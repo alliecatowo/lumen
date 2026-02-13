@@ -442,7 +442,6 @@ end
 }
 
 #[test]
-#[ignore = "Addendum V2 coverage target; enable as features land"]
 fn spec_v2_addendum_coverage_targets() {
     let cases = [
         CompileCase {
@@ -611,7 +610,6 @@ end
 }
 
 #[test]
-#[ignore = "Unimplemented V1 sections from SPEC.md that should eventually be covered"]
 fn spec_v1_unimplemented_targets() {
     let cases = [
         CompileCase {

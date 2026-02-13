@@ -832,9 +832,15 @@ impl Parser {
             self.advance();
         }
         self.skip_newlines();
-        while !matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof | TokenKind::Else) {
+        while !matches!(
+            self.peek_kind(),
+            TokenKind::End | TokenKind::Eof | TokenKind::Else
+        ) {
             self.skip_newlines();
-            if matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof | TokenKind::Else) {
+            if matches!(
+                self.peek_kind(),
+                TokenKind::End | TokenKind::Eof | TokenKind::Else
+            ) {
                 break;
             }
             if matches!(self.peek_kind(), TokenKind::Dedent) {
@@ -1076,23 +1082,28 @@ impl Parser {
         } else {
             false
         };
-        let (name, pattern) = if matches!(self.peek_kind(), TokenKind::LParen | TokenKind::LBracket) {
+        let (name, pattern) = if matches!(self.peek_kind(), TokenKind::LParen | TokenKind::LBracket)
+        {
             // Destructuring pattern: let (a, b) = ... or let [a, b] = ...
             let pat = self.parse_pattern()?;
             let pat_name = match &pat {
                 Pattern::TupleDestructure { elements, .. } => {
                     // Use first element name as the binding name for backwards compat
-                    elements.first().and_then(|p| match p {
+                    elements
+                        .first()
+                        .and_then(|p| match p {
+                            Pattern::Ident(n, _) => Some(n.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| "__tuple".to_string())
+                }
+                Pattern::ListDestructure { elements, .. } => elements
+                    .first()
+                    .and_then(|p| match p {
                         Pattern::Ident(n, _) => Some(n.clone()),
                         _ => None,
-                    }).unwrap_or_else(|| "__tuple".to_string())
-                }
-                Pattern::ListDestructure { elements, .. } => {
-                    elements.first().and_then(|p| match p {
-                        Pattern::Ident(n, _) => Some(n.clone()),
-                        _ => None,
-                    }).unwrap_or_else(|| "__pattern".to_string())
-                }
+                    })
+                    .unwrap_or_else(|| "__pattern".to_string()),
                 _ => "__pattern".to_string(),
             };
             (pat_name, Some(pat))
@@ -1111,7 +1122,8 @@ impl Parser {
             if matches!(self.peek_kind(), TokenKind::RBrace) {
                 self.advance();
             }
-            let first_name = fields.first()
+            let first_name = fields
+                .first()
                 .map(|(n, _)| n.clone())
                 .unwrap_or_else(|| "__pattern".to_string());
             let pat = Pattern::RecordDestructure {
@@ -1130,11 +1142,10 @@ impl Parser {
                 let pat = self.parse_pattern()?;
                 let pat_name = match &pat {
                     Pattern::Variant(_, Some(binding), _) => binding.clone(),
-                    Pattern::RecordDestructure { fields, .. } => {
-                        fields.first()
-                            .map(|(n, _)| n.clone())
-                            .unwrap_or_else(|| "__pattern".to_string())
-                    }
+                    Pattern::RecordDestructure { fields, .. } => fields
+                        .first()
+                        .map(|(n, _)| n.clone())
+                        .unwrap_or_else(|| "__pattern".to_string()),
                     _ => first.clone(),
                 };
                 (pat_name, Some(pat))
@@ -1293,12 +1304,13 @@ impl Parser {
             // Tuple destructuring: for (k, v) in ...
             let pat = self.parse_pattern()?;
             let first_name = match &pat {
-                Pattern::TupleDestructure { elements, .. } => {
-                    elements.first().and_then(|p| match p {
+                Pattern::TupleDestructure { elements, .. } => elements
+                    .first()
+                    .and_then(|p| match p {
                         Pattern::Ident(n, _) => Some(n.clone()),
                         _ => None,
-                    }).unwrap_or_else(|| "__tuple".to_string())
-                }
+                    })
+                    .unwrap_or_else(|| "__tuple".to_string()),
                 Pattern::Ident(n, _) => n.clone(),
                 _ => "__pattern".to_string(),
             };
@@ -1556,10 +1568,8 @@ impl Parser {
                             let field_name = self.expect_ident()?;
                             let field_pat = if matches!(self.peek_kind(), TokenKind::Colon) {
                                 self.advance();
-                                if matches!(
-                                    self.peek_kind(),
-                                    TokenKind::Comma | TokenKind::RParen
-                                ) {
+                                if matches!(self.peek_kind(), TokenKind::Comma | TokenKind::RParen)
+                                {
                                     None
                                 } else {
                                     Some(self.parse_pattern()?)
@@ -3826,11 +3836,8 @@ impl Parser {
                     if matches!(self.peek_kind(), TokenKind::RBracket) {
                         self.expect(&TokenKind::RBracket)?;
                         let span = lhs.span().merge(self.current().span);
-                        lhs = Expr::IndexAccess(
-                            Box::new(lhs),
-                            Box::new(Expr::IntLit(0, span)),
-                            span,
-                        );
+                        lhs =
+                            Expr::IndexAccess(Box::new(lhs), Box::new(Expr::IntLit(0, span)), span);
                         continue;
                     }
                     let idx = self.parse_expr(0)?;
@@ -4109,8 +4116,11 @@ impl Parser {
                     Ok(Expr::BlockExpr(block, s.merge(end_span)))
                 } else if !matches!(
                     self.peek_kind(),
-                    TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace
-                        | TokenKind::Comma | TokenKind::Eof
+                    TokenKind::RParen
+                        | TokenKind::RBracket
+                        | TokenKind::RBrace
+                        | TokenKind::Comma
+                        | TokenKind::Eof
                 ) {
                     let inner = self.parse_expr(0)?;
                     let span = s.merge(inner.span());
@@ -5419,8 +5429,10 @@ end"#;
         };
         assert_eq!(ms.arms.len(), 2);
         // First arm should be the pattern (ok(val))
-        assert!(matches!(&ms.arms[0].pattern, Pattern::Variant(name, Some(binding), _)
-            if name == "ok" && binding == "val"));
+        assert!(
+            matches!(&ms.arms[0].pattern, Pattern::Variant(name, Some(binding), _)
+            if name == "ok" && binding == "val")
+        );
         // Second arm should be the wildcard (else branch)
         assert!(matches!(&ms.arms[1].pattern, Pattern::Wildcard(_)));
     }
@@ -5839,10 +5851,14 @@ end
         let (program, _errors) = parse_with_recovery(tokens, vec![]);
 
         // Should continue parsing after error in bad cell
-        let has_memory = program.items.iter().any(|item| {
-            matches!(item, Item::Process(p) if p.name == "GoodMemory")
-        });
+        let has_memory = program
+            .items
+            .iter()
+            .any(|item| matches!(item, Item::Process(p) if p.name == "GoodMemory"));
 
-        assert!(has_memory, "Should parse memory process after error in cell");
+        assert!(
+            has_memory,
+            "Should parse memory process after error in cell"
+        );
     }
 }

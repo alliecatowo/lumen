@@ -32,7 +32,10 @@ fn assert_type_error(source: &str, expected_fragment: &str) {
 fn assert_compiles(source: &str) {
     let md = markdown_from_code(source);
     if let Err(err) = compile(&md) {
-        panic!("expected source to compile, but got error:\n{}\nsource:\n{}", err, source);
+        panic!(
+            "expected source to compile, but got error:\n{}\nsource:\n{}",
+            err, source
+        );
     }
 }
 

@@ -25,7 +25,11 @@ end
             None
         }
     });
-    assert!(result.is_ok(), "Expected successful compilation, got: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Expected successful compilation, got: {:?}",
+        result.err()
+    );
     let module = result.unwrap();
     assert_eq!(module.cells.len(), 1);
     assert_eq!(module.cells[0].name, "main");
@@ -57,7 +61,11 @@ end
             None
         }
     });
-    assert!(result.is_ok(), "Expected successful compilation, got: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Expected successful compilation, got: {:?}",
+        result.err()
+    );
     let module = result.unwrap();
     // Note: imported types are not necessarily included in the output module
     // They're available for type checking but not re-exported
@@ -84,18 +92,19 @@ cell foo() -> Int
 end
 ```
 "#;
-    let result = compile_with_imports(module_a, &|module| {
-        match module {
-            "b" => Some(module_b.to_string()),
-            "a" => Some(module_a.to_string()),
-            _ => None,
-        }
+    let result = compile_with_imports(module_a, &|module| match module {
+        "b" => Some(module_b.to_string()),
+        "a" => Some(module_a.to_string()),
+        _ => None,
     });
     assert!(result.is_err(), "Expected circular import error");
     if let Err(e) = result {
         let err_str = format!("{:?}", e);
-        assert!(err_str.contains("CircularImport") || err_str.contains("circular"),
-                "Expected CircularImport error, got: {}", err_str);
+        assert!(
+            err_str.contains("CircularImport") || err_str.contains("circular"),
+            "Expected CircularImport error, got: {}",
+            err_str
+        );
     }
 }
 
@@ -114,8 +123,11 @@ end
     assert!(result.is_err(), "Expected module not found error");
     if let Err(e) = result {
         let err_str = format!("{:?}", e);
-        assert!(err_str.contains("ModuleNotFound") || err_str.contains("not found"),
-                "Expected ModuleNotFound error, got: {}", err_str);
+        assert!(
+            err_str.contains("ModuleNotFound") || err_str.contains("not found"),
+            "Expected ModuleNotFound error, got: {}",
+            err_str
+        );
     }
 }
 
@@ -144,7 +156,11 @@ end
             None
         }
     });
-    assert!(result.is_ok(), "Expected successful compilation with aliased import, got: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Expected successful compilation with aliased import, got: {:?}",
+        result.err()
+    );
     let module = result.unwrap();
     assert_eq!(module.cells.len(), 1);
 }
@@ -178,7 +194,11 @@ end
             None
         }
     });
-    assert!(result.is_ok(), "Expected successful compilation with multiple imports, got: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Expected successful compilation with multiple imports, got: {:?}",
+        result.err()
+    );
 }
 
 #[test]
@@ -212,7 +232,11 @@ end
             None
         }
     });
-    assert!(result.is_ok(), "Expected successful compilation with wildcard import, got: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Expected successful compilation with wildcard import, got: {:?}",
+        result.err()
+    );
 }
 
 #[test]
@@ -243,7 +267,10 @@ end
     assert!(result.is_err(), "Expected symbol not found error");
     if let Err(e) = result {
         let err_str = format!("{:?}", e);
-        assert!(err_str.contains("ImportedSymbolNotFound") || err_str.contains("not found"),
-                "Expected ImportedSymbolNotFound error, got: {}", err_str);
+        assert!(
+            err_str.contains("ImportedSymbolNotFound") || err_str.contains("not found"),
+            "Expected ImportedSymbolNotFound error, got: {}",
+            err_str
+        );
     }
 }

@@ -2,8 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use lumen_compiler::compiler::resolve::ResolveError;
-use lumen_compiler::{CompileError, compile};
 use lumen_compiler::markdown::extract::extract_blocks;
+use lumen_compiler::{compile, CompileError};
 
 fn repo_file(path_from_repo_root: &str) -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -46,7 +46,10 @@ fn compile_block_with_type_stubs(code: &str) -> Result<(), String> {
         } else {
             format!("{}\n\n{}", prelude, code)
         };
-        let md = format!("@doc_mode true\n\n# sweep\n\n```lumen\n{}\n```\n", full_code);
+        let md = format!(
+            "@doc_mode true\n\n# sweep\n\n```lumen\n{}\n```\n",
+            full_code
+        );
 
         match compile(&md) {
             Ok(_) => return Ok(()),

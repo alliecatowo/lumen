@@ -1225,9 +1225,10 @@ end
         .expect("main cell should exist");
 
     // Find any Jmp instruction with a negative signed offset (backward jump)
-    let has_backward_jump = main_cell.instructions.iter().any(|inst| {
-        inst.op == OpCode::Jmp && inst.sax_val() < 0
-    });
+    let has_backward_jump = main_cell
+        .instructions
+        .iter()
+        .any(|inst| inst.op == OpCode::Jmp && inst.sax_val() < 0);
     assert!(
         has_backward_jump,
         "while loop should contain a backward jump (negative sax_val), instructions: {:?}",
@@ -2101,7 +2102,10 @@ end
 "#,
     );
     let module = compile(&md).expect("should compile");
-    assert!(!module.effects.is_empty(), "should have effect declarations");
+    assert!(
+        !module.effects.is_empty(),
+        "should have effect declarations"
+    );
     assert_eq!(module.effects[0].name, "database");
 }
 

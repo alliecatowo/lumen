@@ -74,7 +74,12 @@ impl Diagnostic {
         if !self.suggestions.is_empty() {
             out.push_str(&format!("   {}\n", cyan("|")));
             for suggestion in &self.suggestions {
-                out.push_str(&format!("   {} {}: {}\n", cyan("="), cyan("help"), suggestion));
+                out.push_str(&format!(
+                    "   {} {}: {}\n",
+                    cyan("="),
+                    cyan("help"),
+                    suggestion
+                ));
             }
         }
 
@@ -231,18 +236,51 @@ const KEYWORDS: &[&str] = &[
 
 // Builtin functions for suggestions
 const BUILTINS: &[&str] = &[
-    "print", "len", "length", "append", "range", "to_string", "str", "to_int", "int", "to_float",
-    "float", "type_of", "keys", "values", "contains", "join", "split", "trim", "upper", "lower",
-    "replace", "abs", "min", "max", "hash", "not", "count", "matches", "slice", "sort", "reverse",
-    "map", "filter", "reduce", "parallel", "race", "vote", "select", "timeout", "spawn", "resume",
+    "print",
+    "len",
+    "length",
+    "append",
+    "range",
+    "to_string",
+    "str",
+    "to_int",
+    "int",
+    "to_float",
+    "float",
+    "type_of",
+    "keys",
+    "values",
+    "contains",
+    "join",
+    "split",
+    "trim",
+    "upper",
+    "lower",
+    "replace",
+    "abs",
+    "min",
+    "max",
+    "hash",
+    "not",
+    "count",
+    "matches",
+    "slice",
+    "sort",
+    "reverse",
+    "map",
+    "filter",
+    "reduce",
+    "parallel",
+    "race",
+    "vote",
+    "select",
+    "timeout",
+    "spawn",
+    "resume",
 ];
 
 /// Convert a CompileError + source text into a list of Diagnostics
-pub fn format_compile_error(
-    error: &CompileError,
-    source: &str,
-    filename: &str,
-) -> Vec<Diagnostic> {
+pub fn format_compile_error(error: &CompileError, source: &str, filename: &str) -> Vec<Diagnostic> {
     match error {
         CompileError::Lex(e) => vec![format_lex_error(e, source, filename)],
         CompileError::Parse(e) => vec![format_parse_error(e, source, filename)],

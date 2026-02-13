@@ -25,9 +25,9 @@ fn collect_effect_handler_cells(program: &Program) -> HashMap<String, String> {
     for item in &program.items {
         if let Item::Handler(handler) = item {
             for handle in &handler.handles {
-                handlers
-                    .entry(handle.name.clone())
-                    .or_insert_with(|| format!("{}.handle_{}", handler.name, handle.name.replace('.', "_")));
+                handlers.entry(handle.name.clone()).or_insert_with(|| {
+                    format!("{}.handle_{}", handler.name, handle.name.replace('.', "_"))
+                });
             }
         }
     }
@@ -254,7 +254,9 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                 tool_alias: b.tool_alias.clone(),
             }),
             Item::Handler(h) => {
-                module.handlers.push(lowerer.lower_handler(h, &mut module.cells));
+                module
+                    .handlers
+                    .push(lowerer.lower_handler(h, &mut module.cells));
             }
             Item::Addon(a) => module.addons.push(LirAddon {
                 kind: a.kind.clone(),
@@ -443,7 +445,12 @@ impl<'a> Lowerer<'a> {
         }
 
         let result_reg = ra.alloc_temp();
-        instrs.push(Instruction::abc(OpCode::Call, base, arg_regs.len() as u8, 1));
+        instrs.push(Instruction::abc(
+            OpCode::Call,
+            base,
+            arg_regs.len() as u8,
+            1,
+        ));
         instrs.push(Instruction::abc(OpCode::Move, result_reg, base, 0));
         result_reg
     }
@@ -640,7 +647,14 @@ impl<'a> Lowerer<'a> {
             let kidx = constants.len() as u16;
             constants.push(Constant::String(format!("{}.{}", p.name, method)));
             instructions.push(Instruction::abx(OpCode::LoadK, val_reg, kidx));
-            self.emit_set_field(dest, method, val_reg, &mut ra, &mut constants, &mut instructions);
+            self.emit_set_field(
+                dest,
+                method,
+                val_reg,
+                &mut ra,
+                &mut constants,
+                &mut instructions,
+            );
         }
 
         instructions.push(Instruction::abc(OpCode::Return, dest, 1, 0));
@@ -1033,11 +1047,7 @@ impl<'a> Lowerer<'a> {
         reg
     }
 
-    fn emit_jump_if_false(
-        &mut self,
-        cond_reg: u8,
-        instrs: &mut Vec<Instruction>,
-    ) -> usize {
+    fn emit_jump_if_false(&mut self, cond_reg: u8, instrs: &mut Vec<Instruction>) -> usize {
         instrs.push(Instruction::abc(OpCode::Test, cond_reg, 0, 0));
         let jmp_idx = instrs.len();
         instrs.push(Instruction::sax(OpCode::Jmp, 0));
@@ -1067,7 +1077,12 @@ impl<'a> Lowerer<'a> {
         instrs: &mut Vec<Instruction>,
     ) {
         let key_reg = self.push_const_string(field_name, ra, consts, instrs);
-        instrs.push(Instruction::abc(OpCode::SetIndex, obj_reg, key_reg, value_reg));
+        instrs.push(Instruction::abc(
+            OpCode::SetIndex,
+            obj_reg,
+            key_reg,
+            value_reg,
+        ));
     }
 
     fn lower_match_pattern(
@@ -1116,14 +1131,7 @@ impl<'a> Lowerer<'a> {
                 let mut success_jumps = Vec::new();
                 for (idx, p) in patterns.iter().enumerate() {
                     let mut alt_fail_jumps = Vec::new();
-                    self.lower_match_pattern(
-                        p,
-                        value_reg,
-                        ra,
-                        consts,
-                        instrs,
-                        &mut alt_fail_jumps,
-                    );
+                    self.lower_match_pattern(p, value_reg, ra, consts, instrs, &mut alt_fail_jumps);
                     let is_last = idx + 1 == patterns.len();
                     if is_last {
                         fail_jumps.extend(alt_fail_jumps);
@@ -1156,21 +1164,35 @@ impl<'a> Lowerer<'a> {
                     IntrinsicId::Length as u8,
                     value_reg,
                 ));
-                let expected_reg =
-                    self.push_const_int(elements.len() as i64, ra, consts, instrs);
+                let expected_reg = self.push_const_int(elements.len() as i64, ra, consts, instrs);
                 let arity_ok = ra.alloc_temp();
                 if rest.is_some() {
                     // expected_len <= actual_len
-                    instrs.push(Instruction::abc(OpCode::Le, arity_ok, expected_reg, len_reg));
+                    instrs.push(Instruction::abc(
+                        OpCode::Le,
+                        arity_ok,
+                        expected_reg,
+                        len_reg,
+                    ));
                 } else {
-                    instrs.push(Instruction::abc(OpCode::Eq, arity_ok, len_reg, expected_reg));
+                    instrs.push(Instruction::abc(
+                        OpCode::Eq,
+                        arity_ok,
+                        len_reg,
+                        expected_reg,
+                    ));
                 }
                 fail_jumps.push(self.emit_jump_if_false(arity_ok, instrs));
 
                 for (idx, elem_pat) in elements.iter().enumerate() {
                     let idx_reg = self.push_const_int(idx as i64, ra, consts, instrs);
                     let elem_reg = ra.alloc_temp();
-                    instrs.push(Instruction::abc(OpCode::GetIndex, elem_reg, value_reg, idx_reg));
+                    instrs.push(Instruction::abc(
+                        OpCode::GetIndex,
+                        elem_reg,
+                        value_reg,
+                        idx_reg,
+                    ));
                     self.lower_match_pattern(elem_pat, elem_reg, ra, consts, instrs, fail_jumps);
                 }
 
@@ -1194,7 +1216,12 @@ impl<'a> Lowerer<'a> {
             Pattern::TupleDestructure { elements, .. } => {
                 let tuple_type = self.push_const_string("Tuple", ra, consts, instrs);
                 let is_tuple = ra.alloc_temp();
-                instrs.push(Instruction::abc(OpCode::Is, is_tuple, value_reg, tuple_type));
+                instrs.push(Instruction::abc(
+                    OpCode::Is,
+                    is_tuple,
+                    value_reg,
+                    tuple_type,
+                ));
                 fail_jumps.push(self.emit_jump_if_false(is_tuple, instrs));
 
                 let len_reg = ra.alloc_temp();
@@ -1204,16 +1231,25 @@ impl<'a> Lowerer<'a> {
                     IntrinsicId::Length as u8,
                     value_reg,
                 ));
-                let expected_reg =
-                    self.push_const_int(elements.len() as i64, ra, consts, instrs);
+                let expected_reg = self.push_const_int(elements.len() as i64, ra, consts, instrs);
                 let arity_ok = ra.alloc_temp();
-                instrs.push(Instruction::abc(OpCode::Eq, arity_ok, len_reg, expected_reg));
+                instrs.push(Instruction::abc(
+                    OpCode::Eq,
+                    arity_ok,
+                    len_reg,
+                    expected_reg,
+                ));
                 fail_jumps.push(self.emit_jump_if_false(arity_ok, instrs));
 
                 for (idx, elem_pat) in elements.iter().enumerate() {
                     let idx_reg = self.push_const_int(idx as i64, ra, consts, instrs);
                     let elem_reg = ra.alloc_temp();
-                    instrs.push(Instruction::abc(OpCode::GetIndex, elem_reg, value_reg, idx_reg));
+                    instrs.push(Instruction::abc(
+                        OpCode::GetIndex,
+                        elem_reg,
+                        value_reg,
+                        idx_reg,
+                    ));
                     self.lower_match_pattern(elem_pat, elem_reg, ra, consts, instrs, fail_jumps);
                 }
             }
@@ -1232,7 +1268,9 @@ impl<'a> Lowerer<'a> {
                     let field_reg = ra.alloc_temp();
                     self.emit_get_field(field_reg, value_reg, field_name, ra, consts, instrs);
                     if let Some(field_pat) = pat {
-                        self.lower_match_pattern(field_pat, field_reg, ra, consts, instrs, fail_jumps);
+                        self.lower_match_pattern(
+                            field_pat, field_reg, ra, consts, instrs, fail_jumps,
+                        );
                     } else {
                         let bind_reg = ra.alloc_named(field_name);
                         instrs.push(Instruction::abc(OpCode::Move, bind_reg, field_reg, 0));
@@ -1415,20 +1453,33 @@ impl<'a> Lowerer<'a> {
                                 instrs.push(Instruction::sax(OpCode::Jmp, 0));
 
                                 let elem_reg = ra.alloc_temp();
-                                instrs.push(Instruction::abc(OpCode::GetIndex, elem_reg, src_reg, idx_reg));
+                                instrs.push(Instruction::abc(
+                                    OpCode::GetIndex,
+                                    elem_reg,
+                                    src_reg,
+                                    idx_reg,
+                                ));
                                 instrs.push(Instruction::abc(OpCode::Append, dest, elem_reg, 0));
 
                                 let one_idx = consts.len() as u16;
                                 consts.push(Constant::Int(1));
                                 let one_reg = ra.alloc_temp();
                                 instrs.push(Instruction::abx(OpCode::LoadK, one_reg, one_idx));
-                                instrs.push(Instruction::abc(OpCode::Add, idx_reg, idx_reg, one_reg));
+                                instrs.push(Instruction::abc(
+                                    OpCode::Add,
+                                    idx_reg,
+                                    idx_reg,
+                                    one_reg,
+                                ));
 
                                 let back_offset = loop_start as i32 - instrs.len() as i32 - 1;
                                 instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
 
                                 let after_loop = instrs.len();
-                                instrs[break_jmp] = Instruction::sax(OpCode::Jmp, (after_loop - break_jmp - 1) as i32);
+                                instrs[break_jmp] = Instruction::sax(
+                                    OpCode::Jmp,
+                                    (after_loop - break_jmp - 1) as i32,
+                                );
                             }
                             _ => {
                                 let er = self.lower_expr(elem, ra, consts, instrs);
@@ -1566,14 +1617,18 @@ impl<'a> Lowerer<'a> {
                             instrs,
                         );
                     }
-                    if let Some(tool_alias) = self.resolve_effect_tool_binding(&effect_path).map(|s| s.to_string()) {
+                    if let Some(tool_alias) = self
+                        .resolve_effect_tool_binding(&effect_path)
+                        .map(|s| s.to_string())
+                    {
                         return self.lower_tool_call(Some(&tool_alias), args, ra, consts, instrs);
                     }
                 }
 
                 // Check for intrinsic call or Enum/Result constructor
                 if let Expr::Ident(ref name, _) = **callee {
-                    if self.tool_indices.contains_key(name) && !self.symbols.cells.contains_key(name)
+                    if self.tool_indices.contains_key(name)
+                        && !self.symbols.cells.contains_key(name)
                     {
                         return self.lower_tool_call(Some(name.as_str()), args, ra, consts, instrs);
                     }
@@ -1891,7 +1946,8 @@ impl<'a> Lowerer<'a> {
                     self.lower_expr(callee, ra, consts, instrs)
                 };
 
-                let arg_regs = self.lower_call_arg_regs(args, implicit_self_arg, ra, consts, instrs);
+                let arg_regs =
+                    self.lower_call_arg_regs(args, implicit_self_arg, ra, consts, instrs);
                 self.emit_call_with_regs(callee_reg, &arg_regs, ra, instrs)
             }
             Expr::ToolCall(callee, args, _) => {
@@ -1966,7 +2022,9 @@ impl<'a> Lowerer<'a> {
                 match body {
                     LambdaBody::Expr(e) => collect_free_idents_expr(e, &mut referenced),
                     LambdaBody::Block(stmts) => {
-                        for s in stmts { collect_free_idents_stmt(s, &mut referenced); }
+                        for s in stmts {
+                            collect_free_idents_stmt(s, &mut referenced);
+                        }
                     }
                 }
 
@@ -1975,8 +2033,12 @@ impl<'a> Lowerer<'a> {
                 let mut captures: Vec<(String, u8)> = Vec::new(); // (name, outer_reg)
                 let mut seen = std::collections::HashSet::new();
                 for name in &referenced {
-                    if param_names.contains(&name.as_str()) { continue; }
-                    if !seen.insert(name.clone()) { continue; }
+                    if param_names.contains(&name.as_str()) {
+                        continue;
+                    }
+                    if !seen.insert(name.clone()) {
+                        continue;
+                    }
                     if let Some(outer_reg) = ra.lookup(name) {
                         captures.push((name.clone(), outer_reg));
                     }
@@ -2055,7 +2117,12 @@ impl<'a> Lowerer<'a> {
 
                 // Emit SetUpval for each captured variable to populate the closure
                 for (idx, (_, outer_reg)) in captures.iter().enumerate() {
-                    instrs.push(Instruction::abc(OpCode::SetUpval, *outer_reg, idx as u8, dest));
+                    instrs.push(Instruction::abc(
+                        OpCode::SetUpval,
+                        *outer_reg,
+                        idx as u8,
+                        dest,
+                    ));
                 }
 
                 dest
@@ -2234,7 +2301,12 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::sax(OpCode::Jmp, 0));
 
                 let elem_reg = ra.alloc_temp();
-                instrs.push(Instruction::abc(OpCode::GetIndex, elem_reg, src_reg, idx_reg));
+                instrs.push(Instruction::abc(
+                    OpCode::GetIndex,
+                    elem_reg,
+                    src_reg,
+                    idx_reg,
+                ));
                 instrs.push(Instruction::abc(OpCode::Append, dest, elem_reg, 0));
 
                 let one_idx = consts.len() as u16;
@@ -2365,7 +2437,12 @@ impl<'a> Lowerer<'a> {
                         consts.push(Constant::Int(0));
                         instrs.push(Instruction::abx(OpCode::LoadK, zero_reg, kidx));
                         let key_reg = ra.alloc_temp();
-                        instrs.push(Instruction::abc(OpCode::GetIndex, key_reg, body_reg, zero_reg));
+                        instrs.push(Instruction::abc(
+                            OpCode::GetIndex,
+                            key_reg,
+                            body_reg,
+                            zero_reg,
+                        ));
 
                         let one_k = ra.alloc_temp();
                         let kidx2 = consts.len() as u16;
@@ -2374,7 +2451,12 @@ impl<'a> Lowerer<'a> {
                         let val_reg = ra.alloc_temp();
                         instrs.push(Instruction::abc(OpCode::GetIndex, val_reg, body_reg, one_k));
 
-                        instrs.push(Instruction::abc(OpCode::SetIndex, temp_reg, key_reg, val_reg));
+                        instrs.push(Instruction::abc(
+                            OpCode::SetIndex,
+                            temp_reg,
+                            key_reg,
+                            val_reg,
+                        ));
                     }
                 }
 
@@ -2494,10 +2576,13 @@ impl<'a> Lowerer<'a> {
         let mut kv_regs = Vec::new();
         for (idx, arg) in args.iter().enumerate() {
             let (key, value_reg) = match arg {
-                CallArg::Named(name, e, _) => (name.clone(), self.lower_expr(e, ra, consts, instrs)),
-                CallArg::Positional(e) => {
-                    (format!("arg{}", idx), self.lower_expr(e, ra, consts, instrs))
+                CallArg::Named(name, e, _) => {
+                    (name.clone(), self.lower_expr(e, ra, consts, instrs))
                 }
+                CallArg::Positional(e) => (
+                    format!("arg{}", idx),
+                    self.lower_expr(e, ra, consts, instrs),
+                ),
                 CallArg::Role(name, content, _) => {
                     let content_reg = self.lower_expr(content, ra, consts, instrs);
                     let prefix_reg = ra.alloc_temp();
@@ -2543,7 +2628,12 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        instrs.push(Instruction::abc(OpCode::NewMap, dest, kv_regs.len() as u8, 0));
+        instrs.push(Instruction::abc(
+            OpCode::NewMap,
+            dest,
+            kv_regs.len() as u8,
+            0,
+        ));
         let tool_index = alias
             .and_then(|name| self.tool_indices.get(name).copied())
             .unwrap_or(0);
@@ -2599,7 +2689,12 @@ fn collect_free_idents_expr(expr: &Expr, out: &mut Vec<String>) {
                 }
             }
         }
-        Expr::IfExpr { cond, then_val, else_val, .. } => {
+        Expr::IfExpr {
+            cond,
+            then_val,
+            else_val,
+            ..
+        } => {
             collect_free_idents_expr(cond, out);
             collect_free_idents_expr(then_val, out);
             collect_free_idents_expr(else_val, out);
@@ -2609,38 +2704,57 @@ fn collect_free_idents_expr(expr: &Expr, out: &mut Vec<String>) {
             collect_free_idents_expr(r, out);
         }
         Expr::NullSafeAccess(obj, _, _) => collect_free_idents_expr(obj, out),
-        Expr::NullAssert(inner, _) | Expr::SpreadExpr(inner, _)
-        | Expr::TryExpr(inner, _) | Expr::AwaitExpr(inner, _) => {
+        Expr::NullAssert(inner, _)
+        | Expr::SpreadExpr(inner, _)
+        | Expr::TryExpr(inner, _)
+        | Expr::AwaitExpr(inner, _) => {
             collect_free_idents_expr(inner, out);
         }
         Expr::ExpectSchema(inner, _, _) => collect_free_idents_expr(inner, out),
         Expr::RoleBlock(_, content, _) => collect_free_idents_expr(content, out),
         Expr::RangeExpr { start, end, .. } => {
-            if let Some(s) = start { collect_free_idents_expr(s, out); }
-            if let Some(e) = end { collect_free_idents_expr(e, out); }
+            if let Some(s) = start {
+                collect_free_idents_expr(s, out);
+            }
+            if let Some(e) = end {
+                collect_free_idents_expr(e, out);
+            }
         }
-        Expr::Comprehension { body, iter, condition, .. } => {
+        Expr::Comprehension {
+            body,
+            iter,
+            condition,
+            ..
+        } => {
             collect_free_idents_expr(body, out);
             collect_free_idents_expr(iter, out);
-            if let Some(c) = condition { collect_free_idents_expr(c, out); }
+            if let Some(c) = condition {
+                collect_free_idents_expr(c, out);
+            }
         }
         Expr::Lambda { body, .. } => {
             // Don't recurse into nested lambdas - they handle their own captures
             match body {
                 LambdaBody::Expr(e) => collect_free_idents_expr(e, out),
                 LambdaBody::Block(stmts) => {
-                    for s in stmts { collect_free_idents_stmt(s, out); }
+                    for s in stmts {
+                        collect_free_idents_stmt(s, out);
+                    }
                 }
             }
         }
         Expr::MatchExpr { subject, arms, .. } => {
             collect_free_idents_expr(subject, out);
             for arm in arms {
-                for s in &arm.body { collect_free_idents_stmt(s, out); }
+                for s in &arm.body {
+                    collect_free_idents_stmt(s, out);
+                }
             }
         }
         Expr::BlockExpr(stmts, _) => {
-            for s in stmts { collect_free_idents_stmt(s, out); }
+            for s in stmts {
+                collect_free_idents_stmt(s, out);
+            }
         }
         _ => {} // literals, etc.
     }
@@ -2656,26 +2770,38 @@ fn collect_free_idents_stmt(stmt: &Stmt, out: &mut Vec<String>) {
         Stmt::Emit(e) => collect_free_idents_expr(&e.value, out),
         Stmt::If(ifs) => {
             collect_free_idents_expr(&ifs.condition, out);
-            for s in &ifs.then_body { collect_free_idents_stmt(s, out); }
+            for s in &ifs.then_body {
+                collect_free_idents_stmt(s, out);
+            }
             if let Some(ref eb) = ifs.else_body {
-                for s in eb { collect_free_idents_stmt(s, out); }
+                for s in eb {
+                    collect_free_idents_stmt(s, out);
+                }
             }
         }
         Stmt::While(ws) => {
             collect_free_idents_expr(&ws.condition, out);
-            for s in &ws.body { collect_free_idents_stmt(s, out); }
+            for s in &ws.body {
+                collect_free_idents_stmt(s, out);
+            }
         }
         Stmt::For(fs) => {
             collect_free_idents_expr(&fs.iter, out);
-            for s in &fs.body { collect_free_idents_stmt(s, out); }
+            for s in &fs.body {
+                collect_free_idents_stmt(s, out);
+            }
         }
         Stmt::Loop(ls) => {
-            for s in &ls.body { collect_free_idents_stmt(s, out); }
+            for s in &ls.body {
+                collect_free_idents_stmt(s, out);
+            }
         }
         Stmt::Match(ms) => {
             collect_free_idents_expr(&ms.subject, out);
             for arm in &ms.arms {
-                for s in &arm.body { collect_free_idents_stmt(s, out); }
+                for s in &arm.body {
+                    collect_free_idents_stmt(s, out);
+                }
             }
         }
         Stmt::CompoundAssign(ca) => collect_free_idents_expr(&ca.value, out),
@@ -2829,14 +2955,22 @@ mod tests {
         let module = lower_src("cell neq(a: Int, b: Int) -> Bool\n  return a != b\nend");
         let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
         // Should have Eq followed by Not
-        let eq_idx = ops.iter().position(|o| *o == OpCode::Eq).expect("expected Eq opcode");
-        assert_eq!(ops[eq_idx + 1], OpCode::Not, "Not should follow Eq for NotEq");
+        let eq_idx = ops
+            .iter()
+            .position(|o| *o == OpCode::Eq)
+            .expect("expected Eq opcode");
+        assert_eq!(
+            ops[eq_idx + 1],
+            OpCode::Not,
+            "Not should follow Eq for NotEq"
+        );
         assert!(ops.contains(&OpCode::Return));
     }
 
     #[test]
     fn test_if_else_emits_jmp_test() {
-        let src = "cell check(x: Bool) -> Int\n  if x\n    return 1\n  else\n    return 0\n  end\nend";
+        let src =
+            "cell check(x: Bool) -> Int\n  if x\n    return 1\n  else\n    return 0\n  end\nend";
         let module = lower_src(src);
         let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
         // Should have: Eq, Test, Jmp sequence for condition check
@@ -2845,7 +2979,10 @@ mod tests {
         assert!(ops.contains(&OpCode::Jmp), "if should emit Jmp");
         // Should have two Returns (one for each branch)
         let ret_count = ops.iter().filter(|o| **o == OpCode::Return).count();
-        assert!(ret_count >= 2, "if/else should have returns in both branches");
+        assert!(
+            ret_count >= 2,
+            "if/else should have returns in both branches"
+        );
     }
 
     #[test]
@@ -2876,7 +3013,10 @@ mod tests {
         // Match literal should emit Eq for comparison
         assert!(ops.contains(&OpCode::Eq), "match literal should emit Eq");
         // Should have Test+Jmp for conditional branching
-        assert!(ops.contains(&OpCode::Test), "match literal should emit Test");
+        assert!(
+            ops.contains(&OpCode::Test),
+            "match literal should emit Test"
+        );
         assert!(ops.contains(&OpCode::Jmp), "match literal should emit Jmp");
     }
 
@@ -2900,7 +3040,10 @@ mod tests {
         let module = lower_src(src);
         let make_cell = module.cells.iter().find(|c| c.name == "make").unwrap();
         let ops: Vec<_> = make_cell.instructions.iter().map(|i| i.op).collect();
-        assert!(ops.contains(&OpCode::NewRecord), "record construction should emit NewRecord");
+        assert!(
+            ops.contains(&OpCode::NewRecord),
+            "record construction should emit NewRecord"
+        );
         // SetIndex is used for setting fields (via emit_set_field)
         let setindex_count = ops.iter().filter(|o| **o == OpCode::SetIndex).count();
         assert!(
@@ -2912,11 +3055,15 @@ mod tests {
 
     #[test]
     fn test_set_comprehension_emits_newset() {
-        let src = "cell make_set() -> set[Int]\n  let xs = [1, 2, 3]\n  return set[x for x in xs]\nend";
+        let src =
+            "cell make_set() -> set[Int]\n  let xs = [1, 2, 3]\n  return set[x for x in xs]\nend";
         let module = lower_src(src);
         let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
         // Set comprehension now builds as list then converts using ToSet intrinsic
-        assert!(ops.contains(&OpCode::Append), "set comprehension should emit Append");
+        assert!(
+            ops.contains(&OpCode::Append),
+            "set comprehension should emit Append"
+        );
         let intrinsics: Vec<u8> = module.cells[0]
             .instructions
             .iter()
@@ -2934,14 +3081,31 @@ mod tests {
         let src = "cell make_adder(x: Int) -> fn(Int) -> Int\n  return fn(y: Int) => x + y\nend";
         let module = lower_src(src);
         // The lambda should be emitted as a separate cell
-        let lambda_cell = module.cells.iter().find(|c| c.name.starts_with("<lambda/")).unwrap();
+        let lambda_cell = module
+            .cells
+            .iter()
+            .find(|c| c.name.starts_with("<lambda/"))
+            .unwrap();
         let ops: Vec<_> = lambda_cell.instructions.iter().map(|i| i.op).collect();
-        assert!(ops.contains(&OpCode::GetUpval), "lambda capturing outer variable should emit GetUpval");
+        assert!(
+            ops.contains(&OpCode::GetUpval),
+            "lambda capturing outer variable should emit GetUpval"
+        );
         // The outer cell should have Closure and SetUpval
-        let outer_cell = module.cells.iter().find(|c| c.name == "make_adder").unwrap();
+        let outer_cell = module
+            .cells
+            .iter()
+            .find(|c| c.name == "make_adder")
+            .unwrap();
         let outer_ops: Vec<_> = outer_cell.instructions.iter().map(|i| i.op).collect();
-        assert!(outer_ops.contains(&OpCode::Closure), "should emit Closure for lambda");
-        assert!(outer_ops.contains(&OpCode::SetUpval), "should emit SetUpval for captured variable");
+        assert!(
+            outer_ops.contains(&OpCode::Closure),
+            "should emit Closure for lambda"
+        );
+        assert!(
+            outer_ops.contains(&OpCode::SetUpval),
+            "should emit SetUpval for captured variable"
+        );
     }
 
     #[test]
@@ -2949,12 +3113,20 @@ mod tests {
         let src = "cell sum_list(xs: list[Int]) -> Int\n  let total = 0\n  for x in xs\n    total = total + x\n  end\n  return total\nend";
         let module = lower_src(src);
         let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
-        assert!(ops.contains(&OpCode::Lt), "for loop should emit Lt for bound check");
-        assert!(ops.contains(&OpCode::GetIndex), "for loop should emit GetIndex for element access");
+        assert!(
+            ops.contains(&OpCode::Lt),
+            "for loop should emit Lt for bound check"
+        );
+        assert!(
+            ops.contains(&OpCode::GetIndex),
+            "for loop should emit GetIndex for element access"
+        );
         assert!(ops.contains(&OpCode::Add), "for loop body should emit Add");
         // Should have backward jump
         let instrs = &module.cells[0].instructions;
-        let has_backward_jmp = instrs.iter().any(|i| i.op == OpCode::Jmp && i.sax_val() < 0);
+        let has_backward_jmp = instrs
+            .iter()
+            .any(|i| i.op == OpCode::Jmp && i.sax_val() < 0);
         assert!(has_backward_jmp, "for loop should have backward jump");
     }
 
@@ -2963,18 +3135,37 @@ mod tests {
         let src = "cell test_sort(xs: list[Int]) -> list[Int]\n  return sort(xs)\nend";
         let module = lower_src(src);
         let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
-        assert!(ops.contains(&OpCode::Intrinsic), "sort should emit Intrinsic opcode");
+        assert!(
+            ops.contains(&OpCode::Intrinsic),
+            "sort should emit Intrinsic opcode"
+        );
         // Check the intrinsic ID
-        let intr = module.cells[0].instructions.iter().find(|i| i.op == OpCode::Intrinsic).unwrap();
-        assert_eq!(intr.b, IntrinsicId::Sort as u8, "sort should use Sort intrinsic ID");
+        let intr = module.cells[0]
+            .instructions
+            .iter()
+            .find(|i| i.op == OpCode::Intrinsic)
+            .unwrap();
+        assert_eq!(
+            intr.b,
+            IntrinsicId::Sort as u8,
+            "sort should use Sort intrinsic ID"
+        );
     }
 
     #[test]
     fn test_intrinsic_filter_maps_correctly() {
         let src = "cell test_filter(xs: list[Int], f: fn(Int) -> Bool) -> list[Int]\n  return filter(xs, f)\nend";
         let module = lower_src(src);
-        let intr = module.cells[0].instructions.iter().find(|i| i.op == OpCode::Intrinsic).unwrap();
-        assert_eq!(intr.b, IntrinsicId::Filter as u8, "filter should use Filter intrinsic ID");
+        let intr = module.cells[0]
+            .instructions
+            .iter()
+            .find(|i| i.op == OpCode::Intrinsic)
+            .unwrap();
+        assert_eq!(
+            intr.b,
+            IntrinsicId::Filter as u8,
+            "filter should use Filter intrinsic ID"
+        );
     }
 
     #[test]
@@ -2988,31 +3179,57 @@ mod tests {
             .filter(|i| i.op == OpCode::Jmp)
             .map(|i| i.sax_val())
             .collect();
-        assert!(jmps.iter().any(|o| *o < 0), "while should have backward jump");
-        assert!(jmps.iter().any(|o| *o > 0), "break should have forward jump");
+        assert!(
+            jmps.iter().any(|o| *o < 0),
+            "while should have backward jump"
+        );
+        assert!(
+            jmps.iter().any(|o| *o > 0),
+            "break should have forward jump"
+        );
     }
 
     #[test]
     fn test_list_literal() {
         let module = lower_src("cell make() -> list[Int]\n  return [1, 2, 3]\nend");
         let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
-        assert!(ops.contains(&OpCode::NewList), "list literal should emit NewList");
+        assert!(
+            ops.contains(&OpCode::NewList),
+            "list literal should emit NewList"
+        );
     }
 
     #[test]
     fn test_intrinsic_matches_maps_correctly() {
-        let src = "cell test_matches(s: String, pat: String) -> Bool\n  return matches(s, pat)\nend";
+        let src =
+            "cell test_matches(s: String, pat: String) -> Bool\n  return matches(s, pat)\nend";
         let module = lower_src(src);
-        let intr = module.cells[0].instructions.iter().find(|i| i.op == OpCode::Intrinsic).unwrap();
-        assert_eq!(intr.b, IntrinsicId::Matches as u8, "matches should use Matches intrinsic ID");
+        let intr = module.cells[0]
+            .instructions
+            .iter()
+            .find(|i| i.op == OpCode::Intrinsic)
+            .unwrap();
+        assert_eq!(
+            intr.b,
+            IntrinsicId::Matches as u8,
+            "matches should use Matches intrinsic ID"
+        );
     }
 
     #[test]
     fn test_intrinsic_trace_ref_maps_correctly() {
         let src = "cell test_trace() -> String\n  return trace_ref()\nend";
         let module = lower_src(src);
-        let intr = module.cells[0].instructions.iter().find(|i| i.op == OpCode::Intrinsic).unwrap();
-        assert_eq!(intr.b, IntrinsicId::TraceRef as u8, "trace_ref should use TraceRef intrinsic ID");
+        let intr = module.cells[0]
+            .instructions
+            .iter()
+            .find(|i| i.op == OpCode::Intrinsic)
+            .unwrap();
+        assert_eq!(
+            intr.b,
+            IntrinsicId::TraceRef as u8,
+            "trace_ref should use TraceRef intrinsic ID"
+        );
     }
 
     #[test]
@@ -3024,11 +3241,23 @@ mod tests {
         let eq_instr = instrs.iter().find(|i| i.op == OpCode::Eq).unwrap();
         let not_instr = instrs.iter().find(|i| i.op == OpCode::Not).unwrap();
         // Eq writes to dest (a field), Not reads from and writes to the same register
-        assert_eq!(eq_instr.a, not_instr.b, "Not should read from Eq's dest register");
-        assert_eq!(eq_instr.a, not_instr.a, "Not should write to the same register as Eq's dest");
+        assert_eq!(
+            eq_instr.a, not_instr.b,
+            "Not should read from Eq's dest register"
+        );
+        assert_eq!(
+            eq_instr.a, not_instr.a,
+            "Not should write to the same register as Eq's dest"
+        );
         // dest should not be the same as operand registers
-        assert_ne!(eq_instr.a, eq_instr.b, "Eq dest should not clobber lhs operand");
-        assert_ne!(eq_instr.a, eq_instr.c, "Eq dest should not clobber rhs operand");
+        assert_ne!(
+            eq_instr.a, eq_instr.b,
+            "Eq dest should not clobber lhs operand"
+        );
+        assert_ne!(
+            eq_instr.a, eq_instr.c,
+            "Eq dest should not clobber rhs operand"
+        );
     }
 
     #[test]
@@ -3036,12 +3265,31 @@ mod tests {
         // Verify that the number of SetUpval instructions matches the number of captures
         let src = "cell make_adder(x: Int) -> fn(Int) -> Int\n  return fn(y: Int) => x + y\nend";
         let module = lower_src(src);
-        let outer_cell = module.cells.iter().find(|c| c.name == "make_adder").unwrap();
-        let setupval_count = outer_cell.instructions.iter().filter(|i| i.op == OpCode::SetUpval).count();
-        let lambda_cell = module.cells.iter().find(|c| c.name.starts_with("<lambda/")).unwrap();
-        let getupval_count = lambda_cell.instructions.iter().filter(|i| i.op == OpCode::GetUpval).count();
-        assert_eq!(setupval_count, getupval_count,
-            "SetUpval count ({}) should match GetUpval count ({})", setupval_count, getupval_count);
+        let outer_cell = module
+            .cells
+            .iter()
+            .find(|c| c.name == "make_adder")
+            .unwrap();
+        let setupval_count = outer_cell
+            .instructions
+            .iter()
+            .filter(|i| i.op == OpCode::SetUpval)
+            .count();
+        let lambda_cell = module
+            .cells
+            .iter()
+            .find(|c| c.name.starts_with("<lambda/"))
+            .unwrap();
+        let getupval_count = lambda_cell
+            .instructions
+            .iter()
+            .filter(|i| i.op == OpCode::GetUpval)
+            .count();
+        assert_eq!(
+            setupval_count, getupval_count,
+            "SetUpval count ({}) should match GetUpval count ({})",
+            setupval_count, getupval_count
+        );
         assert_eq!(setupval_count, 1, "should have exactly 1 capture (x)");
     }
 
@@ -3050,9 +3298,21 @@ mod tests {
         let src = "cell make_fn(a: Int, b: String) -> fn() -> String\n  return fn() => \"#{a} #{b}\"\nend";
         let module = lower_src(src);
         let outer_cell = module.cells.iter().find(|c| c.name == "make_fn").unwrap();
-        let setupval_count = outer_cell.instructions.iter().filter(|i| i.op == OpCode::SetUpval).count();
-        let lambda_cell = module.cells.iter().find(|c| c.name.starts_with("<lambda/")).unwrap();
-        let getupval_count = lambda_cell.instructions.iter().filter(|i| i.op == OpCode::GetUpval).count();
+        let setupval_count = outer_cell
+            .instructions
+            .iter()
+            .filter(|i| i.op == OpCode::SetUpval)
+            .count();
+        let lambda_cell = module
+            .cells
+            .iter()
+            .find(|c| c.name.starts_with("<lambda/"))
+            .unwrap();
+        let getupval_count = lambda_cell
+            .instructions
+            .iter()
+            .filter(|i| i.op == OpCode::GetUpval)
+            .count();
         assert_eq!(setupval_count, 2, "should capture both a and b");
         assert_eq!(getupval_count, 2, "lambda should load both captures");
     }
@@ -3063,8 +3323,15 @@ mod tests {
         let src = "cell identity() -> fn(Int) -> Int\n  return fn(x: Int) => x\nend";
         let module = lower_src(src);
         let outer_cell = module.cells.iter().find(|c| c.name == "identity").unwrap();
-        let setupval_count = outer_cell.instructions.iter().filter(|i| i.op == OpCode::SetUpval).count();
-        assert_eq!(setupval_count, 0, "lambda using only its own params should have no captures");
+        let setupval_count = outer_cell
+            .instructions
+            .iter()
+            .filter(|i| i.op == OpCode::SetUpval)
+            .count();
+        assert_eq!(
+            setupval_count, 0,
+            "lambda using only its own params should have no captures"
+        );
     }
 
     #[test]
@@ -3072,13 +3339,27 @@ mod tests {
         let src = "cell test_spread(xs: list[Int]) -> list[Int]\n  return [...xs]\nend";
         let module = lower_src(src);
         let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
-        assert!(ops.contains(&OpCode::NewList), "spread in list should create initial list");
-        assert!(ops.contains(&OpCode::Append), "spread should emit Append for each element");
-        assert!(ops.contains(&OpCode::GetIndex), "spread loop should emit GetIndex");
+        assert!(
+            ops.contains(&OpCode::NewList),
+            "spread in list should create initial list"
+        );
+        assert!(
+            ops.contains(&OpCode::Append),
+            "spread should emit Append for each element"
+        );
+        assert!(
+            ops.contains(&OpCode::GetIndex),
+            "spread loop should emit GetIndex"
+        );
         // Should have a backward jump for the loop
         let instrs = &module.cells[0].instructions;
-        let has_backward_jmp = instrs.iter().any(|i| i.op == OpCode::Jmp && i.sax_val() < 0);
-        assert!(has_backward_jmp, "spread should have iteration loop with backward jump");
+        let has_backward_jmp = instrs
+            .iter()
+            .any(|i| i.op == OpCode::Jmp && i.sax_val() < 0);
+        assert!(
+            has_backward_jmp,
+            "spread should have iteration loop with backward jump"
+        );
     }
 
     #[test]
@@ -3088,8 +3369,14 @@ mod tests {
         let instrs = &module.cells[0].instructions;
         let lt_instr = instrs.iter().find(|i| i.op == OpCode::Lt).unwrap();
         // params: a=r0, b=r1; Lt should be Lt(dest, r1, r0) i.e. b < a
-        assert_eq!(lt_instr.b, 1, "Gt should swap: Lt first operand should be b (r1)");
-        assert_eq!(lt_instr.c, 0, "Gt should swap: Lt second operand should be a (r0)");
+        assert_eq!(
+            lt_instr.b, 1,
+            "Gt should swap: Lt first operand should be b (r1)"
+        );
+        assert_eq!(
+            lt_instr.c, 0,
+            "Gt should swap: Lt second operand should be a (r0)"
+        );
     }
 
     #[test]
@@ -3098,17 +3385,27 @@ mod tests {
         let module = lower_src("cell gte(a: Int, b: Int) -> Bool\n  return a >= b\nend");
         let instrs = &module.cells[0].instructions;
         let le_instr = instrs.iter().find(|i| i.op == OpCode::Le).unwrap();
-        assert_eq!(le_instr.b, 1, "GtEq should swap: Le first operand should be b (r1)");
-        assert_eq!(le_instr.c, 0, "GtEq should swap: Le second operand should be a (r0)");
+        assert_eq!(
+            le_instr.b, 1,
+            "GtEq should swap: Le first operand should be b (r1)"
+        );
+        assert_eq!(
+            le_instr.c, 0,
+            "GtEq should swap: Le second operand should be a (r0)"
+        );
     }
 
     #[test]
     fn test_set_comprehension_uses_toset_intrinsic() {
-        let src = "cell make_set() -> set[Int]\n  let xs = [1, 2, 3]\n  return set[x for x in xs]\nend";
+        let src =
+            "cell make_set() -> set[Int]\n  let xs = [1, 2, 3]\n  return set[x for x in xs]\nend";
         let module = lower_src(src);
         let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
         // Set comprehension should build as list then convert using ToSet intrinsic
-        assert!(ops.contains(&OpCode::Append), "set comprehension should use Append during iteration");
+        assert!(
+            ops.contains(&OpCode::Append),
+            "set comprehension should use Append during iteration"
+        );
         let intrinsics: Vec<u8> = module.cells[0]
             .instructions
             .iter()
@@ -3127,10 +3424,18 @@ mod tests {
         let module = lower_src(src);
         let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
         // List with spread should use Append-based construction
-        assert!(ops.contains(&OpCode::Append), "list with spread should use Append");
+        assert!(
+            ops.contains(&OpCode::Append),
+            "list with spread should use Append"
+        );
         // Should iterate over spread values
-        assert!(ops.contains(&OpCode::GetIndex), "should iterate over spread values");
-        assert!(ops.contains(&OpCode::Lt), "should check bounds during spread iteration");
+        assert!(
+            ops.contains(&OpCode::GetIndex),
+            "should iterate over spread values"
+        );
+        assert!(
+            ops.contains(&OpCode::Lt),
+            "should check bounds during spread iteration"
+        );
     }
-
 }

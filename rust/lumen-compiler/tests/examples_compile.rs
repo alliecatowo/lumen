@@ -91,9 +91,8 @@ fn compile_example(filename: &str) {
     let path = examples_dir().join(filename);
     let source = fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e));
-    compile(&source).unwrap_or_else(|e| {
-        panic!("{} failed to compile:\n--- error ---\n{}", filename, e)
-    });
+    compile(&source)
+        .unwrap_or_else(|e| panic!("{} failed to compile:\n--- error ---\n{}", filename, e));
 }
 
 #[test]

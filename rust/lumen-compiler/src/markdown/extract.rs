@@ -359,6 +359,8 @@ end
 "#;
         let result = extract_blocks(src);
         assert_eq!(result.code_blocks.len(), 1);
-        assert!(result.code_blocks[0].code.contains("Use ``` for code fences"));
+        assert!(result.code_blocks[0]
+            .code
+            .contains("Use ``` for code fences"));
     }
 }

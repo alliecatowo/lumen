@@ -20,8 +20,12 @@ Core value families:
 ## Futures and Async
 
 - `Spawn` creates a `Future` handle.
-- Spawned frame completion stores resolved future value.
-- `Await` reads resolved future values.
+- Futures have explicit lifecycle states: `pending`, `completed`, `error`.
+- Spawned frame completion stores `completed` value; failures store `error`.
+- `Await` resolves completed values and raises runtime errors for failed futures.
+- Runtime supports configurable future scheduling:
+  - `Eager` executes spawned futures immediately.
+  - `DeferredFifo` queues spawned futures and runs deterministically when awaited.
 
 ## Process Runtime Objects
 

@@ -276,7 +276,7 @@ impl Lexer {
                 ']' => tokens.push(self.single(TokenKind::RBracket)),
                 '{' => tokens.push(self.single(TokenKind::LBrace)),
                 '}' => tokens.push(self.single(TokenKind::RBrace)),
-                _ => return Err(LexError::UnexpectedChar { ch, line: self.base_line + self.line - 1, col: self.col }),
+                c => tokens.push(self.single(TokenKind::Symbol(c))),
             }
         }
         while self.indent_stack.len() > 1 { self.indent_stack.pop(); tokens.push(Token::new(TokenKind::Dedent, self.span_here())); }

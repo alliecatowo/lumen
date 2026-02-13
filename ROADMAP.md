@@ -8,7 +8,7 @@ It intentionally avoids dates and fixed timelines.
 ### What's Built
 
 **Compiler Pipeline (Complete):**
-- Markdown extraction with `@directive` support
+- Source loading for `.lm` and markdown extraction for `.lm.md` with `@directive` support
 - Lexer (full token support)
 - Parser (all declaration forms, expressions, statements, patterns)
 - Name resolution with symbol table
@@ -35,11 +35,11 @@ It intentionally avoids dates and fixed timelines.
 - Three provider crates started: http, fs, json
 
 **Tooling (Functional):**
-- CLI with 9 commands: check, run, emit, trace, cache, init, repl, pkg, fmt
+- CLI with 12 commands: check, run, emit, trace, cache, init, repl, pkg, fmt, doc, lint, build
 - LSP server (676 lines): diagnostics, go-to-definition, hover, completion
 - REPL (265 lines): basic interactive loop
 - Formatter (1259 lines): AST-based code formatting
-- Package manager (654 lines): init, build, check commands
+- Package manager: path dependency resolution, lockfile generation, and registry-facing stubs
 - Config system (335 lines): lumen.toml parsing
 
 **Test Coverage:**
@@ -47,7 +47,7 @@ It intentionally avoids dates and fixed timelines.
 - Compiler: lexer, parser, resolver, typecheck, lowering
 - VM: instruction dispatch, futures, process runtimes
 - Runtime: provider registry, tool dispatch
-- Examples: 19 .lm.md files (compile-tested)
+- Examples in `.lm`/`.lm.md` formats (compile-tested)
 
 **Crate Layout:**
 - `lumen-compiler` — front-end pipeline
@@ -130,7 +130,7 @@ The V1 release focuses on **core correctness and essential tooling**, not featur
 ### 1. Language Core
 
 - Mature static type system with robust generics.
-  - Type alias resolution (aliases parsed but not expanded — immediate gap).
+  - Type alias resolution (implemented); remaining work is generics + trait conformance.
   - Generic type instantiation and bounded generics.
   - Trait conformance checking and method dispatch.
 - First-class effect rows integrated into typing and call compatibility.
@@ -285,11 +285,11 @@ tools = ["slack.send_message", "slack.list_channels"]
 
 Language source never mentions "openai" or "anthropic" — those are config-level concerns.
 
-**MCP as universal bridge:** Every MCP server is already a `ToolProvider`. The `lumen-provider-mcp` crate is a generic bridge — every MCP tool in the ecosystem becomes a Lumen tool with zero custom code. MCP config in `lumen.toml` maps server URIs to tool namespaces.
+**MCP as universal bridge (target):** `lumen-provider-mcp` is planned as the generic bridge so MCP tools can be surfaced as Lumen tools without compiler changes. The bridge is not functional yet.
 
-**Effect kinds come from provider declarations**, not hardcoded lists in the compiler. Each provider declares its effects via `ToolProvider::effects()`, and the resolver uses those declarations for effect checking.
+**Effect kinds from provider declarations (target):** long-term, resolver effect checking should come from `ToolProvider::effects()` rather than hardcoded lists.
 
-**Role blocks** define provider-agnostic conversation structure. The `role` / `end` syntax captures the shape of a conversation (system, user, assistant turns) without prescribing any wire format. The provider translates role blocks to its native API format — OpenAI's message array, Anthropic's Messages API, or any future format.
+**Role blocks** define provider-agnostic conversation structure. Provider-specific translation of role blocks remains a key architecture goal and still needs completion.
 
 ### What Goes Where
 

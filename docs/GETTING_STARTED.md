@@ -36,9 +36,9 @@ Welcome to Lumen, a statically typed programming language for AI-native systems.
 
 ### Hello World
 
-Create a file called `hello.lm.md`:
+Create `hello.lm.md` (markdown-native) or `hello.lm` (raw source):
 
-```markdown
+````markdown
 # Hello World Example
 
 ```lumen
@@ -48,9 +48,11 @@ cell main()
     print("Hello, {name}!")
 end
 ```
-```
+````
 
-Note: Lumen source files are markdown documents (`.lm.md`) with fenced `lumen` code blocks. This allows you to document your code naturally alongside the implementation.
+Lumen supports two first-class source formats:
+- `.lm` for raw source files
+- `.lm.md` for markdown files with fenced `lumen` blocks
 
 ### Running Your Program
 
@@ -90,6 +92,12 @@ Hello, Lumen!
 - **`lumen pkg init [name]`** — Create a new Lumen package (creates subdirectory if name provided)
 - **`lumen pkg build`** — Compile the package and all dependencies
 - **`lumen pkg check`** — Type-check the package without running
+- **`lumen pkg add <name> --path <dir>`** — Add a local path dependency
+- **`lumen pkg remove <name>`** — Remove a dependency
+- **`lumen pkg list`** — List configured dependencies
+- **`lumen pkg install`** — Resolve path dependencies and write `lumen.lock`
+- **`lumen pkg update`** — Currently same behavior as `install`
+- **`lumen pkg search <query>`** — Registry stub (prints "not yet available")
 
 ### Advanced Commands
 
@@ -113,7 +121,7 @@ Lumen includes syntax highlighting for Visual Studio Code.
 
 2. Restart VS Code
 
-3. Open a `.lm.md` file to see syntax highlighting
+3. Open a `.lm` or `.lm.md` file to see syntax highlighting
 
 ### Features
 
@@ -256,11 +264,11 @@ Lumen includes powerful features for AI-native systems:
 ### Common Issues
 
 **Error: "cannot read file"**
-- Ensure the file path is correct and the file has a `.lm.md` extension
+- Ensure the file path is correct and uses `.lm` or `.lm.md`
 
 **Error: "cell not found"**
 - Verify that a `cell main()` exists in your source file
-- Or specify a different cell: `lumen run file.lm.md --cell other_cell`
+- Or specify a different cell: `lumen run file.lm --cell other_cell`
 
 **Type errors**
 - Run `lumen check` to see detailed error messages with line numbers and context
@@ -280,7 +288,15 @@ Lumen includes powerful features for AI-native systems:
 ## Quick Reference
 
 ### File Format
-```markdown
+Raw source:
+```lumen
+cell main()
+    print("Hello from .lm")
+end
+```
+
+Markdown source:
+````markdown
 # My Program
 
 ```lumen
@@ -288,7 +304,7 @@ cell main()
     print("Code goes in fenced lumen blocks")
 end
 ```
-```
+````
 
 ### Basic Types
 - `Int`, `Float`, `String`, `Bool`

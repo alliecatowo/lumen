@@ -5661,7 +5661,7 @@ end
         let (program, errors) = parse_with_recovery(tokens, vec![]);
 
         // Should have parse errors from bad1 and bad2
-        assert!(errors.len() >= 1, "Expected at least 1 parse error");
+        assert!(!errors.is_empty(), "Expected at least 1 parse error");
 
         // Should still parse valid declarations
         let has_good_cell = program
@@ -5698,7 +5698,7 @@ end
 "#;
         let mut lexer = Lexer::new(src, 1, 0);
         let tokens = lexer.tokenize().unwrap();
-        let (program, errors) = parse_with_recovery(tokens, vec![]);
+        let (program, _errors) = parse_with_recovery(tokens, vec![]);
 
         // Should have at least one error (from Point)
         // Note: Some errors might be recovered gracefully, so we check for any valid parsing
@@ -5805,7 +5805,7 @@ end
 "#;
         let mut lexer = Lexer::new(src, 1, 0);
         let tokens = lexer.tokenize().unwrap();
-        let (program, errors) = parse_with_recovery(tokens, vec![]);
+        let (program, _errors) = parse_with_recovery(tokens, vec![]);
 
         // Parser should attempt recovery and continue
         // Should parse enum and cell after error in bad()
@@ -5836,7 +5836,7 @@ end
 "#;
         let mut lexer = Lexer::new(src, 1, 0);
         let tokens = lexer.tokenize().unwrap();
-        let (program, errors) = parse_with_recovery(tokens, vec![]);
+        let (program, _errors) = parse_with_recovery(tokens, vec![]);
 
         // Should continue parsing after error in bad cell
         let has_memory = program.items.iter().any(|item| {

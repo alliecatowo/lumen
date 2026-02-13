@@ -8,7 +8,7 @@
 
 Lumen is a **statically typed, markdown-native programming language** for building AI-native systems.
 
-Write programs in `.lm.md` files, keep your code and intent together, and compile to a VM runtime that supports modern language fundamentals **plus** first-class tooling for effects, orchestration, policy-aware execution, and agent workflows.
+Write programs in `.lm` or `.lm.md` files, keep your code and intent together, and compile to a VM runtime that supports modern language fundamentals **plus** first-class tooling for effects, orchestration, policy-aware execution, and agent workflows.
 
 ---
 
@@ -20,7 +20,7 @@ Lumen gives you one language and one runtime for the whole flow:
 
 - **Language ergonomics you expect**: types, functions, control flow, records, pattern matching.
 - **Agentic features you actually need**: tool declarations, grants, role prompts, and policy controls.
-- **Markdown-native authoring**: programs live in docs-friendly markdown files (`.lm.md`) without losing executable structure.
+- **Dual-format source files**: `.lm` (raw) and `.lm.md` (markdown with fenced `lumen` blocks) are both first-class.
 - **Compiler + VM stack**: from lexer/parser/typechecker to LIR lowering and register-based execution.
 
 If you want to build robust AI systems without duct-taping five frameworks together, Lumen is the bet.
@@ -43,7 +43,7 @@ end
 ```
 ````
 
-That means you can keep architecture notes, rationale, and runnable language code in one artifact.
+That means you can keep architecture notes, rationale, and runnable language code in one artifact. If you prefer raw source files, use `.lm` with the same CLI commands.
 
 ## Current State
 
@@ -66,11 +66,13 @@ cd lumen
 cargo build --release
 ```
 
-### Run a markdown-native program
+### Run a program (`.lm.md` or `.lm`)
 
 ```bash
 cargo run --bin lumen -- run examples/hello.lm.md
 ```
+
+Use `examples/hello.lm` the same way for raw source files.
 
 ### Typecheck only
 

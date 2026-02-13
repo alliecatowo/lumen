@@ -288,20 +288,24 @@ The VM implements 69 intrinsics but only ~18 are callable from source code. The 
 ### Package Manager (Competitive Gap 4)
 
 - [x] **`lumen pkg` command exists**
-  - **File**: `rust/lumen-cli/src/pkg.rs` — 654 lines, implements init/build/check.
+  - **File**: `rust/lumen-cli/src/pkg.rs`
+  - **Status**: `init`, `build`, `check`, `add`, `remove`, `list`, `install`, `update`, `search`.
 
 - [ ] **Add `lumen pkg test` command**.
 
 - [ ] **Add `lumen pkg publish` command**.
   - **Competitive**: Gap 4 in COMPETITIVE_ANALYSIS.md — no registry like crates.io/npm.
 
-- [ ] **Add dependency resolution and lockfile**.
-  - **Examples**: `Cargo.lock`, `package-lock.json`.
+- [x] **Add dependency resolution and lockfile for path dependencies**.
+  - **Status**: `install`/`update` resolve path deps and write `lumen.lock` entries with `path+...` sources.
+
+- [ ] **Add registry-backed dependency resolution and lockfile metadata**.
+  - **Gap**: no registry index fetch, semver resolution, download, or checksum population in lockfile.
 
 - [ ] **Add package registry support**.
   - **Target**: `lumen pkg add github-client@1.0` downloads and integrates package.
 
-- [ ] **Add version constraint parsing** (SemVer).
+- [ ] **Use parsed version constraints for real registry installs** (SemVer resolution).
 
 ### Test Runner (Competitive Gap 6)
 
@@ -318,8 +322,11 @@ The VM implements 69 intrinsics but only ~18 are callable from source code. The 
 
 ### Documentation (Competitive Gap 7)
 
-- [ ] **Add `lumen doc` command**: Generate documentation.
-  - **Competitive**: Gap 7 in COMPETITIVE_ANALYSIS.md — behind rustdoc/godoc/TSDoc.
+- [x] **Add `lumen doc` command**: Generate documentation.
+  - **Status**: Command exists with markdown/json output for `.lm.md` inputs.
+
+- [ ] **Expand `lumen doc` to support `.lm` inputs and richer output UX**.
+  - **Competitive**: Gap 7 in COMPETITIVE_ANALYSIS.md — still behind rustdoc/godoc/TSDoc.
   - **Target**: `lumen doc --open` generates and opens navigable API docs.
 
 - [ ] **Generate HTML/markdown with symbol links**.

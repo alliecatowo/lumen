@@ -4,6 +4,7 @@
 //! (resolve path-based dependencies and compile).
 
 use crate::config::{DependencySpec, LumenConfig};
+use crate::lockfile::{LockFile, LockedPackage};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -305,6 +306,22 @@ fn resolve_dep(
             let p = parent_dir.join(path);
             canonicalize_or_clean(&p)
         }
+        DependencySpec::Version(version) => {
+            return Err(format!(
+                "dependency '{}': registry dependency '{}' is not available yet; use a path dependency",
+                name, version
+            ));
+        }
+        DependencySpec::VersionDetailed { version, registry } => {
+            let registry_hint = registry
+                .as_deref()
+                .map(|r| format!(" from '{}'", r))
+                .unwrap_or_default();
+            return Err(format!(
+                "dependency '{}': registry dependency '{}'{} is not available yet; use a path dependency",
+                name, version, registry_hint
+            ));
+        }
     };
 
     if !dep_path.exists() {
@@ -315,16 +332,16 @@ fn resolve_dep(
         ));
     }
 
-    // Check for lumen.toml or .lm.md files
+    // Check for lumen.toml or source files
     let dep_config_path = dep_path.join("lumen.toml");
     let dep_config = if dep_config_path.exists() {
         LumenConfig::load_from(&dep_config_path)?
     } else {
-        // No lumen.toml — check for .lm.md files
+        // No lumen.toml — check for source files
         let has_sources = has_lumen_sources(&dep_path);
         if !has_sources {
             return Err(format!(
-                "dependency '{}': no lumen.toml or .lm.md files found in '{}'",
+                "dependency '{}': no lumen.toml or .lm/.lm.md files found in '{}'",
                 name,
                 dep_path.display()
             ));
@@ -348,25 +365,92 @@ fn resolve_dep(
     Ok(())
 }
 
-/// Compile all `.lm.md` files found in a package directory.
+/// Compile all `.lm` and `.lm.md` files found in a package directory.
 /// Returns the number of files compiled, or the first error.
 fn compile_package_sources(pkg_dir: &Path) -> Result<usize, String> {
     let sources = find_lumen_sources(pkg_dir);
     if sources.is_empty() {
-        return Err(format!("no .lm.md files found in '{}'", pkg_dir.display()));
+        return Err(format!(
+            "no .lm/.lm.md files found in '{}'",
+            pkg_dir.display()
+        ));
     }
 
     for src in &sources {
-        let content = std::fs::read_to_string(src)
-            .map_err(|e| format!("cannot read '{}': {}", src.display(), e))?;
-        lumen_compiler::compile(&content)
-            .map_err(|e| format!("{}: {}", src.display(), e))?;
+        compile_source_with_imports(src, pkg_dir)?;
     }
 
     Ok(sources.len())
 }
 
-/// Find all `.lm.md` files in a directory (searches `src/` subdirectory first,
+fn compile_source_with_imports(source_path: &Path, pkg_dir: &Path) -> Result<(), String> {
+    let content = std::fs::read_to_string(source_path)
+        .map_err(|e| format!("cannot read '{}': {}", source_path.display(), e))?;
+    let source_dir = source_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| pkg_dir.to_path_buf());
+
+    let mut roots = vec![source_dir];
+    let src_dir = pkg_dir.join("src");
+    if src_dir.is_dir() && !roots.contains(&src_dir) {
+        roots.push(src_dir);
+    }
+    let pkg_root = pkg_dir.to_path_buf();
+    if !roots.contains(&pkg_root) {
+        roots.push(pkg_root);
+    }
+
+    let resolve_import = |module_path: &str| resolve_module_from_roots(module_path, &roots);
+
+    let compile_result = if is_markdown_source(source_path) {
+        lumen_compiler::compile_with_imports(&content, &resolve_import)
+    } else {
+        lumen_compiler::compile_raw_with_imports(&content, &resolve_import)
+    };
+
+    compile_result.map_err(|e| format!("{}: {}", source_path.display(), e))?;
+    Ok(())
+}
+
+fn resolve_module_from_roots(module_path: &str, roots: &[PathBuf]) -> Option<String> {
+    let fs_path = module_path.replace('.', "/");
+    for root in roots {
+        let candidates = [
+            root.join(format!("{}.lm", fs_path)),
+            root.join(format!("{}.lm.md", fs_path)),
+            root.join(fs_path.clone()).join("mod.lm"),
+            root.join(fs_path.clone()).join("mod.lm.md"),
+            root.join(fs_path.clone()).join("main.lm"),
+            root.join(fs_path.clone()).join("main.lm.md"),
+        ];
+
+        for candidate in candidates {
+            if candidate.exists() {
+                if let Ok(src) = std::fs::read_to_string(candidate) {
+                    return Some(src);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn is_markdown_source(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.ends_with(".lm.md"))
+        .unwrap_or(false)
+}
+
+fn is_lumen_source(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|name| name.ends_with(".lm") || name.ends_with(".lm.md"))
+        .unwrap_or(false)
+}
+
+/// Find all `.lm` and `.lm.md` files in a directory (searches `src/` subdirectory first,
 /// then top level).
 fn find_lumen_sources(dir: &Path) -> Vec<PathBuf> {
     let mut sources = Vec::new();
@@ -380,6 +464,7 @@ fn find_lumen_sources(dir: &Path) -> Vec<PathBuf> {
         collect_lm_files(dir, &mut sources);
     }
 
+    sources.sort();
     sources
 }
 
@@ -388,10 +473,8 @@ fn collect_lm_files(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_file() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if name.ends_with(".lm.md") {
-                        out.push(path);
-                    }
+                if is_lumen_source(&path) {
+                    out.push(path);
                 }
             } else if path.is_dir() {
                 collect_lm_files(&path, out);
@@ -458,6 +541,7 @@ pub fn cmd_pkg_add(package: &str, path_opt: Option<&str>) {
 }
 
 /// Remove a dependency from lumen.toml
+#[allow(dead_code)]
 pub fn cmd_pkg_remove(package: &str) {
     let (config_path, mut config) = match LumenConfig::load_with_path() {
         Some(pair) => pair,
@@ -486,6 +570,7 @@ pub fn cmd_pkg_remove(package: &str) {
 }
 
 /// List all dependencies from lumen.toml
+#[allow(dead_code)]
 pub fn cmd_pkg_list() {
     let config = LumenConfig::load();
 
@@ -500,8 +585,86 @@ pub fn cmd_pkg_list() {
             DependencySpec::Path { path } => {
                 println!("  {} {} path = {}", bold(name), gray("→"), cyan(path));
             }
+            DependencySpec::Version(version) => {
+                println!("  {} {} version = {}", bold(name), gray("→"), cyan(version));
+            }
+            DependencySpec::VersionDetailed { version, registry } => {
+                if let Some(registry) = registry {
+                    println!(
+                        "  {} {} version = {}, registry = {}",
+                        bold(name),
+                        gray("→"),
+                        cyan(version),
+                        cyan(registry)
+                    );
+                } else {
+                    println!("  {} {} version = {}", bold(name), gray("→"), cyan(version));
+                }
+            }
         }
     }
+}
+
+/// Install dependencies from lumen.toml and generate lumen.lock
+pub fn cmd_pkg_install() {
+    let (config_path, config) = match LumenConfig::load_with_path() {
+        Some(pair) => pair,
+        None => {
+            eprintln!("{} no lumen.toml found (run `lumen pkg init` first)", red("error:"));
+            std::process::exit(1);
+        }
+    };
+
+    let project_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+    println!("{} dependencies", status_label("Resolving"));
+
+    let deps = match resolve_dependencies(&config, project_dir) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("{} {}", red("error:"), e);
+            std::process::exit(1);
+        }
+    };
+
+    let lock_path = project_dir.join("lumen.lock");
+    let mut lock = match LockFile::load(&lock_path) {
+        Ok(lock) => lock,
+        Err(e) => {
+            eprintln!("{} {}", red("error:"), e);
+            std::process::exit(1);
+        }
+    };
+
+    for dep in &deps {
+        let version = dep.config.package.as_ref().and_then(|p| p.version.clone()).unwrap_or_else(|| "0.1.0".to_string());
+        let mut locked_pkg =
+            LockedPackage::from_path(dep.name.clone(), dep.path.display().to_string());
+        locked_pkg.version = version;
+        lock.add_package(locked_pkg);
+    }
+
+    if let Err(e) = lock.save(&lock_path) {
+        eprintln!("{} {}", red("error:"), e);
+        std::process::exit(1);
+    }
+
+    println!("{} {} package{} resolved", green("✓"), deps.len(), if deps.len() == 1 { "" } else { "s" });
+    println!("{} lumen.lock", status_label("Created"));
+}
+
+/// Update dependencies to latest compatible versions
+pub fn cmd_pkg_update() {
+    println!("{} note: update is equivalent to install for now (registry support coming soon)", gray(""));
+    cmd_pkg_install();
+}
+
+/// Search for packages in the registry
+pub fn cmd_pkg_search(_query: &str) {
+    println!("{} Package registry not yet available.", gray(""));
+    println!();
+    println!("Registry support is planned for a future release.");
+    println!("For now, use path dependencies:");
+    println!("  {} = {{ path = \"../package-name\" }}", gray("package-name"));
 }
 
 // ---------------------------------------------------------------------------
@@ -529,6 +692,10 @@ mod tests {
                 version: Some("0.1.0".to_string()),
                 description: None,
                 authors: None,
+                license: None,
+                repository: None,
+                keywords: None,
+                readme: None,
             }),
             dependencies,
             ..Default::default()
@@ -650,7 +817,23 @@ foo = { path = "./foo" }
 
         let sources = find_lumen_sources(&tmp);
         assert_eq!(sources.len(), 2);
-        assert!(sources.iter().all(|p| p.to_str().unwrap().ends_with(".lm.md")));
+        assert!(sources.iter().all(|p| is_lumen_source(p)));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn find_lumen_sources_supports_raw_files() {
+        let tmp = std::env::temp_dir().join("lumen_find_raw_src_test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let src = tmp.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("main.lm"), "cell main() -> Int\n  return 1\nend\n").unwrap();
+        std::fs::write(src.join("models.lm.md"), "# m\n```lumen\ncell x() -> Int\n  return 1\nend\n```\n").unwrap();
+
+        let sources = find_lumen_sources(&tmp);
+        assert_eq!(sources.len(), 2);
+        assert!(sources.iter().all(|p| is_lumen_source(p)));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

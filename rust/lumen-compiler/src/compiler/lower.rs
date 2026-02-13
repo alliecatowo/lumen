@@ -13,6 +13,17 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
     let mut module = LirModule::new(doc_hash);
     let mut lowerer = Lowerer::new(symbols);
 
+    for d in &program.directives {
+        let name = match &d.value {
+            Some(v) => format!("{}={}", d.name, v),
+            None => d.name.clone(),
+        };
+        module.addons.push(LirAddon {
+            kind: "directive".to_string(),
+            name: Some(name),
+        });
+    }
+
     let mut tool_aliases: Vec<String> = symbols.tools.keys().cloned().collect();
     tool_aliases.sort();
     for alias in tool_aliases {

@@ -102,6 +102,7 @@ pub struct VM {
     future_states: BTreeMap<u64, FutureState>,
     scheduled_futures: VecDeque<FutureTask>,
     future_schedule: FutureSchedule,
+    future_schedule_explicit: bool,
     next_process_instance_id: u64,
     process_kinds: BTreeMap<String, String>,
     memory_runtime: BTreeMap<u64, MemoryRuntime>,
@@ -122,6 +123,7 @@ impl VM {
             future_states: BTreeMap::new(),
             scheduled_futures: VecDeque::new(),
             future_schedule: FutureSchedule::Eager,
+            future_schedule_explicit: false,
             next_process_instance_id: 1,
             process_kinds: BTreeMap::new(),
             memory_runtime: BTreeMap::new(),
@@ -134,6 +136,9 @@ impl VM {
         // Intern all strings
         for s in &module.strings {
             self.strings.intern(s);
+        }
+        if !self.future_schedule_explicit {
+            self.future_schedule = future_schedule_from_addons(&module.addons);
         }
         self.next_process_instance_id = 1;
         self.process_kinds.clear();
@@ -194,6 +199,11 @@ impl VM {
 
     pub fn set_future_schedule(&mut self, schedule: FutureSchedule) {
         self.future_schedule = schedule;
+        self.future_schedule_explicit = true;
+    }
+
+    pub fn future_schedule(&self) -> FutureSchedule {
+        self.future_schedule
     }
 
     fn ensure_process_instance(&mut self, value: &mut Value) {
@@ -3058,6 +3068,60 @@ fn extract_host(url: &str) -> String {
         .to_string()
 }
 
+fn future_schedule_from_addons(addons: &[LirAddon]) -> FutureSchedule {
+    for addon in addons {
+        if addon.kind != "directive" {
+            continue;
+        }
+        let Some(raw) = addon.name.as_deref() else {
+            continue;
+        };
+        let (name, raw_value) = match raw.split_once('=') {
+            Some((k, v)) => (k.trim(), Some(v.trim())),
+            None => (raw.trim(), None),
+        };
+        let key = name.trim_start_matches('@').to_ascii_lowercase();
+        if key != "deterministic" {
+            continue;
+        }
+        let parsed = raw_value
+            .map(strip_quote_wrappers)
+            .and_then(parse_bool_like)
+            .unwrap_or(true);
+        return if parsed {
+            FutureSchedule::DeferredFifo
+        } else {
+            FutureSchedule::Eager
+        };
+    }
+    FutureSchedule::Eager
+}
+
+fn strip_quote_wrappers(s: &str) -> &str {
+    let trimmed = s.trim();
+    if let Some(inner) = trimmed
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+    {
+        return inner.trim();
+    }
+    if let Some(inner) = trimmed
+        .strip_prefix('\'')
+        .and_then(|rest| rest.strip_suffix('\''))
+    {
+        return inner.trim();
+    }
+    trimmed
+}
+
+fn parse_bool_like(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 /// Convert a Lumen Value to a serde_json Value.
 fn value_to_json(val: &Value) -> serde_json::Value {
     match val {
@@ -3867,6 +3931,31 @@ end
             "expected await failure, got: {}",
             err
         );
+    }
+
+    #[test]
+    fn test_load_sets_deferred_schedule_from_deterministic_directive() {
+        let mut module = make_return_42();
+        module.addons.push(LirAddon {
+            kind: "directive".to_string(),
+            name: Some("deterministic=true".to_string()),
+        });
+        let mut vm = VM::new();
+        vm.load(module);
+        assert_eq!(vm.future_schedule(), FutureSchedule::DeferredFifo);
+    }
+
+    #[test]
+    fn test_explicit_future_schedule_not_overridden_by_directive() {
+        let mut module = make_return_42();
+        module.addons.push(LirAddon {
+            kind: "directive".to_string(),
+            name: Some("deterministic=true".to_string()),
+        });
+        let mut vm = VM::new();
+        vm.set_future_schedule(FutureSchedule::Eager);
+        vm.load(module);
+        assert_eq!(vm.future_schedule(), FutureSchedule::Eager);
     }
 
     #[test]

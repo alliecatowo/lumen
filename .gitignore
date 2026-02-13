@@ -1,6 +1,9 @@
 # Build artifacts
 /target/
 
+# Runtime artifacts
+.lumen/
+
 # IDE / Editor
 .vscode/
 .idea/

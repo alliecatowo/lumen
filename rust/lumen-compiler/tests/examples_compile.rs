@@ -84,3 +84,85 @@ fn all_examples_compile() {
         compiled
     );
 }
+
+// ─── Individual per-example compile tests for fine-grained failure reporting ───
+
+fn compile_example(filename: &str) {
+    let path = examples_dir().join(filename);
+    let source = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e));
+    compile(&source).unwrap_or_else(|e| {
+        panic!("{} failed to compile:\n--- error ---\n{}", filename, e)
+    });
+}
+
+#[test]
+fn example_hello() {
+    compile_example("hello.lm.md");
+}
+
+#[test]
+fn example_fibonacci() {
+    compile_example("fibonacci.lm.md");
+}
+
+#[test]
+fn example_language_features() {
+    compile_example("language_features.lm.md");
+}
+
+#[test]
+fn example_intrinsics_test() {
+    compile_example("intrinsics_test.lm.md");
+}
+
+#[test]
+fn example_typecheck_pass() {
+    compile_example("typecheck_pass.lm.md");
+}
+
+#[test]
+fn example_record_validation() {
+    compile_example("record_validation.lm.md");
+}
+
+#[test]
+fn example_where_constraints() {
+    compile_example("where_constraints.lm.md");
+}
+
+#[test]
+fn example_expect_schema() {
+    compile_example("expect_schema.lm.md");
+}
+
+#[test]
+fn example_invoice_agent() {
+    compile_example("invoice_agent.lm.md");
+}
+
+#[test]
+fn example_todo_manager() {
+    compile_example("todo_manager.lm.md");
+}
+
+#[test]
+fn example_code_reviewer() {
+    compile_example("code_reviewer.lm.md");
+}
+
+#[test]
+fn example_data_pipeline() {
+    compile_example("data_pipeline.lm.md");
+}
+
+#[test]
+fn example_role_repro() {
+    compile_example("role_repro.lm.md");
+}
+
+#[test]
+#[ignore = "role_interpolation.lm.md has a known parse issue"]
+fn example_role_interpolation() {
+    compile_example("role_interpolation.lm.md");
+}

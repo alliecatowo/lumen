@@ -760,11 +760,9 @@ end
 ```
 "#;
         let warnings = lint_file(source, "test.lm.md");
-        assert!(
-            warnings
-                .iter()
-                .any(|w| w.rule == "unused-variable" && w.message.contains("'x'"))
-        );
+        assert!(warnings
+            .iter()
+            .any(|w| w.rule == "unused-variable" && w.message.contains("'x'")));
     }
 
     #[test]

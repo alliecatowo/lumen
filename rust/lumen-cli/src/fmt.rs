@@ -351,7 +351,10 @@ impl Formatter {
     }
 
     fn fmt_effect_bind(&mut self, bind: &EffectBindDecl) {
-        self.writeln(&format!("bind effect {} to {}", bind.effect_path, bind.tool_alias));
+        self.writeln(&format!(
+            "bind effect {} to {}",
+            bind.effect_path, bind.tool_alias
+        ));
     }
 
     fn fmt_use_tool(&mut self, use_tool: &UseToolDecl) {
@@ -851,7 +854,12 @@ impl Formatter {
             Expr::ExpectSchema(expr, schema, _) => {
                 format!("{} expect schema {}", self.fmt_expr(expr), schema)
             }
-            Expr::Lambda { params, return_type, body, .. } => {
+            Expr::Lambda {
+                params,
+                return_type,
+                body,
+                ..
+            } => {
                 let mut result = String::from("fn(");
                 for (i, param) in params.iter().enumerate() {
                     if i > 0 {
@@ -902,7 +910,13 @@ impl Formatter {
                 result.push(']');
                 result
             }
-            Expr::RangeExpr { start, end, inclusive, step, .. } => {
+            Expr::RangeExpr {
+                start,
+                end,
+                inclusive,
+                step,
+                ..
+            } => {
                 let mut result = String::new();
                 if let Some(s) = start {
                     result.push_str(&self.fmt_expr(s));
@@ -932,16 +946,30 @@ impl Formatter {
             Expr::SpreadExpr(expr, _) => {
                 format!("...{}", self.fmt_expr(expr))
             }
-            Expr::IfExpr { cond, then_val, else_val, .. } => {
-                format!("if {} then {} else {}",
+            Expr::IfExpr {
+                cond,
+                then_val,
+                else_val,
+                ..
+            } => {
+                format!(
+                    "if {} then {} else {}",
                     self.fmt_expr(cond),
                     self.fmt_expr(then_val),
-                    self.fmt_expr(else_val))
+                    self.fmt_expr(else_val)
+                )
             }
             Expr::AwaitExpr(expr, _) => {
                 format!("await {}", self.fmt_expr(expr))
             }
-            Expr::Comprehension { body, var, iter, condition, kind, .. } => {
+            Expr::Comprehension {
+                body,
+                var,
+                iter,
+                condition,
+                kind,
+                ..
+            } => {
                 let bracket = match kind {
                     ComprehensionKind::List => ("[", "]"),
                     ComprehensionKind::Set => ("set[", "]"),
@@ -960,12 +988,12 @@ impl Formatter {
                 result.push_str(bracket.1);
                 result
             }
-            Expr::MatchExpr { subject, arms: _, .. } => {
+            Expr::MatchExpr {
+                subject, arms: _, ..
+            } => {
                 format!("match {} ... end", self.fmt_expr(subject))
             }
-            Expr::BlockExpr(_, _) => {
-                "block ... end".to_string()
-            }
+            Expr::BlockExpr(_, _) => "block ... end".to_string(),
         }
     }
 
@@ -974,13 +1002,14 @@ impl Formatter {
             TypeExpr::Named(name, _) => name.clone(),
             TypeExpr::List(inner, _) => format!("list[{}]", self.fmt_type(inner)),
             TypeExpr::Map(k, v, _) => format!("map[{}, {}]", self.fmt_type(k), self.fmt_type(v)),
-            TypeExpr::Result(ok, err, _) => format!("result[{}, {}]", self.fmt_type(ok), self.fmt_type(err)),
-            TypeExpr::Union(types, _) => {
-                types.iter()
-                    .map(|t| self.fmt_type(t))
-                    .collect::<Vec<_>>()
-                    .join(" | ")
+            TypeExpr::Result(ok, err, _) => {
+                format!("result[{}, {}]", self.fmt_type(ok), self.fmt_type(err))
             }
+            TypeExpr::Union(types, _) => types
+                .iter()
+                .map(|t| self.fmt_type(t))
+                .collect::<Vec<_>>()
+                .join(" | "),
             TypeExpr::Null(_) => "null".to_string(),
             TypeExpr::Tuple(types, _) => {
                 let mut result = String::from("(");
@@ -1038,15 +1067,20 @@ impl Formatter {
             }
             Pattern::Wildcard(_) => "_".to_string(),
             Pattern::Ident(name, _) => name.clone(),
-            Pattern::Guard { inner, condition, .. } => {
-                format!("{} if {}", self.fmt_pattern(inner), self.fmt_expr(condition))
+            Pattern::Guard {
+                inner, condition, ..
+            } => {
+                format!(
+                    "{} if {}",
+                    self.fmt_pattern(inner),
+                    self.fmt_expr(condition)
+                )
             }
-            Pattern::Or { patterns, .. } => {
-                patterns.iter()
-                    .map(|p| self.fmt_pattern(p))
-                    .collect::<Vec<_>>()
-                    .join(" | ")
-            }
+            Pattern::Or { patterns, .. } => patterns
+                .iter()
+                .map(|p| self.fmt_pattern(p))
+                .collect::<Vec<_>>()
+                .join(" | "),
             Pattern::ListDestructure { elements, rest, .. } => {
                 let mut result = String::from("[");
                 for (i, elem) in elements.iter().enumerate() {
@@ -1076,7 +1110,12 @@ impl Formatter {
                 result.push(')');
                 result
             }
-            Pattern::RecordDestructure { type_name, fields, open, .. } => {
+            Pattern::RecordDestructure {
+                type_name,
+                fields,
+                open,
+                ..
+            } => {
                 let mut result = type_name.clone();
                 result.push('(');
                 for (i, (fname, pat)) in fields.iter().enumerate() {
@@ -1098,7 +1137,9 @@ impl Formatter {
                 result.push(')');
                 result
             }
-            Pattern::TypeCheck { name, type_expr, .. } => {
+            Pattern::TypeCheck {
+                name, type_expr, ..
+            } => {
                 format!("{}: {}", name, self.fmt_type(type_expr))
             }
         }
@@ -1135,17 +1176,35 @@ pub fn format_files(files: &[PathBuf], check_mode: bool) -> Result<bool, String>
         if content != formatted {
             needs_formatting = true;
             if check_mode {
-                println!("{}✗{} {}{}{} — would reformat",
-                    YELLOW, RESET, BOLD, file.display(), RESET);
+                println!(
+                    "{}✗{} {}{}{} — would reformat",
+                    YELLOW,
+                    RESET,
+                    BOLD,
+                    file.display(),
+                    RESET
+                );
             } else {
                 std::fs::write(file, &formatted)
                     .map_err(|e| format!("error writing '{}': {}", file.display(), e))?;
-                println!("{}✓{} {}{}{} — reformatted",
-                    YELLOW, RESET, BOLD, file.display(), RESET);
+                println!(
+                    "{}✓{} {}{}{} — reformatted",
+                    YELLOW,
+                    RESET,
+                    BOLD,
+                    file.display(),
+                    RESET
+                );
             }
         } else if !check_mode {
-            println!("{}✓{} {}{}{} — already formatted",
-                GREEN, RESET, BOLD, file.display(), RESET);
+            println!(
+                "{}✓{} {}{}{} — already formatted",
+                GREEN,
+                RESET,
+                BOLD,
+                file.display(),
+                RESET
+            );
         }
     }
 
@@ -1257,7 +1316,7 @@ end"#;
     #[test]
     fn test_parse_error_returns_original() {
         // Use syntax that genuinely doesn't parse
-        let input = "cell foo( -> Int";  // Missing closing paren
+        let input = "cell foo( -> Int"; // Missing closing paren
         let output = format_lumen_code(input);
         assert_eq!(input, output);
     }

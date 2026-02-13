@@ -59,11 +59,7 @@ pub fn cmd_doc(path: &Path, format: &str, output: Option<&Path>) -> Result<(), S
     }
 }
 
-fn generate_directory_docs(
-    dir: &Path,
-    format: &str,
-    output: Option<&Path>,
-) -> Result<(), String> {
+fn generate_directory_docs(dir: &Path, format: &str, output: Option<&Path>) -> Result<(), String> {
     let mut all_docs = Vec::new();
 
     // Find all .lm.md files
@@ -186,10 +182,14 @@ fn parse_to_ast(source: &str) -> Result<Program, String> {
     use lumen_compiler::compiler::{lexer::Lexer, parser::Parser};
 
     let mut lexer = Lexer::new(source, 1, 0);
-    let tokens = lexer.tokenize().map_err(|e| format!("Tokenize error: {:?}", e))?;
+    let tokens = lexer
+        .tokenize()
+        .map_err(|e| format!("Tokenize error: {:?}", e))?;
 
     let mut parser = Parser::new(tokens);
-    parser.parse_program(vec![]).map_err(|e| format!("Parse error: {:?}", e))
+    parser
+        .parse_program(vec![])
+        .map_err(|e| format!("Parse error: {:?}", e))
 }
 
 fn find_doc_for_span(start: usize, prose_map: &HashMap<usize, String>) -> String {
@@ -371,7 +371,10 @@ fn render_doc_markdown(doc: &ModuleDoc) -> String {
                 .join(", ");
 
             let sig = if cell.effects.is_empty() {
-                format!("### `{}({}) -> {}`\n", cell.name, params_str, cell.return_type)
+                format!(
+                    "### `{}({}) -> {}`\n",
+                    cell.name, params_str, cell.return_type
+                )
             } else {
                 format!(
                     "### `{}({}) -> {} / {{{}}}`\n",

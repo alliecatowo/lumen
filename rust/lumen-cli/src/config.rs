@@ -87,7 +87,9 @@ impl LumenConfig {
     /// Load config from `lumen.toml`, searching current dir then parents.
     /// Returns `Default` when no file is found.
     pub fn load() -> Self {
-        Self::find_and_load().map(|(_path, cfg)| cfg).unwrap_or_default()
+        Self::find_and_load()
+            .map(|(_path, cfg)| cfg)
+            .unwrap_or_default()
     }
 
     /// Load config and return the path to the config file that was found.
@@ -99,8 +101,7 @@ impl LumenConfig {
     pub fn load_from(path: &std::path::Path) -> Result<Self, String> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read '{}': {}", path.display(), e))?;
-        toml::from_str(&content)
-            .map_err(|e| format!("invalid toml in '{}': {}", path.display(), e))
+        toml::from_str(&content).map_err(|e| format!("invalid toml in '{}': {}", path.display(), e))
     }
 
     fn find_and_load() -> Option<(PathBuf, Self)> {
@@ -218,10 +219,7 @@ default_model = "gpt-4"
             .config
             .get("openai-compatible")
             .expect("provider config");
-        assert_eq!(
-            pc.base_url.as_deref(),
-            Some("https://api.openai.com/v1")
-        );
+        assert_eq!(pc.base_url.as_deref(), Some("https://api.openai.com/v1"));
         assert_eq!(pc.api_key_env.as_deref(), Some("OPENAI_API_KEY"));
         assert_eq!(pc.default_model.as_deref(), Some("gpt-4"));
     }
@@ -368,7 +366,10 @@ readme = "README.md"
         assert_eq!(pkg.version.as_deref(), Some("1.2.0"));
         assert_eq!(pkg.description.as_deref(), Some("HTTP utilities for Lumen"));
         assert_eq!(pkg.license.as_deref(), Some("MIT"));
-        assert_eq!(pkg.repository.as_deref(), Some("https://github.com/lumen/http-utils"));
+        assert_eq!(
+            pkg.repository.as_deref(),
+            Some("https://github.com/lumen/http-utils")
+        );
         assert_eq!(pkg.keywords.as_ref().unwrap().len(), 2);
         assert_eq!(pkg.readme.as_deref(), Some("README.md"));
     }

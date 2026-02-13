@@ -39,43 +39,142 @@ const BLOCK_OPENERS: &[&str] = &[
 
 /// Keywords that start a top-level item definition (not an expression).
 const ITEM_KEYWORDS: &[&str] = &[
-    "cell", "record", "enum", "process", "agent", "effect", "bind",
-    "handler", "pipeline", "orchestration", "machine", "memory",
-    "guardrail", "eval", "pattern", "grant", "import",
+    "cell",
+    "record",
+    "enum",
+    "process",
+    "agent",
+    "effect",
+    "bind",
+    "handler",
+    "pipeline",
+    "orchestration",
+    "machine",
+    "memory",
+    "guardrail",
+    "eval",
+    "pattern",
+    "grant",
+    "import",
 ];
 
 /// All keywords for tab completion.
 const KEYWORDS: &[&str] = &[
-    "cell", "record", "enum", "process", "agent", "effect", "bind",
-    "handler", "pipeline", "orchestration", "machine", "memory",
-    "guardrail", "eval", "pattern", "grant", "import",
-    "if", "else", "while", "for", "match", "loop", "break", "continue",
-    "return", "halt", "emit", "let", "use", "tool", "where", "in",
-    "and", "or", "not", "is", "as", "type", "alias", "parallel",
-    "race", "vote", "select", "timeout", "await", "defer", "true",
-    "false", "null", "when", "do", "end", "state", "on", "to",
+    "cell",
+    "record",
+    "enum",
+    "process",
+    "agent",
+    "effect",
+    "bind",
+    "handler",
+    "pipeline",
+    "orchestration",
+    "machine",
+    "memory",
+    "guardrail",
+    "eval",
+    "pattern",
+    "grant",
+    "import",
+    "if",
+    "else",
+    "while",
+    "for",
+    "match",
+    "loop",
+    "break",
+    "continue",
+    "return",
+    "halt",
+    "emit",
+    "let",
+    "use",
+    "tool",
+    "where",
+    "in",
+    "and",
+    "or",
+    "not",
+    "is",
+    "as",
+    "type",
+    "alias",
+    "parallel",
+    "race",
+    "vote",
+    "select",
+    "timeout",
+    "await",
+    "defer",
+    "true",
+    "false",
+    "null",
+    "when",
+    "do",
+    "end",
+    "state",
+    "on",
+    "to",
 ];
 
 /// Builtin functions for tab completion.
 const BUILTINS: &[&str] = &[
-    "print", "len", "sort", "map", "filter", "reduce", "append", "join",
-    "split", "contains", "starts_with", "ends_with", "replace", "trim",
-    "upper", "lower", "reverse", "unique", "zip", "range", "sum", "max",
-    "min", "abs", "floor", "ceil", "round", "sqrt", "pow", "log", "exp",
-    "sin", "cos", "tan", "uuid", "timestamp", "parse_int", "parse_float",
-    "to_string", "to_json", "from_json", "hash", "encode", "decode",
+    "print",
+    "len",
+    "sort",
+    "map",
+    "filter",
+    "reduce",
+    "append",
+    "join",
+    "split",
+    "contains",
+    "starts_with",
+    "ends_with",
+    "replace",
+    "trim",
+    "upper",
+    "lower",
+    "reverse",
+    "unique",
+    "zip",
+    "range",
+    "sum",
+    "max",
+    "min",
+    "abs",
+    "floor",
+    "ceil",
+    "round",
+    "sqrt",
+    "pow",
+    "log",
+    "exp",
+    "sin",
+    "cos",
+    "tan",
+    "uuid",
+    "timestamp",
+    "parse_int",
+    "parse_float",
+    "to_string",
+    "to_json",
+    "from_json",
+    "hash",
+    "encode",
+    "decode",
 ];
 
 /// Type names for tab completion.
 const TYPES: &[&str] = &[
-    "Int", "Float", "String", "Bool", "Any", "Null", "Bytes", "List",
-    "Tuple", "Set", "Map", "Record", "Union", "Future", "result",
+    "Int", "Float", "String", "Bool", "Any", "Null", "Bytes", "List", "Tuple", "Set", "Map",
+    "Record", "Union", "Future", "result",
 ];
 
 /// REPL commands for tab completion.
 const COMMANDS: &[&str] = &[
-    ":help", ":quit", ":reset", ":type", ":clear", ":history",
-    ":load", ":env", ":time",
+    ":help", ":quit", ":reset", ":type", ":clear", ":history", ":load", ":env", ":time",
 ];
 
 /// Completer for the REPL.
@@ -213,12 +312,13 @@ fn extract_symbol_name(input: &str) -> Option<String> {
 
 pub fn run_repl() {
     println!("{}", bold(&cyan("Lumen REPL v0.1.0")));
-    println!("{}\n", gray("Type :help for available commands, :quit to exit."));
+    println!(
+        "{}\n",
+        gray("Type :help for available commands, :quit to exit.")
+    );
 
     // Set up rustyline editor
-    let config = rustyline::Config::builder()
-        .auto_add_history(true)
-        .build();
+    let config = rustyline::Config::builder().auto_add_history(true).build();
     let mut rl = Editor::with_config(config).expect("Failed to create editor");
     rl.set_helper(Some(LumenCompleter));
 
@@ -411,8 +511,7 @@ fn needs_more_input(input: &str) -> bool {
 
 /// Keywords that start a statement (not a bare expression).
 const STMT_KEYWORDS: &[&str] = &[
-    "let", "if", "while", "for", "match", "return", "halt",
-    "loop", "break", "continue", "emit",
+    "let", "if", "while", "for", "match", "return", "halt", "loop", "break", "continue", "emit",
 ];
 
 /// Check if the input looks like a top-level item definition.
@@ -647,19 +746,47 @@ fn print_help() {
     println!("  {}  {}", cyan(":help, :h"), gray("Show this help"));
     println!("  {}  {}", cyan(":quit, :q"), gray("Exit the REPL"));
     println!("  {}  {}", cyan(":reset, :r"), gray("Reset session state"));
-    println!("  {}  {}", cyan(":clear, :c"), gray("Clear terminal screen"));
-    println!("  {}  {}", cyan(":type <expr>, :t <expr>"), gray("Show the type of an expression"));
-    println!("  {}  {}", cyan(":load <file>"), gray("Load and execute a .lm.md file"));
+    println!(
+        "  {}  {}",
+        cyan(":clear, :c"),
+        gray("Clear terminal screen")
+    );
+    println!(
+        "  {}  {}",
+        cyan(":type <expr>, :t <expr>"),
+        gray("Show the type of an expression")
+    );
+    println!(
+        "  {}  {}",
+        cyan(":load <file>"),
+        gray("Load and execute a .lm.md file")
+    );
     println!("  {}  {}", cyan(":env"), gray("Show all defined symbols"));
-    println!("  {}  {}", cyan(":time <expr>"), gray("Evaluate and show execution time"));
+    println!(
+        "  {}  {}",
+        cyan(":time <expr>"),
+        gray("Evaluate and show execution time")
+    );
     println!("  {}  {}", cyan(":history"), gray("Show command history"));
     println!();
     println!("{}", gray("Features:"));
     println!("  {}", gray("• Arrow keys for navigation"));
-    println!("  {}", gray("• Tab completion for keywords, builtins, types, commands"));
-    println!("  {}", gray("• History persistence in ~/.lumen/repl_history"));
-    println!("  {}", gray("• Multi-line input (open blocks continue until `end`)"));
-    println!("  {}", gray("• Session state (define cells/records that persist)"));
+    println!(
+        "  {}",
+        gray("• Tab completion for keywords, builtins, types, commands")
+    );
+    println!(
+        "  {}",
+        gray("• History persistence in ~/.lumen/repl_history")
+    );
+    println!(
+        "  {}",
+        gray("• Multi-line input (open blocks continue until `end`)")
+    );
+    println!(
+        "  {}",
+        gray("• Session state (define cells/records that persist)")
+    );
 }
 
 #[cfg(test)]
@@ -689,8 +816,14 @@ mod tests {
         assert_eq!(extract_symbol_name("cell foo()"), Some("foo".to_string()));
         assert_eq!(extract_symbol_name("record Bar"), Some("Bar".to_string()));
         assert_eq!(extract_symbol_name("enum Baz"), Some("Baz".to_string()));
-        assert_eq!(extract_symbol_name("cell square(x: Int)"), Some("square".to_string()));
-        assert_eq!(extract_symbol_name("record Point[T]"), Some("Point".to_string()));
+        assert_eq!(
+            extract_symbol_name("cell square(x: Int)"),
+            Some("square".to_string())
+        );
+        assert_eq!(
+            extract_symbol_name("record Point[T]"),
+            Some("Point".to_string())
+        );
         assert_eq!(extract_symbol_name("let x = 1"), None);
     }
 

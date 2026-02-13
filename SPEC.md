@@ -124,7 +124,8 @@ handler MockDb
 end
 ```
 
-`bind effect` declarations are supported.
+`bind effect` declarations explicitly associate an effect with a tool alias.
+This is the only supported mechanism for mapping effects to tool implementations — the compiler does not infer effect-to-tool bindings heuristically.
 
 ```lumen
 use tool postgres.query as DbQuery
@@ -135,8 +136,8 @@ bind effect database.query to DbQuery
 
 The parser/resolver supports:
 
-- `use tool`
-- `grant`
+- `use tool` — declares a tool by name; the language treats tools as abstract typed interfaces (see Section 10)
+- `grant` — attaches policy constraints to a tool alias; constraints are provider-agnostic (see Section 10.3)
 - `type` alias
 - `trait`
 - `impl`
@@ -145,6 +146,9 @@ The parser/resolver supports:
 - `macro`
 
 ```lumen
+use tool llm.chat as Chat
+grant Chat timeout_ms 30000
+
 type UserId = String
 
 const MAX_RETRIES: Int = 3
@@ -304,8 +308,9 @@ Capability checks use grant scope:
 
 - top-level cells use top-level `grant` declarations
 - agent/process methods use top-level grants plus local grants declared in that agent/process
-- effect bindings (`bind effect ... to <ToolAlias>`) are preferred for mapping custom/bound effects to tools
+- effect bindings (`bind effect ... to <ToolAlias>`) are the explicit mechanism for mapping effects to tools (no heuristic inference)
 - grant policies may restrict allowed effects via `effect`/`effects` constraints; resolver enforces these restrictions
+- tool calls automatically produce trace events recording input, output, duration, and provider identity
 
 ## 7.4 Deterministic Profile
 
@@ -393,7 +398,232 @@ CLI commands currently implemented:
 - `lumen trace show <run_id> [--trace-dir ...]`
 - `lumen cache clear [--cache-dir ...]`
 
-## 10. Boundaries of This Spec
+## 10. Tool Providers
+
+Lumen separates tool contracts (declared in source) from tool implementations (loaded at runtime).
+The language defines what a tool looks like; the runtime decides how to call it.
+
+### 10.1 Tools Are Abstract
+
+A `use tool` declaration introduces a tool by name.
+At the language level, a tool is a typed interface with:
+
+- a qualified name (e.g. `llm.chat`, `http.get`, `github.search_repos`)
+- typed input (record of named arguments)
+- typed output
+- declared effects
+- automatic trace events on every call
+
+The compiler validates tool usage (argument types, effect compatibility, grant policy constraints) without knowing which provider will handle the call.
+
+```lumen
+use tool llm.chat as Chat
+grant Chat timeout_ms 30000
+bind effect llm to Chat
+
+cell ask(prompt: String) -> String / {llm}
+  return Chat(prompt: prompt)
+end
+```
+
+This code is valid regardless of whether `llm.chat` is backed by OpenAI, Anthropic, Ollama, or any custom provider.
+The provider is determined by runtime configuration (see Section 11).
+
+### 10.2 ToolProvider Interface
+
+At runtime, every tool name resolves to a `ToolProvider` implementation.
+The ToolProvider trait exposes:
+
+- `name() -> String` — canonical tool name
+- `version() -> String` — provider version string
+- `schema() -> ToolSchema` — input/output JSON schemas and declared effect kinds
+- `call(input) -> result` — execute the tool with validated input
+- `effects() -> list of effect kinds` — effects this provider may produce
+
+`ToolSchema` contains:
+
+- `input_schema` — JSON schema describing accepted input fields
+- `output_schema` — JSON schema describing the return value
+- `effect_kinds` — set of effect kind strings the tool may trigger (e.g. `"http"`, `"llm"`, `"mcp"`)
+
+Provider implementations live in separate crates (e.g. `lumen-provider-openai`, `lumen-provider-http`).
+The runtime loads and registers providers at startup based on configuration.
+
+### 10.3 Grants and Policy Constraints
+
+`grant` declarations attach policy constraints to tool aliases.
+Constraints are provider-agnostic — they restrict how any provider may be used.
+
+Supported constraint keys:
+
+- `domain` — URL pattern matching (e.g. `"*.example.com"`)
+- `timeout_ms` — maximum execution time in milliseconds
+- `max_tokens` — maximum token budget (for LLM providers)
+- custom keys — matched exactly against provider schema
+
+```lumen
+use tool http.get as Fetch
+grant Fetch domain "*.trusted.com"
+grant Fetch timeout_ms 5000
+
+use tool llm.chat as Chat
+grant Chat max_tokens 4096
+grant Chat timeout_ms 30000
+```
+
+At runtime, `validate_tool_policy()` merges all grants for a tool alias and checks them before dispatch.
+Policy violations produce tool-policy errors.
+
+### 10.4 Effect Bindings
+
+`bind effect` explicitly maps an effect to a tool alias.
+This is the only mechanism for associating effects with tool implementations.
+
+```lumen
+use tool postgres.query as DbQuery
+bind effect database.query to DbQuery
+```
+
+The compiler uses these bindings for effect provenance diagnostics (e.g. `UndeclaredEffect` errors include a `cause` field tracing the binding).
+
+### 10.5 Tool Call Semantics
+
+When a tool is called at runtime:
+
+1. The VM looks up the tool alias in the provider registry.
+2. Grant policies are merged and validated via `validate_tool_policy()`.
+3. The provider's `call()` method executes with the validated input.
+4. A trace event is recorded with: tool name, input, output, duration, provider identity, and status.
+5. The result is returned to the calling cell.
+
+Tool results can be validated against expected schemas:
+
+```lumen
+let response = Chat(prompt: "hello")
+expect schema response { message: String }
+```
+
+### 10.6 MCP Server Bridge
+
+MCP (Model Context Protocol) servers are automatically exposed as Lumen tool providers.
+An MCP server registered in configuration becomes a set of tools following the `server.tool_name` naming convention.
+
+Semantics:
+
+- Each tool exposed by the MCP server becomes a Lumen tool (e.g. `github.create_issue`, `github.search_repos`)
+- MCP tools carry the `"mcp"` effect kind by default
+- MCP tool schemas (input/output) are derived from the MCP server's tool descriptions
+- MCP tools participate in grant policies and effect bindings like any other tool
+
+```lumen
+use tool github.create_issue as CreateIssue
+grant CreateIssue timeout_ms 10000
+bind effect mcp to CreateIssue
+
+cell file_bug(title: String, body: String) -> Json / {mcp}
+  return CreateIssue(title: title, body: body)
+end
+```
+
+## 11. Configuration
+
+Runtime configuration is specified in `lumen.toml`.
+This file maps tool names to provider implementations and supplies provider-specific settings.
+
+### 11.1 Config File Resolution
+
+The runtime searches for `lumen.toml` in the following order:
+
+1. `./lumen.toml` — current working directory
+2. Parent directories — walk up the filesystem tree
+3. `~/.config/lumen/lumen.toml` — global default
+
+The first file found is used. Files are not merged across locations.
+
+### 11.2 Provider Mapping
+
+The `[providers]` table maps tool names to provider types:
+
+```toml
+[providers]
+llm.chat = "openai-compatible"
+http.get = "builtin-http"
+```
+
+Each key is a tool name as used in `use tool` declarations.
+Each value is a provider type identifier that the runtime resolves to a `ToolProvider` implementation.
+
+### 11.3 Provider Configuration
+
+Provider-specific settings go under `[providers.config.<provider_type>]`:
+
+```toml
+[providers.config.openai-compatible]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+default_model = "gpt-4"
+
+[providers.config.builtin-http]
+max_redirects = 5
+```
+
+The `api_key_env` field names an environment variable — secrets are never stored directly in config files.
+
+### 11.4 MCP Server Configuration
+
+MCP servers are registered under `[providers.mcp.<server_name>]`:
+
+```toml
+[providers.mcp.github]
+uri = "npx -y @modelcontextprotocol/server-github"
+tools = ["github.create_issue", "github.search_repos"]
+
+[providers.mcp.filesystem]
+uri = "npx -y @modelcontextprotocol/server-filesystem /tmp"
+tools = ["filesystem.read_file", "filesystem.write_file"]
+```
+
+- `uri` — command or URL to launch/connect to the MCP server
+- `tools` — list of tool names this server exposes (following `server.tool_name` convention)
+
+### 11.5 Example: Same Code, Different Providers
+
+The same Lumen source works with different providers by changing only `lumen.toml`:
+
+```lumen
+use tool llm.chat as Chat
+grant Chat timeout_ms 30000
+bind effect llm to Chat
+
+cell summarize(text: String) -> String / {llm}
+  return Chat(prompt: "Summarize: " + text)
+end
+```
+
+With OpenAI:
+```toml
+[providers]
+llm.chat = "openai-compatible"
+
+[providers.config.openai-compatible]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+default_model = "gpt-4"
+```
+
+With Ollama (local):
+```toml
+[providers]
+llm.chat = "openai-compatible"
+
+[providers.config.openai-compatible]
+base_url = "http://localhost:11434/v1"
+default_model = "llama3"
+```
+
+The Lumen code is identical. Only the configuration changes.
+
+## 12. Boundaries of This Spec
 
 This spec covers implemented behavior only.
 

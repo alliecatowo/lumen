@@ -111,6 +111,139 @@ Incremental path to a complete type system:
 4. Trait method dispatch (resolve method calls through impl lookup).
 5. Bounded generics (`where T: Trait` constraints).
 
+## Provider Architecture: Pluggable Runtime
+
+This is the critical architectural decision for Lumen: **the language defines contracts, the runtime loads implementations.** No transport layer or provider-specific code is baked into the compiler. The compiler verifies types, effects, and grants with zero knowledge of what a tool actually does. Providers are external, replaceable, and evolve independently.
+
+### Layer 1 — Language Primitives (baked in, never changes)
+
+These are part of the language grammar and compiler semantics. They ship with the compiler and define the contracts that providers must satisfy.
+
+- `use tool <provider>.<method> as <Alias>` — tool import syntax
+- `grant <Alias> <constraints>` — capability-scoped tool access with policy constraints
+- Effect rows: `cell foo() -> T / {http, trace}` — declared side effects
+- `ToolCall` opcodes in LIR — VM-level tool invocation
+- `role` / conversation blocks — provider-agnostic conversation structure (the provider translates to wire format)
+- `expect schema` validation — structural output contracts
+- Trace event emission — structured execution logs for replay and audit
+
+The compiler verifies types, effects, and grants. It has zero knowledge of what a tool actually does at runtime.
+
+Example Lumen source using tools:
+
+```lumen
+use tool github.create_issue as CreateIssue
+use tool slack.send_message as SlackMsg
+
+grant CreateIssue timeout_ms 10000
+grant SlackMsg timeout_ms 5000
+```
+
+### Layer 2 — ToolProvider Interface (trait in runtime, implementations external)
+
+A single trait in `lumen-runtime` that all providers implement:
+
+```rust
+pub trait ToolProvider: Send + Sync {
+    fn name(&self) -> &str;
+    fn version(&self) -> &str;
+    fn schema(&self) -> &ToolSchema;
+    fn call(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError>;
+    fn effects(&self) -> &[&str];
+}
+```
+
+- The VM holds `HashMap<String, Box<dyn ToolProvider>>`
+- `ToolCall` opcode looks up the provider by name and calls it
+- The VM does not know or care what the provider does internally
+- This trait is the **only** coupling point between the language and any external service
+
+### Layer 3 — First-Party Provider Packages (ships with CLI, NOT the compiler)
+
+Separate crates implementing `ToolProvider`, maintained and versioned independently of the compiler:
+
+```
+lumen-providers/
+  lumen-provider-http/       # reqwest-based HTTP client
+  lumen-provider-openai/     # OpenAI-compatible chat/embeddings
+  lumen-provider-anthropic/  # Claude API adapter
+  lumen-provider-mcp/        # MCP client bridge (every MCP server = Lumen tool)
+  lumen-provider-fs/         # filesystem operations
+  lumen-provider-process/    # subprocess execution
+```
+
+Each provider is a library crate. They ship with the Lumen CLI for convenience but can be replaced entirely with custom implementations. They update independently of the compiler.
+
+### Layer 4 — Provider Registration (lumen.toml runtime config)
+
+Runtime configuration maps tool names to provider implementations:
+
+```toml
+[providers]
+llm.chat = "openai-compatible"
+http.get = "builtin-http"
+http.post = "builtin-http"
+mcp = "builtin-mcp"
+
+[providers.config.openai-compatible]
+base_url = "https://api.anthropic.com/v1"
+api_key_env = "ANTHROPIC_API_KEY"
+default_model = "claude-sonnet-4-20250514"
+
+[providers.config.builtin-mcp]
+servers = ["npx -y @modelcontextprotocol/server-filesystem /tmp"]
+
+[providers.mcp.github]
+uri = "npx -y @modelcontextprotocol/server-github"
+tools = ["github.create_issue", "github.search_repos"]
+
+[providers.mcp.slack]
+uri = "npx -y @modelcontextprotocol/server-slack"
+tools = ["slack.send_message", "slack.list_channels"]
+```
+
+**Zero code changes for provider switching:**
+
+- Switch from OpenAI to Anthropic? Change one line in `lumen.toml`.
+- New provider? Write a `ToolProvider` impl and register it.
+- Provider changes its API? Update the provider package, not the compiler.
+- Running locally with Ollama? Same interface, different config.
+
+Language source never mentions "openai" or "anthropic" — those are config-level concerns.
+
+**MCP as universal bridge:** Every MCP server is already a `ToolProvider`. The `lumen-provider-mcp` crate is a generic bridge — every MCP tool in the ecosystem becomes a Lumen tool with zero custom code. MCP config in `lumen.toml` maps server URIs to tool namespaces.
+
+**Effect kinds come from provider declarations**, not hardcoded lists in the compiler. Each provider declares its effects via `ToolProvider::effects()`, and the resolver uses those declarations for effect checking.
+
+**Role blocks** define provider-agnostic conversation structure. The `role` / `end` syntax captures the shape of a conversation (system, user, assistant turns) without prescribing any wire format. The provider translates role blocks to its native API format — OpenAI's message array, Anthropic's Messages API, or any future format.
+
+### What Goes Where
+
+| Baked into language | Provider library |
+|---|---|
+| `use tool` / `grant` syntax | HTTP client |
+| Effect rows and capability checking | OpenAI/Anthropic/Google API adapters |
+| `role` / `end` conversation blocks | MCP client bridge |
+| `expect schema` validation | Filesystem operations |
+| Trace event emission | Subprocess execution |
+| `ToolCall` opcode in VM | Embedding model adapters |
+| `ToolProvider` trait | Database drivers |
+| Provider registry lookup | Custom user providers |
+
+### Why This Separation Is Non-Negotiable
+
+The language is stable for decades. The providers evolve weekly. They must never be in the same crate.
+
+Historical lessons:
+
+- **PHP baked in `mysql_query()`** — 20 years of deprecation warnings, security holes, and migration pain (`mysql_`, `mysqli_`, PDO) because the database driver was a language built-in.
+- **Go baked `net/http` into stdlib** — frozen at 2012 design decisions. Every HTTP/2 and HTTP/3 improvement requires stdlib changes gated by Go's compatibility promise.
+- **Java JDBC is 25 years old and still works perfectly** — because it is an interface. Driver implementations evolve freely behind it.
+
+AI providers are changing monthly. OpenAI changed their API format three times in 2024. Anthropic's message format is different from OpenAI's. Google's is different from both. MCP is still evolving. If you bake any of this in, you're chasing spec changes in your compiler forever.
+
+The `ToolProvider` trait is Lumen's JDBC moment — a stable contract that outlives any individual provider.
+
 ## Execution Principles
 
 - No metadata-only features presented as full semantics.

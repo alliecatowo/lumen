@@ -1236,27 +1236,50 @@ impl Parser {
     fn parse_pattern(&mut self) -> Result<Pattern, ParseError> {
         if matches!(self.peek_kind(), TokenKind::LParen) {
             let s = self.advance().span;
-            let mut depth = 1usize;
-            while !self.at_end() {
-                match self.peek_kind() {
-                    TokenKind::LParen => {
-                        depth += 1;
-                        self.advance();
-                    }
-                    TokenKind::RParen => {
-                        depth -= 1;
-                        self.advance();
-                        if depth == 0 {
-                            break;
+            if self.paren_contains_top_level_arrow() {
+                let mut depth = 1usize;
+                while !self.at_end() {
+                    match self.peek_kind() {
+                        TokenKind::LParen => {
+                            depth += 1;
+                            self.advance();
+                        }
+                        TokenKind::RParen => {
+                            depth -= 1;
+                            self.advance();
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {
+                            self.advance();
                         }
                     }
-                    TokenKind::Arrow if depth == 0 => break,
-                    _ => {
-                        self.advance();
-                    }
                 }
+                return Ok(Pattern::Wildcard(s));
             }
-            return Ok(Pattern::Wildcard(s));
+            if matches!(self.peek_kind(), TokenKind::RParen) {
+                self.advance();
+                return Ok(Pattern::TupleDestructure {
+                    elements: vec![],
+                    span: s,
+                });
+            }
+            let first = self.parse_pattern()?;
+            if matches!(self.peek_kind(), TokenKind::Comma) {
+                let mut elements = vec![first];
+                while matches!(self.peek_kind(), TokenKind::Comma) {
+                    self.advance();
+                    if matches!(self.peek_kind(), TokenKind::RParen | TokenKind::Eof) {
+                        break;
+                    }
+                    elements.push(self.parse_pattern()?);
+                }
+                self.expect(&TokenKind::RParen)?;
+                return Ok(Pattern::TupleDestructure { elements, span: s });
+            }
+            self.expect(&TokenKind::RParen)?;
+            return Ok(first);
         }
         if matches!(self.peek_kind(), TokenKind::LBracket) {
             let s = self.advance().span;
@@ -1343,10 +1366,56 @@ impl Parser {
                     });
                 }
                 if matches!(self.peek_kind(), TokenKind::LParen) {
-                    self.advance();
-                    let binding = self.parse_variant_binding_candidate()?;
-                    self.expect(&TokenKind::RParen)?;
-                    Ok(Pattern::Variant(name, binding, s))
+                    if self.paren_looks_like_record_destructure() {
+                        self.advance(); // (
+                        let mut fields = Vec::new();
+                        let mut open = false;
+                        while !matches!(self.peek_kind(), TokenKind::RParen | TokenKind::Eof) {
+                            if matches!(self.peek_kind(), TokenKind::Comma) {
+                                self.advance();
+                                continue;
+                            }
+                            if matches!(self.peek_kind(), TokenKind::DotDot | TokenKind::DotDotDot)
+                            {
+                                open = true;
+                                self.advance();
+                                if matches!(self.peek_kind(), TokenKind::Ident(_)) {
+                                    self.advance();
+                                }
+                                continue;
+                            }
+                            let field_name = self.expect_ident()?;
+                            let field_pat = if matches!(self.peek_kind(), TokenKind::Colon) {
+                                self.advance();
+                                if matches!(
+                                    self.peek_kind(),
+                                    TokenKind::Comma | TokenKind::RParen
+                                ) {
+                                    None
+                                } else {
+                                    Some(self.parse_pattern()?)
+                                }
+                            } else {
+                                None
+                            };
+                            fields.push((field_name, field_pat));
+                            if matches!(self.peek_kind(), TokenKind::Comma) {
+                                self.advance();
+                            }
+                        }
+                        self.expect(&TokenKind::RParen)?;
+                        Ok(Pattern::RecordDestructure {
+                            type_name: name,
+                            fields,
+                            open,
+                            span: s,
+                        })
+                    } else {
+                        self.advance();
+                        let binding = self.parse_variant_binding_candidate()?;
+                        self.expect(&TokenKind::RParen)?;
+                        Ok(Pattern::Variant(name, binding, s))
+                    }
                 } else {
                     Ok(Pattern::Ident(name, s))
                 }
@@ -2647,6 +2716,52 @@ impl Parser {
             }
         }
         Ok(binding)
+    }
+
+    fn paren_looks_like_record_destructure(&self) -> bool {
+        if !matches!(self.peek_kind(), TokenKind::LParen) {
+            return false;
+        }
+        let mut i = self.pos + 1;
+        let mut depth = 0usize;
+        while let Some(tok) = self.tokens.get(i) {
+            match tok.kind {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                }
+                TokenKind::Colon | TokenKind::DotDot | TokenKind::DotDotDot if depth == 0 => {
+                    return true;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    }
+
+    fn paren_contains_top_level_arrow(&self) -> bool {
+        let mut i = self.pos;
+        // Caller has already consumed the opening '(' for this group.
+        let mut depth = 1usize;
+        while let Some(tok) = self.tokens.get(i) {
+            match tok.kind {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                TokenKind::Arrow if depth == 1 => return true,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
     }
 
     fn consume_variant_arg_tokens(&mut self) {

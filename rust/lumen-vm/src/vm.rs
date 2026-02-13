@@ -2,7 +2,9 @@
 
 use crate::strings::StringTable;
 use crate::types::{RuntimeField, RuntimeType, RuntimeTypeKind, RuntimeVariant, TypeTable};
-use crate::values::{ClosureValue, RecordValue, StringRef, TraceRefValue, UnionValue, Value};
+use crate::values::{
+    ClosureValue, FutureValue, RecordValue, StringRef, TraceRefValue, UnionValue, Value,
+};
 use lumen_compiler::compiler::lir::*;
 use lumen_runtime::tools::{ToolDispatcher, ToolRequest};
 use std::collections::BTreeMap;
@@ -37,6 +39,7 @@ struct CallFrame {
     base_register: usize,
     ip: usize,
     return_register: usize,
+    future_id: Option<u64>,
 }
 
 /// The Lumen register VM.
@@ -50,6 +53,8 @@ pub struct VM {
     pub output: Vec<String>,
     /// Optional tool dispatcher
     pub tool_dispatcher: Option<Box<dyn ToolDispatcher>>,
+    next_future_id: u64,
+    resolved_futures: BTreeMap<u64, Value>,
 }
 
 impl VM {
@@ -62,6 +67,8 @@ impl VM {
             module: None,
             output: Vec::new(),
             tool_dispatcher: None,
+            next_future_id: 1,
+            resolved_futures: BTreeMap::new(),
         }
     }
 
@@ -134,6 +141,7 @@ impl VM {
             base_register: base,
             ip: 0,
             return_register: 0,
+            future_id: None,
         });
 
         // Execute
@@ -636,6 +644,10 @@ impl VM {
                 OpCode::Return => {
                     let return_val = self.registers[base + a].clone();
                     let frame = self.frames.pop().unwrap();
+                    if let Some(fid) = frame.future_id {
+                        self.resolved_futures.insert(fid, return_val);
+                        continue;
+                    }
                     if self.frames.is_empty() {
                         return Ok(return_val);
                     }
@@ -873,25 +885,43 @@ impl VM {
                     });
                 }
                 OpCode::Await => {
-                    // V1: synchronous - just copy value
-                    self.registers[base + a] = self.registers[base + b].clone();
+                    match self.registers[base + b].clone() {
+                        Value::Future(f) => {
+                            let val = self
+                                .resolved_futures
+                                .get(&f.id)
+                                .cloned()
+                                .unwrap_or(Value::Null);
+                            self.registers[base + a] = val;
+                        }
+                        other => {
+                            // Backward compatibility: awaiting a concrete value yields it directly.
+                            self.registers[base + a] = other;
+                        }
+                    }
                 }
                 OpCode::Spawn => {
-                    // V1: synchronous - just execute the cell
                     let bx = instr.bx() as usize;
                     let module = self.module.as_ref().unwrap();
                     if bx < module.cells.len() {
+                        if self.frames.len() >= MAX_CALL_DEPTH {
+                            return Err(VmError::StackOverflow(MAX_CALL_DEPTH));
+                        }
                         let callee_cell = &module.cells[bx];
                         let new_base = self.registers.len();
                         self.registers.resize(
                             new_base + (callee_cell.registers as usize).max(256),
                             Value::Null,
                         );
+                        let future_id = self.next_future_id;
+                        self.next_future_id += 1;
+                        self.registers[base + a] = Value::Future(FutureValue { id: future_id });
                         self.frames.push(CallFrame {
                             cell_idx: bx,
                             base_register: new_base,
                             ip: 0,
-                            return_register: base + a,
+                            return_register: 0,
+                            future_id: Some(future_id),
                         });
                     } else {
                         self.registers[base + a] = Value::Null;
@@ -964,6 +994,7 @@ impl VM {
                         base_register: new_base,
                         ip: 0,
                         return_register: base + a,
+                        future_id: None,
                     });
                 } else {
                     let _ = module;
@@ -999,6 +1030,7 @@ impl VM {
                     base_register: new_base,
                     ip: 0,
                     return_register: base + a,
+                    future_id: None,
                 });
             }
             _ => {
@@ -1528,11 +1560,9 @@ impl VM {
             }
             // Crypto
             "sha512" => {
-                // sha2 crate provides Sha512 but let's just stub with the hash prefix
-                use sha2::{Digest, Sha256};
+                use sha2::{Digest, Sha512};
                 let s = self.registers[base + a + 1].as_string();
-                // Use SHA256 as placeholder since sha512 requires different import
-                let h = format!("sha512:{:x}", Sha256::digest(s.as_bytes()));
+                let h = format!("sha512:{:x}", Sha512::digest(s.as_bytes()));
                 Ok(Value::String(StringRef::Owned(h)))
             }
             "uuid" | "uuid_v4" => {
@@ -2623,6 +2653,15 @@ impl Default for VM {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lumen_compiler::compile as compile_lumen;
+
+    fn run_main(source: &str) -> Value {
+        let md = format!("# test\n\n```lumen\n{}\n```\n", source.trim());
+        let module = compile_lumen(&md).expect("source should compile");
+        let mut vm = VM::new();
+        vm.load(module);
+        vm.execute("main", vec![]).expect("main should execute")
+    }
 
     fn make_return_42() -> LirModule {
         LirModule {
@@ -2974,5 +3013,89 @@ mod tests {
         vm.load(module);
         let result = vm.execute("main", vec![]).unwrap();
         assert_eq!(result, Value::Int(0b1000));
+    }
+
+    #[test]
+    fn test_match_guard_and_or_runtime() {
+        let result = run_main(
+            r#"
+cell main() -> Int
+  let x = ok(5)
+  match x
+    ok(v) if v > 3 -> return 1
+    ok(v) | err(v) -> return 2
+    _ -> return 0
+  end
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(1));
+    }
+
+    #[test]
+    fn test_match_list_destructure_with_rest_runtime() {
+        let result = run_main(
+            r#"
+cell main() -> Int
+  match [1, 2, 3, 4]
+    [head, second, ...rest] -> return length(rest)
+    _ -> return 0
+  end
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(2));
+    }
+
+    #[test]
+    fn test_match_tuple_destructure_runtime() {
+        let result = run_main(
+            r#"
+cell main() -> Int
+  match (2, 5)
+    (a, b) -> return a + b
+    _ -> return 0
+  end
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(7));
+    }
+
+    #[test]
+    fn test_match_record_destructure_runtime() {
+        let result = run_main(
+            r#"
+record Point
+  x: Int
+  y: Int
+end
+
+cell main() -> Int
+  let p = Point(x: 3, y: 4)
+  match p
+    Point(x: x, y: y) -> return x + y
+    _ -> return 0
+  end
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(7));
+    }
+
+    #[test]
+    fn test_match_type_check_pattern_runtime() {
+        let result = run_main(
+            r#"
+cell main() -> Int
+  let v: Int | String = 9
+  match v
+    n: Int -> return n
+    _ -> return 0
+  end
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(9));
     }
 }

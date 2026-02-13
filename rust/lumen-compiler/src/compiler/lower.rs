@@ -495,77 +495,25 @@ impl<'a> Lowerer<'a> {
                 let mut end_jumps = Vec::new();
 
                 for arm in &ms.arms {
-                    match &arm.pattern {
-                        Pattern::Literal(lit_expr) => {
-                            let lit_reg = self.lower_expr(lit_expr, ra, consts, instrs);
-                            let cmp_reg = ra.alloc_temp();
-                            instrs.push(Instruction::abc(OpCode::Eq, cmp_reg, subj_reg, lit_reg));
-                            // Test: skip next instruction (Jmp) if cmp_reg is truthy
-                            instrs.push(Instruction::abc(OpCode::Test, cmp_reg, 0, 0));
-                            let skip_jmp = instrs.len();
-                            instrs.push(Instruction::sax(OpCode::Jmp, 0));
+                    let mut fail_jumps = Vec::new();
+                    self.lower_match_pattern(
+                        &arm.pattern,
+                        subj_reg,
+                        ra,
+                        consts,
+                        instrs,
+                        &mut fail_jumps,
+                    );
 
-                            for s in &arm.body {
-                                self.lower_stmt(s, ra, consts, instrs);
-                            }
-                            end_jumps.push(instrs.len());
-                            instrs.push(Instruction::sax(OpCode::Jmp, 0));
+                    for s in &arm.body {
+                        self.lower_stmt(s, ra, consts, instrs);
+                    }
+                    end_jumps.push(instrs.len());
+                    instrs.push(Instruction::sax(OpCode::Jmp, 0));
 
-                            let after = instrs.len();
-                            instrs[skip_jmp] =
-                                Instruction::sax(OpCode::Jmp, (after - skip_jmp - 1) as i32);
-                        }
-                        Pattern::Variant(tag, binding, _) => {
-                            // Check Variant Tag
-                            let tag_idx = self.intern_string(tag);
-                            instrs.push(Instruction::abx(OpCode::IsVariant, subj_reg, tag_idx));
-                            // If NOT matched, skip next instruction (the body execution)
-                            // Wait, IsVariant logic in VM: "if matched, skip next".
-                            // So if Matched, we Skip the JUMP.
-                            // So next instruction should be JUMP (to next arm).
-                            let skip_jmp = instrs.len();
-                            instrs.push(Instruction::sax(OpCode::Jmp, 0)); // Jump to next arm (if NOT matched)
-
-                            // Matched: Execute body
-                            if let Some(ref b) = binding {
-                                let breg = ra.alloc_named(b);
-                                instrs.push(Instruction::abc(OpCode::Unbox, breg, subj_reg, 0));
-                            }
-                            for s in &arm.body {
-                                self.lower_stmt(s, ra, consts, instrs);
-                            }
-                            end_jumps.push(instrs.len());
-                            instrs.push(Instruction::sax(OpCode::Jmp, 0)); // Jump to end of match
-
-                            // Patch skip_jmp (failure case) to point here
-                            let after = instrs.len();
-                            instrs[skip_jmp] =
-                                Instruction::sax(OpCode::Jmp, (after - skip_jmp - 1) as i32);
-                        }
-                        Pattern::Wildcard(_) | Pattern::Ident(_, _) => {
-                            if let Pattern::Ident(name, _) = &arm.pattern {
-                                let breg = ra.alloc_named(name);
-                                instrs.push(Instruction::abc(OpCode::Move, breg, subj_reg, 0));
-                            }
-                            for s in &arm.body {
-                                self.lower_stmt(s, ra, consts, instrs);
-                            }
-                            end_jumps.push(instrs.len());
-                            instrs.push(Instruction::sax(OpCode::Jmp, 0));
-                        }
-                        // New pattern types: treat as wildcard for now
-                        Pattern::Guard { .. }
-                        | Pattern::Or { .. }
-                        | Pattern::ListDestructure { .. }
-                        | Pattern::TupleDestructure { .. }
-                        | Pattern::RecordDestructure { .. }
-                        | Pattern::TypeCheck { .. } => {
-                            for s in &arm.body {
-                                self.lower_stmt(s, ra, consts, instrs);
-                            }
-                            end_jumps.push(instrs.len());
-                            instrs.push(Instruction::sax(OpCode::Jmp, 0));
-                        }
+                    let next_arm = instrs.len();
+                    for j in fail_jumps {
+                        instrs[j] = Instruction::sax(OpCode::Jmp, (next_arm - j - 1) as i32);
                     }
                 }
 
@@ -682,6 +630,235 @@ impl<'a> Lowerer<'a> {
                     CompoundOp::DivAssign => OpCode::Div,
                 };
                 instrs.push(Instruction::abc(opcode, target_reg, target_reg, val_reg));
+            }
+        }
+    }
+
+    fn push_const_int(
+        &mut self,
+        n: i64,
+        ra: &mut RegAlloc,
+        consts: &mut Vec<Constant>,
+        instrs: &mut Vec<Instruction>,
+    ) -> u8 {
+        let reg = ra.alloc_temp();
+        let kidx = consts.len() as u16;
+        consts.push(Constant::Int(n));
+        instrs.push(Instruction::abx(OpCode::LoadK, reg, kidx));
+        reg
+    }
+
+    fn push_const_string(
+        &mut self,
+        s: &str,
+        ra: &mut RegAlloc,
+        consts: &mut Vec<Constant>,
+        instrs: &mut Vec<Instruction>,
+    ) -> u8 {
+        let reg = ra.alloc_temp();
+        let kidx = consts.len() as u16;
+        consts.push(Constant::String(s.to_string()));
+        instrs.push(Instruction::abx(OpCode::LoadK, reg, kidx));
+        reg
+    }
+
+    fn emit_jump_if_false(
+        &mut self,
+        cond_reg: u8,
+        instrs: &mut Vec<Instruction>,
+    ) -> usize {
+        instrs.push(Instruction::abc(OpCode::Test, cond_reg, 0, 0));
+        let jmp_idx = instrs.len();
+        instrs.push(Instruction::sax(OpCode::Jmp, 0));
+        jmp_idx
+    }
+
+    fn lower_match_pattern(
+        &mut self,
+        pattern: &Pattern,
+        value_reg: u8,
+        ra: &mut RegAlloc,
+        consts: &mut Vec<Constant>,
+        instrs: &mut Vec<Instruction>,
+        fail_jumps: &mut Vec<usize>,
+    ) {
+        match pattern {
+            Pattern::Literal(lit_expr) => {
+                let lit_reg = self.lower_expr(lit_expr, ra, consts, instrs);
+                let cmp_reg = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::Eq, cmp_reg, value_reg, lit_reg));
+                fail_jumps.push(self.emit_jump_if_false(cmp_reg, instrs));
+            }
+            Pattern::Variant(tag, binding, _) => {
+                let tag_idx = self.intern_string(tag);
+                instrs.push(Instruction::abx(OpCode::IsVariant, value_reg, tag_idx));
+                let fail_jmp = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0));
+                fail_jumps.push(fail_jmp);
+                if let Some(ref b) = binding {
+                    let breg = ra.alloc_named(b);
+                    instrs.push(Instruction::abc(OpCode::Unbox, breg, value_reg, 0));
+                }
+            }
+            Pattern::Wildcard(_) => {}
+            Pattern::Ident(name, _) => {
+                let breg = ra.alloc_named(name);
+                instrs.push(Instruction::abc(OpCode::Move, breg, value_reg, 0));
+            }
+            Pattern::Guard {
+                inner, condition, ..
+            } => {
+                self.lower_match_pattern(inner, value_reg, ra, consts, instrs, fail_jumps);
+                let cond_reg = self.lower_expr(condition, ra, consts, instrs);
+                fail_jumps.push(self.emit_jump_if_false(cond_reg, instrs));
+            }
+            Pattern::Or { patterns, .. } => {
+                if patterns.is_empty() {
+                    return;
+                }
+                let mut success_jumps = Vec::new();
+                for (idx, p) in patterns.iter().enumerate() {
+                    let mut alt_fail_jumps = Vec::new();
+                    self.lower_match_pattern(
+                        p,
+                        value_reg,
+                        ra,
+                        consts,
+                        instrs,
+                        &mut alt_fail_jumps,
+                    );
+                    let is_last = idx + 1 == patterns.len();
+                    if is_last {
+                        fail_jumps.extend(alt_fail_jumps);
+                    } else {
+                        let success_jmp = instrs.len();
+                        instrs.push(Instruction::sax(OpCode::Jmp, 0));
+                        success_jumps.push(success_jmp);
+
+                        let next_alt = instrs.len();
+                        for j in alt_fail_jumps {
+                            instrs[j] = Instruction::sax(OpCode::Jmp, (next_alt - j - 1) as i32);
+                        }
+                    }
+                }
+                let after_or = instrs.len();
+                for j in success_jumps {
+                    instrs[j] = Instruction::sax(OpCode::Jmp, (after_or - j - 1) as i32);
+                }
+            }
+            Pattern::ListDestructure { elements, rest, .. } => {
+                let list_type = self.push_const_string("List", ra, consts, instrs);
+                let is_list = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::Is, is_list, value_reg, list_type));
+                fail_jumps.push(self.emit_jump_if_false(is_list, instrs));
+
+                let len_reg = ra.alloc_temp();
+                instrs.push(Instruction::abc(
+                    OpCode::Intrinsic,
+                    len_reg,
+                    IntrinsicId::Length as u8,
+                    value_reg,
+                ));
+                let expected_reg =
+                    self.push_const_int(elements.len() as i64, ra, consts, instrs);
+                let arity_ok = ra.alloc_temp();
+                if rest.is_some() {
+                    // expected_len <= actual_len
+                    instrs.push(Instruction::abc(OpCode::Le, arity_ok, expected_reg, len_reg));
+                } else {
+                    instrs.push(Instruction::abc(OpCode::Eq, arity_ok, len_reg, expected_reg));
+                }
+                fail_jumps.push(self.emit_jump_if_false(arity_ok, instrs));
+
+                for (idx, elem_pat) in elements.iter().enumerate() {
+                    let idx_reg = self.push_const_int(idx as i64, ra, consts, instrs);
+                    let elem_reg = ra.alloc_temp();
+                    instrs.push(Instruction::abc(OpCode::GetIndex, elem_reg, value_reg, idx_reg));
+                    self.lower_match_pattern(elem_pat, elem_reg, ra, consts, instrs, fail_jumps);
+                }
+
+                if let Some(rest_name) = rest {
+                    let list_arg = ra.alloc_temp();
+                    instrs.push(Instruction::abc(OpCode::Move, list_arg, value_reg, 0));
+                    let n_kidx = consts.len() as u16;
+                    consts.push(Constant::Int(elements.len() as i64));
+                    let n_reg = ra.alloc_temp();
+                    instrs.push(Instruction::abx(OpCode::LoadK, n_reg, n_kidx));
+                    debug_assert_eq!(n_reg, list_arg + 1);
+                    let rest_reg = ra.alloc_named(rest_name);
+                    instrs.push(Instruction::abc(
+                        OpCode::Intrinsic,
+                        rest_reg,
+                        IntrinsicId::Drop as u8,
+                        list_arg,
+                    ));
+                }
+            }
+            Pattern::TupleDestructure { elements, .. } => {
+                let tuple_type = self.push_const_string("Tuple", ra, consts, instrs);
+                let is_tuple = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::Is, is_tuple, value_reg, tuple_type));
+                fail_jumps.push(self.emit_jump_if_false(is_tuple, instrs));
+
+                let len_reg = ra.alloc_temp();
+                instrs.push(Instruction::abc(
+                    OpCode::Intrinsic,
+                    len_reg,
+                    IntrinsicId::Length as u8,
+                    value_reg,
+                ));
+                let expected_reg =
+                    self.push_const_int(elements.len() as i64, ra, consts, instrs);
+                let arity_ok = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::Eq, arity_ok, len_reg, expected_reg));
+                fail_jumps.push(self.emit_jump_if_false(arity_ok, instrs));
+
+                for (idx, elem_pat) in elements.iter().enumerate() {
+                    let idx_reg = self.push_const_int(idx as i64, ra, consts, instrs);
+                    let elem_reg = ra.alloc_temp();
+                    instrs.push(Instruction::abc(OpCode::GetIndex, elem_reg, value_reg, idx_reg));
+                    self.lower_match_pattern(elem_pat, elem_reg, ra, consts, instrs, fail_jumps);
+                }
+            }
+            Pattern::RecordDestructure {
+                type_name,
+                fields,
+                open: _,
+                ..
+            } => {
+                let ty_reg = self.push_const_string(type_name, ra, consts, instrs);
+                let is_ty = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::Is, is_ty, value_reg, ty_reg));
+                fail_jumps.push(self.emit_jump_if_false(is_ty, instrs));
+
+                for (field_name, pat) in fields {
+                    let field_idx = self.intern_string(field_name) as u8;
+                    let field_reg = ra.alloc_temp();
+                    instrs.push(Instruction::abc(
+                        OpCode::GetField,
+                        field_reg,
+                        value_reg,
+                        field_idx,
+                    ));
+                    if let Some(field_pat) = pat {
+                        self.lower_match_pattern(field_pat, field_reg, ra, consts, instrs, fail_jumps);
+                    } else {
+                        let bind_reg = ra.alloc_named(field_name);
+                        instrs.push(Instruction::abc(OpCode::Move, bind_reg, field_reg, 0));
+                    }
+                }
+            }
+            Pattern::TypeCheck {
+                name, type_expr, ..
+            } => {
+                let bind_reg = ra.alloc_named(name);
+                instrs.push(Instruction::abc(OpCode::Move, bind_reg, value_reg, 0));
+                if let TypeExpr::Named(type_name, _) = type_expr.as_ref() {
+                    let ty_reg = self.push_const_string(type_name, ra, consts, instrs);
+                    let is_ty = ra.alloc_temp();
+                    instrs.push(Instruction::abc(OpCode::Is, is_ty, value_reg, ty_reg));
+                    fail_jumps.push(self.emit_jump_if_false(is_ty, instrs));
+                }
             }
         }
     }

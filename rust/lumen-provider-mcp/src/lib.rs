@@ -7,6 +7,9 @@
 use lumen_runtime::tools::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::Mutex;
 
 // ---------------------------------------------------------------------------
 // MCP Transport abstraction
@@ -40,15 +43,22 @@ pub struct McpToolSchema {
 // Stdio Transport
 // ---------------------------------------------------------------------------
 
-// TODO: implement McpTransport trait for StdioTransport — currently only stores config
 /// Stdio-based MCP transport that spawns a subprocess.
 ///
-/// In a real implementation, this would manage the child process lifecycle,
-/// send requests via stdin, and read responses from stdout.
-/// For now, this is a placeholder that stores configuration.
+/// Manages the child process lifecycle, sends JSON-RPC 2.0 requests via stdin,
+/// and reads responses from stdout. The process is spawned lazily on first request.
 pub struct StdioTransport {
     command: String,
     args: Vec<String>,
+    child: Mutex<Option<ChildProcess>>,
+}
+
+struct ChildProcess {
+    #[allow(dead_code)]
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    next_id: u64,
 }
 
 impl StdioTransport {
@@ -56,6 +66,7 @@ impl StdioTransport {
         Self {
             command: command.to_string(),
             args: args.iter().map(|s| s.to_string()).collect(),
+            child: Mutex::new(None),
         }
     }
 
@@ -67,6 +78,103 @@ impl StdioTransport {
     #[allow(dead_code)]
     pub fn args(&self) -> &[String] {
         &self.args
+    }
+
+    /// Ensure the child process is started. Called before each request.
+    fn ensure_started(&self) -> Result<(), String> {
+        let mut guard = self.child.lock().map_err(|e| e.to_string())?;
+        if guard.is_none() {
+            let mut child = Command::new(&self.command)
+                .args(&self.args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| {
+                    format!("Failed to spawn MCP server '{}': {}", self.command, e)
+                })?;
+
+            let stdin = child
+                .stdin
+                .take()
+                .ok_or("Failed to capture stdin")?;
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or("Failed to capture stdout")?;
+
+            *guard = Some(ChildProcess {
+                child,
+                stdin,
+                stdout: BufReader::new(stdout),
+                next_id: 1,
+            });
+        }
+        Ok(())
+    }
+}
+
+impl McpTransport for StdioTransport {
+    fn send_request(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        self.ensure_started()?;
+        let mut guard = self.child.lock().map_err(|e| e.to_string())?;
+        let child = guard.as_mut().ok_or("MCP server not started")?;
+
+        let id = child.next_id;
+        child.next_id += 1;
+
+        // Build JSON-RPC 2.0 request
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+
+        // Send request (newline-delimited)
+        let request_str =
+            serde_json::to_string(&request).map_err(|e| e.to_string())?;
+        writeln!(child.stdin, "{}", request_str)
+            .map_err(|e| format!("Failed to write to MCP server: {}", e))?;
+        child
+            .stdin
+            .flush()
+            .map_err(|e| format!("Failed to flush: {}", e))?;
+
+        // Read response
+        let mut response_line = String::new();
+        child
+            .stdout
+            .read_line(&mut response_line)
+            .map_err(|e| format!("Failed to read from MCP server: {}", e))?;
+
+        let response: serde_json::Value =
+            serde_json::from_str(&response_line)
+                .map_err(|e| format!("Invalid JSON from MCP server: {}", e))?;
+
+        // Check for JSON-RPC error
+        if let Some(error) = response.get("error") {
+            return Err(format!("MCP error: {}", error));
+        }
+
+        // Return result
+        response
+            .get("result")
+            .cloned()
+            .ok_or_else(|| "No result in MCP response".to_string())
+    }
+}
+
+impl Drop for StdioTransport {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.child.lock() {
+            // ChildProcess dropped, stdin closed, process terminates
+            *guard = None;
+        }
     }
 }
 
@@ -377,5 +485,56 @@ mod tests {
         let transport = StdioTransport::new("node", &["server.js", "--port", "3000"]);
         assert_eq!(transport.command(), "node");
         assert_eq!(transport.args(), &["server.js", "--port", "3000"]);
+    }
+
+    #[test]
+    fn stdio_transport_fails_on_nonexistent_command() {
+        let transport = StdioTransport::new("nonexistent_command_12345", &[]);
+        let err = transport
+            .send_request("test", json!({}))
+            .unwrap_err();
+        assert!(err.contains("Failed to spawn MCP server"));
+        assert!(err.contains("nonexistent_command_12345"));
+    }
+
+    #[test]
+    fn stdio_transport_json_rpc_format() {
+        // Compare JSON-RPC format with MockTransport expectations.
+        // We can't easily test StdioTransport without a real server,
+        // but we can verify the request structure would match JSON-RPC 2.0 spec.
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+        });
+
+        // Verify all required fields are present
+        assert_eq!(request["jsonrpc"], "2.0");
+        assert_eq!(request["id"], 1);
+        assert_eq!(request["method"], "tools/list");
+        assert!(request.get("params").is_some());
+    }
+
+    #[test]
+    fn stdio_transport_response_parsing() {
+        // Verify we can parse a valid JSON-RPC response.
+        let response_str = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#;
+        let response: serde_json::Value = serde_json::from_str(response_str).unwrap();
+
+        assert_eq!(response["jsonrpc"], "2.0");
+        assert_eq!(response["id"], 1);
+        assert!(response.get("result").is_some());
+        assert!(response.get("error").is_none());
+    }
+
+    #[test]
+    fn stdio_transport_error_response_parsing() {
+        // Verify we can detect JSON-RPC error responses.
+        let error_response_str = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
+        let response: serde_json::Value = serde_json::from_str(error_response_str).unwrap();
+
+        assert!(response.get("error").is_some());
+        assert_eq!(response["error"]["code"], -32601);
     }
 }

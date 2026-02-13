@@ -956,18 +956,6 @@ fn is_effect_satisfied_by_policies(
             return true;
         }
 
-        if effect == "mcp" {
-            if table
-                .tools
-                .get(alias)
-                .map(|tool| tool.mcp_url.is_some())
-                .unwrap_or(false)
-            {
-                return true;
-            }
-            continue;
-        }
-
         // Unrestricted policies allow external effects by default.
         return true;
     }
@@ -1406,6 +1394,7 @@ fn collect_effect_cells(program: &Program) -> Vec<EffectCell> {
 }
 
 fn effect_from_tool(alias: &str, table: &SymbolTable) -> Option<String> {
+    // Check explicit effect bindings (bind effect X to Y)
     if let Some(bind) = table.effect_binds.iter().find(|b| b.tool_alias == alias) {
         let root = bind
             .effect_path
@@ -1415,43 +1404,18 @@ fn effect_from_tool(alias: &str, table: &SymbolTable) -> Option<String> {
         return Some(normalize_effect(root));
     }
 
-    let lower = alias.to_ascii_lowercase();
-    if lower.contains("http") {
-        return Some("http".into());
-    }
-    if lower.contains("llm") || lower.contains("chat") {
-        return Some("llm".into());
-    }
-    if lower.contains("db") || lower.contains("sql") || lower.contains("postgres") {
-        return Some("database".into());
-    }
-    if lower.contains("email") {
-        return Some("email".into());
-    }
-    if lower.contains("file") || lower.contains("fs") {
-        return Some("fs".into());
-    }
-    if let Some(tool) = table.tools.get(alias) {
-        let path = tool.tool_path.to_ascii_lowercase();
-        if path.contains("http") {
-            return Some("http".into());
-        }
-        if path.contains("llm") || path.contains("chat") {
-            return Some("llm".into());
-        }
-        if path.contains("db") || path.contains("sql") || path.contains("postgres") {
-            return Some("database".into());
-        }
-        if path.contains("email") {
-            return Some("email".into());
-        }
-        if path.contains("file") || path.contains("fs") {
-            return Some("fs".into());
-        }
-        if tool.mcp_url.is_some() {
-            return Some("mcp".into());
+    // Check grant-declared effects for this tool
+    for policy in table.cell_policies.values().flatten() {
+        if policy.tool_alias == alias {
+            if let Some(ref allowed) = policy.allowed_effects {
+                if let Some(first) = allowed.iter().next() {
+                    return Some(first.clone());
+                }
+            }
         }
     }
+
+    // No explicit effect declaration found -- caller decides the fallback
     None
 }
 
@@ -1762,6 +1726,21 @@ fn collect_expr_call_requirements(
             }
             if let Some(st) = step {
                 collect_expr_call_requirements(st, table, out);
+            }
+        }
+        Expr::MatchExpr {
+            subject, arms, ..
+        } => {
+            collect_expr_call_requirements(subject, table, out);
+            for arm in arms {
+                for s in &arm.body {
+                    collect_stmt_call_requirements(s, table, out);
+                }
+            }
+        }
+        Expr::BlockExpr(stmts, _) => {
+            for s in stmts {
+                collect_stmt_call_requirements(s, table, out);
             }
         }
         Expr::IntLit(_, _)
@@ -2112,6 +2091,21 @@ fn collect_expr_effect_evidence(
                 collect_expr_effect_evidence(st, table, current, out);
             }
         }
+        Expr::MatchExpr {
+            subject, arms, ..
+        } => {
+            collect_expr_effect_evidence(subject, table, current, out);
+            for arm in arms {
+                for s in &arm.body {
+                    collect_stmt_effect_evidence(s, table, current, out);
+                }
+            }
+        }
+        Expr::BlockExpr(stmts, _) => {
+            for s in stmts {
+                collect_stmt_effect_evidence(s, table, current, out);
+            }
+        }
         Expr::IntLit(_, _)
         | Expr::FloatLit(_, _)
         | Expr::StringLit(_, _)
@@ -2380,6 +2374,21 @@ fn infer_expr_effects(
             }
             infer_expr_effects(body, table, current, out);
         }
+        Expr::MatchExpr {
+            subject, arms, ..
+        } => {
+            infer_expr_effects(subject, table, current, out);
+            for arm in arms {
+                for s in &arm.body {
+                    infer_stmt_effects(s, table, current, out);
+                }
+            }
+        }
+        Expr::BlockExpr(stmts, _) => {
+            for s in stmts {
+                infer_stmt_effects(s, table, current, out);
+            }
+        }
         Expr::IntLit(_, _)
         | Expr::FloatLit(_, _)
         | Expr::StringLit(_, _)
@@ -2542,16 +2551,20 @@ fn enforce_deterministic_profile(
         return;
     }
 
+    // Effects that represent real I/O and are therefore nondeterministic.
+    // "external" is the fallback for any tool without an explicit `bind effect`
+    // declaration.  The rest are well-known effect names that users may bind
+    // via `bind effect <name> to <tool>`.
     const NONDETERMINISTIC_EFFECTS: &[&str] = &[
-        "http",
-        "llm",
-        "fs",
         "database",
         "email",
+        "external",
+        "fs",
+        "http",
+        "llm",
         "mcp",
         "random",
         "time",
-        "external",
     ];
 
     for cell in cells {
@@ -2804,7 +2817,7 @@ mod tests {
     #[test]
     fn test_effect_contract_violation_on_tool_call() {
         let err = resolve_src(
-            "use tool http.get as HttpGet\n\ngrant HttpGet\n\ncell main() -> String / {emit}\n  return string(HttpGet(url: \"https://example.com\"))\nend",
+            "use tool http.get as HttpGet\nbind effect http to HttpGet\n\ngrant HttpGet\n\ncell main() -> String / {emit}\n  return string(HttpGet(url: \"https://example.com\"))\nend",
         )
         .unwrap_err();
         assert!(err.iter().any(|e| matches!(
@@ -2840,7 +2853,7 @@ mod tests {
     #[test]
     fn test_undeclared_effect_includes_tool_cause() {
         let err = resolve_src(
-            "use tool http.get as HttpGet\ngrant HttpGet\n\ncell main() -> String / {emit}\n  return string(HttpGet(url: \"https://example.com\"))\nend",
+            "use tool http.get as HttpGet\nbind effect http to HttpGet\ngrant HttpGet\n\ncell main() -> String / {emit}\n  return string(HttpGet(url: \"https://example.com\"))\nend",
         )
         .unwrap_err();
         assert!(err.iter().any(|e| matches!(
@@ -3004,6 +3017,24 @@ mod tests {
     }
 
     #[test]
+    fn test_duplicate_enum_detection() {
+        let err = resolve_src("enum Color\n  Red\n  Blue\nend\n\nenum Color\n  Green\nend").unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::Duplicate { name, .. } if name == "Color"
+        )));
+    }
+
+    #[test]
+    fn test_duplicate_effect_detection() {
+        let err = resolve_src("effect http\n  cell get(url: String) -> String\nend\n\neffect http\n  cell post(url: String) -> String\nend").unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::Duplicate { name, .. } if name == "http"
+        )));
+    }
+
+    #[test]
     fn test_builtin_types_are_minimal() {
         let table = SymbolTable::new();
         // Core builtins should be present
@@ -3019,5 +3050,34 @@ mod tests {
         assert!(!table.types.contains_key("MyRecord"));
         assert!(!table.types.contains_key("Report"));
         assert!(!table.types.contains_key("Response"));
+    }
+
+    #[test]
+    fn test_tool_without_binding_gets_external_effect() {
+        // A tool with no explicit `bind effect` should produce "external" effect,
+        // not a heuristic guess based on tool name or path.
+        let err = resolve_src(
+            "use tool http.get as HttpGet\ngrant HttpGet\n\ncell main() -> String / {http}\n  return string(HttpGet(url: \"https://example.com\"))\nend",
+        )
+        .unwrap_err();
+        // The tool call should produce "external" (not "http"), so declaring {http}
+        // should cause an UndeclaredEffect for "external".
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::UndeclaredEffect { cell, effect, .. }
+            if cell == "main" && effect == "external"
+        )));
+    }
+
+    #[test]
+    fn test_explicit_bind_effect_maps_tool_to_effect() {
+        // With an explicit `bind effect http to HttpGet`, the tool should
+        // produce "http" effect.
+        let table = resolve_src(
+            "use tool http.get as HttpGet\nbind effect http to HttpGet\ngrant HttpGet\n\ncell main() -> String / {http}\n  return string(HttpGet(url: \"https://example.com\"))\nend",
+        )
+        .unwrap();
+        let effects = &table.cells.get("main").unwrap().effects;
+        assert!(effects.contains(&"http".to_string()));
     }
 }

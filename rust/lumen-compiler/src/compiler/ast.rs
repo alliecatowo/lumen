@@ -374,6 +374,7 @@ pub struct IfStmt {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForStmt {
     pub var: String,
+    pub pattern: Option<Pattern>,
     pub iter: Expr,
     pub body: Vec<Stmt>,
     pub span: Span,
@@ -603,6 +604,14 @@ pub enum Expr {
         kind: ComprehensionKind,
         span: Span,
     },
+    /// Match expression: match expr ... end (expression position)
+    MatchExpr {
+        subject: Box<Expr>,
+        arms: Vec<MatchArm>,
+        span: Span,
+    },
+    /// Block expression: evaluates a sequence of statements, value is last expression
+    BlockExpr(Vec<Stmt>, Span),
 }
 
 impl Expr {
@@ -635,11 +644,13 @@ impl Expr {
             | Expr::NullSafeAccess(_, _, s)
             | Expr::NullAssert(_, s)
             | Expr::SpreadExpr(_, s)
-            | Expr::AwaitExpr(_, s) => *s,
+            | Expr::AwaitExpr(_, s)
+            | Expr::BlockExpr(_, s) => *s,
             Expr::Lambda { span, .. } => *span,
             Expr::RangeExpr { span, .. } => *span,
             Expr::IfExpr { span, .. } => *span,
             Expr::Comprehension { span, .. } => *span,
+            Expr::MatchExpr { span, .. } => *span,
         }
     }
 }

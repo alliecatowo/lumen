@@ -1686,7 +1686,8 @@ impl<'a> Lowerer<'a> {
                         "slice" => Some(IntrinsicId::Slice),
                         "min" => Some(IntrinsicId::Min),
                         "max" => Some(IntrinsicId::Max),
-                        "confirm" => Some(IntrinsicId::Matches),
+                        "confirm" | "matches" => Some(IntrinsicId::Matches),
+                        "trace_ref" => Some(IntrinsicId::TraceRef),
                         "abs" => Some(IntrinsicId::Abs),
                         // Collection operations
                         "sort" => Some(IntrinsicId::Sort),
@@ -1920,22 +1921,34 @@ impl<'a> Lowerer<'a> {
                 let mut lconsts: Vec<Constant> = Vec::new();
                 let mut linstrs: Vec<Instruction> = Vec::new();
 
-                let lparams: Vec<LirParam> = params
-                    .iter()
-                    .map(|p| {
-                        let reg = lra.alloc_named(&p.name);
-                        LirParam {
-                            name: p.name.clone(),
-                            ty: format_type_expr(&p.ty),
-                            register: reg,
-                        }
-                    })
-                    .collect();
+                // VM convention: captures occupy registers 0..captures.len(),
+                // then parameters follow. The params list in LirCell must include
+                // placeholder entries for captures so the VM can index correctly.
+                let mut lparams: Vec<LirParam> = Vec::new();
 
-                // Emit GetUpval instructions for captured variables
+                // 1. Allocate registers for captures first (r0, r1, ...)
                 for (idx, (name, _)) in captures.iter().enumerate() {
                     let reg = lra.alloc_named(name);
+                    lparams.push(LirParam {
+                        name: format!("__capture_{}", name),
+                        ty: "Any".to_string(),
+                        register: reg,
+                    });
+                    // GetUpval loads the capture from the closure's capture list.
+                    // The VM already copies captures to regs 0..cap_count on call,
+                    // but GetUpval is still emitted for correctness when the frame
+                    // is entered via non-closure dispatch paths.
                     linstrs.push(Instruction::abc(OpCode::GetUpval, reg, idx as u8, 0));
+                }
+
+                // 2. Allocate registers for actual parameters after captures
+                for p in params.iter() {
+                    let reg = lra.alloc_named(&p.name);
+                    lparams.push(LirParam {
+                        name: p.name.clone(),
+                        ty: format_type_expr(&p.ty),
+                        register: reg,
+                    });
                 }
 
                 match body {
@@ -2317,6 +2330,76 @@ impl<'a> Lowerer<'a> {
                     Instruction::sax(OpCode::Jmp, (after_loop - break_jmp - 1) as i32);
                 dest
             }
+            Expr::MatchExpr { subject, arms, .. } => {
+                let subj_reg = self.lower_expr(subject, ra, consts, instrs);
+                let dest = ra.alloc_temp();
+                let mut end_jumps = Vec::new();
+
+                for arm in arms {
+                    let mut fail_jumps = Vec::new();
+                    self.lower_match_pattern(
+                        &arm.pattern,
+                        subj_reg,
+                        ra,
+                        consts,
+                        instrs,
+                        &mut fail_jumps,
+                    );
+
+                    // Lower arm body; last statement's value goes into dest
+                    for (idx, s) in arm.body.iter().enumerate() {
+                        if idx == arm.body.len() - 1 {
+                            if let Stmt::Expr(es) = s {
+                                let val = self.lower_expr(&es.expr, ra, consts, instrs);
+                                instrs.push(Instruction::abc(OpCode::Move, dest, val, 0));
+                            } else if let Stmt::Return(rs) = s {
+                                let val = self.lower_expr(&rs.value, ra, consts, instrs);
+                                instrs.push(Instruction::abc(OpCode::Return, val, 1, 0));
+                            } else {
+                                self.lower_stmt(s, ra, consts, instrs);
+                            }
+                        } else {
+                            self.lower_stmt(s, ra, consts, instrs);
+                        }
+                    }
+                    end_jumps.push(instrs.len());
+                    instrs.push(Instruction::sax(OpCode::Jmp, 0));
+
+                    let next_arm = instrs.len();
+                    for j in fail_jumps {
+                        instrs[j] = Instruction::sax(OpCode::Jmp, (next_arm - j - 1) as i32);
+                    }
+                }
+
+                let end = instrs.len();
+                for jmp_idx in end_jumps {
+                    instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, (end - jmp_idx - 1) as i32);
+                }
+                dest
+            }
+            Expr::BlockExpr(stmts, _) => {
+                let dest = ra.alloc_temp();
+                for (idx, s) in stmts.iter().enumerate() {
+                    if idx == stmts.len() - 1 {
+                        if let Stmt::Expr(es) = s {
+                            let val = self.lower_expr(&es.expr, ra, consts, instrs);
+                            instrs.push(Instruction::abc(OpCode::Move, dest, val, 0));
+                        } else if let Stmt::Return(rs) = s {
+                            let val = self.lower_expr(&rs.value, ra, consts, instrs);
+                            instrs.push(Instruction::abc(OpCode::Return, val, 1, 0));
+                        } else {
+                            self.lower_stmt(s, ra, consts, instrs);
+                            instrs.push(Instruction::abc(OpCode::LoadNil, dest, 0, 0));
+                        }
+                    } else {
+                        self.lower_stmt(s, ra, consts, instrs);
+                    }
+                }
+                if stmts.is_empty() {
+                    instrs.push(Instruction::abc(OpCode::LoadNil, dest, 0, 0));
+                }
+                dest
+            }
         }
     }
 
@@ -2469,6 +2552,15 @@ fn collect_free_idents_expr(expr: &Expr, out: &mut Vec<String>) {
                     for s in stmts { collect_free_idents_stmt(s, out); }
                 }
             }
+        }
+        Expr::MatchExpr { subject, arms, .. } => {
+            collect_free_idents_expr(subject, out);
+            for arm in arms {
+                for s in &arm.body { collect_free_idents_stmt(s, out); }
+            }
+        }
+        Expr::BlockExpr(stmts, _) => {
+            for s in stmts { collect_free_idents_stmt(s, out); }
         }
         _ => {} // literals, etc.
     }
@@ -2815,5 +2907,108 @@ mod tests {
         let module = lower_src("cell make() -> list[Int]\n  return [1, 2, 3]\nend");
         let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
         assert!(ops.contains(&OpCode::NewList), "list literal should emit NewList");
+    }
+
+    #[test]
+    fn test_intrinsic_matches_maps_correctly() {
+        let src = "cell test_matches(s: String, pat: String) -> Bool\n  return matches(s, pat)\nend";
+        let module = lower_src(src);
+        let intr = module.cells[0].instructions.iter().find(|i| i.op == OpCode::Intrinsic).unwrap();
+        assert_eq!(intr.b, IntrinsicId::Matches as u8, "matches should use Matches intrinsic ID");
+    }
+
+    #[test]
+    fn test_intrinsic_trace_ref_maps_correctly() {
+        let src = "cell test_trace() -> String\n  return trace_ref()\nend";
+        let module = lower_src(src);
+        let intr = module.cells[0].instructions.iter().find(|i| i.op == OpCode::Intrinsic).unwrap();
+        assert_eq!(intr.b, IntrinsicId::TraceRef as u8, "trace_ref should use TraceRef intrinsic ID");
+    }
+
+    #[test]
+    fn test_noteq_result_register_distinct_from_operands() {
+        // Verify that NotEq emits Eq into a fresh dest, then Not into the same dest,
+        // and neither clobbers the operand registers.
+        let module = lower_src("cell neq2(a: Int, b: Int) -> Bool\n  return a != b\nend");
+        let instrs = &module.cells[0].instructions;
+        let eq_instr = instrs.iter().find(|i| i.op == OpCode::Eq).unwrap();
+        let not_instr = instrs.iter().find(|i| i.op == OpCode::Not).unwrap();
+        // Eq writes to dest (a field), Not reads from and writes to the same register
+        assert_eq!(eq_instr.a, not_instr.b, "Not should read from Eq's dest register");
+        assert_eq!(eq_instr.a, not_instr.a, "Not should write to the same register as Eq's dest");
+        // dest should not be the same as operand registers
+        assert_ne!(eq_instr.a, eq_instr.b, "Eq dest should not clobber lhs operand");
+        assert_ne!(eq_instr.a, eq_instr.c, "Eq dest should not clobber rhs operand");
+    }
+
+    #[test]
+    fn test_closure_capture_count_matches_setupval() {
+        // Verify that the number of SetUpval instructions matches the number of captures
+        let src = "cell make_adder(x: Int) -> fn(Int) -> Int\n  return fn(y: Int) => x + y\nend";
+        let module = lower_src(src);
+        let outer_cell = module.cells.iter().find(|c| c.name == "make_adder").unwrap();
+        let setupval_count = outer_cell.instructions.iter().filter(|i| i.op == OpCode::SetUpval).count();
+        let lambda_cell = module.cells.iter().find(|c| c.name.starts_with("<lambda/")).unwrap();
+        let getupval_count = lambda_cell.instructions.iter().filter(|i| i.op == OpCode::GetUpval).count();
+        assert_eq!(setupval_count, getupval_count,
+            "SetUpval count ({}) should match GetUpval count ({})", setupval_count, getupval_count);
+        assert_eq!(setupval_count, 1, "should have exactly 1 capture (x)");
+    }
+
+    #[test]
+    fn test_closure_multiple_captures() {
+        let src = "cell make_fn(a: Int, b: String) -> fn() -> String\n  return fn() => \"#{a} #{b}\"\nend";
+        let module = lower_src(src);
+        let outer_cell = module.cells.iter().find(|c| c.name == "make_fn").unwrap();
+        let setupval_count = outer_cell.instructions.iter().filter(|i| i.op == OpCode::SetUpval).count();
+        let lambda_cell = module.cells.iter().find(|c| c.name.starts_with("<lambda/")).unwrap();
+        let getupval_count = lambda_cell.instructions.iter().filter(|i| i.op == OpCode::GetUpval).count();
+        assert_eq!(setupval_count, 2, "should capture both a and b");
+        assert_eq!(getupval_count, 2, "lambda should load both captures");
+    }
+
+    #[test]
+    fn test_closure_no_capture_of_own_params() {
+        // Lambda params should not be captured as upvalues
+        let src = "cell identity() -> fn(Int) -> Int\n  return fn(x: Int) => x\nend";
+        let module = lower_src(src);
+        let outer_cell = module.cells.iter().find(|c| c.name == "identity").unwrap();
+        let setupval_count = outer_cell.instructions.iter().filter(|i| i.op == OpCode::SetUpval).count();
+        assert_eq!(setupval_count, 0, "lambda using only its own params should have no captures");
+    }
+
+    #[test]
+    fn test_spread_expr_emits_iteration_loop() {
+        let src = "cell test_spread(xs: list[Int]) -> list[Int]\n  return [...xs]\nend";
+        let module = lower_src(src);
+        let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
+        assert!(ops.contains(&OpCode::NewList), "spread in list should create initial list");
+        assert!(ops.contains(&OpCode::Append), "spread should emit Append for each element");
+        assert!(ops.contains(&OpCode::GetIndex), "spread loop should emit GetIndex");
+        // Should have a backward jump for the loop
+        let instrs = &module.cells[0].instructions;
+        let has_backward_jmp = instrs.iter().any(|i| i.op == OpCode::Jmp && i.sax_val() < 0);
+        assert!(has_backward_jmp, "spread should have iteration loop with backward jump");
+    }
+
+    #[test]
+    fn test_gt_swaps_operands() {
+        // a > b should lower as Lt(dest, b, a) — swapped operands
+        let module = lower_src("cell gt(a: Int, b: Int) -> Bool\n  return a > b\nend");
+        let instrs = &module.cells[0].instructions;
+        let lt_instr = instrs.iter().find(|i| i.op == OpCode::Lt).unwrap();
+        // params: a=r0, b=r1; Lt should be Lt(dest, r1, r0) i.e. b < a
+        assert_eq!(lt_instr.b, 1, "Gt should swap: Lt first operand should be b (r1)");
+        assert_eq!(lt_instr.c, 0, "Gt should swap: Lt second operand should be a (r0)");
+    }
+
+    #[test]
+    fn test_gte_swaps_operands() {
+        // a >= b should lower as Le(dest, b, a) — swapped operands
+        let module = lower_src("cell gte(a: Int, b: Int) -> Bool\n  return a >= b\nend");
+        let instrs = &module.cells[0].instructions;
+        let le_instr = instrs.iter().find(|i| i.op == OpCode::Le).unwrap();
+        assert_eq!(le_instr.b, 1, "GtEq should swap: Le first operand should be b (r1)");
+        assert_eq!(le_instr.c, 0, "GtEq should swap: Le second operand should be a (r0)");
     }
 }

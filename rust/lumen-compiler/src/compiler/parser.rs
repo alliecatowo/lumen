@@ -2533,6 +2533,16 @@ impl Parser {
             return;
         }
         self.consume_rest_of_line();
+        if matches!(self.peek_kind(), TokenKind::Newline) {
+            self.skip_newlines();
+            if matches!(self.peek_kind(), TokenKind::Indent) {
+                self.consume_indented_payload();
+                self.skip_newlines();
+                if matches!(self.peek_kind(), TokenKind::End) {
+                    self.advance();
+                }
+            }
+        }
     }
 
     fn consume_balanced_group(&mut self) {

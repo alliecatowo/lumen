@@ -61,6 +61,8 @@ pub enum VmError {
     ArithmeticOverflow,
     #[error("division by zero")]
     DivisionByZero,
+    #[error("instruction limit exceeded: {0}")]
+    InstructionLimitExceeded(u64),
     #[error("register out of bounds: {0}")]
     RegisterOutOfBounds(usize),
 }
@@ -238,9 +240,12 @@ pub struct VM {
     memory_runtime: BTreeMap<u64, MemoryRuntime>,
     machine_runtime: BTreeMap<u64, MachineRuntime>,
     await_fuel: u32,
+    max_instructions: u64,
+    instruction_count: u64,
 }
 
 const MAX_AWAIT_RETRIES: u32 = 10_000;
+const DEFAULT_MAX_INSTRUCTIONS: u64 = 10_000_000;
 
 impl VM {
     pub fn new() -> Self {
@@ -264,6 +269,8 @@ impl VM {
             memory_runtime: BTreeMap::new(),
             machine_runtime: BTreeMap::new(),
             await_fuel: MAX_AWAIT_RETRIES,
+            max_instructions: DEFAULT_MAX_INSTRUCTIONS,
+            instruction_count: 0,
         }
     }
 
@@ -293,6 +300,7 @@ impl VM {
         self.machine_runtime.clear();
         self.machine_graphs.clear();
         self.await_fuel = MAX_AWAIT_RETRIES;
+        self.instruction_count = 0;
         let mut machine_initials: BTreeMap<String, String> = BTreeMap::new();
         for addon in &module.addons {
             if let Some(name) = &addon.name {
@@ -428,6 +436,10 @@ impl VM {
 
     pub fn future_schedule(&self) -> FutureSchedule {
         self.future_schedule
+    }
+
+    pub fn set_instruction_limit(&mut self, max_instructions: u64) {
+        self.max_instructions = max_instructions;
     }
 
     /// Capture the current call stack for error reporting.
@@ -763,6 +775,7 @@ impl VM {
         }
 
         // Push initial frame
+        self.instruction_count = 0;
         self.frames.push(CallFrame {
             cell_idx,
             base_register: base,
@@ -823,6 +836,11 @@ impl VM {
                 let instr = cell.instructions[ip];
                 (cell_idx, base, instr)
             };
+
+            self.instruction_count = self.instruction_count.saturating_add(1);
+            if self.instruction_count > self.max_instructions {
+                return Err(VmError::InstructionLimitExceeded(self.max_instructions));
+            }
 
             // Emit debug Step event
             if let Some(ref mut cb) = self.debug_callback {
@@ -2968,13 +2986,20 @@ impl VM {
             }
             "hex_decode" => {
                 let s = self.registers[base + a + 1].as_string();
-                if !s.len().is_multiple_of(2) {
+                if !s.is_ascii() || !s.len().is_multiple_of(2) {
                     return Ok(Value::Null);
                 }
-                let bytes: Vec<u8> = (0..s.len())
-                    .step_by(2)
-                    .filter_map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-                    .collect();
+                let mut bytes = Vec::with_capacity(s.len() / 2);
+                for chunk in s.as_bytes().chunks_exact(2) {
+                    let pair = match std::str::from_utf8(chunk) {
+                        Ok(pair) => pair,
+                        Err(_) => return Ok(Value::Null),
+                    };
+                    match u8::from_str_radix(pair, 16) {
+                        Ok(byte) => bytes.push(byte),
+                        Err(_) => return Ok(Value::Null),
+                    }
+                }
                 Ok(Value::String(StringRef::Owned(
                     String::from_utf8_lossy(&bytes).to_string(),
                 )))
@@ -7200,6 +7225,113 @@ end
 "#,
         );
         assert_eq!(result, Value::String(StringRef::Owned("世界".to_string())));
+    }
+
+    #[test]
+    fn test_hex_decode_odd_length_returns_null() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: None,
+                registers: 4,
+                constants: vec![
+                    Constant::String("hex_decode".into()),
+                    Constant::String("abc".into()),
+                ],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),
+                    Instruction::abx(OpCode::LoadK, 1, 1),
+                    Instruction::abc(OpCode::Call, 0, 1, 0),
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        vm.load(module);
+        let result = vm.execute("main", vec![]).expect("execution should succeed");
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_hex_decode_non_ascii_returns_null() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: None,
+                registers: 4,
+                constants: vec![
+                    Constant::String("hex_decode".into()),
+                    Constant::String("a€".into()),
+                ],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),
+                    Instruction::abx(OpCode::LoadK, 1, 1),
+                    Instruction::abc(OpCode::Call, 0, 1, 0),
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        vm.load(module);
+        let result = vm.execute("main", vec![]).expect("execution should succeed");
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_instruction_limit_prevents_infinite_loop() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: None,
+                registers: 1,
+                constants: vec![],
+                instructions: vec![Instruction::sax(OpCode::Jmp, -1)],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        vm.set_instruction_limit(64);
+        vm.load(module);
+        let err = vm.execute("main", vec![]).expect_err("loop should hit instruction limit");
+        assert!(matches!(err, VmError::InstructionLimitExceeded(64)));
     }
 
     #[test]

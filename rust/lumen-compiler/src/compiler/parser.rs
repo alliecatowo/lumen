@@ -524,15 +524,40 @@ impl Parser {
             self.advance();
         }
         self.skip_newlines();
-        while !matches!(
-            self.peek_kind(),
-            TokenKind::End | TokenKind::Dedent | TokenKind::Eof
-        ) {
+        while !matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
             self.skip_newlines();
-            if matches!(
-                self.peek_kind(),
-                TokenKind::End | TokenKind::Dedent | TokenKind::Eof
-            ) {
+            if matches!(self.peek_kind(), TokenKind::Dedent) {
+                let mut i = self.pos;
+                while matches!(
+                    self.tokens.get(i).map(|t| &t.kind),
+                    Some(TokenKind::Dedent | TokenKind::Newline)
+                ) {
+                    i += 1;
+                }
+                let mut j = i;
+                let mut saw_arrow = false;
+                while let Some(tok) = self.tokens.get(j) {
+                    match tok.kind {
+                        TokenKind::Arrow => {
+                            saw_arrow = true;
+                            break;
+                        }
+                        TokenKind::Newline
+                        | TokenKind::Eof
+                        | TokenKind::End
+                        | TokenKind::Dedent => break,
+                        _ => j += 1,
+                    }
+                }
+                if saw_arrow {
+                    while matches!(self.peek_kind(), TokenKind::Dedent | TokenKind::Newline) {
+                        self.advance();
+                    }
+                    continue;
+                }
+                break;
+            }
+            if matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
                 break;
             }
             if matches!(self.peek_kind(), TokenKind::Cell) {
@@ -1140,15 +1165,13 @@ impl Parser {
             self.advance();
         }
         self.skip_newlines();
-        while !matches!(
-            self.peek_kind(),
-            TokenKind::End | TokenKind::Dedent | TokenKind::Eof
-        ) {
+        while !matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
             self.skip_newlines();
-            if matches!(
-                self.peek_kind(),
-                TokenKind::End | TokenKind::Dedent | TokenKind::Eof
-            ) {
+            if matches!(self.peek_kind(), TokenKind::Dedent) {
+                self.advance();
+                continue;
+            }
+            if matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
                 break;
             }
             let arm_start = self.current().span;
@@ -1527,15 +1550,13 @@ impl Parser {
             self.advance();
         }
         self.skip_newlines();
-        while !matches!(
-            self.peek_kind(),
-            TokenKind::End | TokenKind::Dedent | TokenKind::Eof
-        ) {
+        while !matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
             self.skip_newlines();
-            if matches!(
-                self.peek_kind(),
-                TokenKind::End | TokenKind::Dedent | TokenKind::Eof
-            ) {
+            if matches!(self.peek_kind(), TokenKind::Dedent) {
+                self.advance();
+                continue;
+            }
+            if matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
                 break;
             }
             methods.push(self.parse_cell()?);
@@ -1594,15 +1615,13 @@ impl Parser {
             self.advance();
         }
         self.skip_newlines();
-        while !matches!(
-            self.peek_kind(),
-            TokenKind::End | TokenKind::Dedent | TokenKind::Eof
-        ) {
+        while !matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
             self.skip_newlines();
-            if matches!(
-                self.peek_kind(),
-                TokenKind::End | TokenKind::Dedent | TokenKind::Eof
-            ) {
+            if matches!(self.peek_kind(), TokenKind::Dedent) {
+                self.advance();
+                continue;
+            }
+            if matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
                 break;
             }
             cells.push(self.parse_cell()?);
@@ -2073,15 +2092,13 @@ impl Parser {
         }
         self.skip_newlines();
 
-        while !matches!(
-            self.peek_kind(),
-            TokenKind::End | TokenKind::Dedent | TokenKind::Eof
-        ) {
+        while !matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
             self.skip_newlines();
-            if matches!(
-                self.peek_kind(),
-                TokenKind::End | TokenKind::Dedent | TokenKind::Eof
-            ) {
+            if matches!(self.peek_kind(), TokenKind::Dedent) {
+                self.advance();
+                continue;
+            }
+            if matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
                 break;
             }
 
@@ -2095,6 +2112,18 @@ impl Parser {
                 TokenKind::Cell => {
                     let mut cell = self.parse_cell()?;
                     cell.is_async = is_async;
+                    if cell.params.first().map(|p| p.name.as_str()) != Some("self") {
+                        let self_span = cell.span;
+                        cell.params.insert(
+                            0,
+                            Param {
+                                name: "self".into(),
+                                ty: TypeExpr::Named("Json".into(), self_span),
+                                default_value: None,
+                                span: self_span,
+                            },
+                        );
+                    }
                     cells.push(cell);
                 }
                 TokenKind::Grant => grants.push(self.parse_grant()?),
@@ -2104,6 +2133,27 @@ impl Parser {
                 TokenKind::Role | TokenKind::Tool => {
                     self.advance();
                     self.consume_section_or_line_after_name();
+                }
+                TokenKind::Record | TokenKind::Enum | TokenKind::Trait | TokenKind::Impl => {
+                    self.advance();
+                    self.consume_block_until_end();
+                }
+                TokenKind::Ident(name)
+                    if matches!(
+                        name.as_str(),
+                        "state"
+                            | "on_enter"
+                            | "on_event"
+                            | "on_error"
+                            | "on_input"
+                            | "on_output"
+                            | "on_violation"
+                            | "on_timeout"
+                            | "migrate"
+                    ) =>
+                {
+                    self.advance();
+                    self.consume_block_until_end();
                 }
                 TokenKind::Ident(_) => {
                     self.consume_named_section_or_line();
@@ -2996,11 +3046,21 @@ impl Parser {
 
     fn parse_expr(&mut self, min_bp: u8) -> Result<Expr, ParseError> {
         let mut lhs = self.parse_prefix()?;
+        let mut pending_continuation_dedents: usize = 0;
         loop {
+            while pending_continuation_dedents > 0
+                && matches!(self.peek_kind(), TokenKind::Newline | TokenKind::Dedent)
+            {
+                if matches!(self.peek_kind(), TokenKind::Dedent) {
+                    pending_continuation_dedents -= 1;
+                }
+                self.advance();
+            }
             if matches!(
                 self.peek_kind(),
                 TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent
             ) {
+                let ws_start = self.pos;
                 let mut i = self.pos;
                 while matches!(
                     self.tokens.get(i).map(|t| &t.kind),
@@ -3010,10 +3070,39 @@ impl Parser {
                 }
                 if matches!(
                     self.tokens.get(i).map(|t| &t.kind),
-                    Some(TokenKind::PipeForward | TokenKind::Compose | TokenKind::Dot)
+                    Some(
+                        TokenKind::PipeForward
+                            | TokenKind::Compose
+                            | TokenKind::Dot
+                            | TokenKind::QuestionQuestion
+                            | TokenKind::Plus
+                            | TokenKind::Minus
+                            | TokenKind::Star
+                            | TokenKind::Slash
+                            | TokenKind::Percent
+                            | TokenKind::Eq
+                            | TokenKind::NotEq
+                            | TokenKind::Lt
+                            | TokenKind::LtEq
+                            | TokenKind::Gt
+                            | TokenKind::GtEq
+                            | TokenKind::And
+                            | TokenKind::Or
+                            | TokenKind::In
+                    )
                 ) {
                     while self.pos < i {
                         self.advance();
+                    }
+                    for tok in &self.tokens[ws_start..i] {
+                        match tok.kind {
+                            TokenKind::Indent => pending_continuation_dedents += 1,
+                            TokenKind::Dedent => {
+                                pending_continuation_dedents =
+                                    pending_continuation_dedents.saturating_sub(1);
+                            }
+                            _ => {}
+                        }
                     }
                 }
             }
@@ -3456,6 +3545,10 @@ impl Parser {
                 let s = self.advance().span;
                 Ok(Expr::Ident("use".into(), s))
             }
+            TokenKind::Halt => {
+                let s = self.advance().span;
+                Ok(Expr::Ident("halt".into(), s))
+            }
             TokenKind::Cell => {
                 let s = self.advance().span;
                 Ok(Expr::Ident("cell".into(), s))
@@ -3831,8 +3924,12 @@ impl Parser {
                     }
                 }
                 let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
-                let content_expr =
-                    self.parse_role_content(&[TokenKind::Comma, TokenKind::RParen], has_indent)?;
+                let role_terminators: &[TokenKind] = if has_indent {
+                    &[TokenKind::RParen]
+                } else {
+                    &[TokenKind::Comma, TokenKind::RParen]
+                };
+                let content_expr = self.parse_role_content(role_terminators, has_indent)?;
                 if has_indent && matches!(self.peek_kind(), TokenKind::End) {
                     self.advance();
                 }
@@ -4008,19 +4105,28 @@ impl Parser {
 
             match peek {
                 TokenKind::LBrace => {
-                    // Interpolation start
-                    self.advance(); // consume {
+                    // Try interpolation first; if parsing fails, keep `{...}` as literal text.
+                    let saved_pos = self.pos;
+                    let saved_bracket_depth = self.bracket_depth;
+                    self.advance(); // consume `{`
+                    let parsed_interp = (|| {
+                        let expr = self.parse_expr(0).ok()?;
+                        self.expect(&TokenKind::RBrace).ok()?;
+                        Some(expr)
+                    })();
 
-                    // Flush existing text
-                    if !text_buf.is_empty() {
-                        segments.push(StringSegment::Literal(text_buf.clone()));
-                        text_buf.clear();
+                    if let Some(expr) = parsed_interp {
+                        if !text_buf.is_empty() {
+                            segments.push(StringSegment::Literal(text_buf.clone()));
+                            text_buf.clear();
+                        }
+                        segments.push(StringSegment::Interpolation(Box::new(expr)));
+                    } else {
+                        self.pos = saved_pos;
+                        self.bracket_depth = saved_bracket_depth;
+                        text_buf.push('{');
+                        self.advance();
                     }
-
-                    // Parse expression
-                    let expr = self.parse_expr(0)?;
-                    self.expect(&TokenKind::RBrace)?;
-                    segments.push(StringSegment::Interpolation(Box::new(expr)));
                 }
                 TokenKind::Newline => {
                     // Inside indented block, preserve newline
@@ -4143,6 +4249,10 @@ impl Parser {
             TokenKind::Cell => {
                 self.advance();
                 Ok("cell".into())
+            }
+            TokenKind::Record => {
+                self.advance();
+                Ok("record".into())
             }
             TokenKind::SelfKw => {
                 self.advance();
@@ -4390,5 +4500,46 @@ end"#;
         } else {
             panic!("expected process");
         }
+    }
+
+    #[test]
+    fn test_parse_match_arm_line_continuation_with_null_coalesce() {
+        let src = r#"cell main() -> String
+  loop
+    let result = foo()
+    match result
+      Response.Handoff(target, reason) ->
+        let current_agent = self.agents.find(fn(a) => a.name == target)
+          ?? halt("Unknown agent: {target}")
+      Response.Escalate(reason) ->
+        return "ok"
+    end
+  end
+end"#;
+        let prog = parse_src(src).unwrap();
+        assert_eq!(prog.items.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_machine_states_with_empty_bodies() {
+        let src = r#"machine DistributedOrder
+  @replicated(factor: 3)
+
+  state Pending
+    # ...
+  end
+
+  state Processing
+    @location("warehouse-{region}")
+    # ...
+  end
+
+  state Shipped
+    # ...
+  end
+end"#;
+        let prog = parse_src(src).unwrap();
+        assert_eq!(prog.items.len(), 1);
+        assert!(matches!(prog.items[0], Item::Process(_)));
     }
 }

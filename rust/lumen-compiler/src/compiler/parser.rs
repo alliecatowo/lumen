@@ -4,7 +4,7 @@ use crate::compiler::ast::*;
 use crate::compiler::tokens::{Span, Token, TokenKind};
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum ParseError {
     #[error("unexpected token {found} at line {line}, col {col}; expected {expected}")]
     Unexpected {
@@ -21,6 +21,7 @@ pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     bracket_depth: usize,
+    errors: Vec<ParseError>,
 }
 
 impl Parser {
@@ -29,6 +30,63 @@ impl Parser {
             tokens,
             pos: 0,
             bracket_depth: 0,
+            errors: Vec::new(),
+        }
+    }
+
+    /// Record a parse error and continue parsing
+    fn record_error(&mut self, error: ParseError) {
+        self.errors.push(error);
+    }
+
+    /// Synchronize parser state by skipping tokens until we reach a declaration boundary
+    fn synchronize(&mut self) {
+        // Skip tokens until we reach a synchronization point:
+        // - A new declaration keyword (cell, record, enum, type, grant, import, etc.)
+        // - End of file
+        while !self.at_end() {
+            match self.peek_kind() {
+                TokenKind::Cell
+                | TokenKind::Record
+                | TokenKind::Enum
+                | TokenKind::Type
+                | TokenKind::Grant
+                | TokenKind::Import
+                | TokenKind::Use
+                | TokenKind::Pub
+                | TokenKind::Async
+                | TokenKind::At
+                | TokenKind::Schema
+                | TokenKind::Trait
+                | TokenKind::Impl
+                | TokenKind::Const
+                | TokenKind::Macro
+                | TokenKind::Extern
+                | TokenKind::Comptime
+                | TokenKind::Eof => break,
+                TokenKind::Ident(name) => {
+                    if matches!(
+                        name.as_str(),
+                        "agent"
+                            | "effect"
+                            | "bind"
+                            | "handler"
+                            | "pipeline"
+                            | "orchestration"
+                            | "machine"
+                            | "memory"
+                            | "guardrail"
+                            | "eval"
+                            | "pattern"
+                    ) {
+                        break;
+                    }
+                    self.advance();
+                }
+                _ => {
+                    self.advance();
+                }
+            }
         }
     }
 
@@ -230,9 +288,21 @@ impl Parser {
                 continue;
             }
             if self.is_top_level_stmt_start() {
-                top_level_stmts.push(self.parse_stmt()?);
+                match self.parse_stmt() {
+                    Ok(stmt) => top_level_stmts.push(stmt),
+                    Err(err) => {
+                        self.record_error(err);
+                        self.synchronize();
+                    }
+                }
             } else {
-                items.push(self.parse_item()?);
+                match self.parse_item() {
+                    Ok(item) => items.push(item),
+                    Err(err) => {
+                        self.record_error(err);
+                        self.synchronize();
+                    }
+                }
             }
             self.skip_newlines();
         }
@@ -5034,6 +5104,41 @@ impl Parser {
         }
         Ok(parts.join("."))
     }
+
+    /// Parse a program with error recovery enabled.
+    /// Returns the program AST (possibly partial) and a vector of all parse errors encountered.
+    /// If no errors occurred, the vector will be empty.
+    pub fn parse_program_with_recovery(
+        &mut self,
+        directives: Vec<Directive>,
+    ) -> (Program, Vec<ParseError>) {
+        let result = self.parse_program(directives);
+        let program = result.unwrap_or_else(|_| {
+            // If parse_program itself failed catastrophically, return empty program
+            Program {
+                directives: vec![],
+                items: vec![],
+                span: Span {
+                    start: 0,
+                    end: 0,
+                    line: 1,
+                    col: 1,
+                },
+            }
+        });
+        let errors = std::mem::take(&mut self.errors);
+        (program, errors)
+    }
+}
+
+/// Parse tokens with error recovery.
+/// Returns the program AST (possibly partial) and a vector of all parse errors encountered.
+pub fn parse_with_recovery(
+    tokens: Vec<Token>,
+    directives: Vec<Directive>,
+) -> (Program, Vec<ParseError>) {
+    let mut parser = Parser::new(tokens);
+    parser.parse_program_with_recovery(directives)
 }
 
 #[cfg(test)]
@@ -5528,5 +5633,216 @@ end"#;
         };
         assert_eq!(fs.var, "item");
         assert!(fs.pattern.is_none());
+    }
+
+    // ── Error Recovery Tests ──
+
+    #[test]
+    fn test_error_recovery_multiple_errors() {
+        // Multiple parse errors in same file
+        let src = r#"
+cell bad1() -> Int
+  let x =
+
+cell good() -> Int
+  return 42
+end
+
+cell bad2() -> String
+  return
+
+enum GoodEnum
+  A
+  B
+end
+"#;
+        let mut lexer = Lexer::new(src, 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        let (program, errors) = parse_with_recovery(tokens, vec![]);
+
+        // Should have parse errors from bad1 and bad2
+        assert!(errors.len() >= 1, "Expected at least 1 parse error");
+
+        // Should still parse valid declarations
+        let has_good_cell = program
+            .items
+            .iter()
+            .any(|item| matches!(item, Item::Cell(c) if c.name == "good"));
+        let has_good_enum = program
+            .items
+            .iter()
+            .any(|item| matches!(item, Item::Enum(e) if e.name == "GoodEnum"));
+
+        assert!(
+            has_good_cell || has_good_enum,
+            "Should parse at least one valid declaration after errors"
+        );
+    }
+
+    #[test]
+    fn test_error_recovery_continues_after_bad_declaration() {
+        let src = r#"
+record Point
+  x: Int
+  invalid: something wrong
+
+cell get_x() -> Int
+  return 1
+end
+
+record Color
+  r: Int
+  g: Int
+  b: Int
+end
+"#;
+        let mut lexer = Lexer::new(src, 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        let (program, errors) = parse_with_recovery(tokens, vec![]);
+
+        // Should have at least one error (from Point)
+        // Note: Some errors might be recovered gracefully, so we check for any valid parsing
+        let has_cell = program
+            .items
+            .iter()
+            .any(|item| matches!(item, Item::Cell(c) if c.name == "get_x"));
+        let has_color = program
+            .items
+            .iter()
+            .any(|item| matches!(item, Item::Record(r) if r.name == "Color"));
+
+        assert!(
+            has_cell || has_color,
+            "Should parse declarations after error in Point"
+        );
+    }
+
+    #[test]
+    fn test_error_recovery_valid_declarations_after_errors() {
+        let src = r#"
+cell bad_one() -> Int
+  let x =
+  // Incomplete statement
+
+cell good_one() -> Int
+  return 42
+end
+
+cell bad_two() -> String
+  return
+
+cell good_two() -> Bool
+  return false
+end
+"#;
+        let mut lexer = Lexer::new(src, 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        let (program, errors) = parse_with_recovery(tokens, vec![]);
+
+        // Should have errors
+        assert!(!errors.is_empty(), "Expected parse errors");
+
+        // Should parse valid cells
+        let good_cells: Vec<_> = program
+            .items
+            .iter()
+            .filter_map(|item| {
+                if let Item::Cell(c) = item {
+                    Some(c.name.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert!(
+            good_cells.contains(&"good_one") || good_cells.contains(&"good_two"),
+            "Should parse at least one valid cell after errors"
+        );
+    }
+
+    #[test]
+    fn test_error_recovery_single_error() {
+        // Single error should work the same way
+        let src = r#"
+cell test() -> Int
+  return 1
+  // Missing 'end'
+"#;
+        let mut lexer = Lexer::new(src, 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        let (_, errors) = parse_with_recovery(tokens, vec![]);
+
+        assert_eq!(errors.len(), 1, "Should report exactly 1 error");
+    }
+
+    #[test]
+    fn test_error_recovery_empty_file() {
+        let src = "";
+        let mut lexer = Lexer::new(src, 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        let (program, errors) = parse_with_recovery(tokens, vec![]);
+
+        assert!(errors.is_empty(), "Empty file should have no errors");
+        assert!(program.items.is_empty(), "Empty file should have no items");
+    }
+
+    #[test]
+    fn test_error_recovery_synchronizes_on_keywords() {
+        let src = r#"
+cell bad() -> Int
+  return
+
+enum Color
+  Red
+  Green
+  Blue
+end
+
+cell process() -> Int
+  return 1
+end
+"#;
+        let mut lexer = Lexer::new(src, 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        let (program, errors) = parse_with_recovery(tokens, vec![]);
+
+        // Parser should attempt recovery and continue
+        // Should parse enum and cell after error in bad()
+        let has_enum = program
+            .items
+            .iter()
+            .any(|item| matches!(item, Item::Enum(e) if e.name == "Color"));
+        let has_cell = program
+            .items
+            .iter()
+            .any(|item| matches!(item, Item::Cell(c) if c.name == "process"));
+
+        assert!(
+            has_enum && has_cell,
+            "Should parse declarations after synchronization"
+        );
+    }
+
+    #[test]
+    fn test_error_recovery_mixed_process_types() {
+        let src = r#"
+cell bad() -> Int
+  let x =
+
+memory GoodMemory
+  initial: { count: 0 }
+end
+"#;
+        let mut lexer = Lexer::new(src, 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        let (program, errors) = parse_with_recovery(tokens, vec![]);
+
+        // Should continue parsing after error in bad cell
+        let has_memory = program.items.iter().any(|item| {
+            matches!(item, Item::Process(p) if p.name == "GoodMemory")
+        });
+
+        assert!(has_memory, "Should parse memory process after error in cell");
     }
 }

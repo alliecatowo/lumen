@@ -40,6 +40,7 @@ pub struct McpToolSchema {
 // Stdio Transport
 // ---------------------------------------------------------------------------
 
+// TODO: implement McpTransport trait for StdioTransport — currently only stores config
 /// Stdio-based MCP transport that spawns a subprocess.
 ///
 /// In a real implementation, this would manage the child process lifecycle,

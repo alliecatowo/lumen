@@ -3,11 +3,11 @@
 //! Searches current directory then ancestors, falling back to
 //! `~/.config/lumen/lumen.toml` if no project-level file is found.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-#[derive(Debug, Deserialize, Default, Clone)]
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
 #[allow(dead_code)]
 pub struct LumenConfig {
     #[serde(default)]
@@ -18,7 +18,7 @@ pub struct LumenConfig {
     pub package: Option<PackageInfo>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[allow(dead_code)]
 pub struct PackageInfo {
     pub name: String,
@@ -27,14 +27,14 @@ pub struct PackageInfo {
     pub authors: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(untagged)]
 pub enum DependencySpec {
     Path { path: String },
     // Future: Version { version: String, registry: Option<String> },
 }
 
-#[derive(Debug, Deserialize, Default, Clone)]
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
 #[allow(dead_code)]
 pub struct ProviderSection {
     /// Tool name -> provider type mapping (e.g., "llm.chat" = "openai-compatible")
@@ -50,7 +50,7 @@ pub struct ProviderSection {
     pub mcp: HashMap<String, McpConfig>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[allow(dead_code)]
 pub struct ProviderConfig {
     pub base_url: Option<String>,
@@ -61,7 +61,7 @@ pub struct ProviderConfig {
     pub extra: HashMap<String, toml::Value>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[allow(dead_code)]
 pub struct McpConfig {
     pub uri: String,

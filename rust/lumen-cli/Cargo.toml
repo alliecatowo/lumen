@@ -7,6 +7,14 @@ edition.workspace = true
 name = "lumen"
 path = "src/main.rs"
 
+[[bin]]
+name = "lpm"
+path = "src/lpm.rs"
+
+[[bin]]
+name = "lpx"
+path = "src/lpx.rs"
+
 [dependencies]
 lumen-compiler = { path = "../lumen-compiler" }
 lumen-vm = { path = "../lumen-vm" }

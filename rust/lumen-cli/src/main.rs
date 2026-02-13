@@ -1,6 +1,7 @@
 //! Lumen CLI — command-line interface for the Lumen language.
 
 mod config;
+mod doc;
 mod fmt;
 mod pkg;
 mod repl;
@@ -97,6 +98,17 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
+    /// Generate documentation from .lm.md files
+    Doc {
+        /// Input file or directory
+        path: PathBuf,
+        /// Output format (markdown or json)
+        #[arg(long, default_value = "markdown")]
+        format: String,
+        /// Output file (defaults to stdout)
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -159,6 +171,21 @@ fn main() {
             PkgCommands::Check => pkg::cmd_pkg_check(),
         },
         Commands::Fmt { files, check } => cmd_fmt(files, check),
+        Commands::Doc {
+            path,
+            format,
+            output,
+        } => cmd_doc(&path, &format, output),
+    }
+}
+
+fn cmd_doc(path: &PathBuf, format: &str, output: Option<PathBuf>) {
+    match doc::cmd_doc(path, format, output.as_deref()) {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("{} {}", red("error:"), e);
+            std::process::exit(1);
+        }
     }
 }
 

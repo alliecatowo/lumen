@@ -18,6 +18,9 @@ fn red(s: &str) -> String {
 fn yellow(s: &str) -> String {
     format!("\x1b[33m{}\x1b[0m", s)
 }
+fn cyan(s: &str) -> String {
+    format!("\x1b[36m{}\x1b[0m", s)
+}
 fn bold(s: &str) -> String {
     format!("\x1b[1m{}\x1b[0m", s)
 }
@@ -417,6 +420,88 @@ fn canonicalize_or_clean(path: &Path) -> PathBuf {
         }
         out
     })
+}
+
+/// Add a dependency to lumen.toml
+pub fn cmd_pkg_add(package: &str, path_opt: Option<&str>) {
+    let (config_path, mut config) = match LumenConfig::load_with_path() {
+        Some(pair) => pair,
+        None => {
+            eprintln!("{} no lumen.toml found (run `lumen pkg init` first)", red("error:"));
+            std::process::exit(1);
+        }
+    };
+
+    let path = path_opt.unwrap_or_else(|| {
+        eprintln!("{} --path is required for now (registry support coming soon)", red("error:"));
+        std::process::exit(1);
+    });
+
+    // Add to dependencies map
+    config.dependencies.insert(
+        package.to_string(),
+        DependencySpec::Path { path: path.to_string() },
+    );
+
+    // Serialize back to TOML
+    let toml_content = toml::to_string_pretty(&config).unwrap_or_else(|e| {
+        eprintln!("{} serializing config: {}", red("error:"), e);
+        std::process::exit(1);
+    });
+
+    std::fs::write(&config_path, &toml_content).unwrap_or_else(|e| {
+        eprintln!("{} writing lumen.toml: {}", red("error:"), e);
+        std::process::exit(1);
+    });
+
+    println!("{} dependency {} {{ path = \"{}\" }}", status_label("Added"), bold(package), path);
+}
+
+/// Remove a dependency from lumen.toml
+pub fn cmd_pkg_remove(package: &str) {
+    let (config_path, mut config) = match LumenConfig::load_with_path() {
+        Some(pair) => pair,
+        None => {
+            eprintln!("{} no lumen.toml found", red("error:"));
+            std::process::exit(1);
+        }
+    };
+
+    if config.dependencies.remove(package).is_none() {
+        eprintln!("{} dependency '{}' not found in lumen.toml", red("error:"), package);
+        std::process::exit(1);
+    }
+
+    let toml_content = toml::to_string_pretty(&config).unwrap_or_else(|e| {
+        eprintln!("{} serializing config: {}", red("error:"), e);
+        std::process::exit(1);
+    });
+
+    std::fs::write(&config_path, &toml_content).unwrap_or_else(|e| {
+        eprintln!("{} writing lumen.toml: {}", red("error:"), e);
+        std::process::exit(1);
+    });
+
+    println!("{} dependency {}", status_label("Removed"), bold(package));
+}
+
+/// List all dependencies from lumen.toml
+pub fn cmd_pkg_list() {
+    let config = LumenConfig::load();
+
+    if config.dependencies.is_empty() {
+        println!("{} no dependencies", gray("info:"));
+        return;
+    }
+
+    println!("{} dependencies:", status_label("Listing"));
+    for (name, spec) in &config.dependencies {
+        match spec {
+            DependencySpec::Path { path } => {
+                println!("  {} {} path = {}", bold(name), gray("→"), cyan(path));
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

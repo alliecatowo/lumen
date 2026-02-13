@@ -1,0 +1,32 @@
+[package]
+name = "advanced-workspace"
+version = "0.1.0"
+description = "Advanced multi-module workspace example for LLM + MCP style orchestration"
+authors = ["Lumen Team <team@lumen.local>"]
+license = "MIT"
+readme = "README.md"
+
+[dependencies]
+# Demonstration-only workspace; no external package dependencies required.
+
+[providers]
+"llm.chat" = "openai-compatible"
+"http.get" = "builtin-http"
+"mcp.github.search_issues" = "mcp-bridge"
+"mcp.slack.post_message" = "mcp-bridge"
+
+[providers.config.openai-compatible]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+default_model = "gpt-4o-mini"
+
+[providers.config.builtin-http]
+timeout_ms = 5000
+
+[providers.mcp.github]
+uri = "npx -y @modelcontextprotocol/server-github"
+tools = ["mcp.github.search_issues"]
+
+[providers.mcp.slack]
+uri = "npx -y @modelcontextprotocol/server-slack"
+tools = ["mcp.slack.post_message"]

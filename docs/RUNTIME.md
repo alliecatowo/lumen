@@ -26,6 +26,7 @@ Core value families:
 - Runtime supports configurable future scheduling:
   - `Eager` executes spawned futures immediately.
   - `DeferredFifo` queues spawned futures and runs deterministically when awaited.
+- `@deterministic true` is lowered into module metadata; VM load defaults scheduling to `DeferredFifo` from that metadata unless an explicit runtime override is set.
 
 ## Process Runtime Objects
 

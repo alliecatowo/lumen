@@ -6,7 +6,7 @@ pub mod compiler;
 pub mod diagnostics;
 pub mod markdown;
 
-use compiler::ast::{Directive, Item, ImportDecl, ImportList};
+use compiler::ast::{Directive, ImportDecl, ImportList, Item};
 use compiler::lir::LirModule;
 use compiler::resolve::SymbolTable;
 use std::collections::HashSet;
@@ -136,87 +136,111 @@ fn compile_with_imports_internal(
         compilation_stack.insert(module_path.clone());
 
         // Recursively compile the imported module (we only need it for validation)
-        let _imported_module = compile_with_imports_internal(
-            &imported_source,
-            resolve_import,
-            compilation_stack,
-            Some(&module_path),
-        )?;
+        let _imported_module = if imported_source.contains("```lumen") {
+            compile_with_imports_internal(
+                &imported_source,
+                resolve_import,
+                compilation_stack,
+                Some(&module_path),
+            )?
+        } else {
+            compile_raw_with_imports_internal(
+                &imported_source,
+                resolve_import,
+                compilation_stack,
+                Some(&module_path),
+            )?
+        };
 
         // Remove from stack after compilation
         compilation_stack.remove(&module_path);
 
-        // Extract symbols from the imported module
-        // Re-parse to get the AST and symbol table
+        // Extract symbols from the imported module by parsing it as markdown if it has
+        // fenced lumen blocks, otherwise as raw source.
         let imported_extracted = markdown::extract::extract_blocks(&imported_source);
-        let mut imported_code = String::new();
-        for block in &imported_extracted.code_blocks {
-            if !imported_code.is_empty() {
-                imported_code.push('\n');
-            }
-            imported_code.push_str(&block.code);
-        }
+        let (imported_code, imported_directives, imported_line, imported_offset) =
+            if imported_extracted.code_blocks.is_empty() {
+                (imported_source.clone(), vec![], 1, 0)
+            } else {
+                let mut code = String::new();
+                let mut first_line = 1;
+                let mut first_offset = 0;
+                for (i, block) in imported_extracted.code_blocks.iter().enumerate() {
+                    if i == 0 {
+                        first_line = block.code_start_line;
+                        first_offset = block.code_offset;
+                    }
+                    if !code.is_empty() {
+                        code.push('\n');
+                    }
+                    code.push_str(&block.code);
+                }
+                let directives: Vec<Directive> = imported_extracted
+                    .directives
+                    .iter()
+                    .map(|d| Directive {
+                        name: d.name.clone(),
+                        value: d.value.clone(),
+                        span: d.span,
+                    })
+                    .collect();
+                (code, directives, first_line, first_offset)
+            };
 
-        if !imported_code.is_empty() {
-            let imported_directives: Vec<Directive> = imported_extracted
-                .directives
-                .iter()
-                .map(|d| Directive {
-                    name: d.name.clone(),
-                    value: d.value.clone(),
-                    span: d.span,
-                })
-                .collect();
-
-            let mut imported_lexer = compiler::lexer::Lexer::new(&imported_code, 1, 0);
-            if let Ok(imported_tokens) = imported_lexer.tokenize() {
-                let mut imported_parser = compiler::parser::Parser::new(imported_tokens);
-                if let Ok(imported_program) = imported_parser.parse_program(imported_directives) {
-                    if let Ok(imported_symbols) = compiler::resolve::resolve(&imported_program) {
-                        // Import the requested symbols
-                        match &import.names {
-                            ImportList::Wildcard => {
-                                // Import all top-level definitions
-                                for (name, info) in imported_symbols.cells {
-                                    base_symbols.import_cell(name, info);
-                                }
-                                for (name, info) in imported_symbols.types {
-                                    base_symbols.import_type(name, info);
-                                }
-                                for (name, type_expr) in imported_symbols.type_aliases {
-                                    base_symbols.import_type_alias(name, type_expr);
-                                }
+        let mut imported_lexer =
+            compiler::lexer::Lexer::new(&imported_code, imported_line, imported_offset);
+        if let Ok(imported_tokens) = imported_lexer.tokenize() {
+            let mut imported_parser = compiler::parser::Parser::new(imported_tokens);
+            if let Ok(imported_program) = imported_parser.parse_program(imported_directives) {
+                if let Ok(imported_symbols) = compiler::resolve::resolve(&imported_program) {
+                    // Import the requested symbols
+                    match &import.names {
+                        ImportList::Wildcard => {
+                            // Import all top-level definitions
+                            for (name, info) in imported_symbols.cells {
+                                base_symbols.import_cell(name, info);
                             }
-                            ImportList::Names(names) => {
-                                for import_name in names {
-                                    let symbol_name = &import_name.name;
-                                    let local_name = import_name.alias.as_ref().unwrap_or(symbol_name);
+                            for (name, info) in imported_symbols.types {
+                                base_symbols.import_type(name, info);
+                            }
+                            for (name, type_expr) in imported_symbols.type_aliases {
+                                base_symbols.import_type_alias(name, type_expr);
+                            }
+                        }
+                        ImportList::Names(names) => {
+                            for import_name in names {
+                                let symbol_name = &import_name.name;
+                                let local_name = import_name.alias.as_ref().unwrap_or(symbol_name);
 
-                                    // Try to find the symbol in cells, types, or type aliases
-                                    let mut found = false;
+                                // Try to find the symbol in cells, types, or type aliases
+                                let mut found = false;
 
-                                    if let Some(cell_info) = imported_symbols.cells.get(symbol_name) {
-                                        base_symbols.import_cell(local_name.clone(), cell_info.clone());
-                                        found = true;
-                                    }
+                                if let Some(cell_info) = imported_symbols.cells.get(symbol_name) {
+                                    base_symbols.import_cell(local_name.clone(), cell_info.clone());
+                                    found = true;
+                                }
 
-                                    if let Some(type_info) = imported_symbols.types.get(symbol_name) {
-                                        base_symbols.import_type(local_name.clone(), type_info.clone());
-                                        found = true;
-                                    }
+                                if let Some(type_info) = imported_symbols.types.get(symbol_name) {
+                                    base_symbols.import_type(local_name.clone(), type_info.clone());
+                                    found = true;
+                                }
 
-                                    if let Some(type_expr) = imported_symbols.type_aliases.get(symbol_name) {
-                                        base_symbols.import_type_alias(local_name.clone(), type_expr.clone());
-                                        found = true;
-                                    }
+                                if let Some(type_expr) =
+                                    imported_symbols.type_aliases.get(symbol_name)
+                                {
+                                    base_symbols
+                                        .import_type_alias(local_name.clone(), type_expr.clone());
+                                    found = true;
+                                }
 
-                                    if !found {
-                                        import_errors.push(compiler::resolve::ResolveError::ImportedSymbolNotFound {
+                                if !found {
+                                    import_errors.push(
+                                        compiler::resolve::ResolveError::ImportedSymbolNotFound {
                                             symbol: symbol_name.clone(),
                                             module: module_path.clone(),
                                             line: import_name.span.line,
-                                        });
-                                    }
+                                        },
+                                    );
                                 }
                             }
                         }
@@ -247,7 +271,250 @@ fn compile_with_imports_internal(
     Ok(module)
 }
 
-/// Compile a `.lm.md` source file to a LIR module.
+/// Compile raw .lm source with access to external modules for import resolution.
+///
+/// The `resolve_import` callback takes a module path (e.g., "mathlib") and returns
+/// the source content of that module if it exists, or None if not found.
+pub fn compile_raw_with_imports(
+    source: &str,
+    resolve_import: &dyn Fn(&str) -> Option<String>,
+) -> Result<LirModule, CompileError> {
+    let mut compilation_stack = HashSet::new();
+    compile_raw_with_imports_internal(source, resolve_import, &mut compilation_stack, None)
+}
+
+/// Internal implementation for raw source compilation with imports
+fn compile_raw_with_imports_internal(
+    source: &str,
+    resolve_import: &dyn Fn(&str) -> Option<String>,
+    compilation_stack: &mut HashSet<String>,
+    _current_module: Option<&str>,
+) -> Result<LirModule, CompileError> {
+    if source.is_empty() {
+        return Ok(LirModule::new("sha256:empty".to_string()));
+    }
+
+    // 1. Lex (start at line 1, offset 0)
+    let mut lexer = compiler::lexer::Lexer::new(source, 1, 0);
+    let tokens = lexer.tokenize()?;
+
+    // 2. Parse (no directives for raw source)
+    let mut parser = compiler::parser::Parser::new(tokens);
+    let program = parser.parse_program(vec![])?;
+
+    // 3. Process imports before resolution
+    let mut base_symbols = SymbolTable::new();
+    let mut import_errors = Vec::new();
+
+    // Collect all imports
+    let imports: Vec<&ImportDecl> = program
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let Item::Import(imp) = item {
+                Some(imp)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Process each import
+    for import in imports {
+        let module_path = import.path.join(".");
+
+        // Check for circular imports
+        if compilation_stack.contains(&module_path) {
+            let chain: Vec<String> = compilation_stack.iter().cloned().collect();
+            let chain_str = format!("{} -> {}", chain.join(" -> "), module_path);
+            import_errors.push(compiler::resolve::ResolveError::CircularImport {
+                module: module_path.clone(),
+                chain: chain_str,
+            });
+            continue;
+        }
+
+        // Resolve the module source
+        let imported_source = match resolve_import(&module_path) {
+            Some(src) => src,
+            None => {
+                import_errors.push(compiler::resolve::ResolveError::ModuleNotFound {
+                    module: module_path.clone(),
+                    line: import.span.line,
+                });
+                continue;
+            }
+        };
+
+        // Track this module in the compilation stack
+        compilation_stack.insert(module_path.clone());
+
+        // Recursively compile the imported module
+        // Determine if it's markdown or raw based on what we got back
+        let _imported_module = if imported_source.contains("```lumen") {
+            compile_with_imports_internal(
+                &imported_source,
+                resolve_import,
+                compilation_stack,
+                Some(&module_path),
+            )?
+        } else {
+            compile_raw_with_imports_internal(
+                &imported_source,
+                resolve_import,
+                compilation_stack,
+                Some(&module_path),
+            )?
+        };
+
+        // Remove from stack after compilation
+        compilation_stack.remove(&module_path);
+
+        // Extract symbols from the imported module by parsing it as markdown if it has
+        // fenced lumen blocks, otherwise as raw source.
+        let imported_extracted = markdown::extract::extract_blocks(&imported_source);
+        let (imported_code, imported_directives, imported_line, imported_offset) =
+            if imported_extracted.code_blocks.is_empty() {
+                (imported_source.clone(), vec![], 1, 0)
+            } else {
+                let mut code = String::new();
+                let mut first_line = 1;
+                let mut first_offset = 0;
+                for (i, block) in imported_extracted.code_blocks.iter().enumerate() {
+                    if i == 0 {
+                        first_line = block.code_start_line;
+                        first_offset = block.code_offset;
+                    }
+                    if !code.is_empty() {
+                        code.push('\n');
+                    }
+                    code.push_str(&block.code);
+                }
+                let directives: Vec<Directive> = imported_extracted
+                    .directives
+                    .iter()
+                    .map(|d| Directive {
+                        name: d.name.clone(),
+                        value: d.value.clone(),
+                        span: d.span,
+                    })
+                    .collect();
+                (code, directives, first_line, first_offset)
+            };
+
+        let mut imported_lexer =
+            compiler::lexer::Lexer::new(&imported_code, imported_line, imported_offset);
+        if let Ok(imported_tokens) = imported_lexer.tokenize() {
+            let mut imported_parser = compiler::parser::Parser::new(imported_tokens);
+            if let Ok(imported_program) = imported_parser.parse_program(imported_directives) {
+                if let Ok(imported_symbols) = compiler::resolve::resolve(&imported_program) {
+                    // Import the requested symbols
+                    match &import.names {
+                        ImportList::Wildcard => {
+                            // Import all top-level definitions
+                            for (name, info) in imported_symbols.cells {
+                                base_symbols.import_cell(name, info);
+                            }
+                            for (name, info) in imported_symbols.types {
+                                base_symbols.import_type(name, info);
+                            }
+                            for (name, type_expr) in imported_symbols.type_aliases {
+                                base_symbols.import_type_alias(name, type_expr);
+                            }
+                        }
+                        ImportList::Names(names) => {
+                            for import_name in names {
+                                let symbol_name = &import_name.name;
+                                let local_name = import_name.alias.as_ref().unwrap_or(symbol_name);
+
+                                // Try to find the symbol in cells, types, or type aliases
+                                let mut found = false;
+
+                                if let Some(cell_info) = imported_symbols.cells.get(symbol_name) {
+                                    base_symbols.import_cell(local_name.clone(), cell_info.clone());
+                                    found = true;
+                                }
+
+                                if let Some(type_info) = imported_symbols.types.get(symbol_name) {
+                                    base_symbols.import_type(local_name.clone(), type_info.clone());
+                                    found = true;
+                                }
+
+                                if let Some(type_expr) =
+                                    imported_symbols.type_aliases.get(symbol_name)
+                                {
+                                    base_symbols
+                                        .import_type_alias(local_name.clone(), type_expr.clone());
+                                    found = true;
+                                }
+
+                                if !found {
+                                    import_errors.push(
+                                        compiler::resolve::ResolveError::ImportedSymbolNotFound {
+                                            symbol: symbol_name.clone(),
+                                            module: module_path.clone(),
+                                            line: import_name.span.line,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if !import_errors.is_empty() {
+        return Err(CompileError::Resolve(import_errors));
+    }
+
+    // 4. Resolve with imported symbols pre-populated
+    let symbols = compiler::resolve::resolve_with_base(&program, base_symbols)
+        .map_err(CompileError::Resolve)?;
+
+    // 5. Typecheck
+    compiler::typecheck::typecheck(&program, &symbols).map_err(CompileError::Type)?;
+
+    // 6. Validate constraints
+    compiler::constraints::validate_constraints(&program).map_err(CompileError::Constraint)?;
+
+    // 7. Lower to LIR
+    let module = compiler::lower::lower(&program, &symbols, source);
+
+    Ok(module)
+}
+
+/// Compile a `.lm` raw Lumen source file to a LIR module.
+/// This skips markdown extraction and processes the source directly.
+pub fn compile_raw(source: &str) -> Result<LirModule, CompileError> {
+    if source.is_empty() {
+        return Ok(LirModule::new("sha256:empty".to_string()));
+    }
+
+    // 1. Lex (start at line 1, offset 0)
+    let mut lexer = compiler::lexer::Lexer::new(source, 1, 0);
+    let tokens = lexer.tokenize()?;
+
+    // 2. Parse (no directives for raw source)
+    let mut parser = compiler::parser::Parser::new(tokens);
+    let program = parser.parse_program(vec![])?;
+
+    // 3. Resolve
+    let symbols = compiler::resolve::resolve(&program).map_err(CompileError::Resolve)?;
+
+    // 4. Typecheck
+    compiler::typecheck::typecheck(&program, &symbols).map_err(CompileError::Type)?;
+
+    // 5. Validate constraints
+    compiler::constraints::validate_constraints(&program).map_err(CompileError::Constraint)?;
+
+    // 6. Lower to LIR
+    let module = compiler::lower::lower(&program, &symbols, source);
+
+    Ok(module)
+}
+
 pub fn compile(source: &str) -> Result<LirModule, CompileError> {
     // 1. Extract Markdown blocks
     let extracted = markdown::extract::extract_blocks(source);

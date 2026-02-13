@@ -123,16 +123,12 @@ pub enum ResolveError {
         actual: String,
         line: usize,
     },
-    #[error("circular import detected: module '{module}' is already being compiled (chain: {chain})")]
-    CircularImport {
-        module: String,
-        chain: String,
-    },
+    #[error(
+        "circular import detected: module '{module}' is already being compiled (chain: {chain})"
+    )]
+    CircularImport { module: String, chain: String },
     #[error("module '{module}' not found at line {line}")]
-    ModuleNotFound {
-        module: String,
-        line: usize,
-    },
+    ModuleNotFound { module: String, line: usize },
     #[error("imported symbol '{symbol}' not found in module '{module}' at line {line}")]
     ImportedSymbolNotFound {
         symbol: String,
@@ -324,7 +320,10 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
 
 /// Resolve all names in a program, using a pre-populated symbol table as the base.
 /// This is useful for multi-file compilation where imported symbols need to be available.
-pub fn resolve_with_base(program: &Program, mut table: SymbolTable) -> Result<SymbolTable, Vec<ResolveError>> {
+pub fn resolve_with_base(
+    program: &Program,
+    mut table: SymbolTable,
+) -> Result<SymbolTable, Vec<ResolveError>> {
     let mut errors = Vec::new();
     let doc_mode = parse_directive_bool(program, "doc_mode").unwrap_or(false);
 
@@ -332,57 +331,51 @@ pub fn resolve_with_base(program: &Program, mut table: SymbolTable) -> Result<Sy
     for item in &program.items {
         use std::collections::hash_map::Entry;
         match item {
-            Item::Record(r) => {
-                match table.types.entry(r.name.clone()) {
-                    Entry::Occupied(_) => {
-                        errors.push(ResolveError::Duplicate {
-                            name: r.name.clone(),
-                            line: r.span.line,
-                        });
-                    }
-                    Entry::Vacant(entry) => {
-                        entry.insert(TypeInfo {
-                            kind: TypeInfoKind::Record(r.clone()),
-                        });
-                    }
+            Item::Record(r) => match table.types.entry(r.name.clone()) {
+                Entry::Occupied(_) => {
+                    errors.push(ResolveError::Duplicate {
+                        name: r.name.clone(),
+                        line: r.span.line,
+                    });
                 }
-            }
-            Item::Enum(e) => {
-                match table.types.entry(e.name.clone()) {
-                    Entry::Occupied(_) => {
-                        errors.push(ResolveError::Duplicate {
-                            name: e.name.clone(),
-                            line: e.span.line,
-                        });
-                    }
-                    Entry::Vacant(entry) => {
-                        entry.insert(TypeInfo {
-                            kind: TypeInfoKind::Enum(e.clone()),
-                        });
-                    }
+                Entry::Vacant(entry) => {
+                    entry.insert(TypeInfo {
+                        kind: TypeInfoKind::Record(r.clone()),
+                    });
                 }
-            }
-            Item::Cell(c) => {
-                match table.cells.entry(c.name.clone()) {
-                    Entry::Occupied(_) => {
-                        errors.push(ResolveError::Duplicate {
-                            name: c.name.clone(),
-                            line: c.span.line,
-                        });
-                    }
-                    Entry::Vacant(entry) => {
-                        entry.insert(CellInfo {
-                            params: c
-                                .params
-                                .iter()
-                                .map(|p| (p.name.clone(), p.ty.clone()))
-                                .collect(),
-                            return_type: c.return_type.clone(),
-                            effects: c.effects.clone(),
-                        });
-                    }
+            },
+            Item::Enum(e) => match table.types.entry(e.name.clone()) {
+                Entry::Occupied(_) => {
+                    errors.push(ResolveError::Duplicate {
+                        name: e.name.clone(),
+                        line: e.span.line,
+                    });
                 }
-            }
+                Entry::Vacant(entry) => {
+                    entry.insert(TypeInfo {
+                        kind: TypeInfoKind::Enum(e.clone()),
+                    });
+                }
+            },
+            Item::Cell(c) => match table.cells.entry(c.name.clone()) {
+                Entry::Occupied(_) => {
+                    errors.push(ResolveError::Duplicate {
+                        name: c.name.clone(),
+                        line: c.span.line,
+                    });
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(CellInfo {
+                        params: c
+                            .params
+                            .iter()
+                            .map(|p| (p.name.clone(), p.ty.clone()))
+                            .collect(),
+                        return_type: c.return_type.clone(),
+                        effects: c.effects.clone(),
+                    });
+                }
+            },
             Item::Agent(a) => {
                 match table.agents.entry(a.name.clone()) {
                     Entry::Occupied(_) => {
@@ -615,19 +608,17 @@ pub fn resolve_with_base(program: &Program, mut table: SymbolTable) -> Result<Sy
                 );
             }
             Item::Grant(_) => {} // Grants reference tools, checked below
-            Item::TypeAlias(ta) => {
-                match table.type_aliases.entry(ta.name.clone()) {
-                    Entry::Occupied(_) => {
-                        errors.push(ResolveError::Duplicate {
-                            name: ta.name.clone(),
-                            line: ta.span.line,
-                        });
-                    }
-                    Entry::Vacant(entry) => {
-                        entry.insert(ta.type_expr.clone());
-                    }
+            Item::TypeAlias(ta) => match table.type_aliases.entry(ta.name.clone()) {
+                Entry::Occupied(_) => {
+                    errors.push(ResolveError::Duplicate {
+                        name: ta.name.clone(),
+                        line: ta.span.line,
+                    });
                 }
-            }
+                Entry::Vacant(entry) => {
+                    entry.insert(ta.type_expr.clone());
+                }
+            },
             Item::Trait(t) => {
                 let methods: Vec<String> = t.methods.iter().map(|m| m.name.clone()).collect();
                 match table.traits.entry(t.name.clone()) {
@@ -692,13 +683,7 @@ pub fn resolve_with_base(program: &Program, mut table: SymbolTable) -> Result<Sy
                     check_type_refs_with_generics(rt, &table, &mut errors, &generics);
                 }
                 if !doc_mode {
-                    check_effect_grants_for(
-                        &c.name,
-                        c.span.line,
-                        &c.effects,
-                        &table,
-                        &mut errors,
-                    );
+                    check_effect_grants_for(&c.name, c.span.line, &c.effects, &table, &mut errors);
                 }
             }
             Item::Agent(a) => {
@@ -716,13 +701,7 @@ pub fn resolve_with_base(program: &Program, mut table: SymbolTable) -> Result<Sy
                     }
                     if !doc_mode {
                         let fq = format!("{}.{}", a.name, c.name);
-                        check_effect_grants_for(
-                            &fq,
-                            c.span.line,
-                            &c.effects,
-                            &table,
-                            &mut errors,
-                        );
+                        check_effect_grants_for(&fq, c.span.line, &c.effects, &table, &mut errors);
                     }
                 }
             }
@@ -752,13 +731,7 @@ pub fn resolve_with_base(program: &Program, mut table: SymbolTable) -> Result<Sy
                     }
                     if !doc_mode {
                         let fq = format!("{}.{}", p.name, c.name);
-                        check_effect_grants_for(
-                            &fq,
-                            c.span.line,
-                            &c.effects,
-                            &table,
-                            &mut errors,
-                        );
+                        check_effect_grants_for(&fq, c.span.line, &c.effects, &table, &mut errors);
                     }
                 }
                 for g in &p.grants {
@@ -798,13 +771,7 @@ pub fn resolve_with_base(program: &Program, mut table: SymbolTable) -> Result<Sy
                     }
                     if !doc_mode && !c.body.is_empty() {
                         let fq = format!("{}.{}", h.name, c.name);
-                        check_effect_grants_for(
-                            &fq,
-                            c.span.line,
-                            &c.effects,
-                            &table,
-                            &mut errors,
-                        );
+                        check_effect_grants_for(&fq, c.span.line, &c.effects, &table, &mut errors);
                     }
                 }
             }
@@ -849,20 +816,13 @@ fn check_effect_grants_for(
         let effect = normalize_effect(effect);
         if matches!(
             effect.as_str(),
-            "pure"
-                | "trace"
-                | "state"
-                | "approve"
-                | "emit"
-                | "cache"
-                | "async"
-                | "random"
-                | "time"
+            "pure" | "trace" | "state" | "approve" | "emit" | "cache" | "async" | "random" | "time"
         ) {
             continue;
         }
 
-        let satisfied = is_effect_satisfied_by_policies(&effect, table, &policies, &effect_bind_map);
+        let satisfied =
+            is_effect_satisfied_by_policies(&effect, table, &policies, &effect_bind_map);
 
         if !satisfied {
             errors.push(ResolveError::MissingEffectGrant {
@@ -971,7 +931,10 @@ fn build_cell_policies(program: &Program) -> HashMap<String, Vec<GrantPolicy>> {
             }
             Item::Handler(h) => {
                 for handle in &h.handles {
-                    map.insert(format!("{}.{}", h.name, handle.name), global_policies.clone());
+                    map.insert(
+                        format!("{}.{}", h.name, handle.name),
+                        global_policies.clone(),
+                    );
                 }
             }
             _ => {}
@@ -1070,7 +1033,11 @@ fn parse_directive_bool(program: &Program, name: &str) -> Option<bool> {
             }) if kind == "attribute" && attr_name.eq_ignore_ascii_case(name)
         )
     });
-    if has_attr { Some(true) } else { None }
+    if has_attr {
+        Some(true)
+    } else {
+        None
+    }
 }
 
 fn validate_machine_graph(process: &ProcessDecl, errors: &mut Vec<ResolveError>) {
@@ -1234,8 +1201,11 @@ fn validate_pipeline_stages(
             continue;
         };
 
-        let non_self_params: Vec<&(String, TypeExpr)> =
-            cell.params.iter().filter(|(name, _)| name != "self").collect();
+        let non_self_params: Vec<&(String, TypeExpr)> = cell
+            .params
+            .iter()
+            .filter(|(name, _)| name != "self")
+            .collect();
         if non_self_params.len() != 1 {
             errors.push(ResolveError::PipelineStageArity {
                 pipeline: process.name.clone(),
@@ -1247,7 +1217,9 @@ fn validate_pipeline_stages(
             if !pipeline_type_compatible(expected, prev_out) {
                 errors.push(ResolveError::PipelineStageTypeMismatch {
                     pipeline: process.name.clone(),
-                    from_stage: previous_stage.clone().unwrap_or_else(|| "<entry>".to_string()),
+                    from_stage: previous_stage
+                        .clone()
+                        .unwrap_or_else(|| "<entry>".to_string()),
                     to_stage: stage.clone(),
                     expected: machine_type_key(expected),
                     actual: machine_type_key(prev_out),
@@ -1297,7 +1269,11 @@ fn machine_type_key(ty: &TypeExpr) -> String {
             .join("|"),
         TypeExpr::Null(_) => "Null".to_string(),
         TypeExpr::Tuple(types, _) => {
-            let inner = types.iter().map(machine_type_key).collect::<Vec<_>>().join(",");
+            let inner = types
+                .iter()
+                .map(machine_type_key)
+                .collect::<Vec<_>>()
+                .join(",");
             format!("({})", inner)
         }
         TypeExpr::Set(inner, _) => format!("set[{}]", machine_type_key(inner)),
@@ -1385,9 +1361,11 @@ fn infer_machine_expr_type(expr: &Expr, scope: &HashMap<String, TypeExpr>) -> Op
                 | BinOp::And
                 | BinOp::Or
                 | BinOp::In => Some("Bool".to_string()),
-                BinOp::PipeForward | BinOp::Concat | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
-                    Some("Any".to_string())
-                }
+                BinOp::PipeForward
+                | BinOp::Concat
+                | BinOp::BitAnd
+                | BinOp::BitOr
+                | BinOp::BitXor => Some("Any".to_string()),
             }
         }
         _ => None,
@@ -1785,9 +1763,7 @@ fn collect_expr_call_requirements(
                 collect_expr_call_requirements(st, table, out);
             }
         }
-        Expr::MatchExpr {
-            subject, arms, ..
-        } => {
+        Expr::MatchExpr { subject, arms, .. } => {
             collect_expr_call_requirements(subject, table, out);
             for arm in arms {
                 for s in &arm.body {
@@ -1958,18 +1934,12 @@ fn collect_expr_effect_evidence(
                         );
                     }
                     if name == "emit" || name == "print" {
-                        push_effect_evidence(
-                            out,
-                            "emit",
-                            span.line,
-                            format!("call to '{}'", name),
-                        );
+                        push_effect_evidence(out, "emit", span.line, format!("call to '{}'", name));
                     }
                     if matches!(
                         name.as_str(),
                         "parallel" | "race" | "vote" | "select" | "timeout" | "spawn"
-                    )
-                    {
+                    ) {
                         push_effect_evidence(
                             out,
                             "async",
@@ -1986,12 +1956,7 @@ fn collect_expr_effect_evidence(
                         );
                     }
                     if matches!(name.as_str(), "timestamp") {
-                        push_effect_evidence(
-                            out,
-                            "time",
-                            span.line,
-                            format!("call to '{}'", name),
-                        );
+                        push_effect_evidence(out, "time", span.line, format!("call to '{}'", name));
                     }
                 }
                 Expr::DotAccess(obj, field, _) => {
@@ -2065,13 +2030,9 @@ fn collect_expr_effect_evidence(
             }
             match callee.as_ref() {
                 Expr::Ident(alias, _) => {
-                    let effect = effect_from_tool(alias, table).unwrap_or_else(|| "external".into());
-                    push_effect_evidence(
-                        out,
-                        &effect,
-                        span.line,
-                        format!("tool call '{}'", alias),
-                    );
+                    let effect =
+                        effect_from_tool(alias, table).unwrap_or_else(|| "external".into());
+                    push_effect_evidence(out, &effect, span.line, format!("tool call '{}'", alias));
                 }
                 _ => push_effect_evidence(
                     out,
@@ -2148,9 +2109,7 @@ fn collect_expr_effect_evidence(
                 collect_expr_effect_evidence(st, table, current, out);
             }
         }
-        Expr::MatchExpr {
-            subject, arms, ..
-        } => {
+        Expr::MatchExpr { subject, arms, .. } => {
             collect_expr_effect_evidence(subject, table, current, out);
             for arm in arms {
                 for s in &arm.body {
@@ -2304,8 +2263,7 @@ fn infer_expr_effects(
                     if matches!(
                         name.as_str(),
                         "parallel" | "race" | "vote" | "select" | "timeout" | "spawn"
-                    )
-                    {
+                    ) {
                         out.insert("async".into());
                     }
                     if matches!(name.as_str(), "uuid" | "uuid_v4") {
@@ -2431,9 +2389,7 @@ fn infer_expr_effects(
             }
             infer_expr_effects(body, table, current, out);
         }
-        Expr::MatchExpr {
-            subject, arms, ..
-        } => {
+        Expr::MatchExpr { subject, arms, .. } => {
             infer_expr_effects(subject, table, current, out);
             for arm in arms {
                 for s in &arm.body {
@@ -2486,7 +2442,8 @@ fn apply_effect_inference(
 
     let mut effective: HashMap<String, BTreeSet<String>> = HashMap::new();
     for cell in &cells {
-        let declared: BTreeSet<String> = cell.declared.iter().map(|e| normalize_effect(e)).collect();
+        let declared: BTreeSet<String> =
+            cell.declared.iter().map(|e| normalize_effect(e)).collect();
         effective.insert(
             cell.name.clone(),
             if declared.is_empty() {
@@ -2518,7 +2475,8 @@ fn apply_effect_inference(
     for cell in &cells {
         let inferred = infer_cell_effects(cell, table, &effective);
         let evidence = collect_cell_effect_evidence(cell, table, &effective);
-        let declared: BTreeSet<String> = cell.declared.iter().map(|e| normalize_effect(e)).collect();
+        let declared: BTreeSet<String> =
+            cell.declared.iter().map(|e| normalize_effect(e)).collect();
         let final_effects = if declared.is_empty() {
             inferred.clone()
         } else {
@@ -2613,15 +2571,7 @@ fn enforce_deterministic_profile(
     // declaration.  The rest are well-known effect names that users may bind
     // via `bind effect <name> to <tool>`.
     const NONDETERMINISTIC_EFFECTS: &[&str] = &[
-        "database",
-        "email",
-        "external",
-        "fs",
-        "http",
-        "llm",
-        "mcp",
-        "random",
-        "time",
+        "database", "email", "external", "fs", "http", "llm", "mcp", "random", "time",
     ];
 
     for cell in cells {
@@ -2658,9 +2608,10 @@ fn edit_distance(a: &str, b: &str) -> usize {
 
     let mut matrix = vec![vec![0; b_len + 1]; a_len + 1];
 
-    for i in 0..=a_len {
-        matrix[i][0] = i;
+    for (i, row) in matrix.iter_mut().enumerate() {
+        row[0] = i;
     }
+    #[allow(clippy::needless_range_loop)]
     for j in 0..=b_len {
         matrix[0][j] = j;
     }
@@ -2912,10 +2863,8 @@ mod tests {
 
     #[test]
     fn test_deterministic_profile_rejects_nondeterminism() {
-        let err = resolve_src(
-            "@deterministic true\n\ncell main() -> String\n  return uuid()\nend",
-        )
-        .unwrap_err();
+        let err = resolve_src("@deterministic true\n\ncell main() -> String\n  return uuid()\nend")
+            .unwrap_err();
         assert!(err.iter().any(|e| matches!(
             e,
             ResolveError::NondeterministicOperation { cell, operation, .. }
@@ -3083,10 +3032,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_stage_validation_rejects_unknown_stage() {
-        let err = resolve_src(
-            "pipeline P\n  stages:\n    UnknownStage\n  end\nend",
-        )
-        .unwrap_err();
+        let err = resolve_src("pipeline P\n  stages:\n    UnknownStage\n  end\nend").unwrap_err();
         assert!(err.iter().any(|e| matches!(
             e,
             ResolveError::PipelineUnknownStage { pipeline, stage, .. }
@@ -3109,7 +3055,8 @@ mod tests {
 
     #[test]
     fn test_duplicate_record_detection() {
-        let err = resolve_src("record Foo\n  x: Int\nend\n\nrecord Foo\n  y: String\nend").unwrap_err();
+        let err =
+            resolve_src("record Foo\n  x: Int\nend\n\nrecord Foo\n  y: String\nend").unwrap_err();
         assert!(err.iter().any(|e| matches!(
             e,
             ResolveError::Duplicate { name, .. } if name == "Foo"
@@ -3118,10 +3065,9 @@ mod tests {
 
     #[test]
     fn test_duplicate_cell_detection() {
-        let err = resolve_src(
-            "cell foo() -> Int\n  return 1\nend\n\ncell foo() -> Int\n  return 2\nend",
-        )
-        .unwrap_err();
+        let err =
+            resolve_src("cell foo() -> Int\n  return 1\nend\n\ncell foo() -> Int\n  return 2\nend")
+                .unwrap_err();
         assert!(err.iter().any(|e| matches!(
             e,
             ResolveError::Duplicate { name, .. } if name == "foo"
@@ -3140,7 +3086,8 @@ mod tests {
 
     #[test]
     fn test_duplicate_enum_detection() {
-        let err = resolve_src("enum Color\n  Red\n  Blue\nend\n\nenum Color\n  Green\nend").unwrap_err();
+        let err =
+            resolve_src("enum Color\n  Red\n  Blue\nend\n\nenum Color\n  Green\nend").unwrap_err();
         assert!(err.iter().any(|e| matches!(
             e,
             ResolveError::Duplicate { name, .. } if name == "Color"

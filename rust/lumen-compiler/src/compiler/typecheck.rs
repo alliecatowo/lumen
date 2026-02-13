@@ -91,9 +91,10 @@ fn edit_distance(a: &str, b: &str) -> usize {
 
     let mut matrix = vec![vec![0; b_len + 1]; a_len + 1];
 
-    for i in 0..=a_len {
-        matrix[i][0] = i;
+    for (i, row) in matrix.iter_mut().enumerate() {
+        row[0] = i;
     }
+    #[allow(clippy::needless_range_loop)]
     for j in 0..=b_len {
         matrix[0][j] = j;
     }
@@ -594,40 +595,32 @@ impl<'a> TypeChecker<'a> {
                         .insert(rest_name.clone(), Type::List(Box::new(elem_type)));
                 }
             }
-            Pattern::TupleDestructure { elements, .. } => {
-                match subject_type {
-                    Type::Tuple(types) => {
-                        for (idx, p) in elements.iter().enumerate() {
-                            let ty = types.get(idx).cloned().unwrap_or(Type::Any);
-                            self.bind_match_pattern(
-                                p,
-                                &ty,
-                                covered_variants,
-                                has_catchall,
-                                line,
-                            );
-                        }
-                    }
-                    Type::Any => {
-                        for p in elements {
-                            self.bind_match_pattern(
-                                p,
-                                &Type::Any,
-                                covered_variants,
-                                has_catchall,
-                                line,
-                            );
-                        }
-                    }
-                    other => {
-                        self.errors.push(TypeError::Mismatch {
-                            expected: "Tuple".into(),
-                            actual: format!("{}", other),
-                            line,
-                        });
+            Pattern::TupleDestructure { elements, .. } => match subject_type {
+                Type::Tuple(types) => {
+                    for (idx, p) in elements.iter().enumerate() {
+                        let ty = types.get(idx).cloned().unwrap_or(Type::Any);
+                        self.bind_match_pattern(p, &ty, covered_variants, has_catchall, line);
                     }
                 }
-            }
+                Type::Any => {
+                    for p in elements {
+                        self.bind_match_pattern(
+                            p,
+                            &Type::Any,
+                            covered_variants,
+                            has_catchall,
+                            line,
+                        );
+                    }
+                }
+                other => {
+                    self.errors.push(TypeError::Mismatch {
+                        expected: "Tuple".into(),
+                        actual: format!("{}", other),
+                        line,
+                    });
+                }
+            },
             Pattern::RecordDestructure {
                 type_name,
                 fields,
@@ -658,13 +651,7 @@ impl<'a> TypeChecker<'a> {
                         Type::Any
                     };
                     if let Some(p) = field_pat {
-                        self.bind_match_pattern(
-                            p,
-                            &field_ty,
-                            covered_variants,
-                            has_catchall,
-                            line,
-                        );
+                        self.bind_match_pattern(p, &field_ty, covered_variants, has_catchall, line);
                     } else {
                         self.locals.insert(field_name.clone(), field_ty);
                     }
@@ -703,7 +690,9 @@ impl<'a> TypeChecker<'a> {
                             Expr::BoolLit(_, _) => Type::Bool,
                             Expr::NullLit(_) => Type::Null,
                             Expr::ListLit(_, _) => Type::List(Box::new(Type::Any)),
-                            Expr::MapLit(_, _) => Type::Map(Box::new(Type::String), Box::new(Type::Any)),
+                            Expr::MapLit(_, _) => {
+                                Type::Map(Box::new(Type::String), Box::new(Type::Any))
+                            }
                             _ => Type::Any,
                         }
                     } else {
@@ -1109,9 +1098,7 @@ impl<'a> TypeChecker<'a> {
                     ComprehensionKind::Map => Type::Any, // map comprehension needs key+value
                 }
             }
-            Expr::MatchExpr {
-                subject, arms, ..
-            } => {
+            Expr::MatchExpr { subject, arms, .. } => {
                 let _subject_type = self.infer_expr(subject);
                 let mut result_type = Type::Any;
                 for arm in arms {
@@ -1230,7 +1217,11 @@ fn parse_directive_bool(program: &Program, name: &str) -> Option<bool> {
             }) if kind == "attribute" && attr_name.eq_ignore_ascii_case(name)
         )
     });
-    if has_attr { Some(true) } else { None }
+    if has_attr {
+        Some(true)
+    } else {
+        None
+    }
 }
 
 /// Typecheck a program.
@@ -1302,10 +1293,8 @@ mod tests {
     #[test]
     fn test_type_alias_resolves_in_typecheck() {
         // Type alias should resolve to the underlying type
-        typecheck_src(
-            "type UserId = String\n\ncell greet(id: UserId) -> String\n  return id\nend",
-        )
-        .unwrap();
+        typecheck_src("type UserId = String\n\ncell greet(id: UserId) -> String\n  return id\nend")
+            .unwrap();
     }
 
     #[test]
@@ -1320,10 +1309,8 @@ mod tests {
     #[test]
     fn test_strict_mode_catches_undefined_var() {
         // In strict mode (default), undefined variables should be caught
-        let err = typecheck_src(
-            "cell example() -> Int\n  return completely_unknown_var_xyz\nend",
-        )
-        .unwrap_err();
+        let err = typecheck_src("cell example() -> Int\n  return completely_unknown_var_xyz\nend")
+            .unwrap_err();
         assert!(err.iter().any(|e| matches!(e, TypeError::UndefinedVar { name, .. } if name == "completely_unknown_var_xyz")));
     }
 
@@ -1340,10 +1327,8 @@ mod tests {
     #[test]
     fn test_type_alias_basic() {
         // Basic type alias to primitive type
-        typecheck_src(
-            "type UserId = String\n\ncell greet(id: UserId) -> UserId\n  return id\nend",
-        )
-        .unwrap();
+        typecheck_src("type UserId = String\n\ncell greet(id: UserId) -> UserId\n  return id\nend")
+            .unwrap();
     }
 
     #[test]

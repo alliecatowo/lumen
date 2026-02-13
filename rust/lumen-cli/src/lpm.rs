@@ -57,6 +57,14 @@ enum Commands {
         /// Search query
         query: String,
     },
+    /// Create a deterministic package archive in dist/
+    Pack,
+    /// Validate package metadata/contents and (eventually) publish
+    Publish {
+        /// Validate/package locally without uploading
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() {
@@ -72,5 +80,7 @@ fn main() {
         Commands::Install { frozen } => pkg::cmd_pkg_install_with_lock(frozen),
         Commands::Update { frozen } => pkg::cmd_pkg_update_with_lock(frozen),
         Commands::Search { query } => pkg::cmd_pkg_search(&query),
+        Commands::Pack => pkg::cmd_pkg_pack(),
+        Commands::Publish { dry_run } => pkg::cmd_pkg_publish(dry_run),
     }
 }

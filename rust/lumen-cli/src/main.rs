@@ -224,6 +224,14 @@ enum PkgCommands {
         /// Search query
         query: String,
     },
+    /// Create a deterministic package archive in dist/
+    Pack,
+    /// Validate package metadata/contents and (eventually) publish
+    Publish {
+        /// Validate/package locally without uploading
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// Register all provider crates into the runtime registry.
@@ -392,6 +400,8 @@ fn main() {
             PkgCommands::Install { frozen } => pkg::cmd_pkg_install_with_lock(frozen),
             PkgCommands::Update { frozen } => pkg::cmd_pkg_update_with_lock(frozen),
             PkgCommands::Search { query } => pkg::cmd_pkg_search(&query),
+            PkgCommands::Pack => pkg::cmd_pkg_pack(),
+            PkgCommands::Publish { dry_run } => pkg::cmd_pkg_publish(dry_run),
         },
         Commands::Fmt { files, check } => cmd_fmt(files, check),
         Commands::Doc {

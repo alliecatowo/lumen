@@ -35,11 +35,13 @@ Implemented in `lumen pkg` today:
 - Dependency graph resolution for local path dependencies (including circular dependency detection)
 - `lumen pkg install` / `lumen pkg update` writing `lumen.lock` entries with `path+...` sources
 - `lumen pkg search` stub output (registry not yet available)
+- `lumen pkg pack` deterministic tarball generation (`dist/<name>-<version>.tar`)
+- `lumen pkg publish --dry-run` manifest/content validation using the same pack pipeline
 
 Not implemented yet:
 - Installing registry dependencies from version constraints
 - Registry index cloning, semver-based registry resolution, tarball download, checksum verification
-- Publish/authentication flows (`lumen registry ...`, registry API backend)
+- Registry upload/authentication flows (`lumen pkg publish` upload step, registry API backend)
 
 > The remaining sections describe target registry architecture. Treat them as planned design, not current behavior.
 

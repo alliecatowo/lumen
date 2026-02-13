@@ -80,9 +80,10 @@ pub struct VM {
     pub tool_dispatcher: Option<Box<dyn ToolDispatcher>>,
     next_future_id: u64,
     resolved_futures: BTreeMap<u64, Value>,
+    next_process_instance_id: u64,
     process_kinds: BTreeMap<String, String>,
-    memory_runtime: BTreeMap<String, MemoryRuntime>,
-    machine_runtime: BTreeMap<String, MachineRuntime>,
+    memory_runtime: BTreeMap<u64, MemoryRuntime>,
+    machine_runtime: BTreeMap<u64, MachineRuntime>,
 }
 
 impl VM {
@@ -97,6 +98,7 @@ impl VM {
             tool_dispatcher: None,
             next_future_id: 1,
             resolved_futures: BTreeMap::new(),
+            next_process_instance_id: 1,
             process_kinds: BTreeMap::new(),
             memory_runtime: BTreeMap::new(),
             machine_runtime: BTreeMap::new(),
@@ -109,6 +111,7 @@ impl VM {
         for s in &module.strings {
             self.strings.intern(s);
         }
+        self.next_process_instance_id = 1;
         self.process_kinds.clear();
         self.memory_runtime.clear();
         self.machine_runtime.clear();
@@ -160,6 +163,26 @@ impl VM {
             self.types.register(rt);
         }
         self.module = Some(module);
+    }
+
+    fn ensure_process_instance(&mut self, value: &mut Value) {
+        let Value::Record(ref mut r) = value else {
+            return;
+        };
+        if !self.process_kinds.contains_key(&r.type_name) {
+            return;
+        }
+        if let Some(Value::Int(_)) = r.fields.get("__instance_id") {
+            return;
+        }
+        let id = self.next_process_instance_id;
+        self.next_process_instance_id += 1;
+        r.fields
+            .insert("__instance_id".to_string(), Value::Int(id as i64));
+        r.fields.insert(
+            "__process_name".to_string(),
+            Value::String(StringRef::Owned(r.type_name.clone())),
+        );
     }
 
     /// Execute a cell by name with arguments.
@@ -698,7 +721,8 @@ impl VM {
                     unreachable!()
                 }
                 OpCode::Return => {
-                    let return_val = self.registers[base + a].clone();
+                    let mut return_val = self.registers[base + a].clone();
+                    self.ensure_process_instance(&mut return_val);
                     let frame = self.frames.pop().unwrap();
                     if let Some(fid) = frame.future_id {
                         self.resolved_futures.insert(fid, return_val);
@@ -1187,7 +1211,13 @@ impl VM {
         let args: Vec<Value> = (0..nargs)
             .map(|i| self.registers[base + a + 1 + i].clone())
             .collect();
-        let store = self.memory_runtime.entry(owner.to_string()).or_default();
+        let instance_id = process_instance_id(args.first()).ok_or_else(|| {
+            VmError::TypeError(format!(
+                "{}.{} requires a process instance as the first argument",
+                owner, method
+            ))
+        })?;
+        let store = self.memory_runtime.entry(instance_id).or_default();
         match method {
             "append" | "remember" => {
                 if let Some(val) = args.get(1) {
@@ -1264,11 +1294,20 @@ impl VM {
         &mut self,
         owner: &str,
         method: &str,
-        _base: usize,
-        _a: usize,
-        _nargs: usize,
+        base: usize,
+        a: usize,
+        nargs: usize,
     ) -> Result<Value, VmError> {
-        let state = self.machine_runtime.entry(owner.to_string()).or_default();
+        let args: Vec<Value> = (0..nargs)
+            .map(|i| self.registers[base + a + 1 + i].clone())
+            .collect();
+        let instance_id = process_instance_id(args.first()).ok_or_else(|| {
+            VmError::TypeError(format!(
+                "{}.{} requires a process instance as the first argument",
+                owner, method
+            ))
+        })?;
+        let state = self.machine_runtime.entry(instance_id).or_default();
         match method {
             "start" => {
                 state.started = true;
@@ -2732,6 +2771,19 @@ impl VM {
     }
 }
 
+fn process_instance_id(value: Option<&Value>) -> Option<u64> {
+    let Value::Record(r) = value? else {
+        return None;
+    };
+    let Value::Int(id) = r.fields.get("__instance_id")? else {
+        return None;
+    };
+    if *id < 0 {
+        return None;
+    }
+    Some(*id as u64)
+}
+
 /// Convert a Lumen Value to a serde_json Value.
 fn value_to_json(val: &Value) -> serde_json::Value {
     match val {
@@ -3387,6 +3439,24 @@ end
     }
 
     #[test]
+    fn test_memory_instances_are_isolated() {
+        let result = run_main(
+            r#"
+memory Buf
+end
+
+cell main() -> Int
+  let a = Buf()
+  let b = Buf()
+  a.append("x")
+  return length(b.recent(10))
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(0));
+    }
+
+    #[test]
     fn test_machine_runtime_methods() {
         let result = run_main(
             r#"
@@ -3402,5 +3472,24 @@ end
 "#,
         );
         assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_machine_instances_are_isolated() {
+        let result = run_main(
+            r#"
+machine TicketHandler
+end
+
+cell main() -> Bool
+  let a = TicketHandler()
+  let b = TicketHandler()
+  a.start("ticket")
+  a.step()
+  return b.is_terminal()
+end
+"#,
+        );
+        assert_eq!(result, Value::Bool(false));
     }
 }

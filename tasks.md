@@ -452,3 +452,120 @@ Completed work should be removed from this list and reflected in docs/changelog.
 - [ ] Add versioned language spec (Lumen 1.0, 1.1, etc.).
 
 - [ ] Add migration guides for breaking changes.
+
+## Competitive Gap Tasks
+
+These tasks close identified gaps where Lumen is objectively behind competitors (see `docs/COMPETITIVE_ANALYSIS.md` for full analysis).
+
+### P0 — Blocking V1 Release
+
+- [ ] **Gap 1: Generic Type Instantiation** — Match Rust/TypeScript/Go/Gleam
+  - Implement generic instantiation in `typecheck.rs` (monomorphization or erasure)
+  - Add generic constraint checking (`where T: Trait`)
+  - Expand test suite with generic record/enum/cell cases
+  - Target: Type-safe collections work like TypeScript generics
+
+- [ ] **Gap 3: MCP Bridge (Ecosystem Blocker)** — Beat LangChain/DSPy integration
+  - Complete `lumen-provider-mcp` crate with stdio/HTTP transports
+  - Parse MCP server tool schemas into `ToolProvider` instances
+  - Map MCP `tools/list` to Lumen tool registry
+  - Wire `lumen.toml` MCP config into CLI startup
+  - Target: `lumen run example.lm.md` with MCP GitHub server works in one command
+
+- [ ] **Gap 5: Parser Error Recovery** — Match Rust/TypeScript multi-error reporting
+  - Add panic mode recovery (skip to next statement boundary on error)
+  - Collect all errors before aborting
+  - Emit partial AST for incomplete parses (enables LSP partial completions)
+  - Target: Report 5+ errors in one compile pass (Rust-style)
+
+### P1 — Developer Experience Parity
+
+- [ ] **Gap 2: LSP Incremental Parsing** — Match TypeScript responsiveness
+  - Adopt tree-sitter-lumen for incremental parsing
+  - Track file changes as delta edits (LSP TextDocumentContentChangeEvent)
+  - Re-typecheck only affected symbols and dependents
+  - Cache symbol table and AST between edits
+  - Target: Diagnostics appear <100ms after typing (match TypeScript LSP)
+
+- [ ] **Gap 6: Test Runner** — Match `cargo test`, `go test`, `gleam test`
+  - Add `test` declaration form (like `cell` but for tests)
+  - Implement `lumen test` command that discovers and runs test cells
+  - Add assertion intrinsics (`assert_eq`, `assert_ne`, `assert_ok`, `assert_err`)
+  - Support test filtering (by name/path) and parallel execution
+  - Target: `lumen test` runs all tests with colored pass/fail output
+
+- [ ] **Gap 7: Documentation Generation** — Match rustdoc/godoc/TSDoc
+  - Add `lumen doc` command that extracts doc comments from AST
+  - Generate HTML/markdown with symbol links
+  - Include examples from doc comments
+  - Publish to static site (like docs.rs for Rust)
+  - Target: `lumen doc --open` generates and opens navigable API docs
+
+### P2 — Ecosystem Growth
+
+- [ ] **Gap 4: Package Registry** — Match crates.io/npm/pkg.go.dev/Hex
+  - Design package manifest format (extend `lumen.toml`)
+  - Implement lockfile generation (a la `Cargo.lock`, `package-lock.json`)
+  - Build registry server (static S3 + API or dynamic service)
+  - Implement `lumen pkg publish` command
+  - Add SemVer version constraint parsing
+  - Target: `lumen pkg add github-client@1.0` downloads and integrates package
+
+### P3 — Production Readiness
+
+- [ ] **Gap 8: WASM Compilation Target** — Match Rust/Gleam/Go WASM support
+  - Add WASM backend to lowering stage (emit `.wasm` instead of LIR)
+  - Implement runtime intrinsics as WASM imports
+  - Provide JS glue for tool provider dispatch
+  - Add `lumen build --target wasm` flag
+  - Target: Lumen REPL running in browser at `play.lumenlang.dev`
+
+- [ ] **Gap 9: Memory Management** — Match Rust ownership or Go/Gleam GC
+  - **Option A:** Implement tracing GC (mark-and-sweep or generational)
+  - **Option B:** Add ownership/borrow checker (Rust-style)
+  - **Option C:** Reference counting with cycle detection
+  - Target: Long-running process (24hr+) maintains stable memory footprint
+
+### V2 — AI-First Differentiators (Beat BAML/Guidance/DSPy)
+
+These build on Lumen's unique strengths to create capabilities no other language provides.
+
+- [ ] **Structured AI Output Types** — Beat BAML type-safe prompting
+  - JSON schema compilation from record types (`lumen emit --schema RecordName`)
+  - Include schema in `ToolCall` opcode requests
+  - Auto-retry on schema validation failures
+  - Builds on existing `expect schema` opcode
+
+- [ ] **Typed Prompt Templates** — Beat Guidance constrained generation
+  - New `prompt` declaration bundling `role` blocks with typed input/output
+  - Compiler verifies interpolated variables exist with correct types
+  - Output type compiles to JSON schema
+  - Builds on existing `role` block parsing
+
+- [ ] **Cost-Aware Types with Budget Enforcement** — No other language has this
+  - `cost` annotation on effect rows: `cell foo() -> String / cost[~2000]`
+  - Compiler sums costs through call graph
+  - Check against `@budget` directives at compile-time
+  - Extends existing `grant { max_tokens }` constraint
+
+- [ ] **Constraint-Driven Automatic Retry** — Beat BAML structured extraction
+  - Evaluate `where` predicates on record construction at runtime
+  - When LLM structured output violates constraints, auto-retry with violation feedback
+  - Builds on existing `constraints.rs` compile-time validation
+
+- [ ] **Agent Orchestration Primitives** — Beat LangGraph state management
+  - First-class capability grants with attenuation (grants as values)
+  - Session-typed multi-agent protocols (multiparty session types)
+  - CRDT memory types (`memory SharedState: crdt`)
+  - Event-sourced memory (`memory AuditTrail: event_sourced`)
+
+- [ ] **Effect-Guaranteed Deterministic Replay** — No framework can prove this
+  - Effect system proves all side effects are declared and traced
+  - Replay mode substitutes recorded responses
+  - "Audit completeness by construction"
+  - Builds on existing effect system + trace infrastructure
+
+- [ ] **Linear Resource Types** — Apply Rust ownership to AI resources
+  - `once` and `consume` type qualifiers for API keys, session handles, context windows
+  - Single-use enforcement at compile-time
+  - Prevents token budget leaks and credential reuse

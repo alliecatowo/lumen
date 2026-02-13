@@ -1383,25 +1383,80 @@ impl<'a> Lowerer<'a> {
             }
             Expr::ListLit(elems, _) => {
                 let dest = ra.alloc_temp();
-                // Evaluate each element and move into consecutive registers after dest
-                let mut elem_regs = Vec::new();
-                for elem in elems {
-                    let er = self.lower_expr(elem, ra, consts, instrs);
-                    elem_regs.push(er);
-                }
-                // Move elements into consecutive positions dest+1..dest+N
-                for (i, er) in elem_regs.iter().enumerate() {
-                    let target = dest + 1 + i as u8;
-                    if *er != target {
-                        instrs.push(Instruction::abc(OpCode::Move, target, *er, 0));
+                // Check if any element is a spread - if so, use append-based lowering
+                let has_spread = elems.iter().any(|e| matches!(e, Expr::SpreadExpr(_, _)));
+
+                if has_spread {
+                    // Create empty list and append each element (or spread elements)
+                    instrs.push(Instruction::abc(OpCode::NewList, dest, 0, 0));
+                    for elem in elems {
+                        match elem {
+                            Expr::SpreadExpr(inner, _) => {
+                                // Iterate over the spread value and append each element
+                                let src_reg = self.lower_expr(inner, ra, consts, instrs);
+                                let idx_reg = ra.alloc_temp();
+                                let len_reg = ra.alloc_temp();
+
+                                let zero_idx = consts.len() as u16;
+                                consts.push(Constant::Int(0));
+                                instrs.push(Instruction::abx(OpCode::LoadK, idx_reg, zero_idx));
+                                instrs.push(Instruction::abc(
+                                    OpCode::Intrinsic,
+                                    len_reg,
+                                    IntrinsicId::Length as u8,
+                                    src_reg,
+                                ));
+
+                                let loop_start = instrs.len();
+                                let lt_reg = ra.alloc_temp();
+                                instrs.push(Instruction::abc(OpCode::Lt, lt_reg, idx_reg, len_reg));
+                                instrs.push(Instruction::abc(OpCode::Test, lt_reg, 0, 0));
+                                let break_jmp = instrs.len();
+                                instrs.push(Instruction::sax(OpCode::Jmp, 0));
+
+                                let elem_reg = ra.alloc_temp();
+                                instrs.push(Instruction::abc(OpCode::GetIndex, elem_reg, src_reg, idx_reg));
+                                instrs.push(Instruction::abc(OpCode::Append, dest, elem_reg, 0));
+
+                                let one_idx = consts.len() as u16;
+                                consts.push(Constant::Int(1));
+                                let one_reg = ra.alloc_temp();
+                                instrs.push(Instruction::abx(OpCode::LoadK, one_reg, one_idx));
+                                instrs.push(Instruction::abc(OpCode::Add, idx_reg, idx_reg, one_reg));
+
+                                let back_offset = loop_start as i32 - instrs.len() as i32 - 1;
+                                instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
+
+                                let after_loop = instrs.len();
+                                instrs[break_jmp] = Instruction::sax(OpCode::Jmp, (after_loop - break_jmp - 1) as i32);
+                            }
+                            _ => {
+                                let er = self.lower_expr(elem, ra, consts, instrs);
+                                instrs.push(Instruction::abc(OpCode::Append, dest, er, 0));
+                            }
+                        }
                     }
+                } else {
+                    // No spread - use original efficient lowering
+                    let mut elem_regs = Vec::new();
+                    for elem in elems {
+                        let er = self.lower_expr(elem, ra, consts, instrs);
+                        elem_regs.push(er);
+                    }
+                    // Move elements into consecutive positions dest+1..dest+N
+                    for (i, er) in elem_regs.iter().enumerate() {
+                        let target = dest + 1 + i as u8;
+                        if *er != target {
+                            instrs.push(Instruction::abc(OpCode::Move, target, *er, 0));
+                        }
+                    }
+                    instrs.push(Instruction::abc(
+                        OpCode::NewList,
+                        dest,
+                        elems.len() as u8,
+                        0,
+                    ));
                 }
-                instrs.push(Instruction::abc(
-                    OpCode::NewList,
-                    dest,
-                    elems.len() as u8,
-                    0,
-                ));
                 dest
             }
             Expr::MapLit(pairs, _) => {
@@ -2848,8 +2903,18 @@ mod tests {
         let src = "cell make_set() -> set[Int]\n  let xs = [1, 2, 3]\n  return set[x for x in xs]\nend";
         let module = lower_src(src);
         let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
-        assert!(ops.contains(&OpCode::NewSet), "set comprehension should emit NewSet");
+        // Set comprehension now builds as list then converts using ToSet intrinsic
         assert!(ops.contains(&OpCode::Append), "set comprehension should emit Append");
+        let intrinsics: Vec<u8> = module.cells[0]
+            .instructions
+            .iter()
+            .filter(|i| i.op == OpCode::Intrinsic)
+            .map(|i| i.b)
+            .collect();
+        assert!(
+            intrinsics.contains(&(IntrinsicId::ToSet as u8)),
+            "set comprehension should use ToSet intrinsic"
+        );
     }
 
     #[test]
@@ -3024,4 +3089,36 @@ mod tests {
         assert_eq!(le_instr.b, 1, "GtEq should swap: Le first operand should be b (r1)");
         assert_eq!(le_instr.c, 0, "GtEq should swap: Le second operand should be a (r0)");
     }
+
+    #[test]
+    fn test_set_comprehension_uses_toset_intrinsic() {
+        let src = "cell make_set() -> set[Int]\n  let xs = [1, 2, 3]\n  return set[x for x in xs]\nend";
+        let module = lower_src(src);
+        let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
+        // Set comprehension should build as list then convert using ToSet intrinsic
+        assert!(ops.contains(&OpCode::Append), "set comprehension should use Append during iteration");
+        let intrinsics: Vec<u8> = module.cells[0]
+            .instructions
+            .iter()
+            .filter(|i| i.op == OpCode::Intrinsic)
+            .map(|i| i.b)
+            .collect();
+        assert!(
+            intrinsics.contains(&(IntrinsicId::ToSet as u8)),
+            "set comprehension should use ToSet intrinsic to convert list to set"
+        );
+    }
+
+    #[test]
+    fn test_list_with_spread_uses_append() {
+        let src = "cell merge() -> list[Int]\n  let a = [1, 2]\n  let b = [3, 4]\n  return [0, ...a, ...b, 5]\nend";
+        let module = lower_src(src);
+        let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
+        // List with spread should use Append-based construction
+        assert!(ops.contains(&OpCode::Append), "list with spread should use Append");
+        // Should iterate over spread values
+        assert!(ops.contains(&OpCode::GetIndex), "should iterate over spread values");
+        assert!(ops.contains(&OpCode::Lt), "should check bounds during spread iteration");
+    }
+
 }

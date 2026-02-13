@@ -11,6 +11,25 @@ use lumen_runtime::tools::{ProviderRegistry, ToolDispatcher, ToolRequest};
 use std::collections::{BTreeMap, VecDeque};
 use thiserror::Error;
 
+/// Debug events emitted during VM execution.
+/// Used for step-through debugging and execution tracing.
+#[derive(Debug, Clone)]
+pub enum DebugEvent {
+    /// Instruction step: cell name, instruction pointer, opcode name
+    Step {
+        cell_name: String,
+        ip: usize,
+        opcode: String,
+    },
+    /// Call enter: cell name being called
+    CallEnter { cell_name: String },
+    /// Call exit: cell name returning, result value
+    CallExit {
+        cell_name: String,
+        result: Value,
+    },
+}
+
 #[derive(Debug, Error)]
 pub enum VmError {
     #[error("runtime error: {0}")]
@@ -147,6 +166,8 @@ pub struct VM {
     pub output: Vec<String>,
     /// Optional tool dispatcher
     pub tool_dispatcher: Option<Box<dyn ToolDispatcher>>,
+    /// Optional debug callback for step-through debugging
+    pub debug_callback: Option<Box<dyn FnMut(&DebugEvent)>>,
     next_future_id: u64,
     future_states: BTreeMap<u64, FutureState>,
     scheduled_futures: VecDeque<FutureTask>,
@@ -172,6 +193,7 @@ impl VM {
             module: None,
             output: Vec::new(),
             tool_dispatcher: None,
+            debug_callback: None,
             next_future_id: 1,
             future_states: BTreeMap::new(),
             scheduled_futures: VecDeque::new(),
@@ -701,6 +723,17 @@ impl VM {
                 let instr = cell.instructions[ip];
                 (cell_idx, base, instr)
             };
+
+            // Emit debug Step event
+            if let Some(ref mut cb) = self.debug_callback {
+                let module = self.module.as_ref().ok_or(VmError::NoModule)?;
+                let cell = &module.cells[cell_idx];
+                cb(&DebugEvent::Step {
+                    cell_name: cell.name.clone(),
+                    ip: self.frames.last().map(|f| f.ip).unwrap_or(0),
+                    opcode: format!("{:?}", instr.op),
+                });
+            }
 
             // Advance IP in the frame
             if let Some(f) = self.frames.last_mut() {
@@ -1240,6 +1273,17 @@ impl VM {
                         .frames
                         .pop()
                         .ok_or_else(|| VmError::Runtime("call stack underflow".into()))?;
+
+                    // Emit debug CallExit event
+                    if let Some(ref mut cb) = self.debug_callback {
+                        let module = self.module.as_ref().ok_or(VmError::NoModule)?;
+                        let cell = &module.cells[frame.cell_idx];
+                        cb(&DebugEvent::CallExit {
+                            cell_name: cell.name.clone(),
+                            result: return_val.clone(),
+                        });
+                    }
+
                     if let Some(fid) = frame.future_id {
                         self.future_states
                             .insert(fid, FutureState::Completed(return_val));
@@ -1588,6 +1632,12 @@ impl VM {
                         return_register: base + a,
                         future_id: None,
                     });
+                    // Emit debug CallEnter event
+                    if let Some(ref mut cb) = self.debug_callback {
+                        cb(&DebugEvent::CallEnter {
+                            cell_name: name.clone(),
+                        });
+                    }
                 } else {
                     let _ = module;
                     let result = self.call_builtin(&name, base, a, nargs)?;
@@ -1624,6 +1674,14 @@ impl VM {
                     return_register: base + a,
                     future_id: None,
                 });
+                // Emit debug CallEnter event for closure call
+                if let Some(ref mut cb) = self.debug_callback {
+                    let module = self.module.as_ref().ok_or(VmError::NoModule)?;
+                    let cell = &module.cells[cv.cell_idx];
+                    cb(&DebugEvent::CallEnter {
+                        cell_name: cell.name.clone(),
+                    });
+                }
             }
             _ => {
                 return Err(VmError::TypeError(format!("cannot call {}", callee)));
@@ -4809,6 +4867,152 @@ mod tests {
         } else {
             panic!("expected set");
         }
+    }
+
+    #[test]
+    fn test_toset_intrinsic_deduplicates() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: None,
+                registers: 8,
+                constants: vec![Constant::Int(1), Constant::Int(2), Constant::Int(1), Constant::Int(3)],
+                instructions: vec![
+                    Instruction::abc(OpCode::NewList, 0, 0, 0),
+                    Instruction::abx(OpCode::LoadK, 1, 0),  // 1
+                    Instruction::abc(OpCode::Append, 0, 1, 0),
+                    Instruction::abx(OpCode::LoadK, 1, 1),  // 2
+                    Instruction::abc(OpCode::Append, 0, 1, 0),
+                    Instruction::abx(OpCode::LoadK, 1, 2),  // 1 (duplicate)
+                    Instruction::abc(OpCode::Append, 0, 1, 0),
+                    Instruction::abx(OpCode::LoadK, 1, 3),  // 3
+                    Instruction::abc(OpCode::Append, 0, 1, 0),
+                    // Convert list to set using ToSet intrinsic (ID 69)
+                    Instruction::abc(OpCode::Intrinsic, 2, 69, 0),
+                    Instruction::abc(OpCode::Return, 2, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+        let mut vm = VM::new();
+        vm.load(module);
+        let result = vm.execute("main", vec![]).unwrap();
+        // ToSet should deduplicate: [1,2,1,3] -> {1,2,3}
+        if let Value::Set(s) = result {
+            assert_eq!(s.len(), 3, "ToSet should deduplicate elements");
+            assert!(s.contains(&Value::Int(1)));
+            assert!(s.contains(&Value::Int(2)));
+            assert!(s.contains(&Value::Int(3)));
+        } else {
+            panic!("expected set, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_debug_hooks_capture_steps() {
+        use std::sync::{Arc, Mutex};
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = Arc::clone(&events);
+
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: None,
+                registers: 4,
+                constants: vec![Constant::Int(5), Constant::Int(3)],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),  // r0 = 5
+                    Instruction::abx(OpCode::LoadK, 1, 1),  // r1 = 3
+                    Instruction::abc(OpCode::Add, 2, 0, 1), // r2 = r0 + r1
+                    Instruction::abc(OpCode::Return, 2, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        vm.debug_callback = Some(Box::new(move |event| {
+            events_clone.lock().unwrap().push(event.clone());
+        }));
+        vm.load(module);
+        let result = vm.execute("main", vec![]).unwrap();
+        assert_eq!(result, Value::Int(8));
+
+        let captured_events = events.lock().unwrap();
+        // Should have Step events for each instruction
+        let step_count = captured_events
+            .iter()
+            .filter(|e| matches!(e, DebugEvent::Step { .. }))
+            .count();
+        assert!(step_count >= 4, "should capture at least 4 step events, got {}", step_count);
+    }
+
+    #[test]
+    fn test_debug_hooks_capture_call_exit() {
+        use std::sync::{Arc, Mutex};
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = Arc::clone(&events);
+
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: None,
+                registers: 2,
+                constants: vec![Constant::Int(42)],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),  // r0 = 42
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        vm.debug_callback = Some(Box::new(move |event| {
+            events_clone.lock().unwrap().push(event.clone());
+        }));
+        vm.load(module);
+        let _ = vm.execute("main", vec![]);
+
+        let captured_events = events.lock().unwrap();
+        // Should have a CallExit event when returning
+        let has_call_exit = captured_events
+            .iter()
+            .any(|e| matches!(e, DebugEvent::CallExit { .. }));
+        assert!(has_call_exit, "should capture CallExit event");
     }
 
     #[test]

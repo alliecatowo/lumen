@@ -4439,6 +4439,34 @@ end
     }
 
     #[test]
+    fn test_pipeline_declarative_stages_generate_run_semantics() {
+        let result = run_main(
+            r#"
+cell inc(x: Int) -> Int
+  return x + 1
+end
+
+cell dbl(x: Int) -> Int
+  return x * 2
+end
+
+pipeline NumberPipe
+  stages:
+    inc
+      -> dbl
+  end
+end
+
+cell main() -> Int
+  let p = NumberPipe()
+  return p.run(3)
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(8));
+    }
+
+    #[test]
     fn test_memory_runtime_append_recent() {
         let result = run_main(
             r#"

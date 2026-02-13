@@ -4,6 +4,7 @@ use crate::compiler::ast::*;
 use crate::compiler::lir::*;
 use crate::compiler::regalloc::RegAlloc;
 use crate::compiler::resolve::SymbolTable;
+use crate::compiler::tokens::Span;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
@@ -126,6 +127,64 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                     let mut lowered = cell.clone();
                     lowered.name = format!("{}.{}", p.name, cell.name);
                     module.cells.push(lowerer.lower_cell(&lowered));
+                }
+                if p.kind == "pipeline"
+                    && !p.pipeline_stages.is_empty()
+                    && !p.cells.iter().any(|c| c.name == "run")
+                {
+                    let span = p.span;
+                    let value_name = "__pipeline_value".to_string();
+                    let mut body = vec![Stmt::Let(LetStmt {
+                        name: value_name.clone(),
+                        mutable: true,
+                        pattern: None,
+                        ty: Some(TypeExpr::Named("Any".to_string(), span)),
+                        value: Expr::Ident("input".to_string(), span),
+                        span,
+                    })];
+                    for stage in &p.pipeline_stages {
+                        let callee = pipeline_stage_callee_expr(stage, span);
+                        let call = Expr::Call(
+                            Box::new(callee),
+                            vec![CallArg::Positional(Expr::Ident(value_name.clone(), span))],
+                            span,
+                        );
+                        body.push(Stmt::Assign(AssignStmt {
+                            target: value_name.clone(),
+                            value: call,
+                            span,
+                        }));
+                    }
+                    body.push(Stmt::Return(ReturnStmt {
+                        value: Expr::Ident(value_name, span),
+                        span,
+                    }));
+                    let generated = CellDef {
+                        name: format!("{}.run", p.name),
+                        generic_params: vec![],
+                        params: vec![
+                            Param {
+                                name: "self".to_string(),
+                                ty: TypeExpr::Named("Json".to_string(), span),
+                                default_value: None,
+                                span,
+                            },
+                            Param {
+                                name: "input".to_string(),
+                                ty: TypeExpr::Named("Any".to_string(), span),
+                                default_value: None,
+                                span,
+                            },
+                        ],
+                        return_type: Some(TypeExpr::Named("Any".to_string(), span)),
+                        effects: vec![],
+                        body,
+                        is_pub: false,
+                        is_async: false,
+                        where_clauses: vec![],
+                        span,
+                    };
+                    module.cells.push(lowerer.lower_cell(&generated));
                 }
                 for g in &p.grants {
                     let mut grants = serde_json::Map::new();
@@ -2162,6 +2221,19 @@ fn encode_machine_expr(expr: &Expr) -> Option<serde_json::Value> {
         }
         _ => None,
     }
+}
+
+fn pipeline_stage_callee_expr(stage: &str, span: Span) -> Expr {
+    let mut parts = stage.split('.');
+    let first = parts
+        .next()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| stage.to_string());
+    let mut expr = Expr::Ident(first, span);
+    for part in parts {
+        expr = Expr::DotAccess(Box::new(expr), part.to_string(), span);
+    }
+    expr
 }
 
 #[cfg(test)]

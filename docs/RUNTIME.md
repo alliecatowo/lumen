@@ -37,6 +37,9 @@ Process-family declarations compile to constructor-backed records with callable 
 
 Current runtime support:
 
+- `pipeline` semantics:
+  - declarative stage chains compile into executable `run` behavior (when explicit `run` is not provided)
+  - runtime executes stage chain deterministically in declaration order
 - `memory` methods:
   - `append`, `recent`, `remember`, `recall`, `upsert`, `get`, `query`, `store`
 - `machine` methods:

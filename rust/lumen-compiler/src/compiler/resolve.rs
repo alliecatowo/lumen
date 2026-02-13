@@ -94,6 +94,27 @@ pub enum ResolveError {
         actual: String,
         line: usize,
     },
+    #[error("pipeline '{pipeline}' references unknown stage cell '{stage}' at line {line}")]
+    PipelineUnknownStage {
+        pipeline: String,
+        stage: String,
+        line: usize,
+    },
+    #[error("pipeline '{pipeline}' stage '{stage}' has invalid arity at line {line}: expected exactly one data argument")]
+    PipelineStageArity {
+        pipeline: String,
+        stage: String,
+        line: usize,
+    },
+    #[error("pipeline '{pipeline}' stage type mismatch from '{from_stage}' to '{to_stage}' at line {line}: expected {expected}, got {actual}")]
+    PipelineStageTypeMismatch {
+        pipeline: String,
+        from_stage: String,
+        to_stage: String,
+        expected: String,
+        actual: String,
+        line: usize,
+    },
 }
 
 /// Symbol table built during resolution
@@ -151,6 +172,7 @@ pub struct ProcessInfo {
     pub kind: String,
     pub name: String,
     pub methods: Vec<String>,
+    pub pipeline_stages: Vec<String>,
     pub machine_initial: Option<String>,
     pub machine_states: Vec<MachineStateInfo>,
 }
@@ -406,6 +428,7 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                         kind: p.kind.clone(),
                         name: p.name.clone(),
                         methods: p.cells.iter().map(|c| c.name.clone()).collect(),
+                        pipeline_stages: p.pipeline_stages.clone(),
                         machine_initial: p.machine_initial.clone(),
                         machine_states: p
                             .machine_states
@@ -633,6 +656,9 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                 }
             }
             Item::Process(p) => {
+                if p.kind == "pipeline" {
+                    validate_pipeline_stages(p, &table, &mut errors);
+                }
                 if p.kind == "machine" {
                     validate_machine_graph(p, &mut errors);
                     for state in &p.machine_states {
@@ -1123,6 +1149,77 @@ fn validate_machine_graph(process: &ProcessDecl, errors: &mut Vec<ResolveError>)
             machine: process.name.clone(),
             line: process.span.line,
         });
+    }
+}
+
+fn validate_pipeline_stages(
+    process: &ProcessDecl,
+    table: &SymbolTable,
+    errors: &mut Vec<ResolveError>,
+) {
+    if process.pipeline_stages.is_empty() {
+        return;
+    }
+
+    let mut previous_output: Option<TypeExpr> = None;
+    let mut previous_stage: Option<String> = None;
+    for stage in &process.pipeline_stages {
+        let Some(cell) = table.cells.get(stage) else {
+            errors.push(ResolveError::PipelineUnknownStage {
+                pipeline: process.name.clone(),
+                stage: stage.clone(),
+                line: process.span.line,
+            });
+            previous_output = None;
+            previous_stage = Some(stage.clone());
+            continue;
+        };
+
+        let non_self_params: Vec<&(String, TypeExpr)> =
+            cell.params.iter().filter(|(name, _)| name != "self").collect();
+        if non_self_params.len() != 1 {
+            errors.push(ResolveError::PipelineStageArity {
+                pipeline: process.name.clone(),
+                stage: stage.clone(),
+                line: process.span.line,
+            });
+        } else if let Some(prev_out) = previous_output.as_ref() {
+            let expected = &non_self_params[0].1;
+            if !pipeline_type_compatible(expected, prev_out) {
+                errors.push(ResolveError::PipelineStageTypeMismatch {
+                    pipeline: process.name.clone(),
+                    from_stage: previous_stage.clone().unwrap_or_else(|| "<entry>".to_string()),
+                    to_stage: stage.clone(),
+                    expected: machine_type_key(expected),
+                    actual: machine_type_key(prev_out),
+                    line: process.span.line,
+                });
+            }
+        }
+
+        previous_output = Some(
+            cell.return_type
+                .clone()
+                .unwrap_or(TypeExpr::Named("Any".to_string(), process.span)),
+        );
+        previous_stage = Some(stage.clone());
+    }
+}
+
+fn pipeline_type_compatible(expected: &TypeExpr, actual: &TypeExpr) -> bool {
+    match expected {
+        TypeExpr::Named(name, _) if name == "Any" => true,
+        TypeExpr::Union(types, _) => types
+            .iter()
+            .any(|candidate| pipeline_type_compatible(candidate, actual)),
+        _ => {
+            let actual_key = machine_type_key(actual);
+            if actual_key == "Any" {
+                true
+            } else {
+                machine_type_key(expected) == actual_key
+            }
+        }
     }
 }
 
@@ -2832,6 +2929,32 @@ mod tests {
             e,
             ResolveError::MachineGuardType { machine, state, actual, .. }
             if machine == "Guarded" && state == "Start" && actual == "Int"
+        )));
+    }
+
+    #[test]
+    fn test_pipeline_stage_validation_rejects_unknown_stage() {
+        let err = resolve_src(
+            "pipeline P\n  stages:\n    UnknownStage\n  end\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::PipelineUnknownStage { pipeline, stage, .. }
+            if pipeline == "P" && stage == "UnknownStage"
+        )));
+    }
+
+    #[test]
+    fn test_pipeline_stage_validation_rejects_type_mismatch() {
+        let err = resolve_src(
+            "cell one(x: Int) -> String\n  return \"x\"\nend\n\ncell two(y: Int) -> Int\n  return y\nend\n\npipeline P\n  stages:\n    one\n      -> two\n  end\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::PipelineStageTypeMismatch { pipeline, from_stage, to_stage, expected, actual, .. }
+            if pipeline == "P" && from_stage == "one" && to_stage == "two" && expected == "Int" && actual == "String"
         )));
     }
 }

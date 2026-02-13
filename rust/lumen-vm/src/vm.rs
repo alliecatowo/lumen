@@ -23,6 +23,8 @@ pub enum VmError {
     ToolError(String),
     #[error("type error at runtime: {0}")]
     TypeError(String),
+    #[error("no module loaded")]
+    NoModule,
 }
 
 const MAX_CALL_DEPTH: usize = 256;
@@ -43,6 +45,8 @@ pub struct VM {
     registers: Vec<Value>,
     frames: Vec<CallFrame>,
     module: Option<LirModule>,
+    /// Captured stdout output (for testing and tracing)
+    pub output: Vec<String>,
 }
 
 impl VM {
@@ -53,6 +57,7 @@ impl VM {
             registers: Vec::new(),
             frames: Vec::new(),
             module: None,
+            output: Vec::new(),
         }
     }
 
@@ -86,7 +91,7 @@ impl VM {
 
     /// Execute a cell by name with arguments.
     pub fn execute(&mut self, cell_name: &str, args: Vec<Value>) -> Result<Value, VmError> {
-        let module = self.module.as_ref().ok_or_else(|| VmError::Runtime("no module loaded".into()))?;
+        let module = self.module.as_ref().ok_or(VmError::NoModule)?;
         let cell_idx = module.cells.iter().position(|c| c.name == cell_name)
             .ok_or_else(|| VmError::UndefinedCell(cell_name.into()))?;
 
@@ -264,6 +269,14 @@ impl VM {
                     let lhs = &self.registers[base + b];
                     let rhs = &self.registers[base + c];
                     let eq = lhs == rhs;
+                    // If A == 0, test for equality; if A != 0, test for inequality
+                    let test = if a == 0 { !eq } else { eq };
+                    if test {
+                        // Skip next instruction
+                        if let Some(f) = self.frames.last_mut() { f.ip += 1; }
+                    }
+                    // Also store the result in case it's used as a value
+                    // We store based on b == c comparison result into the first operand position
                     self.registers[base + a] = Value::Bool(eq);
                 }
                 OpCode::Lt => {
@@ -316,10 +329,9 @@ impl VM {
                     }
                 }
                 OpCode::Call => {
-                    let _callee = &self.registers[base + a];
-                    let nargs = b;
-                    let nresults = c;
-                    // For now, look up cell by name in callee
+                    let _nargs = b;
+                    let _nresults = c;
+                    // Resolve callee — look up cell by name
                     if let Value::String(ref sr) = self.registers[base + a] {
                         let name = match sr { StringRef::Owned(s) => s.clone(), StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or("").to_string() };
                         if let Some(idx) = module.cells.iter().position(|c| c.name == name) {
@@ -328,10 +340,194 @@ impl VM {
                             }
                             let callee_cell = &module.cells[idx];
                             let new_base = self.registers.len();
-                            self.registers.resize(new_base + callee_cell.registers as usize, Value::Null);
-                            // Copy args
-                            for i in 0..nargs { self.registers[new_base + i] = self.registers[base + a + 1 + i].clone(); }
+                            self.registers.resize(new_base + (callee_cell.registers as usize).max(256), Value::Null);
+                            // Copy args into callee's parameter registers
+                            for i in 0.._nargs {
+                                if i < callee_cell.params.len() {
+                                    self.registers[new_base + callee_cell.params[i].register as usize] = self.registers[base + a + 1 + i].clone();
+                                }
+                            }
                             self.frames.push(CallFrame { cell_idx: idx, base_register: new_base, ip: 0, return_register: base + a });
+                        } else {
+                            // Check built-in functions
+                            match name.as_str() {
+                                "print" => {
+                                    let mut parts = Vec::new();
+                                    for i in 0.._nargs {
+                                        parts.push(self.registers[base + a + 1 + i].display_pretty());
+                                    }
+                                    let output = parts.join(" ");
+                                    println!("{}", output);
+                                    self.output.push(output);
+                                    self.registers[base + a] = Value::Null;
+                                }
+                                "len" | "length" => {
+                                    let arg = &self.registers[base + a + 1];
+                                    let result = match arg {
+                                        Value::String(StringRef::Owned(s)) => Value::Int(s.len() as i64),
+                                        Value::List(l) => Value::Int(l.len() as i64),
+                                        Value::Map(m) => Value::Int(m.len() as i64),
+                                        _ => Value::Int(0),
+                                    };
+                                    self.registers[base + a] = result;
+                                }
+                                "append" => {
+                                    let list = self.registers[base + a + 1].clone();
+                                    let elem = self.registers[base + a + 2].clone();
+                                    if let Value::List(mut l) = list {
+                                        l.push(elem);
+                                        self.registers[base + a] = Value::List(l);
+                                    } else {
+                                        self.registers[base + a] = Value::List(vec![elem]);
+                                    }
+                                }
+                                "to_string" | "str" => {
+                                    let arg = &self.registers[base + a + 1];
+                                    self.registers[base + a] = Value::String(StringRef::Owned(arg.display_pretty()));
+                                }
+                                "to_int" | "int" => {
+                                    let arg = &self.registers[base + a + 1];
+                                    let result = match arg {
+                                        Value::Int(n) => Value::Int(*n),
+                                        Value::Float(f) => Value::Int(*f as i64),
+                                        Value::String(StringRef::Owned(s)) => s.parse::<i64>().map(Value::Int).unwrap_or(Value::Null),
+                                        Value::Bool(b) => Value::Int(if *b { 1 } else { 0 }),
+                                        _ => Value::Null,
+                                    };
+                                    self.registers[base + a] = result;
+                                }
+                                "to_float" | "float" => {
+                                    let arg = &self.registers[base + a + 1];
+                                    let result = match arg {
+                                        Value::Float(f) => Value::Float(*f),
+                                        Value::Int(n) => Value::Float(*n as f64),
+                                        Value::String(StringRef::Owned(s)) => s.parse::<f64>().map(Value::Float).unwrap_or(Value::Null),
+                                        _ => Value::Null,
+                                    };
+                                    self.registers[base + a] = result;
+                                }
+                                "type_of" => {
+                                    let arg = &self.registers[base + a + 1];
+                                    let type_name = match arg {
+                                        Value::Null => "Null",
+                                        Value::Bool(_) => "Bool",
+                                        Value::Int(_) => "Int",
+                                        Value::Float(_) => "Float",
+                                        Value::String(_) => "String",
+                                        Value::Bytes(_) => "Bytes",
+                                        Value::List(_) => "List",
+                                        Value::Map(_) => "Map",
+                                        Value::Record(r) => &r.type_name,
+                                        Value::Union(u) => &u.tag,
+                                        Value::TraceRef(_) => "TraceRef",
+                                    };
+                                    self.registers[base + a] = Value::String(StringRef::Owned(type_name.to_string()));
+                                }
+                                "keys" => {
+                                    let arg = &self.registers[base + a + 1];
+                                    let result = match arg {
+                                        Value::Map(m) => Value::List(m.keys().map(|k| Value::String(StringRef::Owned(k.clone()))).collect()),
+                                        Value::Record(r) => Value::List(r.fields.keys().map(|k| Value::String(StringRef::Owned(k.clone()))).collect()),
+                                        _ => Value::List(vec![]),
+                                    };
+                                    self.registers[base + a] = result;
+                                }
+                                "values" => {
+                                    let arg = &self.registers[base + a + 1];
+                                    let result = match arg {
+                                        Value::Map(m) => Value::List(m.values().cloned().collect()),
+                                        Value::Record(r) => Value::List(r.fields.values().cloned().collect()),
+                                        _ => Value::List(vec![]),
+                                    };
+                                    self.registers[base + a] = result;
+                                }
+                                "contains" => {
+                                    let collection = &self.registers[base + a + 1];
+                                    let needle = &self.registers[base + a + 2];
+                                    let result = match collection {
+                                        Value::List(l) => l.iter().any(|v| v == needle),
+                                        Value::Map(m) => m.contains_key(&needle.as_string()),
+                                        Value::String(StringRef::Owned(s)) => s.contains(&needle.as_string()),
+                                        _ => false,
+                                    };
+                                    self.registers[base + a] = Value::Bool(result);
+                                }
+                                "join" => {
+                                    let list = &self.registers[base + a + 1];
+                                    let sep = if _nargs > 1 { self.registers[base + a + 2].as_string() } else { ", ".to_string() };
+                                    if let Value::List(l) = list {
+                                        let joined = l.iter().map(|v| v.display_pretty()).collect::<Vec<_>>().join(&sep);
+                                        self.registers[base + a] = Value::String(StringRef::Owned(joined));
+                                    } else {
+                                        self.registers[base + a] = Value::String(StringRef::Owned(list.display_pretty()));
+                                    }
+                                }
+                                "split" => {
+                                    let s = self.registers[base + a + 1].as_string();
+                                    let sep = if _nargs > 1 { self.registers[base + a + 2].as_string() } else { " ".to_string() };
+                                    let parts: Vec<Value> = s.split(&sep).map(|p| Value::String(StringRef::Owned(p.to_string()))).collect();
+                                    self.registers[base + a] = Value::List(parts);
+                                }
+                                "trim" => {
+                                    let s = self.registers[base + a + 1].as_string();
+                                    self.registers[base + a] = Value::String(StringRef::Owned(s.trim().to_string()));
+                                }
+                                "upper" => {
+                                    let s = self.registers[base + a + 1].as_string();
+                                    self.registers[base + a] = Value::String(StringRef::Owned(s.to_uppercase()));
+                                }
+                                "lower" => {
+                                    let s = self.registers[base + a + 1].as_string();
+                                    self.registers[base + a] = Value::String(StringRef::Owned(s.to_lowercase()));
+                                }
+                                "replace" => {
+                                    let s = self.registers[base + a + 1].as_string();
+                                    let from = self.registers[base + a + 2].as_string();
+                                    let to = self.registers[base + a + 3].as_string();
+                                    self.registers[base + a] = Value::String(StringRef::Owned(s.replace(&from, &to)));
+                                }
+                                "abs" => {
+                                    let arg = &self.registers[base + a + 1];
+                                    self.registers[base + a] = match arg {
+                                        Value::Int(n) => Value::Int(n.abs()),
+                                        Value::Float(f) => Value::Float(f.abs()),
+                                        _ => arg.clone(),
+                                    };
+                                }
+                                "min" => {
+                                    let lhs = &self.registers[base + a + 1];
+                                    let rhs = &self.registers[base + a + 2];
+                                    self.registers[base + a] = match (lhs, rhs) {
+                                        (Value::Int(x), Value::Int(y)) => Value::Int(*x.min(y)),
+                                        (Value::Float(x), Value::Float(y)) => Value::Float(x.min(*y)),
+                                        _ => lhs.clone(),
+                                    };
+                                }
+                                "max" => {
+                                    let lhs = &self.registers[base + a + 1];
+                                    let rhs = &self.registers[base + a + 2];
+                                    self.registers[base + a] = match (lhs, rhs) {
+                                        (Value::Int(x), Value::Int(y)) => Value::Int(*x.max(y)),
+                                        (Value::Float(x), Value::Float(y)) => Value::Float(x.max(*y)),
+                                        _ => lhs.clone(),
+                                    };
+                                }
+                                "range" => {
+                                    let start = self.registers[base + a + 1].as_int().unwrap_or(0);
+                                    let end = self.registers[base + a + 2].as_int().unwrap_or(0);
+                                    let list: Vec<Value> = (start..end).map(Value::Int).collect();
+                                    self.registers[base + a] = Value::List(list);
+                                }
+                                "hash" => {
+                                    use sha2::{Sha256, Digest};
+                                    let s = self.registers[base + a + 1].as_string();
+                                    let h = format!("sha256:{:x}", Sha256::digest(s.as_bytes()));
+                                    self.registers[base + a] = Value::String(StringRef::Owned(h));
+                                }
+                                _ => {
+                                    return Err(VmError::UndefinedCell(name));
+                                }
+                            }
                         }
                     }
                 }
@@ -355,17 +551,76 @@ impl VM {
                         0 => { // LENGTH
                             match arg {
                                 Value::String(StringRef::Owned(s)) => Value::Int(s.len() as i64),
+                                Value::String(StringRef::Interned(id)) => {
+                                    let s = self.strings.resolve(*id).unwrap_or("");
+                                    Value::Int(s.len() as i64)
+                                }
                                 Value::List(l) => Value::Int(l.len() as i64),
                                 Value::Map(m) => Value::Int(m.len() as i64),
                                 _ => Value::Int(0),
                             }
                         }
-                        1 => Value::Int(0), // COUNT
-                        2 => Value::Bool(false), // MATCHES
+                        1 => { // COUNT
+                            match arg {
+                                Value::List(l) => Value::Int(l.len() as i64),
+                                Value::Map(m) => Value::Int(m.len() as i64),
+                                Value::String(StringRef::Owned(s)) => Value::Int(s.len() as i64),
+                                _ => Value::Int(0),
+                            }
+                        }
+                        2 => { // MATCHES
+                            match arg {
+                                Value::Bool(b) => Value::Bool(*b),
+                                Value::String(_) => Value::Bool(!arg.as_string().is_empty()),
+                                _ => Value::Bool(false),
+                            }
+                        }
                         3 => { // HASH
                             use sha2::{Sha256, Digest};
                             let hash = format!("{:x}", Sha256::digest(arg.as_string().as_bytes()));
                             Value::String(StringRef::Owned(format!("sha256:{}", hash)))
+                        }
+                        9 => { // PRINT
+                            let output = arg.display_pretty();
+                            println!("{}", output);
+                            self.output.push(output);
+                            Value::Null
+                        }
+                        10 => { // TOSTRING
+                            Value::String(StringRef::Owned(arg.display_pretty()))
+                        }
+                        11 => { // TOINT
+                            match arg {
+                                Value::Int(n) => Value::Int(*n),
+                                Value::Float(f) => Value::Int(*f as i64),
+                                Value::String(StringRef::Owned(s)) => s.parse::<i64>().map(Value::Int).unwrap_or(Value::Null),
+                                Value::Bool(b) => Value::Int(if *b { 1 } else { 0 }),
+                                _ => Value::Null,
+                            }
+                        }
+                        12 => { // TOFLOAT
+                            match arg {
+                                Value::Float(f) => Value::Float(*f),
+                                Value::Int(n) => Value::Float(*n as f64),
+                                Value::String(StringRef::Owned(s)) => s.parse::<f64>().map(Value::Float).unwrap_or(Value::Null),
+                                _ => Value::Null,
+                            }
+                        }
+                        13 => { // TYPEOF
+                            let type_name = match arg {
+                                Value::Null => "Null",
+                                Value::Bool(_) => "Bool",
+                                Value::Int(_) => "Int",
+                                Value::Float(_) => "Float",
+                                Value::String(_) => "String",
+                                Value::Bytes(_) => "Bytes",
+                                Value::List(_) => "List",
+                                Value::Map(_) => "Map",
+                                Value::Record(_) => "Record",
+                                Value::Union(_) => "Union",
+                                Value::TraceRef(_) => "TraceRef",
+                            };
+                            Value::String(StringRef::Owned(type_name.to_string()))
                         }
                         _ => Value::Null,
                     };
@@ -373,14 +628,63 @@ impl VM {
                 }
                 OpCode::ToolCall => {
                     // Tool calls are handled by the runtime layer
-                    self.registers[base + a] = Value::String(StringRef::Owned("<<tool call placeholder>>".into()));
+                    // For now, placeholder — future: dispatch to ToolDispatcher
+                    self.registers[base + a] = Value::String(StringRef::Owned("<<tool call pending>>".into()));
                 }
                 OpCode::Schema => {
-                    // Schema validation is handled by the runtime layer
-                    // For now, pass through
+                    // Schema validation — check against type registry
+                    let bx = instr.bx() as usize;
+                    let _type_name = if bx < module.strings.len() { &module.strings[bx] } else { "" };
+                    // For now, pass through — validation is advisory
                 }
-                OpCode::ForPrep | OpCode::ForLoop | OpCode::Append => {
-                    // Extended ops — basic implementations
+                OpCode::ForPrep => {
+                    // A = iterator state register, Bx = jump offset past loop on empty
+                    // Initialize: set loop counter in A to 0
+                    let bx = instr.bx() as usize;
+                    let iter_val = &self.registers[base + a];
+                    let len = match iter_val {
+                        Value::List(l) => l.len(),
+                        _ => 0,
+                    };
+                    if len == 0 {
+                        // Skip past the loop
+                        if let Some(f) = self.frames.last_mut() {
+                            f.ip += bx;
+                        }
+                    }
+                    // Store length for the loop to use
+                    self.registers[base + a + 1] = Value::Int(0); // index
+                    self.registers[base + a + 2] = Value::Int(len as i64); // length
+                }
+                OpCode::ForLoop => {
+                    // A = base of loop vars (iter, idx, len, elem)
+                    // Bx = jump back offset
+                    let bx = instr.bx();
+                    let idx = self.registers[base + a + 1].as_int().unwrap_or(0);
+                    let len = self.registers[base + a + 2].as_int().unwrap_or(0);
+                    if idx < len {
+                        // Load current element
+                        let iter = &self.registers[base + a];
+                        let elem = match iter {
+                            Value::List(l) => l.get(idx as usize).cloned().unwrap_or(Value::Null),
+                            _ => Value::Null,
+                        };
+                        self.registers[base + a + 3] = elem;
+                        // Increment index
+                        self.registers[base + a + 1] = Value::Int(idx + 1);
+                        // Jump back
+                        if let Some(f) = self.frames.last_mut() {
+                            f.ip = (f.ip as i32 - bx as i32) as usize;
+                        }
+                    }
+                    // If idx >= len, fall through (loop ends)
+                }
+                OpCode::Append => {
+                    // A = list register, B = value to append
+                    let val = self.registers[base + b].clone();
+                    if let Value::List(ref mut l) = self.registers[base + a] {
+                        l.push(val);
+                    }
                 }
             }
         }
@@ -470,5 +774,141 @@ mod tests {
         vm.load(make_add());
         let result = vm.execute("add", vec![Value::Int(10), Value::Int(32)]).unwrap();
         assert_eq!(result, Value::Int(42));
+    }
+
+    #[test]
+    fn test_vm_print() {
+        // Test print as a built-in function call
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: None,
+                registers: 8,
+                constants: vec![
+                    Constant::String("print".into()),
+                    Constant::String("Hello, World!".into()),
+                ],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0), // r0 = "print"
+                    Instruction::abx(OpCode::LoadK, 1, 1), // r1 = "Hello, World!"
+                    Instruction::abc(OpCode::Call, 0, 1, 0), // print(r1)
+                    Instruction::abc(OpCode::LoadNil, 0, 0, 0),
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+        };
+        let mut vm = VM::new();
+        vm.load(module);
+        let _result = vm.execute("main", vec![]).unwrap();
+        assert_eq!(vm.output, vec!["Hello, World!"]);
+    }
+
+    #[test]
+    fn test_vm_append() {
+        // Test the Append opcode
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("list[Int]".into()),
+                registers: 8,
+                constants: vec![Constant::Int(1), Constant::Int(2), Constant::Int(3)],
+                instructions: vec![
+                    Instruction::abc(OpCode::NewList, 0, 0, 0), // r0 = []
+                    Instruction::abx(OpCode::LoadK, 1, 0),      // r1 = 1
+                    Instruction::abc(OpCode::Append, 0, 1, 0),  // r0.append(1)
+                    Instruction::abx(OpCode::LoadK, 1, 1),      // r1 = 2
+                    Instruction::abc(OpCode::Append, 0, 1, 0),  // r0.append(2)
+                    Instruction::abx(OpCode::LoadK, 1, 2),      // r1 = 3
+                    Instruction::abc(OpCode::Append, 0, 1, 0),  // r0.append(3)
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+        };
+        let mut vm = VM::new();
+        vm.load(module);
+        let result = vm.execute("main", vec![]).unwrap();
+        if let Value::List(l) = result {
+            assert_eq!(l.len(), 3);
+            assert_eq!(l[0], Value::Int(1));
+            assert_eq!(l[1], Value::Int(2));
+            assert_eq!(l[2], Value::Int(3));
+        } else {
+            panic!("expected list");
+        }
+    }
+
+    #[test]
+    fn test_vm_comparison() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("Bool".into()),
+                registers: 8,
+                constants: vec![Constant::Int(5), Constant::Int(10)],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),      // r0 = 5
+                    Instruction::abx(OpCode::LoadK, 1, 1),      // r1 = 10
+                    Instruction::abc(OpCode::Lt, 2, 0, 1),      // r2 = 5 < 10 = true
+                    Instruction::abc(OpCode::Return, 2, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+        };
+        let mut vm = VM::new();
+        vm.load(module);
+        let result = vm.execute("main", vec![]).unwrap();
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_vm_string_concat() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("String".into()),
+                registers: 8,
+                constants: vec![
+                    Constant::String("Hello, ".into()),
+                    Constant::String("World!".into()),
+                ],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),
+                    Instruction::abx(OpCode::LoadK, 1, 1),
+                    Instruction::abc(OpCode::Concat, 2, 0, 1),
+                    Instruction::abc(OpCode::Return, 2, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+        };
+        let mut vm = VM::new();
+        vm.load(module);
+        let result = vm.execute("main", vec![]).unwrap();
+        assert_eq!(result, Value::String(StringRef::Owned("Hello, World!".into())));
     }
 }

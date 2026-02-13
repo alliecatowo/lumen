@@ -132,6 +132,7 @@ pub enum Stmt {
     Match(MatchStmt),
     Return(ReturnStmt),
     Halt(HaltStmt),
+    Assign(AssignStmt),
     Expr(ExprStmt),
 }
 
@@ -144,6 +145,7 @@ impl Stmt {
             Stmt::Match(s) => s.span,
             Stmt::Return(s) => s.span,
             Stmt::Halt(s) => s.span,
+            Stmt::Assign(s) => s.span,
             Stmt::Expr(s) => s.span,
         }
     }
@@ -214,6 +216,13 @@ pub struct HaltStmt {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExprStmt {
     pub expr: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssignStmt {
+    pub target: String,
+    pub value: Expr,
     pub span: Span,
 }
 

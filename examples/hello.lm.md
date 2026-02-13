@@ -1,31 +1,11 @@
-@lumen 1
-@package "hello"
-
 # Hello World
 
-A simple hello-world program in Lumen.
+> The simplest Lumen program — demonstrates basic cells and output.
 
 ```lumen
-record Greeting
-  message: String
-  recipient: String
-end
-```
-
-## The greet cell
-
-```lumen
-cell greet(name: String) -> Greeting
-  let msg = "Hello, " + name + "!"
-  return Greeting(message: msg, recipient: name)
-end
-```
-
-## Entry point
-
-```lumen
-cell main() -> Int
-  let g = greet("World")
-  return 0
+cell main() -> String
+  print("Hello, World!")
+  print("Welcome to Lumen — the capability-safe language for AI agents.")
+  return "Hello, World!"
 end
 ```

@@ -263,6 +263,19 @@ impl<'a> Lowerer<'a> {
                 let msg_reg = self.lower_expr(&hs.message, ra, consts, instrs);
                 instrs.push(Instruction::abc(OpCode::Halt, msg_reg, 0, 0));
             }
+            Stmt::Assign(asgn) => {
+                let val_reg = self.lower_expr(&asgn.value, ra, consts, instrs);
+                if let Some(dest) = ra.lookup(&asgn.target) {
+                    if dest != val_reg {
+                        instrs.push(Instruction::abc(OpCode::Move, dest, val_reg, 0));
+                    }
+                } else {
+                    let dest = ra.alloc_named(&asgn.target);
+                    if dest != val_reg {
+                        instrs.push(Instruction::abc(OpCode::Move, dest, val_reg, 0));
+                    }
+                }
+            }
             Stmt::Expr(es) => {
                 self.lower_expr(&es.expr, ra, consts, instrs);
             }
@@ -292,11 +305,47 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
                 dest
             }
-            Expr::StringInterp(_, _) => {
+            Expr::StringInterp(segments, _) => {
+                // Lower each segment and concat
                 let dest = ra.alloc_temp();
-                let kidx = consts.len() as u16;
-                consts.push(Constant::String("<interp>".to_string()));
-                instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
+                let mut first = true;
+                for seg in segments {
+                    match seg {
+                        StringSegment::Literal(s) => {
+                            if s.is_empty() { continue; }
+                            let seg_reg = ra.alloc_temp();
+                            let kidx = consts.len() as u16;
+                            consts.push(Constant::String(s.clone()));
+                            instrs.push(Instruction::abx(OpCode::LoadK, seg_reg, kidx));
+                            if first {
+                                instrs.push(Instruction::abc(OpCode::Move, dest, seg_reg, 0));
+                                first = false;
+                            } else {
+                                instrs.push(Instruction::abc(OpCode::Concat, dest, dest, seg_reg));
+                            }
+                        }
+                        StringSegment::Interpolation(expr) => {
+                            let expr_reg = self.lower_expr(expr, ra, consts, instrs);
+                            if first {
+                                // Convert to string via a temp concat with empty
+                                let empty_reg = ra.alloc_temp();
+                                let kidx = consts.len() as u16;
+                                consts.push(Constant::String(String::new()));
+                                instrs.push(Instruction::abx(OpCode::LoadK, empty_reg, kidx));
+                                instrs.push(Instruction::abc(OpCode::Concat, dest, empty_reg, expr_reg));
+                                first = false;
+                            } else {
+                                instrs.push(Instruction::abc(OpCode::Concat, dest, dest, expr_reg));
+                            }
+                        }
+                    }
+                }
+                if first {
+                    // Empty interpolation - load empty string
+                    let kidx = consts.len() as u16;
+                    consts.push(Constant::String(String::new()));
+                    instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
+                }
                 dest
             }
             Expr::BoolLit(b, _) => {
@@ -318,11 +367,17 @@ impl<'a> Lowerer<'a> {
             }
             Expr::ListLit(elems, _) => {
                 let dest = ra.alloc_temp();
-                let base = ra.alloc_temp();
-                for (i, elem) in elems.iter().enumerate() {
+                // Evaluate each element and move into consecutive registers after dest
+                let mut elem_regs = Vec::new();
+                for elem in elems {
                     let er = self.lower_expr(elem, ra, consts, instrs);
-                    if er != base + i as u8 + 1 {
-                        // May need to move
+                    elem_regs.push(er);
+                }
+                // Move elements into consecutive positions dest+1..dest+N
+                for (i, er) in elem_regs.iter().enumerate() {
+                    let target = dest + 1 + i as u8;
+                    if *er != target {
+                        instrs.push(Instruction::abc(OpCode::Move, target, *er, 0));
                     }
                 }
                 instrs.push(Instruction::abc(OpCode::NewList, dest, elems.len() as u8, 0));
@@ -340,10 +395,13 @@ impl<'a> Lowerer<'a> {
             Expr::RecordLit(name, fields, _) => {
                 let dest = ra.alloc_temp();
                 let type_idx = self.intern_string(name);
-                for (_, val) in fields {
-                    self.lower_expr(val, ra, consts, instrs);
-                }
                 instrs.push(Instruction::abx(OpCode::NewRecord, dest, type_idx));
+                // Now set each field
+                for (field_name, val) in fields {
+                    let val_reg = self.lower_expr(val, ra, consts, instrs);
+                    let field_idx = self.intern_string(field_name) as u8;
+                    instrs.push(Instruction::abc(OpCode::SetField, dest, field_idx, val_reg));
+                }
                 dest
             }
             Expr::BinOp(lhs, op, rhs, _) => {

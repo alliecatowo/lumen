@@ -1,0 +1,12 @@
+[package]
+name = "lumen-vm"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lumen-compiler = { path = "../lumen-compiler" }
+lumen-runtime = { path = "../lumen-runtime" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }

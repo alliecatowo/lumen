@@ -1,0 +1,16 @@
+[package]
+name = "lumen-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "lumen"
+path = "src/main.rs"
+
+[dependencies]
+lumen-compiler = { path = "../lumen-compiler" }
+lumen-vm = { path = "../lumen-vm" }
+lumen-runtime = { path = "../lumen-runtime" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }

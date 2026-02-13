@@ -1477,7 +1477,8 @@ fn collect_expr_effect_evidence(
                             format!("call to '{}'", name),
                         );
                     }
-                    if name == "parallel" || name == "race" {
+                    if matches!(name.as_str(), "parallel" | "race" | "vote" | "select" | "timeout")
+                    {
                         push_effect_evidence(
                             out,
                             "async",
@@ -1794,7 +1795,8 @@ fn infer_expr_effects(
                     if name == "emit" || name == "print" {
                         out.insert("emit".into());
                     }
-                    if name == "parallel" || name == "race" {
+                    if matches!(name.as_str(), "parallel" | "race" | "vote" | "select" | "timeout")
+                    {
                         out.insert("async".into());
                     }
                     if matches!(name.as_str(), "uuid" | "uuid_v4") {
@@ -2303,6 +2305,16 @@ mod tests {
         let effects = &table.cells.get("main").unwrap().effects;
         assert!(effects.contains(&"random".to_string()));
         assert!(effects.contains(&"time".to_string()));
+    }
+
+    #[test]
+    fn test_effect_inference_marks_async_orchestration_builtins() {
+        let table = resolve_src(
+            "cell main() -> Int\n  let a = parallel(1, 2)\n  let b = race(1, 2)\n  let c = vote(1, 1, 2)\n  let d = select(null, 1)\n  return timeout(d, 10)\nend",
+        )
+        .unwrap();
+        let effects = &table.cells.get("main").unwrap().effects;
+        assert!(effects.contains(&"async".to_string()));
     }
 
     #[test]

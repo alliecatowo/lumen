@@ -47,6 +47,8 @@ fn is_builtin_function(name: &str) -> bool {
             | "parallel"
             | "race"
             | "vote"
+            | "select"
+            | "timeout"
             | "resume"
     )
 }

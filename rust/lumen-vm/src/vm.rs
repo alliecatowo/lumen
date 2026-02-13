@@ -1717,6 +1717,119 @@ impl VM {
                 let list: Vec<Value> = (start..end).map(Value::Int).collect();
                 Ok(Value::List(list))
             }
+            "parallel" => {
+                let mut out = Vec::with_capacity(nargs);
+                for i in 0..nargs {
+                    let arg = &self.registers[base + a + 1 + i];
+                    match arg {
+                        Value::Future(f) => match self.future_states.get(&f.id) {
+                            Some(FutureState::Completed(v)) => out.push(v.clone()),
+                            Some(FutureState::Pending) => out.push(Value::Future(FutureValue {
+                                id: f.id,
+                                state: FutureStatus::Pending,
+                            })),
+                            Some(FutureState::Error(_)) | None => {
+                                out.push(Value::Future(FutureValue {
+                                    id: f.id,
+                                    state: FutureStatus::Error,
+                                }))
+                            }
+                        },
+                        other => out.push(other.clone()),
+                    }
+                }
+                Ok(Value::List(out))
+            }
+            "race" => {
+                let mut first_pending: Option<Value> = None;
+                for i in 0..nargs {
+                    let arg = &self.registers[base + a + 1 + i];
+                    match arg {
+                        Value::Future(f) => match self.future_states.get(&f.id) {
+                            Some(FutureState::Completed(v)) => return Ok(v.clone()),
+                            Some(FutureState::Pending) => {
+                                if first_pending.is_none() {
+                                    first_pending = Some(Value::Future(FutureValue {
+                                        id: f.id,
+                                        state: FutureStatus::Pending,
+                                    }));
+                                }
+                            }
+                            Some(FutureState::Error(_)) | None => {}
+                        },
+                        other => return Ok(other.clone()),
+                    }
+                }
+                Ok(first_pending.unwrap_or(Value::Null))
+            }
+            "select" => {
+                for i in 0..nargs {
+                    let arg = &self.registers[base + a + 1 + i];
+                    let candidate = match arg {
+                        Value::Future(f) => match self.future_states.get(&f.id) {
+                            Some(FutureState::Completed(v)) => Some(v.clone()),
+                            _ => None,
+                        },
+                        other => Some(other.clone()),
+                    };
+                    if let Some(value) = candidate {
+                        if !matches!(value, Value::Null) {
+                            return Ok(value);
+                        }
+                    }
+                }
+                Ok(Value::Null)
+            }
+            "vote" => {
+                let mut counts: BTreeMap<Value, (usize, usize)> = BTreeMap::new();
+                for i in 0..nargs {
+                    let arg = &self.registers[base + a + 1 + i];
+                    let value = match arg {
+                        Value::Future(f) => match self.future_states.get(&f.id) {
+                            Some(FutureState::Completed(v)) => Some(v.clone()),
+                            _ => None,
+                        },
+                        other => Some(other.clone()),
+                    };
+                    if let Some(value) = value {
+                        let entry = counts.entry(value).or_insert((0, i));
+                        entry.0 += 1;
+                    }
+                }
+                if counts.is_empty() {
+                    return Ok(Value::Null);
+                }
+                let mut best: Option<(Value, usize, usize)> = None;
+                for (value, (count, first_idx)) in counts {
+                    match &best {
+                        None => best = Some((value, count, first_idx)),
+                        Some((_, best_count, best_idx)) => {
+                            if count > *best_count || (count == *best_count && first_idx < *best_idx)
+                            {
+                                best = Some((value, count, first_idx));
+                            }
+                        }
+                    }
+                }
+                Ok(best.map(|(value, _, _)| value).unwrap_or(Value::Null))
+            }
+            "timeout" => {
+                if nargs == 0 {
+                    return Ok(Value::Null);
+                }
+                let arg = &self.registers[base + a + 1];
+                match arg {
+                    Value::Future(f) => match self.future_states.get(&f.id) {
+                        Some(FutureState::Completed(v)) => Ok(v.clone()),
+                        Some(FutureState::Pending) => Ok(Value::Null),
+                        Some(FutureState::Error(msg)) => {
+                            Err(VmError::Runtime(format!("timeout target failed: {}", msg)))
+                        }
+                        None => Ok(Value::Null),
+                    },
+                    other => Ok(other.clone()),
+                }
+            }
             "hash" | "sha256" => {
                 use sha2::{Digest, Sha256};
                 let s = self.registers[base + a + 1].as_string();
@@ -3956,6 +4069,67 @@ end
         vm.set_future_schedule(FutureSchedule::Eager);
         vm.load(module);
         assert_eq!(vm.future_schedule(), FutureSchedule::Eager);
+    }
+
+    #[test]
+    fn test_parallel_builtin_collects_values() {
+        let result = run_main(
+            r#"
+cell main() -> Int
+  let xs = parallel(1, 2, 3)
+  return length(xs)
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(3));
+    }
+
+    #[test]
+    fn test_race_builtin_returns_first_value() {
+        let result = run_main(
+            r#"
+cell main() -> Int
+  return race(9, 10)
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(9));
+    }
+
+    #[test]
+    fn test_vote_builtin_returns_majority() {
+        let result = run_main(
+            r#"
+cell main() -> Int
+  return vote(2, 1, 2, 3)
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(2));
+    }
+
+    #[test]
+    fn test_select_builtin_returns_first_non_null() {
+        let result = run_main(
+            r#"
+cell main() -> Int
+  return select(null, 5, 7)
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(5));
+    }
+
+    #[test]
+    fn test_timeout_builtin_returns_value_for_non_future() {
+        let result = run_main(
+            r#"
+cell main() -> Int
+  return timeout(42, 10)
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(42));
     }
 
     #[test]

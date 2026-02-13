@@ -927,6 +927,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lumen-provider-gemini"
+version = "0.1.0"
+dependencies = [
+ "lumen-runtime",
+ "reqwest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "lumen-provider-http"
 version = "0.1.0"
 dependencies = [

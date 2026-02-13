@@ -49,6 +49,8 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                 }
             }
             Item::Process(p) => {
+                module.types.push(lowerer.lower_process_type(p));
+                module.cells.push(lowerer.lower_process_constructor(p));
                 module.addons.push(LirAddon {
                     kind: p.kind.clone(),
                     name: Some(p.name.clone()),
@@ -245,6 +247,55 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn process_runtime_method_names<'b>(&self, p: &'b ProcessDecl) -> Vec<&'b str> {
+        let mut methods: Vec<&'b str> = p.cells.iter().map(|c| c.name.as_str()).collect();
+        match p.kind.as_str() {
+            "memory" => {
+                methods.extend([
+                    "append", "recent", "remember", "recall", "upsert", "get", "query", "store",
+                ]);
+            }
+            "machine" => {
+                methods.extend([
+                    "run",
+                    "start",
+                    "step",
+                    "is_terminal",
+                    "current_state",
+                    "resume_from",
+                ]);
+            }
+            "pipeline" | "orchestration" => {
+                methods.push("run");
+            }
+            _ => {}
+        }
+        methods.sort_unstable();
+        methods.dedup();
+        methods
+    }
+
+    fn lower_process_type(&mut self, p: &ProcessDecl) -> LirType {
+        self.intern_string(&p.name);
+        let methods = self.process_runtime_method_names(p);
+        LirType {
+            kind: "record".to_string(),
+            name: p.name.clone(),
+            fields: methods
+                .iter()
+                .map(|name| {
+                    self.intern_string(name);
+                    LirField {
+                        name: (*name).to_string(),
+                        ty: "String".to_string(),
+                        constraints: vec![],
+                    }
+                })
+                .collect(),
+            variants: vec![],
+        }
+    }
+
     fn lower_effect(&mut self, e: &EffectDecl) -> LirEffect {
         self.intern_string(&e.name);
         LirEffect {
@@ -290,6 +341,36 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn lower_process_constructor(&mut self, p: &ProcessDecl) -> LirCell {
+        self.intern_string(&p.name);
+        let mut ra = RegAlloc::new();
+        let mut constants: Vec<Constant> = Vec::new();
+        let mut instructions: Vec<Instruction> = Vec::new();
+
+        let dest = ra.alloc_temp();
+        let type_idx = self.intern_string(&p.name);
+        instructions.push(Instruction::abx(OpCode::NewRecord, dest, type_idx));
+
+        for method in self.process_runtime_method_names(p) {
+            let val_reg = ra.alloc_temp();
+            let kidx = constants.len() as u16;
+            constants.push(Constant::String(format!("{}.{}", p.name, method)));
+            instructions.push(Instruction::abx(OpCode::LoadK, val_reg, kidx));
+            self.emit_set_field(dest, method, val_reg, &mut ra, &mut constants, &mut instructions);
+        }
+
+        instructions.push(Instruction::abc(OpCode::Return, dest, 1, 0));
+
+        LirCell {
+            name: p.name.clone(),
+            params: vec![],
+            returns: Some(p.name.clone()),
+            registers: ra.max_regs(),
+            constants,
+            instructions,
+        }
+    }
+
     fn lower_agent_constructor(&mut self, a: &AgentDecl) -> LirCell {
         self.intern_string(&a.name);
         let mut ra = RegAlloc::new();
@@ -301,12 +382,18 @@ impl<'a> Lowerer<'a> {
         instructions.push(Instruction::abx(OpCode::NewRecord, dest, type_idx));
 
         for cell in &a.cells {
-            let field_idx = self.intern_string(&cell.name) as u8;
             let val_reg = ra.alloc_temp();
             let kidx = constants.len() as u16;
             constants.push(Constant::String(format!("{}.{}", a.name, cell.name)));
             instructions.push(Instruction::abx(OpCode::LoadK, val_reg, kidx));
-            instructions.push(Instruction::abc(OpCode::SetField, dest, field_idx, val_reg));
+            self.emit_set_field(
+                dest,
+                &cell.name,
+                val_reg,
+                &mut ra,
+                &mut constants,
+                &mut instructions,
+            );
         }
 
         instructions.push(Instruction::abc(OpCode::Return, dest, 1, 0));
@@ -673,6 +760,32 @@ impl<'a> Lowerer<'a> {
         jmp_idx
     }
 
+    fn emit_get_field(
+        &mut self,
+        dest: u8,
+        obj_reg: u8,
+        field_name: &str,
+        ra: &mut RegAlloc,
+        consts: &mut Vec<Constant>,
+        instrs: &mut Vec<Instruction>,
+    ) {
+        let key_reg = self.push_const_string(field_name, ra, consts, instrs);
+        instrs.push(Instruction::abc(OpCode::GetIndex, dest, obj_reg, key_reg));
+    }
+
+    fn emit_set_field(
+        &mut self,
+        obj_reg: u8,
+        field_name: &str,
+        value_reg: u8,
+        ra: &mut RegAlloc,
+        consts: &mut Vec<Constant>,
+        instrs: &mut Vec<Instruction>,
+    ) {
+        let key_reg = self.push_const_string(field_name, ra, consts, instrs);
+        instrs.push(Instruction::abc(OpCode::SetIndex, obj_reg, key_reg, value_reg));
+    }
+
     fn lower_match_pattern(
         &mut self,
         pattern: &Pattern,
@@ -832,14 +945,8 @@ impl<'a> Lowerer<'a> {
                 fail_jumps.push(self.emit_jump_if_false(is_ty, instrs));
 
                 for (field_name, pat) in fields {
-                    let field_idx = self.intern_string(field_name) as u8;
                     let field_reg = ra.alloc_temp();
-                    instrs.push(Instruction::abc(
-                        OpCode::GetField,
-                        field_reg,
-                        value_reg,
-                        field_idx,
-                    ));
+                    self.emit_get_field(field_reg, value_reg, field_name, ra, consts, instrs);
                     if let Some(field_pat) = pat {
                         self.lower_match_pattern(field_pat, field_reg, ra, consts, instrs, fail_jumps);
                     } else {
@@ -1038,8 +1145,7 @@ impl<'a> Lowerer<'a> {
                 // Now set each field
                 for (field_name, val) in fields {
                     let val_reg = self.lower_expr(val, ra, consts, instrs);
-                    let field_idx = self.intern_string(field_name) as u8;
-                    instrs.push(Instruction::abc(OpCode::SetField, dest, field_idx, val_reg));
+                    self.emit_set_field(dest, field_name, val_reg, ra, consts, instrs);
                 }
                 dest
             }
@@ -1108,13 +1214,15 @@ impl<'a> Lowerer<'a> {
             Expr::Call(callee, args, _) => {
                 // Check for intrinsic call or Enum/Result constructor
                 if let Expr::Ident(ref name, _) = **callee {
+                    let is_agent_ctor = self.symbols.agents.contains_key(name);
+                    let is_process_ctor = self.symbols.processes.values().any(|p| p.name == *name);
                     // Check Result/Enum constructors
                     // "ok" / "err"
                     let is_result = name == "ok" || name == "err";
                     let is_enum = self.symbols.types.values().any(|t| matches!(&t.kind, crate::compiler::resolve::TypeInfoKind::Enum(e) if e.variants.iter().any(|v| v.name == *name)));
                     let is_record = self.symbols.types.values().any(|t| matches!(&t.kind, crate::compiler::resolve::TypeInfoKind::Record(r) if r.name == *name));
 
-                    if is_record {
+                    if is_record && !is_agent_ctor && !is_process_ctor {
                         let dest = ra.alloc_temp();
                         let type_idx = self.intern_string(name);
                         instrs.push(Instruction::abx(OpCode::NewRecord, dest, type_idx));
@@ -1200,13 +1308,7 @@ impl<'a> Lowerer<'a> {
                                         instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, offset);
                                     }
 
-                                    let field_idx = self.intern_string(field) as u8;
-                                    instrs.push(Instruction::abc(
-                                        OpCode::SetField,
-                                        dest,
-                                        field_idx,
-                                        val_reg,
-                                    ));
+                                    self.emit_set_field(dest, field, val_reg, ra, consts, instrs);
                                 }
                                 CallArg::Positional(expr) => {
                                     // Positional not supported for records yet? Or map by index?
@@ -1321,7 +1423,13 @@ impl<'a> Lowerer<'a> {
                 let mut implicit_self_arg: Option<u8> = None;
                 let callee_reg = if let Expr::DotAccess(obj, field, _) = callee.as_ref() {
                     if let Expr::Ident(agent_name, _) = obj.as_ref() {
-                        if self.symbols.agents.contains_key(agent_name) {
+                        let is_ctor_target = self.symbols.agents.contains_key(agent_name)
+                            || self
+                                .symbols
+                                .processes
+                                .values()
+                                .any(|p| p.name == *agent_name);
+                        if is_ctor_target {
                             let ctor_reg = ra.alloc_temp();
                             let ctor_idx = consts.len() as u16;
                             consts.push(Constant::String(agent_name.clone()));
@@ -1338,26 +1446,14 @@ impl<'a> Lowerer<'a> {
                             let obj_reg = self.lower_expr(obj, ra, consts, instrs);
                             implicit_self_arg = Some(obj_reg);
                             let dest = ra.alloc_temp();
-                            let fidx = self.intern_string(field);
-                            instrs.push(Instruction::abc(
-                                OpCode::GetField,
-                                dest,
-                                obj_reg,
-                                fidx as u8,
-                            ));
+                            self.emit_get_field(dest, obj_reg, field, ra, consts, instrs);
                             dest
                         }
                     } else {
                         let obj_reg = self.lower_expr(obj, ra, consts, instrs);
                         implicit_self_arg = Some(obj_reg);
                         let dest = ra.alloc_temp();
-                        let fidx = self.intern_string(field);
-                        instrs.push(Instruction::abc(
-                            OpCode::GetField,
-                            dest,
-                            obj_reg,
-                            fidx as u8,
-                        ));
+                        self.emit_get_field(dest, obj_reg, field, ra, consts, instrs);
                         dest
                     }
                 } else {
@@ -1494,8 +1590,7 @@ impl<'a> Lowerer<'a> {
             Expr::DotAccess(obj, field, _) => {
                 let or = self.lower_expr(obj, ra, consts, instrs);
                 let dest = ra.alloc_temp();
-                let fidx = self.intern_string(field);
-                instrs.push(Instruction::abc(OpCode::GetField, dest, or, fidx as u8));
+                self.emit_get_field(dest, or, field, ra, consts, instrs);
                 dest
             }
             Expr::IndexAccess(obj, idx, _) => {
@@ -1719,8 +1814,7 @@ impl<'a> Lowerer<'a> {
                 let jmp_null = instrs.len();
                 instrs.push(Instruction::sax(OpCode::Jmp, 0));
                 // Not null: get field
-                let fidx = self.intern_string(field);
-                instrs.push(Instruction::abc(OpCode::GetField, dest, or, fidx as u8));
+                self.emit_get_field(dest, or, field, ra, consts, instrs);
                 let jmp_end = instrs.len();
                 instrs.push(Instruction::sax(OpCode::Jmp, 0));
                 // Null case: load nil

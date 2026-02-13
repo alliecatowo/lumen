@@ -242,46 +242,9 @@ impl SymbolTable {
         let mut types = HashMap::new();
         // Register builtin types
         for name in &[
-            "String",
-            "Int",
-            "Float",
-            "Bool",
-            "Bytes",
-            "Json",
-            "type",
-            "ValidationError",
-            "Embedding",
-            "Record",
-            "Item",
-            "Paper",
-            "Message",
-            "LumenError",
-            "GuardrailViolation",
-            "Response",
-            "Result",
-            "Invoice",
-            "ExtractionError",
-            "AnalysisResult",
-            "Report",
-            "Resolution",
-            "TestCase",
-            "EvalResult",
-            "JudgmentScore",
-            "AppError",
-            "TypeError",
-            "MyRecord",
-            "LineItem",
-            "Context",
-            "Data",
-            "Pair",
-            "Event",
-            "A",
-            "B",
-            "C",
-            "T",
-            "U",
-            "V",
-            "Self",
+            "String", "Int", "Float", "Bool", "Bytes", "Json", "Null", "Self",
+            // Generic type params -- pragmatic workaround until full generics support
+            "A", "B", "C", "T", "U", "V",
         ] {
             types.insert(
                 name.to_string(),
@@ -319,34 +282,55 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
     for item in &program.items {
         match item {
             Item::Record(r) => {
-                table.types.insert(
-                    r.name.clone(),
-                    TypeInfo {
-                        kind: TypeInfoKind::Record(r.clone()),
-                    },
-                );
+                if table.types.contains_key(&r.name) {
+                    errors.push(ResolveError::Duplicate {
+                        name: r.name.clone(),
+                        line: r.span.line,
+                    });
+                } else {
+                    table.types.insert(
+                        r.name.clone(),
+                        TypeInfo {
+                            kind: TypeInfoKind::Record(r.clone()),
+                        },
+                    );
+                }
             }
             Item::Enum(e) => {
-                table.types.insert(
-                    e.name.clone(),
-                    TypeInfo {
-                        kind: TypeInfoKind::Enum(e.clone()),
-                    },
-                );
+                if table.types.contains_key(&e.name) {
+                    errors.push(ResolveError::Duplicate {
+                        name: e.name.clone(),
+                        line: e.span.line,
+                    });
+                } else {
+                    table.types.insert(
+                        e.name.clone(),
+                        TypeInfo {
+                            kind: TypeInfoKind::Enum(e.clone()),
+                        },
+                    );
+                }
             }
             Item::Cell(c) => {
-                table.cells.insert(
-                    c.name.clone(),
-                    CellInfo {
-                        params: c
-                            .params
-                            .iter()
-                            .map(|p| (p.name.clone(), p.ty.clone()))
-                            .collect(),
-                        return_type: c.return_type.clone(),
-                        effects: c.effects.clone(),
-                    },
-                );
+                if table.cells.contains_key(&c.name) {
+                    errors.push(ResolveError::Duplicate {
+                        name: c.name.clone(),
+                        line: c.span.line,
+                    });
+                } else {
+                    table.cells.insert(
+                        c.name.clone(),
+                        CellInfo {
+                            params: c
+                                .params
+                                .iter()
+                                .map(|p| (p.name.clone(), p.ty.clone()))
+                                .collect(),
+                            return_type: c.return_type.clone(),
+                            effects: c.effects.clone(),
+                        },
+                    );
+                }
             }
             Item::Agent(a) => {
                 if table.agents.contains_key(&a.name) {
@@ -422,6 +406,12 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
             }
             Item::Process(p) => {
                 let process_key = format!("{}:{}", p.kind, p.name);
+                if table.processes.contains_key(&process_key) {
+                    errors.push(ResolveError::Duplicate {
+                        name: p.name.clone(),
+                        line: p.span.line,
+                    });
+                }
                 table.processes.insert(
                     process_key,
                     ProcessInfo {
@@ -492,6 +482,12 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                 }
             }
             Item::Effect(e) => {
+                if table.effects.contains_key(&e.name) {
+                    errors.push(ResolveError::Duplicate {
+                        name: e.name.clone(),
+                        line: e.span.line,
+                    });
+                }
                 table.effects.insert(
                     e.name.clone(),
                     EffectInfo {
@@ -523,6 +519,12 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                 });
             }
             Item::Handler(h) => {
+                if table.handlers.contains_key(&h.name) {
+                    errors.push(ResolveError::Duplicate {
+                        name: h.name.clone(),
+                        line: h.span.line,
+                    });
+                }
                 table.handlers.insert(
                     h.name.clone(),
                     HandlerInfo {
@@ -560,11 +562,23 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
             }
             Item::Grant(_) => {} // Grants reference tools, checked below
             Item::TypeAlias(ta) => {
+                if table.type_aliases.contains_key(&ta.name) {
+                    errors.push(ResolveError::Duplicate {
+                        name: ta.name.clone(),
+                        line: ta.span.line,
+                    });
+                }
                 table
                     .type_aliases
                     .insert(ta.name.clone(), ta.type_expr.clone());
             }
             Item::Trait(t) => {
+                if table.traits.contains_key(&t.name) {
+                    errors.push(ResolveError::Duplicate {
+                        name: t.name.clone(),
+                        line: t.span.line,
+                    });
+                }
                 let methods: Vec<String> = t.methods.iter().map(|m| m.name.clone()).collect();
                 table.traits.insert(
                     t.name.clone(),
@@ -2569,7 +2583,7 @@ fn check_type_refs_with_generics(
             if generics.iter().any(|g| g == name) {
                 return;
             }
-            if !table.types.contains_key(name) {
+            if !table.types.contains_key(name) && !table.type_aliases.contains_key(name) {
                 errors.push(ResolveError::UndefinedType {
                     name: name.clone(),
                     line: span.line,
@@ -2604,7 +2618,7 @@ fn check_type_refs_with_generics(
             check_type_refs_with_generics(ret, table, errors, generics);
         }
         TypeExpr::Generic(name, args, span) => {
-            if !table.types.contains_key(name) {
+            if !table.types.contains_key(name) && !table.type_aliases.contains_key(name) {
                 errors.push(ResolveError::UndefinedType {
                     name: name.clone(),
                     line: span.line,
@@ -2956,5 +2970,54 @@ mod tests {
             ResolveError::PipelineStageTypeMismatch { pipeline, from_stage, to_stage, expected, actual, .. }
             if pipeline == "P" && from_stage == "one" && to_stage == "two" && expected == "Int" && actual == "String"
         )));
+    }
+
+    #[test]
+    fn test_duplicate_record_detection() {
+        let err = resolve_src("record Foo\n  x: Int\nend\n\nrecord Foo\n  y: String\nend").unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::Duplicate { name, .. } if name == "Foo"
+        )));
+    }
+
+    #[test]
+    fn test_duplicate_cell_detection() {
+        let err = resolve_src(
+            "cell foo() -> Int\n  return 1\nend\n\ncell foo() -> Int\n  return 2\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::Duplicate { name, .. } if name == "foo"
+        )));
+    }
+
+    #[test]
+    fn test_type_alias_not_undefined() {
+        // A type alias should not produce an UndefinedType error
+        let table = resolve_src(
+            "type UserId = String\n\ncell greet(id: UserId) -> String\n  return id\nend",
+        )
+        .unwrap();
+        assert!(table.type_aliases.contains_key("UserId"));
+    }
+
+    #[test]
+    fn test_builtin_types_are_minimal() {
+        let table = SymbolTable::new();
+        // Core builtins should be present
+        assert!(table.types.contains_key("String"));
+        assert!(table.types.contains_key("Int"));
+        assert!(table.types.contains_key("Float"));
+        assert!(table.types.contains_key("Bool"));
+        assert!(table.types.contains_key("Bytes"));
+        assert!(table.types.contains_key("Json"));
+        assert!(table.types.contains_key("Null"));
+        // App-specific types should NOT be present
+        assert!(!table.types.contains_key("Invoice"));
+        assert!(!table.types.contains_key("MyRecord"));
+        assert!(!table.types.contains_key("Report"));
+        assert!(!table.types.contains_key("Response"));
     }
 }

@@ -54,103 +54,11 @@ fn is_builtin_function(name: &str) -> bool {
     )
 }
 
-fn is_doc_placeholder_var(name: &str) -> bool {
-    matches!(
-        name,
-        "text"
-            | "raw_text"
-            | "ticket"
-            | "value"
-            | "email"
-            | "users"
-            | "response"
-            | "data"
-            | "reason"
-            | "topic"
-            | "query"
-            | "input"
-            | "customer"
-            | "records"
-            | "entries"
-            | "Extractor"
-            | "Validator"
-            | "Enricher"
-            | "Researcher"
-            | "Analyst"
-            | "FastModel"
-            | "SlowModel"
-            | "Agent1"
-            | "Agent2"
-            | "Agent3"
-            | "item"
-            | "u"
-            | "p"
-            | "Color"
-            | "Direction"
-            | "non_empty"
-            | "MAX_RETRIES"
-            | "on_chunk"
-            | "PI"
-            | "key"
-            | "encoded"
-            | "bytes"
-            | "hex_string"
-            | "items"
-            | "shape"
-            | "color"
-            | "score"
-            | "iterator"
-            | "ch"
-            | "MyRecord"
-            | "match_expr"
-            | "if_expr"
-            | "when_expr"
-            | "other_map"
-            | "y"
-            | "emails"
-            | "condition"
-            | "other_condition"
-            | "select"
-            | "async_expr"
-            | "timeout_ms"
-            | "news"
-            | "prices"
-            | "Format"
-            | "JsonResponse"
-            | "XmlResponse"
-            | "CsvResponse"
-            | "_last_err"
-            | "url"
-            | "expression"
-            | "name"
-            | "arg"
-            | "x"
-            | "raw"
-            | "or_halt"
-            | "config"
-            | "matrix"
-            | "target"
-            | "row"
-            | "loop_expr"
-            | "user"
-            | "temperature"
-            | "direction"
-            | "pair"
-            | "sample_text"
-            | "my_record"
-            | "a"
-            | "b"
-            | "old"
-            | "new"
-            | "start"
-            | "end"
-            | "plugin"
-            | "output"
-            | "Escalation"
-            | "..."
-            | ".."
-            | "try_expr"
-    )
+/// In doc_mode / non-strict mode, allow any undefined variable name.
+/// This avoids an unmaintainable hardcoded whitelist; doc snippets frequently
+/// reference variables that aren't defined in the same compilation unit.
+fn is_doc_placeholder_var(_name: &str) -> bool {
+    true
 }
 
 fn type_contains_any(ty: &Type) -> bool {
@@ -277,6 +185,8 @@ pub fn resolve_type_expr(ty: &TypeExpr, symbols: &SymbolTable) -> Type {
                         TypeInfoKind::Enum(_) => Type::Enum(name.clone()),
                         TypeInfoKind::Builtin => Type::Record(name.clone()),
                     }
+                } else if let Some(alias_target) = symbols.type_aliases.get(name) {
+                    resolve_type_expr(alias_target, symbols)
                 } else {
                     Type::Any
                 }
@@ -1206,20 +1116,36 @@ impl<'a> TypeChecker<'a> {
 }
 
 fn parse_directive_bool(program: &Program, name: &str) -> Option<bool> {
-    let raw = program
+    if let Some(directive) = program
         .directives
         .iter()
-        .find(|d| d.name.eq_ignore_ascii_case(name))?
-        .value
-        .as_deref()
-        .unwrap_or("true")
-        .trim()
-        .to_ascii_lowercase();
-    match raw.as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
+        .find(|d| d.name.eq_ignore_ascii_case(name))
+    {
+        let raw = directive
+            .value
+            .as_deref()
+            .unwrap_or("true")
+            .trim()
+            .to_ascii_lowercase();
+        return match raw.as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        };
     }
+
+    // Support attribute-style toggles, e.g. `@doc_mode true` parsed as Addon
+    let has_attr = program.items.iter().any(|item| {
+        matches!(
+            item,
+            Item::Addon(AddonDecl {
+                kind,
+                name: Some(attr_name),
+                ..
+            }) if kind == "attribute" && attr_name.eq_ignore_ascii_case(name)
+        )
+    });
+    if has_attr { Some(true) } else { None }
 }
 
 /// Typecheck a program.
@@ -1286,5 +1212,23 @@ mod tests {
     fn test_typecheck_undefined_var() {
         let err = typecheck_src("cell bad() -> Int\n  return missing_var\nend").unwrap_err();
         assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn test_type_alias_resolves_in_typecheck() {
+        // Type alias should resolve to the underlying type
+        typecheck_src(
+            "type UserId = String\n\ncell greet(id: UserId) -> String\n  return id\nend",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_doc_mode_allows_any_undefined_var() {
+        // In doc_mode, any undefined variable should be allowed
+        typecheck_src(
+            "@doc_mode true\n\ncell example() -> Int\n  return completely_unknown_var_xyz\nend",
+        )
+        .unwrap();
     }
 }

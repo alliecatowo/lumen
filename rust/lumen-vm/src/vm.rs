@@ -157,7 +157,10 @@ pub struct VM {
     machine_graphs: BTreeMap<String, MachineGraphDef>,
     memory_runtime: BTreeMap<u64, MemoryRuntime>,
     machine_runtime: BTreeMap<u64, MachineRuntime>,
+    await_fuel: u32,
 }
+
+const MAX_AWAIT_RETRIES: u32 = 10_000;
 
 impl VM {
     pub fn new() -> Self {
@@ -179,6 +182,7 @@ impl VM {
             machine_graphs: BTreeMap::new(),
             memory_runtime: BTreeMap::new(),
             machine_runtime: BTreeMap::new(),
+            await_fuel: MAX_AWAIT_RETRIES,
         }
     }
 
@@ -199,6 +203,7 @@ impl VM {
         self.memory_runtime.clear();
         self.machine_runtime.clear();
         self.machine_graphs.clear();
+        self.await_fuel = MAX_AWAIT_RETRIES;
         let mut machine_initials: BTreeMap<String, String> = BTreeMap::new();
         for addon in &module.addons {
             if let Some(name) = &addon.name {
@@ -367,6 +372,19 @@ impl VM {
         let _ = self.frames.pop();
         self.future_states.insert(fid, FutureState::Error(message));
         true
+    }
+
+    /// Check truthiness with interned string resolution.
+    fn value_is_truthy(&self, val: &Value) -> bool {
+        match val {
+            Value::String(StringRef::Interned(id)) => {
+                match self.strings.resolve(*id) {
+                    Some(s) => !s.is_empty(),
+                    None => true, // unknown interned string, assume truthy
+                }
+            }
+            other => other.is_truthy(),
+        }
     }
 
     fn start_future_task(&mut self, task: FutureTask) -> Result<(), VmError> {
@@ -630,13 +648,13 @@ impl VM {
     /// Helper to get a constant from the current cell.
     #[allow(dead_code)]
     fn get_constant(&self, cell_idx: usize, idx: usize) -> Constant {
-        self.module.as_ref().unwrap().cells[cell_idx].constants[idx].clone()
+        self.module.as_ref().expect("module must be loaded").cells[cell_idx].constants[idx].clone()
     }
 
     /// Helper to get a string from the module string table.
     #[allow(dead_code)]
     fn get_module_string(&self, idx: usize) -> String {
-        let module = self.module.as_ref().unwrap();
+        let module = self.module.as_ref().expect("module must be loaded");
         if idx < module.strings.len() {
             module.strings[idx].clone()
         } else {
@@ -655,7 +673,7 @@ impl VM {
                 let base = frame.base_register;
                 let ip = frame.ip;
 
-                let module = self.module.as_ref().unwrap();
+                let module = self.module.as_ref().ok_or(VmError::NoModule)?;
                 let cell = &module.cells[cell_idx];
 
                 if ip >= cell.instructions.len() {
@@ -715,7 +733,7 @@ impl VM {
                 _ => {}
             }
 
-            let module = self.module.as_ref().unwrap();
+            let module = self.module.as_ref().ok_or(VmError::NoModule)?;
             let cell = &module.cells[cell_idx];
 
             match instr.op {
@@ -885,7 +903,10 @@ impl VM {
                     let lhs = &self.registers[base + b];
                     let rhs = &self.registers[base + c];
                     let result = match (lhs, rhs) {
-                        (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+                        (Value::Int(x), Value::Int(y)) => Value::Int(
+                            x.checked_add(*y)
+                                .ok_or_else(|| VmError::Runtime("integer overflow".into()))?,
+                        ),
                         (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
                         (Value::Int(a), Value::Float(b)) => Value::Float(*a as f64 + b),
                         (Value::Float(a), Value::Int(b)) => Value::Float(a + *b as f64),
@@ -902,28 +923,42 @@ impl VM {
                     self.registers[base + a] = result;
                 }
                 OpCode::Sub => {
-                    self.arith_op(base, a, b, c, |x, y| x - y, |x, y| x - y)?;
+                    self.arith_op(base, a, b, c, |x, y| x.checked_sub(y), |x, y| x - y)?;
                 }
                 OpCode::Mul => {
-                    self.arith_op(base, a, b, c, |x, y| x * y, |x, y| x * y)?;
+                    self.arith_op(base, a, b, c, |x, y| x.checked_mul(y), |x, y| x * y)?;
                 }
                 OpCode::Div => {
+                    // Pre-check for integer division by zero
+                    if matches!(
+                        (&self.registers[base + b], &self.registers[base + c]),
+                        (Value::Int(_), Value::Int(0))
+                    ) {
+                        return Err(VmError::Runtime("division by zero".into()));
+                    }
                     self.arith_op(
                         base,
                         a,
                         b,
                         c,
-                        |x, y| if y != 0 { x / y } else { 0 },
+                        |x, y| x.checked_div(y),
                         |x, y| x / y,
                     )?;
                 }
                 OpCode::Mod => {
+                    // Pre-check for integer modulo by zero
+                    if matches!(
+                        (&self.registers[base + b], &self.registers[base + c]),
+                        (Value::Int(_), Value::Int(0))
+                    ) {
+                        return Err(VmError::Runtime("division by zero".into()));
+                    }
                     self.arith_op(
                         base,
                         a,
                         b,
                         c,
-                        |x, y| if y != 0 { x % y } else { 0 },
+                        |x, y| x.checked_rem(y),
                         |x, y| x % y,
                     )?;
                 }
@@ -932,10 +967,19 @@ impl VM {
                     let rhs = &self.registers[base + c];
                     self.registers[base + a] = match (lhs, rhs) {
                         (Value::Int(x), Value::Int(y)) => {
-                            if *y >= 0 {
-                                Value::Int(x.pow(*y as u32))
-                            } else {
+                            if *y < 0 {
                                 Value::Float((*x as f64).powf(*y as f64))
+                            } else if *y >= 64 {
+                                return Err(VmError::Runtime(
+                                    "exponent out of range (must be 0..63 for integers)".into(),
+                                ));
+                            } else {
+                                Value::Int(
+                                    x.checked_pow(*y as u32)
+                                        .ok_or_else(|| {
+                                            VmError::Runtime("integer overflow".into())
+                                        })?,
+                                )
                             }
                         }
                         (Value::Float(x), Value::Float(y)) => Value::Float(x.powf(*y)),
@@ -1015,7 +1059,14 @@ impl VM {
                     let lhs = &self.registers[base + b];
                     let rhs = &self.registers[base + c];
                     self.registers[base + a] = match (lhs, rhs) {
-                        (Value::Int(x), Value::Int(y)) => Value::Int(x << (*y as u32)),
+                        (Value::Int(x), Value::Int(y)) => {
+                            if *y < 0 || *y > 63 {
+                                return Err(VmError::Runtime(
+                                    "shift amount out of range (must be 0..63)".into(),
+                                ));
+                            }
+                            Value::Int(x << (*y as u32))
+                        }
                         _ => return Err(VmError::TypeError("shift left requires integers".into())),
                     };
                 }
@@ -1023,7 +1074,14 @@ impl VM {
                     let lhs = &self.registers[base + b];
                     let rhs = &self.registers[base + c];
                     self.registers[base + a] = match (lhs, rhs) {
-                        (Value::Int(x), Value::Int(y)) => Value::Int(x >> (*y as u32)),
+                        (Value::Int(x), Value::Int(y)) => {
+                            if *y < 0 || *y > 63 {
+                                return Err(VmError::Runtime(
+                                    "shift amount out of range (must be 0..63)".into(),
+                                ));
+                            }
+                            Value::Int(x >> (*y as u32))
+                        }
                         _ => {
                             return Err(VmError::TypeError("shift right requires integers".into()))
                         }
@@ -1084,18 +1142,18 @@ impl VM {
                     self.registers[base + a] = Value::Bool(result);
                 }
                 OpCode::Not => {
-                    let val = &self.registers[base + b];
-                    self.registers[base + a] = Value::Bool(!val.is_truthy());
+                    let truthy = self.value_is_truthy(&self.registers[base + b]);
+                    self.registers[base + a] = Value::Bool(!truthy);
                 }
                 OpCode::And => {
-                    let lhs = &self.registers[base + b];
-                    let rhs = &self.registers[base + c];
-                    self.registers[base + a] = Value::Bool(lhs.is_truthy() && rhs.is_truthy());
+                    let lt = self.value_is_truthy(&self.registers[base + b]);
+                    let rt = self.value_is_truthy(&self.registers[base + c]);
+                    self.registers[base + a] = Value::Bool(lt && rt);
                 }
                 OpCode::Or => {
-                    let lhs = &self.registers[base + b];
-                    let rhs = &self.registers[base + c];
-                    self.registers[base + a] = Value::Bool(lhs.is_truthy() || rhs.is_truthy());
+                    let lt = self.value_is_truthy(&self.registers[base + b]);
+                    let rt = self.value_is_truthy(&self.registers[base + c]);
+                    self.registers[base + a] = Value::Bool(lt || rt);
                 }
                 OpCode::In => {
                     let needle = &self.registers[base + b];
@@ -1124,8 +1182,7 @@ impl VM {
                     }
                 }
                 OpCode::Test => {
-                    let val = &self.registers[base + a];
-                    let truthy = val.is_truthy();
+                    let truthy = self.value_is_truthy(&self.registers[base + a]);
                     if truthy != (c != 0) {
                         if let Some(f) = self.frames.last_mut() {
                             f.ip += 1;
@@ -1147,7 +1204,10 @@ impl VM {
                 OpCode::Return => {
                     let mut return_val = self.registers[base + a].clone();
                     self.ensure_process_instance(&mut return_val);
-                    let frame = self.frames.pop().unwrap();
+                    let frame = self
+                        .frames
+                        .pop()
+                        .ok_or_else(|| VmError::Runtime("call stack underflow".into()))?;
                     if let Some(fid) = frame.future_id {
                         self.future_states
                             .insert(fid, FutureState::Completed(return_val));
@@ -1272,7 +1332,7 @@ impl VM {
                     let bx = instr.bx() as usize;
                     // Captures follow in registers A+1, A+2, ...
                     // The number of captures is determined by the cell's params
-                    let module = self.module.as_ref().unwrap();
+                    let module = self.module.as_ref().ok_or(VmError::NoModule)?;
                     let cap_count = if bx < module.cells.len() {
                         // Use the cell's param count as a hint, but for closures
                         // we determine captures from subsequent GETUPVAL instructions
@@ -1294,7 +1354,10 @@ impl VM {
                 OpCode::GetUpval => {
                     // Get upvalue from current closure's captures
                     // The current frame must be running a closure
-                    let frame = self.frames.last().unwrap();
+                    let frame = self
+                        .frames
+                        .last()
+                        .ok_or_else(|| VmError::Runtime("no frame for GetUpval".into()))?;
                     let closure_reg = frame.base_register;
                     // Captures are stored at the beginning of the frame's registers
                     if b < 256 {
@@ -1303,7 +1366,10 @@ impl VM {
                 }
                 OpCode::SetUpval => {
                     let val = self.registers[base + a].clone();
-                    let frame = self.frames.last().unwrap();
+                    let frame = self
+                        .frames
+                        .last()
+                        .ok_or_else(|| VmError::Runtime("no frame for SetUpval".into()))?;
                     let closure_reg = frame.base_register;
                     if b < 256 {
                         self.registers[closure_reg + b] = val;
@@ -1314,7 +1380,7 @@ impl VM {
                 OpCode::ToolCall => {
                     if let Some(ref dispatcher) = self.tool_dispatcher {
                         let bx = instr.bx() as usize;
-                        let module = self.module.as_ref().unwrap();
+                        let module = self.module.as_ref().ok_or(VmError::NoModule)?;
                         let tool = if bx < module.tools.len() {
                             &module.tools[bx]
                         } else {
@@ -1414,8 +1480,15 @@ impl VM {
                     match awaited {
                         Some(value) => {
                             self.registers[base + a] = value;
+                            self.await_fuel = MAX_AWAIT_RETRIES;
                         }
                         None => {
+                            if self.await_fuel == 0 {
+                                return Err(VmError::Runtime(
+                                    "await exceeded maximum retries on unresolvable future".into(),
+                                ));
+                            }
+                            self.await_fuel -= 1;
                             if let Some(frame) = self.frames.get_mut(caller_frame_idx) {
                                 frame.ip = frame.ip.saturating_sub(1);
                             }
@@ -1472,7 +1545,7 @@ impl VM {
                     StringRef::Owned(s) => s.clone(),
                     StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or("").to_string(),
                 };
-                let module = self.module.as_ref().unwrap();
+                let module = self.module.as_ref().ok_or(VmError::NoModule)?;
                 if let Some(idx) = module.cells.iter().position(|c| c.name == name) {
                     if self.frames.len() >= MAX_CALL_DEPTH {
                         return Err(VmError::StackOverflow(MAX_CALL_DEPTH));
@@ -1508,7 +1581,7 @@ impl VM {
                     return Err(VmError::StackOverflow(MAX_CALL_DEPTH));
                 }
                 let cv = cv.clone();
-                let module = self.module.as_ref().unwrap();
+                let module = self.module.as_ref().ok_or(VmError::NoModule)?;
                 let callee_cell = &module.cells[cv.cell_idx];
                 let num_regs = callee_cell.registers as usize;
                 let params: Vec<LirParam> = callee_cell.params.clone();
@@ -1550,7 +1623,7 @@ impl VM {
                     StringRef::Owned(s) => s.clone(),
                     StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or("").to_string(),
                 };
-                let module = self.module.as_ref().unwrap();
+                let module = self.module.as_ref().ok_or(VmError::NoModule)?;
                 if let Some(idx) = module.cells.iter().position(|c| c.name == name) {
                     let params: Vec<LirParam> = module.cells[idx].params.clone();
                     let _ = module;
@@ -1572,7 +1645,7 @@ impl VM {
             }
             Value::Closure(ref cv) => {
                 let cv = cv.clone();
-                let module = self.module.as_ref().unwrap();
+                let module = self.module.as_ref().ok_or(VmError::NoModule)?;
                 let params: Vec<LirParam> = module.cells[cv.cell_idx].params.clone();
                 let _ = module;
                 for (i, cap) in cv.captures.iter().enumerate() {
@@ -2694,6 +2767,9 @@ impl VM {
             }
             "hex_decode" => {
                 let s = self.registers[base + a + 1].as_string();
+                if s.len() % 2 != 0 {
+                    return Ok(Value::Null);
+                }
                 let bytes: Vec<u8> = (0..s.len())
                     .step_by(2)
                     .filter_map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
@@ -2704,17 +2780,19 @@ impl VM {
             }
             "url_encode" => {
                 let s = self.registers[base + a + 1].as_string();
-                let encoded: String = s
-                    .chars()
-                    .map(|c| {
-                        if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '~'
-                        {
-                            c.to_string()
-                        } else {
-                            format!("%{:02X}", c as u32)
-                        }
-                    })
-                    .collect();
+                let mut encoded = String::new();
+                for byte in s.bytes() {
+                    if byte.is_ascii_alphanumeric()
+                        || byte == b'-'
+                        || byte == b'_'
+                        || byte == b'.'
+                        || byte == b'~'
+                    {
+                        encoded.push(byte as char);
+                    } else {
+                        encoded.push_str(&format!("%{:02X}", byte));
+                    }
+                }
                 Ok(Value::String(StringRef::Owned(encoded)))
             }
             "url_decode" => {
@@ -3155,14 +3233,17 @@ impl VM {
                         }
                     }
                     Value::String(StringRef::Owned(s)) => {
+                        let char_count = s.chars().count();
                         let start = start.max(0) as usize;
                         let end = if end <= 0 {
-                            s.len()
+                            char_count
                         } else {
-                            (end as usize).min(s.len())
+                            (end as usize).min(char_count)
                         };
-                        if start < end && start <= s.len() {
-                            Value::String(StringRef::Owned(s[start..end].to_string()))
+                        if start < end {
+                            Value::String(StringRef::Owned(
+                                s.chars().skip(start).take(end - start).collect::<String>(),
+                            ))
                         } else {
                             Value::String(StringRef::Owned("".into()))
                         }
@@ -3592,13 +3673,16 @@ impl VM {
         a: usize,
         b: usize,
         c: usize,
-        int_op: impl Fn(i64, i64) -> i64,
+        int_op: impl Fn(i64, i64) -> Option<i64>,
         float_op: impl Fn(f64, f64) -> f64,
     ) -> Result<(), VmError> {
         let lhs = &self.registers[base + b];
         let rhs = &self.registers[base + c];
         self.registers[base + a] = match (lhs, rhs) {
-            (Value::Int(x), Value::Int(y)) => Value::Int(int_op(*x, *y)),
+            (Value::Int(x), Value::Int(y)) => Value::Int(
+                int_op(*x, *y)
+                    .ok_or_else(|| VmError::Runtime("integer overflow".into()))?,
+            ),
             (Value::Float(x), Value::Float(y)) => Value::Float(float_op(*x, *y)),
             (Value::Int(x), Value::Float(y)) => Value::Float(float_op(*x as f64, *y)),
             (Value::Float(x), Value::Int(y)) => Value::Float(float_op(*x, *y as f64)),
@@ -4938,5 +5022,328 @@ end
             "expected policy violation error, got: {}",
             err
         );
+    }
+
+    // ===== Arithmetic safety tests =====
+
+    #[test]
+    fn test_integer_overflow_add() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("Int".into()),
+                registers: 4,
+                constants: vec![Constant::Int(i64::MAX), Constant::Int(1)],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),
+                    Instruction::abx(OpCode::LoadK, 1, 1),
+                    Instruction::abc(OpCode::Add, 2, 0, 1),
+                    Instruction::abc(OpCode::Return, 2, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+        let mut vm = VM::new();
+        vm.load(module);
+        let err = vm.execute("main", vec![]).unwrap_err();
+        assert!(
+            err.to_string().contains("integer overflow"),
+            "expected integer overflow, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_integer_overflow_sub() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("Int".into()),
+                registers: 4,
+                constants: vec![Constant::Int(i64::MIN), Constant::Int(1)],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),
+                    Instruction::abx(OpCode::LoadK, 1, 1),
+                    Instruction::abc(OpCode::Sub, 2, 0, 1),
+                    Instruction::abc(OpCode::Return, 2, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+        let mut vm = VM::new();
+        vm.load(module);
+        let err = vm.execute("main", vec![]).unwrap_err();
+        assert!(
+            err.to_string().contains("integer overflow"),
+            "expected integer overflow, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_integer_overflow_mul() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("Int".into()),
+                registers: 4,
+                constants: vec![Constant::Int(i64::MAX), Constant::Int(2)],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),
+                    Instruction::abx(OpCode::LoadK, 1, 1),
+                    Instruction::abc(OpCode::Mul, 2, 0, 1),
+                    Instruction::abc(OpCode::Return, 2, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+        let mut vm = VM::new();
+        vm.load(module);
+        let err = vm.execute("main", vec![]).unwrap_err();
+        assert!(
+            err.to_string().contains("integer overflow"),
+            "expected integer overflow, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_division_by_zero() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("Int".into()),
+                registers: 4,
+                constants: vec![Constant::Int(42), Constant::Int(0)],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),
+                    Instruction::abx(OpCode::LoadK, 1, 1),
+                    Instruction::abc(OpCode::Div, 2, 0, 1),
+                    Instruction::abc(OpCode::Return, 2, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+        let mut vm = VM::new();
+        vm.load(module);
+        let err = vm.execute("main", vec![]).unwrap_err();
+        assert!(
+            err.to_string().contains("division by zero"),
+            "expected division by zero, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_modulo_by_zero() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("Int".into()),
+                registers: 4,
+                constants: vec![Constant::Int(42), Constant::Int(0)],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),
+                    Instruction::abx(OpCode::LoadK, 1, 1),
+                    Instruction::abc(OpCode::Mod, 2, 0, 1),
+                    Instruction::abc(OpCode::Return, 2, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+        let mut vm = VM::new();
+        vm.load(module);
+        let err = vm.execute("main", vec![]).unwrap_err();
+        assert!(
+            err.to_string().contains("division by zero"),
+            "expected division by zero, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_pow_exponent_out_of_range() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("Int".into()),
+                registers: 4,
+                constants: vec![Constant::Int(2), Constant::Int(64)],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),
+                    Instruction::abx(OpCode::LoadK, 1, 1),
+                    Instruction::abc(OpCode::Pow, 2, 0, 1),
+                    Instruction::abc(OpCode::Return, 2, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+        let mut vm = VM::new();
+        vm.load(module);
+        let err = vm.execute("main", vec![]).unwrap_err();
+        assert!(
+            err.to_string().contains("exponent out of range"),
+            "expected exponent out of range, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_shift_out_of_range() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("Int".into()),
+                registers: 4,
+                constants: vec![Constant::Int(1), Constant::Int(64)],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),
+                    Instruction::abx(OpCode::LoadK, 1, 1),
+                    Instruction::abc(OpCode::Shl, 2, 0, 1),
+                    Instruction::abc(OpCode::Return, 2, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+        let mut vm = VM::new();
+        vm.load(module);
+        let err = vm.execute("main", vec![]).unwrap_err();
+        assert!(
+            err.to_string().contains("shift amount out of range"),
+            "expected shift amount out of range, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_negative_shift_out_of_range() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("Int".into()),
+                registers: 4,
+                constants: vec![Constant::Int(1), Constant::Int(-1)],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),
+                    Instruction::abx(OpCode::LoadK, 1, 1),
+                    Instruction::abc(OpCode::Shr, 2, 0, 1),
+                    Instruction::abc(OpCode::Return, 2, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+        let mut vm = VM::new();
+        vm.load(module);
+        let err = vm.execute("main", vec![]).unwrap_err();
+        assert!(
+            err.to_string().contains("shift amount out of range"),
+            "expected shift amount out of range, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_stack_overflow_detection() {
+        // Verify MAX_CALL_DEPTH is enforced
+        let mut vm = VM::new();
+        // Push frames up to the limit
+        for _ in 0..MAX_CALL_DEPTH {
+            vm.frames.push(CallFrame {
+                cell_idx: 0,
+                base_register: 0,
+                ip: 0,
+                return_register: 0,
+                future_id: None,
+            });
+        }
+        assert_eq!(vm.frames.len(), MAX_CALL_DEPTH);
     }
 }

@@ -166,6 +166,73 @@ pub fn cmd_pkg_build() {
     }
 }
 
+/// Type-check a Lumen package and all dependencies without running.
+pub fn cmd_pkg_check() {
+    let (config_path, config) = match LumenConfig::load_with_path() {
+        Some(pair) => pair,
+        None => {
+            eprintln!("error: no lumen.toml found (run `lumen pkg init` first)");
+            std::process::exit(1);
+        }
+    };
+
+    let project_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+    let pkg_name = config
+        .package
+        .as_ref()
+        .map(|p| p.name.as_str())
+        .unwrap_or("(unnamed)");
+
+    // Resolve dependencies
+    let deps = match resolve_dependencies(&config, project_dir) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("dependency error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let mut errors = 0;
+
+    for dep in &deps {
+        print!("  checking dependency '{}' ... ", dep.name);
+        match compile_package_sources(&dep.path) {
+            Ok(count) => println!("ok ({} file{})", count, if count == 1 { "" } else { "s" }),
+            Err(e) => {
+                println!("FAILED");
+                eprintln!("    {}", e);
+                errors += 1;
+            }
+        }
+    }
+
+    print!("  checking '{}' ... ", pkg_name);
+    match compile_package_sources(project_dir) {
+        Ok(count) => println!("ok ({} file{})", count, if count == 1 { "" } else { "s" }),
+        Err(e) => {
+            println!("FAILED");
+            eprintln!("    {}", e);
+            errors += 1;
+        }
+    }
+
+    if errors > 0 {
+        eprintln!(
+            "\ncheck failed with {} error{}",
+            errors,
+            if errors == 1 { "" } else { "s" }
+        );
+        std::process::exit(1);
+    } else {
+        let total = deps.len() + 1;
+        println!(
+            "\ncheck passed ({} package{})",
+            total,
+            if total == 1 { "" } else { "s" }
+        );
+    }
+}
+
 /// Resolve all dependencies from a config, returning them in compilation order.
 /// Detects circular dependencies.
 pub fn resolve_dependencies(

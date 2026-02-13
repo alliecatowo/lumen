@@ -60,6 +60,11 @@ enum Commands {
     Init,
     /// Start an interactive REPL
     Repl,
+    /// Package manager commands
+    Pkg {
+        #[command(subcommand)]
+        sub: PkgCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -84,6 +89,19 @@ enum CacheCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum PkgCommands {
+    /// Create a new Lumen package
+    Init {
+        /// Package name (creates a subdirectory; omit to init in current dir)
+        name: Option<String>,
+    },
+    /// Compile the package and all dependencies
+    Build,
+    /// Type-check the package and all dependencies without running
+    Check,
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -103,6 +121,11 @@ fn main() {
         },
         Commands::Init => cmd_init(),
         Commands::Repl => repl::run_repl(),
+        Commands::Pkg { sub } => match sub {
+            PkgCommands::Init { name } => pkg::cmd_pkg_init(name),
+            PkgCommands::Build => pkg::cmd_pkg_build(),
+            PkgCommands::Check => pkg::cmd_pkg_check(),
+        },
     }
 }
 

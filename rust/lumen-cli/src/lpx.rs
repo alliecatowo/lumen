@@ -1,11 +1,18 @@
 //! lpx — Lumen Package Executor
 //! Run a Lumen file or package cell directly.
 
+mod module_resolver;
+
 use clap::Parser;
-use std::path::PathBuf;
+use std::cell::RefCell;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
-#[command(name = "lpx", about = "Lumen Package Executor — run any .lm.md file", version)]
+#[command(
+    name = "lpx",
+    about = "Lumen Package Executor — run any .lm or .lm.md file",
+    version
+)]
 struct Args {
     /// File or package to run
     file: PathBuf,
@@ -15,6 +22,52 @@ struct Args {
     /// Emit trace to the given directory
     #[arg(long)]
     trace_dir: Option<PathBuf>,
+}
+
+fn is_markdown_source(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.ends_with(".lm.md"))
+        .unwrap_or(false)
+}
+
+fn find_project_root(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
+    loop {
+        if dir.join("lumen.toml").exists() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+fn compile_source_file(
+    path: &Path,
+    source: &str,
+) -> Result<lumen_compiler::compiler::lir::LirModule, lumen_compiler::CompileError> {
+    let source_dir = path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+    let mut resolver = module_resolver::ModuleResolver::new(source_dir.clone());
+
+    if let Some(project_root) = find_project_root(&source_dir) {
+        let src_dir = project_root.join("src");
+        if src_dir.is_dir() && src_dir != source_dir {
+            resolver.add_root(src_dir);
+        }
+        if project_root != source_dir {
+            resolver.add_root(project_root);
+        }
+    }
+
+    let resolver = RefCell::new(resolver);
+    let resolve_import = |module_path: &str| resolver.borrow_mut().resolve(module_path);
+
+    if is_markdown_source(path) {
+        lumen_compiler::compile_with_imports(source, &resolve_import)
+    } else {
+        lumen_compiler::compile_raw_with_imports(source, &resolve_import)
+    }
 }
 
 fn main() {
@@ -29,7 +82,7 @@ fn main() {
     let filename = args.file.display().to_string();
 
     println!("\x1b[1;32m{:>12}\x1b[0m {}", "Compiling", filename);
-    let module = match lumen_compiler::compile(&source) {
+    let module = match compile_source_file(&args.file, &source) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("\x1b[31merror:\x1b[0m compilation failed");

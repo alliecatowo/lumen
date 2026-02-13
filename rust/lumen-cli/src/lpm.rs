@@ -2,6 +2,7 @@
 //! Alias for `lumen pkg` subcommands.
 
 mod config;
+mod lockfile;
 mod pkg;
 
 use clap::{Parser, Subcommand};
@@ -39,6 +40,15 @@ enum Commands {
     },
     /// List dependencies
     List,
+    /// Install dependencies from lumen.toml
+    Install,
+    /// Update dependencies to latest compatible versions
+    Update,
+    /// Search for packages in the registry
+    Search {
+        /// Search query
+        query: String,
+    },
 }
 
 fn main() {
@@ -51,5 +61,8 @@ fn main() {
         Commands::Add { package, path } => pkg::cmd_pkg_add(&package, path.as_deref()),
         Commands::Remove { package } => pkg::cmd_pkg_remove(&package),
         Commands::List => pkg::cmd_pkg_list(),
+        Commands::Install => pkg::cmd_pkg_install(),
+        Commands::Update => pkg::cmd_pkg_update(),
+        Commands::Search { query } => pkg::cmd_pkg_search(&query),
     }
 }

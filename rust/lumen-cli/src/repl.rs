@@ -322,20 +322,20 @@ fn handle_command<H: Helper>(
     let trimmed = line.trim();
 
     match trimmed {
-        ":quit" | ":q" => return Some(false),
+        ":quit" | ":q" => Some(false),
         ":help" | ":h" => {
             print_help();
-            return Some(true);
+            Some(true)
         }
         ":reset" | ":r" => {
             session_state.clear();
             println!("{}", gray("Session state reset."));
-            return Some(true);
+            Some(true)
         }
         ":clear" | ":c" => {
             print!("\x1b[2J\x1b[H"); // Clear screen and move cursor to top
             io::stdout().flush().ok();
-            return Some(true);
+            Some(true)
         }
         ":history" => {
             let history = rl.history();
@@ -344,11 +344,11 @@ fn handle_command<H: Helper>(
                     println!("{:4} {}", gray(&format!("{}", i + 1)), result.entry);
                 }
             }
-            return Some(true);
+            Some(true)
         }
         ":env" => {
             cmd_env(session_state);
-            return Some(true);
+            Some(true)
         }
         _ if trimmed.starts_with(":type ") || trimmed.starts_with(":t ") => {
             let expr = if let Some(stripped) = trimmed.strip_prefix(":type ") {
@@ -359,17 +359,17 @@ fn handle_command<H: Helper>(
                 unreachable!()
             };
             cmd_type(expr, session_state);
-            return Some(true);
+            Some(true)
         }
         _ if trimmed.starts_with(":load ") => {
             let path = trimmed.strip_prefix(":load ").unwrap().trim();
             cmd_load(path);
-            return Some(true);
+            Some(true)
         }
         _ if trimmed.starts_with(":time ") => {
             let expr = trimmed.strip_prefix(":time ").unwrap();
             cmd_time(expr, session_state);
-            return Some(true);
+            Some(true)
         }
         _ => None,
     }

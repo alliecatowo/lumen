@@ -14,6 +14,8 @@ pub struct LumenConfig {
     pub providers: ProviderSection,
     #[serde(default)]
     pub dependencies: HashMap<String, DependencySpec>,
+    #[serde(default, rename = "dev-dependencies")]
+    pub dev_dependencies: HashMap<String, DependencySpec>,
     #[serde(default)]
     pub package: Option<PackageInfo>,
 }
@@ -25,13 +27,25 @@ pub struct PackageInfo {
     pub version: Option<String>,
     pub description: Option<String>,
     pub authors: Option<Vec<String>>,
+    pub license: Option<String>,
+    pub repository: Option<String>,
+    pub keywords: Option<Vec<String>>,
+    pub readme: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(untagged)]
 pub enum DependencySpec {
+    /// Simple string version: `pkg = "^1.0"`
+    Version(String),
+    /// Path dependency: `pkg = { path = "../pkg" }`
     Path { path: String },
-    // Future: Version { version: String, registry: Option<String> },
+    /// Version with registry: `pkg = { version = "^1.0", registry = "..." }`
+    VersionDetailed {
+        version: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        registry: Option<String>,
+    },
 }
 
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
@@ -121,6 +135,7 @@ impl LumenConfig {
     }
 
     /// Generate a default `lumen.toml` template.
+    #[allow(dead_code)]
     pub fn default_template() -> &'static str {
         r#"# Lumen Configuration
 # See https://lumen-lang.org/docs/config for details
@@ -227,7 +242,6 @@ default_model = "gpt-4"
 
     #[test]
     fn default_template_round_trips() {
-        // Strip comment-only lines so we get an empty (but valid) doc
         let template = LumenConfig::default_template();
         let result: Result<LumenConfig, _> = toml::from_str(template);
         assert!(result.is_ok(), "default template must be valid toml");
@@ -297,9 +311,11 @@ utils = { path = "./libs/utils" }
         assert_eq!(cfg.dependencies.len(), 2);
         match &cfg.dependencies["mathlib"] {
             DependencySpec::Path { path } => assert_eq!(path, "../mathlib"),
+            _ => panic!("expected path spec"),
         }
         match &cfg.dependencies["utils"] {
             DependencySpec::Path { path } => assert_eq!(path, "./libs/utils"),
+            _ => panic!("expected path spec"),
         }
     }
 
@@ -331,5 +347,78 @@ mathlib = { path = "../mathlib" }
         let cfg: LumenConfig = toml::from_str(toml_str).expect("should parse");
         assert!(cfg.package.is_none());
         assert!(cfg.dependencies.is_empty());
+    }
+
+    #[test]
+    fn parse_package_with_all_fields() {
+        let toml_str = r#"
+[package]
+name = "http-utils"
+version = "1.2.0"
+description = "HTTP utilities for Lumen"
+license = "MIT"
+authors = ["Alice <alice@example.com>"]
+repository = "https://github.com/lumen/http-utils"
+keywords = ["http", "network"]
+readme = "README.md"
+"#;
+        let cfg: LumenConfig = toml::from_str(toml_str).expect("should parse");
+        let pkg = cfg.package.expect("package should be present");
+        assert_eq!(pkg.name, "http-utils");
+        assert_eq!(pkg.version.as_deref(), Some("1.2.0"));
+        assert_eq!(pkg.description.as_deref(), Some("HTTP utilities for Lumen"));
+        assert_eq!(pkg.license.as_deref(), Some("MIT"));
+        assert_eq!(pkg.repository.as_deref(), Some("https://github.com/lumen/http-utils"));
+        assert_eq!(pkg.keywords.as_ref().unwrap().len(), 2);
+        assert_eq!(pkg.readme.as_deref(), Some("README.md"));
+    }
+
+    #[test]
+    fn parse_version_dependencies() {
+        let toml_str = r#"
+[dependencies]
+http-utils = "^1.2"
+json-parser = "~0.3"
+logging = { version = ">=1.0, <2.0" }
+mathlib = { path = "../mathlib" }
+"#;
+        let cfg: LumenConfig = toml::from_str(toml_str).expect("should parse");
+        assert_eq!(cfg.dependencies.len(), 4);
+
+        match &cfg.dependencies["http-utils"] {
+            DependencySpec::Version(v) => assert_eq!(v, "^1.2"),
+            _ => panic!("expected version spec"),
+        }
+
+        match &cfg.dependencies["json-parser"] {
+            DependencySpec::Version(v) => assert_eq!(v, "~0.3"),
+            _ => panic!("expected version spec"),
+        }
+
+        match &cfg.dependencies["logging"] {
+            DependencySpec::VersionDetailed { version, .. } => assert_eq!(version, ">=1.0, <2.0"),
+            _ => panic!("expected version detailed spec"),
+        }
+
+        match &cfg.dependencies["mathlib"] {
+            DependencySpec::Path { path } => assert_eq!(path, "../mathlib"),
+            _ => panic!("expected path spec"),
+        }
+    }
+
+    #[test]
+    fn parse_dev_dependencies() {
+        let toml_str = r#"
+[dev-dependencies]
+test-utils = "^0.1"
+mock-server = { path = "../test/mock" }
+"#;
+        let cfg: LumenConfig = toml::from_str(toml_str).expect("should parse");
+        assert_eq!(cfg.dev_dependencies.len(), 2);
+
+        match &cfg.dev_dependencies["test-utils"] {
+            DependencySpec::Version(v) => assert_eq!(v, "^0.1"),
+            _ => panic!("expected version spec"),
+        }
     }
 }

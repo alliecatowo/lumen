@@ -4,10 +4,13 @@ mod config;
 mod doc;
 mod fmt;
 mod lint;
+mod lockfile;
+mod module_resolver;
 mod pkg;
 mod repl;
 
 use clap::{Parser as ClapParser, Subcommand};
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 // ANSI color helpers
@@ -42,15 +45,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Type-check a .lm.md source file
+    /// Type-check a `.lm` or `.lm.md` source file
     Check {
-        /// Path to the .lm.md file
+        /// Path to the source file
         #[arg()]
         file: PathBuf,
     },
-    /// Compile and run a .lm.md file
+    /// Compile and run a `.lm` or `.lm.md` file
     Run {
-        /// Path to the .lm.md file
+        /// Path to the source file
         #[arg()]
         file: PathBuf,
 
@@ -62,9 +65,9 @@ enum Commands {
         #[arg(long)]
         trace_dir: Option<PathBuf>,
     },
-    /// Compile a .lm.md file to LIR JSON
+    /// Compile a `.lm` or `.lm.md` file to LIR JSON
     Emit {
-        /// Path to the .lm.md file
+        /// Path to the source file
         #[arg()]
         file: PathBuf,
 
@@ -171,6 +174,30 @@ enum PkgCommands {
     Build,
     /// Type-check the package and all dependencies without running
     Check,
+    /// Add a dependency to this package
+    Add {
+        /// Package name
+        package: String,
+        /// Path to the dependency
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Remove a dependency from this package
+    Remove {
+        /// Package name
+        package: String,
+    },
+    /// List dependencies
+    List,
+    /// Install dependencies from lumen.toml and write lumen.lock
+    Install,
+    /// Update dependencies to latest compatible versions
+    Update,
+    /// Search for a package in the registry
+    Search {
+        /// Search query
+        query: String,
+    },
 }
 
 /// Register all provider crates into the runtime registry.
@@ -264,6 +291,12 @@ fn main() {
             PkgCommands::Init { name } => pkg::cmd_pkg_init(name),
             PkgCommands::Build => pkg::cmd_pkg_build(),
             PkgCommands::Check => pkg::cmd_pkg_check(),
+            PkgCommands::Add { package, path } => pkg::cmd_pkg_add(&package, path.as_deref()),
+            PkgCommands::Remove { package } => pkg::cmd_pkg_remove(&package),
+            PkgCommands::List => pkg::cmd_pkg_list(),
+            PkgCommands::Install => pkg::cmd_pkg_install(),
+            PkgCommands::Update => pkg::cmd_pkg_update(),
+            PkgCommands::Search { query } => pkg::cmd_pkg_search(&query),
         },
         Commands::Fmt { files, check } => cmd_fmt(files, check),
         Commands::Doc {
@@ -288,7 +321,7 @@ fn cmd_lint(files: Vec<PathBuf>, strict: bool) {
     }
 }
 
-fn cmd_doc(path: &PathBuf, format: &str, output: Option<PathBuf>) {
+fn cmd_doc(path: &Path, format: &str, output: Option<PathBuf>) {
     match doc::cmd_doc(path, format, output.as_deref()) {
         Ok(()) => {}
         Err(e) => {
@@ -305,10 +338,53 @@ fn read_source(path: &PathBuf) -> String {
     })
 }
 
+fn is_markdown_source(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.ends_with(".lm.md"))
+        .unwrap_or(false)
+}
+
+fn find_project_root(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
+    loop {
+        if dir.join("lumen.toml").exists() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+fn compile_source_file(path: &Path, source: &str) -> Result<lumen_compiler::compiler::lir::LirModule, lumen_compiler::CompileError> {
+    let source_dir = path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+    let mut resolver = module_resolver::ModuleResolver::new(source_dir.clone());
+
+    if let Some(project_root) = find_project_root(&source_dir) {
+        let src_dir = project_root.join("src");
+        if src_dir.is_dir() && src_dir != source_dir {
+            resolver.add_root(src_dir);
+        }
+        if project_root != source_dir {
+            resolver.add_root(project_root);
+        }
+    }
+
+    let resolver = RefCell::new(resolver);
+    let resolve_import = |module_path: &str| resolver.borrow_mut().resolve(module_path);
+
+    if is_markdown_source(path) {
+        lumen_compiler::compile_with_imports(source, &resolve_import)
+    } else {
+        lumen_compiler::compile_raw_with_imports(source, &resolve_import)
+    }
+}
+
 fn cmd_check(file: &PathBuf) {
     let source = read_source(file);
     let filename = file.display().to_string();
-    match lumen_compiler::compile(&source) {
+    match compile_source_file(file, &source) {
         Ok(_module) => {
             println!("{} {} {}", green("✓"), bold(&filename), gray("— no errors found"));
         }
@@ -325,7 +401,7 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
     let filename = file.display().to_string();
 
     println!("{} {}", status_label("Compiling"), filename);
-    let module = match lumen_compiler::compile(&source) {
+    let module = match compile_source_file(file, &source) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("{} compilation failed", red("error:"));
@@ -377,7 +453,7 @@ fn cmd_emit(file: &PathBuf, output: Option<PathBuf>) {
     let filename = file.display().to_string();
 
     println!("{} {}", status_label("Compiling"), filename);
-    let module = match lumen_compiler::compile(&source) {
+    let module = match compile_source_file(file, &source) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("{} compilation failed", red("error:"));

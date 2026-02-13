@@ -224,6 +224,10 @@ impl Parser {
                     self.parse_expr_stmt()
                 }
             }
+            TokenKind::Role => {
+                let expr = self.parse_role_block_stmt()?;
+                Ok(Stmt::Expr(ExprStmt { expr: expr.clone(), span: expr.span() }))
+            }
             _ => self.parse_expr_stmt(),
         }
     }
@@ -632,7 +636,8 @@ impl Parser {
                 let role_name = self.expect_ident()?;
                 self.expect(&TokenKind::Colon)?;
                 
-                let content_expr = self.parse_role_content()?;
+                let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
+                let content_expr = self.parse_role_content(&[TokenKind::Comma, TokenKind::RParen], has_indent)?;
                 
                 let span = role_span.merge(content_expr.span());
                 args.push(CallArg::Role(role_name, content_expr, span));
@@ -720,30 +725,64 @@ impl Parser {
     }
 
     fn parse_role_block_expr(&mut self) -> Result<Expr, ParseError> {
+        // Expression context (default): stops at RParen to support call args
+        self.parse_role_block_general(&[TokenKind::End, TokenKind::Role, TokenKind::Eof, TokenKind::RParen])
+    }
+
+    /// Parse a role block in statement context (allows RParen)
+    fn parse_role_block_stmt(&mut self) -> Result<Expr, ParseError> {
+        self.parse_role_block_general(&[TokenKind::End, TokenKind::Role, TokenKind::Eof])
+    }
+
+    fn parse_role_block_general(&mut self, terminators: &[TokenKind]) -> Result<Expr, ParseError> {
         let start = self.expect(&TokenKind::Role)?.span;
         let name = self.expect_ident()?;
         self.expect(&TokenKind::Colon)?;
         
-        let content_expr = self.parse_role_content()?;
-        let end_span = self.expect(&TokenKind::End)?.span;
+        // Check if it was an indented block
+        // We need to know if we started with indentation.
+        // But parse_role_content consumed the indent/dedent if present.
+        // Actually parse_role_content determines this.
+        // We should move the `Expect End` logic into parse_role_content or check here?
+        // parse_role_content: returns Expr.
+        // If we inspect parse_role_content more closely, it handles indent/dedent.
+        // If it was inline, it stopped at Newline.
+        // Does inline require `end`? No.
+        // Does block require `end`? Yes.
+        // How do we know which one it was?
+        // peek Indent *before* calling parse_role_content?
+        let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
+        let content_expr = self.parse_role_content(terminators, has_indent)?;
+        
+        let end_span = if has_indent {
+             self.expect(&TokenKind::End)?.span
+        } else {
+             // Inline role ends at newline (which is peeked but not consumed by parse_role_content?)
+             // parse_role_content breaks on Newline. So Newline is next.
+             // We don't need to consume it necessarily, skip_newlines in parse_block will handle it.
+             content_expr.span()
+        };
+        
         Ok(Expr::RoleBlock(name, Box::new(content_expr), start.merge(end_span)))
     }
 
     /// Parse role block content with interpolation support.
     /// Stops at TokenKind::End, TokenKind::Role (peeked), or EOF/Dedent.
     /// Does NOT consume 'end' or 'role', but consumes the content.
-    fn parse_role_content(&mut self) -> Result<Expr, ParseError> {
+    fn parse_role_content(&mut self, terminators: &[TokenKind], has_indent: bool) -> Result<Expr, ParseError> {
         let start = self.current().span;
         let mut segments = Vec::new();
         let mut text_buf = String::new();
-        let mut has_indent = matches!(self.peek_kind(), TokenKind::Indent);
         if has_indent { self.advance(); }
         self.skip_newlines();
 
         loop {
-            match self.peek_kind() {
-                TokenKind::End | TokenKind::Role | TokenKind::Eof | TokenKind::RParen => break,
-                TokenKind::Dedent if has_indent => { break; }
+            let peek = self.peek_kind();
+            if terminators.contains(peek) { break; }
+            if matches!(peek, TokenKind::Newline) && !has_indent { break; }
+            if matches!(peek, TokenKind::Dedent) && has_indent { break; }
+            
+            match peek {
                 TokenKind::LBrace => {
                     // Interpolation start
                     self.advance(); // consume {
@@ -756,20 +795,27 @@ impl Parser {
                     
                     // Parse expression
                     let expr = self.parse_expr(0)?;
-                    segments.push(StringSegment::Interpolation(Box::new(expr)));
-                    
-                    // Expect }
                     self.expect(&TokenKind::RBrace)?;
+                    segments.push(StringSegment::Interpolation(Box::new(expr)));
                 }
-                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => {
-                    if !text_buf.is_empty() { text_buf.push('\n'); }
-                    self.advance();
+                TokenKind::Newline => {
+                     // Inside indented block, preserve newline
+                     text_buf.push('\n');
+                     self.advance();
+                }
+                TokenKind::Indent | TokenKind::Dedent => {
+                     // Should imply structural change, but if we are inside role block content...
+                     // Indent here means nested indentation? 
+                     // We just consume it as whitespace/structure?
+                     // Or maybe we should skip it?
+                     self.advance();
                 }
                 _ => {
                     // Accumulate text
-                    let tok = self.advance().clone();
+                    let tok = self.advance();
+                    let text = format!("{}", tok.kind);
                     if !text_buf.is_empty() && !text_buf.ends_with('\n') { text_buf.push(' '); }
-                    text_buf.push_str(&format!("{}", tok.kind));
+                    text_buf.push_str(&text);
                 }
             }
         }

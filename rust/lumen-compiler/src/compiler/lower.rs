@@ -510,6 +510,63 @@ impl<'a> Lowerer<'a> {
                              match arg {
                                  CallArg::Named(field, expr, _) => {
                                      let val_reg = self.lower_expr(expr, ra, consts, instrs);
+                                     
+                                     // Check for 'where' constraint on this field
+                                     // We need to look up the RecordDef fields
+                                     let mut constraint_expr = None;
+                                     if let Some(crate::compiler::resolve::TypeInfo { kind: crate::compiler::resolve::TypeInfoKind::Record(def), .. }) = self.symbols.types.get(name) {
+                                         if let Some(f) = def.fields.iter().find(|fd| fd.name == *field) {
+                                             constraint_expr = f.constraint.clone();
+                                         }
+                                     }
+
+                                     if let Some(cexpr) = constraint_expr {
+                                         // 1. Save old binding
+                                         let old_bind = ra.lookup(field);
+                                         // 2. Bind field name to val_reg (shadowing)
+                                         ra.bind(field, val_reg);
+                                         
+                                         // 3. Lower constraint expression
+                                         let cond_reg = self.lower_expr(&cexpr, ra, consts, instrs);
+                                         
+                                         // 4. Restore old binding
+                                         if let Some(old) = old_bind {
+                                             ra.bind(field, old);
+                                         } else {
+                                             ra.unbind(field);
+                                         }
+
+                                         // 5. Emit Check
+                                         // 5. Emit Check
+                                         // Check against false: if cond == false, skip Jmp and Halt
+                                         let false_idx = consts.len() as u16;
+                                         consts.push(Constant::Bool(false));
+                                         let false_reg = ra.alloc_temp();
+                                         instrs.push(Instruction::abx(OpCode::LoadK, false_reg, false_idx));
+                                         
+                                         // Eq(cond, false)
+                                         // If cond is false (Invalid), equality is true -> Skip Next (Jmp) -> Execute Halt
+                                         // If cond is true (Valid), equality is false -> Exec Next (Jmp) -> Jump Over Halt
+                                         instrs.push(Instruction::abc(OpCode::Eq, 0, cond_reg, false_reg));
+                                         
+                                         // If true, skip Halt
+                                         let jmp_idx = instrs.len();
+                                         instrs.push(Instruction::ax(OpCode::Jmp, 0));
+                                         
+                                         // Halt(msg)
+                                         let msg = format!("Constraint failed for field '{}'", field);
+                                         let msg_idx = consts.len() as u16;
+                                         consts.push(Constant::String(msg));
+                                         let msg_reg = ra.alloc_temp();
+                                         instrs.push(Instruction::abx(OpCode::LoadK, msg_reg, msg_idx));
+                                         instrs.push(Instruction::abc(OpCode::Halt, msg_reg, 0, 0));
+                                         
+                                         // Patch Jmp
+                                         let after_halt = instrs.len();
+                                         let offset = (after_halt - jmp_idx - 1) as u32;
+                                         instrs[jmp_idx] = Instruction::ax(OpCode::Jmp, offset);
+                                     }
+
                                      let field_idx = self.intern_string(field) as u8;
                                      instrs.push(Instruction::abc(OpCode::SetField, dest, field_idx, val_reg));
                                  }

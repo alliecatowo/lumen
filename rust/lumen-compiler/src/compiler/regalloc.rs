@@ -12,7 +12,10 @@ pub struct RegAlloc {
 
 impl RegAlloc {
     pub fn new() -> Self {
-        Self { next_reg: 0, bindings: HashMap::new() }
+        Self {
+            next_reg: 0,
+            bindings: HashMap::new(),
+        }
     }
 
     /// Allocate a named register for a parameter or let binding
@@ -44,7 +47,7 @@ impl RegAlloc {
     pub fn bind(&mut self, name: &str, reg: u8) {
         self.bindings.insert(name.to_string(), reg);
     }
-    
+
     /// Unbind a name (for temporary shadowing)
     pub fn unbind(&mut self, name: &str) {
         self.bindings.remove(name);

@@ -25,7 +25,10 @@ impl CacheStore {
     pub fn new(base_dir: &Path) -> Self {
         let cache_dir = base_dir.join("cache");
         fs::create_dir_all(&cache_dir).ok();
-        Self { cache_dir, memory: HashMap::new() }
+        Self {
+            cache_dir,
+            memory: HashMap::new(),
+        }
     }
 
     pub fn get(&self, key: &str) -> Option<&CacheEntry> {
@@ -33,14 +36,22 @@ impl CacheStore {
     }
 
     pub fn put(&mut self, entry: CacheEntry) {
-        let path = self.cache_dir.join(format!("{}.json", &entry.key[7..71.min(entry.key.len())]));
+        let path = self
+            .cache_dir
+            .join(format!("{}.json", &entry.key[7..71.min(entry.key.len())]));
         if let Ok(json) = serde_json::to_string_pretty(&entry) {
             fs::write(&path, json).ok();
         }
         self.memory.insert(entry.key.clone(), entry);
     }
 
-    pub fn lookup(&self, tool_id: &str, version: &str, policy_hash: &str, args: &serde_json::Value) -> Option<&CacheEntry> {
+    pub fn lookup(
+        &self,
+        tool_id: &str,
+        version: &str,
+        policy_hash: &str,
+        args: &serde_json::Value,
+    ) -> Option<&CacheEntry> {
         let args_hash = canonical_hash(args);
         let key = crate::trace::hasher::cache_key(tool_id, version, policy_hash, &args_hash);
         self.get(&key)

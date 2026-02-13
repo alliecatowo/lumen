@@ -21,9 +21,9 @@ pub fn emit_canonical_json(module: &LirModule) -> String {
 mod tests {
     use super::*;
     use crate::compiler::lexer::Lexer;
+    use crate::compiler::lower;
     use crate::compiler::parser::Parser;
     use crate::compiler::resolve;
-    use crate::compiler::lower;
 
     #[test]
     fn test_emit_json() {

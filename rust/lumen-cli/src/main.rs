@@ -81,7 +81,11 @@ fn main() {
 
     match cli.command {
         Commands::Check { file } => cmd_check(&file),
-        Commands::Run { file, cell, trace_dir } => cmd_run(&file, &cell, trace_dir),
+        Commands::Run {
+            file,
+            cell,
+            trace_dir,
+        } => cmd_run(&file, &cell, trace_dir),
         Commands::Emit { file, output } => cmd_emit(&file, output),
         Commands::Trace { sub } => match sub {
             TraceCommands::Show { run_id, trace_dir } => cmd_trace_show(&run_id, &trace_dir),
@@ -123,9 +127,7 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
     };
 
     // Optionally set up tracing
-    let mut trace_store = trace_dir.map(|dir| {
-        lumen_runtime::trace::store::TraceStore::new(&dir)
-    });
+    let mut trace_store = trace_dir.map(|dir| lumen_runtime::trace::store::TraceStore::new(&dir));
 
     if let Some(ref mut ts) = trace_store {
         ts.start_run(&module.doc_hash);

@@ -32,7 +32,9 @@ pub struct TypeTable {
 }
 
 impl TypeTable {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn register(&mut self, ty: RuntimeType) {
         self.types.insert(ty.name.clone(), ty);

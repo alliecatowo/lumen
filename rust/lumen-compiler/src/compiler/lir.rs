@@ -9,95 +9,95 @@ use serde::{Deserialize, Serialize};
 #[repr(u8)]
 pub enum OpCode {
     // Misc
-    Nop       = 0x00,  // Ax: no operation
+    Nop = 0x00, // Ax: no operation
 
     // Register and constant ops
-    LoadK     = 0x01,  // A, Bx: load constant Bx into register A
-    LoadNil   = 0x02,  // A, B:  set registers A..A+B to nil
-    LoadBool  = 0x03,  // A, B, C: load bool B into A; if C, skip next
-    LoadInt   = 0x04,  // A, sB: R[A] = sB as i64 (small integer)
-    Move      = 0x05,  // A, B:  copy register B to A
+    LoadK = 0x01,    // A, Bx: load constant Bx into register A
+    LoadNil = 0x02,  // A, B:  set registers A..A+B to nil
+    LoadBool = 0x03, // A, B, C: load bool B into A; if C, skip next
+    LoadInt = 0x04,  // A, sB: R[A] = sB as i64 (small integer)
+    Move = 0x05,     // A, B:  copy register B to A
 
     // Data construction
-    NewList   = 0x06,  // A, B:  create list from B values at A+1..
-    NewMap    = 0x07,  // A, B:  create map from B kv pairs at A+1..
-    NewRecord = 0x08,  // A, Bx: create record of type Bx
-    NewUnion  = 0x09,  // A, B, C: create union tag=B payload=C
-    NewTuple  = 0x0A,  // A, B:  create tuple from B values at A+1..
-    NewSet    = 0x0B,  // A, B:  create set from B values at A+1..
+    NewList = 0x06,   // A, B:  create list from B values at A+1..
+    NewMap = 0x07,    // A, B:  create map from B kv pairs at A+1..
+    NewRecord = 0x08, // A, Bx: create record of type Bx
+    NewUnion = 0x09,  // A, B, C: create union tag=B payload=C
+    NewTuple = 0x0A,  // A, B:  create tuple from B values at A+1..
+    NewSet = 0x0B,    // A, B:  create set from B values at A+1..
 
     // Access
-    GetField  = 0x10,  // A, B, C: A = B.field[C]
-    SetField  = 0x11,  // A, B, C: A.field[B] = C
-    GetIndex  = 0x12,  // A, B, C: A = B[C]
-    SetIndex  = 0x13,  // A, B, C: A[B] = C
-    GetTuple  = 0x14,  // A, B, C: A = R[B].elements[C]
+    GetField = 0x10, // A, B, C: A = B.field[C]
+    SetField = 0x11, // A, B, C: A.field[B] = C
+    GetIndex = 0x12, // A, B, C: A = B[C]
+    SetIndex = 0x13, // A, B, C: A[B] = C
+    GetTuple = 0x14, // A, B, C: A = R[B].elements[C]
 
     // Arithmetic
-    Add       = 0x20,  // A, B, C: A = B + C
-    Sub       = 0x21,  // A, B, C: A = B - C
-    Mul       = 0x22,  // A, B, C: A = B * C
-    Div       = 0x23,  // A, B, C: A = B / C
-    Mod       = 0x24,  // A, B, C: A = B % C
-    Pow       = 0x25,  // A, B, C: A = B ** C
-    Neg       = 0x26,  // A, B:    A = -B
-    Concat    = 0x27,  // A, B, C: A = B ++ C
+    Add = 0x20,    // A, B, C: A = B + C
+    Sub = 0x21,    // A, B, C: A = B - C
+    Mul = 0x22,    // A, B, C: A = B * C
+    Div = 0x23,    // A, B, C: A = B / C
+    Mod = 0x24,    // A, B, C: A = B % C
+    Pow = 0x25,    // A, B, C: A = B ** C
+    Neg = 0x26,    // A, B:    A = -B
+    Concat = 0x27, // A, B, C: A = B ++ C
 
     // Bitwise
-    BitOr     = 0x28,  // A, B, C: A = B | C
-    BitAnd    = 0x29,  // A, B, C: A = B & C
-    BitXor    = 0x2A,  // A, B, C: A = B ^ C
-    BitNot    = 0x2B,  // A, B:    A = ~B
-    Shl       = 0x2C,  // A, B, C: A = B << C
-    Shr       = 0x2D,  // A, B, C: A = B >> C
+    BitOr = 0x28,  // A, B, C: A = B | C
+    BitAnd = 0x29, // A, B, C: A = B & C
+    BitXor = 0x2A, // A, B, C: A = B ^ C
+    BitNot = 0x2B, // A, B:    A = ~B
+    Shl = 0x2C,    // A, B, C: A = B << C
+    Shr = 0x2D,    // A, B, C: A = B >> C
 
     // Comparison / logic
-    Eq        = 0x30,  // A, B, C: if (B == C) != A then skip next
-    Lt        = 0x31,  // A, B, C: if (B < C) != A then skip next
-    Le        = 0x32,  // A, B, C: if (B <= C) != A then skip next
-    Not       = 0x33,  // A, B:    A = not B
-    And       = 0x34,  // A, B, C: A = B and C
-    Or        = 0x35,  // A, B, C: A = B or C
-    In        = 0x36,  // A, B, C: A = B in C
-    Is        = 0x37,  // A, B, C: A = typeof(B) == type(C)
-    NullCo    = 0x38,  // A, B, C: A = if B != null then B else C
-    Test      = 0x39,  // A, C: if (Reg[A] is truthy) != C then skip next
+    Eq = 0x30,     // A, B, C: if (B == C) != A then skip next
+    Lt = 0x31,     // A, B, C: if (B < C) != A then skip next
+    Le = 0x32,     // A, B, C: if (B <= C) != A then skip next
+    Not = 0x33,    // A, B:    A = not B
+    And = 0x34,    // A, B, C: A = B and C
+    Or = 0x35,     // A, B, C: A = B or C
+    In = 0x36,     // A, B, C: A = B in C
+    Is = 0x37,     // A, B, C: A = typeof(B) == type(C)
+    NullCo = 0x38, // A, B, C: A = if B != null then B else C
+    Test = 0x39,   // A, C: if (Reg[A] is truthy) != C then skip next
 
     // Control flow
-    Jmp       = 0x40,  // Ax: jump by signed offset
-    Call      = 0x41,  // A, B, C: call A with B args, C results
-    TailCall  = 0x42,  // A, B, C: tail-call A with B args
-    Return    = 0x43,  // A, B: return B values starting from A
-    Halt      = 0x44,  // A: halt with error message in A
-    Loop      = 0x45,  // AsB: decrement counter, jump if > 0
-    ForPrep   = 0x46,  // A, sB: prepare for-loop
-    ForLoop   = 0x47,  // A, sB: iterate for-loop
-    ForIn     = 0x48,  // A, B, C: for-in iterator step
-    Break     = 0x49,  // Ax: break from enclosing loop
-    Continue  = 0x4A,  // Ax: continue to next iteration
+    Jmp = 0x40,      // Ax: jump by signed offset
+    Call = 0x41,     // A, B, C: call A with B args, C results
+    TailCall = 0x42, // A, B, C: tail-call A with B args
+    Return = 0x43,   // A, B: return B values starting from A
+    Halt = 0x44,     // A: halt with error message in A
+    Loop = 0x45,     // AsB: decrement counter, jump if > 0
+    ForPrep = 0x46,  // A, sB: prepare for-loop
+    ForLoop = 0x47,  // A, sB: iterate for-loop
+    ForIn = 0x48,    // A, B, C: for-in iterator step
+    Break = 0x49,    // Ax: break from enclosing loop
+    Continue = 0x4A, // Ax: continue to next iteration
 
     // Intrinsics
-    Intrinsic = 0x50,  // A, B, C: A = intrinsic[B](args at C)
+    Intrinsic = 0x50, // A, B, C: A = intrinsic[B](args at C)
 
     // Closures
-    Closure   = 0x51,  // A, Bx: R[A] = closure(proto=Bx, upvalues from regs)
-    GetUpval  = 0x52,  // A, B:  R[A] = upvalue[B]
-    SetUpval  = 0x53,  // A, B:  upvalue[B] = R[A]
+    Closure = 0x51,  // A, Bx: R[A] = closure(proto=Bx, upvalues from regs)
+    GetUpval = 0x52, // A, B:  R[A] = upvalue[B]
+    SetUpval = 0x53, // A, B:  upvalue[B] = R[A]
 
     // Effects
-    ToolCall  = 0x60,  // A, Bx: tool_call(tool=Bx, args from subsequent regs)
-    Schema    = 0x61,  // A, B: validate A against schema type B
-    Emit      = 0x62,  // A: emit output R[A]
-    TraceRef  = 0x63,  // A: R[A] = current trace reference
-    Await     = 0x64,  // A, B: R[A] = await future R[B]
-    Spawn     = 0x65,  // A, Bx: R[A] = spawn async(proto=Bx)
+    ToolCall = 0x60, // A, Bx: tool_call(tool=Bx, args from subsequent regs)
+    Schema = 0x61,   // A, B: validate A against schema type B
+    Emit = 0x62,     // A: emit output R[A]
+    TraceRef = 0x63, // A: R[A] = current trace reference
+    Await = 0x64,    // A, B: R[A] = await future R[B]
+    Spawn = 0x65,    // A, Bx: R[A] = spawn async(proto=Bx)
 
     // List ops
-    Append    = 0x70,  // A, B: append B to list A
+    Append = 0x70, // A, B: append B to list A
 
     // Type checks
-    IsVariant = 0x71,  // A, Bx: if A is variant w/ tag Bx, skip next
-    Unbox     = 0x72,  // A, B: A = B.payload (for unions)
+    IsVariant = 0x71, // A, Bx: if A is variant w/ tag Bx, skip next
+    Unbox = 0x72,     // A, B: A = B.payload (for unions)
 }
 
 /// Intrinsic function IDs
@@ -186,22 +186,53 @@ pub struct Instruction {
 }
 
 impl Instruction {
-    pub fn abc(op: OpCode, a: u8, b: u8, c: u8) -> Self { Self { op, a, b, c } }
-    pub fn abx(op: OpCode, a: u8, bx: u16) -> Self { Self { op, a, b: (bx >> 8) as u8, c: (bx & 0xFF) as u8 } }
-    pub fn ax(op: OpCode, ax: u32) -> Self { Self { op, a: ((ax >> 16) & 0xFF) as u8, b: ((ax >> 8) & 0xFF) as u8, c: (ax & 0xFF) as u8 } }
+    pub fn abc(op: OpCode, a: u8, b: u8, c: u8) -> Self {
+        Self { op, a, b, c }
+    }
+    pub fn abx(op: OpCode, a: u8, bx: u16) -> Self {
+        Self {
+            op,
+            a,
+            b: (bx >> 8) as u8,
+            c: (bx & 0xFF) as u8,
+        }
+    }
+    pub fn ax(op: OpCode, ax: u32) -> Self {
+        Self {
+            op,
+            a: ((ax >> 16) & 0xFF) as u8,
+            b: ((ax >> 8) & 0xFF) as u8,
+            c: (ax & 0xFF) as u8,
+        }
+    }
     /// Signed 24-bit AX constructor for jump offsets (supports negative values)
     pub fn sax(op: OpCode, offset: i32) -> Self {
         let bits = (offset as u32) & 0xFFFFFF;
-        Self { op, a: ((bits >> 16) & 0xFF) as u8, b: ((bits >> 8) & 0xFF) as u8, c: (bits & 0xFF) as u8 }
+        Self {
+            op,
+            a: ((bits >> 16) & 0xFF) as u8,
+            b: ((bits >> 8) & 0xFF) as u8,
+            c: (bits & 0xFF) as u8,
+        }
     }
-    pub fn bx(&self) -> u16 { ((self.b as u16) << 8) | (self.c as u16) }
-    pub fn ax_val(&self) -> u32 { ((self.a as u32) << 16) | ((self.b as u32) << 8) | (self.c as u32) }
+    pub fn bx(&self) -> u16 {
+        ((self.b as u16) << 8) | (self.c as u16)
+    }
+    pub fn ax_val(&self) -> u32 {
+        ((self.a as u32) << 16) | ((self.b as u32) << 8) | (self.c as u32)
+    }
     /// Signed 24-bit AX value with sign extension for jump offsets
     pub fn sax_val(&self) -> i32 {
         let raw = self.ax_val();
-        if raw & 0x800000 != 0 { (raw | 0xFF000000) as i32 } else { raw as i32 }
+        if raw & 0x800000 != 0 {
+            (raw | 0xFF000000) as i32
+        } else {
+            raw as i32
+        }
     }
-    pub fn sbx(&self) -> i16 { self.bx() as i16 }
+    pub fn sbx(&self) -> i16 {
+        self.bx() as i16
+    }
 }
 
 /// Constant value in the constant pool
@@ -272,6 +303,18 @@ pub struct LirPolicy {
     pub grants: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LirAgent {
+    pub name: String,
+    pub methods: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LirAddon {
+    pub kind: String,
+    pub name: Option<String>,
+}
+
 /// Complete LIR module
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LirModule {
@@ -282,6 +325,8 @@ pub struct LirModule {
     pub cells: Vec<LirCell>,
     pub tools: Vec<LirTool>,
     pub policies: Vec<LirPolicy>,
+    pub agents: Vec<LirAgent>,
+    pub addons: Vec<LirAddon>,
 }
 
 impl LirModule {
@@ -294,6 +339,8 @@ impl LirModule {
             cells: Vec::new(),
             tools: Vec::new(),
             policies: Vec::new(),
+            agents: Vec::new(),
+            addons: Vec::new(),
         }
     }
 }

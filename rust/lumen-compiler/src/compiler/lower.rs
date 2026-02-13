@@ -4,7 +4,7 @@ use crate::compiler::ast::*;
 use crate::compiler::lir::*;
 use crate::compiler::regalloc::RegAlloc;
 use crate::compiler::resolve::SymbolTable;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 /// Lower an entire program to a LIR module.
 pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModule {
@@ -18,6 +18,40 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
             Item::Record(r) => module.types.push(lowerer.lower_record(r)),
             Item::Enum(e) => module.types.push(lowerer.lower_enum(e)),
             Item::Cell(c) => module.cells.push(lowerer.lower_cell(c)),
+            Item::Agent(a) => {
+                module.types.push(lowerer.lower_agent_type(a));
+                module.cells.push(lowerer.lower_agent_constructor(a));
+                module.agents.push(LirAgent {
+                    name: a.name.clone(),
+                    methods: a.cells.iter().map(|c| c.name.clone()).collect(),
+                });
+                for cell in &a.cells {
+                    let mut method = cell.clone();
+                    method.name = format!("{}.{}", a.name, cell.name);
+                    module.cells.push(lowerer.lower_cell(&method));
+                }
+                for g in &a.grants {
+                    let mut grants = serde_json::Map::new();
+                    for c in &g.constraints {
+                        let val = match &c.value {
+                            Expr::StringLit(s, _) => serde_json::Value::String(s.clone()),
+                            Expr::IntLit(n, _) => serde_json::json!(*n),
+                            Expr::FloatLit(f, _) => serde_json::json!(*f),
+                            Expr::BoolLit(b, _) => serde_json::json!(*b),
+                            _ => serde_json::Value::Null,
+                        };
+                        grants.insert(c.key.clone(), val);
+                    }
+                    module.policies.push(LirPolicy {
+                        tool_alias: g.tool_alias.clone(),
+                        grants: serde_json::Value::Object(grants),
+                    });
+                }
+            }
+            Item::Addon(a) => module.addons.push(LirAddon {
+                kind: a.kind.clone(),
+                name: a.name.clone(),
+            }),
             Item::UseTool(u) => module.tools.push(LirTool {
                 alias: u.alias.clone(),
                 tool_id: u.tool_path.clone(),
@@ -42,8 +76,12 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                 });
             }
             // New item types: skip for now (no LIR lowering yet)
-            Item::TypeAlias(_) | Item::Trait(_) | Item::Impl(_)
-            | Item::Import(_) | Item::ConstDecl(_) | Item::MacroDecl(_) => {}
+            Item::TypeAlias(_)
+            | Item::Trait(_)
+            | Item::Impl(_)
+            | Item::Import(_)
+            | Item::ConstDecl(_)
+            | Item::MacroDecl(_) => {}
         }
     }
 
@@ -70,7 +108,12 @@ struct Lowerer<'a> {
 
 impl<'a> Lowerer<'a> {
     fn new(symbols: &'a SymbolTable) -> Self {
-        Self { symbols, strings: Vec::new(), loop_stack: Vec::new(), lambda_cells: Vec::new() }
+        Self {
+            symbols,
+            strings: Vec::new(),
+            loop_stack: Vec::new(),
+            lambda_cells: Vec::new(),
+        }
     }
 
     fn intern_string(&mut self, s: &str) -> u16 {
@@ -88,14 +131,22 @@ impl<'a> Lowerer<'a> {
         LirType {
             kind: "record".to_string(),
             name: r.name.clone(),
-            fields: r.fields.iter().map(|f| {
-                self.intern_string(&f.name);
-                LirField {
-                    name: f.name.clone(),
-                    ty: format_type_expr(&f.ty),
-                    constraints: if f.constraint.is_some() { vec!["has_constraint".into()] } else { vec![] },
-                }
-            }).collect(),
+            fields: r
+                .fields
+                .iter()
+                .map(|f| {
+                    self.intern_string(&f.name);
+                    LirField {
+                        name: f.name.clone(),
+                        ty: format_type_expr(&f.ty),
+                        constraints: if f.constraint.is_some() {
+                            vec!["has_constraint".into()]
+                        } else {
+                            vec![]
+                        },
+                    }
+                })
+                .collect(),
             variants: vec![],
         }
     }
@@ -106,10 +157,69 @@ impl<'a> Lowerer<'a> {
             kind: "enum".to_string(),
             name: e.name.clone(),
             fields: vec![],
-            variants: e.variants.iter().map(|v| {
-                self.intern_string(&v.name);
-                LirVariant { name: v.name.clone(), payload: v.payload.as_ref().map(format_type_expr) }
-            }).collect(),
+            variants: e
+                .variants
+                .iter()
+                .map(|v| {
+                    self.intern_string(&v.name);
+                    LirVariant {
+                        name: v.name.clone(),
+                        payload: v.payload.as_ref().map(format_type_expr),
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    fn lower_agent_type(&mut self, a: &AgentDecl) -> LirType {
+        self.intern_string(&a.name);
+        LirType {
+            kind: "record".to_string(),
+            name: a.name.clone(),
+            fields: a
+                .cells
+                .iter()
+                .map(|c| {
+                    self.intern_string(&c.name);
+                    LirField {
+                        name: c.name.clone(),
+                        ty: "String".to_string(),
+                        constraints: vec![],
+                    }
+                })
+                .collect(),
+            variants: vec![],
+        }
+    }
+
+    fn lower_agent_constructor(&mut self, a: &AgentDecl) -> LirCell {
+        self.intern_string(&a.name);
+        let mut ra = RegAlloc::new();
+        let mut constants: Vec<Constant> = Vec::new();
+        let mut instructions: Vec<Instruction> = Vec::new();
+
+        let dest = ra.alloc_temp();
+        let type_idx = self.intern_string(&a.name);
+        instructions.push(Instruction::abx(OpCode::NewRecord, dest, type_idx));
+
+        for cell in &a.cells {
+            let field_idx = self.intern_string(&cell.name) as u8;
+            let val_reg = ra.alloc_temp();
+            let kidx = constants.len() as u16;
+            constants.push(Constant::String(format!("{}.{}", a.name, cell.name)));
+            instructions.push(Instruction::abx(OpCode::LoadK, val_reg, kidx));
+            instructions.push(Instruction::abc(OpCode::SetField, dest, field_idx, val_reg));
+        }
+
+        instructions.push(Instruction::abc(OpCode::Return, dest, 1, 0));
+
+        LirCell {
+            name: a.name.clone(),
+            params: vec![],
+            returns: Some(a.name.clone()),
+            registers: ra.max_regs(),
+            constants,
+            instructions,
         }
     }
 
@@ -120,10 +230,18 @@ impl<'a> Lowerer<'a> {
         let mut instructions: Vec<Instruction> = Vec::new();
 
         // Allocate param registers
-        let params: Vec<LirParam> = cell.params.iter().map(|p| {
-            let reg = ra.alloc_named(&p.name);
-            LirParam { name: p.name.clone(), ty: format_type_expr(&p.ty), register: reg }
-        }).collect();
+        let params: Vec<LirParam> = cell
+            .params
+            .iter()
+            .map(|p| {
+                let reg = ra.alloc_named(&p.name);
+                LirParam {
+                    name: p.name.clone(),
+                    ty: format_type_expr(&p.ty),
+                    register: reg,
+                }
+            })
+            .collect();
 
         // Lower body
         for stmt in &cell.body {
@@ -131,7 +249,12 @@ impl<'a> Lowerer<'a> {
         }
 
         // Ensure return at end
-        if instructions.is_empty() || !matches!(instructions.last().map(|i| i.op), Some(OpCode::Return) | Some(OpCode::Halt)) {
+        if instructions.is_empty()
+            || !matches!(
+                instructions.last().map(|i| i.op),
+                Some(OpCode::Return) | Some(OpCode::Halt)
+            )
+        {
             let r = ra.alloc_temp();
             instructions.push(Instruction::abc(OpCode::LoadNil, r, 0, 0));
             instructions.push(Instruction::abc(OpCode::Return, r, 1, 0));
@@ -147,7 +270,13 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn lower_stmt(&mut self, stmt: &Stmt, ra: &mut RegAlloc, consts: &mut Vec<Constant>, instrs: &mut Vec<Instruction>) {
+    fn lower_stmt(
+        &mut self,
+        stmt: &Stmt,
+        ra: &mut RegAlloc,
+        consts: &mut Vec<Constant>,
+        instrs: &mut Vec<Instruction>,
+    ) {
         match stmt {
             Stmt::Let(ls) => {
                 let val_reg = self.lower_expr(&ls.value, ra, consts, instrs);
@@ -161,24 +290,26 @@ impl<'a> Lowerer<'a> {
                 // Compare with True
                 let true_reg = ra.alloc_temp();
                 instrs.push(Instruction::abc(OpCode::LoadBool, true_reg, 1, 0));
-                
+
                 // Result register for Eq (fixes VM restriction on A=0 mode)
                 let cmp_dest = ra.alloc_temp();
 
                 // Skip if Equal (cond == true)
                 // Eq(dest, cond, true) -> dest = (cond == true)
                 instrs.push(Instruction::abc(OpCode::Eq, cmp_dest, cond_reg, true_reg));
-                
+
                 // If cmp_dest is FALSE, we want to JUMP to Else.
                 // Test(cmp_dest, 0) -> If cmp_dest is Truthy (True) != 0 (False) -> True -> Skip Next.
                 // So if True, Skip Jump.
                 // If False, Don't Skip Jump -> Jump.
                 instrs.push(Instruction::abc(OpCode::Test, cmp_dest, 0, 0));
-                
+
                 let jmp_idx = instrs.len();
                 instrs.push(Instruction::sax(OpCode::Jmp, 0)); // Jump to else/end
 
-                for s in &ifs.then_body { self.lower_stmt(s, ra, consts, instrs); }
+                for s in &ifs.then_body {
+                    self.lower_stmt(s, ra, consts, instrs);
+                }
 
                 if let Some(ref else_body) = ifs.else_body {
                     let else_jmp_idx = instrs.len();
@@ -188,7 +319,9 @@ impl<'a> Lowerer<'a> {
                     let offset = (else_start - jmp_idx - 1) as i32;
                     instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, offset);
 
-                    for s in else_body { self.lower_stmt(s, ra, consts, instrs); }
+                    for s in else_body {
+                        self.lower_stmt(s, ra, consts, instrs);
+                    }
 
                     let after_else = instrs.len();
                     let else_offset = (after_else - else_jmp_idx - 1) as i32;
@@ -210,7 +343,12 @@ impl<'a> Lowerer<'a> {
                 consts.push(Constant::Int(0));
                 instrs.push(Instruction::abx(OpCode::LoadK, idx_reg, zero_idx));
                 // len = length(iter)
-                instrs.push(Instruction::abc(OpCode::Intrinsic, len_reg, IntrinsicId::Length as u8, iter_reg));
+                instrs.push(Instruction::abc(
+                    OpCode::Intrinsic,
+                    len_reg,
+                    IntrinsicId::Length as u8,
+                    iter_reg,
+                ));
 
                 let loop_start = instrs.len();
                 // if idx >= len, break
@@ -219,7 +357,7 @@ impl<'a> Lowerer<'a> {
                 // Break if Not (idx < len).
                 let lt_reg = ra.alloc_temp();
                 instrs.push(Instruction::abc(OpCode::Lt, lt_reg, idx_reg, len_reg));
-                
+
                 // If lt_reg is True, Skip Next (Break).
                 // Test(lt, 0): Skip if True.
                 instrs.push(Instruction::abc(OpCode::Test, lt_reg, 0, 0));
@@ -227,9 +365,16 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
 
                 // elem = iter[idx]
-                instrs.push(Instruction::abc(OpCode::GetIndex, elem_reg, iter_reg, idx_reg));
+                instrs.push(Instruction::abc(
+                    OpCode::GetIndex,
+                    elem_reg,
+                    iter_reg,
+                    idx_reg,
+                ));
 
-                for s in &fs.body { self.lower_stmt(s, ra, consts, instrs); }
+                for s in &fs.body {
+                    self.lower_stmt(s, ra, consts, instrs);
+                }
 
                 // idx = idx + 1
                 let one_idx = consts.len() as u16;
@@ -262,12 +407,15 @@ impl<'a> Lowerer<'a> {
                             let skip_jmp = instrs.len();
                             instrs.push(Instruction::sax(OpCode::Jmp, 0));
 
-                            for s in &arm.body { self.lower_stmt(s, ra, consts, instrs); }
+                            for s in &arm.body {
+                                self.lower_stmt(s, ra, consts, instrs);
+                            }
                             end_jumps.push(instrs.len());
                             instrs.push(Instruction::sax(OpCode::Jmp, 0));
 
                             let after = instrs.len();
-                            instrs[skip_jmp] = Instruction::sax(OpCode::Jmp, (after - skip_jmp - 1) as i32);
+                            instrs[skip_jmp] =
+                                Instruction::sax(OpCode::Jmp, (after - skip_jmp - 1) as i32);
                         }
                         Pattern::Variant(tag, binding, _) => {
                             // Check Variant Tag
@@ -285,28 +433,38 @@ impl<'a> Lowerer<'a> {
                                 let breg = ra.alloc_named(b);
                                 instrs.push(Instruction::abc(OpCode::Unbox, breg, subj_reg, 0));
                             }
-                            for s in &arm.body { self.lower_stmt(s, ra, consts, instrs); }
+                            for s in &arm.body {
+                                self.lower_stmt(s, ra, consts, instrs);
+                            }
                             end_jumps.push(instrs.len());
                             instrs.push(Instruction::sax(OpCode::Jmp, 0)); // Jump to end of match
 
                             // Patch skip_jmp (failure case) to point here
                             let after = instrs.len();
-                            instrs[skip_jmp] = Instruction::sax(OpCode::Jmp, (after - skip_jmp - 1) as i32);
+                            instrs[skip_jmp] =
+                                Instruction::sax(OpCode::Jmp, (after - skip_jmp - 1) as i32);
                         }
                         Pattern::Wildcard(_) | Pattern::Ident(_, _) => {
                             if let Pattern::Ident(name, _) = &arm.pattern {
                                 let breg = ra.alloc_named(name);
                                 instrs.push(Instruction::abc(OpCode::Move, breg, subj_reg, 0));
                             }
-                            for s in &arm.body { self.lower_stmt(s, ra, consts, instrs); }
+                            for s in &arm.body {
+                                self.lower_stmt(s, ra, consts, instrs);
+                            }
                             end_jumps.push(instrs.len());
                             instrs.push(Instruction::sax(OpCode::Jmp, 0));
                         }
                         // New pattern types: treat as wildcard for now
-                        Pattern::Guard { .. } | Pattern::Or { .. }
-                        | Pattern::ListDestructure { .. } | Pattern::TupleDestructure { .. }
-                        | Pattern::RecordDestructure { .. } | Pattern::TypeCheck { .. } => {
-                            for s in &arm.body { self.lower_stmt(s, ra, consts, instrs); }
+                        Pattern::Guard { .. }
+                        | Pattern::Or { .. }
+                        | Pattern::ListDestructure { .. }
+                        | Pattern::TupleDestructure { .. }
+                        | Pattern::RecordDestructure { .. }
+                        | Pattern::TypeCheck { .. } => {
+                            for s in &arm.body {
+                                self.lower_stmt(s, ra, consts, instrs);
+                            }
                             end_jumps.push(instrs.len());
                             instrs.push(Instruction::sax(OpCode::Jmp, 0));
                         }
@@ -344,7 +502,10 @@ impl<'a> Lowerer<'a> {
             }
             Stmt::While(ws) => {
                 let loop_start = instrs.len();
-                self.loop_stack.push(LoopContext { start: loop_start, break_jumps: Vec::new() });
+                self.loop_stack.push(LoopContext {
+                    start: loop_start,
+                    break_jumps: Vec::new(),
+                });
 
                 let cond_reg = self.lower_expr(&ws.condition, ra, consts, instrs);
                 let true_reg = ra.alloc_temp();
@@ -355,7 +516,9 @@ impl<'a> Lowerer<'a> {
                 let cond_jmp = instrs.len();
                 instrs.push(Instruction::sax(OpCode::Jmp, 0));
 
-                for s in &ws.body { self.lower_stmt(s, ra, consts, instrs); }
+                for s in &ws.body {
+                    self.lower_stmt(s, ra, consts, instrs);
+                }
 
                 let back_offset = loop_start as i32 - instrs.len() as i32 - 1;
                 instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
@@ -371,9 +534,14 @@ impl<'a> Lowerer<'a> {
             }
             Stmt::Loop(ls) => {
                 let loop_start = instrs.len();
-                self.loop_stack.push(LoopContext { start: loop_start, break_jumps: Vec::new() });
+                self.loop_stack.push(LoopContext {
+                    start: loop_start,
+                    break_jumps: Vec::new(),
+                });
 
-                for s in &ls.body { self.lower_stmt(s, ra, consts, instrs); }
+                for s in &ls.body {
+                    self.lower_stmt(s, ra, consts, instrs);
+                }
                 let back_offset = loop_start as i32 - instrs.len() as i32 - 1;
                 instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
 
@@ -404,7 +572,11 @@ impl<'a> Lowerer<'a> {
             }
             Stmt::CompoundAssign(ca) => {
                 let val_reg = self.lower_expr(&ca.value, ra, consts, instrs);
-                let target_reg = if let Some(r) = ra.lookup(&ca.target) { r } else { ra.alloc_named(&ca.target) };
+                let target_reg = if let Some(r) = ra.lookup(&ca.target) {
+                    r
+                } else {
+                    ra.alloc_named(&ca.target)
+                };
                 let opcode = match ca.op {
                     CompoundOp::AddAssign => OpCode::Add,
                     CompoundOp::SubAssign => OpCode::Sub,
@@ -416,7 +588,13 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn lower_expr(&mut self, expr: &Expr, ra: &mut RegAlloc, consts: &mut Vec<Constant>, instrs: &mut Vec<Instruction>) -> u8 {
+    fn lower_expr(
+        &mut self,
+        expr: &Expr,
+        ra: &mut RegAlloc,
+        consts: &mut Vec<Constant>,
+        instrs: &mut Vec<Instruction>,
+    ) -> u8 {
         match expr {
             Expr::IntLit(n, _) => {
                 let dest = ra.alloc_temp();
@@ -447,7 +625,9 @@ impl<'a> Lowerer<'a> {
                 for seg in segments {
                     match seg {
                         StringSegment::Literal(s) => {
-                            if s.is_empty() { continue; }
+                            if s.is_empty() {
+                                continue;
+                            }
                             let seg_reg = ra.alloc_temp();
                             let kidx = consts.len() as u16;
                             consts.push(Constant::String(s.clone()));
@@ -467,7 +647,12 @@ impl<'a> Lowerer<'a> {
                                 let kidx = consts.len() as u16;
                                 consts.push(Constant::String(String::new()));
                                 instrs.push(Instruction::abx(OpCode::LoadK, empty_reg, kidx));
-                                instrs.push(Instruction::abc(OpCode::Concat, dest, empty_reg, expr_reg));
+                                instrs.push(Instruction::abc(
+                                    OpCode::Concat,
+                                    dest,
+                                    empty_reg,
+                                    expr_reg,
+                                ));
                                 first = false;
                             } else {
                                 instrs.push(Instruction::abc(OpCode::Concat, dest, dest, expr_reg));
@@ -485,7 +670,12 @@ impl<'a> Lowerer<'a> {
             }
             Expr::BoolLit(b, _) => {
                 let dest = ra.alloc_temp();
-                instrs.push(Instruction::abc(OpCode::LoadBool, dest, if *b { 1 } else { 0 }, 0));
+                instrs.push(Instruction::abc(
+                    OpCode::LoadBool,
+                    dest,
+                    if *b { 1 } else { 0 },
+                    0,
+                ));
                 dest
             }
             Expr::NullLit(_) => {
@@ -506,7 +696,7 @@ impl<'a> Lowerer<'a> {
 
                     let nil_reg = ra.alloc_temp();
                     instrs.push(Instruction::abc(OpCode::LoadNil, nil_reg, 0, 0));
-                    
+
                     instrs.push(Instruction::abc(OpCode::NewUnion, dest, tag_reg, nil_reg));
                     dest
                 } else {
@@ -532,17 +722,22 @@ impl<'a> Lowerer<'a> {
                         instrs.push(Instruction::abc(OpCode::Move, target, *er, 0));
                     }
                 }
-                instrs.push(Instruction::abc(OpCode::NewList, dest, elems.len() as u8, 0));
+                instrs.push(Instruction::abc(
+                    OpCode::NewList,
+                    dest,
+                    elems.len() as u8,
+                    0,
+                ));
                 dest
             }
             Expr::MapLit(pairs, _) => {
                 let dest = ra.alloc_temp();
                 let mut kv_regs = Vec::new();
                 for (k, v) in pairs {
-                     kv_regs.push(self.lower_expr(k, ra, consts, instrs));
-                     kv_regs.push(self.lower_expr(v, ra, consts, instrs));
+                    kv_regs.push(self.lower_expr(k, ra, consts, instrs));
+                    kv_regs.push(self.lower_expr(v, ra, consts, instrs));
                 }
-                
+
                 // Move KVs into consecutive positions dest+1..
                 for (i, reg) in kv_regs.iter().enumerate() {
                     let target = dest + 1 + i as u8;
@@ -597,7 +792,7 @@ impl<'a> Lowerer<'a> {
                     BinOp::NotEq => OpCode::Eq, // inverted in post
                     BinOp::Lt => OpCode::Lt,
                     BinOp::LtEq => OpCode::Le,
-                    BinOp::Gt => OpCode::Lt, // swap operands
+                    BinOp::Gt => OpCode::Lt,   // swap operands
                     BinOp::GtEq => OpCode::Le, // swap operands
                     BinOp::And => OpCode::And,
                     BinOp::Or => OpCode::Or,
@@ -640,111 +835,144 @@ impl<'a> Lowerer<'a> {
                         let dest = ra.alloc_temp();
                         let type_idx = self.intern_string(name);
                         instrs.push(Instruction::abx(OpCode::NewRecord, dest, type_idx));
-                        
+
                         for arg in args {
-                             match arg {
-                                 CallArg::Named(field, expr, _) => {
-                                     let val_reg = self.lower_expr(expr, ra, consts, instrs);
-                                     
-                                     // Check for 'where' constraint on this field
-                                     // We need to look up the RecordDef fields
-                                     let mut constraint_expr = None;
-                                     if let Some(crate::compiler::resolve::TypeInfo { kind: crate::compiler::resolve::TypeInfoKind::Record(def), .. }) = self.symbols.types.get(name) {
-                                         if let Some(f) = def.fields.iter().find(|fd| fd.name == *field) {
-                                             constraint_expr = f.constraint.clone();
-                                         }
-                                     }
+                            match arg {
+                                CallArg::Named(field, expr, _) => {
+                                    let val_reg = self.lower_expr(expr, ra, consts, instrs);
 
-                                     if let Some(cexpr) = constraint_expr {
-                                         // 1. Save old binding
-                                         let old_bind = ra.lookup(field);
-                                         // 2. Bind field name to val_reg (shadowing)
-                                         ra.bind(field, val_reg);
-                                         
-                                         // 3. Lower constraint expression
-                                         let cond_reg = self.lower_expr(&cexpr, ra, consts, instrs);
-                                         
-                                         // 4. Restore old binding
-                                         if let Some(old) = old_bind {
-                                             ra.bind(field, old);
-                                         } else {
-                                             ra.unbind(field);
-                                         }
+                                    // Check for 'where' constraint on this field
+                                    // We need to look up the RecordDef fields
+                                    let mut constraint_expr = None;
+                                    if let Some(crate::compiler::resolve::TypeInfo {
+                                        kind: crate::compiler::resolve::TypeInfoKind::Record(def),
+                                        ..
+                                    }) = self.symbols.types.get(name)
+                                    {
+                                        if let Some(f) =
+                                            def.fields.iter().find(|fd| fd.name == *field)
+                                        {
+                                            constraint_expr = f.constraint.clone();
+                                        }
+                                    }
 
-                                         // 5. Emit Check
-                                         // 5. Emit Check
-                                         // Check against false: if cond == false, skip Jmp and Halt
-                                         let false_idx = consts.len() as u16;
-                                         consts.push(Constant::Bool(false));
-                                         let false_reg = ra.alloc_temp();
-                                         instrs.push(Instruction::abx(OpCode::LoadK, false_reg, false_idx));
-                                         
-                                         // Eq(cond, false)
-                                         // If cond is false (Invalid), equality is true -> Skip Next (Jmp) -> Execute Halt
-                                         // If cond is true (Valid), equality is false -> Exec Next (Jmp) -> Jump Over Halt
-                                         instrs.push(Instruction::abc(OpCode::Eq, 0, cond_reg, false_reg));
-                                         
-                                         // If true, skip Halt
-                                         let jmp_idx = instrs.len();
-                                         instrs.push(Instruction::sax(OpCode::Jmp, 0));
-                                         
-                                         // Halt(msg)
-                                         let msg = format!("Constraint failed for field '{}'", field);
-                                         let msg_idx = consts.len() as u16;
-                                         consts.push(Constant::String(msg));
-                                         let msg_reg = ra.alloc_temp();
-                                         instrs.push(Instruction::abx(OpCode::LoadK, msg_reg, msg_idx));
-                                         instrs.push(Instruction::abc(OpCode::Halt, msg_reg, 0, 0));
-                                         
-                                         // Patch Jmp
-                                         let after_halt = instrs.len();
-                                         let offset = (after_halt - jmp_idx - 1) as i32;
-                                         instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, offset);
-                                     }
+                                    if let Some(cexpr) = constraint_expr {
+                                        // 1. Save old binding
+                                        let old_bind = ra.lookup(field);
+                                        // 2. Bind field name to val_reg (shadowing)
+                                        ra.bind(field, val_reg);
 
-                                     let field_idx = self.intern_string(field) as u8;
-                                     instrs.push(Instruction::abc(OpCode::SetField, dest, field_idx, val_reg));
-                                 }
-                                 CallArg::Positional(expr) => {
-                                      // Positional not supported for records yet? Or map by index?
-                                      // Typecheck didn't validate positional args for records.
-                                      // Assume named args for now or ignore.
-                                      let _ = self.lower_expr(expr, ra, consts, instrs); // consume
-                                 }
-                                 _ => {}
-                             }
+                                        // 3. Lower constraint expression
+                                        let cond_reg = self.lower_expr(&cexpr, ra, consts, instrs);
+
+                                        // 4. Restore old binding
+                                        if let Some(old) = old_bind {
+                                            ra.bind(field, old);
+                                        } else {
+                                            ra.unbind(field);
+                                        }
+
+                                        // 5. Emit Check
+                                        // 5. Emit Check
+                                        // Check against false: if cond == false, skip Jmp and Halt
+                                        let false_idx = consts.len() as u16;
+                                        consts.push(Constant::Bool(false));
+                                        let false_reg = ra.alloc_temp();
+                                        instrs.push(Instruction::abx(
+                                            OpCode::LoadK,
+                                            false_reg,
+                                            false_idx,
+                                        ));
+
+                                        // Eq(cond, false)
+                                        // If cond is false (Invalid), equality is true -> Skip Next (Jmp) -> Execute Halt
+                                        // If cond is true (Valid), equality is false -> Exec Next (Jmp) -> Jump Over Halt
+                                        instrs.push(Instruction::abc(
+                                            OpCode::Eq,
+                                            0,
+                                            cond_reg,
+                                            false_reg,
+                                        ));
+
+                                        // If true, skip Halt
+                                        let jmp_idx = instrs.len();
+                                        instrs.push(Instruction::sax(OpCode::Jmp, 0));
+
+                                        // Halt(msg)
+                                        let msg =
+                                            format!("Constraint failed for field '{}'", field);
+                                        let msg_idx = consts.len() as u16;
+                                        consts.push(Constant::String(msg));
+                                        let msg_reg = ra.alloc_temp();
+                                        instrs.push(Instruction::abx(
+                                            OpCode::LoadK,
+                                            msg_reg,
+                                            msg_idx,
+                                        ));
+                                        instrs.push(Instruction::abc(OpCode::Halt, msg_reg, 0, 0));
+
+                                        // Patch Jmp
+                                        let after_halt = instrs.len();
+                                        let offset = (after_halt - jmp_idx - 1) as i32;
+                                        instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, offset);
+                                    }
+
+                                    let field_idx = self.intern_string(field) as u8;
+                                    instrs.push(Instruction::abc(
+                                        OpCode::SetField,
+                                        dest,
+                                        field_idx,
+                                        val_reg,
+                                    ));
+                                }
+                                CallArg::Positional(expr) => {
+                                    // Positional not supported for records yet? Or map by index?
+                                    // Typecheck didn't validate positional args for records.
+                                    // Assume named args for now or ignore.
+                                    let _ = self.lower_expr(expr, ra, consts, instrs);
+                                    // consume
+                                }
+                                _ => {}
+                            }
                         }
                         return dest;
                     }
 
                     if is_result || is_enum {
-                         // Expect 1 argument (payload)
-                         // If 0 args -> Nil payload (handled in Ident if bare, but if ok(), then explicit nil?)
-                         // If >1 args -> Tuple? Result only takes 1. Enum payload is 1 type (maybe tuple).
-                         // For now assume 1 arg.
-                         let payload_reg = if args.is_empty() {
-                             let r = ra.alloc_temp();
-                             instrs.push(Instruction::abc(OpCode::LoadNil, r, 0, 0));
-                             r
-                         } else {
-                             match &args[0] {
-                                 CallArg::Positional(e) | CallArg::Named(_, e, _) => self.lower_expr(e, ra, consts, instrs),
-                                 _ => {
-                                     let r = ra.alloc_temp();
-                                     instrs.push(Instruction::abc(OpCode::LoadNil, r, 0, 0));
-                                     r
-                                 }
-                             }
-                         };
-                         
-                         let dest = ra.alloc_temp();
-                         let tag_reg = ra.alloc_temp();
-                         let kidx = consts.len() as u16;
-                         consts.push(Constant::String(name.clone()));
-                         instrs.push(Instruction::abx(OpCode::LoadK, tag_reg, kidx));
-                         
-                         instrs.push(Instruction::abc(OpCode::NewUnion, dest, tag_reg, payload_reg));
-                         return dest;
+                        // Expect 1 argument (payload)
+                        // If 0 args -> Nil payload (handled in Ident if bare, but if ok(), then explicit nil?)
+                        // If >1 args -> Tuple? Result only takes 1. Enum payload is 1 type (maybe tuple).
+                        // For now assume 1 arg.
+                        let payload_reg = if args.is_empty() {
+                            let r = ra.alloc_temp();
+                            instrs.push(Instruction::abc(OpCode::LoadNil, r, 0, 0));
+                            r
+                        } else {
+                            match &args[0] {
+                                CallArg::Positional(e) | CallArg::Named(_, e, _) => {
+                                    self.lower_expr(e, ra, consts, instrs)
+                                }
+                                _ => {
+                                    let r = ra.alloc_temp();
+                                    instrs.push(Instruction::abc(OpCode::LoadNil, r, 0, 0));
+                                    r
+                                }
+                            }
+                        };
+
+                        let dest = ra.alloc_temp();
+                        let tag_reg = ra.alloc_temp();
+                        let kidx = consts.len() as u16;
+                        consts.push(Constant::String(name.clone()));
+                        instrs.push(Instruction::abx(OpCode::LoadK, tag_reg, kidx));
+
+                        instrs.push(Instruction::abc(
+                            OpCode::NewUnion,
+                            dest,
+                            tag_reg,
+                            payload_reg,
+                        ));
+                        return dest;
                     }
 
                     let intrinsic = match name.as_str() {
@@ -764,51 +992,103 @@ impl<'a> Lowerer<'a> {
                         "slice" => Some(IntrinsicId::Slice),
                         "min" => Some(IntrinsicId::Min),
                         "max" => Some(IntrinsicId::Max),
+                        "confirm" => Some(IntrinsicId::Matches),
                         "abs" => Some(IntrinsicId::Abs),
                         _ => None,
                     };
 
-
                     if let Some(id) = intrinsic {
-                         // Evaluate args
-                         let mut arg_regs = Vec::new();
-                         for arg in args {
-                             match arg {
-                                 CallArg::Positional(e) | CallArg::Named(_, e, _) => {
-                                     arg_regs.push(self.lower_expr(e, ra, consts, instrs));
-                                 }
-                                 _ => {} // Role not supported in intrinsics yet?
-                             }
-                         }
-                         
-                         // Move args to contiguous block
-                         let start_reg = ra.alloc_temp();
-                         // We need count registers
-                         for _ in 0..arg_regs.len().saturating_sub(1) {
-                             ra.alloc_temp();
-                         }
-                         
-                         for (i, &reg) in arg_regs.iter().enumerate() {
-                             let target = start_reg + i as u8;
-                             if reg != target {
-                                 instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
-                             }
-                         }
-                         
-                         let dest = ra.alloc_temp();
-                         instrs.push(Instruction::abc(OpCode::Intrinsic, dest, id as u8, start_reg));
-                         return dest;
+                        // Evaluate args
+                        let mut arg_regs = Vec::new();
+                        for arg in args {
+                            match arg {
+                                CallArg::Positional(e) | CallArg::Named(_, e, _) => {
+                                    arg_regs.push(self.lower_expr(e, ra, consts, instrs));
+                                }
+                                _ => {} // Role not supported in intrinsics yet?
+                            }
+                        }
+
+                        // Move args to contiguous block
+                        let start_reg = ra.alloc_temp();
+                        // We need count registers
+                        for _ in 0..arg_regs.len().saturating_sub(1) {
+                            ra.alloc_temp();
+                        }
+
+                        for (i, &reg) in arg_regs.iter().enumerate() {
+                            let target = start_reg + i as u8;
+                            if reg != target {
+                                instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
+                            }
+                        }
+
+                        let dest = ra.alloc_temp();
+                        instrs.push(Instruction::abc(
+                            OpCode::Intrinsic,
+                            dest,
+                            id as u8,
+                            start_reg,
+                        ));
+                        return dest;
                     }
                 }
 
-                // Normal call
-                let callee_reg = self.lower_expr(callee, ra, consts, instrs);
-                
+                // Normal call (including agent-style method calls via dot access).
+                let mut implicit_self_arg: Option<u8> = None;
+                let callee_reg = if let Expr::DotAccess(obj, field, _) = callee.as_ref() {
+                    if let Expr::Ident(agent_name, _) = obj.as_ref() {
+                        if self.symbols.agents.contains_key(agent_name) {
+                            let ctor_reg = ra.alloc_temp();
+                            let ctor_idx = consts.len() as u16;
+                            consts.push(Constant::String(agent_name.clone()));
+                            instrs.push(Instruction::abx(OpCode::LoadK, ctor_reg, ctor_idx));
+                            instrs.push(Instruction::abc(OpCode::Call, ctor_reg, 0, 1));
+                            implicit_self_arg = Some(ctor_reg);
+
+                            let dest = ra.alloc_temp();
+                            let kidx = consts.len() as u16;
+                            consts.push(Constant::String(format!("{}.{}", agent_name, field)));
+                            instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
+                            dest
+                        } else {
+                            let obj_reg = self.lower_expr(obj, ra, consts, instrs);
+                            implicit_self_arg = Some(obj_reg);
+                            let dest = ra.alloc_temp();
+                            let fidx = self.intern_string(field);
+                            instrs.push(Instruction::abc(
+                                OpCode::GetField,
+                                dest,
+                                obj_reg,
+                                fidx as u8,
+                            ));
+                            dest
+                        }
+                    } else {
+                        let obj_reg = self.lower_expr(obj, ra, consts, instrs);
+                        implicit_self_arg = Some(obj_reg);
+                        let dest = ra.alloc_temp();
+                        let fidx = self.intern_string(field);
+                        instrs.push(Instruction::abc(
+                            OpCode::GetField,
+                            dest,
+                            obj_reg,
+                            fidx as u8,
+                        ));
+                        dest
+                    }
+                } else {
+                    self.lower_expr(callee, ra, consts, instrs)
+                };
+
                 let mut arg_regs = Vec::new();
+                if let Some(self_reg) = implicit_self_arg {
+                    arg_regs.push(self_reg);
+                }
                 for arg in args {
                     match arg {
-                        CallArg::Positional(e) | CallArg::Named(_, e, _) => { 
-                            arg_regs.push(self.lower_expr(e, ra, consts, instrs)); 
+                        CallArg::Positional(e) | CallArg::Named(_, e, _) => {
+                            arg_regs.push(self.lower_expr(e, ra, consts, instrs));
                         }
                         CallArg::Role(name, content, _) => {
                             let content_reg = self.lower_expr(content, ra, consts, instrs);
@@ -817,7 +1097,12 @@ impl<'a> Lowerer<'a> {
                             consts.push(Constant::String(format!("{}: ", name)));
                             instrs.push(Instruction::abx(OpCode::LoadK, prefix_reg, kidx));
                             let dest = ra.alloc_temp();
-                            instrs.push(Instruction::abc(OpCode::Concat, dest, prefix_reg, content_reg));
+                            instrs.push(Instruction::abc(
+                                OpCode::Concat,
+                                dest,
+                                prefix_reg,
+                                content_reg,
+                            ));
                             arg_regs.push(dest);
                         }
                     }
@@ -830,13 +1115,13 @@ impl<'a> Lowerer<'a> {
                 if callee_reg != base {
                     instrs.push(Instruction::abc(OpCode::Move, base, callee_reg, 0));
                 }
-                
+
                 for (i, &reg) in arg_regs.iter().enumerate() {
-                     let target = base + 1 + i as u8;
-                     ra.alloc_temp(); // ensure allocated
-                     if reg != target {
-                         instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
-                     }
+                    let target = base + 1 + i as u8;
+                    ra.alloc_temp(); // ensure allocated
+                    if reg != target {
+                        instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
+                    }
                 }
 
                 let result_reg = ra.alloc_temp();
@@ -853,30 +1138,35 @@ impl<'a> Lowerer<'a> {
                 // Given previous code passed `nargs`, maybe it was `nargs`?
                 // I'll stick to `nargs` for now but with contiguous registers.
                 // Wait, if I pass logic `nargs` and regs are contiguous, VM can find them.
-                
+
                 // If I use `nargs` as B:
-                instrs.push(Instruction::abc(OpCode::Call, base, args.len() as u8, 1));
-                
+                instrs.push(Instruction::abc(
+                    OpCode::Call,
+                    base,
+                    arg_regs.len() as u8,
+                    1,
+                ));
+
                 // Result is in base? Or C?
                 // Lua: results start at A.
                 // Previous code: `Move result_reg, callee_reg`.
                 // So results overwrite function register.
                 instrs.push(Instruction::abc(OpCode::Move, result_reg, base, 0));
-                
+
                 result_reg
             }
             Expr::ToolCall(callee, args, _) => {
                 let _ = self.lower_expr(callee, ra, consts, instrs); // Callee is ignored? "tool" token?
-                // Should we lower callee if it's an expression? "tool" is keyword.
-                // If callee is Expr::Ident("tool"), it evaluates to nothing?
-                // But ToolCall syntax is `tool name(args)`. name is Ident.
-                // The AST has `callee: Expr`.
-                
+                                                                     // Should we lower callee if it's an expression? "tool" is keyword.
+                                                                     // If callee is Expr::Ident("tool"), it evaluates to nothing?
+                                                                     // But ToolCall syntax is `tool name(args)`. name is Ident.
+                                                                     // The AST has `callee: Expr`.
+
                 let mut arg_regs = Vec::new();
                 for arg in args {
-                    match arg { 
-                        CallArg::Positional(e) | CallArg::Named(_, e, _) => { 
-                            arg_regs.push(self.lower_expr(e, ra, consts, instrs)); 
+                    match arg {
+                        CallArg::Positional(e) | CallArg::Named(_, e, _) => {
+                            arg_regs.push(self.lower_expr(e, ra, consts, instrs));
                         }
                         CallArg::Role(name, content, _) => {
                             let content_reg = self.lower_expr(content, ra, consts, instrs);
@@ -885,25 +1175,37 @@ impl<'a> Lowerer<'a> {
                             consts.push(Constant::String(format!("{}: ", name)));
                             instrs.push(Instruction::abx(OpCode::LoadK, prefix_reg, kidx));
                             let dest = ra.alloc_temp();
-                            instrs.push(Instruction::abc(OpCode::Concat, dest, prefix_reg, content_reg));
+                            instrs.push(Instruction::abc(
+                                OpCode::Concat,
+                                dest,
+                                prefix_reg,
+                                content_reg,
+                            ));
                             arg_regs.push(dest);
                         }
                     }
                 }
-                
+
                 // Pack args into contiguous registers starting at dest+1
                 let dest = ra.alloc_temp(); // A
-                // Allocate space for args
-                for _ in 0..arg_regs.len() { ra.alloc_temp(); }
-                
-                for (i, &reg) in arg_regs.iter().enumerate() {
-                     let target = dest + 1 + i as u8;
-                     if reg != target {
-                         instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
-                     }
+                                            // Allocate space for args
+                for _ in 0..arg_regs.len() {
+                    ra.alloc_temp();
                 }
-                
-                instrs.push(Instruction::abc(OpCode::ToolCall, dest, 0, args.len() as u8));
+
+                for (i, &reg) in arg_regs.iter().enumerate() {
+                    let target = dest + 1 + i as u8;
+                    if reg != target {
+                        instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
+                    }
+                }
+
+                instrs.push(Instruction::abc(
+                    OpCode::ToolCall,
+                    dest,
+                    0,
+                    args.len() as u8,
+                ));
                 dest
             }
             Expr::DotAccess(obj, field, _) => {
@@ -922,16 +1224,21 @@ impl<'a> Lowerer<'a> {
             }
             Expr::RoleBlock(name, content, _) => {
                 let content_reg = self.lower_expr(content, ra, consts, instrs);
-                
+
                 // Prefix: "name: "
                 let prefix_reg = ra.alloc_temp();
                 let kidx = consts.len() as u16;
                 consts.push(Constant::String(format!("{}: ", name)));
                 instrs.push(Instruction::abx(OpCode::LoadK, prefix_reg, kidx));
-                
+
                 // Concat
                 let dest = ra.alloc_temp();
-                instrs.push(Instruction::abc(OpCode::Concat, dest, prefix_reg, content_reg));
+                instrs.push(Instruction::abc(
+                    OpCode::Concat,
+                    dest,
+                    prefix_reg,
+                    content_reg,
+                ));
                 dest
             }
             Expr::ExpectSchema(inner, schema_name, _) => {
@@ -956,17 +1263,29 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
                 dest
             }
-            Expr::Lambda { params, return_type, body, .. } => {
+            Expr::Lambda {
+                params,
+                return_type,
+                body,
+                ..
+            } => {
                 // Lower lambda body as a separate LirCell
                 let lambda_name = format!("<lambda/{}>", self.lambda_cells.len());
                 let mut lra = RegAlloc::new();
                 let mut lconsts: Vec<Constant> = Vec::new();
                 let mut linstrs: Vec<Instruction> = Vec::new();
 
-                let lparams: Vec<LirParam> = params.iter().map(|p| {
-                    let reg = lra.alloc_named(&p.name);
-                    LirParam { name: p.name.clone(), ty: format_type_expr(&p.ty), register: reg }
-                }).collect();
+                let lparams: Vec<LirParam> = params
+                    .iter()
+                    .map(|p| {
+                        let reg = lra.alloc_named(&p.name);
+                        LirParam {
+                            name: p.name.clone(),
+                            ty: format_type_expr(&p.ty),
+                            register: reg,
+                        }
+                    })
+                    .collect();
 
                 match body {
                     LambdaBody::Expr(e) => {
@@ -977,7 +1296,12 @@ impl<'a> Lowerer<'a> {
                         for s in stmts {
                             self.lower_stmt(s, &mut lra, &mut lconsts, &mut linstrs);
                         }
-                        if linstrs.is_empty() || !matches!(linstrs.last().map(|i| i.op), Some(OpCode::Return) | Some(OpCode::Halt)) {
+                        if linstrs.is_empty()
+                            || !matches!(
+                                linstrs.last().map(|i| i.op),
+                                Some(OpCode::Return) | Some(OpCode::Halt)
+                            )
+                        {
                             let r = lra.alloc_temp();
                             linstrs.push(Instruction::abc(OpCode::LoadNil, r, 0, 0));
                             linstrs.push(Instruction::abc(OpCode::Return, r, 1, 0));
@@ -1012,7 +1336,12 @@ impl<'a> Lowerer<'a> {
                         instrs.push(Instruction::abc(OpCode::Move, target, *er, 0));
                     }
                 }
-                instrs.push(Instruction::abc(OpCode::NewTuple, dest, elems.len() as u8, 0));
+                instrs.push(Instruction::abc(
+                    OpCode::NewTuple,
+                    dest,
+                    elems.len() as u8,
+                    0,
+                ));
                 dest
             }
             Expr::SetLit(elems, _) => {
@@ -1033,20 +1362,39 @@ impl<'a> Lowerer<'a> {
             }
             Expr::RangeExpr { start, end, .. } => {
                 // Lower as range(start, end) intrinsic call
-                let sr = if let Some(s) = start { self.lower_expr(s, ra, consts, instrs) } else {
-                    let r = ra.alloc_temp(); let kidx = consts.len() as u16; consts.push(Constant::Int(0));
-                    instrs.push(Instruction::abx(OpCode::LoadK, r, kidx)); r
+                let sr = if let Some(s) = start {
+                    self.lower_expr(s, ra, consts, instrs)
+                } else {
+                    let r = ra.alloc_temp();
+                    let kidx = consts.len() as u16;
+                    consts.push(Constant::Int(0));
+                    instrs.push(Instruction::abx(OpCode::LoadK, r, kidx));
+                    r
                 };
-                let er = if let Some(e) = end { self.lower_expr(e, ra, consts, instrs) } else {
-                    let r = ra.alloc_temp(); let kidx = consts.len() as u16; consts.push(Constant::Int(0));
-                    instrs.push(Instruction::abx(OpCode::LoadK, r, kidx)); r
+                let er = if let Some(e) = end {
+                    self.lower_expr(e, ra, consts, instrs)
+                } else {
+                    let r = ra.alloc_temp();
+                    let kidx = consts.len() as u16;
+                    consts.push(Constant::Int(0));
+                    instrs.push(Instruction::abx(OpCode::LoadK, r, kidx));
+                    r
                 };
                 let dest = ra.alloc_temp();
                 let start_reg = ra.alloc_temp();
                 ra.alloc_temp(); // for end
-                if sr != start_reg { instrs.push(Instruction::abc(OpCode::Move, start_reg, sr, 0)); }
-                if er != start_reg + 1 { instrs.push(Instruction::abc(OpCode::Move, start_reg + 1, er, 0)); }
-                instrs.push(Instruction::abc(OpCode::Intrinsic, dest, IntrinsicId::Range as u8, start_reg));
+                if sr != start_reg {
+                    instrs.push(Instruction::abc(OpCode::Move, start_reg, sr, 0));
+                }
+                if er != start_reg + 1 {
+                    instrs.push(Instruction::abc(OpCode::Move, start_reg + 1, er, 0));
+                }
+                instrs.push(Instruction::abc(
+                    OpCode::Intrinsic,
+                    dest,
+                    IntrinsicId::Range as u8,
+                    start_reg,
+                ));
                 dest
             }
             Expr::TryExpr(inner, _) => {
@@ -1060,7 +1408,7 @@ impl<'a> Lowerer<'a> {
                 // If ok: execute Jmp -> jump over return
                 let jmp_ok = instrs.len();
                 instrs.push(Instruction::sax(OpCode::Jmp, 0)); // jump past return-err
-                // Return the error as-is
+                                                               // Return the error as-is
                 instrs.push(Instruction::abc(OpCode::Return, ir, 1, 0));
                 // Patch jump
                 let after = instrs.len();
@@ -1094,7 +1442,8 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::sax(OpCode::Jmp, 0));
                 // Null case: load nil
                 let null_start = instrs.len();
-                instrs[jmp_null] = Instruction::sax(OpCode::Jmp, (null_start - jmp_null - 1) as i32);
+                instrs[jmp_null] =
+                    Instruction::sax(OpCode::Jmp, (null_start - jmp_null - 1) as i32);
                 instrs.push(Instruction::abc(OpCode::LoadNil, dest, 0, 0));
                 let after = instrs.len();
                 instrs[jmp_end] = Instruction::sax(OpCode::Jmp, (after - jmp_end - 1) as i32);
@@ -1121,10 +1470,13 @@ impl<'a> Lowerer<'a> {
                 instrs[jmp_ok] = Instruction::sax(OpCode::Jmp, (after - jmp_ok - 1) as i32);
                 ir
             }
-            Expr::SpreadExpr(inner, _) => {
-                self.lower_expr(inner, ra, consts, instrs)
-            }
-            Expr::IfExpr { cond, then_val, else_val, .. } => {
+            Expr::SpreadExpr(inner, _) => self.lower_expr(inner, ra, consts, instrs),
+            Expr::IfExpr {
+                cond,
+                then_val,
+                else_val,
+                ..
+            } => {
                 let cond_reg = self.lower_expr(cond, ra, consts, instrs);
                 let dest = ra.alloc_temp();
                 let true_reg = ra.alloc_temp();
@@ -1155,7 +1507,14 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::abc(OpCode::Await, dest, ir, 0));
                 dest
             }
-            Expr::Comprehension { body, var, iter, condition, kind: _, span: _ } => {
+            Expr::Comprehension {
+                body,
+                var,
+                iter,
+                condition,
+                kind: _,
+                span: _,
+            } => {
                 // Lower as: result = []; for var in iter { if cond { append(result, body) } }
                 let dest = ra.alloc_temp();
                 instrs.push(Instruction::abc(OpCode::NewList, dest, 0, 0));
@@ -1168,7 +1527,12 @@ impl<'a> Lowerer<'a> {
                 let zero_idx = consts.len() as u16;
                 consts.push(Constant::Int(0));
                 instrs.push(Instruction::abx(OpCode::LoadK, idx_reg, zero_idx));
-                instrs.push(Instruction::abc(OpCode::Intrinsic, len_reg, IntrinsicId::Length as u8, iter_reg));
+                instrs.push(Instruction::abc(
+                    OpCode::Intrinsic,
+                    len_reg,
+                    IntrinsicId::Length as u8,
+                    iter_reg,
+                ));
 
                 let loop_start = instrs.len();
                 let lt_reg = ra.alloc_temp();
@@ -1177,7 +1541,12 @@ impl<'a> Lowerer<'a> {
                 let break_jmp = instrs.len();
                 instrs.push(Instruction::sax(OpCode::Jmp, 0));
 
-                instrs.push(Instruction::abc(OpCode::GetIndex, elem_reg, iter_reg, idx_reg));
+                instrs.push(Instruction::abc(
+                    OpCode::GetIndex,
+                    elem_reg,
+                    iter_reg,
+                    idx_reg,
+                ));
 
                 // Optional condition
                 let mut cond_jmp = None;
@@ -1193,7 +1562,12 @@ impl<'a> Lowerer<'a> {
                 }
 
                 let body_reg = self.lower_expr(body, ra, consts, instrs);
-                instrs.push(Instruction::abc(OpCode::Intrinsic, dest, IntrinsicId::Append as u8, body_reg));
+                instrs.push(Instruction::abc(
+                    OpCode::Intrinsic,
+                    dest,
+                    IntrinsicId::Append as u8,
+                    body_reg,
+                ));
 
                 if let Some(cj) = cond_jmp {
                     let after_body = instrs.len();
@@ -1210,7 +1584,8 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
 
                 let after_loop = instrs.len();
-                instrs[break_jmp] = Instruction::sax(OpCode::Jmp, (after_loop - break_jmp - 1) as i32);
+                instrs[break_jmp] =
+                    Instruction::sax(OpCode::Jmp, (after_loop - break_jmp - 1) as i32);
                 dest
             }
         }
@@ -1222,15 +1597,23 @@ fn format_type_expr(ty: &TypeExpr) -> String {
         TypeExpr::Named(n, _) => n.clone(),
         TypeExpr::List(inner, _) => format!("list[{}]", format_type_expr(inner)),
         TypeExpr::Map(k, v, _) => format!("map[{}, {}]", format_type_expr(k), format_type_expr(v)),
-        TypeExpr::Result(ok, err, _) => format!("result[{}, {}]", format_type_expr(ok), format_type_expr(err)),
-        TypeExpr::Union(types, _) => types.iter().map(format_type_expr).collect::<Vec<_>>().join(" | "),
+        TypeExpr::Result(ok, err, _) => format!(
+            "result[{}, {}]",
+            format_type_expr(ok),
+            format_type_expr(err)
+        ),
+        TypeExpr::Union(types, _) => types
+            .iter()
+            .map(format_type_expr)
+            .collect::<Vec<_>>()
+            .join(" | "),
         TypeExpr::Null(_) => "Null".to_string(),
         TypeExpr::Tuple(types, _) => {
             let inner: Vec<_> = types.iter().map(format_type_expr).collect();
             format!("({})", inner.join(", "))
         }
         TypeExpr::Set(inner, _) => format!("set[{}]", format_type_expr(inner)),
-        TypeExpr::Fn(params, ret, _) => {
+        TypeExpr::Fn(params, ret, _, _) => {
             let ps: Vec<_> = params.iter().map(format_type_expr).collect();
             format!("fn({}) -> {}", ps.join(", "), format_type_expr(ret))
         }

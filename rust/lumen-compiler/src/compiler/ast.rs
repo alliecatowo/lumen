@@ -23,6 +23,8 @@ pub enum Item {
     Record(RecordDef),
     Enum(EnumDef),
     Cell(CellDef),
+    Agent(AgentDecl),
+    Addon(AddonDecl),
     UseTool(UseToolDecl),
     Grant(GrantDecl),
     TypeAlias(TypeAliasDef),
@@ -39,6 +41,8 @@ impl Item {
             Item::Record(r) => r.span,
             Item::Enum(e) => e.span,
             Item::Cell(c) => c.span,
+            Item::Agent(a) => a.span,
+            Item::Addon(a) => a.span,
             Item::UseTool(u) => u.span,
             Item::Grant(g) => g.span,
             Item::TypeAlias(t) => t.span,
@@ -72,8 +76,8 @@ pub enum TypeExpr {
     Tuple(Vec<TypeExpr>, Span),
     /// Set type: set[T]
     Set(Box<TypeExpr>, Span),
-    /// Function type: fn(A, B) -> C
-    Fn(Vec<TypeExpr>, Box<TypeExpr>, Span),
+    /// Function type: fn(A, B) -> C / {effects}
+    Fn(Vec<TypeExpr>, Box<TypeExpr>, Vec<String>, Span),
     /// Generic type: Name[T, U]
     Generic(String, Vec<TypeExpr>, Span),
 }
@@ -89,7 +93,7 @@ impl TypeExpr {
             TypeExpr::Null(s) => *s,
             TypeExpr::Tuple(_, s) => *s,
             TypeExpr::Set(_, s) => *s,
-            TypeExpr::Fn(_, _, s) => *s,
+            TypeExpr::Fn(_, _, _, s) => *s,
             TypeExpr::Generic(_, _, s) => *s,
         }
     }
@@ -151,10 +155,26 @@ pub struct CellDef {
     pub generic_params: Vec<GenericParam>,
     pub params: Vec<Param>,
     pub return_type: Option<TypeExpr>,
+    pub effects: Vec<String>,
     pub body: Vec<Stmt>,
     pub is_pub: bool,
     pub is_async: bool,
     pub where_clauses: Vec<Expr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentDecl {
+    pub name: String,
+    pub cells: Vec<CellDef>,
+    pub grants: Vec<GrantDecl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddonDecl {
+    pub kind: String,
+    pub name: Option<String>,
     pub span: Span,
 }
 
@@ -332,17 +352,34 @@ pub enum Pattern {
     /// Ident binding
     Ident(String, Span),
     /// Guard: pattern if condition
-    Guard { inner: Box<Pattern>, condition: Box<Expr>, span: Span },
+    Guard {
+        inner: Box<Pattern>,
+        condition: Box<Expr>,
+        span: Span,
+    },
     /// Or: pattern1 | pattern2
     Or { patterns: Vec<Pattern>, span: Span },
     /// List destructure: [a, b, ...rest]
-    ListDestructure { elements: Vec<Pattern>, rest: Option<String>, span: Span },
+    ListDestructure {
+        elements: Vec<Pattern>,
+        rest: Option<String>,
+        span: Span,
+    },
     /// Tuple destructure: (a, b, c)
     TupleDestructure { elements: Vec<Pattern>, span: Span },
     /// Record destructure: TypeName(field1:, field2: pat, ..)
-    RecordDestructure { type_name: String, fields: Vec<(String, Option<Pattern>)>, open: bool, span: Span },
+    RecordDestructure {
+        type_name: String,
+        fields: Vec<(String, Option<Pattern>)>,
+        open: bool,
+        span: Span,
+    },
     /// Type check: name: Type
-    TypeCheck { name: String, type_expr: Box<TypeExpr>, span: Span },
+    TypeCheck {
+        name: String,
+        type_expr: Box<TypeExpr>,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -468,13 +505,24 @@ pub enum Expr {
     /// expect schema Type
     ExpectSchema(Box<Expr>, String, Span),
     /// Lambda: fn(params) -> type => expr | fn(params) block end
-    Lambda { params: Vec<Param>, return_type: Option<Box<TypeExpr>>, body: LambdaBody, span: Span },
+    Lambda {
+        params: Vec<Param>,
+        return_type: Option<Box<TypeExpr>>,
+        body: LambdaBody,
+        span: Span,
+    },
     /// Tuple literal: (a, b, c)
     TupleLit(Vec<Expr>, Span),
     /// Set literal: set[a, b, c]
     SetLit(Vec<Expr>, Span),
     /// Range expression: start..end or start..=end
-    RangeExpr { start: Option<Box<Expr>>, end: Option<Box<Expr>>, inclusive: bool, step: Option<Box<Expr>>, span: Span },
+    RangeExpr {
+        start: Option<Box<Expr>>,
+        end: Option<Box<Expr>>,
+        inclusive: bool,
+        step: Option<Box<Expr>>,
+        span: Span,
+    },
     /// Postfix try: expr?
     TryExpr(Box<Expr>, Span),
     /// Null coalescing: lhs ?? rhs
@@ -486,11 +534,23 @@ pub enum Expr {
     /// Spread: ...expr
     SpreadExpr(Box<Expr>, Span),
     /// If expression: if cond then a else b
-    IfExpr { cond: Box<Expr>, then_val: Box<Expr>, else_val: Box<Expr>, span: Span },
+    IfExpr {
+        cond: Box<Expr>,
+        then_val: Box<Expr>,
+        else_val: Box<Expr>,
+        span: Span,
+    },
     /// Await expression: await expr
     AwaitExpr(Box<Expr>, Span),
     /// Comprehension: [expr for pat in iter if cond]
-    Comprehension { body: Box<Expr>, var: String, iter: Box<Expr>, condition: Option<Box<Expr>>, kind: ComprehensionKind, span: Span },
+    Comprehension {
+        body: Box<Expr>,
+        var: String,
+        iter: Box<Expr>,
+        condition: Option<Box<Expr>>,
+        kind: ComprehensionKind,
+        span: Span,
+    },
 }
 
 impl Expr {

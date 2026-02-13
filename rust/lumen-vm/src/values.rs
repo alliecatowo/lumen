@@ -80,12 +80,41 @@ impl Value {
             Value::String(StringRef::Owned(s)) => s.clone(),
             Value::String(StringRef::Interned(id)) => format!("<interned:{}>", id),
             Value::Bytes(b) => format!("<bytes:{}>", b.len()),
-            Value::List(l) => format!("[{}]", l.iter().map(|v| v.display_pretty()).collect::<Vec<_>>().join(", ")),
-            Value::Tuple(t) => format!("({})", t.iter().map(|v| v.display_pretty()).collect::<Vec<_>>().join(", ")),
-            Value::Set(s) => format!("set[{}]", s.iter().map(|v| v.display_pretty()).collect::<Vec<_>>().join(", ")),
-            Value::Map(m) => format!("{{{}}}", m.iter().map(|(k, v)| format!("{}: {}", k, v.display_pretty())).collect::<Vec<_>>().join(", ")),
+            Value::List(l) => format!(
+                "[{}]",
+                l.iter()
+                    .map(|v| v.display_pretty())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Value::Tuple(t) => format!(
+                "({})",
+                t.iter()
+                    .map(|v| v.display_pretty())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Value::Set(s) => format!(
+                "set[{}]",
+                s.iter()
+                    .map(|v| v.display_pretty())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Value::Map(m) => format!(
+                "{{{}}}",
+                m.iter()
+                    .map(|(k, v)| format!("{}: {}", k, v.display_pretty()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Value::Record(r) => {
-                let fields = r.fields.iter().map(|(k, v)| format!("{}: {}", k, v.display_pretty())).collect::<Vec<_>>().join(", ");
+                let fields = r
+                    .fields
+                    .iter()
+                    .map(|(k, v)| format!("{}: {}", k, v.display_pretty()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!("{}({})", r.type_name, fields)
             }
             Value::Union(u) => {
@@ -95,29 +124,49 @@ impl Value {
                     format!("{}({})", u.tag, u.payload.display_pretty())
                 }
             }
-            Value::Closure(c) => format!("<closure:cell={},captures={}>", c.cell_idx, c.captures.len()),
+            Value::Closure(c) => format!(
+                "<closure:cell={},captures={}>",
+                c.cell_idx,
+                c.captures.len()
+            ),
             Value::TraceRef(t) => format!("<trace:{}:{}>", t.trace_id, t.seq),
         }
     }
 
     pub fn as_int(&self) -> Option<i64> {
-        match self { Value::Int(n) => Some(*n), _ => None }
+        match self {
+            Value::Int(n) => Some(*n),
+            _ => None,
+        }
     }
 
     pub fn as_float(&self) -> Option<f64> {
-        match self { Value::Float(f) => Some(*f), Value::Int(n) => Some(*n as f64), _ => None }
+        match self {
+            Value::Float(f) => Some(*f),
+            Value::Int(n) => Some(*n as f64),
+            _ => None,
+        }
     }
 
     pub fn as_list(&self) -> Option<&Vec<Value>> {
-        match self { Value::List(l) => Some(l), _ => None }
+        match self {
+            Value::List(l) => Some(l),
+            _ => None,
+        }
     }
 
     pub fn as_record(&self) -> Option<&RecordValue> {
-        match self { Value::Record(r) => Some(r), _ => None }
+        match self {
+            Value::Record(r) => Some(r),
+            _ => None,
+        }
     }
 
     pub fn as_map(&self) -> Option<&BTreeMap<String, Value>> {
-        match self { Value::Map(m) => Some(m), _ => None }
+        match self {
+            Value::Map(m) => Some(m),
+            _ => None,
+        }
     }
 
     /// Return a numeric discriminant for type ordering.
@@ -183,14 +232,21 @@ impl Value {
                 format!("set[{}]", items.join(", "))
             }
             Value::Map(m) => {
-                let entries: Vec<String> = m.iter().map(|(k, v)| format!("\"{}\": {}", k, v.display_quoted())).collect();
+                let entries: Vec<String> = m
+                    .iter()
+                    .map(|(k, v)| format!("\"{}\": {}", k, v.display_quoted()))
+                    .collect();
                 format!("{{{}}}", entries.join(", "))
             }
             Value::Record(r) => {
                 if r.fields.is_empty() {
                     format!("{}()", r.type_name)
                 } else {
-                    let fields: Vec<String> = r.fields.iter().map(|(k, v)| format!("{}: {}", k, v.display_quoted())).collect();
+                    let fields: Vec<String> = r
+                        .fields
+                        .iter()
+                        .map(|(k, v)| format!("{}: {}", k, v.display_quoted()))
+                        .collect();
                     format!("{}({})", r.type_name, fields.join(", "))
                 }
             }
@@ -244,13 +300,19 @@ impl PartialEq for Value {
             (Value::Tuple(a), Value::Tuple(b)) => a == b,
             (Value::Set(a), Value::Set(b)) => {
                 // Sets are equal if they contain the same elements (order-independent)
-                if a.len() != b.len() { return false; }
+                if a.len() != b.len() {
+                    return false;
+                }
                 a.iter().all(|v| b.contains(v))
             }
             (Value::Map(a), Value::Map(b)) => a == b,
-            (Value::Record(a), Value::Record(b)) => a.type_name == b.type_name && a.fields == b.fields,
+            (Value::Record(a), Value::Record(b)) => {
+                a.type_name == b.type_name && a.fields == b.fields
+            }
             (Value::Union(a), Value::Union(b)) => a.tag == b.tag && a.payload == b.payload,
-            (Value::Closure(a), Value::Closure(b)) => a.cell_idx == b.cell_idx && a.captures == b.captures,
+            (Value::Closure(a), Value::Closure(b)) => {
+                a.cell_idx == b.cell_idx && a.captures == b.captures
+            }
             _ => false,
         }
     }
@@ -278,8 +340,20 @@ impl Ord for Value {
             (Value::Int(a), Value::Int(b)) => a.cmp(b),
             (Value::Float(a), Value::Float(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
             (Value::String(a), Value::String(b)) => {
-                let sa = match a { StringRef::Owned(s) => s.as_str(), StringRef::Interned(id) => { let _ = id; "" } };
-                let sb = match b { StringRef::Owned(s) => s.as_str(), StringRef::Interned(id) => { let _ = id; "" } };
+                let sa = match a {
+                    StringRef::Owned(s) => s.as_str(),
+                    StringRef::Interned(id) => {
+                        let _ = id;
+                        ""
+                    }
+                };
+                let sb = match b {
+                    StringRef::Owned(s) => s.as_str(),
+                    StringRef::Interned(id) => {
+                        let _ = id;
+                        ""
+                    }
+                };
                 sa.cmp(sb)
             }
             (Value::Bytes(a), Value::Bytes(b)) => a.cmp(b),
@@ -293,33 +367,36 @@ impl Ord for Value {
                     for key in ak {
                         if let (Some(va), Some(vb)) = (a.get(key), b.get(key)) {
                             let c = va.cmp(vb);
-                            if c != Ordering::Equal { return c; }
+                            if c != Ordering::Equal {
+                                return c;
+                            }
                         }
                     }
                     Ordering::Equal
                 })
             }
-            (Value::Record(a), Value::Record(b)) => {
-                a.type_name.cmp(&b.type_name).then_with(|| {
-                    let ak: Vec<_> = a.fields.keys().collect();
-                    let bk: Vec<_> = b.fields.keys().collect();
-                    ak.cmp(&bk).then_with(|| {
-                        for key in ak {
-                            if let (Some(va), Some(vb)) = (a.fields.get(key), b.fields.get(key)) {
-                                let c = va.cmp(vb);
-                                if c != Ordering::Equal { return c; }
+            (Value::Record(a), Value::Record(b)) => a.type_name.cmp(&b.type_name).then_with(|| {
+                let ak: Vec<_> = a.fields.keys().collect();
+                let bk: Vec<_> = b.fields.keys().collect();
+                ak.cmp(&bk).then_with(|| {
+                    for key in ak {
+                        if let (Some(va), Some(vb)) = (a.fields.get(key), b.fields.get(key)) {
+                            let c = va.cmp(vb);
+                            if c != Ordering::Equal {
+                                return c;
                             }
                         }
-                        Ordering::Equal
-                    })
+                    }
+                    Ordering::Equal
                 })
-            }
+            }),
             (Value::Union(a), Value::Union(b)) => {
                 a.tag.cmp(&b.tag).then_with(|| a.payload.cmp(&b.payload))
             }
-            (Value::Closure(a), Value::Closure(b)) => {
-                a.cell_idx.cmp(&b.cell_idx).then_with(|| a.captures.cmp(&b.captures))
-            }
+            (Value::Closure(a), Value::Closure(b)) => a
+                .cell_idx
+                .cmp(&b.cell_idx)
+                .then_with(|| a.captures.cmp(&b.captures)),
             (Value::TraceRef(a), Value::TraceRef(b)) => {
                 a.trace_id.cmp(&b.trace_id).then_with(|| a.seq.cmp(&b.seq))
             }
@@ -346,7 +423,10 @@ mod tests {
 
     #[test]
     fn test_display_pretty_tuple() {
-        let v = Value::Tuple(vec![Value::Int(1), Value::String(StringRef::Owned("a".into()))]);
+        let v = Value::Tuple(vec![
+            Value::Int(1),
+            Value::String(StringRef::Owned("a".into())),
+        ]);
         assert_eq!(v.display_pretty(), "(1, \"a\")");
     }
 
@@ -359,9 +439,15 @@ mod tests {
     #[test]
     fn test_display_pretty_record() {
         let mut fields = BTreeMap::new();
-        fields.insert("name".to_string(), Value::String(StringRef::Owned("Alice".into())));
+        fields.insert(
+            "name".to_string(),
+            Value::String(StringRef::Owned("Alice".into())),
+        );
         fields.insert("age".to_string(), Value::Int(30));
-        let v = Value::Record(RecordValue { type_name: "Person".into(), fields });
+        let v = Value::Record(RecordValue {
+            type_name: "Person".into(),
+            fields,
+        });
         assert_eq!(v.display_pretty(), "Person(age: 30, name: \"Alice\")");
     }
 
@@ -403,7 +489,10 @@ mod tests {
 
     #[test]
     fn test_closure_display() {
-        let c = Value::Closure(ClosureValue { cell_idx: 0, captures: vec![Value::Int(42)] });
+        let c = Value::Closure(ClosureValue {
+            cell_idx: 0,
+            captures: vec![Value::Int(42)],
+        });
         assert_eq!(c.display_pretty(), "<closure:cell=0>");
     }
 }

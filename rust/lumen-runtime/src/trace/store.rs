@@ -73,7 +73,9 @@ impl TraceStore {
         self.write_event(&event);
     }
 
-    pub fn run_id(&self) -> &str { &self.current_run_id }
+    pub fn run_id(&self) -> &str {
+        &self.current_run_id
+    }
 
     fn emit_event(&mut self, kind: TraceEventKind, cell: Option<String>, message: Option<String>) {
         let mut event = self.make_event(kind);

@@ -1,12 +1,12 @@
 //! Register VM dispatch loop for executing LIR bytecode.
 
-use crate::values::{Value, StringRef, RecordValue, TraceRefValue, ClosureValue, UnionValue};
 use crate::strings::StringTable;
-use crate::types::{TypeTable, RuntimeType, RuntimeTypeKind, RuntimeField, RuntimeVariant};
+use crate::types::{RuntimeField, RuntimeType, RuntimeTypeKind, RuntimeVariant, TypeTable};
+use crate::values::{ClosureValue, RecordValue, StringRef, TraceRefValue, UnionValue, Value};
 use lumen_compiler::compiler::lir::*;
 use lumen_runtime::tools::{ToolDispatcher, ToolRequest};
-use thiserror::Error;
 use std::collections::BTreeMap;
+use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum VmError {
@@ -76,15 +76,27 @@ impl VM {
             let rt = match ty.kind.as_str() {
                 "record" => RuntimeType {
                     name: ty.name.clone(),
-                    kind: RuntimeTypeKind::Record(ty.fields.iter().map(|f| RuntimeField {
-                        name: f.name.clone(), ty: f.ty.clone(),
-                    }).collect()),
+                    kind: RuntimeTypeKind::Record(
+                        ty.fields
+                            .iter()
+                            .map(|f| RuntimeField {
+                                name: f.name.clone(),
+                                ty: f.ty.clone(),
+                            })
+                            .collect(),
+                    ),
                 },
                 "enum" => RuntimeType {
                     name: ty.name.clone(),
-                    kind: RuntimeTypeKind::Enum(ty.variants.iter().map(|v| RuntimeVariant {
-                        name: v.name.clone(), payload: v.payload.clone(),
-                    }).collect()),
+                    kind: RuntimeTypeKind::Enum(
+                        ty.variants
+                            .iter()
+                            .map(|v| RuntimeVariant {
+                                name: v.name.clone(),
+                                payload: v.payload.clone(),
+                            })
+                            .collect(),
+                    ),
                 },
                 _ => continue,
             };
@@ -96,7 +108,10 @@ impl VM {
     /// Execute a cell by name with arguments.
     pub fn execute(&mut self, cell_name: &str, args: Vec<Value>) -> Result<Value, VmError> {
         let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-        let cell_idx = module.cells.iter().position(|c| c.name == cell_name)
+        let cell_idx = module
+            .cells
+            .iter()
+            .position(|c| c.name == cell_name)
             .ok_or_else(|| VmError::UndefinedCell(cell_name.into()))?;
 
         let cell = &module.cells[cell_idx];
@@ -135,7 +150,11 @@ impl VM {
     #[allow(dead_code)]
     fn get_module_string(&self, idx: usize) -> String {
         let module = self.module.as_ref().unwrap();
-        if idx < module.strings.len() { module.strings[idx].clone() } else { String::new() }
+        if idx < module.strings.len() {
+            module.strings[idx].clone()
+        } else {
+            String::new()
+        }
     }
 
     fn run(&mut self) -> Result<Value, VmError> {
@@ -165,7 +184,9 @@ impl VM {
             };
 
             // Advance IP in the frame
-            if let Some(f) = self.frames.last_mut() { f.ip += 1; }
+            if let Some(f) = self.frames.last_mut() {
+                f.ip += 1;
+            }
 
             let a = instr.a as usize;
             let b = instr.b as usize;
@@ -207,12 +228,16 @@ impl VM {
                     self.registers[base + a] = val;
                 }
                 OpCode::LoadNil => {
-                    for i in 0..=b { self.registers[base + a + i] = Value::Null; }
+                    for i in 0..=b {
+                        self.registers[base + a + i] = Value::Null;
+                    }
                 }
                 OpCode::LoadBool => {
                     self.registers[base + a] = Value::Bool(b != 0);
                     if c != 0 {
-                        if let Some(f) = self.frames.last_mut() { f.ip += 1; }
+                        if let Some(f) = self.frames.last_mut() {
+                            f.ip += 1;
+                        }
                     }
                 }
                 OpCode::LoadInt => {
@@ -225,7 +250,9 @@ impl VM {
                 }
                 OpCode::NewList => {
                     let mut list = Vec::with_capacity(b);
-                    for i in 1..=b { list.push(self.registers[base + a + i].clone()); }
+                    for i in 1..=b {
+                        list.push(self.registers[base + a + i].clone());
+                    }
                     self.registers[base + a] = Value::List(list);
                 }
                 OpCode::NewMap => {
@@ -239,7 +266,11 @@ impl VM {
                 }
                 OpCode::NewRecord => {
                     let bx = instr.bx() as usize;
-                    let type_name = if bx < module.strings.len() { module.strings[bx].clone() } else { "Unknown".to_string() };
+                    let type_name = if bx < module.strings.len() {
+                        module.strings[bx].clone()
+                    } else {
+                        "Unknown".to_string()
+                    };
                     let fields = BTreeMap::new();
                     self.registers[base + a] = Value::Record(RecordValue { type_name, fields });
                 }
@@ -250,7 +281,9 @@ impl VM {
                 }
                 OpCode::NewTuple => {
                     let mut elems = Vec::with_capacity(b);
-                    for i in 1..=b { elems.push(self.registers[base + a + i].clone()); }
+                    for i in 1..=b {
+                        elems.push(self.registers[base + a + i].clone());
+                    }
                     self.registers[base + a] = Value::Tuple(elems);
                 }
                 OpCode::NewSet => {
@@ -267,9 +300,15 @@ impl VM {
                 // Access
                 OpCode::GetField => {
                     let obj = &self.registers[base + b];
-                    let field_name = if c < module.strings.len() { &module.strings[c] } else { "" };
+                    let field_name = if c < module.strings.len() {
+                        &module.strings[c]
+                    } else {
+                        ""
+                    };
                     let val = match obj {
-                        Value::Record(r) => r.fields.get(field_name).cloned().unwrap_or(Value::Null),
+                        Value::Record(r) => {
+                            r.fields.get(field_name).cloned().unwrap_or(Value::Null)
+                        }
                         Value::Map(m) => m.get(field_name).cloned().unwrap_or(Value::Null),
                         _ => Value::Null,
                     };
@@ -277,7 +316,11 @@ impl VM {
                 }
                 OpCode::SetField => {
                     let val = self.registers[base + c].clone();
-                    let field_name = if b < module.strings.len() { module.strings[b].clone() } else { String::new() };
+                    let field_name = if b < module.strings.len() {
+                        module.strings[b].clone()
+                    } else {
+                        String::new()
+                    };
                     if let Value::Record(ref mut r) = self.registers[base + a] {
                         r.fields.insert(field_name, val);
                     }
@@ -286,9 +329,15 @@ impl VM {
                     let obj = &self.registers[base + b];
                     let idx = &self.registers[base + c];
                     let val = match (obj, idx) {
-                        (Value::List(l), Value::Int(i)) => l.get(*i as usize).cloned().unwrap_or(Value::Null),
-                        (Value::Tuple(t), Value::Int(i)) => t.get(*i as usize).cloned().unwrap_or(Value::Null),
-                        (Value::Map(m), _) => m.get(&idx.as_string()).cloned().unwrap_or(Value::Null),
+                        (Value::List(l), Value::Int(i)) => {
+                            l.get(*i as usize).cloned().unwrap_or(Value::Null)
+                        }
+                        (Value::Tuple(t), Value::Int(i)) => {
+                            t.get(*i as usize).cloned().unwrap_or(Value::Null)
+                        }
+                        (Value::Map(m), _) => {
+                            m.get(&idx.as_string()).cloned().unwrap_or(Value::Null)
+                        }
                         _ => Value::Null,
                     };
                     self.registers[base + a] = val;
@@ -297,8 +346,16 @@ impl VM {
                     let val = self.registers[base + c].clone();
                     let key = self.registers[base + b].clone();
                     match &mut self.registers[base + a] {
-                        Value::List(l) => { if let Some(i) = key.as_int() { if (i as usize) < l.len() { l[i as usize] = val; } } }
-                        Value::Map(m) => { m.insert(key.as_string(), val); }
+                        Value::List(l) => {
+                            if let Some(i) = key.as_int() {
+                                if (i as usize) < l.len() {
+                                    l[i as usize] = val;
+                                }
+                            }
+                        }
+                        Value::Map(m) => {
+                            m.insert(key.as_string(), val);
+                        }
                         _ => {}
                     }
                 }
@@ -321,28 +378,64 @@ impl VM {
                         (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
                         (Value::Int(a), Value::Float(b)) => Value::Float(*a as f64 + b),
                         (Value::Float(a), Value::Int(b)) => Value::Float(a + *b as f64),
-                        (Value::String(_), _) | (_, Value::String(_)) => {
-                            Value::String(StringRef::Owned(format!("{}{}", lhs.as_string(), rhs.as_string())))
+                        (Value::String(_), _) | (_, Value::String(_)) => Value::String(
+                            StringRef::Owned(format!("{}{}", lhs.as_string(), rhs.as_string())),
+                        ),
+                        _ => {
+                            return Err(VmError::TypeError(format!(
+                                "cannot add {} and {}",
+                                lhs, rhs
+                            )))
                         }
-                        _ => return Err(VmError::TypeError(format!("cannot add {} and {}", lhs, rhs))),
                     };
                     self.registers[base + a] = result;
                 }
-                OpCode::Sub => { self.arith_op(base, a, b, c, |x, y| x - y, |x, y| x - y)?; }
-                OpCode::Mul => { self.arith_op(base, a, b, c, |x, y| x * y, |x, y| x * y)?; }
-                OpCode::Div => { self.arith_op(base, a, b, c, |x, y| if y != 0 { x / y } else { 0 }, |x, y| x / y)?; }
-                OpCode::Mod => { self.arith_op(base, a, b, c, |x, y| if y != 0 { x % y } else { 0 }, |x, y| x % y)?; }
+                OpCode::Sub => {
+                    self.arith_op(base, a, b, c, |x, y| x - y, |x, y| x - y)?;
+                }
+                OpCode::Mul => {
+                    self.arith_op(base, a, b, c, |x, y| x * y, |x, y| x * y)?;
+                }
+                OpCode::Div => {
+                    self.arith_op(
+                        base,
+                        a,
+                        b,
+                        c,
+                        |x, y| if y != 0 { x / y } else { 0 },
+                        |x, y| x / y,
+                    )?;
+                }
+                OpCode::Mod => {
+                    self.arith_op(
+                        base,
+                        a,
+                        b,
+                        c,
+                        |x, y| if y != 0 { x % y } else { 0 },
+                        |x, y| x % y,
+                    )?;
+                }
                 OpCode::Pow => {
                     let lhs = &self.registers[base + b];
                     let rhs = &self.registers[base + c];
                     self.registers[base + a] = match (lhs, rhs) {
                         (Value::Int(x), Value::Int(y)) => {
-                            if *y >= 0 { Value::Int(x.pow(*y as u32)) } else { Value::Float((*x as f64).powf(*y as f64)) }
+                            if *y >= 0 {
+                                Value::Int(x.pow(*y as u32))
+                            } else {
+                                Value::Float((*x as f64).powf(*y as f64))
+                            }
                         }
                         (Value::Float(x), Value::Float(y)) => Value::Float(x.powf(*y)),
                         (Value::Int(x), Value::Float(y)) => Value::Float((*x as f64).powf(*y)),
                         (Value::Float(x), Value::Int(y)) => Value::Float(x.powf(*y as f64)),
-                        _ => return Err(VmError::TypeError(format!("cannot pow {} and {}", lhs, rhs))),
+                        _ => {
+                            return Err(VmError::TypeError(format!(
+                                "cannot pow {} and {}",
+                                lhs, rhs
+                            )))
+                        }
                     };
                 }
                 OpCode::Neg => {
@@ -362,9 +455,11 @@ impl VM {
                             combined.extend(b.iter().cloned());
                             Value::List(combined)
                         }
-                        _ => {
-                            Value::String(StringRef::Owned(format!("{}{}", lhs.as_string(), rhs.as_string())))
-                        }
+                        _ => Value::String(StringRef::Owned(format!(
+                            "{}{}",
+                            lhs.as_string(),
+                            rhs.as_string()
+                        ))),
                     };
                     self.registers[base + a] = result;
                 }
@@ -383,7 +478,9 @@ impl VM {
                     let rhs = &self.registers[base + c];
                     self.registers[base + a] = match (lhs, rhs) {
                         (Value::Int(x), Value::Int(y)) => Value::Int(x & y),
-                        _ => return Err(VmError::TypeError("bitwise and requires integers".into())),
+                        _ => {
+                            return Err(VmError::TypeError("bitwise and requires integers".into()))
+                        }
                     };
                 }
                 OpCode::BitXor => {
@@ -391,7 +488,9 @@ impl VM {
                     let rhs = &self.registers[base + c];
                     self.registers[base + a] = match (lhs, rhs) {
                         (Value::Int(x), Value::Int(y)) => Value::Int(x ^ y),
-                        _ => return Err(VmError::TypeError("bitwise xor requires integers".into())),
+                        _ => {
+                            return Err(VmError::TypeError("bitwise xor requires integers".into()))
+                        }
                     };
                 }
                 OpCode::BitNot => {
@@ -414,7 +513,9 @@ impl VM {
                     let rhs = &self.registers[base + c];
                     self.registers[base + a] = match (lhs, rhs) {
                         (Value::Int(x), Value::Int(y)) => Value::Int(x >> (*y as u32)),
-                        _ => return Err(VmError::TypeError("shift right requires integers".into())),
+                        _ => {
+                            return Err(VmError::TypeError("shift right requires integers".into()))
+                        }
                     };
                 }
 
@@ -434,8 +535,14 @@ impl VM {
                         (Value::Int(x), Value::Float(y)) => (*x as f64) < *y,
                         (Value::Float(x), Value::Int(y)) => *x < (*y as f64),
                         (Value::String(x), Value::String(y)) => {
-                            let s1 = match x { StringRef::Owned(s) => s.as_str(), StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or("") };
-                            let s2 = match y { StringRef::Owned(s) => s.as_str(), StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or("") };
+                            let s1 = match x {
+                                StringRef::Owned(s) => s.as_str(),
+                                StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                            };
+                            let s2 = match y {
+                                StringRef::Owned(s) => s.as_str(),
+                                StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                            };
                             s1 < s2
                         }
                         _ => false,
@@ -451,8 +558,14 @@ impl VM {
                         (Value::Int(x), Value::Float(y)) => (*x as f64) <= *y,
                         (Value::Float(x), Value::Int(y)) => *x <= (*y as f64),
                         (Value::String(x), Value::String(y)) => {
-                            let s1 = match x { StringRef::Owned(s) => s.as_str(), StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or("") };
-                            let s2 = match y { StringRef::Owned(s) => s.as_str(), StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or("") };
+                            let s1 = match x {
+                                StringRef::Owned(s) => s.as_str(),
+                                StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                            };
+                            let s2 = match y {
+                                StringRef::Owned(s) => s.as_str(),
+                                StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                            };
                             s1 <= s2
                         }
                         _ => false,
@@ -503,7 +616,9 @@ impl VM {
                     let val = &self.registers[base + a];
                     let truthy = val.is_truthy();
                     if truthy != (c != 0) {
-                        if let Some(f) = self.frames.last_mut() { f.ip += 1; }
+                        if let Some(f) = self.frames.last_mut() {
+                            f.ip += 1;
+                        }
                     }
                 }
 
@@ -515,7 +630,9 @@ impl VM {
                     }
                 }
                 // Call and TailCall are handled in the pre-match above
-                OpCode::Call | OpCode::TailCall => { unreachable!() }
+                OpCode::Call | OpCode::TailCall => {
+                    unreachable!()
+                }
                 OpCode::Return => {
                     let return_val = self.registers[base + a].clone();
                     let frame = self.frames.pop().unwrap();
@@ -594,7 +711,10 @@ impl VM {
                             if (idx as usize) < keys.len() {
                                 let key = keys[idx as usize].clone();
                                 let val = m.get(&key).cloned().unwrap_or(Value::Null);
-                                (Value::Tuple(vec![Value::String(StringRef::Owned(key)), val]), true)
+                                (
+                                    Value::Tuple(vec![Value::String(StringRef::Owned(key)), val]),
+                                    true,
+                                )
                             } else {
                                 (Value::Null, false)
                             }
@@ -621,7 +741,9 @@ impl VM {
                 }
 
                 // Intrinsic is handled in the pre-match above
-                OpCode::Intrinsic => { unreachable!() }
+                OpCode::Intrinsic => {
+                    unreachable!()
+                }
 
                 // Closures
                 OpCode::Closure => {
@@ -634,7 +756,9 @@ impl VM {
                         // we determine captures from subsequent GETUPVAL instructions
                         // For now, scan forward for the capture count
                         0 // Will be populated by subsequent Move instructions
-                    } else { 0 };
+                    } else {
+                        0
+                    };
                     let mut captures = Vec::new();
                     // Read captures from registers after A
                     for i in 0..cap_count {
@@ -669,7 +793,9 @@ impl VM {
                     if let Some(ref dispatcher) = self.tool_dispatcher {
                         let bx = instr.bx() as usize;
                         let module = self.module.as_ref().unwrap();
-                        let tool = if bx < module.tools.len() { &module.tools[bx] } else {
+                        let tool = if bx < module.tools.len() {
+                            &module.tools[bx]
+                        } else {
                             self.registers[base + a] = Value::Null;
                             continue;
                         };
@@ -685,7 +811,11 @@ impl VM {
                             tool_id: tool.tool_id.clone(),
                             version: tool.version.clone(),
                             args: serde_json::Value::Object(args_map),
-                            policy: if bx < module.policies.len() { module.policies[bx].grants.clone() } else { serde_json::Value::Null },
+                            policy: if bx < module.policies.len() {
+                                module.policies[bx].grants.clone()
+                            } else {
+                                serde_json::Value::Null
+                            },
                         };
                         match dispatcher.dispatch(&request) {
                             Ok(response) => {
@@ -696,12 +826,17 @@ impl VM {
                             }
                         }
                     } else {
-                        self.registers[base + a] = Value::String(StringRef::Owned("<<tool call pending>>".into()));
+                        self.registers[base + a] =
+                            Value::String(StringRef::Owned("<<tool call pending>>".into()));
                     }
                 }
                 OpCode::Schema => {
                     let bx = instr.bx() as usize;
-                    let type_name = if bx < module.strings.len() { &module.strings[bx] } else { "" };
+                    let type_name = if bx < module.strings.len() {
+                        &module.strings[bx]
+                    } else {
+                        ""
+                    };
                     let val = &self.registers[base + a];
 
                     let valid = match type_name {
@@ -716,11 +851,14 @@ impl VM {
                         _ => match val {
                             Value::Record(r) => r.type_name == type_name,
                             _ => false,
-                        }
+                        },
                     };
 
                     if !valid {
-                        return Err(VmError::Runtime(format!("value {} does not match schema {}", val, type_name)));
+                        return Err(VmError::Runtime(format!(
+                            "value {} does not match schema {}",
+                            val, type_name
+                        )));
                     }
                 }
                 OpCode::Emit => {
@@ -745,8 +883,16 @@ impl VM {
                     if bx < module.cells.len() {
                         let callee_cell = &module.cells[bx];
                         let new_base = self.registers.len();
-                        self.registers.resize(new_base + (callee_cell.registers as usize).max(256), Value::Null);
-                        self.frames.push(CallFrame { cell_idx: bx, base_register: new_base, ip: 0, return_register: base + a });
+                        self.registers.resize(
+                            new_base + (callee_cell.registers as usize).max(256),
+                            Value::Null,
+                        );
+                        self.frames.push(CallFrame {
+                            cell_idx: bx,
+                            base_register: new_base,
+                            ip: 0,
+                            return_register: base + a,
+                        });
                     } else {
                         self.registers[base + a] = Value::Null;
                     }
@@ -791,7 +937,10 @@ impl VM {
         let callee = self.registers[base + a].clone();
         match callee {
             Value::String(ref sr) => {
-                let name = match sr { StringRef::Owned(s) => s.clone(), StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or("").to_string() };
+                let name = match sr {
+                    StringRef::Owned(s) => s.clone(),
+                    StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or("").to_string(),
+                };
                 let module = self.module.as_ref().unwrap();
                 if let Some(idx) = module.cells.iter().position(|c| c.name == name) {
                     if self.frames.len() >= MAX_CALL_DEPTH {
@@ -802,13 +951,20 @@ impl VM {
                     let params: Vec<LirParam> = callee_cell.params.clone();
                     let _ = module;
                     let new_base = self.registers.len();
-                    self.registers.resize(new_base + num_regs.max(256), Value::Null);
+                    self.registers
+                        .resize(new_base + num_regs.max(256), Value::Null);
                     for i in 0..nargs {
                         if i < params.len() {
-                            self.registers[new_base + params[i].register as usize] = self.registers[base + a + 1 + i].clone();
+                            self.registers[new_base + params[i].register as usize] =
+                                self.registers[base + a + 1 + i].clone();
                         }
                     }
-                    self.frames.push(CallFrame { cell_idx: idx, base_register: new_base, ip: 0, return_register: base + a });
+                    self.frames.push(CallFrame {
+                        cell_idx: idx,
+                        base_register: new_base,
+                        ip: 0,
+                        return_register: base + a,
+                    });
                 } else {
                     let _ = module;
                     let result = self.call_builtin(&name, base, a, nargs)?;
@@ -826,17 +982,24 @@ impl VM {
                 let params: Vec<LirParam> = callee_cell.params.clone();
                 let _ = module;
                 let new_base = self.registers.len();
-                self.registers.resize(new_base + num_regs.max(256), Value::Null);
+                self.registers
+                    .resize(new_base + num_regs.max(256), Value::Null);
                 for (i, cap) in cv.captures.iter().enumerate() {
                     self.registers[new_base + i] = cap.clone();
                 }
                 let cap_count = cv.captures.len();
                 for i in 0..nargs {
                     if cap_count + i < params.len() {
-                        self.registers[new_base + params[cap_count + i].register as usize] = self.registers[base + a + 1 + i].clone();
+                        self.registers[new_base + params[cap_count + i].register as usize] =
+                            self.registers[base + a + 1 + i].clone();
                     }
                 }
-                self.frames.push(CallFrame { cell_idx: cv.cell_idx, base_register: new_base, ip: 0, return_register: base + a });
+                self.frames.push(CallFrame {
+                    cell_idx: cv.cell_idx,
+                    base_register: new_base,
+                    ip: 0,
+                    return_register: base + a,
+                });
             }
             _ => {
                 return Err(VmError::TypeError(format!("cannot call {}", callee)));
@@ -850,7 +1013,10 @@ impl VM {
         let callee = self.registers[base + a].clone();
         match callee {
             Value::String(ref sr) => {
-                let name = match sr { StringRef::Owned(s) => s.clone(), StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or("").to_string() };
+                let name = match sr {
+                    StringRef::Owned(s) => s.clone(),
+                    StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or("").to_string(),
+                };
                 let module = self.module.as_ref().unwrap();
                 if let Some(idx) = module.cells.iter().position(|c| c.name == name) {
                     let params: Vec<LirParam> = module.cells[idx].params.clone();
@@ -899,7 +1065,13 @@ impl VM {
     }
 
     /// Execute a built-in function by name.
-    fn call_builtin(&mut self, name: &str, base: usize, a: usize, nargs: usize) -> Result<Value, VmError> {
+    fn call_builtin(
+        &mut self,
+        name: &str,
+        base: usize,
+        a: usize,
+        nargs: usize,
+    ) -> Result<Value, VmError> {
         match name {
             "print" => {
                 let mut parts = Vec::new();
@@ -942,7 +1114,9 @@ impl VM {
                 Ok(match arg {
                     Value::Int(n) => Value::Int(*n),
                     Value::Float(f) => Value::Int(*f as i64),
-                    Value::String(StringRef::Owned(s)) => s.parse::<i64>().map(Value::Int).unwrap_or(Value::Null),
+                    Value::String(StringRef::Owned(s)) => {
+                        s.parse::<i64>().map(Value::Int).unwrap_or(Value::Null)
+                    }
                     Value::Bool(b) => Value::Int(if *b { 1 } else { 0 }),
                     _ => Value::Null,
                 })
@@ -952,7 +1126,9 @@ impl VM {
                 Ok(match arg {
                     Value::Float(f) => Value::Float(*f),
                     Value::Int(n) => Value::Float(*n as f64),
-                    Value::String(StringRef::Owned(s)) => s.parse::<f64>().map(Value::Float).unwrap_or(Value::Null),
+                    Value::String(StringRef::Owned(s)) => {
+                        s.parse::<f64>().map(Value::Float).unwrap_or(Value::Null)
+                    }
                     _ => Value::Null,
                 })
             }
@@ -963,8 +1139,17 @@ impl VM {
             "keys" => {
                 let arg = &self.registers[base + a + 1];
                 Ok(match arg {
-                    Value::Map(m) => Value::List(m.keys().map(|k| Value::String(StringRef::Owned(k.clone()))).collect()),
-                    Value::Record(r) => Value::List(r.fields.keys().map(|k| Value::String(StringRef::Owned(k.clone()))).collect()),
+                    Value::Map(m) => Value::List(
+                        m.keys()
+                            .map(|k| Value::String(StringRef::Owned(k.clone())))
+                            .collect(),
+                    ),
+                    Value::Record(r) => Value::List(
+                        r.fields
+                            .keys()
+                            .map(|k| Value::String(StringRef::Owned(k.clone())))
+                            .collect(),
+                    ),
                     _ => Value::List(vec![]),
                 })
             }
@@ -990,9 +1175,17 @@ impl VM {
             }
             "join" => {
                 let list = &self.registers[base + a + 1];
-                let sep = if nargs > 1 { self.registers[base + a + 2].as_string() } else { ", ".to_string() };
+                let sep = if nargs > 1 {
+                    self.registers[base + a + 2].as_string()
+                } else {
+                    ", ".to_string()
+                };
                 if let Value::List(l) = list {
-                    let joined = l.iter().map(|v| v.display_pretty()).collect::<Vec<_>>().join(&sep);
+                    let joined = l
+                        .iter()
+                        .map(|v| v.display_pretty())
+                        .collect::<Vec<_>>()
+                        .join(&sep);
                     Ok(Value::String(StringRef::Owned(joined)))
                 } else {
                     Ok(Value::String(StringRef::Owned(list.display_pretty())))
@@ -1000,8 +1193,15 @@ impl VM {
             }
             "split" => {
                 let s = self.registers[base + a + 1].as_string();
-                let sep = if nargs > 1 { self.registers[base + a + 2].as_string() } else { " ".to_string() };
-                let parts: Vec<Value> = s.split(&sep).map(|p| Value::String(StringRef::Owned(p.to_string()))).collect();
+                let sep = if nargs > 1 {
+                    self.registers[base + a + 2].as_string()
+                } else {
+                    " ".to_string()
+                };
+                let parts: Vec<Value> = s
+                    .split(&sep)
+                    .map(|p| Value::String(StringRef::Owned(p.to_string())))
+                    .collect();
                 Ok(Value::List(parts))
             }
             "trim" => {
@@ -1055,7 +1255,7 @@ impl VM {
                 Ok(Value::List(list))
             }
             "hash" | "sha256" => {
-                use sha2::{Sha256, Digest};
+                use sha2::{Digest, Sha256};
                 let s = self.registers[base + a + 1].as_string();
                 let h = format!("sha256:{:x}", Sha256::digest(s.as_bytes()));
                 Ok(Value::String(StringRef::Owned(h)))
@@ -1066,14 +1266,18 @@ impl VM {
                 if let Value::List(mut l) = arg {
                     l.sort();
                     Ok(Value::List(l))
-                } else { Ok(arg) }
+                } else {
+                    Ok(arg)
+                }
             }
             "reverse" => {
                 let arg = self.registers[base + a + 1].clone();
                 if let Value::List(mut l) = arg {
                     l.reverse();
                     Ok(Value::List(l))
-                } else { Ok(arg) }
+                } else {
+                    Ok(arg)
+                }
             }
             "flatten" => {
                 let arg = &self.registers[base + a + 1];
@@ -1087,7 +1291,9 @@ impl VM {
                         }
                     }
                     Ok(Value::List(result))
-                } else { Ok(arg.clone()) }
+                } else {
+                    Ok(arg.clone())
+                }
             }
             "unique" => {
                 let arg = &self.registers[base + a + 1];
@@ -1099,21 +1305,27 @@ impl VM {
                         }
                     }
                     Ok(Value::List(result))
-                } else { Ok(arg.clone()) }
+                } else {
+                    Ok(arg.clone())
+                }
             }
             "take" => {
                 let arg = &self.registers[base + a + 1];
                 let n = self.registers[base + a + 2].as_int().unwrap_or(0) as usize;
                 if let Value::List(l) = arg {
                     Ok(Value::List(l.iter().take(n).cloned().collect()))
-                } else { Ok(arg.clone()) }
+                } else {
+                    Ok(arg.clone())
+                }
             }
             "drop" => {
                 let arg = &self.registers[base + a + 1];
                 let n = self.registers[base + a + 2].as_int().unwrap_or(0) as usize;
                 if let Value::List(l) = arg {
                     Ok(Value::List(l.iter().skip(n).cloned().collect()))
-                } else { Ok(arg.clone()) }
+                } else {
+                    Ok(arg.clone())
+                }
             }
             "first" => {
                 let arg = &self.registers[base + a + 1];
@@ -1144,7 +1356,11 @@ impl VM {
             }
             "chars" => {
                 let s = self.registers[base + a + 1].as_string();
-                Ok(Value::List(s.chars().map(|c| Value::String(StringRef::Owned(c.to_string()))).collect()))
+                Ok(Value::List(
+                    s.chars()
+                        .map(|c| Value::String(StringRef::Owned(c.to_string())))
+                        .collect(),
+                ))
             }
             "starts_with" => {
                 let s = self.registers[base + a + 1].as_string();
@@ -1167,10 +1383,15 @@ impl VM {
             "pad_left" => {
                 let s = self.registers[base + a + 1].as_string();
                 let width = self.registers[base + a + 2].as_int().unwrap_or(0) as usize;
-                let pad = if nargs > 2 { self.registers[base + a + 3].as_string() } else { " ".to_string() };
+                let pad = if nargs > 2 {
+                    self.registers[base + a + 3].as_string()
+                } else {
+                    " ".to_string()
+                };
                 let pad_char = pad.chars().next().unwrap_or(' ');
                 if s.len() < width {
-                    let padding: String = std::iter::repeat(pad_char).take(width - s.len()).collect();
+                    let padding: String =
+                        std::iter::repeat(pad_char).take(width - s.len()).collect();
                     Ok(Value::String(StringRef::Owned(format!("{}{}", padding, s))))
                 } else {
                     Ok(Value::String(StringRef::Owned(s)))
@@ -1179,10 +1400,15 @@ impl VM {
             "pad_right" => {
                 let s = self.registers[base + a + 1].as_string();
                 let width = self.registers[base + a + 2].as_int().unwrap_or(0) as usize;
-                let pad = if nargs > 2 { self.registers[base + a + 3].as_string() } else { " ".to_string() };
+                let pad = if nargs > 2 {
+                    self.registers[base + a + 3].as_string()
+                } else {
+                    " ".to_string()
+                };
                 let pad_char = pad.chars().next().unwrap_or(' ');
                 if s.len() < width {
-                    let padding: String = std::iter::repeat(pad_char).take(width - s.len()).collect();
+                    let padding: String =
+                        std::iter::repeat(pad_char).take(width - s.len()).collect();
                     Ok(Value::String(StringRef::Owned(format!("{}{}", s, padding))))
                 } else {
                     Ok(Value::String(StringRef::Owned(s)))
@@ -1222,7 +1448,13 @@ impl VM {
                 let b_val = &self.registers[base + a + 1];
                 let e_val = &self.registers[base + a + 2];
                 Ok(match (b_val, e_val) {
-                    (Value::Int(x), Value::Int(y)) => if *y >= 0 { Value::Int(x.pow(*y as u32)) } else { Value::Float((*x as f64).powf(*y as f64)) },
+                    (Value::Int(x), Value::Int(y)) => {
+                        if *y >= 0 {
+                            Value::Int(x.pow(*y as u32))
+                        } else {
+                            Value::Float((*x as f64).powf(*y as f64))
+                        }
+                    }
                     (Value::Float(x), Value::Float(y)) => Value::Float(x.powf(*y)),
                     (Value::Int(x), Value::Float(y)) => Value::Float((*x as f64).powf(*y)),
                     (Value::Float(x), Value::Int(y)) => Value::Float(x.powf(*y as f64)),
@@ -1259,7 +1491,9 @@ impl VM {
                 let hi = &self.registers[base + a + 3];
                 Ok(match (val, lo, hi) {
                     (Value::Int(v), Value::Int(l), Value::Int(h)) => Value::Int(*v.max(l).min(h)),
-                    (Value::Float(v), Value::Float(l), Value::Float(h)) => Value::Float(v.max(*l).min(*h)),
+                    (Value::Float(v), Value::Float(l), Value::Float(h)) => {
+                        Value::Float(v.max(*l).min(*h))
+                    }
                     _ => val.clone(),
                 })
             }
@@ -1270,13 +1504,17 @@ impl VM {
             }
             "is_err" => {
                 let arg = &self.registers[base + a + 1];
-                Ok(Value::Bool(matches!(arg, Value::Union(u) if u.tag == "err")))
+                Ok(Value::Bool(
+                    matches!(arg, Value::Union(u) if u.tag == "err"),
+                ))
             }
             "unwrap" => {
                 let arg = &self.registers[base + a + 1];
                 match arg {
                     Value::Union(u) if u.tag == "ok" => Ok(*u.payload.clone()),
-                    Value::Union(u) if u.tag == "err" => Err(VmError::Runtime(format!("unwrap on err: {}", u.payload))),
+                    Value::Union(u) if u.tag == "err" => {
+                        Err(VmError::Runtime(format!("unwrap on err: {}", u.payload)))
+                    }
                     _ => Ok(arg.clone()),
                 }
             }
@@ -1291,7 +1529,7 @@ impl VM {
             // Crypto
             "sha512" => {
                 // sha2 crate provides Sha512 but let's just stub with the hash prefix
-                use sha2::{Sha256, Digest};
+                use sha2::{Digest, Sha256};
                 let s = self.registers[base + a + 1].as_string();
                 // Use SHA256 as placeholder since sha512 requires different import
                 let h = format!("sha512:{:x}", Sha256::digest(s.as_bytes()));
@@ -1309,12 +1547,16 @@ impl VM {
             "base64_encode" => {
                 // Simple base64 implementation
                 let s = self.registers[base + a + 1].as_string();
-                Ok(Value::String(StringRef::Owned(simple_base64_encode(s.as_bytes()))))
+                Ok(Value::String(StringRef::Owned(simple_base64_encode(
+                    s.as_bytes(),
+                ))))
             }
             "base64_decode" => {
                 let s = self.registers[base + a + 1].as_string();
                 match simple_base64_decode(&s) {
-                    Some(bytes) => Ok(Value::String(StringRef::Owned(String::from_utf8_lossy(&bytes).to_string()))),
+                    Some(bytes) => Ok(Value::String(StringRef::Owned(
+                        String::from_utf8_lossy(&bytes).to_string(),
+                    ))),
                     None => Ok(Value::Null),
                 }
             }
@@ -1327,19 +1569,25 @@ impl VM {
                 let s = self.registers[base + a + 1].as_string();
                 let bytes: Vec<u8> = (0..s.len())
                     .step_by(2)
-                    .filter_map(|i| u8::from_str_radix(&s[i..i+2], 16).ok())
+                    .filter_map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
                     .collect();
-                Ok(Value::String(StringRef::Owned(String::from_utf8_lossy(&bytes).to_string())))
+                Ok(Value::String(StringRef::Owned(
+                    String::from_utf8_lossy(&bytes).to_string(),
+                )))
             }
             "url_encode" => {
                 let s = self.registers[base + a + 1].as_string();
-                let encoded: String = s.chars().map(|c| {
-                    if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '~' {
-                        c.to_string()
-                    } else {
-                        format!("%{:02X}", c as u32)
-                    }
-                }).collect();
+                let encoded: String = s
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '~'
+                        {
+                            c.to_string()
+                        } else {
+                            format!("%{:02X}", c as u32)
+                        }
+                    })
+                    .collect();
                 Ok(Value::String(StringRef::Owned(encoded)))
             }
             "url_decode" => {
@@ -1378,7 +1626,9 @@ impl VM {
             "json_pretty" => {
                 let val = &self.registers[base + a + 1];
                 let j = value_to_json(val);
-                Ok(Value::String(StringRef::Owned(serde_json::to_string_pretty(&j).unwrap_or_default())))
+                Ok(Value::String(StringRef::Owned(
+                    serde_json::to_string_pretty(&j).unwrap_or_default(),
+                )))
             }
             // String case transforms (std.string)
             "capitalize" => {
@@ -1392,7 +1642,8 @@ impl VM {
             }
             "title_case" => {
                 let s = self.registers[base + a + 1].as_string();
-                let result: String = s.split_whitespace()
+                let result: String = s
+                    .split_whitespace()
                     .map(|word| {
                         let mut c = word.chars();
                         match c.next() {
@@ -1413,11 +1664,14 @@ impl VM {
                     }
                     result.push(ch.to_lowercase().next().unwrap_or(ch));
                 }
-                Ok(Value::String(StringRef::Owned(result.replace(' ', "_").replace("__", "_"))))
+                Ok(Value::String(StringRef::Owned(
+                    result.replace(' ', "_").replace("__", "_"),
+                )))
             }
             "camel_case" => {
                 let s = self.registers[base + a + 1].as_string();
-                let result: String = s.split(|c: char| c == '_' || c == ' ' || c == '-')
+                let result: String = s
+                    .split(|c: char| c == '_' || c == ' ' || c == '-')
                     .enumerate()
                     .map(|(i, word)| {
                         if i == 0 {
@@ -1426,7 +1680,9 @@ impl VM {
                             let mut c = word.chars();
                             match c.next() {
                                 None => String::new(),
-                                Some(f) => f.to_uppercase().to_string() + &c.as_str().to_lowercase(),
+                                Some(f) => {
+                                    f.to_uppercase().to_string() + &c.as_str().to_lowercase()
+                                }
                             }
                         }
                     })
@@ -1437,7 +1693,11 @@ impl VM {
             "assert" => {
                 let arg = &self.registers[base + a + 1];
                 if !arg.is_truthy() {
-                    let msg = if nargs > 1 { self.registers[base + a + 2].as_string() } else { "assertion failed".to_string() };
+                    let msg = if nargs > 1 {
+                        self.registers[base + a + 2].as_string()
+                    } else {
+                        "assertion failed".to_string()
+                    };
                     return Err(VmError::Runtime(msg));
                 }
                 Ok(Value::Null)
@@ -1446,7 +1706,10 @@ impl VM {
                 let lhs = &self.registers[base + a + 1];
                 let rhs = &self.registers[base + a + 2];
                 if lhs != rhs {
-                    return Err(VmError::Runtime(format!("assert_eq failed: {} != {}", lhs, rhs)));
+                    return Err(VmError::Runtime(format!(
+                        "assert_eq failed: {} != {}",
+                        lhs, rhs
+                    )));
                 }
                 Ok(Value::Null)
             }
@@ -1454,7 +1717,10 @@ impl VM {
                 let lhs = &self.registers[base + a + 1];
                 let rhs = &self.registers[base + a + 2];
                 if lhs == rhs {
-                    return Err(VmError::Runtime(format!("assert_ne failed: {} == {}", lhs, rhs)));
+                    return Err(VmError::Runtime(format!(
+                        "assert_ne failed: {} == {}",
+                        lhs, rhs
+                    )));
                 }
                 Ok(Value::Null)
             }
@@ -1467,7 +1733,10 @@ impl VM {
                     _ => false,
                 };
                 if !found {
-                    return Err(VmError::Runtime(format!("assert_contains failed: {} not in {}", needle, collection)));
+                    return Err(VmError::Runtime(format!(
+                        "assert_contains failed: {} not in {}",
+                        needle, collection
+                    )));
                 }
                 Ok(Value::Null)
             }
@@ -1485,9 +1754,7 @@ impl VM {
                 self.output.push(output);
                 Ok(Value::Null)
             }
-            "clone" => {
-                Ok(self.registers[base + a + 1].clone())
-            }
+            "clone" => Ok(self.registers[base + a + 1].clone()),
             "sizeof" => {
                 let val = &self.registers[base + a + 1];
                 Ok(Value::Int(std::mem::size_of_val(val) as i64))
@@ -1495,46 +1762,60 @@ impl VM {
             "enumerate" => {
                 let arg = &self.registers[base + a + 1];
                 if let Value::List(l) = arg {
-                    let result: Vec<Value> = l.iter().enumerate()
+                    let result: Vec<Value> = l
+                        .iter()
+                        .enumerate()
                         .map(|(i, v)| Value::Tuple(vec![Value::Int(i as i64), v.clone()]))
                         .collect();
                     Ok(Value::List(result))
-                } else { Ok(Value::List(vec![])) }
+                } else {
+                    Ok(Value::List(vec![]))
+                }
             }
             "zip" => {
                 let a_list = &self.registers[base + a + 1];
                 let b_list = &self.registers[base + a + 2];
                 if let (Value::List(la), Value::List(lb)) = (a_list, b_list) {
-                    let result: Vec<Value> = la.iter().zip(lb.iter())
+                    let result: Vec<Value> = la
+                        .iter()
+                        .zip(lb.iter())
                         .map(|(x, y)| Value::Tuple(vec![x.clone(), y.clone()]))
                         .collect();
                     Ok(Value::List(result))
-                } else { Ok(Value::List(vec![])) }
+                } else {
+                    Ok(Value::List(vec![]))
+                }
             }
             "chunk" => {
                 let arg = &self.registers[base + a + 1];
                 let size = self.registers[base + a + 2].as_int().unwrap_or(1) as usize;
                 if let Value::List(l) = arg {
-                    let result: Vec<Value> = l.chunks(size.max(1))
+                    let result: Vec<Value> = l
+                        .chunks(size.max(1))
                         .map(|chunk| Value::List(chunk.to_vec()))
                         .collect();
                     Ok(Value::List(result))
-                } else { Ok(Value::List(vec![])) }
+                } else {
+                    Ok(Value::List(vec![]))
+                }
             }
-            "freeze" => {
-                Ok(self.registers[base + a + 1].clone())
-            }
-            _ => {
-                Err(VmError::UndefinedCell(name.to_string()))
-            }
+            "freeze" => Ok(self.registers[base + a + 1].clone()),
+            _ => Err(VmError::UndefinedCell(name.to_string())),
         }
     }
 
     /// Execute an intrinsic function by ID.
-    fn exec_intrinsic(&mut self, base: usize, _a: usize, func_id: usize, arg_reg: usize) -> Result<Value, VmError> {
+    fn exec_intrinsic(
+        &mut self,
+        base: usize,
+        _a: usize,
+        func_id: usize,
+        arg_reg: usize,
+    ) -> Result<Value, VmError> {
         let arg = &self.registers[base + arg_reg];
         match func_id {
-            0 => { // LENGTH
+            0 => {
+                // LENGTH
                 Ok(match arg {
                     Value::String(StringRef::Owned(s)) => Value::Int(s.len() as i64),
                     Value::String(StringRef::Interned(id)) => {
@@ -1549,7 +1830,8 @@ impl VM {
                     _ => Value::Int(0),
                 })
             }
-            1 => { // COUNT
+            1 => {
+                // COUNT
                 Ok(match arg {
                     Value::List(l) => Value::Int(l.len() as i64),
                     Value::Map(m) => Value::Int(m.len() as i64),
@@ -1557,117 +1839,176 @@ impl VM {
                     _ => Value::Int(0),
                 })
             }
-            2 => { // MATCHES
+            2 => {
+                // MATCHES
                 Ok(match arg {
                     Value::Bool(b) => Value::Bool(*b),
                     Value::String(_) => Value::Bool(!arg.as_string().is_empty()),
                     _ => Value::Bool(false),
                 })
             }
-            3 => { // HASH
-                use sha2::{Sha256, Digest};
+            3 => {
+                // HASH
+                use sha2::{Digest, Sha256};
                 let hash = format!("{:x}", Sha256::digest(arg.as_string().as_bytes()));
                 Ok(Value::String(StringRef::Owned(format!("sha256:{}", hash))))
             }
-            4 => { // DIFF
+            4 => {
+                // DIFF
                 let other = &self.registers[base + arg_reg + 1];
                 Ok(self.diff_values(arg, other))
             }
-            5 => { // PATCH
+            5 => {
+                // PATCH
                 let patches = &self.registers[base + arg_reg + 1];
                 Ok(self.patch_value(arg, patches))
             }
-            6 => { // REDACT
+            6 => {
+                // REDACT
                 let fields = &self.registers[base + arg_reg + 1];
                 Ok(self.redact_value(arg, fields))
             }
-            7 => { // VALIDATE
+            7 => {
+                // VALIDATE
                 Ok(Value::Bool(true)) // full validation deferred to schema opcode
             }
-            8 => { // TRACEREF
-                Ok(Value::TraceRef(TraceRefValue { trace_id: "trace".into(), seq: 0 }))
+            8 => {
+                // TRACEREF
+                Ok(Value::TraceRef(TraceRefValue {
+                    trace_id: "trace".into(),
+                    seq: 0,
+                }))
             }
-            9 => { // PRINT
+            9 => {
+                // PRINT
                 let output = arg.display_pretty();
                 println!("{}", output);
                 self.output.push(output);
                 Ok(Value::Null)
             }
             10 => Ok(Value::String(StringRef::Owned(arg.display_pretty()))), // TOSTRING
-            11 => { // TOINT
+            11 => {
+                // TOINT
                 Ok(match arg {
                     Value::Int(n) => Value::Int(*n),
                     Value::Float(f) => Value::Int(*f as i64),
-                    Value::String(StringRef::Owned(s)) => s.parse::<i64>().map(Value::Int).unwrap_or(Value::Null),
+                    Value::String(StringRef::Owned(s)) => {
+                        s.parse::<i64>().map(Value::Int).unwrap_or(Value::Null)
+                    }
                     Value::Bool(b) => Value::Int(if *b { 1 } else { 0 }),
                     _ => Value::Null,
                 })
             }
-            12 => { // TOFLOAT
+            12 => {
+                // TOFLOAT
                 Ok(match arg {
                     Value::Float(f) => Value::Float(*f),
                     Value::Int(n) => Value::Float(*n as f64),
-                    Value::String(StringRef::Owned(s)) => s.parse::<f64>().map(Value::Float).unwrap_or(Value::Null),
+                    Value::String(StringRef::Owned(s)) => {
+                        s.parse::<f64>().map(Value::Float).unwrap_or(Value::Null)
+                    }
                     _ => Value::Null,
                 })
             }
             13 => Ok(Value::String(StringRef::Owned(arg.type_name().to_string()))), // TYPEOF
-            14 => { // KEYS
+            14 => {
+                // KEYS
                 Ok(match arg {
-                    Value::Map(m) => Value::List(m.keys().map(|k| Value::String(StringRef::Owned(k.clone()))).collect()),
-                    Value::Record(r) => Value::List(r.fields.keys().map(|k| Value::String(StringRef::Owned(k.clone()))).collect()),
+                    Value::Map(m) => Value::List(
+                        m.keys()
+                            .map(|k| Value::String(StringRef::Owned(k.clone())))
+                            .collect(),
+                    ),
+                    Value::Record(r) => Value::List(
+                        r.fields
+                            .keys()
+                            .map(|k| Value::String(StringRef::Owned(k.clone())))
+                            .collect(),
+                    ),
                     _ => Value::List(vec![]),
                 })
             }
-            15 => { // VALUES
+            15 => {
+                // VALUES
                 Ok(match arg {
                     Value::Map(m) => Value::List(m.values().cloned().collect()),
                     Value::Record(r) => Value::List(r.fields.values().cloned().collect()),
                     _ => Value::List(vec![]),
                 })
             }
-            16 => { // CONTAINS
+            16 => {
+                // CONTAINS
                 let item = &self.registers[base + arg_reg + 1];
                 Ok(match arg {
                     Value::List(l) => Value::Bool(l.contains(item)),
                     Value::Set(s) => Value::Bool(s.contains(item)),
                     Value::Map(m) => Value::Bool(m.contains_key(&item.as_string())),
-                    Value::String(StringRef::Owned(s)) => Value::Bool(s.contains(&item.as_string())),
+                    Value::String(StringRef::Owned(s)) => {
+                        Value::Bool(s.contains(&item.as_string()))
+                    }
                     _ => Value::Bool(false),
                 })
             }
-            17 => { // JOIN
+            17 => {
+                // JOIN
                 let sep = self.registers[base + arg_reg + 1].as_string();
                 Ok(match arg {
                     Value::List(l) => {
-                        let s = l.iter().map(|v| v.as_string()).collect::<Vec<_>>().join(&sep);
+                        let s = l
+                            .iter()
+                            .map(|v| v.as_string())
+                            .collect::<Vec<_>>()
+                            .join(&sep);
                         Value::String(StringRef::Owned(s))
                     }
                     _ => Value::String(StringRef::Owned("".into())),
                 })
             }
-            18 => { // SPLIT
+            18 => {
+                // SPLIT
                 let sep = self.registers[base + arg_reg + 1].as_string();
                 Ok(match arg {
                     Value::String(StringRef::Owned(s)) => {
-                        let parts: Vec<Value> = s.split(&sep).map(|p| Value::String(StringRef::Owned(p.to_string()))).collect();
+                        let parts: Vec<Value> = s
+                            .split(&sep)
+                            .map(|p| Value::String(StringRef::Owned(p.to_string())))
+                            .collect();
                         Value::List(parts)
                     }
                     _ => Value::List(vec![]),
                 })
             }
-            19 => Ok(match arg { Value::String(StringRef::Owned(s)) => Value::String(StringRef::Owned(s.trim().to_string())), _ => arg.clone() }), // TRIM
-            20 => Ok(match arg { Value::String(StringRef::Owned(s)) => Value::String(StringRef::Owned(s.to_uppercase())), _ => arg.clone() }), // UPPER
-            21 => Ok(match arg { Value::String(StringRef::Owned(s)) => Value::String(StringRef::Owned(s.to_lowercase())), _ => arg.clone() }), // LOWER
-            22 => { // REPLACE
+            19 => Ok(match arg {
+                Value::String(StringRef::Owned(s)) => {
+                    Value::String(StringRef::Owned(s.trim().to_string()))
+                }
+                _ => arg.clone(),
+            }), // TRIM
+            20 => Ok(match arg {
+                Value::String(StringRef::Owned(s)) => {
+                    Value::String(StringRef::Owned(s.to_uppercase()))
+                }
+                _ => arg.clone(),
+            }), // UPPER
+            21 => Ok(match arg {
+                Value::String(StringRef::Owned(s)) => {
+                    Value::String(StringRef::Owned(s.to_lowercase()))
+                }
+                _ => arg.clone(),
+            }), // LOWER
+            22 => {
+                // REPLACE
                 let pat = self.registers[base + arg_reg + 1].as_string();
                 let with = self.registers[base + arg_reg + 2].as_string();
                 Ok(match arg {
-                    Value::String(StringRef::Owned(s)) => Value::String(StringRef::Owned(s.replace(&pat, &with))),
+                    Value::String(StringRef::Owned(s)) => {
+                        Value::String(StringRef::Owned(s.replace(&pat, &with)))
+                    }
                     _ => arg.clone(),
                 })
             }
-            23 => { // SLICE
+            23 => {
+                // SLICE
                 let start_val = &self.registers[base + arg_reg + 1];
                 let end_val = &self.registers[base + arg_reg + 2];
                 let start = start_val.as_int().unwrap_or(0);
@@ -1675,12 +2016,24 @@ impl VM {
                 Ok(match arg {
                     Value::List(l) => {
                         let start = start.max(0) as usize;
-                        let end = if end <= 0 { l.len() } else { (end as usize).min(l.len()) };
-                        if start < end { Value::List(l[start..end].to_vec()) } else { Value::List(vec![]) }
+                        let end = if end <= 0 {
+                            l.len()
+                        } else {
+                            (end as usize).min(l.len())
+                        };
+                        if start < end {
+                            Value::List(l[start..end].to_vec())
+                        } else {
+                            Value::List(vec![])
+                        }
                     }
                     Value::String(StringRef::Owned(s)) => {
                         let start = start.max(0) as usize;
-                        let end = if end <= 0 { s.len() } else { (end as usize).min(s.len()) };
+                        let end = if end <= 0 {
+                            s.len()
+                        } else {
+                            (end as usize).min(s.len())
+                        };
                         if start < end && start <= s.len() {
                             Value::String(StringRef::Owned(s[start..end].to_string()))
                         } else {
@@ -1690,21 +2043,32 @@ impl VM {
                     _ => Value::Null,
                 })
             }
-            24 => { // APPEND
+            24 => {
+                // APPEND
                 let item = self.registers[base + arg_reg + 1].clone();
                 Ok(match arg {
-                    Value::List(l) => { let mut new_l = l.clone(); new_l.push(item); Value::List(new_l) }
+                    Value::List(l) => {
+                        let mut new_l = l.clone();
+                        new_l.push(item);
+                        Value::List(new_l)
+                    }
                     _ => Value::Null,
                 })
             }
-            25 => { // RANGE
+            25 => {
+                // RANGE
                 let end = self.registers[base + arg_reg + 1].as_int().unwrap_or(0);
                 let start = arg.as_int().unwrap_or(0);
                 let list: Vec<Value> = (start..end).map(Value::Int).collect();
                 Ok(Value::List(list))
             }
-            26 => Ok(match arg { Value::Int(n) => Value::Int(n.abs()), Value::Float(f) => Value::Float(f.abs()), _ => Value::Null }), // ABS
-            27 => { // MIN
+            26 => Ok(match arg {
+                Value::Int(n) => Value::Int(n.abs()),
+                Value::Float(f) => Value::Float(f.abs()),
+                _ => Value::Null,
+            }), // ABS
+            27 => {
+                // MIN
                 let other = &self.registers[base + arg_reg + 1];
                 Ok(match (arg, other) {
                     (Value::Int(a), Value::Int(b)) => Value::Int(*a.min(b)),
@@ -1712,7 +2076,8 @@ impl VM {
                     _ => arg.clone(),
                 })
             }
-            28 => { // MAX
+            28 => {
+                // MAX
                 let other = &self.registers[base + arg_reg + 1];
                 Ok(match (arg, other) {
                     (Value::Int(a), Value::Int(b)) => Value::Int(*a.max(b)),
@@ -1721,90 +2086,206 @@ impl VM {
                 })
             }
             // Extended intrinsics (29+)
-            29 => { // SORT
-                if let Value::List(l) = arg { let mut s = l.clone(); s.sort(); Ok(Value::List(s)) } else { Ok(arg.clone()) }
+            29 => {
+                // SORT
+                if let Value::List(l) = arg {
+                    let mut s = l.clone();
+                    s.sort();
+                    Ok(Value::List(s))
+                } else {
+                    Ok(arg.clone())
+                }
             }
-            30 => { // REVERSE
-                if let Value::List(l) = arg { let mut r = l.clone(); r.reverse(); Ok(Value::List(r)) } else { Ok(arg.clone()) }
+            30 => {
+                // REVERSE
+                if let Value::List(l) = arg {
+                    let mut r = l.clone();
+                    r.reverse();
+                    Ok(Value::List(r))
+                } else {
+                    Ok(arg.clone())
+                }
             }
-            44 => { // FLATTEN
+            44 => {
+                // FLATTEN
                 if let Value::List(l) = arg {
                     let mut result = Vec::new();
-                    for item in l { if let Value::List(inner) = item { result.extend(inner.iter().cloned()); } else { result.push(item.clone()); } }
+                    for item in l {
+                        if let Value::List(inner) = item {
+                            result.extend(inner.iter().cloned());
+                        } else {
+                            result.push(item.clone());
+                        }
+                    }
                     Ok(Value::List(result))
-                } else { Ok(arg.clone()) }
+                } else {
+                    Ok(arg.clone())
+                }
             }
-            45 => { // UNIQUE
+            45 => {
+                // UNIQUE
                 if let Value::List(l) = arg {
                     let mut result = Vec::new();
-                    for item in l { if !result.contains(item) { result.push(item.clone()); } }
+                    for item in l {
+                        if !result.contains(item) {
+                            result.push(item.clone());
+                        }
+                    }
                     Ok(Value::List(result))
-                } else { Ok(arg.clone()) }
+                } else {
+                    Ok(arg.clone())
+                }
             }
-            46 => { // TAKE
+            46 => {
+                // TAKE
                 let n = self.registers[base + arg_reg + 1].as_int().unwrap_or(0) as usize;
-                if let Value::List(l) = arg { Ok(Value::List(l.iter().take(n).cloned().collect())) } else { Ok(arg.clone()) }
+                if let Value::List(l) = arg {
+                    Ok(Value::List(l.iter().take(n).cloned().collect()))
+                } else {
+                    Ok(arg.clone())
+                }
             }
-            47 => { // DROP
+            47 => {
+                // DROP
                 let n = self.registers[base + arg_reg + 1].as_int().unwrap_or(0) as usize;
-                if let Value::List(l) = arg { Ok(Value::List(l.iter().skip(n).cloned().collect())) } else { Ok(arg.clone()) }
+                if let Value::List(l) = arg {
+                    Ok(Value::List(l.iter().skip(n).cloned().collect()))
+                } else {
+                    Ok(arg.clone())
+                }
             }
-            48 => Ok(match arg { Value::List(l) => l.first().cloned().unwrap_or(Value::Null), _ => Value::Null }), // FIRST
-            49 => Ok(match arg { Value::List(l) => l.last().cloned().unwrap_or(Value::Null), _ => Value::Null }), // LAST
-            50 => Ok(Value::Bool(match arg { Value::List(l) => l.is_empty(), Value::Map(m) => m.is_empty(), Value::String(StringRef::Owned(s)) => s.is_empty(), _ => true })), // ISEMPTY
-            51 => { // CHARS
+            48 => Ok(match arg {
+                Value::List(l) => l.first().cloned().unwrap_or(Value::Null),
+                _ => Value::Null,
+            }), // FIRST
+            49 => Ok(match arg {
+                Value::List(l) => l.last().cloned().unwrap_or(Value::Null),
+                _ => Value::Null,
+            }), // LAST
+            50 => Ok(Value::Bool(match arg {
+                Value::List(l) => l.is_empty(),
+                Value::Map(m) => m.is_empty(),
+                Value::String(StringRef::Owned(s)) => s.is_empty(),
+                _ => true,
+            })), // ISEMPTY
+            51 => {
+                // CHARS
                 let s = arg.as_string();
-                Ok(Value::List(s.chars().map(|c| Value::String(StringRef::Owned(c.to_string()))).collect()))
+                Ok(Value::List(
+                    s.chars()
+                        .map(|c| Value::String(StringRef::Owned(c.to_string())))
+                        .collect(),
+                ))
             }
-            52 => { // STARTSWITH
+            52 => {
+                // STARTSWITH
                 let prefix = self.registers[base + arg_reg + 1].as_string();
                 Ok(Value::Bool(arg.as_string().starts_with(&prefix)))
             }
-            53 => { // ENDSWITH
+            53 => {
+                // ENDSWITH
                 let suffix = self.registers[base + arg_reg + 1].as_string();
                 Ok(Value::Bool(arg.as_string().ends_with(&suffix)))
             }
-            54 => { // INDEXOF
+            54 => {
+                // INDEXOF
                 let needle = self.registers[base + arg_reg + 1].as_string();
-                Ok(match arg.as_string().find(&needle) { Some(i) => Value::Int(i as i64), None => Value::Int(-1) })
+                Ok(match arg.as_string().find(&needle) {
+                    Some(i) => Value::Int(i as i64),
+                    None => Value::Int(-1),
+                })
             }
-            55 => { // PADLEFT
+            55 => {
+                // PADLEFT
                 let width = self.registers[base + arg_reg + 1].as_int().unwrap_or(0) as usize;
                 let s = arg.as_string();
-                if s.len() < width { Ok(Value::String(StringRef::Owned(format!("{:>width$}", s, width = width)))) } else { Ok(Value::String(StringRef::Owned(s))) }
+                if s.len() < width {
+                    Ok(Value::String(StringRef::Owned(format!(
+                        "{:>width$}",
+                        s,
+                        width = width
+                    ))))
+                } else {
+                    Ok(Value::String(StringRef::Owned(s)))
+                }
             }
-            56 => { // PADRIGHT
+            56 => {
+                // PADRIGHT
                 let width = self.registers[base + arg_reg + 1].as_int().unwrap_or(0) as usize;
                 let s = arg.as_string();
-                if s.len() < width { Ok(Value::String(StringRef::Owned(format!("{:<width$}", s, width = width)))) } else { Ok(Value::String(StringRef::Owned(s))) }
+                if s.len() < width {
+                    Ok(Value::String(StringRef::Owned(format!(
+                        "{:<width$}",
+                        s,
+                        width = width
+                    ))))
+                } else {
+                    Ok(Value::String(StringRef::Owned(s)))
+                }
             }
-            57 => Ok(match arg { Value::Float(f) => Value::Float(f.round()), _ => arg.clone() }), // ROUND
-            58 => Ok(match arg { Value::Float(f) => Value::Float(f.ceil()), _ => arg.clone() }), // CEIL
-            59 => Ok(match arg { Value::Float(f) => Value::Float(f.floor()), _ => arg.clone() }), // FLOOR
-            60 => Ok(match arg { Value::Float(f) => Value::Float(f.sqrt()), Value::Int(n) => Value::Float((*n as f64).sqrt()), _ => Value::Null }), // SQRT
-            61 => { // POW
+            57 => Ok(match arg {
+                Value::Float(f) => Value::Float(f.round()),
+                _ => arg.clone(),
+            }), // ROUND
+            58 => Ok(match arg {
+                Value::Float(f) => Value::Float(f.ceil()),
+                _ => arg.clone(),
+            }), // CEIL
+            59 => Ok(match arg {
+                Value::Float(f) => Value::Float(f.floor()),
+                _ => arg.clone(),
+            }), // FLOOR
+            60 => Ok(match arg {
+                Value::Float(f) => Value::Float(f.sqrt()),
+                Value::Int(n) => Value::Float((*n as f64).sqrt()),
+                _ => Value::Null,
+            }), // SQRT
+            61 => {
+                // POW
                 let exp = &self.registers[base + arg_reg + 1];
                 Ok(match (arg, exp) {
-                    (Value::Int(x), Value::Int(y)) => if *y >= 0 { Value::Int(x.pow(*y as u32)) } else { Value::Float((*x as f64).powf(*y as f64)) },
+                    (Value::Int(x), Value::Int(y)) => {
+                        if *y >= 0 {
+                            Value::Int(x.pow(*y as u32))
+                        } else {
+                            Value::Float((*x as f64).powf(*y as f64))
+                        }
+                    }
                     (Value::Float(x), Value::Float(y)) => Value::Float(x.powf(*y)),
                     _ => Value::Null,
                 })
             }
-            62 => Ok(match arg { Value::Float(f) => Value::Float(f.ln()), Value::Int(n) => Value::Float((*n as f64).ln()), _ => Value::Null }), // LOG
-            63 => Ok(match arg { Value::Float(f) => Value::Float(f.sin()), Value::Int(n) => Value::Float((*n as f64).sin()), _ => Value::Null }), // SIN
-            64 => Ok(match arg { Value::Float(f) => Value::Float(f.cos()), Value::Int(n) => Value::Float((*n as f64).cos()), _ => Value::Null }), // COS
-            65 => { // CLAMP
+            62 => Ok(match arg {
+                Value::Float(f) => Value::Float(f.ln()),
+                Value::Int(n) => Value::Float((*n as f64).ln()),
+                _ => Value::Null,
+            }), // LOG
+            63 => Ok(match arg {
+                Value::Float(f) => Value::Float(f.sin()),
+                Value::Int(n) => Value::Float((*n as f64).sin()),
+                _ => Value::Null,
+            }), // SIN
+            64 => Ok(match arg {
+                Value::Float(f) => Value::Float(f.cos()),
+                Value::Int(n) => Value::Float((*n as f64).cos()),
+                _ => Value::Null,
+            }), // COS
+            65 => {
+                // CLAMP
                 let lo = &self.registers[base + arg_reg + 1];
                 let hi = &self.registers[base + arg_reg + 2];
                 Ok(match (arg, lo, hi) {
                     (Value::Int(v), Value::Int(l), Value::Int(h)) => Value::Int(*v.max(l).min(h)),
-                    (Value::Float(v), Value::Float(l), Value::Float(h)) => Value::Float(v.max(*l).min(*h)),
+                    (Value::Float(v), Value::Float(l), Value::Float(h)) => {
+                        Value::Float(v.max(*l).min(*h))
+                    }
                     _ => arg.clone(),
                 })
             }
-            66 => Ok(arg.clone()), // CLONE
+            66 => Ok(arg.clone()),                                   // CLONE
             67 => Ok(Value::Int(std::mem::size_of_val(arg) as i64)), // SIZEOF
-            68 => { // DEBUG
+            68 => {
+                // DEBUG
                 let output = format!("[debug] {:?}", arg);
                 eprintln!("{}", output);
                 self.output.push(output);
@@ -1826,14 +2307,20 @@ impl VM {
                     match rb.fields.get(key) {
                         Some(vb) if va != vb => {
                             let mut change = BTreeMap::new();
-                            change.insert("field".to_string(), Value::String(StringRef::Owned(key.clone())));
+                            change.insert(
+                                "field".to_string(),
+                                Value::String(StringRef::Owned(key.clone())),
+                            );
                             change.insert("from".to_string(), va.clone());
                             change.insert("to".to_string(), vb.clone());
                             diffs.push(Value::Map(change));
                         }
                         None => {
                             let mut change = BTreeMap::new();
-                            change.insert("field".to_string(), Value::String(StringRef::Owned(key.clone())));
+                            change.insert(
+                                "field".to_string(),
+                                Value::String(StringRef::Owned(key.clone())),
+                            );
                             change.insert("removed".to_string(), va.clone());
                             diffs.push(Value::Map(change));
                         }
@@ -1843,7 +2330,10 @@ impl VM {
                 for (key, vb) in &rb.fields {
                     if !ra.fields.contains_key(key) {
                         let mut change = BTreeMap::new();
-                        change.insert("field".to_string(), Value::String(StringRef::Owned(key.clone())));
+                        change.insert(
+                            "field".to_string(),
+                            Value::String(StringRef::Owned(key.clone())),
+                        );
                         change.insert("added".to_string(), vb.clone());
                         diffs.push(Value::Map(change));
                     }
@@ -1856,14 +2346,20 @@ impl VM {
                     match mb.get(key) {
                         Some(vb) if va != vb => {
                             let mut change = BTreeMap::new();
-                            change.insert("key".to_string(), Value::String(StringRef::Owned(key.clone())));
+                            change.insert(
+                                "key".to_string(),
+                                Value::String(StringRef::Owned(key.clone())),
+                            );
                             change.insert("from".to_string(), va.clone());
                             change.insert("to".to_string(), vb.clone());
                             diffs.push(Value::Map(change));
                         }
                         None => {
                             let mut change = BTreeMap::new();
-                            change.insert("key".to_string(), Value::String(StringRef::Owned(key.clone())));
+                            change.insert(
+                                "key".to_string(),
+                                Value::String(StringRef::Owned(key.clone())),
+                            );
                             change.insert("removed".to_string(), va.clone());
                             diffs.push(Value::Map(change));
                         }
@@ -1873,7 +2369,10 @@ impl VM {
                 for (key, vb) in mb {
                     if !ma.contains_key(key) {
                         let mut change = BTreeMap::new();
-                        change.insert("key".to_string(), Value::String(StringRef::Owned(key.clone())));
+                        change.insert(
+                            "key".to_string(),
+                            Value::String(StringRef::Owned(key.clone())),
+                        );
                         change.insert("added".to_string(), vb.clone());
                         diffs.push(Value::Map(change));
                     }
@@ -1960,8 +2459,15 @@ impl VM {
         }
     }
 
-    fn arith_op(&mut self, base: usize, a: usize, b: usize, c: usize,
-        int_op: impl Fn(i64, i64) -> i64, float_op: impl Fn(f64, f64) -> f64) -> Result<(), VmError> {
+    fn arith_op(
+        &mut self,
+        base: usize,
+        a: usize,
+        b: usize,
+        c: usize,
+        int_op: impl Fn(i64, i64) -> i64,
+        float_op: impl Fn(f64, f64) -> f64,
+    ) -> Result<(), VmError> {
         let lhs = &self.registers[base + b];
         let rhs = &self.registers[base + c];
         self.registers[base + a] = match (lhs, rhs) {
@@ -1969,7 +2475,11 @@ impl VM {
             (Value::Float(x), Value::Float(y)) => Value::Float(float_op(*x, *y)),
             (Value::Int(x), Value::Float(y)) => Value::Float(float_op(*x as f64, *y)),
             (Value::Float(x), Value::Int(y)) => Value::Float(float_op(*x, *y as f64)),
-            _ => return Err(VmError::TypeError(format!("arithmetic on non-numeric types"))),
+            _ => {
+                return Err(VmError::TypeError(format!(
+                    "arithmetic on non-numeric types"
+                )))
+            }
         };
         Ok(())
     }
@@ -1988,12 +2498,18 @@ fn value_to_json(val: &Value) -> serde_json::Value {
         Value::Tuple(t) => serde_json::Value::Array(t.iter().map(value_to_json).collect()),
         Value::Set(s) => serde_json::Value::Array(s.iter().map(value_to_json).collect()),
         Value::Map(m) => {
-            let obj: serde_json::Map<String, serde_json::Value> = m.iter().map(|(k, v)| (k.clone(), value_to_json(v))).collect();
+            let obj: serde_json::Map<String, serde_json::Value> = m
+                .iter()
+                .map(|(k, v)| (k.clone(), value_to_json(v)))
+                .collect();
             serde_json::Value::Object(obj)
         }
         Value::Record(r) => {
             let mut obj = serde_json::Map::new();
-            obj.insert("__type".to_string(), serde_json::Value::String(r.type_name.clone()));
+            obj.insert(
+                "__type".to_string(),
+                serde_json::Value::String(r.type_name.clone()),
+            );
             for (k, v) in &r.fields {
                 obj.insert(k.clone(), value_to_json(v));
             }
@@ -2001,7 +2517,10 @@ fn value_to_json(val: &Value) -> serde_json::Value {
         }
         Value::Union(u) => {
             let mut obj = serde_json::Map::new();
-            obj.insert("__tag".to_string(), serde_json::Value::String(u.tag.clone()));
+            obj.insert(
+                "__tag".to_string(),
+                serde_json::Value::String(u.tag.clone()),
+            );
             obj.insert("__payload".to_string(), value_to_json(&u.payload));
             serde_json::Value::Object(obj)
         }
@@ -2015,14 +2534,21 @@ fn json_to_value(val: &serde_json::Value) -> Value {
         serde_json::Value::Null => Value::Null,
         serde_json::Value::Bool(b) => Value::Bool(*b),
         serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() { Value::Int(i) }
-            else if let Some(f) = n.as_f64() { Value::Float(f) }
-            else { Value::Null }
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else if let Some(f) = n.as_f64() {
+                Value::Float(f)
+            } else {
+                Value::Null
+            }
         }
         serde_json::Value::String(s) => Value::String(StringRef::Owned(s.clone())),
         serde_json::Value::Array(arr) => Value::List(arr.iter().map(json_to_value).collect()),
         serde_json::Value::Object(obj) => {
-            let map: BTreeMap<String, Value> = obj.iter().map(|(k, v)| (k.clone(), json_to_value(v))).collect();
+            let map: BTreeMap<String, Value> = obj
+                .iter()
+                .map(|(k, v)| (k.clone(), json_to_value(v)))
+                .collect();
             Value::Map(map)
         }
     }
@@ -2039,8 +2565,16 @@ fn simple_base64_encode(data: &[u8]) -> String {
         let triple = (b0 << 16) | (b1 << 8) | b2;
         result.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
         result.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 { result.push(CHARS[((triple >> 6) & 0x3F) as usize] as char); } else { result.push('='); }
-        if chunk.len() > 2 { result.push(CHARS[(triple & 0x3F) as usize] as char); } else { result.push('='); }
+        if chunk.len() > 1 {
+            result.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+        if chunk.len() > 2 {
+            result.push(CHARS[(triple & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
     }
     result
 }
@@ -2051,22 +2585,39 @@ fn simple_base64_decode(s: &str) -> Option<Vec<u8>> {
     let mut result = Vec::new();
     let bytes: Vec<u8> = s.bytes().filter(|&b| b != b'\n' && b != b'\r').collect();
     for chunk in bytes.chunks(4) {
-        if chunk.len() < 4 { break; }
-        let vals: Vec<Option<usize>> = chunk.iter().map(|&b| {
-            if b == b'=' { Some(0) } else { CHARS.iter().position(|&c| c == b) }
-        }).collect();
-        if vals.iter().any(|v| v.is_none()) { return None; }
+        if chunk.len() < 4 {
+            break;
+        }
+        let vals: Vec<Option<usize>> = chunk
+            .iter()
+            .map(|&b| {
+                if b == b'=' {
+                    Some(0)
+                } else {
+                    CHARS.iter().position(|&c| c == b)
+                }
+            })
+            .collect();
+        if vals.iter().any(|v| v.is_none()) {
+            return None;
+        }
         let v: Vec<usize> = vals.into_iter().map(|v| v.unwrap()).collect();
         let triple = (v[0] << 18) | (v[1] << 12) | (v[2] << 6) | v[3];
         result.push(((triple >> 16) & 0xFF) as u8);
-        if chunk[2] != b'=' { result.push(((triple >> 8) & 0xFF) as u8); }
-        if chunk[3] != b'=' { result.push((triple & 0xFF) as u8); }
+        if chunk[2] != b'=' {
+            result.push(((triple >> 8) & 0xFF) as u8);
+        }
+        if chunk[3] != b'=' {
+            result.push((triple & 0xFF) as u8);
+        }
     }
     Some(result)
 }
 
 impl Default for VM {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -2092,6 +2643,8 @@ mod tests {
             }],
             tools: vec![],
             policies: vec![],
+            agents: vec![],
+            addons: vec![],
         }
     }
 
@@ -2112,8 +2665,16 @@ mod tests {
             cells: vec![LirCell {
                 name: "add".into(),
                 params: vec![
-                    LirParam { name: "a".into(), ty: "Int".into(), register: 0 },
-                    LirParam { name: "b".into(), ty: "Int".into(), register: 1 },
+                    LirParam {
+                        name: "a".into(),
+                        ty: "Int".into(),
+                        register: 0,
+                    },
+                    LirParam {
+                        name: "b".into(),
+                        ty: "Int".into(),
+                        register: 1,
+                    },
                 ],
                 returns: Some("Int".into()),
                 registers: 4,
@@ -2125,6 +2686,8 @@ mod tests {
             }],
             tools: vec![],
             policies: vec![],
+            agents: vec![],
+            addons: vec![],
         }
     }
 
@@ -2132,7 +2695,9 @@ mod tests {
     fn test_vm_add() {
         let mut vm = VM::new();
         vm.load(make_add());
-        let result = vm.execute("add", vec![Value::Int(10), Value::Int(32)]).unwrap();
+        let result = vm
+            .execute("add", vec![Value::Int(10), Value::Int(32)])
+            .unwrap();
         assert_eq!(result, Value::Int(42));
     }
 
@@ -2162,6 +2727,8 @@ mod tests {
             }],
             tools: vec![],
             policies: vec![],
+            agents: vec![],
+            addons: vec![],
         };
         let mut vm = VM::new();
         vm.load(module);
@@ -2195,6 +2762,8 @@ mod tests {
             }],
             tools: vec![],
             policies: vec![],
+            agents: vec![],
+            addons: vec![],
         };
         let mut vm = VM::new();
         vm.load(module);
@@ -2231,6 +2800,8 @@ mod tests {
             }],
             tools: vec![],
             policies: vec![],
+            agents: vec![],
+            addons: vec![],
         };
         let mut vm = VM::new();
         vm.load(module);
@@ -2263,11 +2834,16 @@ mod tests {
             }],
             tools: vec![],
             policies: vec![],
+            agents: vec![],
+            addons: vec![],
         };
         let mut vm = VM::new();
         vm.load(module);
         let result = vm.execute("main", vec![]).unwrap();
-        assert_eq!(result, Value::String(StringRef::Owned("Hello, World!".into())));
+        assert_eq!(
+            result,
+            Value::String(StringRef::Owned("Hello, World!".into()))
+        );
     }
 
     #[test]
@@ -2293,11 +2869,16 @@ mod tests {
             }],
             tools: vec![],
             policies: vec![],
+            agents: vec![],
+            addons: vec![],
         };
         let mut vm = VM::new();
         vm.load(module);
         let result = vm.execute("main", vec![]).unwrap();
-        assert_eq!(result, Value::Tuple(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        assert_eq!(
+            result,
+            Value::Tuple(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+        );
     }
 
     #[test]
@@ -2323,6 +2904,8 @@ mod tests {
             }],
             tools: vec![],
             policies: vec![],
+            agents: vec![],
+            addons: vec![],
         };
         let mut vm = VM::new();
         vm.load(module);
@@ -2357,6 +2940,8 @@ mod tests {
             }],
             tools: vec![],
             policies: vec![],
+            agents: vec![],
+            addons: vec![],
         };
         let mut vm = VM::new();
         vm.load(module);

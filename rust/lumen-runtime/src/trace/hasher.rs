@@ -1,6 +1,6 @@
 //! Canonical hashing for trace events and cache keys.
 
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 /// Hash a string value using SHA-256.
 pub fn sha256_hash(data: &str) -> String {
@@ -19,8 +19,15 @@ pub fn canonical_json(value: &serde_json::Value) -> String {
         serde_json::Value::Object(map) => {
             let mut pairs: Vec<_> = map.iter().collect();
             pairs.sort_by_key(|(k, _)| k.as_str());
-            let entries: Vec<String> = pairs.iter()
-                .map(|(k, v)| format!("{}:{}", serde_json::to_string(k).unwrap(), canonical_json(v)))
+            let entries: Vec<String> = pairs
+                .iter()
+                .map(|(k, v)| {
+                    format!(
+                        "{}:{}",
+                        serde_json::to_string(k).unwrap(),
+                        canonical_json(v)
+                    )
+                })
                 .collect();
             format!("{{{}}}", entries.join(","))
         }
@@ -34,7 +41,10 @@ pub fn canonical_json(value: &serde_json::Value) -> String {
 
 /// Compute a cache key from tool_id, version, policy, and args.
 pub fn cache_key(tool_id: &str, version: &str, policy_hash: &str, args_hash: &str) -> String {
-    sha256_hash(&format!("{}:{}:{}:{}", tool_id, version, policy_hash, args_hash))
+    sha256_hash(&format!(
+        "{}:{}:{}:{}",
+        tool_id, version, policy_hash, args_hash
+    ))
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@ mod doc;
 mod fmt;
 mod pkg;
 mod repl;
+mod test_cmd;
 
 use clap::{Parser as ClapParser, Subcommand};
 use std::path::{Path, PathBuf};
@@ -109,6 +110,25 @@ enum Commands {
         #[arg(long, short)]
         output: Option<PathBuf>,
     },
+    /// Lint Lumen source files
+    Lint {
+        /// Files to lint
+        files: Vec<PathBuf>,
+        /// Treat warnings as errors
+        #[arg(long)]
+        strict: bool,
+    },
+    /// Run Lumen tests
+    Test {
+        /// Directory or file to test
+        path: Option<PathBuf>,
+        /// Filter test names
+        #[arg(long, short)]
+        filter: Option<String>,
+        /// Show verbose output
+        #[arg(long, short)]
+        verbose: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -176,6 +196,11 @@ fn main() {
             format,
             output,
         } => cmd_doc(&path, &format, output),
+        Commands::Lint { files, strict } => {
+            eprintln!("{} lumen lint not yet implemented", red("error:"));
+            std::process::exit(1);
+        }
+        Commands::Test { path, filter, verbose } => test_cmd::cmd_test(path, filter, verbose),
     }
 }
 
@@ -355,3 +380,14 @@ fn cmd_fmt(files: Vec<PathBuf>, check: bool) {
         }
     }
 }
+
+// Lint command implementation pending
+// fn cmd_lint(files: Vec<PathBuf>, strict: bool) {
+//     match lint::cmd_lint(&files, strict) {
+//         Ok(()) => {}
+//         Err(e) => {
+//             eprintln!("{} {}", red("error:"), e);
+//             std::process::exit(1);
+//         }
+//     }
+// }

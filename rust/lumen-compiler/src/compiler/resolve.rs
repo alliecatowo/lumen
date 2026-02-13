@@ -62,6 +62,38 @@ pub enum ResolveError {
     },
     #[error("machine '{machine}' declares no terminal states (line {line})")]
     MachineMissingTerminal { machine: String, line: usize },
+    #[error("machine '{machine}' state '{state}' transition arg count mismatch for '{target}' at line {line}: expected {expected}, got {actual}")]
+    MachineTransitionArgCount {
+        machine: String,
+        state: String,
+        target: String,
+        expected: usize,
+        actual: usize,
+        line: usize,
+    },
+    #[error("machine '{machine}' state '{state}' transition arg type mismatch for '{target}' at line {line}: expected {expected}, got {actual}")]
+    MachineTransitionArgType {
+        machine: String,
+        state: String,
+        target: String,
+        expected: String,
+        actual: String,
+        line: usize,
+    },
+    #[error("machine '{machine}' state '{state}' has unsupported expression in {context} at line {line}")]
+    MachineUnsupportedExpr {
+        machine: String,
+        state: String,
+        context: String,
+        line: usize,
+    },
+    #[error("machine '{machine}' state '{state}' guard must be Bool-compatible, got {actual} at line {line}")]
+    MachineGuardType {
+        machine: String,
+        state: String,
+        actual: String,
+        line: usize,
+    },
 }
 
 /// Symbol table built during resolution
@@ -126,8 +158,11 @@ pub struct ProcessInfo {
 #[derive(Debug, Clone)]
 pub struct MachineStateInfo {
     pub name: String,
+    pub params: Vec<(String, TypeExpr)>,
     pub terminal: bool,
+    pub guard: Option<Expr>,
     pub transition_to: Option<String>,
+    pub transition_args: Vec<Expr>,
 }
 
 #[derive(Debug, Clone)]
@@ -377,8 +412,15 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                             .iter()
                             .map(|s| MachineStateInfo {
                                 name: s.name.clone(),
+                                params: s
+                                    .params
+                                    .iter()
+                                    .map(|p| (p.name.clone(), p.ty.clone()))
+                                    .collect(),
                                 terminal: s.terminal,
+                                guard: s.guard.clone(),
                                 transition_to: s.transition_to.clone(),
+                                transition_args: s.transition_args.clone(),
                             })
                             .collect(),
                     },
@@ -593,6 +635,11 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
             Item::Process(p) => {
                 if p.kind == "machine" {
                     validate_machine_graph(p, &mut errors);
+                    for state in &p.machine_states {
+                        for param in &state.params {
+                            check_type_refs_with_generics(&param.ty, &table, &mut errors, &[]);
+                        }
+                    }
                 }
                 for c in &p.cells {
                     if c.body.is_empty() {
@@ -967,6 +1014,31 @@ fn validate_machine_graph(process: &ProcessDecl, errors: &mut Vec<ResolveError>)
     }
 
     for state in &process.machine_states {
+        if let Some(guard) = &state.guard {
+            if !is_supported_machine_expr(guard) {
+                errors.push(ResolveError::MachineUnsupportedExpr {
+                    machine: process.name.clone(),
+                    state: state.name.clone(),
+                    context: "guard".to_string(),
+                    line: guard.span().line,
+                });
+            } else {
+                let scope: HashMap<String, TypeExpr> = state
+                    .params
+                    .iter()
+                    .map(|p| (p.name.clone(), p.ty.clone()))
+                    .collect();
+                let guard_ty = infer_machine_expr_type(guard, &scope);
+                if !matches!(guard_ty.as_deref(), Some("Bool") | Some("Any")) {
+                    errors.push(ResolveError::MachineGuardType {
+                        machine: process.name.clone(),
+                        state: state.name.clone(),
+                        actual: guard_ty.unwrap_or_else(|| "Unknown".to_string()),
+                        line: guard.span().line,
+                    });
+                }
+            }
+        }
         if let Some(target) = &state.transition_to {
             if !state_names.contains(target) {
                 errors.push(ResolveError::MachineUnknownTransition {
@@ -975,6 +1047,49 @@ fn validate_machine_graph(process: &ProcessDecl, errors: &mut Vec<ResolveError>)
                     target: target.clone(),
                     line: state.span.line,
                 });
+            } else if let Some(target_state) =
+                process.machine_states.iter().find(|s| s.name == *target)
+            {
+                if state.transition_args.len() != target_state.params.len() {
+                    errors.push(ResolveError::MachineTransitionArgCount {
+                        machine: process.name.clone(),
+                        state: state.name.clone(),
+                        target: target.clone(),
+                        expected: target_state.params.len(),
+                        actual: state.transition_args.len(),
+                        line: state.span.line,
+                    });
+                } else {
+                    let source_scope: HashMap<String, TypeExpr> = state
+                        .params
+                        .iter()
+                        .map(|p| (p.name.clone(), p.ty.clone()))
+                        .collect();
+                    for (idx, arg) in state.transition_args.iter().enumerate() {
+                        if !is_supported_machine_expr(arg) {
+                            errors.push(ResolveError::MachineUnsupportedExpr {
+                                machine: process.name.clone(),
+                                state: state.name.clone(),
+                                context: format!("transition arg {}", idx + 1),
+                                line: arg.span().line,
+                            });
+                            continue;
+                        }
+                        let actual = infer_machine_expr_type(arg, &source_scope)
+                            .unwrap_or_else(|| "Unknown".to_string());
+                        let expected_ty = &target_state.params[idx].ty;
+                        if !machine_type_compatible(expected_ty, &actual) {
+                            errors.push(ResolveError::MachineTransitionArgType {
+                                machine: process.name.clone(),
+                                state: state.name.clone(),
+                                target: target.clone(),
+                                expected: machine_type_key(expected_ty),
+                                actual,
+                                line: arg.span().line,
+                            });
+                        }
+                    }
+                }
             }
         }
     }
@@ -1008,6 +1123,118 @@ fn validate_machine_graph(process: &ProcessDecl, errors: &mut Vec<ResolveError>)
             machine: process.name.clone(),
             line: process.span.line,
         });
+    }
+}
+
+fn machine_type_key(ty: &TypeExpr) -> String {
+    match ty {
+        TypeExpr::Named(name, _) => name.clone(),
+        TypeExpr::List(inner, _) => format!("list[{}]", machine_type_key(inner)),
+        TypeExpr::Map(k, v, _) => format!("map[{},{}]", machine_type_key(k), machine_type_key(v)),
+        TypeExpr::Result(ok, err, _) => {
+            format!("result[{},{}]", machine_type_key(ok), machine_type_key(err))
+        }
+        TypeExpr::Union(types, _) => types
+            .iter()
+            .map(machine_type_key)
+            .collect::<Vec<_>>()
+            .join("|"),
+        TypeExpr::Null(_) => "Null".to_string(),
+        TypeExpr::Tuple(types, _) => {
+            let inner = types.iter().map(machine_type_key).collect::<Vec<_>>().join(",");
+            format!("({})", inner)
+        }
+        TypeExpr::Set(inner, _) => format!("set[{}]", machine_type_key(inner)),
+        TypeExpr::Fn(_, _, _, _) => "fn".to_string(),
+        TypeExpr::Generic(name, _, _) => name.clone(),
+    }
+}
+
+fn machine_type_compatible(expected: &TypeExpr, actual_key: &str) -> bool {
+    if actual_key == "Any" {
+        return true;
+    }
+    match expected {
+        TypeExpr::Named(name, _) if name == "Any" => true,
+        TypeExpr::Union(types, _) => types
+            .iter()
+            .any(|candidate| machine_type_compatible(candidate, actual_key)),
+        _ => machine_type_key(expected) == actual_key,
+    }
+}
+
+fn is_supported_machine_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::IntLit(_, _)
+        | Expr::FloatLit(_, _)
+        | Expr::StringLit(_, _)
+        | Expr::BoolLit(_, _)
+        | Expr::NullLit(_) => true,
+        Expr::Ident(_, _) => true,
+        Expr::UnaryOp(_, inner, _) => is_supported_machine_expr(inner),
+        Expr::BinOp(lhs, _, rhs, _) => {
+            is_supported_machine_expr(lhs) && is_supported_machine_expr(rhs)
+        }
+        _ => false,
+    }
+}
+
+fn infer_machine_expr_type(expr: &Expr, scope: &HashMap<String, TypeExpr>) -> Option<String> {
+    match expr {
+        Expr::IntLit(_, _) => Some("Int".to_string()),
+        Expr::FloatLit(_, _) => Some("Float".to_string()),
+        Expr::StringLit(_, _) => Some("String".to_string()),
+        Expr::BoolLit(_, _) => Some("Bool".to_string()),
+        Expr::NullLit(_) => Some("Null".to_string()),
+        Expr::Ident(name, _) => scope
+            .get(name)
+            .map(machine_type_key)
+            .or_else(|| Some("Any".to_string())),
+        Expr::UnaryOp(UnaryOp::Not, inner, _) => {
+            let inner_ty = infer_machine_expr_type(inner, scope).unwrap_or_else(|| "Any".into());
+            if inner_ty == "Bool" || inner_ty == "Any" {
+                Some("Bool".to_string())
+            } else {
+                Some("Any".to_string())
+            }
+        }
+        Expr::UnaryOp(UnaryOp::Neg, inner, _) => {
+            let inner_ty = infer_machine_expr_type(inner, scope).unwrap_or_else(|| "Any".into());
+            if inner_ty == "Int" || inner_ty == "Float" {
+                Some(inner_ty)
+            } else {
+                Some("Any".to_string())
+            }
+        }
+        Expr::UnaryOp(UnaryOp::BitNot, _inner, _) => Some("Int".to_string()),
+        Expr::BinOp(lhs, op, rhs, _) => {
+            let lt = infer_machine_expr_type(lhs, scope).unwrap_or_else(|| "Any".into());
+            let rt = infer_machine_expr_type(rhs, scope).unwrap_or_else(|| "Any".into());
+            match op {
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow => {
+                    if lt == "Float" || rt == "Float" {
+                        Some("Float".to_string())
+                    } else if lt == "Int" && rt == "Int" {
+                        Some("Int".to_string())
+                    } else {
+                        Some("Any".to_string())
+                    }
+                }
+                BinOp::Eq
+                | BinOp::NotEq
+                | BinOp::Lt
+                | BinOp::LtEq
+                | BinOp::Gt
+                | BinOp::GtEq
+                | BinOp::And
+                | BinOp::Or
+                | BinOp::In => Some("Bool".to_string()),
+                BinOp::PipeForward | BinOp::Concat | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
+                    Some("Any".to_string())
+                }
+            }
+        }
+        _ => None,
     }
 }
 
@@ -2569,6 +2796,42 @@ mod tests {
             e,
             ResolveError::MachineMissingTerminal { machine, .. }
             if machine == "Broken"
+        )));
+    }
+
+    #[test]
+    fn test_machine_graph_validation_checks_transition_arg_count_and_type() {
+        let err = resolve_src(
+            "machine Typed\n  initial: Start\n  state Start(x: Int)\n    transition Done(x, \"bad\")\n  end\n  state Done(v: Int)\n    terminal: true\n  end\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::MachineTransitionArgCount { machine, state, target, expected, actual, .. }
+            if machine == "Typed" && state == "Start" && target == "Done" && *expected == 1 && *actual == 2
+        )));
+
+        let err = resolve_src(
+            "machine Typed\n  initial: Start\n  state Start(x: String)\n    transition Done(x)\n  end\n  state Done(v: Int)\n    terminal: true\n  end\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::MachineTransitionArgType { machine, state, target, expected, actual, .. }
+            if machine == "Typed" && state == "Start" && target == "Done" && expected == "Int" && actual == "String"
+        )));
+    }
+
+    #[test]
+    fn test_machine_graph_validation_checks_guard_type() {
+        let err = resolve_src(
+            "machine Guarded\n  initial: Start\n  state Start(x: Int)\n    guard: x + 1\n    transition Done(x)\n  end\n  state Done(v: Int)\n    terminal: true\n  end\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::MachineGuardType { machine, state, actual, .. }
+            if machine == "Guarded" && state == "Start" && actual == "Int"
         )));
     }
 }

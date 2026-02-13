@@ -81,6 +81,7 @@ struct MachineRuntime {
     terminal: bool,
     steps: u64,
     current_state: String,
+    payload: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -91,8 +92,36 @@ struct MachineGraphDef {
 
 #[derive(Debug, Clone)]
 struct MachineStateDef {
+    params: Vec<MachineParamDef>,
     terminal: bool,
+    guard: Option<MachineExpr>,
     transition_to: Option<String>,
+    transition_args: Vec<MachineExpr>,
+}
+
+#[derive(Debug, Clone)]
+struct MachineParamDef {
+    name: String,
+    ty: String,
+}
+
+#[derive(Debug, Clone)]
+enum MachineExpr {
+    Int(i64),
+    Float(f64),
+    String(String),
+    Bool(bool),
+    Null,
+    Ident(String),
+    Unary {
+        op: String,
+        expr: Box<MachineExpr>,
+    },
+    Bin {
+        op: String,
+        lhs: Box<MachineExpr>,
+        rhs: Box<MachineExpr>,
+    },
 }
 
 impl Default for MachineRuntime {
@@ -102,6 +131,7 @@ impl Default for MachineRuntime {
             terminal: false,
             steps: 0,
             current_state: "init".to_string(),
+            payload: BTreeMap::new(),
         }
     }
 }
@@ -190,25 +220,63 @@ impl VM {
                     }
                 }
                 if addon.kind == "machine.state" {
-                    let mut parts = name.splitn(4, '|');
-                    if let (Some(machine), Some(state), Some(terminal_flag), Some(next_raw)) =
-                        (parts.next(), parts.next(), parts.next(), parts.next())
-                    {
-                        let terminal = terminal_flag == "1" || terminal_flag == "true";
-                        let transition_to = if next_raw.is_empty() {
-                            None
-                        } else {
-                            Some(next_raw.to_string())
-                        };
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(name) {
+                        let machine = v
+                            .get("machine")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let state = v
+                            .get("state")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if machine.is_empty() || state.is_empty() {
+                            continue;
+                        }
+                        let terminal = v.get("terminal").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let transition_to = v
+                            .get("transition_to")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let params = v
+                            .get("params")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|p| {
+                                        Some(MachineParamDef {
+                                            name: p.get("name")?.as_str()?.to_string(),
+                                            ty: p.get("type")?.as_str()?.to_string(),
+                                        })
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        let guard = v
+                            .get("guard")
+                            .and_then(parse_machine_expr_json);
+                        let transition_args = v
+                            .get("transition_args")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(parse_machine_expr_json)
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
                         self.machine_graphs
-                            .entry(machine.to_string())
+                            .entry(machine)
                             .or_default()
                             .states
                             .insert(
-                                state.to_string(),
+                                state,
                                 MachineStateDef {
+                                    params,
                                     terminal,
+                                    guard,
                                     transition_to,
+                                    transition_args,
                                 },
                             );
                     }
@@ -1637,10 +1705,119 @@ impl VM {
         );
         fields.insert("steps".to_string(), Value::Int(state.steps as i64));
         fields.insert("terminal".to_string(), Value::Bool(state.terminal));
+        fields.insert("payload".to_string(), Value::Map(state.payload.clone()));
         Value::Record(RecordValue {
             type_name: format!("{}.State", owner),
             fields,
         })
+    }
+
+    fn bind_machine_payload(
+        params: &[MachineParamDef],
+        values: &[Value],
+    ) -> BTreeMap<String, Value> {
+        let mut payload = BTreeMap::new();
+        for (idx, param) in params.iter().enumerate() {
+            let value = values.get(idx).cloned().unwrap_or(Value::Null);
+            let value = match param.ty.as_str() {
+                "Int" => value
+                    .as_int()
+                    .map(Value::Int)
+                    .unwrap_or(Value::Null),
+                "Float" => value
+                    .as_float()
+                    .map(Value::Float)
+                    .unwrap_or(Value::Null),
+                "Bool" => match value {
+                    Value::Bool(b) => Value::Bool(b),
+                    _ => Value::Null,
+                },
+                "String" => match value {
+                    Value::String(_) => value,
+                    _ => Value::Null,
+                },
+                "Null" => Value::Null,
+                _ => value,
+            };
+            payload.insert(param.name.clone(), value);
+        }
+        payload
+    }
+
+    fn eval_machine_expr(expr: &MachineExpr, payload: &BTreeMap<String, Value>) -> Value {
+        match expr {
+            MachineExpr::Int(n) => Value::Int(*n),
+            MachineExpr::Float(f) => Value::Float(*f),
+            MachineExpr::String(s) => Value::String(StringRef::Owned(s.clone())),
+            MachineExpr::Bool(b) => Value::Bool(*b),
+            MachineExpr::Null => Value::Null,
+            MachineExpr::Ident(name) => payload.get(name).cloned().unwrap_or(Value::Null),
+            MachineExpr::Unary { op, expr } => {
+                let value = Self::eval_machine_expr(expr, payload);
+                match op.as_str() {
+                    "-" => match value {
+                        Value::Int(n) => Value::Int(-n),
+                        Value::Float(f) => Value::Float(-f),
+                        _ => Value::Null,
+                    },
+                    "not" => Value::Bool(!value.is_truthy()),
+                    "~" => match value {
+                        Value::Int(n) => Value::Int(!n),
+                        _ => Value::Null,
+                    },
+                    _ => Value::Null,
+                }
+            }
+            MachineExpr::Bin { op, lhs, rhs } => {
+                let left = Self::eval_machine_expr(lhs, payload);
+                let right = Self::eval_machine_expr(rhs, payload);
+                match op.as_str() {
+                    "+" => match (left, right) {
+                        (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+                        (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
+                        (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 + b),
+                        (Value::Float(a), Value::Int(b)) => Value::Float(a + b as f64),
+                        _ => Value::Null,
+                    },
+                    "-" => match (left, right) {
+                        (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
+                        (Value::Float(a), Value::Float(b)) => Value::Float(a - b),
+                        (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 - b),
+                        (Value::Float(a), Value::Int(b)) => Value::Float(a - b as f64),
+                        _ => Value::Null,
+                    },
+                    "*" => match (left, right) {
+                        (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
+                        (Value::Float(a), Value::Float(b)) => Value::Float(a * b),
+                        (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 * b),
+                        (Value::Float(a), Value::Int(b)) => Value::Float(a * b as f64),
+                        _ => Value::Null,
+                    },
+                    "/" => match (left, right) {
+                        (Value::Int(_), Value::Int(0)) => Value::Null,
+                        (Value::Int(a), Value::Int(b)) => Value::Int(a / b),
+                        (Value::Float(a), Value::Float(b)) => Value::Float(a / b),
+                        (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 / b),
+                        (Value::Float(a), Value::Int(b)) => Value::Float(a / b as f64),
+                        _ => Value::Null,
+                    },
+                    "%" => match (left, right) {
+                        (Value::Int(_), Value::Int(0)) => Value::Null,
+                        (Value::Int(a), Value::Int(b)) => Value::Int(a % b),
+                        _ => Value::Null,
+                    },
+                    "==" => Value::Bool(left == right),
+                    "!=" => Value::Bool(left != right),
+                    "<" => Value::Bool(left < right),
+                    "<=" => Value::Bool(left <= right),
+                    ">" => Value::Bool(left > right),
+                    ">=" => Value::Bool(left >= right),
+                    "and" => Value::Bool(left.is_truthy() && right.is_truthy()),
+                    "or" => Value::Bool(left.is_truthy() || right.is_truthy()),
+                    _ => Value::Null,
+                }
+            }
+        }
     }
 
     fn call_machine_method(
@@ -1672,6 +1849,11 @@ impl VM {
                     } else {
                         graph.initial.clone()
                     };
+                    if let Some(state_def) = graph.states.get(&state.current_state) {
+                        state.payload = Self::bind_machine_payload(&state_def.params, &args[1..]);
+                    } else {
+                        state.payload.clear();
+                    }
                     state.terminal = graph
                         .states
                         .get(&state.current_state)
@@ -1680,6 +1862,7 @@ impl VM {
                 } else {
                     state.terminal = false;
                     state.current_state = "started".to_string();
+                    state.payload.clear();
                 }
                 Ok(Value::Null)
             }
@@ -1692,15 +1875,38 @@ impl VM {
                         } else {
                             graph.initial.clone()
                         };
+                        if let Some(state_def) = graph.states.get(&state.current_state) {
+                            state.payload = Self::bind_machine_payload(&state_def.params, &args[1..]);
+                        }
                     }
                 }
                 state.steps += 1;
                 if let Some(graph) = graph.as_ref() {
                     let current = state.current_state.clone();
+                    let mut next_payload = None;
                     if let Some(def) = graph.states.get(&current) {
-                        if let Some(next) = &def.transition_to {
-                            state.current_state = next.clone();
+                        let guard_ok = def
+                            .guard
+                            .as_ref()
+                            .map(|expr| Self::eval_machine_expr(expr, &state.payload).is_truthy())
+                            .unwrap_or(true);
+                        if guard_ok {
+                            if let Some(next) = &def.transition_to {
+                                if let Some(next_def) = graph.states.get(next) {
+                                    let evaluated: Vec<Value> = def
+                                        .transition_args
+                                        .iter()
+                                        .map(|expr| Self::eval_machine_expr(expr, &state.payload))
+                                        .collect();
+                                    next_payload =
+                                        Some(Self::bind_machine_payload(&next_def.params, &evaluated));
+                                }
+                                state.current_state = next.clone();
+                            }
                         }
+                    }
+                    if let Some(payload) = next_payload {
+                        state.payload = payload;
                     }
                     state.terminal = graph
                         .states
@@ -1728,6 +1934,11 @@ impl VM {
                     if state.current_state.is_empty() {
                         state.current_state = "started".to_string();
                     }
+                    if state.payload.is_empty() {
+                        if let Some(state_def) = graph.states.get(&state.current_state) {
+                            state.payload = Self::bind_machine_payload(&state_def.params, &args[1..]);
+                        }
+                    }
                     let mut guard = 0usize;
                     let max_steps = graph.states.len().saturating_mul(4).max(1);
                     while guard < max_steps {
@@ -1736,11 +1947,27 @@ impl VM {
                         let Some(def) = graph.states.get(&state.current_state).cloned() else {
                             break;
                         };
+                        let guard_ok = def
+                            .guard
+                            .as_ref()
+                            .map(|expr| Self::eval_machine_expr(expr, &state.payload).is_truthy())
+                            .unwrap_or(true);
+                        if !guard_ok {
+                            break;
+                        }
                         state.terminal = def.terminal;
                         if state.terminal {
                             break;
                         }
                         if let Some(next) = def.transition_to {
+                            if let Some(next_def) = graph.states.get(&next) {
+                                let evaluated: Vec<Value> = def
+                                    .transition_args
+                                    .iter()
+                                    .map(|expr| Self::eval_machine_expr(expr, &state.payload))
+                                    .collect();
+                                state.payload = Self::bind_machine_payload(&next_def.params, &evaluated);
+                            }
                             state.current_state = next;
                         } else {
                             break;
@@ -1769,6 +1996,11 @@ impl VM {
                     .unwrap_or_else(|| "resumed".to_string());
                 state.current_state = target;
                 if let Some(graph) = graph.as_ref() {
+                    if let Some(state_def) = graph.states.get(&state.current_state) {
+                        state.payload = Self::bind_machine_payload(&state_def.params, &args[2..]);
+                    } else {
+                        state.payload.clear();
+                    }
                     state.terminal = graph
                         .states
                         .get(&state.current_state)
@@ -3502,6 +3734,28 @@ fn extract_host(url: &str) -> String {
         .to_string()
 }
 
+fn parse_machine_expr_json(value: &serde_json::Value) -> Option<MachineExpr> {
+    let kind = value.get("kind")?.as_str()?;
+    match kind {
+        "int" => Some(MachineExpr::Int(value.get("value")?.as_i64()?)),
+        "float" => Some(MachineExpr::Float(value.get("value")?.as_f64()?)),
+        "string" => Some(MachineExpr::String(value.get("value")?.as_str()?.to_string())),
+        "bool" => Some(MachineExpr::Bool(value.get("value")?.as_bool()?)),
+        "null" => Some(MachineExpr::Null),
+        "ident" => Some(MachineExpr::Ident(value.get("value")?.as_str()?.to_string())),
+        "unary" => Some(MachineExpr::Unary {
+            op: value.get("op")?.as_str()?.to_string(),
+            expr: Box::new(parse_machine_expr_json(value.get("expr")?)?),
+        }),
+        "bin" => Some(MachineExpr::Bin {
+            op: value.get("op")?.as_str()?.to_string(),
+            lhs: Box::new(parse_machine_expr_json(value.get("lhs")?)?),
+            rhs: Box::new(parse_machine_expr_json(value.get("rhs")?)?),
+        }),
+        _ => None,
+    }
+}
+
 fn future_schedule_from_addons(addons: &[LirAddon]) -> FutureSchedule {
     for addon in addons {
         if addon.kind != "directive" {
@@ -4325,6 +4579,59 @@ end
 "#,
         );
         assert_eq!(result, Value::String(StringRef::Owned("Start".to_string())));
+    }
+
+    #[test]
+    fn test_machine_graph_guard_and_typed_payload_transition() {
+        let result = run_main(
+            r#"
+machine TypedFlow
+  initial: Start
+  state Start(x: Int)
+    guard: x > 0
+    transition Done(x + 1)
+  end
+  state Done(v: Int)
+    terminal: true
+  end
+end
+
+cell main() -> Int
+  let m = TypedFlow()
+  m.start(4)
+  m.step()
+  let st = m.current_state()
+  return st.payload.v
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(5));
+    }
+
+    #[test]
+    fn test_machine_graph_guard_blocks_transition_when_false() {
+        let result = run_main(
+            r#"
+machine TypedFlow
+  initial: Start
+  state Start(x: Int)
+    guard: x > 0
+    transition Done(x + 1)
+  end
+  state Done(v: Int)
+    terminal: true
+  end
+end
+
+cell main() -> Bool
+  let m = TypedFlow()
+  m.start(0)
+  m.step()
+  return m.is_terminal()
+end
+"#,
+        );
+        assert_eq!(result, Value::Bool(false));
     }
 
     fn make_spawn_await_module(worker_instrs: Vec<Instruction>, worker_consts: Vec<Constant>) -> LirModule {

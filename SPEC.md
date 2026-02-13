@@ -356,9 +356,9 @@ Process declarations compile to constructor-backed records.
 ### `machine` runtime methods
 
 - `run`, `start`, `step`, `is_terminal`, `current_state`, `resume_from`
-- machine declarations parse `initial` + `state` graph metadata (`terminal`, `transition ...`)
-- resolver validates machine graph consistency (unknown initial/transition targets, unreachable states, missing terminal states)
-- VM machine runtime uses the compiled graph for deterministic state transitions
+- machine declarations parse typed state payloads (`state S(x: Int, ...)`), optional guards (`guard: <expr>`), and transition args (`transition T(expr, ...)`)
+- resolver validates machine graph consistency and typing (unknown initial/transition targets, unreachable states, missing terminal states, transition arg count/type compatibility, guard bool compatibility)
+- VM machine runtime uses compiled graph metadata for deterministic transitions and carries typed payload bindings per state
 
 Process runtime state is instance-scoped.
 Two constructed objects do not share memory/machine state unless explicitly passed/shared.

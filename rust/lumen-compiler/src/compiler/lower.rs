@@ -91,16 +91,34 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                         name: Some(format!("{}={}", p.name, initial)),
                     });
                     for state in &p.machine_states {
-                        let next = state.transition_to.clone().unwrap_or_default();
+                        let params: Vec<serde_json::Value> = state
+                            .params
+                            .iter()
+                            .map(|param| {
+                                serde_json::json!({
+                                    "name": param.name,
+                                    "type": format_type_expr(&param.ty),
+                                })
+                            })
+                            .collect();
+                        let guard = state.guard.as_ref().and_then(encode_machine_expr);
+                        let transition_args: Vec<serde_json::Value> = state
+                            .transition_args
+                            .iter()
+                            .filter_map(encode_machine_expr)
+                            .collect();
+                        let payload = serde_json::json!({
+                            "machine": p.name,
+                            "state": state.name,
+                            "terminal": state.terminal,
+                            "transition_to": state.transition_to,
+                            "params": params,
+                            "guard": guard,
+                            "transition_args": transition_args,
+                        });
                         module.addons.push(LirAddon {
                             kind: "machine.state".to_string(),
-                            name: Some(format!(
-                                "{}|{}|{}|{}",
-                                p.name,
-                                state.name,
-                                if state.terminal { "1" } else { "0" },
-                                next
-                            )),
+                            name: Some(payload.to_string()),
                         });
                     }
                 }
@@ -2090,6 +2108,59 @@ fn patch_lambda_closure_indices(cell: &mut LirCell, lambda_base: u16) {
             let patched = instr.bx().saturating_add(lambda_base);
             *instr = Instruction::abx(OpCode::Closure, instr.a, patched);
         }
+    }
+}
+
+fn encode_machine_expr(expr: &Expr) -> Option<serde_json::Value> {
+    match expr {
+        Expr::IntLit(n, _) => Some(serde_json::json!({"kind": "int", "value": n})),
+        Expr::FloatLit(f, _) => Some(serde_json::json!({"kind": "float", "value": f})),
+        Expr::StringLit(s, _) => Some(serde_json::json!({"kind": "string", "value": s})),
+        Expr::BoolLit(b, _) => Some(serde_json::json!({"kind": "bool", "value": b})),
+        Expr::NullLit(_) => Some(serde_json::json!({"kind": "null"})),
+        Expr::Ident(name, _) => Some(serde_json::json!({"kind": "ident", "value": name})),
+        Expr::UnaryOp(op, inner, _) => {
+            let inner = encode_machine_expr(inner)?;
+            let op = match op {
+                UnaryOp::Neg => "-",
+                UnaryOp::Not => "not",
+                UnaryOp::BitNot => "~",
+            };
+            Some(serde_json::json!({"kind": "unary", "op": op, "expr": inner}))
+        }
+        Expr::BinOp(lhs, op, rhs, _) => {
+            let left = encode_machine_expr(lhs)?;
+            let right = encode_machine_expr(rhs)?;
+            let op = match op {
+                BinOp::Add => "+",
+                BinOp::Sub => "-",
+                BinOp::Mul => "*",
+                BinOp::Div => "/",
+                BinOp::Mod => "%",
+                BinOp::Eq => "==",
+                BinOp::NotEq => "!=",
+                BinOp::Lt => "<",
+                BinOp::LtEq => "<=",
+                BinOp::Gt => ">",
+                BinOp::GtEq => ">=",
+                BinOp::And => "and",
+                BinOp::Or => "or",
+                BinOp::Pow => "**",
+                BinOp::In => "in",
+                BinOp::Concat => "++",
+                BinOp::BitAnd => "&",
+                BinOp::BitOr => "|",
+                BinOp::BitXor => "^",
+                BinOp::PipeForward => "|>",
+            };
+            Some(serde_json::json!({
+                "kind": "bin",
+                "op": op,
+                "lhs": left,
+                "rhs": right
+            }))
+        }
+        _ => None,
     }
 }
 

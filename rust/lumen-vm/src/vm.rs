@@ -2645,6 +2645,9 @@ mod tests {
             policies: vec![],
             agents: vec![],
             addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
         }
     }
 
@@ -2688,6 +2691,9 @@ mod tests {
             policies: vec![],
             agents: vec![],
             addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
         }
     }
 
@@ -2729,6 +2735,9 @@ mod tests {
             policies: vec![],
             agents: vec![],
             addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
         };
         let mut vm = VM::new();
         vm.load(module);
@@ -2764,6 +2773,9 @@ mod tests {
             policies: vec![],
             agents: vec![],
             addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
         };
         let mut vm = VM::new();
         vm.load(module);
@@ -2802,6 +2814,9 @@ mod tests {
             policies: vec![],
             agents: vec![],
             addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
         };
         let mut vm = VM::new();
         vm.load(module);
@@ -2836,6 +2851,9 @@ mod tests {
             policies: vec![],
             agents: vec![],
             addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
         };
         let mut vm = VM::new();
         vm.load(module);
@@ -2871,6 +2889,9 @@ mod tests {
             policies: vec![],
             agents: vec![],
             addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
         };
         let mut vm = VM::new();
         vm.load(module);
@@ -2906,6 +2927,9 @@ mod tests {
             policies: vec![],
             agents: vec![],
             addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
         };
         let mut vm = VM::new();
         vm.load(module);
@@ -2942,6 +2966,9 @@ mod tests {
             policies: vec![],
             agents: vec![],
             addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
         };
         let mut vm = VM::new();
         vm.load(module);

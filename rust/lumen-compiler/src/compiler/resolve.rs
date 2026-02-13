@@ -29,6 +29,9 @@ pub struct SymbolTable {
     pub cells: HashMap<String, CellInfo>,
     pub tools: HashMap<String, ToolInfo>,
     pub agents: HashMap<String, AgentInfo>,
+    pub effects: HashMap<String, EffectInfo>,
+    pub effect_binds: Vec<EffectBindInfo>,
+    pub handlers: HashMap<String, HandlerInfo>,
     pub addons: Vec<AddonInfo>,
     pub type_aliases: HashMap<String, TypeExpr>,
     pub traits: HashMap<String, TraitInfo>,
@@ -64,6 +67,24 @@ pub struct ToolInfo {
 pub struct AgentInfo {
     pub name: String,
     pub methods: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EffectInfo {
+    pub name: String,
+    pub operations: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EffectBindInfo {
+    pub effect_path: String,
+    pub tool_alias: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct HandlerInfo {
+    pub name: String,
+    pub handles: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -149,6 +170,9 @@ impl SymbolTable {
             cells: HashMap::new(),
             tools: HashMap::new(),
             agents: HashMap::new(),
+            effects: HashMap::new(),
+            effect_binds: Vec::new(),
+            handlers: HashMap::new(),
             addons: Vec::new(),
             type_aliases: HashMap::new(),
             traits: HashMap::new(),
@@ -265,6 +289,56 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                     });
                 }
             }
+            Item::Effect(e) => {
+                table.effects.insert(
+                    e.name.clone(),
+                    EffectInfo {
+                        name: e.name.clone(),
+                        operations: e.operations.iter().map(|c| c.name.clone()).collect(),
+                    },
+                );
+                for op in &e.operations {
+                    let fq_name = format!("{}.{}", e.name, op.name);
+                    table.cells.entry(fq_name).or_insert(CellInfo {
+                        params: op
+                            .params
+                            .iter()
+                            .map(|p| (p.name.clone(), p.ty.clone()))
+                            .collect(),
+                        return_type: op.return_type.clone(),
+                    });
+                }
+            }
+            Item::EffectBind(b) => {
+                table.effect_binds.push(EffectBindInfo {
+                    effect_path: b.effect_path.clone(),
+                    tool_alias: b.tool_alias.clone(),
+                });
+                table.tools.entry(b.tool_alias.clone()).or_insert(ToolInfo {
+                    tool_path: b.tool_alias.to_lowercase(),
+                    mcp_url: None,
+                });
+            }
+            Item::Handler(h) => {
+                table.handlers.insert(
+                    h.name.clone(),
+                    HandlerInfo {
+                        name: h.name.clone(),
+                        handles: h.handles.iter().map(|c| c.name.clone()).collect(),
+                    },
+                );
+                for handle in &h.handles {
+                    let fq_name = format!("{}.{}", h.name, handle.name);
+                    table.cells.entry(fq_name).or_insert(CellInfo {
+                        params: handle
+                            .params
+                            .iter()
+                            .map(|p| (p.name.clone(), p.ty.clone()))
+                            .collect(),
+                        return_type: handle.return_type.clone(),
+                    });
+                }
+            }
             Item::Addon(a) => {
                 table.addons.push(AddonInfo {
                     kind: a.kind.clone(),
@@ -355,6 +429,39 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                         check_type_refs_with_generics(rt, &table, &mut errors, &generics);
                     }
                     check_effect_grants(c, &table, &mut errors);
+                }
+            }
+            Item::Effect(e) => {
+                for c in &e.operations {
+                    let generics: Vec<String> =
+                        c.generic_params.iter().map(|g| g.name.clone()).collect();
+                    for p in &c.params {
+                        check_type_refs_with_generics(&p.ty, &table, &mut errors, &generics);
+                    }
+                    if let Some(ref rt) = c.return_type {
+                        check_type_refs_with_generics(rt, &table, &mut errors, &generics);
+                    }
+                }
+            }
+            Item::EffectBind(b) => {
+                table.tools.entry(b.tool_alias.clone()).or_insert(ToolInfo {
+                    tool_path: b.tool_alias.to_lowercase(),
+                    mcp_url: None,
+                });
+            }
+            Item::Handler(h) => {
+                for c in &h.handles {
+                    let generics: Vec<String> =
+                        c.generic_params.iter().map(|g| g.name.clone()).collect();
+                    for p in &c.params {
+                        check_type_refs_with_generics(&p.ty, &table, &mut errors, &generics);
+                    }
+                    if let Some(ref rt) = c.return_type {
+                        check_type_refs_with_generics(rt, &table, &mut errors, &generics);
+                    }
+                    if !c.body.is_empty() {
+                        check_effect_grants(c, &table, &mut errors);
+                    }
                 }
             }
             Item::Grant(g) => {

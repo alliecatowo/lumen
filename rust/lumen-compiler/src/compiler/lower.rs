@@ -48,6 +48,14 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                     });
                 }
             }
+            Item::Effect(e) => module.effects.push(lowerer.lower_effect(e)),
+            Item::EffectBind(b) => module.effect_binds.push(LirEffectBind {
+                effect_path: b.effect_path.clone(),
+                tool_alias: b.tool_alias.clone(),
+            }),
+            Item::Handler(h) => {
+                module.handlers.push(lowerer.lower_handler(h, &mut module.cells));
+            }
             Item::Addon(a) => module.addons.push(LirAddon {
                 kind: a.kind.clone(),
                 name: a.name.clone(),
@@ -189,6 +197,51 @@ impl<'a> Lowerer<'a> {
                 })
                 .collect(),
             variants: vec![],
+        }
+    }
+
+    fn lower_effect(&mut self, e: &EffectDecl) -> LirEffect {
+        self.intern_string(&e.name);
+        LirEffect {
+            name: e.name.clone(),
+            operations: e
+                .operations
+                .iter()
+                .map(|op| LirEffectOp {
+                    name: op.name.clone(),
+                    params: op
+                        .params
+                        .iter()
+                        .map(|p| LirParam {
+                            name: p.name.clone(),
+                            ty: format_type_expr(&p.ty),
+                            register: 0,
+                        })
+                        .collect(),
+                    returns: op.return_type.as_ref().map(format_type_expr),
+                    effects: op.effects.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    fn lower_handler(&mut self, h: &HandlerDecl, cells: &mut Vec<LirCell>) -> LirHandler {
+        self.intern_string(&h.name);
+        let mut handles = Vec::new();
+        for handle in &h.handles {
+            let mut lowered = handle.clone();
+            let sanitized_op = handle.name.replace('.', "_");
+            lowered.name = format!("{}.handle_{}", h.name, sanitized_op);
+            let lowered_name = lowered.name.clone();
+            cells.push(self.lower_cell(&lowered));
+            handles.push(LirHandle {
+                operation: handle.name.clone(),
+                cell: lowered_name,
+            });
+        }
+        LirHandler {
+            name: h.name.clone(),
+            handles,
         }
     }
 

@@ -315,6 +315,38 @@ pub struct LirAddon {
     pub name: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LirEffect {
+    pub name: String,
+    pub operations: Vec<LirEffectOp>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LirEffectOp {
+    pub name: String,
+    pub params: Vec<LirParam>,
+    pub returns: Option<String>,
+    pub effects: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LirEffectBind {
+    pub effect_path: String,
+    pub tool_alias: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LirHandler {
+    pub name: String,
+    pub handles: Vec<LirHandle>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LirHandle {
+    pub operation: String,
+    pub cell: String,
+}
+
 /// Complete LIR module
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LirModule {
@@ -327,6 +359,9 @@ pub struct LirModule {
     pub policies: Vec<LirPolicy>,
     pub agents: Vec<LirAgent>,
     pub addons: Vec<LirAddon>,
+    pub effects: Vec<LirEffect>,
+    pub effect_binds: Vec<LirEffectBind>,
+    pub handlers: Vec<LirHandler>,
 }
 
 impl LirModule {
@@ -341,6 +376,9 @@ impl LirModule {
             policies: Vec::new(),
             agents: Vec::new(),
             addons: Vec::new(),
+            effects: Vec::new(),
+            effect_binds: Vec::new(),
+            handlers: Vec::new(),
         }
     }
 }

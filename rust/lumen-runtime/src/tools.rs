@@ -40,7 +40,11 @@ pub struct StubDispatcher {
 }
 
 impl StubDispatcher {
-    pub fn new() -> Self { Self { responses: std::collections::HashMap::new() } }
+    pub fn new() -> Self {
+        Self {
+            responses: std::collections::HashMap::new(),
+        }
+    }
 
     pub fn set_response(&mut self, tool_id: &str, response: serde_json::Value) {
         self.responses.insert(tool_id.to_string(), response);
@@ -50,7 +54,10 @@ impl StubDispatcher {
 impl ToolDispatcher for StubDispatcher {
     fn dispatch(&self, request: &ToolRequest) -> Result<ToolResponse, ToolError> {
         if let Some(response) = self.responses.get(&request.tool_id) {
-            Ok(ToolResponse { outputs: response.clone(), latency_ms: 0 })
+            Ok(ToolResponse {
+                outputs: response.clone(),
+                latency_ms: 0,
+            })
         } else {
             Err(ToolError::NotFound(request.tool_id.clone()))
         }

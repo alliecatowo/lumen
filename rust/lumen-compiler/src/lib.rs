@@ -30,9 +30,15 @@ pub fn compile(source: &str) -> Result<LirModule, CompileError> {
     let extracted = markdown::extract::extract_blocks(source);
 
     // 2. Build directives
-    let directives: Vec<Directive> = extracted.directives.iter().map(|d| {
-        Directive { name: d.name.clone(), value: d.value.clone(), span: d.span }
-    }).collect();
+    let directives: Vec<Directive> = extracted
+        .directives
+        .iter()
+        .map(|d| Directive {
+            name: d.name.clone(),
+            value: d.value.clone(),
+            span: d.span,
+        })
+        .collect();
 
     // 3. Concatenate all code blocks
     let mut full_code = String::new();

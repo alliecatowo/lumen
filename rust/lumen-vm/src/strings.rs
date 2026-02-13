@@ -10,7 +10,9 @@ pub struct StringTable {
 }
 
 impl StringTable {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn intern(&mut self, s: &str) -> u32 {
         if let Some(&id) = self.lookup.get(s) {
@@ -26,8 +28,12 @@ impl StringTable {
         self.strings.get(id as usize).map(|s| s.as_str())
     }
 
-    pub fn len(&self) -> usize { self.strings.len() }
-    pub fn is_empty(&self) -> bool { self.strings.is_empty() }
+    pub fn len(&self) -> usize {
+        self.strings.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.strings.is_empty()
+    }
 }
 
 #[cfg(test)]

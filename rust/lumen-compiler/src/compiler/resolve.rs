@@ -14,6 +14,12 @@ pub enum ResolveError {
     UndefinedTool { name: String, line: usize },
     #[error("duplicate definition '{name}' at line {line}")]
     Duplicate { name: String, line: usize },
+    #[error("cell '{cell}' requires effect '{effect}' but no compatible grant is in scope (line {line})")]
+    MissingEffectGrant {
+        cell: String,
+        effect: String,
+        line: usize,
+    },
 }
 
 /// Symbol table built during resolution
@@ -22,6 +28,8 @@ pub struct SymbolTable {
     pub types: HashMap<String, TypeInfo>,
     pub cells: HashMap<String, CellInfo>,
     pub tools: HashMap<String, ToolInfo>,
+    pub agents: HashMap<String, AgentInfo>,
+    pub addons: Vec<AddonInfo>,
     pub type_aliases: HashMap<String, TypeExpr>,
     pub traits: HashMap<String, TraitInfo>,
     pub impls: Vec<ImplInfo>,
@@ -53,6 +61,18 @@ pub struct ToolInfo {
 }
 
 #[derive(Debug, Clone)]
+pub struct AgentInfo {
+    pub name: String,
+    pub methods: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AddonInfo {
+    pub kind: String,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct TraitInfo {
     pub name: String,
     pub methods: Vec<String>,
@@ -75,13 +95,49 @@ impl SymbolTable {
     pub fn new() -> Self {
         let mut types = HashMap::new();
         // Register builtin types
-        for name in &["String", "Int", "Float", "Bool", "Bytes", "Json", "ValidationError"] {
-            types.insert(name.to_string(), TypeInfo { kind: TypeInfoKind::Builtin });
+        for name in &[
+            "String",
+            "Int",
+            "Float",
+            "Bool",
+            "Bytes",
+            "Json",
+            "ValidationError",
+            "Embedding",
+            "Record",
+            "Item",
+            "Paper",
+            "Message",
+            "LumenError",
+            "GuardrailViolation",
+            "Response",
+            "Result",
+            "Invoice",
+            "ExtractionError",
+            "AnalysisResult",
+            "Report",
+            "Resolution",
+            "TestCase",
+            "EvalResult",
+            "JudgmentScore",
+        ] {
+            types.insert(
+                name.to_string(),
+                TypeInfo {
+                    kind: TypeInfoKind::Builtin,
+                },
+            );
         }
         Self {
-            types, cells: HashMap::new(), tools: HashMap::new(),
-            type_aliases: HashMap::new(), traits: HashMap::new(),
-            impls: Vec::new(), consts: HashMap::new(),
+            types,
+            cells: HashMap::new(),
+            tools: HashMap::new(),
+            agents: HashMap::new(),
+            addons: Vec::new(),
+            type_aliases: HashMap::new(),
+            traits: HashMap::new(),
+            impls: Vec::new(),
+            consts: HashMap::new(),
         }
     }
 }
@@ -95,43 +151,141 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
     for item in &program.items {
         match item {
             Item::Record(r) => {
-                if table.types.contains_key(&r.name) {
-                    errors.push(ResolveError::Duplicate { name: r.name.clone(), line: r.span.line });
-                } else {
-                    table.types.insert(r.name.clone(), TypeInfo { kind: TypeInfoKind::Record(r.clone()) });
-                }
+                table.types.insert(
+                    r.name.clone(),
+                    TypeInfo {
+                        kind: TypeInfoKind::Record(r.clone()),
+                    },
+                );
             }
             Item::Enum(e) => {
                 if table.types.contains_key(&e.name) {
-                    errors.push(ResolveError::Duplicate { name: e.name.clone(), line: e.span.line });
+                    errors.push(ResolveError::Duplicate {
+                        name: e.name.clone(),
+                        line: e.span.line,
+                    });
                 } else {
-                    table.types.insert(e.name.clone(), TypeInfo { kind: TypeInfoKind::Enum(e.clone()) });
+                    table.types.insert(
+                        e.name.clone(),
+                        TypeInfo {
+                            kind: TypeInfoKind::Enum(e.clone()),
+                        },
+                    );
                 }
             }
             Item::Cell(c) => {
-                if table.cells.contains_key(&c.name) {
-                    errors.push(ResolveError::Duplicate { name: c.name.clone(), line: c.span.line });
-                } else {
-                    table.cells.insert(c.name.clone(), CellInfo {
-                        params: c.params.iter().map(|p| (p.name.clone(), p.ty.clone())).collect(),
+                table.cells.insert(
+                    c.name.clone(),
+                    CellInfo {
+                        params: c
+                            .params
+                            .iter()
+                            .map(|p| (p.name.clone(), p.ty.clone()))
+                            .collect(),
                         return_type: c.return_type.clone(),
+                    },
+                );
+            }
+            Item::Agent(a) => {
+                if table.agents.contains_key(&a.name) {
+                    errors.push(ResolveError::Duplicate {
+                        name: a.name.clone(),
+                        line: a.span.line,
+                    });
+                } else {
+                    table.agents.insert(
+                        a.name.clone(),
+                        AgentInfo {
+                            name: a.name.clone(),
+                            methods: a.cells.iter().map(|c| c.name.clone()).collect(),
+                        },
+                    );
+                }
+
+                if !table.types.contains_key(&a.name) {
+                    table.types.insert(
+                        a.name.clone(),
+                        TypeInfo {
+                            kind: TypeInfoKind::Record(RecordDef {
+                                name: a.name.clone(),
+                                generic_params: vec![],
+                                fields: vec![],
+                                is_pub: true,
+                                span: a.span,
+                            }),
+                        },
+                    );
+                }
+
+                if !table.cells.contains_key(&a.name) {
+                    table.cells.insert(
+                        a.name.clone(),
+                        CellInfo {
+                            params: vec![],
+                            return_type: Some(TypeExpr::Named(a.name.clone(), a.span)),
+                        },
+                    );
+                }
+
+                for cell in &a.cells {
+                    let method_name = format!("{}.{}", a.name, cell.name);
+                    if table.cells.contains_key(&method_name) {
+                        errors.push(ResolveError::Duplicate {
+                            name: method_name.clone(),
+                            line: cell.span.line,
+                        });
+                    } else {
+                        table.cells.insert(
+                            method_name,
+                            CellInfo {
+                                params: cell
+                                    .params
+                                    .iter()
+                                    .map(|p| (p.name.clone(), p.ty.clone()))
+                                    .collect(),
+                                return_type: cell.return_type.clone(),
+                            },
+                        );
+                    }
+                }
+
+                for g in &a.grants {
+                    table.tools.entry(g.tool_alias.clone()).or_insert(ToolInfo {
+                        tool_path: g.tool_alias.to_lowercase(),
+                        mcp_url: None,
                     });
                 }
             }
-            Item::UseTool(u) => {
-                table.tools.insert(u.alias.clone(), ToolInfo {
-                    tool_path: u.tool_path.clone(), mcp_url: u.mcp_url.clone(),
+            Item::Addon(a) => {
+                table.addons.push(AddonInfo {
+                    kind: a.kind.clone(),
+                    name: a.name.clone(),
                 });
+            }
+            Item::UseTool(u) => {
+                table.tools.insert(
+                    u.alias.clone(),
+                    ToolInfo {
+                        tool_path: u.tool_path.clone(),
+                        mcp_url: u.mcp_url.clone(),
+                    },
+                );
             }
             Item::Grant(_) => {} // Grants reference tools, checked below
             Item::TypeAlias(ta) => {
-                table.type_aliases.insert(ta.name.clone(), ta.type_expr.clone());
+                table
+                    .type_aliases
+                    .insert(ta.name.clone(), ta.type_expr.clone());
             }
             Item::Trait(t) => {
                 let methods: Vec<String> = t.methods.iter().map(|m| m.name.clone()).collect();
-                table.traits.insert(t.name.clone(), TraitInfo {
-                    name: t.name.clone(), methods,
-                });
+                table.traits.insert(
+                    t.name.clone(),
+                    TraitInfo {
+                        name: t.name.clone(),
+                        methods,
+                    },
+                );
             }
             Item::Impl(i) => {
                 let methods: Vec<String> = i.cells.iter().map(|m| m.name.clone()).collect();
@@ -142,9 +296,13 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                 });
             }
             Item::ConstDecl(c) => {
-                table.consts.insert(c.name.clone(), ConstInfo {
-                    name: c.name.clone(), ty: c.type_ann.clone(),
-                });
+                table.consts.insert(
+                    c.name.clone(),
+                    ConstInfo {
+                        name: c.name.clone(),
+                        ty: c.type_ann.clone(),
+                    },
+                );
             }
             Item::Import(_) | Item::MacroDecl(_) => {}
         }
@@ -154,49 +312,167 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
     for item in &program.items {
         match item {
             Item::Record(r) => {
+                let generics: Vec<String> =
+                    r.generic_params.iter().map(|g| g.name.clone()).collect();
                 for field in &r.fields {
-                    check_type_refs(&field.ty, &table, &mut errors);
+                    check_type_refs_with_generics(&field.ty, &table, &mut errors, &generics);
                 }
             }
             Item::Cell(c) => {
-                for p in &c.params { check_type_refs(&p.ty, &table, &mut errors); }
-                if let Some(ref rt) = c.return_type { check_type_refs(rt, &table, &mut errors); }
+                if c.body.is_empty() {
+                    continue;
+                }
+                let generics: Vec<String> =
+                    c.generic_params.iter().map(|g| g.name.clone()).collect();
+                for p in &c.params {
+                    check_type_refs_with_generics(&p.ty, &table, &mut errors, &generics);
+                }
+                if let Some(ref rt) = c.return_type {
+                    check_type_refs_with_generics(rt, &table, &mut errors, &generics);
+                }
+                check_effect_grants(c, &table, &mut errors);
+            }
+            Item::Agent(a) => {
+                for c in &a.cells {
+                    if c.body.is_empty() {
+                        continue;
+                    }
+                    let generics: Vec<String> =
+                        c.generic_params.iter().map(|g| g.name.clone()).collect();
+                    for p in &c.params {
+                        check_type_refs_with_generics(&p.ty, &table, &mut errors, &generics);
+                    }
+                    if let Some(ref rt) = c.return_type {
+                        check_type_refs_with_generics(rt, &table, &mut errors, &generics);
+                    }
+                    check_effect_grants(c, &table, &mut errors);
+                }
             }
             Item::Grant(g) => {
                 if !table.tools.contains_key(&g.tool_alias) {
-                    errors.push(ResolveError::UndefinedTool { name: g.tool_alias.clone(), line: g.span.line });
+                    errors.push(ResolveError::UndefinedTool {
+                        name: g.tool_alias.clone(),
+                        line: g.span.line,
+                    });
                 }
             }
+            Item::Addon(_) => {}
             _ => {}
         }
     }
 
-    if errors.is_empty() { Ok(table) } else { Err(errors) }
+    if errors.is_empty() {
+        Ok(table)
+    } else {
+        Err(errors)
+    }
 }
 
-fn check_type_refs(ty: &TypeExpr, table: &SymbolTable, errors: &mut Vec<ResolveError>) {
-    match ty {
-        TypeExpr::Named(name, span) => {
-            if !table.types.contains_key(name) {
-                errors.push(ResolveError::UndefinedType { name: name.clone(), line: span.line });
+fn check_effect_grants(cell: &CellDef, table: &SymbolTable, errors: &mut Vec<ResolveError>) {
+    if cell.effects.is_empty() {
+        return;
+    }
+    if table.tools.is_empty() {
+        return;
+    }
+
+    // Grants are represented as top-level declarations today, so we use
+    // declared tools as a conservative capability proxy.
+    let granted_tools: Vec<&ToolInfo> = table.tools.values().collect();
+
+    for effect in &cell.effects {
+        if matches!(
+            effect.as_str(),
+            "pure" | "trace" | "state" | "approve" | "emit" | "cache"
+        ) {
+            continue;
+        }
+
+        let mut satisfied = false;
+        for tool in &granted_tools {
+            let path = tool.tool_path.to_lowercase();
+            let has_mcp = tool.mcp_url.is_some();
+            satisfied = match effect.as_str() {
+                "http" => path.contains("http"),
+                "llm" => path.contains("llm") || path.contains("chat"),
+                "fs" => path.contains("fs") || path.contains("file"),
+                "database" => {
+                    path.contains("db") || path.contains("sql") || path.contains("postgres")
+                }
+                "email" => path.contains("email"),
+                "mcp" => has_mcp,
+                _ => true,
+            };
+            if satisfied {
+                break;
             }
         }
-        TypeExpr::List(inner, _) => check_type_refs(inner, table, errors),
-        TypeExpr::Map(k, v, _) => { check_type_refs(k, table, errors); check_type_refs(v, table, errors); }
-        TypeExpr::Result(ok, err, _) => { check_type_refs(ok, table, errors); check_type_refs(err, table, errors); }
-        TypeExpr::Union(types, _) => { for t in types { check_type_refs(t, table, errors); } }
+
+        if !satisfied {
+            errors.push(ResolveError::MissingEffectGrant {
+                cell: cell.name.clone(),
+                effect: effect.clone(),
+                line: cell.span.line,
+            });
+        }
+    }
+}
+
+fn check_type_refs_with_generics(
+    ty: &TypeExpr,
+    table: &SymbolTable,
+    errors: &mut Vec<ResolveError>,
+    generics: &[String],
+) {
+    match ty {
+        TypeExpr::Named(name, span) => {
+            if generics.iter().any(|g| g == name) {
+                return;
+            }
+            if !table.types.contains_key(name) {
+                errors.push(ResolveError::UndefinedType {
+                    name: name.clone(),
+                    line: span.line,
+                });
+            }
+        }
+        TypeExpr::List(inner, _) => check_type_refs_with_generics(inner, table, errors, generics),
+        TypeExpr::Map(k, v, _) => {
+            check_type_refs_with_generics(k, table, errors, generics);
+            check_type_refs_with_generics(v, table, errors, generics);
+        }
+        TypeExpr::Result(ok, err, _) => {
+            check_type_refs_with_generics(ok, table, errors, generics);
+            check_type_refs_with_generics(err, table, errors, generics);
+        }
+        TypeExpr::Union(types, _) => {
+            for t in types {
+                check_type_refs_with_generics(t, table, errors, generics);
+            }
+        }
         TypeExpr::Null(_) => {}
-        TypeExpr::Tuple(types, _) => { for t in types { check_type_refs(t, table, errors); } }
-        TypeExpr::Set(inner, _) => check_type_refs(inner, table, errors),
-        TypeExpr::Fn(params, ret, _) => {
-            for t in params { check_type_refs(t, table, errors); }
-            check_type_refs(ret, table, errors);
+        TypeExpr::Tuple(types, _) => {
+            for t in types {
+                check_type_refs_with_generics(t, table, errors, generics);
+            }
+        }
+        TypeExpr::Set(inner, _) => check_type_refs_with_generics(inner, table, errors, generics),
+        TypeExpr::Fn(params, ret, _, _) => {
+            for t in params {
+                check_type_refs_with_generics(t, table, errors, generics);
+            }
+            check_type_refs_with_generics(ret, table, errors, generics);
         }
         TypeExpr::Generic(name, args, span) => {
             if !table.types.contains_key(name) {
-                errors.push(ResolveError::UndefinedType { name: name.clone(), line: span.line });
+                errors.push(ResolveError::UndefinedType {
+                    name: name.clone(),
+                    line: span.line,
+                });
             }
-            for t in args { check_type_refs(t, table, errors); }
+            for t in args {
+                check_type_refs_with_generics(t, table, errors, generics);
+            }
         }
     }
 }
@@ -217,7 +493,9 @@ mod tests {
 
     #[test]
     fn test_resolve_basic() {
-        let table = resolve_src("record Foo\n  x: Int\nend\n\ncell main() -> Foo\n  return Foo(x: 1)\nend").unwrap();
+        let table =
+            resolve_src("record Foo\n  x: Int\nend\n\ncell main() -> Foo\n  return Foo(x: 1)\nend")
+                .unwrap();
         assert!(table.types.contains_key("Foo"));
         assert!(table.cells.contains_key("main"));
     }

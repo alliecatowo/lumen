@@ -70,13 +70,17 @@ pub fn extract_blocks(source: &str) -> ExtractResult {
             } else if trimmed.starts_with('@') {
                 // Parse directive
                 let directive_text = trimmed[1..].trim();
-                let (name, value) = if let Some(space_idx) = directive_text.find(|c: char| c.is_whitespace()) {
-                    let n = directive_text[..space_idx].to_string();
-                    let v = directive_text[space_idx..].trim().trim_matches('"').to_string();
-                    (n, Some(v))
-                } else {
-                    (directive_text.to_string(), None)
-                };
+                let (name, value) =
+                    if let Some(space_idx) = directive_text.find(|c: char| c.is_whitespace()) {
+                        let n = directive_text[..space_idx].to_string();
+                        let v = directive_text[space_idx..]
+                            .trim()
+                            .trim_matches('"')
+                            .to_string();
+                        (n, Some(v))
+                    } else {
+                        (directive_text.to_string(), None)
+                    };
                 directives.push(DirectiveLine {
                     name,
                     value,
@@ -90,7 +94,12 @@ pub fn extract_blocks(source: &str) -> ExtractResult {
                 code_blocks.push(CodeBlock {
                     code: fence_code.clone(),
                     language: fence_lang.clone(),
-                    span: Span::new(fence_start_offset, byte_offset + line.len(), fence_start_line, 1),
+                    span: Span::new(
+                        fence_start_offset,
+                        byte_offset + line.len(),
+                        fence_start_line,
+                        1,
+                    ),
                     code_offset: code_start_offset,
                     code_start_line,
                 });
@@ -106,7 +115,10 @@ pub fn extract_blocks(source: &str) -> ExtractResult {
         byte_offset += line.len() + 1; // +1 for newline
     }
 
-    ExtractResult { code_blocks, directives }
+    ExtractResult {
+        code_blocks,
+        directives,
+    }
 }
 
 #[cfg(test)]

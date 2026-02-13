@@ -155,6 +155,74 @@ enum PkgCommands {
     Check,
 }
 
+/// Register all provider crates into the runtime registry.
+fn register_providers(registry: &mut lumen_runtime::tools::ProviderRegistry, #[allow(unused_variables)] config: &config::LumenConfig) {
+    // Auto-register built-in providers (always available by default)
+
+    #[cfg(feature = "fs")]
+    {
+        registry.register("fs.read", Box::new(lumen_provider_fs::FsProvider::read()));
+        registry.register("fs.write", Box::new(lumen_provider_fs::FsProvider::write()));
+        registry.register("fs.exists", Box::new(lumen_provider_fs::FsProvider::exists()));
+        registry.register("fs.list", Box::new(lumen_provider_fs::FsProvider::list()));
+        registry.register("fs.mkdir", Box::new(lumen_provider_fs::FsProvider::mkdir()));
+        registry.register("fs.remove", Box::new(lumen_provider_fs::FsProvider::remove()));
+    }
+
+    #[cfg(feature = "env")]
+    {
+        registry.register("env.get", Box::new(lumen_provider_env::EnvProvider::get()));
+        registry.register("env.set", Box::new(lumen_provider_env::EnvProvider::set()));
+        registry.register("env.list", Box::new(lumen_provider_env::EnvProvider::list()));
+        registry.register("env.has", Box::new(lumen_provider_env::EnvProvider::has()));
+        registry.register("env.cwd", Box::new(lumen_provider_env::EnvProvider::cwd()));
+        registry.register("env.home", Box::new(lumen_provider_env::EnvProvider::home()));
+        registry.register("env.platform", Box::new(lumen_provider_env::EnvProvider::platform()));
+        registry.register("env.args", Box::new(lumen_provider_env::EnvProvider::args()));
+    }
+
+    #[cfg(feature = "json")]
+    {
+        registry.register("json", Box::new(lumen_provider_json::JsonProvider::new()));
+    }
+
+    #[cfg(feature = "crypto")]
+    {
+        registry.register("crypto.sha256", Box::new(lumen_provider_crypto::CryptoProvider::sha256()));
+        registry.register("crypto.sha512", Box::new(lumen_provider_crypto::CryptoProvider::sha512()));
+        registry.register("crypto.md5", Box::new(lumen_provider_crypto::CryptoProvider::md5()));
+        registry.register("crypto.base64_encode", Box::new(lumen_provider_crypto::CryptoProvider::base64_encode()));
+        registry.register("crypto.base64_decode", Box::new(lumen_provider_crypto::CryptoProvider::base64_decode()));
+        registry.register("crypto.uuid", Box::new(lumen_provider_crypto::CryptoProvider::uuid()));
+        registry.register("crypto.random_int", Box::new(lumen_provider_crypto::CryptoProvider::random_int()));
+        registry.register("crypto.hmac_sha256", Box::new(lumen_provider_crypto::CryptoProvider::hmac_sha256()));
+    }
+
+    #[cfg(feature = "http")]
+    {
+        registry.register("http.get", Box::new(lumen_provider_http::HttpProvider::get()));
+        registry.register("http.post", Box::new(lumen_provider_http::HttpProvider::post()));
+        registry.register("http.put", Box::new(lumen_provider_http::HttpProvider::put()));
+        registry.register("http.delete", Box::new(lumen_provider_http::HttpProvider::delete()));
+    }
+
+    // Register providers from config (these may override defaults or add new ones)
+    #[cfg(feature = "gemini")]
+    {
+        // Check if gemini is configured in lumen.toml or via env var
+        let api_key = config.providers.tools.get("gemini")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| std::env::var("GEMINI_API_KEY").ok());
+
+        if let Some(key) = api_key {
+            registry.register("gemini.generate", Box::new(lumen_provider_gemini::GeminiProvider::generate(key.clone())));
+            registry.register("gemini.chat", Box::new(lumen_provider_gemini::GeminiProvider::chat(key.clone())));
+            registry.register("gemini.embed", Box::new(lumen_provider_gemini::GeminiProvider::embed(key)));
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -247,9 +315,9 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
     };
 
     // Load project config and build provider registry
-    let _config = config::LumenConfig::load();
-    let registry = lumen_runtime::tools::ProviderRegistry::new();
-    // TODO: populate registry from _config.providers once concrete providers exist
+    let config = config::LumenConfig::load();
+    let mut registry = lumen_runtime::tools::ProviderRegistry::new();
+    register_providers(&mut registry, &config);
 
     // Optionally set up tracing
     let mut trace_store = trace_dir.map(|dir| lumen_runtime::trace::store::TraceStore::new(&dir));

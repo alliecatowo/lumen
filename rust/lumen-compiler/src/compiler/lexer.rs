@@ -13,6 +13,10 @@ pub enum LexError {
     InconsistentIndent { line: usize },
     #[error("invalid number at line {line}, col {col}")]
     InvalidNumber { line: usize, col: usize },
+    #[error("invalid bytes literal at line {line}, col {col}")]
+    InvalidBytesLiteral { line: usize, col: usize },
+    #[error("invalid unicode escape at line {line}, col {col}")]
+    InvalidUnicodeEscape { line: usize, col: usize },
 }
 
 pub struct Lexer {
@@ -42,6 +46,7 @@ impl Lexer {
 
     fn current(&self) -> Option<char> { self.source.get(self.pos).copied() }
     fn peek(&self) -> Option<char> { self.source.get(self.pos + 1).copied() }
+    fn peek2(&self) -> Option<char> { self.source.get(self.pos + 2).copied() }
 
     fn advance(&mut self) -> Option<char> {
         let ch = self.source.get(self.pos).copied()?;
@@ -94,7 +99,261 @@ impl Lexer {
         Ok(())
     }
 
+    /// Read a unicode escape sequence \u{XXXX}
+    fn read_unicode_escape(&mut self, sl: usize, sc: usize) -> Result<char, LexError> {
+        // We've consumed \u, now expect {
+        if self.current() != Some('{') {
+            return Err(LexError::InvalidUnicodeEscape { line: self.base_line + sl - 1, col: sc });
+        }
+        self.advance(); // skip {
+        let mut hex = String::new();
+        while let Some(c) = self.current() {
+            if c == '}' { break; }
+            hex.push(c);
+            self.advance();
+        }
+        if self.current() != Some('}') {
+            return Err(LexError::InvalidUnicodeEscape { line: self.base_line + sl - 1, col: sc });
+        }
+        self.advance(); // skip }
+        u32::from_str_radix(&hex, 16)
+            .ok()
+            .and_then(char::from_u32)
+            .ok_or(LexError::InvalidUnicodeEscape { line: self.base_line + sl - 1, col: sc })
+    }
+
+    /// Process an escape sequence after consuming the backslash
+    fn process_escape(&mut self, buf: &mut String, sl: usize, sc: usize) -> Result<(), LexError> {
+        match self.current() {
+            Some('n') => { buf.push('\n'); self.advance(); }
+            Some('t') => { buf.push('\t'); self.advance(); }
+            Some('r') => { buf.push('\r'); self.advance(); }
+            Some('\\') => { buf.push('\\'); self.advance(); }
+            Some('"') => { buf.push('"'); self.advance(); }
+            Some('{') => { buf.push('{'); self.advance(); }
+            Some('0') => { buf.push('\0'); self.advance(); }
+            Some('u') => {
+                self.advance(); // skip u
+                let ch = self.read_unicode_escape(sl, sc)?;
+                buf.push(ch);
+            }
+            Some('x') => {
+                self.advance(); // skip x
+                let mut hex = String::new();
+                for _ in 0..2 {
+                    match self.current() {
+                        Some(c) if c.is_ascii_hexdigit() => { hex.push(c); self.advance(); }
+                        _ => return Err(LexError::InvalidUnicodeEscape { line: self.base_line + sl - 1, col: sc }),
+                    }
+                }
+                let byte = u8::from_str_radix(&hex, 16)
+                    .map_err(|_| LexError::InvalidUnicodeEscape { line: self.base_line + sl - 1, col: sc })?;
+                buf.push(byte as char);
+            }
+            Some(c) => { buf.push('\\'); buf.push(c); self.advance(); }
+            None => return Err(LexError::UnterminatedString { line: self.base_line + sl - 1, col: sc }),
+        }
+        Ok(())
+    }
+
+    fn read_triple_quoted_string(&mut self) -> Result<Token, LexError> {
+        let (so, sl, sc) = (self.byte_offset, self.line, self.col);
+        // Skip the three opening quotes
+        self.advance(); self.advance(); self.advance();
+
+        let mut segments = Vec::new();
+        let mut cur_segment = String::new();
+        let mut is_interp = false;
+
+        loop {
+            match self.current() {
+                None => return Err(LexError::UnterminatedString { line: self.base_line + sl - 1, col: sc }),
+                Some('"') if self.peek() == Some('"') && self.peek2() == Some('"') => {
+                    self.advance(); self.advance(); self.advance();
+                    break;
+                }
+                Some('\\') => {
+                    self.advance();
+                    self.process_escape(&mut cur_segment, sl, sc)?;
+                }
+                Some('{') => {
+                    is_interp = true;
+                    if !cur_segment.is_empty() {
+                        segments.push((false, cur_segment.clone()));
+                        cur_segment.clear();
+                    }
+                    self.advance(); // skip {
+                    let mut expr_str = String::new();
+                    let mut brace_balance = 1;
+                    while let Some(c) = self.current() {
+                        if c == '}' {
+                            brace_balance -= 1;
+                            if brace_balance == 0 { break; }
+                            expr_str.push(c);
+                            self.advance();
+                        } else if c == '{' {
+                            brace_balance += 1;
+                            expr_str.push(c);
+                            self.advance();
+                        } else if c == '"' {
+                            expr_str.push(c);
+                            self.advance();
+                            while let Some(ic) = self.current() {
+                                expr_str.push(ic);
+                                self.advance();
+                                if ic == '"' && !expr_str.ends_with("\\\"") { break; }
+                            }
+                        } else {
+                            expr_str.push(c);
+                            self.advance();
+                        }
+                    }
+                    if brace_balance != 0 {
+                        return Err(LexError::UnterminatedString { line: self.base_line + sl - 1, col: sc });
+                    }
+                    self.advance(); // skip }
+                    segments.push((true, expr_str.trim().to_string()));
+                }
+                Some(c) => { cur_segment.push(c); self.advance(); }
+            }
+        }
+
+        // Dedent: strip common leading whitespace
+        let raw_content = if is_interp {
+            if !cur_segment.is_empty() {
+                segments.push((false, cur_segment));
+            }
+            // For interpolated triple-quoted, apply dedent to text segments
+            self.dedent_interp_segments(&mut segments);
+            let span = self.span_from(so, sl, sc);
+            return Ok(Token::new(TokenKind::StringInterpLit(segments), span));
+        } else {
+            cur_segment
+        };
+
+        let dedented = self.dedent_string(&raw_content);
+        let span = self.span_from(so, sl, sc);
+        Ok(Token::new(TokenKind::StringLit(dedented), span))
+    }
+
+    fn dedent_string(&self, s: &str) -> String {
+        let lines: Vec<&str> = s.split('\n').collect();
+        if lines.len() <= 1 {
+            return s.to_string();
+        }
+        // Find minimum indentation of non-empty lines (skip first line which follows """)
+        let min_indent = lines.iter().skip(1)
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.len() - l.trim_start().len())
+            .min()
+            .unwrap_or(0);
+
+        let mut result = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if i == 0 {
+                result.push(*line);
+            } else if line.len() >= min_indent {
+                result.push(&line[min_indent..]);
+            } else {
+                result.push(line.trim());
+            }
+        }
+        // Trim leading/trailing empty lines from the result
+        let joined = result.join("\n");
+        let trimmed = joined.trim_start_matches('\n');
+        let trimmed = trimmed.trim_end_matches('\n');
+        trimmed.to_string()
+    }
+
+    fn dedent_interp_segments(&self, segments: &mut Vec<(bool, String)>) {
+        // Apply dedent to text-only segments
+        for seg in segments.iter_mut() {
+            if !seg.0 {
+                seg.1 = self.dedent_string(&seg.1);
+            }
+        }
+    }
+
+    fn read_raw_string(&mut self) -> Result<Token, LexError> {
+        let (so, sl, sc) = (self.byte_offset, self.line, self.col);
+        self.advance(); // skip 'r'
+        // Check for triple-quoted raw: r"""..."""
+        if self.current() == Some('"') && self.peek() == Some('"') && self.peek2() == Some('"') {
+            self.advance(); self.advance(); self.advance(); // skip """
+            let mut content = String::new();
+            loop {
+                match self.current() {
+                    None => return Err(LexError::UnterminatedString { line: self.base_line + sl - 1, col: sc }),
+                    Some('"') if self.peek() == Some('"') && self.peek2() == Some('"') => {
+                        self.advance(); self.advance(); self.advance();
+                        break;
+                    }
+                    Some(c) => { content.push(c); self.advance(); }
+                }
+            }
+            let dedented = self.dedent_string(&content);
+            let span = self.span_from(so, sl, sc);
+            return Ok(Token::new(TokenKind::RawStringLit(dedented), span));
+        }
+        // Regular raw string: r"..."
+        if self.current() != Some('"') {
+            // Not a raw string, it's an identifier starting with 'r'
+            // Put back by not advancing and let read_ident handle it
+            // Actually we already advanced past 'r', so we need to handle this differently
+            // This shouldn't happen as we check for '"' before calling read_raw_string
+            return Err(LexError::UnexpectedChar { ch: self.current().unwrap_or(' '), line: self.base_line + sl - 1, col: sc });
+        }
+        self.advance(); // skip opening "
+        let mut content = String::new();
+        loop {
+            match self.current() {
+                None | Some('\n') => return Err(LexError::UnterminatedString { line: self.base_line + sl - 1, col: sc }),
+                Some('"') => { self.advance(); break; }
+                Some(c) => { content.push(c); self.advance(); }
+            }
+        }
+        let span = self.span_from(so, sl, sc);
+        Ok(Token::new(TokenKind::RawStringLit(content), span))
+    }
+
+    fn read_bytes_literal(&mut self) -> Result<Token, LexError> {
+        let (so, sl, sc) = (self.byte_offset, self.line, self.col);
+        self.advance(); // skip 'b'
+        if self.current() != Some('"') {
+            return Err(LexError::InvalidBytesLiteral { line: self.base_line + sl - 1, col: sc });
+        }
+        self.advance(); // skip opening "
+        let mut bytes = Vec::new();
+        loop {
+            match self.current() {
+                None | Some('\n') => return Err(LexError::UnterminatedString { line: self.base_line + sl - 1, col: sc }),
+                Some('"') => { self.advance(); break; }
+                Some(c) if c.is_ascii_hexdigit() => {
+                    let hi = c;
+                    self.advance();
+                    match self.current() {
+                        Some(lo) if lo.is_ascii_hexdigit() => {
+                            self.advance();
+                            let byte = u8::from_str_radix(&format!("{}{}", hi, lo), 16)
+                                .map_err(|_| LexError::InvalidBytesLiteral { line: self.base_line + sl - 1, col: sc })?;
+                            bytes.push(byte);
+                        }
+                        _ => return Err(LexError::InvalidBytesLiteral { line: self.base_line + sl - 1, col: sc }),
+                    }
+                }
+                _ => return Err(LexError::InvalidBytesLiteral { line: self.base_line + sl - 1, col: sc }),
+            }
+        }
+        let span = self.span_from(so, sl, sc);
+        Ok(Token::new(TokenKind::BytesLit(bytes), span))
+    }
+
     fn read_string(&mut self) -> Result<Token, LexError> {
+        // Check for triple-quoted string
+        if self.peek() == Some('"') && self.peek2() == Some('"') {
+            return self.read_triple_quoted_string();
+        }
+
         let (so, sl, sc) = (self.byte_offset, self.line, self.col);
         self.advance(); // opening quote
         let mut segments = Vec::new();
@@ -106,15 +365,7 @@ impl Lexer {
                 None | Some('\n') => return Err(LexError::UnterminatedString { line: self.base_line + sl - 1, col: sc }),
                 Some('\\') => {
                     self.advance();
-                    match self.current() {
-                        Some('n') => { cur_segment.push('\n'); self.advance(); }
-                        Some('t') => { cur_segment.push('\t'); self.advance(); }
-                        Some('\\') => { cur_segment.push('\\'); self.advance(); }
-                        Some('"') => { cur_segment.push('"'); self.advance(); }
-                        Some('{') => { cur_segment.push('{'); self.advance(); } // Escaped brace
-                        Some(c) => { cur_segment.push('\\'); cur_segment.push(c); self.advance(); }
-                        None => return Err(LexError::UnterminatedString { line: self.base_line + sl - 1, col: sc }),
-                    }
+                    self.process_escape(&mut cur_segment, sl, sc)?;
                 }
                 Some('{') => {
                     // Start of interpolation
@@ -161,7 +412,7 @@ impl Lexer {
                 Some(c) => { cur_segment.push(c); self.advance(); }
             }
         }
-        
+
         let span = self.span_from(so, sl, sc);
         if is_interp {
             if !cur_segment.is_empty() {
@@ -175,14 +426,44 @@ impl Lexer {
 
     fn read_number(&mut self) -> Result<Token, LexError> {
         let (so, sl, sc) = (self.byte_offset, self.line, self.col);
+
+        // Check for 0x, 0b, 0o prefixes
+        if self.current() == Some('0') {
+            match self.peek() {
+                Some('x') | Some('X') => return self.read_hex_number(so, sl, sc),
+                Some('b') if matches!(self.peek2(), Some('0') | Some('1')) => return self.read_bin_number(so, sl, sc),
+                Some('o') => return self.read_oct_number(so, sl, sc),
+                _ => {}
+            }
+        }
+
         let mut ns = String::new();
         let mut is_float = false;
         while let Some(ch) = self.current() {
             if ch.is_ascii_digit() { ns.push(ch); self.advance(); }
-            else if ch == '.' && !is_float && matches!(self.peek(), Some(d) if d.is_ascii_digit()) {
-                is_float = true; ns.push(ch); self.advance();
+            else if ch == '.' && !is_float {
+                // Check for .. (range) and ... (spread) - don't consume the dot
+                if self.peek() == Some('.') {
+                    break;
+                }
+                if matches!(self.peek(), Some(d) if d.is_ascii_digit()) {
+                    is_float = true; ns.push(ch); self.advance();
+                } else {
+                    break;
+                }
             }
             else if ch == '_' { self.advance(); }
+            else if (ch == 'e' || ch == 'E') && !is_float {
+                // Scientific notation
+                is_float = true;
+                ns.push(ch);
+                self.advance();
+                // Optional +/- sign
+                if matches!(self.current(), Some('+') | Some('-')) {
+                    ns.push(self.current().unwrap());
+                    self.advance();
+                }
+            }
             else { break; }
         }
         let span = self.span_from(so, sl, sc);
@@ -193,6 +474,60 @@ impl Lexer {
             ns.parse::<i64>().map(|n| Token::new(TokenKind::IntLit(n), span))
                 .map_err(|_| LexError::InvalidNumber { line: self.base_line + sl - 1, col: sc })
         }
+    }
+
+    fn read_hex_number(&mut self, so: usize, sl: usize, sc: usize) -> Result<Token, LexError> {
+        self.advance(); // skip 0
+        self.advance(); // skip x/X
+        let mut hex = String::new();
+        while let Some(ch) = self.current() {
+            if ch.is_ascii_hexdigit() { hex.push(ch); self.advance(); }
+            else if ch == '_' { self.advance(); }
+            else { break; }
+        }
+        if hex.is_empty() {
+            return Err(LexError::InvalidNumber { line: self.base_line + sl - 1, col: sc });
+        }
+        let span = self.span_from(so, sl, sc);
+        i64::from_str_radix(&hex, 16)
+            .map(|n| Token::new(TokenKind::IntLit(n), span))
+            .map_err(|_| LexError::InvalidNumber { line: self.base_line + sl - 1, col: sc })
+    }
+
+    fn read_bin_number(&mut self, so: usize, sl: usize, sc: usize) -> Result<Token, LexError> {
+        self.advance(); // skip 0
+        self.advance(); // skip b
+        let mut bin = String::new();
+        while let Some(ch) = self.current() {
+            if ch == '0' || ch == '1' { bin.push(ch); self.advance(); }
+            else if ch == '_' { self.advance(); }
+            else { break; }
+        }
+        if bin.is_empty() {
+            return Err(LexError::InvalidNumber { line: self.base_line + sl - 1, col: sc });
+        }
+        let span = self.span_from(so, sl, sc);
+        i64::from_str_radix(&bin, 2)
+            .map(|n| Token::new(TokenKind::IntLit(n), span))
+            .map_err(|_| LexError::InvalidNumber { line: self.base_line + sl - 1, col: sc })
+    }
+
+    fn read_oct_number(&mut self, so: usize, sl: usize, sc: usize) -> Result<Token, LexError> {
+        self.advance(); // skip 0
+        self.advance(); // skip o
+        let mut oct = String::new();
+        while let Some(ch) = self.current() {
+            if ch >= '0' && ch <= '7' { oct.push(ch); self.advance(); }
+            else if ch == '_' { self.advance(); }
+            else { break; }
+        }
+        if oct.is_empty() {
+            return Err(LexError::InvalidNumber { line: self.base_line + sl - 1, col: sc });
+        }
+        let span = self.span_from(so, sl, sc);
+        i64::from_str_radix(&oct, 8)
+            .map(|n| Token::new(TokenKind::IntLit(n), span))
+            .map_err(|_| LexError::InvalidNumber { line: self.base_line + sl - 1, col: sc })
     }
 
     fn read_ident(&mut self) -> Token {
@@ -210,10 +545,35 @@ impl Lexer {
             "use" => TokenKind::Use, "tool" => TokenKind::Tool, "as" => TokenKind::As,
             "grant" => TokenKind::Grant, "expect" => TokenKind::Expect, "schema" => TokenKind::Schema,
             "role" => TokenKind::Role, "where" => TokenKind::Where, "and" => TokenKind::And,
-            "or" => TokenKind::Or, "not" => TokenKind::Not, "Null" => TokenKind::Null,
+            "or" => TokenKind::Or, "not" => TokenKind::Not, "null" => TokenKind::NullLit,
+            "Null" => TokenKind::Null,
             "result" => TokenKind::Result, "ok" => TokenKind::Ok_, "err" => TokenKind::Err_,
             "list" => TokenKind::List, "map" => TokenKind::Map,
             "true" => TokenKind::BoolLit(true), "false" => TokenKind::BoolLit(false),
+            // New keywords
+            "while" => TokenKind::While, "loop" => TokenKind::Loop,
+            "break" => TokenKind::Break, "continue" => TokenKind::Continue,
+            "mut" => TokenKind::Mut, "const" => TokenKind::Const,
+            "pub" => TokenKind::Pub, "import" => TokenKind::Import,
+            "from" => TokenKind::From, "async" => TokenKind::Async,
+            "await" => TokenKind::Await, "parallel" => TokenKind::Parallel,
+            "fn" => TokenKind::Fn, "trait" => TokenKind::Trait,
+            "impl" => TokenKind::Impl, "type" => TokenKind::Type,
+            "set" => TokenKind::Set, "tuple" => TokenKind::Tuple,
+            "emit" => TokenKind::Emit, "yield" => TokenKind::Yield,
+            "mod" => TokenKind::Mod, "self" => TokenKind::SelfKw,
+            "with" => TokenKind::With, "try" => TokenKind::Try,
+            "union" => TokenKind::Union, "step" => TokenKind::Step,
+            "comptime" => TokenKind::Comptime, "macro" => TokenKind::Macro,
+            "extern" => TokenKind::Extern, "then" => TokenKind::Then,
+            "when" => TokenKind::When,
+            // Type keywords
+            "bool" => TokenKind::Bool,
+            "int" => TokenKind::Int_,
+            "float" => TokenKind::Float_,
+            "string" => TokenKind::String_,
+            "bytes" => TokenKind::Bytes,
+            "json" => TokenKind::Json,
             _ => TokenKind::Ident(id),
         };
         Token::new(kind, span)
@@ -250,32 +610,129 @@ impl Lexer {
                 '#' => { while matches!(self.current(), Some(c) if c != '\n') { self.advance(); } }
                 '"' => tokens.push(self.read_string()?),
                 '0'..='9' => tokens.push(self.read_number()?),
+                'r' if self.peek() == Some('"') => tokens.push(self.read_raw_string()?),
+                'b' if self.peek() == Some('"') => tokens.push(self.read_bytes_literal()?),
                 'a'..='z' | 'A'..='Z' | '_' => tokens.push(self.read_ident()),
-                '+' => tokens.push(self.single(TokenKind::Plus)),
-                '-' => { let (so, sl, sc) = (self.byte_offset, self.line, self.col); self.advance();
-                    if self.current() == Some('>') { self.advance(); tokens.push(Token::new(TokenKind::Arrow, self.span_from(so, sl, sc))); }
-                    else { tokens.push(Token::new(TokenKind::Minus, self.span_from(so, sl, sc))); }
+                '+' => {
+                    let (so, sl, sc) = (self.byte_offset, self.line, self.col);
+                    self.advance();
+                    match self.current() {
+                        Some('=') => { self.advance(); tokens.push(Token::new(TokenKind::PlusAssign, self.span_from(so, sl, sc))); }
+                        Some('+') => { self.advance(); tokens.push(Token::new(TokenKind::PlusPlus, self.span_from(so, sl, sc))); }
+                        _ => { tokens.push(Token::new(TokenKind::Plus, self.span_from(so, sl, sc))); }
+                    }
                 }
-                '*' => tokens.push(self.single(TokenKind::Star)),
-                '/' => tokens.push(self.single(TokenKind::Slash)),
+                '-' => {
+                    let (so, sl, sc) = (self.byte_offset, self.line, self.col);
+                    self.advance();
+                    match self.current() {
+                        Some('>') => { self.advance(); tokens.push(Token::new(TokenKind::Arrow, self.span_from(so, sl, sc))); }
+                        Some('=') => { self.advance(); tokens.push(Token::new(TokenKind::MinusAssign, self.span_from(so, sl, sc))); }
+                        _ => { tokens.push(Token::new(TokenKind::Minus, self.span_from(so, sl, sc))); }
+                    }
+                }
+                '*' => {
+                    let (so, sl, sc) = (self.byte_offset, self.line, self.col);
+                    self.advance();
+                    match self.current() {
+                        Some('*') => { self.advance(); tokens.push(Token::new(TokenKind::StarStar, self.span_from(so, sl, sc))); }
+                        Some('=') => { self.advance(); tokens.push(Token::new(TokenKind::StarAssign, self.span_from(so, sl, sc))); }
+                        _ => { tokens.push(Token::new(TokenKind::Star, self.span_from(so, sl, sc))); }
+                    }
+                }
+                '/' => {
+                    let (so, sl, sc) = (self.byte_offset, self.line, self.col);
+                    self.advance();
+                    match self.current() {
+                        Some('=') => { self.advance(); tokens.push(Token::new(TokenKind::SlashAssign, self.span_from(so, sl, sc))); }
+                        _ => { tokens.push(Token::new(TokenKind::Slash, self.span_from(so, sl, sc))); }
+                    }
+                }
                 '%' => tokens.push(self.single(TokenKind::Percent)),
-                '=' => tokens.push(self.two_char('=', TokenKind::Eq, TokenKind::Assign)),
-                '!' => { let (so, sl, sc) = (self.byte_offset, self.line, self.col); self.advance();
-                    if self.current() == Some('=') { self.advance(); tokens.push(Token::new(TokenKind::NotEq, self.span_from(so, sl, sc))); }
-                    else { return Err(LexError::UnexpectedChar { ch: '!', line: self.base_line + sl - 1, col: sc }); }
+                '=' => {
+                    let (so, sl, sc) = (self.byte_offset, self.line, self.col);
+                    self.advance();
+                    match self.current() {
+                        Some('=') => { self.advance(); tokens.push(Token::new(TokenKind::Eq, self.span_from(so, sl, sc))); }
+                        Some('>') => { self.advance(); tokens.push(Token::new(TokenKind::FatArrow, self.span_from(so, sl, sc))); }
+                        _ => { tokens.push(Token::new(TokenKind::Assign, self.span_from(so, sl, sc))); }
+                    }
+                }
+                '!' => {
+                    let (so, sl, sc) = (self.byte_offset, self.line, self.col);
+                    self.advance();
+                    match self.current() {
+                        Some('=') => { self.advance(); tokens.push(Token::new(TokenKind::NotEq, self.span_from(so, sl, sc))); }
+                        _ => { tokens.push(Token::new(TokenKind::Bang, self.span_from(so, sl, sc))); }
+                    }
+                }
+                '?' => {
+                    let (so, sl, sc) = (self.byte_offset, self.line, self.col);
+                    self.advance();
+                    match self.current() {
+                        Some('?') => { self.advance(); tokens.push(Token::new(TokenKind::QuestionQuestion, self.span_from(so, sl, sc))); }
+                        Some('.') => { self.advance(); tokens.push(Token::new(TokenKind::QuestionDot, self.span_from(so, sl, sc))); }
+                        _ => { tokens.push(Token::new(TokenKind::Question, self.span_from(so, sl, sc))); }
+                    }
                 }
                 '<' => tokens.push(self.two_char('=', TokenKind::LtEq, TokenKind::Lt)),
-                '>' => tokens.push(self.two_char('=', TokenKind::GtEq, TokenKind::Gt)),
-                '.' => tokens.push(self.single(TokenKind::Dot)),
+                '>' => {
+                    let (so, sl, sc) = (self.byte_offset, self.line, self.col);
+                    self.advance();
+                    match self.current() {
+                        Some('=') => { self.advance(); tokens.push(Token::new(TokenKind::GtEq, self.span_from(so, sl, sc))); }
+                        Some('>') => { self.advance(); tokens.push(Token::new(TokenKind::Compose, self.span_from(so, sl, sc))); }
+                        _ => { tokens.push(Token::new(TokenKind::Gt, self.span_from(so, sl, sc))); }
+                    }
+                }
+                '.' => {
+                    let (so, sl, sc) = (self.byte_offset, self.line, self.col);
+                    self.advance();
+                    if self.current() == Some('.') {
+                        self.advance();
+                        if self.current() == Some('.') {
+                            self.advance();
+                            tokens.push(Token::new(TokenKind::DotDotDot, self.span_from(so, sl, sc)));
+                        } else if self.current() == Some('=') {
+                            self.advance();
+                            tokens.push(Token::new(TokenKind::DotDotEq, self.span_from(so, sl, sc)));
+                        } else {
+                            tokens.push(Token::new(TokenKind::DotDot, self.span_from(so, sl, sc)));
+                        }
+                    } else {
+                        tokens.push(Token::new(TokenKind::Dot, self.span_from(so, sl, sc)));
+                    }
+                }
                 ',' => tokens.push(self.single(TokenKind::Comma)),
                 ':' => tokens.push(self.single(TokenKind::Colon)),
-                '|' => tokens.push(self.single(TokenKind::Pipe)),
+                ';' => tokens.push(self.single(TokenKind::Semicolon)),
+                '|' => {
+                    let (so, sl, sc) = (self.byte_offset, self.line, self.col);
+                    self.advance();
+                    match self.current() {
+                        Some('>') => { self.advance(); tokens.push(Token::new(TokenKind::PipeForward, self.span_from(so, sl, sc))); }
+                        _ => { tokens.push(Token::new(TokenKind::Pipe, self.span_from(so, sl, sc))); }
+                    }
+                }
+                '@' => tokens.push(self.single(TokenKind::At)),
+                '&' => tokens.push(self.single(TokenKind::Ampersand)),
+                '~' => tokens.push(self.single(TokenKind::Tilde)),
+                '^' => tokens.push(self.single(TokenKind::Caret)),
                 '(' => tokens.push(self.single(TokenKind::LParen)),
                 ')' => tokens.push(self.single(TokenKind::RParen)),
                 '[' => tokens.push(self.single(TokenKind::LBracket)),
                 ']' => tokens.push(self.single(TokenKind::RBracket)),
                 '{' => tokens.push(self.single(TokenKind::LBrace)),
                 '}' => tokens.push(self.single(TokenKind::RBrace)),
+                '\\' if self.peek() == Some('\n') => {
+                    // Line continuation
+                    self.advance(); // skip backslash
+                    self.advance(); // skip newline
+                    // Don't emit newline, don't set at_line_start
+                    self.at_line_start = false;
+                    // Skip leading whitespace on the continuation line
+                    while matches!(self.current(), Some(' ' | '\t')) { self.advance(); }
+                }
                 c => tokens.push(self.single(TokenKind::Symbol(c))),
             }
         }
@@ -321,5 +778,155 @@ mod tests {
         let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
         assert!(kinds.contains(&&TokenKind::Indent));
         assert!(kinds.contains(&&TokenKind::Dedent));
+    }
+
+    #[test]
+    fn test_lex_hex_number() {
+        let mut lexer = Lexer::new("0xFF", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::IntLit(255)));
+    }
+
+    #[test]
+    fn test_lex_bin_number() {
+        let mut lexer = Lexer::new("0b1010", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::IntLit(10)));
+    }
+
+    #[test]
+    fn test_lex_oct_number() {
+        let mut lexer = Lexer::new("0o777", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::IntLit(511)));
+    }
+
+    #[test]
+    fn test_lex_scientific() {
+        let mut lexer = Lexer::new("1e10", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(f) if *f == 1e10));
+    }
+
+    #[test]
+    fn test_lex_compound_assign() {
+        let mut lexer = Lexer::new("+= -= *= /=", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::PlusAssign));
+        assert!(matches!(&tokens[1].kind, TokenKind::MinusAssign));
+        assert!(matches!(&tokens[2].kind, TokenKind::StarAssign));
+        assert!(matches!(&tokens[3].kind, TokenKind::SlashAssign));
+    }
+
+    #[test]
+    fn test_lex_new_operators() {
+        let mut lexer = Lexer::new("** .. ..= |> >> ?? ?. ! ? ... => ++ & ~ ^", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::StarStar));
+        assert!(matches!(&tokens[1].kind, TokenKind::DotDot));
+        assert!(matches!(&tokens[2].kind, TokenKind::DotDotEq));
+        assert!(matches!(&tokens[3].kind, TokenKind::PipeForward));
+        assert!(matches!(&tokens[4].kind, TokenKind::Compose));
+        assert!(matches!(&tokens[5].kind, TokenKind::QuestionQuestion));
+        assert!(matches!(&tokens[6].kind, TokenKind::QuestionDot));
+        assert!(matches!(&tokens[7].kind, TokenKind::Bang));
+        assert!(matches!(&tokens[8].kind, TokenKind::Question));
+        assert!(matches!(&tokens[9].kind, TokenKind::DotDotDot));
+        assert!(matches!(&tokens[10].kind, TokenKind::FatArrow));
+        assert!(matches!(&tokens[11].kind, TokenKind::PlusPlus));
+        assert!(matches!(&tokens[12].kind, TokenKind::Ampersand));
+        assert!(matches!(&tokens[13].kind, TokenKind::Tilde));
+        assert!(matches!(&tokens[14].kind, TokenKind::Caret));
+    }
+
+    #[test]
+    fn test_lex_new_keywords() {
+        let mut lexer = Lexer::new("while loop break continue mut const pub import from async await parallel fn trait impl type set tuple emit yield mod self with try union step comptime macro extern then when", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::While));
+        assert!(matches!(&tokens[1].kind, TokenKind::Loop));
+        assert!(matches!(&tokens[2].kind, TokenKind::Break));
+        assert!(matches!(&tokens[3].kind, TokenKind::Continue));
+        assert!(matches!(&tokens[4].kind, TokenKind::Mut));
+        assert!(matches!(&tokens[5].kind, TokenKind::Const));
+        assert!(matches!(&tokens[6].kind, TokenKind::Pub));
+        assert!(matches!(&tokens[7].kind, TokenKind::Import));
+        assert!(matches!(&tokens[8].kind, TokenKind::From));
+        assert!(matches!(&tokens[9].kind, TokenKind::Async));
+        assert!(matches!(&tokens[10].kind, TokenKind::Await));
+        assert!(matches!(&tokens[11].kind, TokenKind::Parallel));
+        assert!(matches!(&tokens[12].kind, TokenKind::Fn));
+        assert!(matches!(&tokens[13].kind, TokenKind::Trait));
+        assert!(matches!(&tokens[14].kind, TokenKind::Impl));
+        assert!(matches!(&tokens[15].kind, TokenKind::Type));
+        assert!(matches!(&tokens[16].kind, TokenKind::Set));
+        assert!(matches!(&tokens[17].kind, TokenKind::Tuple));
+        assert!(matches!(&tokens[18].kind, TokenKind::Emit));
+        assert!(matches!(&tokens[19].kind, TokenKind::Yield));
+        assert!(matches!(&tokens[20].kind, TokenKind::Mod));
+        assert!(matches!(&tokens[21].kind, TokenKind::SelfKw));
+        assert!(matches!(&tokens[22].kind, TokenKind::With));
+        assert!(matches!(&tokens[23].kind, TokenKind::Try));
+        assert!(matches!(&tokens[24].kind, TokenKind::Union));
+        assert!(matches!(&tokens[25].kind, TokenKind::Step));
+        assert!(matches!(&tokens[26].kind, TokenKind::Comptime));
+        assert!(matches!(&tokens[27].kind, TokenKind::Macro));
+        assert!(matches!(&tokens[28].kind, TokenKind::Extern));
+        assert!(matches!(&tokens[29].kind, TokenKind::Then));
+        assert!(matches!(&tokens[30].kind, TokenKind::When));
+    }
+
+    #[test]
+    fn test_lex_raw_string() {
+        let mut lexer = Lexer::new(r#"r"no \n here""#, 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::RawStringLit(s) if s == r"no \n here"));
+    }
+
+    #[test]
+    fn test_lex_bytes_literal() {
+        let mut lexer = Lexer::new(r#"b"48656C6C6F""#, 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::BytesLit(b) if b == &[0x48, 0x65, 0x6C, 0x6C, 0x6F]));
+    }
+
+    #[test]
+    fn test_lex_fat_arrow() {
+        let mut lexer = Lexer::new("=>", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FatArrow));
+    }
+
+    #[test]
+    fn test_lex_line_continuation() {
+        let mut lexer = Lexer::new("a +\\\n  b", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        // Should NOT have a Newline between + and b
+        assert!(!kinds.contains(&&TokenKind::Newline));
+        assert!(matches!(&tokens[0].kind, TokenKind::Ident(s) if s == "a"));
+        assert!(matches!(&tokens[1].kind, TokenKind::Plus));
+        assert!(matches!(&tokens[2].kind, TokenKind::Ident(s) if s == "b"));
+    }
+
+    #[test]
+    fn test_lex_null_literal() {
+        let mut lexer = Lexer::new("null", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::NullLit));
+    }
+
+    #[test]
+    fn test_lex_unicode_escape() {
+        let mut lexer = Lexer::new(r#""\u{0041}""#, 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::StringLit(s) if s == "A"));
+    }
+
+    #[test]
+    fn test_lex_hex_byte_escape() {
+        let mut lexer = Lexer::new(r#""\x41""#, 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::StringLit(s) if s == "A"));
     }
 }

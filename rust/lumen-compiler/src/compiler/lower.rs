@@ -41,22 +41,36 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                     grants: serde_json::Value::Object(grants),
                 });
             }
+            // New item types: skip for now (no LIR lowering yet)
+            Item::TypeAlias(_) | Item::Trait(_) | Item::Impl(_)
+            | Item::Import(_) | Item::ConstDecl(_) | Item::MacroDecl(_) => {}
         }
     }
+
+    // Collect lambda cells
+    module.cells.extend(lowerer.lambda_cells.drain(..));
 
     // Collect string table
     module.strings = lowerer.strings;
     module
 }
 
+/// Tracks a loop for break/continue patching
+struct LoopContext {
+    start: usize,
+    break_jumps: Vec<usize>,
+}
+
 struct Lowerer<'a> {
     symbols: &'a SymbolTable,
     strings: Vec<String>,
+    loop_stack: Vec<LoopContext>,
+    lambda_cells: Vec<LirCell>,
 }
 
 impl<'a> Lowerer<'a> {
     fn new(symbols: &'a SymbolTable) -> Self {
-        Self { symbols, strings: Vec::new() }
+        Self { symbols, strings: Vec::new(), loop_stack: Vec::new(), lambda_cells: Vec::new() }
     }
 
     fn intern_string(&mut self, s: &str) -> u16 {
@@ -162,27 +176,27 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::abc(OpCode::Test, cmp_dest, 0, 0));
                 
                 let jmp_idx = instrs.len();
-                instrs.push(Instruction::ax(OpCode::Jmp, 0)); // Jump to else/end
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // Jump to else/end
 
                 for s in &ifs.then_body { self.lower_stmt(s, ra, consts, instrs); }
 
                 if let Some(ref else_body) = ifs.else_body {
                     let else_jmp_idx = instrs.len();
-                    instrs.push(Instruction::ax(OpCode::Jmp, 0)); // skip else
+                    instrs.push(Instruction::sax(OpCode::Jmp, 0)); // skip else
                     let else_start = instrs.len();
                     // Patch the conditional jump
-                    let offset = (else_start - jmp_idx - 1) as u32;
-                    instrs[jmp_idx] = Instruction::ax(OpCode::Jmp, offset);
+                    let offset = (else_start - jmp_idx - 1) as i32;
+                    instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, offset);
 
                     for s in else_body { self.lower_stmt(s, ra, consts, instrs); }
 
                     let after_else = instrs.len();
-                    let else_offset = (after_else - else_jmp_idx - 1) as u32;
-                    instrs[else_jmp_idx] = Instruction::ax(OpCode::Jmp, else_offset);
+                    let else_offset = (after_else - else_jmp_idx - 1) as i32;
+                    instrs[else_jmp_idx] = Instruction::sax(OpCode::Jmp, else_offset);
                 } else {
                     let after = instrs.len();
-                    let offset = (after - jmp_idx - 1) as u32;
-                    instrs[jmp_idx] = Instruction::ax(OpCode::Jmp, offset);
+                    let offset = (after - jmp_idx - 1) as i32;
+                    instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, offset);
                 }
             }
             Stmt::For(fs) => {
@@ -210,7 +224,7 @@ impl<'a> Lowerer<'a> {
                 // Test(lt, 0): Skip if True.
                 instrs.push(Instruction::abc(OpCode::Test, lt_reg, 0, 0));
                 let break_jmp = instrs.len();
-                instrs.push(Instruction::ax(OpCode::Jmp, 0)); // placeholder
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
 
                 // elem = iter[idx]
                 instrs.push(Instruction::abc(OpCode::GetIndex, elem_reg, iter_reg, idx_reg));
@@ -224,14 +238,14 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::abx(OpCode::LoadK, one_reg, one_idx));
                 instrs.push(Instruction::abc(OpCode::Add, idx_reg, idx_reg, one_reg));
 
-                // Jump back to loop start
-                let back_offset = (loop_start as i32 - instrs.len() as i32 - 1) as u32;
-                instrs.push(Instruction::ax(OpCode::Jmp, back_offset));
+                // Jump back to loop start (negative offset)
+                let back_offset = loop_start as i32 - instrs.len() as i32 - 1;
+                instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
 
-                // Patch break jump
+                // Patch break jump (forward offset, always positive)
                 let after_loop = instrs.len();
-                let break_offset = (after_loop - break_jmp - 1) as u32;
-                instrs[break_jmp] = Instruction::ax(OpCode::Jmp, break_offset);
+                let break_offset = (after_loop - break_jmp - 1) as i32;
+                instrs[break_jmp] = Instruction::sax(OpCode::Jmp, break_offset);
             }
             Stmt::Match(ms) => {
                 let subj_reg = self.lower_expr(&ms.subject, ra, consts, instrs);
@@ -241,16 +255,19 @@ impl<'a> Lowerer<'a> {
                     match &arm.pattern {
                         Pattern::Literal(lit_expr) => {
                             let lit_reg = self.lower_expr(lit_expr, ra, consts, instrs);
-                            instrs.push(Instruction::abc(OpCode::Eq, 0, subj_reg, lit_reg));
+                            let cmp_reg = ra.alloc_temp();
+                            instrs.push(Instruction::abc(OpCode::Eq, cmp_reg, subj_reg, lit_reg));
+                            // Test: skip next instruction (Jmp) if cmp_reg is truthy
+                            instrs.push(Instruction::abc(OpCode::Test, cmp_reg, 0, 0));
                             let skip_jmp = instrs.len();
-                            instrs.push(Instruction::ax(OpCode::Jmp, 0));
+                            instrs.push(Instruction::sax(OpCode::Jmp, 0));
 
                             for s in &arm.body { self.lower_stmt(s, ra, consts, instrs); }
                             end_jumps.push(instrs.len());
-                            instrs.push(Instruction::ax(OpCode::Jmp, 0));
+                            instrs.push(Instruction::sax(OpCode::Jmp, 0));
 
                             let after = instrs.len();
-                            instrs[skip_jmp] = Instruction::ax(OpCode::Jmp, (after - skip_jmp - 1) as u32);
+                            instrs[skip_jmp] = Instruction::sax(OpCode::Jmp, (after - skip_jmp - 1) as i32);
                         }
                         Pattern::Variant(tag, binding, _) => {
                             // Check Variant Tag
@@ -261,7 +278,7 @@ impl<'a> Lowerer<'a> {
                             // So if Matched, we Skip the JUMP.
                             // So next instruction should be JUMP (to next arm).
                             let skip_jmp = instrs.len();
-                            instrs.push(Instruction::ax(OpCode::Jmp, 0)); // Jump to next arm (if NOT matched)
+                            instrs.push(Instruction::sax(OpCode::Jmp, 0)); // Jump to next arm (if NOT matched)
 
                             // Matched: Execute body
                             if let Some(ref b) = binding {
@@ -270,11 +287,11 @@ impl<'a> Lowerer<'a> {
                             }
                             for s in &arm.body { self.lower_stmt(s, ra, consts, instrs); }
                             end_jumps.push(instrs.len());
-                            instrs.push(Instruction::ax(OpCode::Jmp, 0)); // Jump to end of match
+                            instrs.push(Instruction::sax(OpCode::Jmp, 0)); // Jump to end of match
 
                             // Patch skip_jmp (failure case) to point here
                             let after = instrs.len();
-                            instrs[skip_jmp] = Instruction::ax(OpCode::Jmp, (after - skip_jmp - 1) as u32);
+                            instrs[skip_jmp] = Instruction::sax(OpCode::Jmp, (after - skip_jmp - 1) as i32);
                         }
                         Pattern::Wildcard(_) | Pattern::Ident(_, _) => {
                             if let Pattern::Ident(name, _) = &arm.pattern {
@@ -283,14 +300,22 @@ impl<'a> Lowerer<'a> {
                             }
                             for s in &arm.body { self.lower_stmt(s, ra, consts, instrs); }
                             end_jumps.push(instrs.len());
-                            instrs.push(Instruction::ax(OpCode::Jmp, 0));
+                            instrs.push(Instruction::sax(OpCode::Jmp, 0));
+                        }
+                        // New pattern types: treat as wildcard for now
+                        Pattern::Guard { .. } | Pattern::Or { .. }
+                        | Pattern::ListDestructure { .. } | Pattern::TupleDestructure { .. }
+                        | Pattern::RecordDestructure { .. } | Pattern::TypeCheck { .. } => {
+                            for s in &arm.body { self.lower_stmt(s, ra, consts, instrs); }
+                            end_jumps.push(instrs.len());
+                            instrs.push(Instruction::sax(OpCode::Jmp, 0));
                         }
                     }
                 }
 
                 let end = instrs.len();
                 for jmp_idx in end_jumps {
-                    instrs[jmp_idx] = Instruction::ax(OpCode::Jmp, (end - jmp_idx - 1) as u32);
+                    instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, (end - jmp_idx - 1) as i32);
                 }
             }
             Stmt::Return(rs) => {
@@ -316,6 +341,77 @@ impl<'a> Lowerer<'a> {
             }
             Stmt::Expr(es) => {
                 self.lower_expr(&es.expr, ra, consts, instrs);
+            }
+            Stmt::While(ws) => {
+                let loop_start = instrs.len();
+                self.loop_stack.push(LoopContext { start: loop_start, break_jumps: Vec::new() });
+
+                let cond_reg = self.lower_expr(&ws.condition, ra, consts, instrs);
+                let true_reg = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::LoadBool, true_reg, 1, 0));
+                let cmp_dest = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::Eq, cmp_dest, cond_reg, true_reg));
+                instrs.push(Instruction::abc(OpCode::Test, cmp_dest, 0, 0));
+                let cond_jmp = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0));
+
+                for s in &ws.body { self.lower_stmt(s, ra, consts, instrs); }
+
+                let back_offset = loop_start as i32 - instrs.len() as i32 - 1;
+                instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
+
+                let after = instrs.len();
+                instrs[cond_jmp] = Instruction::sax(OpCode::Jmp, (after - cond_jmp - 1) as i32);
+
+                // Patch all break jumps
+                let ctx = self.loop_stack.pop().unwrap();
+                for bj in ctx.break_jumps {
+                    instrs[bj] = Instruction::sax(OpCode::Jmp, (after - bj - 1) as i32);
+                }
+            }
+            Stmt::Loop(ls) => {
+                let loop_start = instrs.len();
+                self.loop_stack.push(LoopContext { start: loop_start, break_jumps: Vec::new() });
+
+                for s in &ls.body { self.lower_stmt(s, ra, consts, instrs); }
+                let back_offset = loop_start as i32 - instrs.len() as i32 - 1;
+                instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
+
+                let after = instrs.len();
+                let ctx = self.loop_stack.pop().unwrap();
+                for bj in ctx.break_jumps {
+                    instrs[bj] = Instruction::sax(OpCode::Jmp, (after - bj - 1) as i32);
+                }
+            }
+            Stmt::Break(_) => {
+                let jmp_idx = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+                if let Some(ctx) = self.loop_stack.last_mut() {
+                    ctx.break_jumps.push(jmp_idx);
+                }
+            }
+            Stmt::Continue(_) => {
+                if let Some(ctx) = self.loop_stack.last() {
+                    let back_offset = ctx.start as i32 - instrs.len() as i32 - 1;
+                    instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
+                } else {
+                    instrs.push(Instruction::sax(OpCode::Jmp, 0));
+                }
+            }
+            Stmt::Emit(es) => {
+                let val_reg = self.lower_expr(&es.value, ra, consts, instrs);
+                instrs.push(Instruction::abc(OpCode::Emit, val_reg, 0, 0));
+            }
+            Stmt::CompoundAssign(ca) => {
+                let val_reg = self.lower_expr(&ca.value, ra, consts, instrs);
+                let target_reg = if let Some(r) = ra.lookup(&ca.target) { r } else { ra.alloc_named(&ca.target) };
+                let opcode = match ca.op {
+                    CompoundOp::AddAssign => OpCode::Add,
+                    CompoundOp::SubAssign => OpCode::Sub,
+                    CompoundOp::MulAssign => OpCode::Mul,
+                    CompoundOp::DivAssign => OpCode::Div,
+                };
+                instrs.push(Instruction::abc(opcode, target_reg, target_reg, val_reg));
             }
         }
     }
@@ -470,6 +566,24 @@ impl<'a> Lowerer<'a> {
                 dest
             }
             Expr::BinOp(lhs, op, rhs, _) => {
+                // Special case: pipe forward desugars to function call
+                if *op == BinOp::PipeForward {
+                    let arg_reg = self.lower_expr(lhs, ra, consts, instrs);
+                    let fn_reg = self.lower_expr(rhs, ra, consts, instrs);
+                    let base = ra.alloc_temp();
+                    if fn_reg != base {
+                        instrs.push(Instruction::abc(OpCode::Move, base, fn_reg, 0));
+                    }
+                    let arg_dest = ra.alloc_temp();
+                    if arg_reg != arg_dest {
+                        instrs.push(Instruction::abc(OpCode::Move, arg_dest, arg_reg, 0));
+                    }
+                    let result = ra.alloc_temp();
+                    instrs.push(Instruction::abc(OpCode::Call, base, 1, 1));
+                    instrs.push(Instruction::abc(OpCode::Move, result, base, 0));
+                    return result;
+                }
+
                 let lr = self.lower_expr(lhs, ra, consts, instrs);
                 let rr = self.lower_expr(rhs, ra, consts, instrs);
                 let dest = ra.alloc_temp();
@@ -487,6 +601,13 @@ impl<'a> Lowerer<'a> {
                     BinOp::GtEq => OpCode::Le, // swap operands
                     BinOp::And => OpCode::And,
                     BinOp::Or => OpCode::Or,
+                    BinOp::Pow => OpCode::Pow,
+                    BinOp::Concat => OpCode::Concat,
+                    BinOp::In => OpCode::In,
+                    BinOp::BitAnd => OpCode::BitAnd,
+                    BinOp::BitOr => OpCode::BitOr,
+                    BinOp::BitXor => OpCode::BitXor,
+                    BinOp::PipeForward => unreachable!(), // handled above
                 };
                 match op {
                     BinOp::Gt => instrs.push(Instruction::abc(opcode, dest, rr, lr)),
@@ -501,6 +622,7 @@ impl<'a> Lowerer<'a> {
                 match op {
                     UnaryOp::Neg => instrs.push(Instruction::abc(OpCode::Neg, dest, ir, 0)),
                     UnaryOp::Not => instrs.push(Instruction::abc(OpCode::Not, dest, ir, 0)),
+                    UnaryOp::BitNot => instrs.push(Instruction::abc(OpCode::BitNot, dest, ir, 0)),
                 }
                 dest
             }
@@ -564,7 +686,7 @@ impl<'a> Lowerer<'a> {
                                          
                                          // If true, skip Halt
                                          let jmp_idx = instrs.len();
-                                         instrs.push(Instruction::ax(OpCode::Jmp, 0));
+                                         instrs.push(Instruction::sax(OpCode::Jmp, 0));
                                          
                                          // Halt(msg)
                                          let msg = format!("Constraint failed for field '{}'", field);
@@ -576,8 +698,8 @@ impl<'a> Lowerer<'a> {
                                          
                                          // Patch Jmp
                                          let after_halt = instrs.len();
-                                         let offset = (after_halt - jmp_idx - 1) as u32;
-                                         instrs[jmp_idx] = Instruction::ax(OpCode::Jmp, offset);
+                                         let offset = (after_halt - jmp_idx - 1) as i32;
+                                         instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, offset);
                                      }
 
                                      let field_idx = self.intern_string(field) as u8;
@@ -818,6 +940,279 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::abx(OpCode::Schema, ir, schema_idx));
                 ir
             }
+            Expr::RawStringLit(s, _) => {
+                let dest = ra.alloc_temp();
+                let kidx = consts.len() as u16;
+                consts.push(Constant::String(s.clone()));
+                instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
+                dest
+            }
+            Expr::BytesLit(bytes, _) => {
+                let dest = ra.alloc_temp();
+                let kidx = consts.len() as u16;
+                // Store bytes as hex string constant for now
+                let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                consts.push(Constant::String(hex));
+                instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
+                dest
+            }
+            Expr::Lambda { params, return_type, body, .. } => {
+                // Lower lambda body as a separate LirCell
+                let lambda_name = format!("<lambda/{}>", self.lambda_cells.len());
+                let mut lra = RegAlloc::new();
+                let mut lconsts: Vec<Constant> = Vec::new();
+                let mut linstrs: Vec<Instruction> = Vec::new();
+
+                let lparams: Vec<LirParam> = params.iter().map(|p| {
+                    let reg = lra.alloc_named(&p.name);
+                    LirParam { name: p.name.clone(), ty: format_type_expr(&p.ty), register: reg }
+                }).collect();
+
+                match body {
+                    LambdaBody::Expr(e) => {
+                        let val = self.lower_expr(e, &mut lra, &mut lconsts, &mut linstrs);
+                        linstrs.push(Instruction::abc(OpCode::Return, val, 1, 0));
+                    }
+                    LambdaBody::Block(stmts) => {
+                        for s in stmts {
+                            self.lower_stmt(s, &mut lra, &mut lconsts, &mut linstrs);
+                        }
+                        if linstrs.is_empty() || !matches!(linstrs.last().map(|i| i.op), Some(OpCode::Return) | Some(OpCode::Halt)) {
+                            let r = lra.alloc_temp();
+                            linstrs.push(Instruction::abc(OpCode::LoadNil, r, 0, 0));
+                            linstrs.push(Instruction::abc(OpCode::Return, r, 1, 0));
+                        }
+                    }
+                }
+
+                let proto_idx = self.lambda_cells.len() as u16;
+                self.lambda_cells.push(LirCell {
+                    name: lambda_name,
+                    params: lparams,
+                    returns: return_type.as_ref().map(|t| format_type_expr(t)),
+                    registers: lra.max_regs(),
+                    constants: lconsts,
+                    instructions: linstrs,
+                });
+
+                let dest = ra.alloc_temp();
+                instrs.push(Instruction::abx(OpCode::Closure, dest, proto_idx));
+                dest
+            }
+            Expr::TupleLit(elems, _) => {
+                let dest = ra.alloc_temp();
+                let mut elem_regs = Vec::new();
+                for elem in elems {
+                    let er = self.lower_expr(elem, ra, consts, instrs);
+                    elem_regs.push(er);
+                }
+                for (i, er) in elem_regs.iter().enumerate() {
+                    let target = dest + 1 + i as u8;
+                    if *er != target {
+                        instrs.push(Instruction::abc(OpCode::Move, target, *er, 0));
+                    }
+                }
+                instrs.push(Instruction::abc(OpCode::NewTuple, dest, elems.len() as u8, 0));
+                dest
+            }
+            Expr::SetLit(elems, _) => {
+                let dest = ra.alloc_temp();
+                let mut elem_regs = Vec::new();
+                for elem in elems {
+                    let er = self.lower_expr(elem, ra, consts, instrs);
+                    elem_regs.push(er);
+                }
+                for (i, er) in elem_regs.iter().enumerate() {
+                    let target = dest + 1 + i as u8;
+                    if *er != target {
+                        instrs.push(Instruction::abc(OpCode::Move, target, *er, 0));
+                    }
+                }
+                instrs.push(Instruction::abc(OpCode::NewSet, dest, elems.len() as u8, 0));
+                dest
+            }
+            Expr::RangeExpr { start, end, .. } => {
+                // Lower as range(start, end) intrinsic call
+                let sr = if let Some(s) = start { self.lower_expr(s, ra, consts, instrs) } else {
+                    let r = ra.alloc_temp(); let kidx = consts.len() as u16; consts.push(Constant::Int(0));
+                    instrs.push(Instruction::abx(OpCode::LoadK, r, kidx)); r
+                };
+                let er = if let Some(e) = end { self.lower_expr(e, ra, consts, instrs) } else {
+                    let r = ra.alloc_temp(); let kidx = consts.len() as u16; consts.push(Constant::Int(0));
+                    instrs.push(Instruction::abx(OpCode::LoadK, r, kidx)); r
+                };
+                let dest = ra.alloc_temp();
+                let start_reg = ra.alloc_temp();
+                ra.alloc_temp(); // for end
+                if sr != start_reg { instrs.push(Instruction::abc(OpCode::Move, start_reg, sr, 0)); }
+                if er != start_reg + 1 { instrs.push(Instruction::abc(OpCode::Move, start_reg + 1, er, 0)); }
+                instrs.push(Instruction::abc(OpCode::Intrinsic, dest, IntrinsicId::Range as u8, start_reg));
+                dest
+            }
+            Expr::TryExpr(inner, _) => {
+                let ir = self.lower_expr(inner, ra, consts, instrs);
+                let dest = ra.alloc_temp();
+                // Check if result is err variant
+                let err_idx = self.intern_string("err");
+                instrs.push(Instruction::abx(OpCode::IsVariant, ir, err_idx));
+                // IsVariant: if matched (is err), skip next instruction
+                // If err: skip Jmp -> go to Return(err)
+                // If ok: execute Jmp -> jump over return
+                let jmp_ok = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // jump past return-err
+                // Return the error as-is
+                instrs.push(Instruction::abc(OpCode::Return, ir, 1, 0));
+                // Patch jump
+                let after = instrs.len();
+                instrs[jmp_ok] = Instruction::sax(OpCode::Jmp, (after - jmp_ok - 1) as i32);
+                // Unbox ok value
+                instrs.push(Instruction::abc(OpCode::Unbox, dest, ir, 0));
+                dest
+            }
+            Expr::NullCoalesce(lhs, rhs, _) => {
+                let lr = self.lower_expr(lhs, ra, consts, instrs);
+                let rr = self.lower_expr(rhs, ra, consts, instrs);
+                let dest = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::NullCo, dest, lr, rr));
+                dest
+            }
+            Expr::NullSafeAccess(obj, field, _) => {
+                let or = self.lower_expr(obj, ra, consts, instrs);
+                let dest = ra.alloc_temp();
+                // Test if obj is null
+                let nil_reg = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::LoadNil, nil_reg, 0, 0));
+                let cmp = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::Eq, cmp, or, nil_reg));
+                instrs.push(Instruction::abc(OpCode::Test, cmp, 0, 0));
+                let jmp_null = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0));
+                // Not null: get field
+                let fidx = self.intern_string(field);
+                instrs.push(Instruction::abc(OpCode::GetField, dest, or, fidx as u8));
+                let jmp_end = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0));
+                // Null case: load nil
+                let null_start = instrs.len();
+                instrs[jmp_null] = Instruction::sax(OpCode::Jmp, (null_start - jmp_null - 1) as i32);
+                instrs.push(Instruction::abc(OpCode::LoadNil, dest, 0, 0));
+                let after = instrs.len();
+                instrs[jmp_end] = Instruction::sax(OpCode::Jmp, (after - jmp_end - 1) as i32);
+                dest
+            }
+            Expr::NullAssert(inner, _) => {
+                let ir = self.lower_expr(inner, ra, consts, instrs);
+                // If null, halt with error
+                let nil_reg = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::LoadNil, nil_reg, 0, 0));
+                let cmp = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::Eq, cmp, ir, nil_reg));
+                instrs.push(Instruction::abc(OpCode::Test, cmp, 0, 0));
+                let jmp_ok = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0));
+                // Null case: halt
+                let msg_idx = consts.len() as u16;
+                consts.push(Constant::String("null assertion failed".to_string()));
+                let msg_reg = ra.alloc_temp();
+                instrs.push(Instruction::abx(OpCode::LoadK, msg_reg, msg_idx));
+                instrs.push(Instruction::abc(OpCode::Halt, msg_reg, 0, 0));
+                // Patch jump
+                let after = instrs.len();
+                instrs[jmp_ok] = Instruction::sax(OpCode::Jmp, (after - jmp_ok - 1) as i32);
+                ir
+            }
+            Expr::SpreadExpr(inner, _) => {
+                self.lower_expr(inner, ra, consts, instrs)
+            }
+            Expr::IfExpr { cond, then_val, else_val, .. } => {
+                let cond_reg = self.lower_expr(cond, ra, consts, instrs);
+                let dest = ra.alloc_temp();
+                let true_reg = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::LoadBool, true_reg, 1, 0));
+                let cmp = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::Eq, cmp, cond_reg, true_reg));
+                instrs.push(Instruction::abc(OpCode::Test, cmp, 0, 0));
+                let jmp_idx = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0));
+
+                let then_reg = self.lower_expr(then_val, ra, consts, instrs);
+                instrs.push(Instruction::abc(OpCode::Move, dest, then_reg, 0));
+                let else_jmp = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0));
+
+                let else_start = instrs.len();
+                instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, (else_start - jmp_idx - 1) as i32);
+                let else_reg = self.lower_expr(else_val, ra, consts, instrs);
+                instrs.push(Instruction::abc(OpCode::Move, dest, else_reg, 0));
+
+                let after = instrs.len();
+                instrs[else_jmp] = Instruction::sax(OpCode::Jmp, (after - else_jmp - 1) as i32);
+                dest
+            }
+            Expr::AwaitExpr(inner, _) => {
+                let ir = self.lower_expr(inner, ra, consts, instrs);
+                let dest = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::Await, dest, ir, 0));
+                dest
+            }
+            Expr::Comprehension { body, var, iter, condition, kind: _, span: _ } => {
+                // Lower as: result = []; for var in iter { if cond { append(result, body) } }
+                let dest = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::NewList, dest, 0, 0));
+
+                let iter_reg = self.lower_expr(iter, ra, consts, instrs);
+                let idx_reg = ra.alloc_temp();
+                let len_reg = ra.alloc_temp();
+                let elem_reg = ra.alloc_named(var);
+
+                let zero_idx = consts.len() as u16;
+                consts.push(Constant::Int(0));
+                instrs.push(Instruction::abx(OpCode::LoadK, idx_reg, zero_idx));
+                instrs.push(Instruction::abc(OpCode::Intrinsic, len_reg, IntrinsicId::Length as u8, iter_reg));
+
+                let loop_start = instrs.len();
+                let lt_reg = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::Lt, lt_reg, idx_reg, len_reg));
+                instrs.push(Instruction::abc(OpCode::Test, lt_reg, 0, 0));
+                let break_jmp = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0));
+
+                instrs.push(Instruction::abc(OpCode::GetIndex, elem_reg, iter_reg, idx_reg));
+
+                // Optional condition
+                let mut cond_jmp = None;
+                if let Some(ref cond) = condition {
+                    let cr = self.lower_expr(cond, ra, consts, instrs);
+                    let tr = ra.alloc_temp();
+                    instrs.push(Instruction::abc(OpCode::LoadBool, tr, 1, 0));
+                    let cmp = ra.alloc_temp();
+                    instrs.push(Instruction::abc(OpCode::Eq, cmp, cr, tr));
+                    instrs.push(Instruction::abc(OpCode::Test, cmp, 0, 0));
+                    cond_jmp = Some(instrs.len());
+                    instrs.push(Instruction::sax(OpCode::Jmp, 0));
+                }
+
+                let body_reg = self.lower_expr(body, ra, consts, instrs);
+                instrs.push(Instruction::abc(OpCode::Intrinsic, dest, IntrinsicId::Append as u8, body_reg));
+
+                if let Some(cj) = cond_jmp {
+                    let after_body = instrs.len();
+                    instrs[cj] = Instruction::sax(OpCode::Jmp, (after_body - cj - 1) as i32);
+                }
+
+                let one_idx = consts.len() as u16;
+                consts.push(Constant::Int(1));
+                let one_reg = ra.alloc_temp();
+                instrs.push(Instruction::abx(OpCode::LoadK, one_reg, one_idx));
+                instrs.push(Instruction::abc(OpCode::Add, idx_reg, idx_reg, one_reg));
+
+                let back_offset = loop_start as i32 - instrs.len() as i32 - 1;
+                instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
+
+                let after_loop = instrs.len();
+                instrs[break_jmp] = Instruction::sax(OpCode::Jmp, (after_loop - break_jmp - 1) as i32);
+                dest
+            }
         }
     }
 }
@@ -830,6 +1225,19 @@ fn format_type_expr(ty: &TypeExpr) -> String {
         TypeExpr::Result(ok, err, _) => format!("result[{}, {}]", format_type_expr(ok), format_type_expr(err)),
         TypeExpr::Union(types, _) => types.iter().map(format_type_expr).collect::<Vec<_>>().join(" | "),
         TypeExpr::Null(_) => "Null".to_string(),
+        TypeExpr::Tuple(types, _) => {
+            let inner: Vec<_> = types.iter().map(format_type_expr).collect();
+            format!("({})", inner.join(", "))
+        }
+        TypeExpr::Set(inner, _) => format!("set[{}]", format_type_expr(inner)),
+        TypeExpr::Fn(params, ret, _) => {
+            let ps: Vec<_> = params.iter().map(format_type_expr).collect();
+            format!("fn({}) -> {}", ps.join(", "), format_type_expr(ret))
+        }
+        TypeExpr::Generic(name, args, _) => {
+            let as_: Vec<_> = args.iter().map(format_type_expr).collect();
+            format!("{}[{}]", name, as_.join(", "))
+        }
     }
 }
 

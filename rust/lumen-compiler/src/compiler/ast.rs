@@ -25,6 +25,12 @@ pub enum Item {
     Cell(CellDef),
     UseTool(UseToolDecl),
     Grant(GrantDecl),
+    TypeAlias(TypeAliasDef),
+    Trait(TraitDef),
+    Impl(ImplDef),
+    Import(ImportDecl),
+    ConstDecl(ConstDeclDef),
+    MacroDecl(MacroDeclDef),
 }
 
 impl Item {
@@ -35,6 +41,12 @@ impl Item {
             Item::Cell(c) => c.span,
             Item::UseTool(u) => u.span,
             Item::Grant(g) => g.span,
+            Item::TypeAlias(t) => t.span,
+            Item::Trait(t) => t.span,
+            Item::Impl(i) => i.span,
+            Item::Import(i) => i.span,
+            Item::ConstDecl(c) => c.span,
+            Item::MacroDecl(m) => m.span,
         }
     }
 }
@@ -56,6 +68,14 @@ pub enum TypeExpr {
     Union(Vec<TypeExpr>, Span),
     /// Null type
     Null(Span),
+    /// Tuple type: (A, B, C)
+    Tuple(Vec<TypeExpr>, Span),
+    /// Set type: set[T]
+    Set(Box<TypeExpr>, Span),
+    /// Function type: fn(A, B) -> C
+    Fn(Vec<TypeExpr>, Box<TypeExpr>, Span),
+    /// Generic type: Name[T, U]
+    Generic(String, Vec<TypeExpr>, Span),
 }
 
 impl TypeExpr {
@@ -67,8 +87,21 @@ impl TypeExpr {
             TypeExpr::Result(_, _, s) => *s,
             TypeExpr::Union(_, s) => *s,
             TypeExpr::Null(s) => *s,
+            TypeExpr::Tuple(_, s) => *s,
+            TypeExpr::Set(_, s) => *s,
+            TypeExpr::Fn(_, _, s) => *s,
+            TypeExpr::Generic(_, _, s) => *s,
         }
     }
+}
+
+// ── Generic parameters ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenericParam {
+    pub name: String,
+    pub bounds: Vec<String>,
+    pub span: Span,
 }
 
 // ── Records ──
@@ -76,7 +109,9 @@ impl TypeExpr {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordDef {
     pub name: String,
+    pub generic_params: Vec<GenericParam>,
     pub fields: Vec<FieldDef>,
+    pub is_pub: bool,
     pub span: Span,
 }
 
@@ -84,6 +119,7 @@ pub struct RecordDef {
 pub struct FieldDef {
     pub name: String,
     pub ty: TypeExpr,
+    pub default_value: Option<Expr>,
     pub constraint: Option<Expr>,
     pub span: Span,
 }
@@ -93,7 +129,10 @@ pub struct FieldDef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnumDef {
     pub name: String,
+    pub generic_params: Vec<GenericParam>,
     pub variants: Vec<EnumVariant>,
+    pub methods: Vec<CellDef>,
+    pub is_pub: bool,
     pub span: Span,
 }
 
@@ -109,9 +148,13 @@ pub struct EnumVariant {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CellDef {
     pub name: String,
+    pub generic_params: Vec<GenericParam>,
     pub params: Vec<Param>,
     pub return_type: Option<TypeExpr>,
     pub body: Vec<Stmt>,
+    pub is_pub: bool,
+    pub is_async: bool,
+    pub where_clauses: Vec<Expr>,
     pub span: Span,
 }
 
@@ -119,10 +162,85 @@ pub struct CellDef {
 pub struct Param {
     pub name: String,
     pub ty: TypeExpr,
+    pub default_value: Option<Expr>,
+    pub span: Span,
+}
+
+// ── Type aliases, traits, impls, imports ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypeAliasDef {
+    pub name: String,
+    pub generic_params: Vec<GenericParam>,
+    pub type_expr: TypeExpr,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraitDef {
+    pub name: String,
+    pub parent_traits: Vec<String>,
+    pub methods: Vec<CellDef>,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImplDef {
+    pub trait_name: String,
+    pub generic_params: Vec<GenericParam>,
+    pub target_type: String,
+    pub cells: Vec<CellDef>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ImportList {
+    Names(Vec<ImportName>),
+    Wildcard,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportName {
+    pub name: String,
+    pub alias: Option<String>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportDecl {
+    pub path: Vec<String>,
+    pub names: ImportList,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstDeclDef {
+    pub name: String,
+    pub type_ann: Option<TypeExpr>,
+    pub value: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MacroDeclDef {
+    pub name: String,
+    pub params: Vec<String>,
+    pub body: Vec<Stmt>,
     pub span: Span,
 }
 
 // ── Statements ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CompoundOp {
+    AddAssign,
+    SubAssign,
+    MulAssign,
+    DivAssign,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Stmt {
@@ -134,6 +252,12 @@ pub enum Stmt {
     Halt(HaltStmt),
     Assign(AssignStmt),
     Expr(ExprStmt),
+    While(WhileStmt),
+    Loop(LoopStmt),
+    Break(BreakStmt),
+    Continue(ContinueStmt),
+    Emit(EmitStmt),
+    CompoundAssign(CompoundAssignStmt),
 }
 
 impl Stmt {
@@ -147,6 +271,12 @@ impl Stmt {
             Stmt::Halt(s) => s.span,
             Stmt::Assign(s) => s.span,
             Stmt::Expr(s) => s.span,
+            Stmt::While(s) => s.span,
+            Stmt::Loop(s) => s.span,
+            Stmt::Break(s) => s.span,
+            Stmt::Continue(s) => s.span,
+            Stmt::Emit(s) => s.span,
+            Stmt::CompoundAssign(s) => s.span,
         }
     }
 }
@@ -154,6 +284,8 @@ impl Stmt {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LetStmt {
     pub name: String,
+    pub mutable: bool,
+    pub pattern: Option<Pattern>,
     pub ty: Option<TypeExpr>,
     pub value: Expr,
     pub span: Span,
@@ -199,6 +331,18 @@ pub enum Pattern {
     Wildcard(Span),
     /// Ident binding
     Ident(String, Span),
+    /// Guard: pattern if condition
+    Guard { inner: Box<Pattern>, condition: Box<Expr>, span: Span },
+    /// Or: pattern1 | pattern2
+    Or { patterns: Vec<Pattern>, span: Span },
+    /// List destructure: [a, b, ...rest]
+    ListDestructure { elements: Vec<Pattern>, rest: Option<String>, span: Span },
+    /// Tuple destructure: (a, b, c)
+    TupleDestructure { elements: Vec<Pattern>, span: Span },
+    /// Record destructure: TypeName(field1:, field2: pat, ..)
+    RecordDestructure { type_name: String, fields: Vec<(String, Option<Pattern>)>, open: bool, span: Span },
+    /// Type check: name: Type
+    TypeCheck { name: String, type_expr: Box<TypeExpr>, span: Span },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -226,7 +370,60 @@ pub struct AssignStmt {
     pub span: Span,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhileStmt {
+    pub condition: Expr,
+    pub body: Vec<Stmt>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoopStmt {
+    pub body: Vec<Stmt>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BreakStmt {
+    pub value: Option<Expr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContinueStmt {
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmitStmt {
+    pub value: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompoundAssignStmt {
+    pub target: String,
+    pub op: CompoundOp,
+    pub value: Expr,
+    pub span: Span,
+}
+
 // ── Expressions ──
+
+/// Lambda body can be a single expression or a block
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LambdaBody {
+    Expr(Box<Expr>),
+    Block(Vec<Stmt>),
+}
+
+/// Comprehension kinds
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ComprehensionKind {
+    List,
+    Map,
+    Set,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Expr {
@@ -242,6 +439,10 @@ pub enum Expr {
     BoolLit(bool, Span),
     /// Null literal
     NullLit(Span),
+    /// Raw string literal
+    RawStringLit(String, Span),
+    /// Bytes literal
+    BytesLit(Vec<u8>, Span),
     /// Variable reference
     Ident(String, Span),
     /// List literal: [a, b, c]
@@ -266,6 +467,30 @@ pub enum Expr {
     RoleBlock(String, Box<Expr>, Span),
     /// expect schema Type
     ExpectSchema(Box<Expr>, String, Span),
+    /// Lambda: fn(params) -> type => expr | fn(params) block end
+    Lambda { params: Vec<Param>, return_type: Option<Box<TypeExpr>>, body: LambdaBody, span: Span },
+    /// Tuple literal: (a, b, c)
+    TupleLit(Vec<Expr>, Span),
+    /// Set literal: set[a, b, c]
+    SetLit(Vec<Expr>, Span),
+    /// Range expression: start..end or start..=end
+    RangeExpr { start: Option<Box<Expr>>, end: Option<Box<Expr>>, inclusive: bool, step: Option<Box<Expr>>, span: Span },
+    /// Postfix try: expr?
+    TryExpr(Box<Expr>, Span),
+    /// Null coalescing: lhs ?? rhs
+    NullCoalesce(Box<Expr>, Box<Expr>, Span),
+    /// Null-safe access: expr?.field
+    NullSafeAccess(Box<Expr>, String, Span),
+    /// Null assert: expr!
+    NullAssert(Box<Expr>, Span),
+    /// Spread: ...expr
+    SpreadExpr(Box<Expr>, Span),
+    /// If expression: if cond then a else b
+    IfExpr { cond: Box<Expr>, then_val: Box<Expr>, else_val: Box<Expr>, span: Span },
+    /// Await expression: await expr
+    AwaitExpr(Box<Expr>, Span),
+    /// Comprehension: [expr for pat in iter if cond]
+    Comprehension { body: Box<Expr>, var: String, iter: Box<Expr>, condition: Option<Box<Expr>>, kind: ComprehensionKind, span: Span },
 }
 
 impl Expr {
@@ -277,6 +502,8 @@ impl Expr {
             | Expr::StringInterp(_, s)
             | Expr::BoolLit(_, s)
             | Expr::NullLit(s)
+            | Expr::RawStringLit(_, s)
+            | Expr::BytesLit(_, s)
             | Expr::Ident(_, s)
             | Expr::ListLit(_, s)
             | Expr::MapLit(_, s)
@@ -288,7 +515,19 @@ impl Expr {
             | Expr::DotAccess(_, _, s)
             | Expr::IndexAccess(_, _, s)
             | Expr::RoleBlock(_, _, s)
-            | Expr::ExpectSchema(_, _, s) => *s,
+            | Expr::ExpectSchema(_, _, s)
+            | Expr::TupleLit(_, s)
+            | Expr::SetLit(_, s)
+            | Expr::TryExpr(_, s)
+            | Expr::NullCoalesce(_, _, s)
+            | Expr::NullSafeAccess(_, _, s)
+            | Expr::NullAssert(_, s)
+            | Expr::SpreadExpr(_, s)
+            | Expr::AwaitExpr(_, s) => *s,
+            Expr::Lambda { span, .. } => *span,
+            Expr::RangeExpr { span, .. } => *span,
+            Expr::IfExpr { span, .. } => *span,
+            Expr::Comprehension { span, .. } => *span,
         }
     }
 }
@@ -321,6 +560,13 @@ pub enum BinOp {
     GtEq,
     And,
     Or,
+    Pow,
+    PipeForward,
+    Concat,
+    In,
+    BitAnd,
+    BitOr,
+    BitXor,
 }
 
 impl fmt::Display for BinOp {
@@ -339,6 +585,13 @@ impl fmt::Display for BinOp {
             BinOp::GtEq => write!(f, ">="),
             BinOp::And => write!(f, "and"),
             BinOp::Or => write!(f, "or"),
+            BinOp::Pow => write!(f, "**"),
+            BinOp::PipeForward => write!(f, "|>"),
+            BinOp::Concat => write!(f, "++"),
+            BinOp::In => write!(f, "in"),
+            BinOp::BitAnd => write!(f, "&"),
+            BinOp::BitOr => write!(f, "|"),
+            BinOp::BitXor => write!(f, "^"),
         }
     }
 }
@@ -349,6 +602,7 @@ use std::fmt;
 pub enum UnaryOp {
     Neg,
     Not,
+    BitNot,
 }
 
 // ── Tool Declarations ──

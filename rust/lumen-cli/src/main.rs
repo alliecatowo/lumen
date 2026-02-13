@@ -1,6 +1,7 @@
 //! Lumen CLI — command-line interface for the Lumen language.
 
 mod config;
+mod fmt;
 mod pkg;
 mod repl;
 
@@ -65,6 +66,14 @@ enum Commands {
         #[command(subcommand)]
         sub: PkgCommands,
     },
+    /// Format Lumen source files
+    Fmt {
+        /// Files to format (or stdin)
+        files: Vec<PathBuf>,
+        /// Check mode: exit 1 if files would change
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -126,6 +135,7 @@ fn main() {
             PkgCommands::Build => pkg::cmd_pkg_build(),
             PkgCommands::Check => pkg::cmd_pkg_check(),
         },
+        Commands::Fmt { files, check } => cmd_fmt(files, check),
     }
 }
 
@@ -260,4 +270,23 @@ fn cmd_init() {
         std::process::exit(1);
     });
     println!("created lumen.toml");
+}
+
+fn cmd_fmt(files: Vec<PathBuf>, check: bool) {
+    if files.is_empty() {
+        eprintln!("error: no files specified");
+        std::process::exit(1);
+    }
+
+    match fmt::format_files(&files, check) {
+        Ok(needs_formatting) => {
+            if check && needs_formatting {
+                std::process::exit(1);
+            }
+        }
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    }
 }

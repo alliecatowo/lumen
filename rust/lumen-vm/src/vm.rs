@@ -891,23 +891,31 @@ impl VM {
                             self.registers[base + a] = Value::Null;
                             continue;
                         };
-                        // Build args from subsequent registers
                         let mut args_map = serde_json::Map::new();
-                        // Simple: first arg after A is the arguments map
-                        if let Value::Map(m) = &self.registers[base + a + 1] {
+                        let arg_map_reg = match &self.registers[base + a] {
+                            Value::Map(_) => base + a,
+                            _ => base + a + 1, // backward compatibility
+                        };
+                        if let Value::Map(m) = &self.registers[arg_map_reg] {
                             for (k, v) in m {
                                 args_map.insert(k.clone(), value_to_json(v));
                             }
                         }
+
+                        let args_json = serde_json::Value::Object(args_map);
+                        let policy = merged_policy_for_tool(module, &tool.alias);
+                        if let Err(msg) = validate_tool_policy(&policy, &args_json) {
+                            return Err(VmError::ToolError(format!(
+                                "policy violation for '{}': {}",
+                                tool.alias, msg
+                            )));
+                        }
+
                         let request = ToolRequest {
                             tool_id: tool.tool_id.clone(),
                             version: tool.version.clone(),
-                            args: serde_json::Value::Object(args_map),
-                            policy: if bx < module.policies.len() {
-                                module.policies[bx].grants.clone()
-                            } else {
-                                serde_json::Value::Null
-                            },
+                            args: args_json,
+                            policy,
                         };
                         match dispatcher.dispatch(&request) {
                             Ok(response) => {
@@ -2784,6 +2792,115 @@ fn process_instance_id(value: Option<&Value>) -> Option<u64> {
     Some(*id as u64)
 }
 
+fn merged_policy_for_tool(module: &LirModule, alias: &str) -> serde_json::Value {
+    let mut merged = serde_json::Map::new();
+    for policy in &module.policies {
+        if policy.tool_alias != alias {
+            continue;
+        }
+        if let serde_json::Value::Object(obj) = &policy.grants {
+            for (k, v) in obj {
+                merged.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    serde_json::Value::Object(merged)
+}
+
+fn validate_tool_policy(policy: &serde_json::Value, args: &serde_json::Value) -> Result<(), String> {
+    let serde_json::Value::Object(policy_obj) = policy else {
+        return Ok(());
+    };
+    let serde_json::Value::Object(args_obj) = args else {
+        return Ok(());
+    };
+
+    for (key, constraint) in policy_obj {
+        match key.as_str() {
+            "domain" => {
+                let pattern = constraint
+                    .as_str()
+                    .ok_or_else(|| "domain constraint must be a string".to_string())?;
+                let url = args_obj
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "domain policy requires string 'url' argument".to_string())?;
+                if !domain_matches(pattern, url) {
+                    return Err(format!("domain '{}' does not allow '{}'", pattern, url));
+                }
+            }
+            "timeout_ms" => {
+                let max_timeout = constraint
+                    .as_i64()
+                    .ok_or_else(|| "timeout_ms constraint must be an integer".to_string())?;
+                if let Some(actual) = args_obj.get("timeout_ms").and_then(|v| v.as_i64()) {
+                    if actual > max_timeout {
+                        return Err(format!(
+                            "timeout_ms {} exceeds allowed {}",
+                            actual, max_timeout
+                        ));
+                    }
+                }
+            }
+            "max_tokens" => {
+                let max_tokens = constraint
+                    .as_i64()
+                    .ok_or_else(|| "max_tokens constraint must be an integer".to_string())?;
+                if let Some(actual) = args_obj.get("max_tokens").and_then(|v| v.as_i64()) {
+                    if actual > max_tokens {
+                        return Err(format!(
+                            "max_tokens {} exceeds allowed {}",
+                            actual, max_tokens
+                        ));
+                    }
+                }
+            }
+            _ => {
+                if let Some(actual) = args_obj.get(key) {
+                    if actual != constraint {
+                        return Err(format!(
+                            "argument '{}' value {} violates required {}",
+                            key, actual, constraint
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn domain_matches(pattern: &str, url: &str) -> bool {
+    let host = extract_host(url);
+    if host.is_empty() {
+        return false;
+    }
+
+    let pattern = pattern.to_ascii_lowercase();
+    let host = host.to_ascii_lowercase();
+    if let Some(suffix) = pattern.strip_prefix("*.") {
+        return host == suffix || host.ends_with(&format!(".{}", suffix));
+    }
+    host == pattern
+}
+
+fn extract_host(url: &str) -> String {
+    let without_scheme = if let Some((_, rest)) = url.split_once("://") {
+        rest
+    } else {
+        url
+    };
+    without_scheme
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// Convert a Lumen Value to a serde_json Value.
 fn value_to_json(val: &Value) -> serde_json::Value {
     match val {
@@ -2923,6 +3040,7 @@ impl Default for VM {
 mod tests {
     use super::*;
     use lumen_compiler::compile as compile_lumen;
+    use lumen_runtime::tools::StubDispatcher;
 
     fn run_main(source: &str) -> Value {
         let md = format!("# test\n\n```lumen\n{}\n```\n", source.trim());
@@ -2930,6 +3048,15 @@ mod tests {
         let mut vm = VM::new();
         vm.load(module);
         vm.execute("main", vec![]).expect("main should execute")
+    }
+
+    fn run_main_with_dispatcher(source: &str, dispatcher: StubDispatcher) -> Result<Value, VmError> {
+        let md = format!("# test\n\n```lumen\n{}\n```\n", source.trim());
+        let module = compile_lumen(&md).expect("source should compile");
+        let mut vm = VM::new();
+        vm.tool_dispatcher = Some(Box::new(dispatcher));
+        vm.load(module);
+        vm.execute("main", vec![])
     }
 
     fn make_return_42() -> LirModule {
@@ -3491,5 +3618,54 @@ end
 "#,
         );
         assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn test_tool_alias_call_dispatches_to_runtime_tool() {
+        let mut dispatcher = StubDispatcher::new();
+        dispatcher.set_response("http.get", serde_json::json!({"body": "ok"}));
+
+        let result = run_main_with_dispatcher(
+            r#"
+use tool http.get as HttpGet
+grant HttpGet
+
+cell main() -> String / {http}
+  let resp = HttpGet(url: "https://api.example.com")
+  return resp.body
+end
+"#,
+            dispatcher,
+        )
+        .expect("tool call should succeed");
+
+        assert_eq!(result, Value::String(StringRef::Owned("ok".to_string())));
+    }
+
+    #[test]
+    fn test_tool_policy_violation_blocks_dispatch() {
+        let mut dispatcher = StubDispatcher::new();
+        dispatcher.set_response("http.get", serde_json::json!({"body": "ok"}));
+
+        let err = run_main_with_dispatcher(
+            r#"
+use tool http.get as HttpGet
+grant HttpGet
+  domain "*.example.com"
+
+cell main() -> String / {http}
+  let resp = HttpGet(url: "https://malicious.tld")
+  return resp.body
+end
+"#,
+            dispatcher,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("policy violation"),
+            "expected policy violation error, got: {}",
+            err
+        );
     }
 }

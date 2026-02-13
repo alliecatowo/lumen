@@ -1,6 +1,7 @@
 # Lumen Code
 
-**Lumen** is a domain-specific language (DSL) designed for **AI-agentic workflows**. It bridges the gap between natural language prompts and structured programming, enabling developers to build reliable, type-safe, and observable AI applications.
+**Lumen** is a statically typed, general-purpose programming language for AI-native systems.
+It is designed to compete with mainstream languages on rigor, tooling, and runtime behavior while providing first-class primitives for agents, effects, orchestration, and policy.
 
 ## 🌟 Key Features
 
@@ -10,6 +11,8 @@
 *   **Structured Data**: Native JSON-like records and maps with strict schema validation.
 *   **Resilience**: `result[Ok, Err]` error handling and `expect schema` validation instructions.
 *   **Constraint Validation**: `where` clauses on record fields for runtime invariants.
+*   **Effect Rows + Strict Mode**: Inferred/declared effects with strict diagnostics and deterministic-profile enforcement.
+*   **Process Runtime Objects**: `pipeline`, `orchestration`, `memory`, and `machine` declarations compile to executable constructors and methods.
 
 ## 🚀 Getting Started
 
@@ -73,7 +76,21 @@ end
 
 *   **lumen-cli**: Command-line interface (`run`, `check`, `fmt`).
 *   **lumen-compiler**: Lexer, Parser, Typechecker, and Lowerer (AST -> LIR).
-*   **lumen-vm**: Stack-based virtual machine interacting with LLMs and Tools.
+*   **lumen-vm**: Register-based VM executing LIR with tool dispatch, process runtime state, and futures.
+
+## 🎯 Direction
+
+Lumen is not being developed as a narrow embedded DSL. The goal is a full language platform:
+
+*   production-grade compiler diagnostics and static guarantees
+*   deterministic execution profiles for orchestrations
+*   first-class capabilities/effects and policy enforcement
+*   high-quality tooling (formatter, language server, package workflow)
+
+Current research-driven audit and roadmap:
+
+*   `docs/LANGUAGE_AUDIT_2026-02-13.md`
+*   `docs/LANGUAGE_COMPETITOR_AUDIT_2026-02-13.md`
 
 ## 🤝 Contributing
 

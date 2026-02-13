@@ -298,6 +298,7 @@ Capability checks use grant scope:
 - top-level cells use top-level `grant` declarations
 - agent/process methods use top-level grants plus local grants declared in that agent/process
 - effect bindings (`bind effect ... to <ToolAlias>`) are preferred for mapping custom/bound effects to tools
+- grant policies may restrict allowed effects via `effect`/`effects` constraints; resolver enforces these restrictions
 
 ## 7.4 Deterministic Profile
 

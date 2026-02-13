@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Lumen Markdown Code Blocks",
+  "scopeName": "markdown.lumen.codeblock",
+  "injectionSelector": "L:text.html.markdown",
+  "patterns": [
+    { "include": "#lumen-fenced-code-block" },
+    { "include": "#lumen-directive" }
+  ],
+  "repository": {
+    "lumen-fenced-code-block": {
+      "begin": "(^|\\G)(\\s*)(```)(lumen)\\s*$",
+      "end": "(^|\\G)(\\2)(```)\\s*$",
+      "beginCaptures": {
+        "3": { "name": "punctuation.definition.markdown" },
+        "4": { "name": "fenced_code.block.language.markdown" }
+      },
+      "endCaptures": {
+        "3": { "name": "punctuation.definition.markdown" }
+      },
+      "name": "markup.fenced_code.block.markdown",
+      "contentName": "meta.embedded.block.lumen",
+      "patterns": [
+        { "include": "source.lumen" }
+      ]
+    },
+    "lumen-directive": {
+      "patterns": [
+        {
+          "name": "keyword.preprocessor.lumen",
+          "match": "^@(deterministic|version|doc_mode|location|strict)\\b.*$"
+        }
+      ]
+    }
+  }
+}

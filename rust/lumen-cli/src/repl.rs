@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use lumen_vm::values::Value;
@@ -166,6 +166,97 @@ const BUILTINS: &[&str] = &[
     "decode",
 ];
 
+/// Canonical intrinsic names recognized by the compiler.
+const KNOWN_INTRINSICS: &[&str] = &[
+    "print",
+    "len",
+    "range",
+    "to_string",
+    "to_int",
+    "to_float",
+    "type_of",
+    "keys",
+    "values",
+    "join",
+    "split",
+    "append",
+    "contains",
+    "slice",
+    "min",
+    "max",
+    "matches",
+    "trace_ref",
+    "abs",
+    "sort",
+    "reverse",
+    "map",
+    "filter",
+    "reduce",
+    "flat_map",
+    "zip",
+    "enumerate",
+    "any",
+    "all",
+    "find",
+    "position",
+    "group_by",
+    "chunk",
+    "window",
+    "flatten",
+    "unique",
+    "take",
+    "drop",
+    "first",
+    "last",
+    "is_empty",
+    "chars",
+    "starts_with",
+    "ends_with",
+    "index_of",
+    "pad_left",
+    "pad_right",
+    "trim",
+    "upper",
+    "lower",
+    "replace",
+    "round",
+    "ceil",
+    "floor",
+    "sqrt",
+    "pow",
+    "log",
+    "sin",
+    "cos",
+    "clamp",
+    "clone",
+    "sizeof",
+    "debug",
+    "count",
+    "hash",
+    "diff",
+    "patch",
+    "redact",
+    "validate",
+    "has_key",
+    "merge",
+    "size",
+    "add",
+    "remove",
+    "entries",
+];
+
+/// Alias name -> canonical intrinsic name.
+const INTRINSIC_ALIASES: &[(&str, &str)] = &[
+    ("length", "len"),
+    ("str", "to_string"),
+    ("string", "to_string"),
+    ("int", "to_int"),
+    ("float", "to_float"),
+    ("type", "type_of"),
+    ("has", "contains"),
+    ("confirm", "matches"),
+];
+
 /// Type names for tab completion.
 const TYPES: &[&str] = &[
     "Int", "Float", "String", "Bool", "Any", "Null", "Bytes", "List", "Tuple", "Set", "Map",
@@ -174,8 +265,11 @@ const TYPES: &[&str] = &[
 
 /// REPL commands for tab completion.
 const COMMANDS: &[&str] = &[
-    ":help", ":quit", ":reset", ":type", ":clear", ":history", ":load", ":env", ":time",
+    ":help", ":quit", ":reset", ":type", ":clear", ":history", ":load", ":env", ":time", ":doc",
 ];
+
+/// Environment variable used to override REPL history location.
+const REPL_HISTORY_PATH_ENV: &str = "LUMEN_REPL_HISTORY_PATH";
 
 /// Completer for the REPL.
 struct LumenCompleter;
@@ -296,17 +390,92 @@ impl SessionState {
 
 /// Extract the primary symbol name from a definition (cell name, record name, etc.).
 fn extract_symbol_name(input: &str) -> Option<String> {
-    let words: Vec<&str> = input.split_whitespace().collect();
-    if words.len() < 2 {
+    let mut words = input.split_whitespace();
+    let keyword = words.next()?;
+
+    let raw_name = match keyword {
+        "type" => {
+            let next = words.next()?;
+            if next == "alias" {
+                words.next()?
+            } else {
+                next
+            }
+        }
+        _ if ITEM_KEYWORDS.contains(&keyword) => words.next()?,
+        _ => return None,
+    };
+
+    let cleaned = raw_name
+        .split(&['(', '<', '[', '{', ':', '=', ','][..])
+        .next()
+        .unwrap_or("");
+    if cleaned.is_empty() {
         return None;
     }
-    match words[0] {
-        "cell" | "record" | "enum" | "process" | "agent" | "effect" | "type" => {
-            // Name is second word, possibly followed by generics/parens
-            let name = words[1].split(&['(', '<', '['][..]).next()?;
-            Some(name.to_string())
-        }
-        _ => None,
+    Some(cleaned.to_string())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ReplCommand<'a> {
+    Quit,
+    Help,
+    Reset,
+    Clear,
+    History,
+    Env,
+    Type(&'a str),
+    Load(&'a str),
+    Time(&'a str),
+    Doc(&'a str),
+    DocIndex,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ParsedCommand<'a> {
+    NotACommand,
+    UnknownCommand,
+    InvalidUsage(&'static str),
+    Command(ReplCommand<'a>),
+}
+
+fn parse_repl_command(line: &str) -> ParsedCommand<'_> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with(':') {
+        return ParsedCommand::NotACommand;
+    }
+
+    let mut parts = trimmed.splitn(2, char::is_whitespace);
+    let cmd = parts.next().unwrap_or("");
+    let arg = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    match cmd {
+        ":quit" | ":q" => ParsedCommand::Command(ReplCommand::Quit),
+        ":help" | ":h" => ParsedCommand::Command(ReplCommand::Help),
+        ":reset" | ":r" => ParsedCommand::Command(ReplCommand::Reset),
+        ":clear" | ":c" => ParsedCommand::Command(ReplCommand::Clear),
+        ":history" => ParsedCommand::Command(ReplCommand::History),
+        ":env" => ParsedCommand::Command(ReplCommand::Env),
+        ":type" | ":t" => match arg {
+            Some(expr) => ParsedCommand::Command(ReplCommand::Type(expr)),
+            None => ParsedCommand::InvalidUsage("Usage: :type <expr>"),
+        },
+        ":load" => match arg {
+            Some(path) => ParsedCommand::Command(ReplCommand::Load(path)),
+            None => ParsedCommand::InvalidUsage("Usage: :load <file>"),
+        },
+        ":time" => match arg {
+            Some(expr) => ParsedCommand::Command(ReplCommand::Time(expr)),
+            None => ParsedCommand::InvalidUsage("Usage: :time <expr>"),
+        },
+        ":doc" | ":d" => match arg {
+            Some(symbol) => ParsedCommand::Command(ReplCommand::Doc(symbol)),
+            None => ParsedCommand::Command(ReplCommand::DocIndex),
+        },
+        _ => ParsedCommand::UnknownCommand,
     }
 }
 
@@ -322,11 +491,18 @@ pub fn run_repl() {
     let mut rl = Editor::with_config(config).expect("Failed to create editor");
     rl.set_helper(Some(LumenCompleter));
 
-    // Load history from ~/.lumen/repl_history
+    // Load history from default or configured path.
     let history_path = get_history_path();
     if let Some(ref path) = history_path {
         if path.exists() {
-            let _ = rl.load_history(path);
+            if let Err(err) = rl.load_history(path) {
+                eprintln!(
+                    "{} failed to load history from {}: {}",
+                    red("Warning:"),
+                    path.display(),
+                    err
+                );
+            }
         }
     }
 
@@ -396,21 +572,70 @@ pub fn run_repl() {
     // Save history
     if let Some(ref path) = history_path {
         if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
+            if let Err(err) = fs::create_dir_all(parent) {
+                eprintln!(
+                    "{} failed to create history directory {}: {}",
+                    red("Warning:"),
+                    parent.display(),
+                    err
+                );
+            }
         }
-        let _ = rl.save_history(path);
+        if let Err(err) = rl.save_history(path) {
+            eprintln!(
+                "{} failed to save history to {}: {}",
+                red("Warning:"),
+                path.display(),
+                err
+            );
+        }
     }
 
     println!("\n{}", cyan("Goodbye!"));
 }
 
-/// Get the path to the REPL history file (~/.lumen/repl_history).
+/// Resolve the path to the history file.
+///
+/// Rules:
+/// - `LUMEN_REPL_HISTORY_PATH` set to an absolute path: use as-is.
+/// - `LUMEN_REPL_HISTORY_PATH` set to `~/...`: resolve under HOME.
+/// - `LUMEN_REPL_HISTORY_PATH` set to a relative path: resolve under HOME.
+/// - Otherwise: `${HOME}/.lumen/repl_history`.
+fn resolve_history_path(home: Option<&Path>, override_path: Option<&str>) -> Option<PathBuf> {
+    let home_path = || home.map(Path::to_path_buf);
+
+    if let Some(raw) = override_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if raw == "~" {
+            return home_path();
+        }
+        if let Some(rest) = raw.strip_prefix("~/") {
+            let mut path = home_path()?;
+            path.push(rest);
+            return Some(path);
+        }
+
+        let configured = PathBuf::from(raw);
+        if configured.is_relative() {
+            let mut base = home_path()?;
+            base.push(configured);
+            return Some(base);
+        }
+        return Some(configured);
+    }
+
+    let mut default_path = home_path()?;
+    default_path.push(".lumen");
+    default_path.push("repl_history");
+    Some(default_path)
+}
+
 fn get_history_path() -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let mut path = PathBuf::from(home);
-    path.push(".lumen");
-    path.push("repl_history");
-    Some(path)
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let override_path = std::env::var(REPL_HISTORY_PATH_ENV).ok();
+    resolve_history_path(home.as_deref(), override_path.as_deref())
 }
 
 /// Handle REPL commands. Returns Some(true) to continue, Some(false) to quit, None if not a command.
@@ -419,25 +644,32 @@ fn handle_command<H: Helper>(
     rl: &mut Editor<H, rustyline::history::DefaultHistory>,
     session_state: &mut SessionState,
 ) -> Option<bool> {
-    let trimmed = line.trim();
-
-    match trimmed {
-        ":quit" | ":q" => Some(false),
-        ":help" | ":h" => {
+    match parse_repl_command(line) {
+        ParsedCommand::NotACommand => None,
+        ParsedCommand::UnknownCommand => {
+            eprintln!("{} unknown command. Type :help for usage.", red("Error:"));
+            Some(true)
+        }
+        ParsedCommand::InvalidUsage(usage) => {
+            eprintln!("{} {}", red("Error:"), usage);
+            Some(true)
+        }
+        ParsedCommand::Command(ReplCommand::Quit) => Some(false),
+        ParsedCommand::Command(ReplCommand::Help) => {
             print_help();
             Some(true)
         }
-        ":reset" | ":r" => {
+        ParsedCommand::Command(ReplCommand::Reset) => {
             session_state.clear();
             println!("{}", gray("Session state reset."));
             Some(true)
         }
-        ":clear" | ":c" => {
+        ParsedCommand::Command(ReplCommand::Clear) => {
             print!("\x1b[2J\x1b[H"); // Clear screen and move cursor to top
             io::stdout().flush().ok();
             Some(true)
         }
-        ":history" => {
+        ParsedCommand::Command(ReplCommand::History) => {
             let history = rl.history();
             for i in 0..history.len() {
                 if let Ok(Some(result)) = history.get(i, SearchDirection::Forward) {
@@ -446,32 +678,30 @@ fn handle_command<H: Helper>(
             }
             Some(true)
         }
-        ":env" => {
+        ParsedCommand::Command(ReplCommand::Env) => {
             cmd_env(session_state);
             Some(true)
         }
-        _ if trimmed.starts_with(":type ") || trimmed.starts_with(":t ") => {
-            let expr = if let Some(stripped) = trimmed.strip_prefix(":type ") {
-                stripped
-            } else if let Some(stripped) = trimmed.strip_prefix(":t ") {
-                stripped
-            } else {
-                unreachable!()
-            };
+        ParsedCommand::Command(ReplCommand::Type(expr)) => {
             cmd_type(expr, session_state);
             Some(true)
         }
-        _ if trimmed.starts_with(":load ") => {
-            let path = trimmed.strip_prefix(":load ").unwrap().trim();
+        ParsedCommand::Command(ReplCommand::Load(path)) => {
             cmd_load(path);
             Some(true)
         }
-        _ if trimmed.starts_with(":time ") => {
-            let expr = trimmed.strip_prefix(":time ").unwrap();
+        ParsedCommand::Command(ReplCommand::Time(expr)) => {
             cmd_time(expr, session_state);
             Some(true)
         }
-        _ => None,
+        ParsedCommand::Command(ReplCommand::Doc(symbol)) => {
+            cmd_doc(symbol, session_state);
+            Some(true)
+        }
+        ParsedCommand::Command(ReplCommand::DocIndex) => {
+            cmd_doc_index(session_state);
+            Some(true)
+        }
     }
 }
 
@@ -662,6 +892,234 @@ fn cmd_load(path: &str) {
     }
 }
 
+fn canonical_intrinsic_name(name: &str) -> Option<&str> {
+    if KNOWN_INTRINSICS.contains(&name) {
+        return Some(name);
+    }
+
+    for (alias, canonical) in INTRINSIC_ALIASES {
+        if *alias == name {
+            return Some(canonical);
+        }
+    }
+
+    None
+}
+
+fn intrinsic_aliases(canonical: &str) -> Vec<&'static str> {
+    let mut aliases = Vec::new();
+    for (alias, target) in INTRINSIC_ALIASES {
+        if *target == canonical {
+            aliases.push(*alias);
+        }
+    }
+    aliases
+}
+
+fn intrinsic_category(canonical: &str) -> &'static str {
+    match canonical {
+        "print" | "debug" | "clone" | "sizeof" | "type_of" => "core",
+        "len" | "append" | "contains" | "slice" | "count" | "sort" | "reverse" | "map"
+        | "filter" | "reduce" | "flat_map" | "zip" | "enumerate" | "any" | "all" | "find"
+        | "position" | "group_by" | "chunk" | "window" | "flatten" | "unique" | "take" | "drop"
+        | "first" | "last" | "is_empty" => "collections",
+        "keys" | "values" | "has_key" | "merge" | "size" | "add" | "remove" | "entries" => {
+            "map/set"
+        }
+        "join" | "split" | "chars" | "starts_with" | "ends_with" | "index_of" | "pad_left"
+        | "pad_right" | "trim" | "upper" | "lower" | "replace" => "strings",
+        "abs" | "min" | "max" | "round" | "ceil" | "floor" | "sqrt" | "pow" | "log" | "sin"
+        | "cos" | "clamp" => "math",
+        "diff" | "patch" | "redact" | "validate" | "hash" | "matches" | "trace_ref" => "utility",
+        "range" | "to_string" | "to_int" | "to_float" => "conversion",
+        _ => "intrinsic",
+    }
+}
+
+fn intrinsic_summary(canonical: &str) -> &'static str {
+    match canonical {
+        "print" => "Print a value to stdout.",
+        "len" => "Return the length or element count of a value.",
+        "range" => "Create an integer range as a list.",
+        "to_string" => "Convert a value into a String.",
+        "to_int" => "Convert a value into an Int.",
+        "to_float" => "Convert a value into a Float.",
+        "type_of" => "Return the runtime type name of a value.",
+        "append" => "Append an element to a list.",
+        "map" => "Transform each element in a list.",
+        "filter" => "Keep list elements matching a predicate.",
+        "reduce" => "Fold a list into a single value.",
+        "sort" => "Sort a list in ascending order.",
+        "join" => "Join string/list items with a separator.",
+        "split" => "Split a string by a delimiter.",
+        "contains" => "Check membership/containment in a collection.",
+        "matches" => "Check if a value satisfies a pattern/condition.",
+        "hash" => "Compute a stable hash for a value.",
+        "validate" => "Validate value shape/content against rules.",
+        _ => "Built-in intrinsic recognized by the compiler.",
+    }
+}
+
+fn intrinsic_signature(canonical: &str) -> String {
+    match canonical {
+        "print" => "print(value: Any) -> Null".to_string(),
+        "len" => "len(value: List|Tuple|Map|Set|String|Bytes) -> Int".to_string(),
+        "range" => "range(start: Int, end: Int) -> List[Int]".to_string(),
+        "to_string" => "to_string(value: Any) -> String".to_string(),
+        "to_int" => "to_int(value: Any) -> Int".to_string(),
+        "to_float" => "to_float(value: Any) -> Float".to_string(),
+        "type_of" => "type_of(value: Any) -> String".to_string(),
+        "append" => "append(list: List[T], item: T) -> List[T]".to_string(),
+        "map" => "map(items: List[T], f: Fn(T) -> U) -> List[U]".to_string(),
+        "filter" => "filter(items: List[T], p: Fn(T) -> Bool) -> List[T]".to_string(),
+        "reduce" => "reduce(items: List[T], init: U, f: Fn(U, T) -> U) -> U".to_string(),
+        "sort" => "sort(items: List[T]) -> List[T]".to_string(),
+        "join" => "join(items: List[String], sep: String) -> String".to_string(),
+        "split" => "split(text: String, sep: String) -> List[String]".to_string(),
+        "contains" => "contains(container: Any, value: Any) -> Bool".to_string(),
+        "matches" => "matches(value: Any, pattern: Any) -> Bool".to_string(),
+        "hash" => "hash(value: Any) -> String".to_string(),
+        _ => format!("{canonical}(...)"),
+    }
+}
+
+fn render_doc(symbol: &str, session_state: &SessionState) -> Option<String> {
+    let session_index = session_state.symbols.get(symbol).copied().or_else(|| {
+        session_state
+            .symbols
+            .iter()
+            .find_map(|(name, idx)| name.eq_ignore_ascii_case(symbol).then_some(*idx))
+    });
+
+    if let Some(index) = session_index {
+        let definition = session_state.definitions.get(index)?.trim();
+        let signature = definition
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .map(str::trim)
+            .unwrap_or("<definition>");
+        let kind = signature.split_whitespace().next().unwrap_or("definition");
+
+        return Some(format!(
+            "Session {} `{}`\nSignature: {}\n\n{}",
+            kind, symbol, signature, definition
+        ));
+    }
+
+    let canonical = canonical_intrinsic_name(symbol)?;
+    let mut out = String::new();
+    out.push_str(&format!("Intrinsic `{}`\n", canonical));
+    out.push_str(&format!("Category: {}\n", intrinsic_category(canonical)));
+    out.push_str(&format!("Signature: {}\n", intrinsic_signature(canonical)));
+    out.push_str(&format!("Summary: {}", intrinsic_summary(canonical)));
+
+    if canonical != symbol {
+        out.push_str(&format!(
+            "\nAlias: `{}` resolves to `{}`",
+            symbol, canonical
+        ));
+    }
+
+    let aliases = intrinsic_aliases(canonical);
+    if !aliases.is_empty() {
+        out.push_str(&format!("\nAliases: {}", aliases.join(", ")));
+    }
+
+    Some(out)
+}
+
+fn doc_suggestions(symbol: &str, session_state: &SessionState) -> Vec<String> {
+    let needle = symbol.to_ascii_lowercase();
+    let mut candidates: Vec<String> = session_state.symbols.keys().cloned().collect();
+    candidates.extend(KNOWN_INTRINSICS.iter().map(|name| (*name).to_string()));
+    candidates.extend(
+        INTRINSIC_ALIASES
+            .iter()
+            .map(|(alias, _)| (*alias).to_string()),
+    );
+    candidates.sort();
+    candidates.dedup();
+
+    let mut starts_with = Vec::new();
+    let mut contains = Vec::new();
+    for candidate in candidates {
+        let lowered = candidate.to_ascii_lowercase();
+        if lowered.starts_with(&needle) {
+            starts_with.push(candidate);
+        } else if lowered.contains(&needle) {
+            contains.push(candidate);
+        }
+    }
+
+    starts_with.extend(contains);
+    starts_with.truncate(8);
+    starts_with
+}
+
+/// Handle the :doc command — show docs for loaded symbols or known intrinsics.
+fn cmd_doc(symbol: &str, session_state: &SessionState) {
+    if let Some(doc) = render_doc(symbol, session_state) {
+        println!("{}", doc);
+        return;
+    }
+
+    eprintln!("{} no docs found for `{}`", red("Error:"), symbol);
+    let suggestions = doc_suggestions(symbol, session_state);
+    if !suggestions.is_empty() {
+        println!(
+            "{}",
+            gray(&format!("Did you mean: {}?", suggestions.join(", ")))
+        );
+    }
+}
+
+/// Handle `:doc` with no symbol — show usage and available names.
+fn cmd_doc_index(session_state: &SessionState) {
+    println!("{}", bold("Doc lookup"));
+    println!(
+        "  {}",
+        gray("Use :doc <symbol> to inspect a session definition or intrinsic.")
+    );
+
+    if session_state.symbols.is_empty() {
+        println!("  {}", gray("Session symbols: none"));
+    } else {
+        let mut names: Vec<_> = session_state.symbols.keys().cloned().collect();
+        names.sort();
+        println!(
+            "  {}",
+            gray(&format!("Session symbols: {}", names.join(", ")))
+        );
+    }
+
+    let mut intrinsics = KNOWN_INTRINSICS.to_vec();
+    intrinsics.sort();
+    const PREVIEW_LIMIT: usize = 20;
+    let preview = intrinsics
+        .iter()
+        .take(PREVIEW_LIMIT)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!(
+        "  {}",
+        gray(&format!(
+            "Known intrinsics ({}): {}",
+            intrinsics.len(),
+            preview
+        ))
+    );
+    if intrinsics.len() > PREVIEW_LIMIT {
+        println!(
+            "  {}",
+            gray(&format!(
+                "... plus {} more. Use :doc <name> for details.",
+                intrinsics.len() - PREVIEW_LIMIT
+            ))
+        );
+    }
+}
+
 /// Handle the :env command — show all defined symbols.
 fn cmd_env(session_state: &SessionState) {
     if session_state.symbols.is_empty() {
@@ -767,6 +1225,16 @@ fn print_help() {
         cyan(":time <expr>"),
         gray("Evaluate and show execution time")
     );
+    println!(
+        "  {}  {}",
+        cyan(":doc <symbol>, :d <symbol>"),
+        gray("Show docs for a session symbol or intrinsic")
+    );
+    println!(
+        "  {}  {}",
+        cyan(":doc"),
+        gray("List available doc lookup symbols")
+    );
     println!("  {}  {}", cyan(":history"), gray("Show command history"));
     println!();
     println!("{}", gray("Features:"));
@@ -775,10 +1243,21 @@ fn print_help() {
         "  {}",
         gray("• Tab completion for keywords, builtins, types, commands")
     );
-    println!(
-        "  {}",
-        gray("• History persistence in ~/.lumen/repl_history")
-    );
+    if let Some(path) = get_history_path() {
+        println!(
+            "  {}",
+            gray(&format!(
+                "• History persistence in {} (override with ${})",
+                path.display(),
+                REPL_HISTORY_PATH_ENV
+            ))
+        );
+    } else {
+        println!(
+            "  {}",
+            gray("• History persistence disabled (HOME not set)")
+        );
+    }
     println!(
         "  {}",
         gray("• Multi-line input (open blocks continue until `end`)")
@@ -824,6 +1303,10 @@ mod tests {
             extract_symbol_name("record Point[T]"),
             Some("Point".to_string())
         );
+        assert_eq!(
+            extract_symbol_name("type alias UserId = Int"),
+            Some("UserId".to_string())
+        );
         assert_eq!(extract_symbol_name("let x = 1"), None);
     }
 
@@ -843,5 +1326,67 @@ mod tests {
         assert!(is_statement("return 42"));
         assert!(!is_statement("cell foo()"));
         assert!(!is_statement("42 + 1"));
+    }
+
+    #[test]
+    fn test_parse_repl_command() {
+        assert_eq!(
+            parse_repl_command(":doc len"),
+            ParsedCommand::Command(ReplCommand::Doc("len"))
+        );
+        assert_eq!(
+            parse_repl_command(":d to_string"),
+            ParsedCommand::Command(ReplCommand::Doc("to_string"))
+        );
+        assert_eq!(
+            parse_repl_command(":doc"),
+            ParsedCommand::Command(ReplCommand::DocIndex)
+        );
+        assert_eq!(
+            parse_repl_command(":type"),
+            ParsedCommand::InvalidUsage("Usage: :type <expr>")
+        );
+        assert_eq!(parse_repl_command(":nope"), ParsedCommand::UnknownCommand);
+        assert_eq!(parse_repl_command("1 + 1"), ParsedCommand::NotACommand);
+    }
+
+    #[test]
+    fn test_resolve_history_path() {
+        let home = Path::new("/home/tester");
+
+        assert_eq!(
+            resolve_history_path(Some(home), None),
+            Some(PathBuf::from("/home/tester/.lumen/repl_history"))
+        );
+        assert_eq!(
+            resolve_history_path(Some(home), Some("repl/history.log")),
+            Some(PathBuf::from("/home/tester/repl/history.log"))
+        );
+        assert_eq!(
+            resolve_history_path(Some(home), Some("~/logs/repl.log")),
+            Some(PathBuf::from("/home/tester/logs/repl.log"))
+        );
+        assert_eq!(
+            resolve_history_path(Some(home), Some("/tmp/repl.log")),
+            Some(PathBuf::from("/tmp/repl.log"))
+        );
+        assert_eq!(resolve_history_path(None, Some("relative.log")), None);
+    }
+
+    #[test]
+    fn test_render_doc_for_session_symbol() {
+        let mut state = SessionState::default();
+        state.add_definition("cell square(x: Int)\n  return x * x\nend");
+        let rendered = render_doc("square", &state).expect("session doc");
+        assert!(rendered.contains("Session cell `square`"));
+        assert!(rendered.contains("cell square(x: Int)"));
+    }
+
+    #[test]
+    fn test_render_doc_for_intrinsic_alias() {
+        let state = SessionState::default();
+        let rendered = render_doc("length", &state).expect("intrinsic doc");
+        assert!(rendered.contains("Intrinsic `len`"));
+        assert!(rendered.contains("Alias: `length` resolves to `len`"));
     }
 }

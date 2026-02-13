@@ -1,0 +1,56 @@
+{
+  "name": "lumen-lang",
+  "displayName": "Lumen",
+  "description": "Syntax highlighting for the Lumen programming language",
+  "version": "0.1.0",
+  "publisher": "lumen-lang",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "lumen",
+        "aliases": [
+          "Lumen",
+          "lumen"
+        ],
+        "extensions": [
+          ".lm"
+        ],
+        "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "lumen-markdown",
+        "aliases": [
+          "Lumen Markdown"
+        ],
+        "extensions": [
+          ".lm.md"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "lumen",
+        "scopeName": "source.lumen",
+        "path": "./syntaxes/lumen.tmLanguage.json"
+      },
+      {
+        "scopeName": "markdown.lumen.codeblock",
+        "path": "./syntaxes/lumen-markdown.tmLanguage.json",
+        "injectTo": [
+          "text.html.markdown"
+        ],
+        "embeddedLanguages": {
+          "meta.embedded.block.lumen": "lumen"
+        }
+      }
+    ]
+  }
+}

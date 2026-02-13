@@ -13,22 +13,54 @@ It is the implementation source of truth for closing all known gaps.
   - SPEC_ADDENDUM: 53/53
 - This indicates strong syntax coverage, not full semantic/runtime coverage.
 
-## Confirmed Gaps
+## Resolved in Code
 
-1. Addendum runtime semantics remain incomplete.
-- Declaration parsing/lowering coverage is now substantially improved, but runtime behavior for orchestration/state/memory/guardrail/eval remains mostly metadata-level.
+1. Strict-by-default typechecking.
+- Placeholder fallback is no longer default behavior.
+- `@strict` defaults to `true`.
+- `@doc_mode true` is now explicit opt-in for documentation permissiveness.
 
-2. Some declarations are skipped in lowering.
-- `TypeAlias`, `Trait`, `Impl`, `Import`, `ConstDecl`, `MacroDecl` are currently not fully lowered to executable semantics.
+2. Advanced pattern semantics are lowered and executed.
+- `guard`, `or`, list destructure (including `...rest`), tuple destructure, record destructure, and type-check patterns are lowered with real branch/fail control flow.
+- Typechecker now binds/validates nested advanced patterns and guard boolean constraints.
+- VM runtime tests now cover these pattern forms.
 
-3. Advanced patterns are not fully lowered with true matching semantics.
-- Guard/or/list/tuple/record/type-check pattern shapes are partially tolerated but can degrade during lowering.
+3. Async spawn/await now has first-class future handles.
+- `Spawn` returns `Future`.
+- `Await` resolves future results from VM-managed completion storage.
+- `Return` in spawned frames stores resolved future values.
 
-4. Async/orchestration is still mostly synchronous.
-- VM behavior for `Await`/`Spawn` is still V1 synchronous.
+4. Process-family declarations are now executable runtime objects.
+- `pipeline`, `orchestration`, `machine`, `memory`, `guardrail`, `eval`, `pattern` now lower to record type + constructor cells (like agents).
+- Dot-call dispatch supports process constructors and instance methods.
+- VM now provides concrete built-in runtime behavior for `memory` and `machine` method families.
 
-5. Compiler permissiveness includes doc-oriented fallback behavior.
-- Placeholder variables/types and generic addon fallback reduce strictness.
+5. Effect rows now have inference and strict enforcement.
+- Resolver infers effects from statement/expression trees, tool calls, and transitive cell calls.
+- For cells with explicit effect rows, strict mode now errors on inferred-but-undeclared effects.
+- For cells with omitted effect rows, inferred effects are stored and checked against grants.
+- Doc mode suppresses strict undeclared-effect errors to keep spec/doc sweeps practical.
+
+6. Field access lowering is now robust for large string tables.
+- Compiler field reads/writes now lower through `GetIndex`/`SetIndex` with string constants, avoiding 8-bit field-index overflow in `GetField`/`SetField`.
+- VM `GetIndex`/`SetIndex` now support records directly.
+
+## Remaining Gaps (Real, Not Cosmetic)
+
+1. Full machine DSL semantics are not implemented.
+- `state`, `transition`, `on_event`, timeout semantics, reachability/terminal verification, and typed transition checking from SPEC_ADDENDUM are still not compiled into executable machine graphs.
+
+2. Algebraic effect handlers are still incomplete.
+- `handler` declarations lower metadata and handle cells, but `with <handler> in ...` does not yet implement continuation-based effect interception semantics.
+
+3. Pipeline/orchestration declarative blocks are not yet semantically compiled.
+- Stage graph parsing/typeflow checks and orchestration strategy semantics (fan-out/fan-in, debate loops, etc.) remain incomplete.
+
+4. Guardrail/eval declarations are not yet end-to-end semantic runtimes.
+- They parse and lower as first-class process declarations, but addendum-specific policy/evaluation execution semantics are not complete.
+
+5. Capability/effect grant checking is still heuristic.
+- Grant compatibility currently relies on tool alias/path heuristics and bind mappings; it is not a full formal capability proof system yet.
 
 ## Research Inputs (Primary Sources)
 
@@ -80,3 +112,10 @@ It is the implementation source of truth for closing all known gaps.
 - 2026-02-13: Parser hardened for multiline/null-coalescing continuations, role-block literal braces vs interpolation, machine/state nested sections, and executable `in` blocks in addendum statements.
 - 2026-02-13: Ignored parity targets in `spec_suite.rs` enabled by default.
 - 2026-02-13: Added automated SPEC/SPEC_ADDENDUM markdown sweep conformance tests in CI.
+- 2026-02-13: Strict-by-default typecheck mode landed; doc-mode permissiveness made explicit (`@doc_mode true`).
+- 2026-02-13: Advanced pattern lowering/typechecking upgraded from tolerant fallback to real runtime semantics.
+- 2026-02-13: VM futures implemented for `spawn/await` result tracking.
+- 2026-02-13: Process declarations (`pipeline/orchestration/machine/memory/...`) now lower to constructor-backed runtime objects with method dispatch.
+- 2026-02-13: VM memory/machine runtime method semantics implemented and covered by runtime tests.
+- 2026-02-13: Resolver effect inference + strict undeclared-effect diagnostics + inferred grant checks implemented.
+- 2026-02-13: Field access lowering switched to index-keyed string constants to avoid 8-bit field index overflow at runtime.

@@ -1,10 +1,9 @@
 //! Lumen test runner — discovers and executes test_* cells.
 
-use lumen_compiler;
-use lumen_vm::vm::VM;
 use lumen_vm::values::Value;
-use std::path::{Path, PathBuf};
+use lumen_vm::vm::VM;
 use std::fs;
+use std::path::{Path, PathBuf};
 
 fn green(s: &str) -> String {
     format!("\x1b[32m{}\x1b[0m", s)
@@ -30,11 +29,24 @@ struct TestResult {
     error_message: Option<String>,
 }
 
-pub fn cmd_test(
+#[derive(Debug, Clone, Copy)]
+pub struct TestRunSummary {
+    pub total: usize,
+    pub passed: usize,
+    pub failed: usize,
+}
+
+impl TestRunSummary {
+    pub fn is_success(&self) -> bool {
+        self.failed == 0
+    }
+}
+
+pub fn run_tests(
     path: Option<PathBuf>,
-    filter: Option<String>,
+    filter: Option<&str>,
     verbose: bool,
-) {
+) -> Result<TestRunSummary, String> {
     let target_path = path.unwrap_or_else(|| PathBuf::from("."));
 
     // Collect all .lm.md files
@@ -42,8 +54,10 @@ pub fn cmd_test(
     collect_test_files(&target_path, &mut test_files);
 
     if test_files.is_empty() {
-        eprintln!("{} no .lm.md files found in {}", red("error:"), target_path.display());
-        std::process::exit(1);
+        return Err(format!(
+            "no .lm.md files found in {}",
+            target_path.display()
+        ));
     }
 
     // Run tests and collect results
@@ -54,7 +68,13 @@ pub fn cmd_test(
         let source = match fs::read_to_string(file_path) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("{} cannot read {}: {}", red("error:"), file_path.display(), e);
+                results.push(TestResult {
+                    file: file_path.display().to_string(),
+                    test_name: "<load>".to_string(),
+                    passed: false,
+                    error_message: Some(format!("cannot read file: {}", e)),
+                });
+                total_tests += 1;
                 continue;
             }
         };
@@ -63,20 +83,29 @@ pub fn cmd_test(
         let module = match lumen_compiler::compile(&source) {
             Ok(m) => m,
             Err(e) => {
-                eprintln!("{} compilation failed for {}", red("error:"), filename);
+                let mut error_message = "compilation failed".to_string();
                 if verbose {
                     let formatted = lumen_compiler::format_error(&e, &source, &filename);
-                    eprint!("{}", formatted);
+                    error_message = format!("compilation failed\n{}", formatted);
                 }
+                results.push(TestResult {
+                    file: filename,
+                    test_name: "<compile>".to_string(),
+                    passed: false,
+                    error_message: Some(error_message),
+                });
+                total_tests += 1;
                 continue;
             }
         };
 
         // Find all test_* cells
-        let test_cells: Vec<_> = module.cells.iter()
+        let test_cells: Vec<_> = module
+            .cells
+            .iter()
             .filter(|c| c.name.starts_with("test_"))
             .filter(|c| {
-                if let Some(ref f) = filter {
+                if let Some(f) = filter {
                     c.name.contains(f)
                 } else {
                     true
@@ -133,7 +162,11 @@ pub fn cmd_test(
     }
 
     // Print running summary
-    println!("running {} test{}", total_tests, if total_tests == 1 { "" } else { "s" });
+    println!(
+        "running {} test{}",
+        total_tests,
+        if total_tests == 1 { "" } else { "s" }
+    );
 
     // Print results as they come
     let mut passed = 0;
@@ -186,15 +219,35 @@ pub fn cmd_test(
 
     println!("{}", summary);
 
-    if failed > 0 {
-        std::process::exit(1);
+    Ok(TestRunSummary {
+        total: total_tests,
+        passed,
+        failed,
+    })
+}
+
+pub fn cmd_test(path: Option<PathBuf>, filter: Option<String>, verbose: bool) {
+    match run_tests(path, filter.as_deref(), verbose) {
+        Ok(summary) => {
+            if !summary.is_success() {
+                std::process::exit(1);
+            }
+        }
+        Err(e) => {
+            eprintln!("{} {}", red("error:"), e);
+            std::process::exit(1);
+        }
     }
 }
 
 fn collect_test_files(path: &Path, files: &mut Vec<PathBuf>) {
     if path.is_file() {
         if path.extension().and_then(|s| s.to_str()) == Some("md")
-            && path.to_str().map(|s| s.ends_with(".lm.md")).unwrap_or(false) {
+            && path
+                .to_str()
+                .map(|s| s.ends_with(".lm.md"))
+                .unwrap_or(false)
+        {
             files.push(path.to_path_buf());
         }
     } else if path.is_dir() {

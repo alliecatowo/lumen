@@ -8,6 +8,7 @@ mod lockfile;
 mod module_resolver;
 mod pkg;
 mod repl;
+mod test_cmd;
 
 use clap::{Parser as ClapParser, Subcommand};
 use std::cell::RefCell;
@@ -121,6 +122,23 @@ enum Commands {
         #[arg(long)]
         strict: bool,
     },
+    /// Run tests by discovering test_* cells
+    Test {
+        /// File or directory to test (default: current directory)
+        path: Option<PathBuf>,
+        /// Filter tests by name substring
+        #[arg(long)]
+        filter: Option<String>,
+        /// Show additional details
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    /// Run CI-style quality gate (check + lint + test + doc sanity)
+    Ci {
+        /// File or directory to validate (default: current directory)
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
     /// Build commands
     Build {
         #[command(subcommand)]
@@ -190,9 +208,17 @@ enum PkgCommands {
     /// List dependencies
     List,
     /// Install dependencies from lumen.toml and write lumen.lock
-    Install,
+    Install {
+        /// Fail if lumen.lock would be changed
+        #[arg(long, alias = "locked")]
+        frozen: bool,
+    },
     /// Update dependencies to latest compatible versions
-    Update,
+    Update {
+        /// Fail if lumen.lock would be changed
+        #[arg(long, alias = "locked")]
+        frozen: bool,
+    },
     /// Search for a package in the registry
     Search {
         /// Search query
@@ -201,29 +227,50 @@ enum PkgCommands {
 }
 
 /// Register all provider crates into the runtime registry.
-fn register_providers(registry: &mut lumen_runtime::tools::ProviderRegistry, #[allow(unused_variables)] config: &config::LumenConfig) {
+fn register_providers(
+    registry: &mut lumen_runtime::tools::ProviderRegistry,
+    #[allow(unused_variables)] config: &config::LumenConfig,
+) {
     // Auto-register built-in providers (always available by default)
 
     #[cfg(feature = "fs")]
     {
         registry.register("fs.read", Box::new(lumen_provider_fs::FsProvider::read()));
         registry.register("fs.write", Box::new(lumen_provider_fs::FsProvider::write()));
-        registry.register("fs.exists", Box::new(lumen_provider_fs::FsProvider::exists()));
+        registry.register(
+            "fs.exists",
+            Box::new(lumen_provider_fs::FsProvider::exists()),
+        );
         registry.register("fs.list", Box::new(lumen_provider_fs::FsProvider::list()));
         registry.register("fs.mkdir", Box::new(lumen_provider_fs::FsProvider::mkdir()));
-        registry.register("fs.remove", Box::new(lumen_provider_fs::FsProvider::remove()));
+        registry.register(
+            "fs.remove",
+            Box::new(lumen_provider_fs::FsProvider::remove()),
+        );
     }
 
     #[cfg(feature = "env")]
     {
         registry.register("env.get", Box::new(lumen_provider_env::EnvProvider::get()));
         registry.register("env.set", Box::new(lumen_provider_env::EnvProvider::set()));
-        registry.register("env.list", Box::new(lumen_provider_env::EnvProvider::list()));
+        registry.register(
+            "env.list",
+            Box::new(lumen_provider_env::EnvProvider::list()),
+        );
         registry.register("env.has", Box::new(lumen_provider_env::EnvProvider::has()));
         registry.register("env.cwd", Box::new(lumen_provider_env::EnvProvider::cwd()));
-        registry.register("env.home", Box::new(lumen_provider_env::EnvProvider::home()));
-        registry.register("env.platform", Box::new(lumen_provider_env::EnvProvider::platform()));
-        registry.register("env.args", Box::new(lumen_provider_env::EnvProvider::args()));
+        registry.register(
+            "env.home",
+            Box::new(lumen_provider_env::EnvProvider::home()),
+        );
+        registry.register(
+            "env.platform",
+            Box::new(lumen_provider_env::EnvProvider::platform()),
+        );
+        registry.register(
+            "env.args",
+            Box::new(lumen_provider_env::EnvProvider::args()),
+        );
     }
 
     #[cfg(feature = "json")]
@@ -233,37 +280,85 @@ fn register_providers(registry: &mut lumen_runtime::tools::ProviderRegistry, #[a
 
     #[cfg(feature = "crypto")]
     {
-        registry.register("crypto.sha256", Box::new(lumen_provider_crypto::CryptoProvider::sha256()));
-        registry.register("crypto.sha512", Box::new(lumen_provider_crypto::CryptoProvider::sha512()));
-        registry.register("crypto.md5", Box::new(lumen_provider_crypto::CryptoProvider::md5()));
-        registry.register("crypto.base64_encode", Box::new(lumen_provider_crypto::CryptoProvider::base64_encode()));
-        registry.register("crypto.base64_decode", Box::new(lumen_provider_crypto::CryptoProvider::base64_decode()));
-        registry.register("crypto.uuid", Box::new(lumen_provider_crypto::CryptoProvider::uuid()));
-        registry.register("crypto.random_int", Box::new(lumen_provider_crypto::CryptoProvider::random_int()));
-        registry.register("crypto.hmac_sha256", Box::new(lumen_provider_crypto::CryptoProvider::hmac_sha256()));
+        registry.register(
+            "crypto.sha256",
+            Box::new(lumen_provider_crypto::CryptoProvider::sha256()),
+        );
+        registry.register(
+            "crypto.sha512",
+            Box::new(lumen_provider_crypto::CryptoProvider::sha512()),
+        );
+        registry.register(
+            "crypto.md5",
+            Box::new(lumen_provider_crypto::CryptoProvider::md5()),
+        );
+        registry.register(
+            "crypto.base64_encode",
+            Box::new(lumen_provider_crypto::CryptoProvider::base64_encode()),
+        );
+        registry.register(
+            "crypto.base64_decode",
+            Box::new(lumen_provider_crypto::CryptoProvider::base64_decode()),
+        );
+        registry.register(
+            "crypto.uuid",
+            Box::new(lumen_provider_crypto::CryptoProvider::uuid()),
+        );
+        registry.register(
+            "crypto.random_int",
+            Box::new(lumen_provider_crypto::CryptoProvider::random_int()),
+        );
+        registry.register(
+            "crypto.hmac_sha256",
+            Box::new(lumen_provider_crypto::CryptoProvider::hmac_sha256()),
+        );
     }
 
     #[cfg(feature = "http")]
     {
-        registry.register("http.get", Box::new(lumen_provider_http::HttpProvider::get()));
-        registry.register("http.post", Box::new(lumen_provider_http::HttpProvider::post()));
-        registry.register("http.put", Box::new(lumen_provider_http::HttpProvider::put()));
-        registry.register("http.delete", Box::new(lumen_provider_http::HttpProvider::delete()));
+        registry.register(
+            "http.get",
+            Box::new(lumen_provider_http::HttpProvider::get()),
+        );
+        registry.register(
+            "http.post",
+            Box::new(lumen_provider_http::HttpProvider::post()),
+        );
+        registry.register(
+            "http.put",
+            Box::new(lumen_provider_http::HttpProvider::put()),
+        );
+        registry.register(
+            "http.delete",
+            Box::new(lumen_provider_http::HttpProvider::delete()),
+        );
     }
 
     // Register providers from config (these may override defaults or add new ones)
     #[cfg(feature = "gemini")]
     {
         // Check if gemini is configured in lumen.toml or via env var
-        let api_key = config.providers.tools.get("gemini")
+        let api_key = config
+            .providers
+            .tools
+            .get("gemini")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .or_else(|| std::env::var("GEMINI_API_KEY").ok());
 
         if let Some(key) = api_key {
-            registry.register("gemini.generate", Box::new(lumen_provider_gemini::GeminiProvider::generate(key.clone())));
-            registry.register("gemini.chat", Box::new(lumen_provider_gemini::GeminiProvider::chat(key.clone())));
-            registry.register("gemini.embed", Box::new(lumen_provider_gemini::GeminiProvider::embed(key)));
+            registry.register(
+                "gemini.generate",
+                Box::new(lumen_provider_gemini::GeminiProvider::generate(key.clone())),
+            );
+            registry.register(
+                "gemini.chat",
+                Box::new(lumen_provider_gemini::GeminiProvider::chat(key.clone())),
+            );
+            registry.register(
+                "gemini.embed",
+                Box::new(lumen_provider_gemini::GeminiProvider::embed(key)),
+            );
         }
     }
 }
@@ -294,8 +389,8 @@ fn main() {
             PkgCommands::Add { package, path } => pkg::cmd_pkg_add(&package, path.as_deref()),
             PkgCommands::Remove { package } => pkg::cmd_pkg_remove(&package),
             PkgCommands::List => pkg::cmd_pkg_list(),
-            PkgCommands::Install => pkg::cmd_pkg_install(),
-            PkgCommands::Update => pkg::cmd_pkg_update(),
+            PkgCommands::Install { frozen } => pkg::cmd_pkg_install(frozen),
+            PkgCommands::Update { frozen } => pkg::cmd_pkg_update(frozen),
             PkgCommands::Search { query } => pkg::cmd_pkg_search(&query),
         },
         Commands::Fmt { files, check } => cmd_fmt(files, check),
@@ -305,6 +400,12 @@ fn main() {
             output,
         } => cmd_doc(&path, &format, output),
         Commands::Lint { files, strict } => cmd_lint(files, strict),
+        Commands::Test {
+            path,
+            filter,
+            verbose,
+        } => cmd_test(path, filter, verbose),
+        Commands::Ci { path } => cmd_ci(path),
         Commands::Build { sub } => match sub {
             BuildCommands::Wasm { target, release } => cmd_build_wasm(&target, release),
         },
@@ -331,9 +432,258 @@ fn cmd_doc(path: &Path, format: &str, output: Option<PathBuf>) {
     }
 }
 
+fn cmd_test(path: Option<PathBuf>, filter: Option<String>, verbose: bool) {
+    test_cmd::cmd_test(path, filter, verbose);
+}
+
+const GATE_EXIT_CHECK: u8 = 1;
+const GATE_EXIT_LINT: u8 = 2;
+const GATE_EXIT_TEST: u8 = 4;
+const GATE_EXIT_DOC: u8 = 8;
+const GATE_EXIT_INPUT: u8 = 16;
+
+fn cmd_ci(path: PathBuf) {
+    if !path.exists() {
+        eprintln!("{} path does not exist: {}", red("error:"), path.display());
+        std::process::exit(i32::from(GATE_EXIT_INPUT));
+    }
+
+    let mut source_files = Vec::new();
+    if path.is_file() {
+        if !is_lumen_source(&path) {
+            eprintln!(
+                "{} expected a .lm or .lm.md file, got '{}'",
+                red("error:"),
+                path.display()
+            );
+            std::process::exit(i32::from(GATE_EXIT_INPUT));
+        }
+        source_files.push(path.clone());
+    } else if let Err(e) = collect_lumen_sources(&path, &mut source_files) {
+        eprintln!("{} {}", red("error:"), e);
+        std::process::exit(i32::from(GATE_EXIT_INPUT));
+    }
+
+    source_files.sort();
+    if source_files.is_empty() {
+        eprintln!(
+            "{} no .lm/.lm.md files found under {}",
+            red("error:"),
+            path.display()
+        );
+        std::process::exit(i32::from(GATE_EXIT_INPUT));
+    }
+
+    let markdown_files: Vec<PathBuf> = source_files
+        .iter()
+        .filter(|p| is_markdown_source(p))
+        .cloned()
+        .collect();
+
+    println!(
+        "{} quality gate for {}",
+        status_label("Running"),
+        bold(&path.display().to_string())
+    );
+
+    let mut exit_code = 0u8;
+
+    println!(
+        "{} {} source file(s)",
+        status_label("Checking"),
+        source_files.len()
+    );
+    if !gate_check_sources(&source_files) {
+        exit_code |= GATE_EXIT_CHECK;
+    }
+
+    println!("{} strict mode", status_label("Linting"));
+    if !gate_lint_sources(&source_files) {
+        exit_code |= GATE_EXIT_LINT;
+    }
+
+    let should_run_markdown_stages = !path.is_file() || is_markdown_source(&path);
+
+    if should_run_markdown_stages {
+        println!("{} {}", status_label("Testing"), path.display());
+        if !gate_run_tests(&path) {
+            exit_code |= GATE_EXIT_TEST;
+        }
+
+        println!("{} {}", status_label("Doc"), path.display());
+        if !gate_doc_sanity(&markdown_files) {
+            exit_code |= GATE_EXIT_DOC;
+        }
+    } else {
+        println!(
+            "{} skipping test/doc for non-markdown file '{}'",
+            gray("info:"),
+            path.display()
+        );
+    }
+
+    if exit_code == 0 {
+        println!("{} quality gate passed", green("✓"));
+        return;
+    }
+
+    eprintln!(
+        "{} quality gate failed (exit code {})",
+        red("error:"),
+        exit_code
+    );
+    if exit_code & GATE_EXIT_CHECK != 0 {
+        eprintln!("  check failed");
+    }
+    if exit_code & GATE_EXIT_LINT != 0 {
+        eprintln!("  lint failed");
+    }
+    if exit_code & GATE_EXIT_TEST != 0 {
+        eprintln!("  test failed");
+    }
+    if exit_code & GATE_EXIT_DOC != 0 {
+        eprintln!("  doc sanity failed");
+    }
+    std::process::exit(i32::from(exit_code));
+}
+
+fn gate_check_sources(files: &[PathBuf]) -> bool {
+    let mut failures = 0usize;
+
+    for file in files {
+        let source = match std::fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!(
+                    "{} cannot read file '{}': {}",
+                    red("error:"),
+                    file.display(),
+                    e
+                );
+                failures += 1;
+                continue;
+            }
+        };
+
+        let filename = file.display().to_string();
+        if let Err(e) = compile_source_file(file, &source) {
+            let formatted = lumen_compiler::format_error(&e, &source, &filename);
+            eprint!("{}", formatted);
+            failures += 1;
+        }
+    }
+
+    if failures == 0 {
+        println!("{} check passed", green("✓"));
+        true
+    } else {
+        eprintln!("{} check failed ({} file(s))", red("error:"), failures);
+        false
+    }
+}
+
+fn gate_lint_sources(files: &[PathBuf]) -> bool {
+    match lint::cmd_lint(files, true) {
+        Ok(()) => {
+            println!("{} lint passed", green("✓"));
+            true
+        }
+        Err(e) => {
+            eprintln!("{} {}", red("error:"), e);
+            false
+        }
+    }
+}
+
+fn gate_run_tests(path: &Path) -> bool {
+    match test_cmd::run_tests(Some(path.to_path_buf()), None, false) {
+        Ok(summary) => {
+            if summary.is_success() {
+                println!("{} test passed ({} total)", green("✓"), summary.total);
+                true
+            } else {
+                eprintln!(
+                    "{} test failed ({} passed, {} failed)",
+                    red("error:"),
+                    summary.passed,
+                    summary.failed
+                );
+                false
+            }
+        }
+        Err(e) => {
+            eprintln!("{} {}", red("error:"), e);
+            false
+        }
+    }
+}
+
+fn gate_doc_sanity(markdown_files: &[PathBuf]) -> bool {
+    if markdown_files.is_empty() {
+        eprintln!("{} no .lm.md files found for doc sanity", red("error:"));
+        return false;
+    }
+
+    let mut failures = 0usize;
+    for (idx, file) in markdown_files.iter().enumerate() {
+        let out_path = std::env::temp_dir().join(format!(
+            "lumen-doc-sanity-{}-{}.json",
+            std::process::id(),
+            idx
+        ));
+
+        if let Err(e) = doc::cmd_doc(file, "json", Some(&out_path)) {
+            eprintln!("{} {}: {}", red("error:"), file.display(), e);
+            failures += 1;
+        }
+
+        let _ = std::fs::remove_file(&out_path);
+    }
+
+    if failures == 0 {
+        println!(
+            "{} doc sanity passed ({} file(s))",
+            green("✓"),
+            markdown_files.len()
+        );
+        true
+    } else {
+        eprintln!("{} doc sanity failed ({} file(s))", red("error:"), failures);
+        false
+    }
+}
+
+fn collect_lumen_sources(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+    if path.is_file() {
+        if is_lumen_source(path) {
+            files.push(path.to_path_buf());
+        }
+        return Ok(());
+    }
+
+    let entries = std::fs::read_dir(path)
+        .map_err(|e| format!("cannot read directory '{}': {}", path.display(), e))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("cannot read directory entry: {}", e))?;
+        collect_lumen_sources(&entry.path(), files)?;
+    }
+
+    Ok(())
+}
+
+fn is_lumen_source(path: &Path) -> bool {
+    is_markdown_source(path) || path.extension().and_then(|s| s.to_str()) == Some("lm")
+}
+
 fn read_source(path: &PathBuf) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|e| {
-        eprintln!("{} cannot read file '{}': {}", red("error:"), bold(&path.display().to_string()), e);
+        eprintln!(
+            "{} cannot read file '{}': {}",
+            red("error:"),
+            bold(&path.display().to_string()),
+            e
+        );
         std::process::exit(1);
     })
 }
@@ -357,8 +707,14 @@ fn find_project_root(start: &Path) -> Option<PathBuf> {
     }
 }
 
-fn compile_source_file(path: &Path, source: &str) -> Result<lumen_compiler::compiler::lir::LirModule, lumen_compiler::CompileError> {
-    let source_dir = path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+fn compile_source_file(
+    path: &Path,
+    source: &str,
+) -> Result<lumen_compiler::compiler::lir::LirModule, lumen_compiler::CompileError> {
+    let source_dir = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
     let mut resolver = module_resolver::ModuleResolver::new(source_dir.clone());
 
     if let Some(project_root) = find_project_root(&source_dir) {
@@ -386,7 +742,12 @@ fn cmd_check(file: &PathBuf) {
     let filename = file.display().to_string();
     match compile_source_file(file, &source) {
         Ok(_module) => {
-            println!("{} {} {}", green("✓"), bold(&filename), gray("— no errors found"));
+            println!(
+                "{} {} {}",
+                green("✓"),
+                bold(&filename),
+                gray("— no errors found")
+            );
         }
         Err(e) => {
             let formatted = lumen_compiler::format_error(&e, &source, &filename);
@@ -468,7 +829,12 @@ fn cmd_emit(file: &PathBuf, output: Option<PathBuf>) {
     if let Some(ref out_path) = output {
         println!("{} LIR to {}", status_label("Emitting"), out_path.display());
         std::fs::write(out_path, &json).unwrap_or_else(|e| {
-            eprintln!("{} writing to '{}': {}", red("error:"), out_path.display(), e);
+            eprintln!(
+                "{} writing to '{}': {}",
+                red("error:"),
+                out_path.display(),
+                e
+            );
             std::process::exit(1);
         });
     } else {
@@ -491,7 +857,12 @@ fn cmd_trace_show(run_id: &str, trace_dir: &Path) {
             }
         }
         Err(e) => {
-            eprintln!("{} cannot read trace '{}': {}", red("error:"), path.display(), e);
+            eprintln!(
+                "{} cannot read trace '{}': {}",
+                red("error:"),
+                path.display(),
+                e
+            );
             std::process::exit(1);
         }
     }
@@ -505,14 +876,21 @@ fn cmd_cache_clear(cache_dir: &PathBuf) {
         });
         println!("{} cache cleared", green("✓"));
     } else {
-        println!("{} cache directory does not exist: {}", yellow("warning:"), cache_dir.display());
+        println!(
+            "{} cache directory does not exist: {}",
+            yellow("warning:"),
+            cache_dir.display()
+        );
     }
 }
 
 fn cmd_init() {
     let path = PathBuf::from("lumen.toml");
     if path.exists() {
-        eprintln!("{} lumen.toml already exists — not overwriting", red("error:"));
+        eprintln!(
+            "{} lumen.toml already exists — not overwriting",
+            red("error:")
+        );
         std::process::exit(1);
     }
     std::fs::write(&path, config::LumenConfig::default_template()).unwrap_or_else(|e| {
@@ -560,10 +938,16 @@ fn cmd_build_wasm(target: &str, release: bool) {
             eprintln!("\nAlternatively, build manually:");
             match target {
                 "web" | "nodejs" => {
-                    eprintln!("  {}", cyan("cd rust/lumen-wasm && wasm-pack build --target web"));
+                    eprintln!(
+                        "  {}",
+                        cyan("cd rust/lumen-wasm && wasm-pack build --target web")
+                    );
                 }
                 "wasi" => {
-                    eprintln!("  {}", cyan("cd rust/lumen-wasm && cargo build --target wasm32-wasi"));
+                    eprintln!(
+                        "  {}",
+                        cyan("cd rust/lumen-wasm && cargo build --target wasm32-wasi")
+                    );
                 }
                 _ => {}
             }
@@ -573,7 +957,10 @@ fn cmd_build_wasm(target: &str, release: bool) {
 
     let wasm_crate_dir = PathBuf::from("rust/lumen-wasm");
     if !wasm_crate_dir.exists() {
-        eprintln!("{} lumen-wasm crate not found at rust/lumen-wasm", red("error:"));
+        eprintln!(
+            "{} lumen-wasm crate not found at rust/lumen-wasm",
+            red("error:")
+        );
         eprintln!("\nThe WASM compilation target is still in development.");
         eprintln!("See docs/WASM_STRATEGY.md for more information.");
         std::process::exit(1);
@@ -607,19 +994,87 @@ fn cmd_build_wasm(target: &str, release: bool) {
     match target {
         "web" => {
             println!("\nUsage in browser:");
-            println!("  {}", cyan("import init, {{ run, compile, check }} from './pkg/lumen_wasm.js';"));
+            println!(
+                "  {}",
+                cyan("import init, {{ run, compile, check }} from './pkg/lumen_wasm.js';")
+            );
             println!("  {}", cyan("await init();"));
             println!("  {}", cyan("const result = run(sourceCode, 'main');"));
         }
         "nodejs" => {
             println!("\nUsage in Node.js:");
-            println!("  {}", cyan("const {{ run, compile, check }} = require('./pkg/lumen_wasm.js');"));
+            println!(
+                "  {}",
+                cyan("const {{ run, compile, check }} = require('./pkg/lumen_wasm.js');")
+            );
             println!("  {}", cyan("const result = run(sourceCode, 'main');"));
         }
         "wasi" => {
             println!("\nRun with Wasmtime:");
-            println!("  {}", cyan("wasmtime rust/lumen-wasm/target/wasm32-wasi/release/lumen_wasm.wasm"));
+            println!(
+                "  {}",
+                cyan("wasmtime rust/lumen-wasm/target/wasm32-wasi/release/lumen_wasm.wasm")
+            );
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_test_command_with_defaults() {
+        let cli = Cli::try_parse_from(["lumen", "test"]).expect("test command should parse");
+        match cli.command {
+            Commands::Test {
+                path,
+                filter,
+                verbose,
+            } => {
+                assert!(path.is_none());
+                assert!(filter.is_none());
+                assert!(!verbose);
+            }
+            _ => panic!("expected test command"),
+        }
+    }
+
+    #[test]
+    fn parses_test_command_with_flags() {
+        let cli = Cli::try_parse_from([
+            "lumen",
+            "test",
+            "examples/demo.lm.md",
+            "--filter",
+            "auth",
+            "--verbose",
+        ])
+        .expect("test command with flags should parse");
+
+        match cli.command {
+            Commands::Test {
+                path,
+                filter,
+                verbose,
+            } => {
+                assert_eq!(path, Some(PathBuf::from("examples/demo.lm.md")));
+                assert_eq!(filter, Some("auth".to_string()));
+                assert!(verbose);
+            }
+            _ => panic!("expected test command"),
+        }
+    }
+
+    #[test]
+    fn parses_ci_command_default_path() {
+        let cli = Cli::try_parse_from(["lumen", "ci"]).expect("ci command should parse");
+        match cli.command {
+            Commands::Ci { path } => {
+                assert_eq!(path, PathBuf::from("."));
+            }
+            _ => panic!("expected ci command"),
+        }
     }
 }

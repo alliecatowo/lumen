@@ -78,6 +78,42 @@ Completed work should be removed from this list and reflected in docs/changelog.
 - [ ] Implement runtime `where` constraint evaluation on record construction.
   - Constraints validated for form in `constraints.rs` but never enforced at runtime.
 
+## Provider Architecture (P1)
+
+- [x] Define `ToolProvider` trait in `lumen-runtime/src/tools.rs`.
+  - `name()`, `version()`, `schema()`, `call()`, `effects()` methods.
+  - `ToolSchema` struct: input/output JSON schema, effect declarations.
+- [x] Create `ProviderRegistry` struct with `register`, `get`, `list` methods.
+  - `HashMap<String, Box<dyn ToolProvider>>` backing store.
+- [x] Wire `ProviderRegistry` into VM (`set_provider_registry` method).
+  - `ToolCall` opcode resolves through registry instead of `StubDispatcher`.
+- [x] Create `NullProvider` stub for unregistered tools.
+  - Returns descriptive error with available provider names.
+- [x] Add provider registry tests (20 tests).
+  - Register, lookup, missing provider, duplicate registration, list.
+- [x] Add VM integration tests (2 tests).
+- [ ] Parse `lumen.toml` config file.
+  - Provider mappings, per-provider config sections, MCP server entries.
+- [ ] Create `LumenConfig` struct.
+  - Deserialize from `lumen.toml`, validate provider references.
+- [ ] Wire config loading into CLI startup.
+  - `lumen run` and `lumen check` load config, populate registry.
+- [ ] Add `lumen init` command to generate default `lumen.toml`.
+- [ ] Remove heuristic `effect_from_tool()` substring matching.
+  - Replace with provider-declared effect mappings.
+- [ ] Generalize `max_tokens` to generic `max_*` range constraints.
+  - Grant constraints should support arbitrary numeric limits, not just `max_tokens`.
+- [ ] Review `NONDETERMINISTIC_EFFECTS` list.
+  - Ensure nondeterministic classification comes from provider declarations, not hardcoded list.
+- [ ] Update `SPEC.md` with provider architecture.
+  - Document ToolProvider trait, provider registry, lumen.toml config format.
+- [ ] Audit compiler for hardcoded provider-specific knowledge.
+  - Ensure no tool names, API shapes, or provider assumptions leak into compiler crates.
+- [ ] Ensure effect kinds come from provider declarations, not hardcoded lists.
+  - Providers declare their effects via `ToolProvider::effects()`.
+- [ ] Desugar `role` blocks to standard tool call shapes.
+  - Conversation structure maps to provider-agnostic tool invocations.
+
 ## Test Coverage (P1)
 
 - [ ] Add regression tests for 3 known bugs: signed jumps, match register clobber, Type::Any BinOp.
@@ -112,6 +148,18 @@ Completed work should be removed from this list and reflected in docs/changelog.
 - [ ] Make tool dispatch async-capable.
   - `tools.rs:34` -- trait is synchronous, blocks entire VM.
 
+## First-Party Providers (P2)
+
+- [ ] `lumen-provider-http` crate (reqwest-based HTTP client).
+  - Implements `ToolProvider` for GET/POST/PUT/DELETE with header and body support.
+- [ ] `lumen-provider-mcp` crate (MCP server bridge — universal tool adapter).
+  - Connects to any MCP server and exposes its tools as Lumen `ToolProvider` instances.
+  - Config-driven: `lumen.toml` lists MCP server URIs and tool mappings.
+- [ ] `lumen-provider-openai` crate (OpenAI-compatible chat/embeddings).
+  - Chat completions, structured output, embeddings. Configurable base URL for compatible APIs.
+- [ ] `lumen-provider-anthropic` crate (Claude API adapter).
+  - Messages API, tool use, streaming. Separate from OpenAI-compatible due to different API shape.
+
 ## Language Semantics (P2)
 
 - [ ] Implement real effect handler semantics with continuations.
@@ -132,10 +180,20 @@ Completed work should be removed from this list and reflected in docs/changelog.
 
 - [ ] Add machine transition trace events and replay hooks.
 
-## Toolchain and Ecosystem (P3)
+## Provider Ecosystem (P3)
 
-- [ ] Implement native tool execution (MCP client or subprocess protocol).
-  - Only `StubDispatcher` exists. Tool execution is the language's core purpose.
+- [ ] `lumen-provider-fs` crate (filesystem operations).
+  - Read, write, list, stat with sandboxing and path constraints.
+- [ ] `lumen-provider-process` crate (subprocess execution).
+  - Spawn, stdin/stdout/stderr, exit code. Respects grant constraints.
+- [ ] Provider hot-reload / dynamic loading.
+  - Reload providers without restarting the VM. Useful for development workflows.
+- [ ] Provider version negotiation.
+  - Schema versioning so providers can evolve without breaking existing programs.
+- [ ] Community provider template/scaffold.
+  - `lumen new-provider <name>` generates a crate skeleton with `ToolProvider` impl.
+
+## Toolchain and Ecosystem (P3)
 
 - [ ] Add package/module system: imports are parsed but nonfunctional.
 - [ ] Build first-party LSP server.

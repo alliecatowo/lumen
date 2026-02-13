@@ -837,6 +837,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lumen-provider-json"
+version = "0.1.0"
+dependencies = [
+ "lumen-runtime",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "lumen-runtime"
 version = "0.1.0"
 dependencies = [

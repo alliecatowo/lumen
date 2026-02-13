@@ -7,6 +7,7 @@ members = [
     "rust/lumen-cli",
     "rust/lumen-lsp",
     "rust/lumen-provider-http",
+    "rust/lumen-provider-json",
 ]
 
 [workspace.package]

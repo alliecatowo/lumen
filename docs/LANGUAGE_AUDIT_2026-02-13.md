@@ -2,6 +2,7 @@
 
 This document tracks the gap between compile-surface parity and runtime-semantic parity.
 It is the implementation source of truth for closing all known gaps.
+Strategic competitor-facing roadmap is tracked separately in `docs/LANGUAGE_COMPETITOR_AUDIT_2026-02-13.md`.
 
 ## Current State
 
@@ -119,3 +120,5 @@ It is the implementation source of truth for closing all known gaps.
 - 2026-02-13: VM memory/machine runtime method semantics implemented and covered by runtime tests.
 - 2026-02-13: Resolver effect inference + strict undeclared-effect diagnostics + inferred grant checks implemented.
 - 2026-02-13: Field access lowering switched to index-keyed string constants to avoid 8-bit field index overflow at runtime.
+- 2026-02-13: Process runtime state moved to per-instance identity (no shared singleton state across memory/machine instances).
+- 2026-02-13: Added deterministic profile enforcement (`@deterministic true`) with nondeterministic effect diagnostics.

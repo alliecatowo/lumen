@@ -47,7 +47,7 @@ pub enum ResolveError {
 pub struct SymbolTable {
     pub types: HashMap<String, TypeInfo>,
     pub cells: HashMap<String, CellInfo>,
-    pub cell_grants: HashMap<String, BTreeSet<String>>,
+    pub cell_policies: HashMap<String, Vec<GrantPolicy>>,
     pub tools: HashMap<String, ToolInfo>,
     pub agents: HashMap<String, AgentInfo>,
     pub processes: HashMap<String, ProcessInfo>,
@@ -143,6 +143,12 @@ pub struct ConstInfo {
     pub value: Option<Expr>,
 }
 
+#[derive(Debug, Clone)]
+pub struct GrantPolicy {
+    pub tool_alias: String,
+    pub allowed_effects: Option<BTreeSet<String>>,
+}
+
 impl SymbolTable {
     pub fn new() -> Self {
         let mut types = HashMap::new();
@@ -199,7 +205,7 @@ impl SymbolTable {
         Self {
             types,
             cells: HashMap::new(),
-            cell_grants: HashMap::new(),
+            cell_policies: HashMap::new(),
             tools: HashMap::new(),
             agents: HashMap::new(),
             processes: HashMap::new(),
@@ -484,7 +490,7 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
         }
     }
 
-    table.cell_grants = build_cell_grants(program);
+    table.cell_policies = build_cell_policies(program);
 
     // Second pass: verify all type references exist
     for item in &program.items {
@@ -644,8 +650,8 @@ fn check_effect_grants_for(
     if effects.is_empty() {
         return;
     }
-    let granted_aliases = table
-        .cell_grants
+    let policies = table
+        .cell_policies
         .get(cell_name)
         .cloned()
         .unwrap_or_default();
@@ -668,8 +674,7 @@ fn check_effect_grants_for(
             continue;
         }
 
-        let satisfied =
-            is_effect_satisfied_by_grants(&effect, table, &granted_aliases, &effect_bind_map);
+        let satisfied = is_effect_satisfied_by_policies(&effect, table, &policies, &effect_bind_map);
 
         if !satisfied {
             errors.push(ResolveError::MissingEffectGrant {
@@ -679,59 +684,6 @@ fn check_effect_grants_for(
             });
         }
     }
-}
-
-fn build_cell_grants(program: &Program) -> HashMap<String, BTreeSet<String>> {
-    let mut map: HashMap<String, BTreeSet<String>> = HashMap::new();
-    let mut global_grants: BTreeSet<String> = BTreeSet::new();
-
-    for item in &program.items {
-        if let Item::Grant(g) = item {
-            global_grants.insert(g.tool_alias.clone());
-        }
-    }
-
-    for item in &program.items {
-        match item {
-            Item::Cell(c) => {
-                map.insert(c.name.clone(), global_grants.clone());
-            }
-            Item::Agent(a) => {
-                let mut scoped = global_grants.clone();
-                for g in &a.grants {
-                    scoped.insert(g.tool_alias.clone());
-                }
-                for c in &a.cells {
-                    map.insert(format!("{}.{}", a.name, c.name), scoped.clone());
-                }
-            }
-            Item::Process(p) => {
-                let mut scoped = global_grants.clone();
-                for g in &p.grants {
-                    scoped.insert(g.tool_alias.clone());
-                }
-                for c in &p.cells {
-                    map.insert(format!("{}.{}", p.name, c.name), scoped.clone());
-                }
-            }
-            Item::Effect(e) => {
-                for op in &e.operations {
-                    map.insert(format!("{}.{}", e.name, op.name), global_grants.clone());
-                }
-            }
-            Item::Handler(h) => {
-                for handle in &h.handles {
-                    map.insert(
-                        format!("{}.{}", h.name, handle.name),
-                        global_grants.clone(),
-                    );
-                }
-            }
-            _ => {}
-        }
-    }
-
-    map
 }
 
 fn build_effect_bind_map(table: &SymbolTable) -> HashMap<String, BTreeSet<String>> {
@@ -748,49 +700,148 @@ fn build_effect_bind_map(table: &SymbolTable) -> HashMap<String, BTreeSet<String
     map
 }
 
-fn is_effect_satisfied_by_grants(
-    effect: &str,
-    table: &SymbolTable,
-    granted_aliases: &BTreeSet<String>,
-    effect_bind_map: &HashMap<String, BTreeSet<String>>,
-) -> bool {
-    if granted_aliases.is_empty() {
-        return false;
+fn parse_policy_effects_from_expr(expr: &Expr, out: &mut BTreeSet<String>) {
+    match expr {
+        Expr::StringLit(s, _) => {
+            for part in s.split(',') {
+                let normalized = normalize_effect(part);
+                if !normalized.is_empty() {
+                    out.insert(normalized);
+                }
+            }
+        }
+        Expr::Ident(name, _) => {
+            let normalized = normalize_effect(name);
+            if !normalized.is_empty() {
+                out.insert(normalized);
+            }
+        }
+        Expr::ListLit(items, _) | Expr::SetLit(items, _) | Expr::TupleLit(items, _) => {
+            for item in items {
+                parse_policy_effects_from_expr(item, out);
+            }
+        }
+        _ => {}
     }
+}
 
-    if let Some(bound_aliases) = effect_bind_map.get(effect) {
-        if granted_aliases.iter().any(|a| bound_aliases.contains(a)) {
-            return true;
+fn grant_to_policy(grant: &GrantDecl) -> GrantPolicy {
+    let mut declared_effects = BTreeSet::new();
+    let mut has_effect_clause = false;
+
+    for constraint in &grant.constraints {
+        let key = constraint.key.to_ascii_lowercase();
+        if key == "effect" || key == "effects" {
+            has_effect_clause = true;
+            parse_policy_effects_from_expr(&constraint.value, &mut declared_effects);
         }
     }
 
-    match effect {
-        "mcp" => granted_aliases.iter().any(|alias| {
-            table
+    GrantPolicy {
+        tool_alias: grant.tool_alias.clone(),
+        allowed_effects: if has_effect_clause {
+            Some(declared_effects)
+        } else {
+            None
+        },
+    }
+}
+
+fn build_cell_policies(program: &Program) -> HashMap<String, Vec<GrantPolicy>> {
+    let mut map: HashMap<String, Vec<GrantPolicy>> = HashMap::new();
+    let mut global_policies: Vec<GrantPolicy> = Vec::new();
+
+    for item in &program.items {
+        if let Item::Grant(g) = item {
+            global_policies.push(grant_to_policy(g));
+        }
+    }
+
+    for item in &program.items {
+        match item {
+            Item::Cell(c) => {
+                map.insert(c.name.clone(), global_policies.clone());
+            }
+            Item::Agent(a) => {
+                let mut scoped = global_policies.clone();
+                scoped.extend(a.grants.iter().map(grant_to_policy));
+                for c in &a.cells {
+                    map.insert(format!("{}.{}", a.name, c.name), scoped.clone());
+                }
+            }
+            Item::Process(p) => {
+                let mut scoped = global_policies.clone();
+                scoped.extend(p.grants.iter().map(grant_to_policy));
+                for c in &p.cells {
+                    map.insert(format!("{}.{}", p.name, c.name), scoped.clone());
+                }
+            }
+            Item::Effect(e) => {
+                for op in &e.operations {
+                    map.insert(format!("{}.{}", e.name, op.name), global_policies.clone());
+                }
+            }
+            Item::Handler(h) => {
+                for handle in &h.handles {
+                    map.insert(format!("{}.{}", h.name, handle.name), global_policies.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    map
+}
+
+fn is_effect_satisfied_by_policies(
+    effect: &str,
+    table: &SymbolTable,
+    policies: &[GrantPolicy],
+    effect_bind_map: &HashMap<String, BTreeSet<String>>,
+) -> bool {
+    if policies.is_empty() {
+        return false;
+    }
+
+    for policy in policies {
+        let alias = &policy.tool_alias;
+        if !table.tools.contains_key(alias) {
+            continue;
+        }
+
+        let bound_to_alias = effect_bind_map
+            .get(effect)
+            .map(|aliases| aliases.contains(alias))
+            .unwrap_or(false);
+
+        if let Some(allowed) = &policy.allowed_effects {
+            if allowed.contains(effect) || bound_to_alias {
+                return true;
+            }
+            continue;
+        }
+
+        if bound_to_alias {
+            return true;
+        }
+
+        if effect == "mcp" {
+            if table
                 .tools
                 .get(alias)
-                .map(|t| t.mcp_url.is_some())
+                .map(|tool| tool.mcp_url.is_some())
                 .unwrap_or(false)
-        }),
-        "external" => !granted_aliases.is_empty(),
-        "http" | "llm" | "fs" | "database" | "email" => granted_aliases.iter().any(|alias| {
-            let Some(tool) = table.tools.get(alias) else {
-                return false;
-            };
-            let path = tool.tool_path.to_ascii_lowercase();
-            match effect {
-                "http" => path.contains("http"),
-                "llm" => path.contains("llm") || path.contains("chat"),
-                "fs" => path.contains("fs") || path.contains("file"),
-                "database" => {
-                    path.contains("db") || path.contains("sql") || path.contains("postgres")
-                }
-                "email" => path.contains("email"),
-                _ => false,
+            {
+                return true;
             }
-        }),
-        _ => false,
+            continue;
+        }
+
+        // Unrestricted policies allow external effects by default.
+        return true;
     }
+
+    false
 }
 
 #[derive(Debug, Clone)]
@@ -2327,5 +2378,28 @@ mod tests {
             ResolveError::UndeclaredEffect { cell, effect, cause, .. }
             if cell == "main" && effect == "http" && cause.contains("tool call 'HttpGet'")
         )));
+    }
+
+    #[test]
+    fn test_grant_policy_effect_clause_restricts_effects() {
+        let err = resolve_src(
+            "use tool http.get as HttpGet\ngrant HttpGet\n  effect http\n\ncell main() -> Int / {llm}\n  return 1\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::MissingEffectGrant { cell, effect, .. }
+            if cell == "main" && effect == "llm"
+        )));
+    }
+
+    #[test]
+    fn test_grant_policy_effects_list_allows_effect() {
+        let table = resolve_src(
+            "use tool http.get as HttpGet\ngrant HttpGet\n  effects [\"http\", \"llm\"]\n\ncell main() -> Int / {llm}\n  return 1\nend",
+        )
+        .unwrap();
+        let effects = &table.cells.get("main").unwrap().effects;
+        assert!(effects.contains(&"llm".to_string()));
     }
 }

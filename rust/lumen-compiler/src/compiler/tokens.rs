@@ -98,6 +98,7 @@ pub enum TokenKind {
     Pipe,     // |
 
     // Delimiters
+    Symbol(char),
     LParen,
     RParen,
     LBracket,
@@ -183,6 +184,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Newline => write!(f, "NEWLINE"),
             TokenKind::Eof => write!(f, "EOF"),
             TokenKind::Directive(s) => write!(f, "@{}", s),
+            TokenKind::Symbol(c) => write!(f, "{}", c),
         }
     }
 }

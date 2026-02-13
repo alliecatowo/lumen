@@ -628,12 +628,13 @@ impl Parser {
             // Check for role blocks inline
             if matches!(self.peek_kind(), TokenKind::Role) {
                 self.advance();
+                let role_span = self.current().span;
                 let role_name = self.expect_ident()?;
                 self.expect(&TokenKind::Colon)?;
                 
                 let content_expr = self.parse_role_content()?;
                 
-                let span = role_name.span().merge(content_expr.span());
+                let span = role_span.merge(content_expr.span());
                 args.push(CallArg::Role(role_name, content_expr, span));
                 continue;
             }
@@ -797,57 +798,7 @@ impl Parser {
 
     // ── Helpers ──
 
-    /// Parse role block content with interpolation support.
-    fn parse_role_content(&mut self) -> Result<Expr, ParseError> {
-        let start = self.current().span;
-        let mut segments = Vec::new();
-        let mut text_buf = String::new();
-        let mut has_indent = matches!(self.peek_kind(), TokenKind::Indent);
-        if has_indent { self.advance(); }
-        self.skip_newlines();
 
-        loop {
-            match self.peek_kind() {
-                TokenKind::End | TokenKind::Role | TokenKind::Eof | TokenKind::RParen => break,
-                TokenKind::Dedent if has_indent => { break; }
-                TokenKind::LBrace => {
-                    self.advance(); // consume {
-                    if !text_buf.is_empty() {
-                        segments.push(StringSegment::Literal(text_buf.clone()));
-                        text_buf.clear();
-                    }
-                    let expr = self.parse_expr(0)?;
-                    segments.push(StringSegment::Interpolation(Box::new(expr)));
-                    self.expect(&TokenKind::RBrace)?;
-                }
-                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => {
-                    if !text_buf.is_empty() { text_buf.push('\n'); }
-                    self.advance();
-                }
-                _ => {
-                    let tok = self.advance().clone();
-                    if !text_buf.is_empty() && !text_buf.ends_with('\n') { text_buf.push(' '); }
-                    text_buf.push_str(&format!("{}", tok.kind));
-                }
-            }
-        }
-        
-        if !text_buf.is_empty() {
-            segments.push(StringSegment::Literal(text_buf));
-        }
-
-        if has_indent && matches!(self.peek_kind(), TokenKind::Dedent) { self.advance(); }
-        
-        let span = if segments.is_empty() { start } else { start.merge(self.current().span) };
-        
-        if segments.len() == 1 {
-            if let StringSegment::Literal(ref s) = segments[0] {
-                return Ok(Expr::StringLit(s.clone(), span));
-            }
-        }
-        
-        Ok(Expr::StringInterp(segments, span))
-    }
 
     fn expect_ident(&mut self) -> Result<String, ParseError> {
         let tok = self.current().clone();

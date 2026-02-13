@@ -619,10 +619,13 @@ impl<'a> Lowerer<'a> {
                             arg_regs.push(self.lower_expr(e, ra, consts, instrs)); 
                         }
                         CallArg::Role(name, content, _) => {
-                            let dest = ra.alloc_temp();
+                            let content_reg = self.lower_expr(content, ra, consts, instrs);
+                            let prefix_reg = ra.alloc_temp();
                             let kidx = consts.len() as u16;
-                            consts.push(Constant::String(format!("{}:{}", name, content)));
-                            instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
+                            consts.push(Constant::String(format!("{}: ", name)));
+                            instrs.push(Instruction::abx(OpCode::LoadK, prefix_reg, kidx));
+                            let dest = ra.alloc_temp();
+                            instrs.push(Instruction::abc(OpCode::Concat, dest, prefix_reg, content_reg));
                             arg_regs.push(dest);
                         }
                     }

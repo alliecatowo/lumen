@@ -1282,4 +1282,40 @@ mod tests {
         assert!(is_doc_placeholder_var("x"));
         assert!(is_doc_placeholder_var("my_variable"));
     }
+
+    #[test]
+    fn test_type_alias_basic() {
+        // Basic type alias to primitive type
+        typecheck_src(
+            "type UserId = String\n\ncell greet(id: UserId) -> UserId\n  return id\nend",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_type_alias_complex() {
+        // Type alias to complex type
+        typecheck_src(
+            "type StringList = list[String]\n\ncell make_list() -> StringList\n  return [\"a\", \"b\"]\nend",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_type_alias_in_record() {
+        // Type alias used in record field
+        typecheck_src(
+            "type Email = String\n\nrecord User\n  email: Email\nend\n\ncell get_email(u: User) -> Email\n  return u.email\nend",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_type_alias_chained() {
+        // Chained type aliases: A -> B -> String
+        typecheck_src(
+            "type UserId = String\ntype Id = UserId\n\ncell make_id() -> Id\n  return \"123\"\nend",
+        )
+        .unwrap();
+    }
 }

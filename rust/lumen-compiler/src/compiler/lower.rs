@@ -5,12 +5,26 @@ use crate::compiler::lir::*;
 use crate::compiler::regalloc::RegAlloc;
 use crate::compiler::resolve::SymbolTable;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 
 /// Lower an entire program to a LIR module.
 pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModule {
     let doc_hash = format!("sha256:{:x}", Sha256::digest(source.as_bytes()));
     let mut module = LirModule::new(doc_hash);
     let mut lowerer = Lowerer::new(symbols);
+
+    let mut tool_aliases: Vec<String> = symbols.tools.keys().cloned().collect();
+    tool_aliases.sort();
+    for alias in tool_aliases {
+        if let Some(tool) = symbols.tools.get(&alias) {
+            module.tools.push(LirTool {
+                alias: alias.clone(),
+                tool_id: tool.tool_path.clone(),
+                version: "1.0.0".to_string(),
+                mcp_url: tool.mcp_url.clone(),
+            });
+        }
+    }
 
     // Lower types
     for item in &program.items {
@@ -90,12 +104,7 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                 kind: a.kind.clone(),
                 name: a.name.clone(),
             }),
-            Item::UseTool(u) => module.tools.push(LirTool {
-                alias: u.alias.clone(),
-                tool_id: u.tool_path.clone(),
-                version: "1.0.0".to_string(),
-                mcp_url: u.mcp_url.clone(),
-            }),
+            Item::UseTool(_) => {}
             Item::Grant(g) => {
                 let mut grants = serde_json::Map::new();
                 for c in &g.constraints {
@@ -156,6 +165,7 @@ struct LoopContext {
 
 struct Lowerer<'a> {
     symbols: &'a SymbolTable,
+    tool_indices: HashMap<String, u16>,
     strings: Vec<String>,
     loop_stack: Vec<LoopContext>,
     lambda_cells: Vec<LirCell>,
@@ -163,8 +173,16 @@ struct Lowerer<'a> {
 
 impl<'a> Lowerer<'a> {
     fn new(symbols: &'a SymbolTable) -> Self {
+        let mut tool_aliases: Vec<String> = symbols.tools.keys().cloned().collect();
+        tool_aliases.sort();
+        let tool_indices = tool_aliases
+            .into_iter()
+            .enumerate()
+            .map(|(idx, alias)| (alias, idx as u16))
+            .collect();
         Self {
             symbols,
+            tool_indices,
             strings: Vec::new(),
             loop_stack: Vec::new(),
             lambda_cells: Vec::new(),
@@ -1214,6 +1232,11 @@ impl<'a> Lowerer<'a> {
             Expr::Call(callee, args, _) => {
                 // Check for intrinsic call or Enum/Result constructor
                 if let Expr::Ident(ref name, _) = **callee {
+                    if self.tool_indices.contains_key(name) && !self.symbols.cells.contains_key(name)
+                    {
+                        return self.lower_tool_call(Some(name.as_str()), args, ra, consts, instrs);
+                    }
+
                     let is_agent_ctor = self.symbols.agents.contains_key(name);
                     let is_process_ctor = self.symbols.processes.values().any(|p| p.name == *name);
                     // Check Result/Enum constructors
@@ -1535,57 +1558,11 @@ impl<'a> Lowerer<'a> {
                 result_reg
             }
             Expr::ToolCall(callee, args, _) => {
-                let _ = self.lower_expr(callee, ra, consts, instrs); // Callee is ignored? "tool" token?
-                                                                     // Should we lower callee if it's an expression? "tool" is keyword.
-                                                                     // If callee is Expr::Ident("tool"), it evaluates to nothing?
-                                                                     // But ToolCall syntax is `tool name(args)`. name is Ident.
-                                                                     // The AST has `callee: Expr`.
-
-                let mut arg_regs = Vec::new();
-                for arg in args {
-                    match arg {
-                        CallArg::Positional(e) | CallArg::Named(_, e, _) => {
-                            arg_regs.push(self.lower_expr(e, ra, consts, instrs));
-                        }
-                        CallArg::Role(name, content, _) => {
-                            let content_reg = self.lower_expr(content, ra, consts, instrs);
-                            let prefix_reg = ra.alloc_temp();
-                            let kidx = consts.len() as u16;
-                            consts.push(Constant::String(format!("{}: ", name)));
-                            instrs.push(Instruction::abx(OpCode::LoadK, prefix_reg, kidx));
-                            let dest = ra.alloc_temp();
-                            instrs.push(Instruction::abc(
-                                OpCode::Concat,
-                                dest,
-                                prefix_reg,
-                                content_reg,
-                            ));
-                            arg_regs.push(dest);
-                        }
-                    }
-                }
-
-                // Pack args into contiguous registers starting at dest+1
-                let dest = ra.alloc_temp(); // A
-                                            // Allocate space for args
-                for _ in 0..arg_regs.len() {
-                    ra.alloc_temp();
-                }
-
-                for (i, &reg) in arg_regs.iter().enumerate() {
-                    let target = dest + 1 + i as u8;
-                    if reg != target {
-                        instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
-                    }
-                }
-
-                instrs.push(Instruction::abc(
-                    OpCode::ToolCall,
-                    dest,
-                    0,
-                    args.len() as u8,
-                ));
-                dest
+                let alias = match callee.as_ref() {
+                    Expr::Ident(name, _) => Some(name.as_str()),
+                    _ => None,
+                };
+                self.lower_tool_call(alias, args, ra, consts, instrs)
             }
             Expr::DotAccess(obj, field, _) => {
                 let or = self.lower_expr(obj, ra, consts, instrs);
@@ -1966,6 +1943,74 @@ impl<'a> Lowerer<'a> {
                 dest
             }
         }
+    }
+
+    fn lower_tool_call(
+        &mut self,
+        alias: Option<&str>,
+        args: &[CallArg],
+        ra: &mut RegAlloc,
+        consts: &mut Vec<Constant>,
+        instrs: &mut Vec<Instruction>,
+    ) -> u8 {
+        let mut kv_regs = Vec::new();
+        for (idx, arg) in args.iter().enumerate() {
+            let (key, value_reg) = match arg {
+                CallArg::Named(name, e, _) => (name.clone(), self.lower_expr(e, ra, consts, instrs)),
+                CallArg::Positional(e) => {
+                    (format!("arg{}", idx), self.lower_expr(e, ra, consts, instrs))
+                }
+                CallArg::Role(name, content, _) => {
+                    let content_reg = self.lower_expr(content, ra, consts, instrs);
+                    let prefix_reg = ra.alloc_temp();
+                    let kidx = consts.len() as u16;
+                    consts.push(Constant::String(format!("{}: ", name)));
+                    instrs.push(Instruction::abx(OpCode::LoadK, prefix_reg, kidx));
+                    let rendered_reg = ra.alloc_temp();
+                    instrs.push(Instruction::abc(
+                        OpCode::Concat,
+                        rendered_reg,
+                        prefix_reg,
+                        content_reg,
+                    ));
+                    (name.clone(), rendered_reg)
+                }
+            };
+
+            let key_reg = ra.alloc_temp();
+            let key_idx = consts.len() as u16;
+            consts.push(Constant::String(key));
+            instrs.push(Instruction::abx(OpCode::LoadK, key_reg, key_idx));
+
+            let value_copy_reg = ra.alloc_temp();
+            if value_reg != value_copy_reg {
+                instrs.push(Instruction::abc(OpCode::Move, value_copy_reg, value_reg, 0));
+            }
+            kv_regs.push((key_reg, value_copy_reg));
+        }
+
+        let dest = ra.alloc_temp();
+        for _ in 0..(kv_regs.len() * 2) {
+            ra.alloc_temp();
+        }
+
+        for (i, (key_reg, value_reg)) in kv_regs.iter().enumerate() {
+            let key_target = dest + 1 + (i as u8) * 2;
+            let value_target = key_target + 1;
+            if *key_reg != key_target {
+                instrs.push(Instruction::abc(OpCode::Move, key_target, *key_reg, 0));
+            }
+            if *value_reg != value_target {
+                instrs.push(Instruction::abc(OpCode::Move, value_target, *value_reg, 0));
+            }
+        }
+
+        instrs.push(Instruction::abc(OpCode::NewMap, dest, kv_regs.len() as u8, 0));
+        let tool_index = alias
+            .and_then(|name| self.tool_indices.get(name).copied())
+            .unwrap_or(0);
+        instrs.push(Instruction::abx(OpCode::ToolCall, dest, tool_index));
+        dest
     }
 }
 

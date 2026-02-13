@@ -311,7 +311,7 @@ impl PartialEq for Value {
             (Value::Null, Value::Null) => true,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a), Value::Int(b)) => a == b,
-            (Value::Float(a), Value::Float(b)) => a == b,
+            (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
             (Value::String(StringRef::Owned(a)), Value::String(StringRef::Owned(b))) => a == b,
             (Value::Int(a), Value::Float(b)) => (*a as f64) == *b,
             (Value::Float(a), Value::Int(b)) => *a == (*b as f64),
@@ -360,22 +360,12 @@ impl Ord for Value {
             (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
             (Value::Int(a), Value::Int(b)) => a.cmp(b),
             (Value::Float(a), Value::Float(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
-            (Value::String(a), Value::String(b)) => {
-                let sa = match a {
-                    StringRef::Owned(s) => s.as_str(),
-                    StringRef::Interned(id) => {
-                        let _ = id;
-                        ""
-                    }
-                };
-                let sb = match b {
-                    StringRef::Owned(s) => s.as_str(),
-                    StringRef::Interned(id) => {
-                        let _ = id;
-                        ""
-                    }
-                };
-                sa.cmp(sb)
+            (Value::String(a), Value::String(b)) => match (a, b) {
+                (StringRef::Owned(sa), StringRef::Owned(sb)) => sa.cmp(sb),
+                (StringRef::Interned(ida), StringRef::Interned(idb)) => ida.cmp(idb),
+                // Interned sorts before Owned for deterministic ordering
+                (StringRef::Interned(_), StringRef::Owned(_)) => Ordering::Less,
+                (StringRef::Owned(_), StringRef::Interned(_)) => Ordering::Greater,
             }
             (Value::Bytes(a), Value::Bytes(b)) => a.cmp(b),
             (Value::List(a), Value::List(b)) => a.cmp(b),
@@ -535,5 +525,85 @@ mod tests {
             captures: vec![Value::Int(42)],
         });
         assert_eq!(c.display_pretty(), "<closure:cell=0>");
+    }
+
+    #[test]
+    fn test_nan_equality() {
+        let nan1 = Value::Float(f64::NAN);
+        let nan2 = Value::Float(f64::NAN);
+        // With bitwise equality, NaN == NaN should be true
+        assert_eq!(nan1, nan2);
+    }
+
+    #[test]
+    fn test_nan_not_equal_to_different_nan() {
+        // Positive and negative NaN have different bit patterns
+        let nan_pos = Value::Float(f64::NAN);
+        let nan_neg = Value::Float(-f64::NAN);
+        // They have different bit patterns, so they should not be equal
+        // (unless the platform normalizes NaN)
+        if f64::NAN.to_bits() != (-f64::NAN).to_bits() {
+            assert_ne!(nan_pos, nan_neg);
+        }
+    }
+
+    #[test]
+    fn test_float_equality_normal() {
+        assert_eq!(Value::Float(1.5), Value::Float(1.5));
+        assert_ne!(Value::Float(1.5), Value::Float(2.5));
+    }
+
+    #[test]
+    fn test_is_truthy_interned_always_true_without_table() {
+        // Without string table resolution, interned strings are truthy
+        // (the VM's value_is_truthy method handles resolution)
+        assert!(Value::String(StringRef::Interned(0)).is_truthy());
+        assert!(Value::String(StringRef::Interned(99)).is_truthy());
+    }
+
+    #[test]
+    fn test_is_truthy_comprehensive() {
+        // Null
+        assert!(!Value::Null.is_truthy());
+        // Bool
+        assert!(!Value::Bool(false).is_truthy());
+        assert!(Value::Bool(true).is_truthy());
+        // Int
+        assert!(!Value::Int(0).is_truthy());
+        assert!(Value::Int(1).is_truthy());
+        assert!(Value::Int(-1).is_truthy());
+        // Float
+        assert!(!Value::Float(0.0).is_truthy());
+        assert!(Value::Float(1.0).is_truthy());
+        assert!(Value::Float(-0.5).is_truthy());
+        // String
+        assert!(!Value::String(StringRef::Owned("".into())).is_truthy());
+        assert!(Value::String(StringRef::Owned("hello".into())).is_truthy());
+        // List
+        assert!(!Value::List(vec![]).is_truthy());
+        assert!(Value::List(vec![Value::Null]).is_truthy());
+        // Tuple
+        assert!(!Value::Tuple(vec![]).is_truthy());
+        assert!(Value::Tuple(vec![Value::Int(1)]).is_truthy());
+        // Set
+        assert!(!Value::Set(vec![]).is_truthy());
+        assert!(Value::Set(vec![Value::Int(1)]).is_truthy());
+    }
+
+    #[test]
+    fn test_interned_string_ordering() {
+        // Interned strings should compare by ID
+        let a = Value::String(StringRef::Interned(1));
+        let b = Value::String(StringRef::Interned(2));
+        assert!(a < b);
+
+        // Same interned ID should be equal ordering
+        let c = Value::String(StringRef::Interned(1));
+        assert_eq!(a.cmp(&c), Ordering::Equal);
+
+        // Interned sorts before Owned
+        let owned = Value::String(StringRef::Owned("test".into()));
+        let interned = Value::String(StringRef::Interned(0));
+        assert!(interned < owned);
     }
 }

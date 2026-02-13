@@ -1006,30 +1006,38 @@ impl Parser {
         } else {
             false
         };
-        let name = if matches!(self.peek_kind(), TokenKind::LParen) {
-            self.advance();
-            let first = if !matches!(self.peek_kind(), TokenKind::RParen) {
-                Some(self.expect_ident()?)
-            } else {
-                None
+        let (name, pattern) = if matches!(self.peek_kind(), TokenKind::LParen | TokenKind::LBracket) {
+            // Destructuring pattern: let (a, b) = ... or let [a, b] = ...
+            let pat = self.parse_pattern()?;
+            let pat_name = match &pat {
+                Pattern::TupleDestructure { elements, .. } => {
+                    // Use first element name as the binding name for backwards compat
+                    elements.first().and_then(|p| match p {
+                        Pattern::Ident(n, _) => Some(n.clone()),
+                        _ => None,
+                    }).unwrap_or_else(|| "__tuple".to_string())
+                }
+                Pattern::ListDestructure { elements, .. } => {
+                    elements.first().and_then(|p| match p {
+                        Pattern::Ident(n, _) => Some(n.clone()),
+                        _ => None,
+                    }).unwrap_or_else(|| "__pattern".to_string())
+                }
+                _ => "__pattern".to_string(),
             };
-            while !matches!(self.peek_kind(), TokenKind::RParen | TokenKind::Eof) {
-                self.advance();
-            }
-            if matches!(self.peek_kind(), TokenKind::RParen) {
-                self.advance();
-            }
-            first.unwrap_or_else(|| "__tuple".to_string())
-        } else if matches!(self.peek_kind(), TokenKind::LBracket | TokenKind::LBrace) {
+            (pat_name, Some(pat))
+        } else if matches!(self.peek_kind(), TokenKind::LBrace) {
+            // Record destructuring: let { a, b } = ...
             self.consume_balanced_group();
-            "__pattern".to_string()
+            ("__pattern".to_string(), None)
         } else {
             let first = self.expect_ident()?;
             if matches!(self.peek_kind(), TokenKind::LParen) {
+                // Variant destructuring: let Name(x) = ...
                 self.consume_balanced_group();
-                "__pattern".to_string()
+                ("__pattern".to_string(), None)
             } else {
-                first
+                (first, None)
             }
         };
         let ty = if matches!(self.peek_kind(), TokenKind::Colon) {
@@ -1044,7 +1052,7 @@ impl Parser {
         Ok(Stmt::Let(LetStmt {
             name,
             mutable,
-            pattern: None,
+            pattern,
             ty,
             value,
             span,
@@ -1055,7 +1063,14 @@ impl Parser {
         let start = self.expect(&TokenKind::If)?.span;
         let cond = if matches!(self.peek_kind(), TokenKind::Let) {
             self.advance();
-            self.consume_rest_of_line();
+            // Parse `if let <pattern> = <expr>` — consume the binding pattern and
+            // the expression so the parser stays in sync, but since IfStmt has no
+            // pattern field we desugar to `BoolLit(true)` for now.
+            let _ = self.parse_pattern()?;
+            if matches!(self.peek_kind(), TokenKind::Assign) {
+                self.advance();
+                let _ = self.parse_expr(0)?;
+            }
             Expr::BoolLit(true, start)
         } else {
             self.parse_expr(0)?
@@ -1127,14 +1142,20 @@ impl Parser {
         let start = self.expect(&TokenKind::For)?.span;
         let var = if matches!(self.peek_kind(), TokenKind::LParen) {
             self.advance();
-            let first = self.expect_ident()?;
-            while !matches!(self.peek_kind(), TokenKind::RParen | TokenKind::Eof) {
-                self.advance();
+            let mut names = vec![self.expect_ident()?];
+            while matches!(self.peek_kind(), TokenKind::Comma) {
+                self.advance(); // consume comma
+                if matches!(self.peek_kind(), TokenKind::RParen) {
+                    break; // trailing comma
+                }
+                names.push(self.expect_ident()?);
             }
             if matches!(self.peek_kind(), TokenKind::RParen) {
                 self.advance();
             }
-            first
+            // ForStmt.var is a single String; use first ident as the loop variable.
+            // Full tuple destructuring requires AST changes.
+            names.into_iter().next().unwrap_or_default()
         } else {
             self.expect_ident()?
         };
@@ -1456,7 +1477,12 @@ impl Parser {
         let start = self.expect(&TokenKind::While)?.span;
         let cond = if matches!(self.peek_kind(), TokenKind::Let) {
             self.advance();
-            self.consume_rest_of_line();
+            // Parse `while let <pattern> = <expr>` — same desugar approach as if-let.
+            let _ = self.parse_pattern()?;
+            if matches!(self.peek_kind(), TokenKind::Assign) {
+                self.advance();
+                let _ = self.parse_expr(0)?;
+            }
             Expr::BoolLit(true, start)
         } else {
             self.parse_expr(0)?
@@ -3840,45 +3866,20 @@ impl Parser {
                 Ok(Expr::Ident("parallel".into(), s))
             }
             TokenKind::Match => {
-                let s = self.advance().span;
-                let _ = self.parse_expr(0)?;
-                self.skip_newlines();
-                self.consume_block_until_end();
-                Ok(Expr::Ident("match_expr".into(), s))
+                // Reuse the statement-level match parser for correct token consumption.
+                // Back up since parse_match expects to consume the Match token itself.
+                let s = self.current().span;
+                let stmt = self.parse_match()?;
+                let end_span = stmt.span();
+                // AST has no MatchExpr; return a placeholder that preserves the span.
+                Ok(Expr::Ident("match_expr".into(), s.merge(end_span)))
             }
             TokenKind::If => {
-                let s = self.advance().span;
-                while !matches!(
-                    self.peek_kind(),
-                    TokenKind::RBrace | TokenKind::Newline | TokenKind::Comma | TokenKind::Eof
-                ) {
-                    self.advance();
-                }
-                if matches!(self.peek_kind(), TokenKind::Newline) {
-                    self.skip_newlines();
-                    if matches!(self.peek_kind(), TokenKind::Indent) {
-                        self.consume_indented_payload();
-                        self.skip_newlines();
-                    } else {
-                        self.consume_rest_of_line();
-                        self.skip_newlines();
-                    }
-                    if matches!(self.peek_kind(), TokenKind::Else) {
-                        self.advance();
-                        self.skip_newlines();
-                        if matches!(self.peek_kind(), TokenKind::Indent) {
-                            self.consume_indented_payload();
-                            self.skip_newlines();
-                        } else {
-                            self.consume_rest_of_line();
-                            self.skip_newlines();
-                        }
-                    }
-                    if matches!(self.peek_kind(), TokenKind::End) {
-                        self.advance();
-                    }
-                }
-                Ok(Expr::Ident("if_expr".into(), s))
+                // Reuse the statement-level if parser for correct token consumption.
+                let s = self.current().span;
+                let stmt = self.parse_if()?;
+                let end_span = stmt.span();
+                Ok(Expr::Ident("if_expr".into(), s.merge(end_span)))
             }
             TokenKind::When => {
                 let s = self.advance().span;
@@ -3887,26 +3888,38 @@ impl Parser {
                 Ok(Expr::Ident("when_expr".into(), s))
             }
             TokenKind::Loop => {
-                let s = self.advance().span;
-                self.skip_newlines();
-                self.consume_block_until_end();
-                Ok(Expr::Ident("loop_expr".into(), s))
+                let s = self.current().span;
+                let stmt = self.parse_loop()?;
+                let end_span = stmt.span();
+                Ok(Expr::Ident("loop_expr".into(), s.merge(end_span)))
             }
             TokenKind::Let => {
-                let s = self.advance().span;
-                self.consume_rest_of_line();
-                Ok(Expr::Ident("let_expr".into(), s))
+                let s = self.current().span;
+                let stmt = self.parse_let()?;
+                let end_span = stmt.span();
+                Ok(Expr::Ident("let_expr".into(), s.merge(end_span)))
             }
             TokenKind::Try => {
                 let s = self.advance().span;
-                self.consume_rest_of_line();
-                Ok(Expr::Ident("try_expr".into(), s))
+                let inner = self.parse_expr(0)?;
+                let span = s.merge(inner.span());
+                Ok(Expr::TryExpr(Box::new(inner), span))
             }
             TokenKind::Async => {
                 let s = self.advance().span;
+                // async block: `async ... end` or `async <expr>`
                 if matches!(self.peek_kind(), TokenKind::Newline | TokenKind::Indent) {
                     self.skip_newlines();
-                    self.consume_block_until_end();
+                    let _ = self.parse_block()?;
+                    if matches!(self.peek_kind(), TokenKind::End) {
+                        self.advance();
+                    }
+                } else if !matches!(
+                    self.peek_kind(),
+                    TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace
+                        | TokenKind::Comma | TokenKind::Eof
+                ) {
+                    let _ = self.parse_expr(0)?;
                 }
                 Ok(Expr::Ident("async_expr".into(), s))
             }

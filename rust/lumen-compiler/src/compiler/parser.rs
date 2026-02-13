@@ -2153,6 +2153,8 @@ impl Parser {
             .unwrap_or_else(|| "Process".to_string());
         let mut cells = Vec::new();
         let mut grants = Vec::new();
+        let mut machine_initial = None;
+        let mut machine_states = Vec::new();
 
         self.skip_newlines();
         let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
@@ -2196,6 +2198,12 @@ impl Parser {
                     cells.push(cell);
                 }
                 TokenKind::Grant => grants.push(self.parse_grant()?),
+                TokenKind::Ident(name) if kind == "machine" && name == "initial" => {
+                    machine_initial = Some(self.parse_machine_initial_decl()?);
+                }
+                TokenKind::Ident(name) if kind == "machine" && name == "state" => {
+                    machine_states.push(self.parse_machine_state_decl()?);
+                }
                 TokenKind::At => {
                     let _ = self.parse_attribute_decl()?;
                 }
@@ -2254,6 +2262,148 @@ impl Parser {
             name,
             cells,
             grants,
+            machine_initial,
+            machine_states,
+            span: start.merge(end_span),
+        })
+    }
+
+    fn parse_machine_initial_decl(&mut self) -> Result<String, ParseError> {
+        let kw = self.expect_ident()?;
+        if kw != "initial" {
+            let tok = self.current().clone();
+            return Err(ParseError::Unexpected {
+                found: kw,
+                expected: "initial".into(),
+                line: tok.span.line,
+                col: tok.span.col,
+            });
+        }
+        if matches!(self.peek_kind(), TokenKind::Colon) {
+            self.advance();
+        }
+        let state = self.expect_ident()?;
+        self.consume_rest_of_line();
+        Ok(state)
+    }
+
+    fn parse_machine_state_decl(&mut self) -> Result<MachineStateDecl, ParseError> {
+        let start = self.current().span;
+        let kw = self.expect_ident()?;
+        if kw != "state" {
+            let tok = self.current().clone();
+            return Err(ParseError::Unexpected {
+                found: kw,
+                expected: "state".into(),
+                line: tok.span.line,
+                col: tok.span.col,
+            });
+        }
+        let name = self.expect_ident()?;
+        let mut terminal = false;
+        let mut transition_to = None;
+
+        self.skip_newlines();
+        let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
+        if has_indent {
+            self.advance();
+        }
+        self.skip_newlines();
+
+        while !matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
+            self.skip_newlines();
+            if matches!(self.peek_kind(), TokenKind::Dedent) {
+                self.advance();
+                continue;
+            }
+            match self.peek_kind() {
+                TokenKind::Ident(id) if id == "terminal" => {
+                    self.advance();
+                    if matches!(self.peek_kind(), TokenKind::Colon) {
+                        self.advance();
+                    }
+                    terminal = match self.peek_kind().clone() {
+                        TokenKind::BoolLit(v) => {
+                            self.advance();
+                            v
+                        }
+                        TokenKind::Ident(text) if text == "true" => {
+                            self.advance();
+                            true
+                        }
+                        TokenKind::Ident(text) if text == "false" => {
+                            self.advance();
+                            false
+                        }
+                        _ => false,
+                    };
+                    self.consume_rest_of_line();
+                }
+                TokenKind::Ident(id) if id == "transition" => {
+                    self.advance();
+                    transition_to = Some(self.expect_ident()?);
+                    if matches!(self.peek_kind(), TokenKind::LParen) {
+                        self.consume_balanced_group();
+                    }
+                    self.consume_rest_of_line();
+                }
+                TokenKind::Ident(id)
+                    if matches!(id.as_str(), "on_enter" | "on_event" | "on_timeout") =>
+                {
+                    self.advance();
+                    self.consume_rest_of_line();
+                    self.skip_newlines();
+                    let nested_indent = matches!(self.peek_kind(), TokenKind::Indent);
+                    if nested_indent {
+                        self.advance();
+                    }
+                    self.skip_newlines();
+                    while !matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
+                        self.skip_newlines();
+                        if matches!(self.peek_kind(), TokenKind::Dedent) {
+                            self.advance();
+                            continue;
+                        }
+                        if let TokenKind::Ident(id2) = self.peek_kind() {
+                            if id2 == "transition" {
+                                self.advance();
+                                transition_to = Some(self.expect_ident()?);
+                                if matches!(self.peek_kind(), TokenKind::LParen) {
+                                    self.consume_balanced_group();
+                                }
+                                self.consume_rest_of_line();
+                                continue;
+                            }
+                        }
+                        self.consume_rest_of_line();
+                    }
+                    if nested_indent && matches!(self.peek_kind(), TokenKind::Dedent) {
+                        self.advance();
+                    }
+                    if matches!(self.peek_kind(), TokenKind::End) {
+                        self.advance();
+                    }
+                }
+                _ => {
+                    self.consume_rest_of_line();
+                }
+            }
+            self.skip_newlines();
+        }
+
+        if has_indent && matches!(self.peek_kind(), TokenKind::Dedent) {
+            self.advance();
+        }
+        let end_span = if matches!(self.peek_kind(), TokenKind::End) {
+            self.advance().span
+        } else {
+            self.current().span
+        };
+
+        Ok(MachineStateDecl {
+            name,
+            terminal,
+            transition_to,
             span: start.merge(end_span),
         })
     }
@@ -4732,6 +4882,20 @@ end"#;
         if let Item::Process(p) = &prog.items[0] {
             assert_eq!(p.kind, "machine");
             assert_eq!(p.name, "TicketFlow");
+            assert_eq!(p.machine_initial.as_deref(), Some("Start"));
+            assert_eq!(p.machine_states.len(), 2);
+            let start_state = p
+                .machine_states
+                .iter()
+                .find(|s| s.name == "Start")
+                .expect("Start state should be parsed");
+            assert_eq!(start_state.transition_to.as_deref(), Some("Done"));
+            let done_state = p
+                .machine_states
+                .iter()
+                .find(|s| s.name == "Done")
+                .expect("Done state should be parsed");
+            assert!(done_state.terminal);
         } else {
             panic!("expected process");
         }

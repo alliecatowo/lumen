@@ -1,7 +1,7 @@
 //! Name resolution pass — resolve cells, types, and tool aliases.
 
 use crate::compiler::ast::*;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -40,6 +40,28 @@ pub enum ResolveError {
         operation: String,
         line: usize,
     },
+    #[error("machine '{machine}' initial state '{state}' is undefined (line {line})")]
+    MachineUnknownInitial {
+        machine: String,
+        state: String,
+        line: usize,
+    },
+    #[error("machine '{machine}' state '{state}' transitions to undefined state '{target}' (line {line})")]
+    MachineUnknownTransition {
+        machine: String,
+        state: String,
+        target: String,
+        line: usize,
+    },
+    #[error("machine '{machine}' state '{state}' is unreachable from initial state '{initial}' (line {line})")]
+    MachineUnreachableState {
+        machine: String,
+        state: String,
+        initial: String,
+        line: usize,
+    },
+    #[error("machine '{machine}' declares no terminal states (line {line})")]
+    MachineMissingTerminal { machine: String, line: usize },
 }
 
 /// Symbol table built during resolution
@@ -97,6 +119,15 @@ pub struct ProcessInfo {
     pub kind: String,
     pub name: String,
     pub methods: Vec<String>,
+    pub machine_initial: Option<String>,
+    pub machine_states: Vec<MachineStateInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MachineStateInfo {
+    pub name: String,
+    pub terminal: bool,
+    pub transition_to: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -340,6 +371,16 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                         kind: p.kind.clone(),
                         name: p.name.clone(),
                         methods: p.cells.iter().map(|c| c.name.clone()).collect(),
+                        machine_initial: p.machine_initial.clone(),
+                        machine_states: p
+                            .machine_states
+                            .iter()
+                            .map(|s| MachineStateInfo {
+                                name: s.name.clone(),
+                                terminal: s.terminal,
+                                transition_to: s.transition_to.clone(),
+                            })
+                            .collect(),
                     },
                 );
                 if !table.types.contains_key(&p.name) {
@@ -550,6 +591,9 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                 }
             }
             Item::Process(p) => {
+                if p.kind == "machine" {
+                    validate_machine_graph(p, &mut errors);
+                }
                 for c in &p.cells {
                     if c.body.is_empty() {
                         continue;
@@ -895,6 +939,76 @@ fn parse_directive_bool(program: &Program, name: &str) -> Option<bool> {
         )
     });
     if has_attr { Some(true) } else { None }
+}
+
+fn validate_machine_graph(process: &ProcessDecl, errors: &mut Vec<ResolveError>) {
+    if process.machine_states.is_empty() {
+        return;
+    }
+
+    let state_names: HashSet<String> = process
+        .machine_states
+        .iter()
+        .map(|s| s.name.clone())
+        .collect();
+    let initial = process
+        .machine_initial
+        .clone()
+        .or_else(|| process.machine_states.first().map(|s| s.name.clone()))
+        .unwrap_or_default();
+
+    if !state_names.contains(&initial) {
+        errors.push(ResolveError::MachineUnknownInitial {
+            machine: process.name.clone(),
+            state: initial.clone(),
+            line: process.span.line,
+        });
+        return;
+    }
+
+    for state in &process.machine_states {
+        if let Some(target) = &state.transition_to {
+            if !state_names.contains(target) {
+                errors.push(ResolveError::MachineUnknownTransition {
+                    machine: process.name.clone(),
+                    state: state.name.clone(),
+                    target: target.clone(),
+                    line: state.span.line,
+                });
+            }
+        }
+    }
+
+    let mut reachable = HashSet::new();
+    let mut cursor = Some(initial.clone());
+    while let Some(state_name) = cursor {
+        if !reachable.insert(state_name.clone()) {
+            break;
+        }
+        cursor = process
+            .machine_states
+            .iter()
+            .find(|s| s.name == state_name)
+            .and_then(|s| s.transition_to.clone());
+    }
+
+    for state in &process.machine_states {
+        if !reachable.contains(&state.name) {
+            errors.push(ResolveError::MachineUnreachableState {
+                machine: process.name.clone(),
+                state: state.name.clone(),
+                initial: initial.clone(),
+                line: state.span.line,
+            });
+        }
+    }
+
+    if !process.machine_states.iter().any(|s| s.terminal) {
+        errors.push(ResolveError::MachineMissingTerminal {
+            machine: process.name.clone(),
+            line: process.span.line,
+        });
+    }
 }
 
 fn collect_effect_cells(program: &Program) -> Vec<EffectCell> {
@@ -2419,5 +2533,42 @@ mod tests {
         .unwrap();
         let effects = &table.cells.get("main").unwrap().effects;
         assert!(effects.contains(&"llm".to_string()));
+    }
+
+    #[test]
+    fn test_machine_graph_validation_accepts_reachable_terminal_graph() {
+        let table = resolve_src(
+            "machine TicketFlow\n  initial: Start\n  state Start\n    transition Done()\n  end\n  state Done\n    terminal: true\n  end\nend",
+        )
+        .unwrap();
+        let process = table
+            .processes
+            .get("machine:TicketFlow")
+            .expect("machine should be registered");
+        assert_eq!(process.machine_initial.as_deref(), Some("Start"));
+        assert_eq!(process.machine_states.len(), 2);
+    }
+
+    #[test]
+    fn test_machine_graph_validation_reports_transition_and_reachability_errors() {
+        let err = resolve_src(
+            "machine Broken\n  initial: Start\n  state Start\n    transition Missing()\n  end\n  state DeadEnd\n    terminal: false\n  end\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::MachineUnknownTransition { machine, state, target, .. }
+            if machine == "Broken" && state == "Start" && target == "Missing"
+        )));
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::MachineUnreachableState { machine, state, .. }
+            if machine == "Broken" && state == "DeadEnd"
+        )));
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::MachineMissingTerminal { machine, .. }
+            if machine == "Broken"
+        )));
     }
 }

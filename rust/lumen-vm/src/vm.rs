@@ -83,6 +83,18 @@ struct MachineRuntime {
     current_state: String,
 }
 
+#[derive(Debug, Default, Clone)]
+struct MachineGraphDef {
+    initial: String,
+    states: BTreeMap<String, MachineStateDef>,
+}
+
+#[derive(Debug, Clone)]
+struct MachineStateDef {
+    terminal: bool,
+    transition_to: Option<String>,
+}
+
 impl Default for MachineRuntime {
     fn default() -> Self {
         Self {
@@ -112,6 +124,7 @@ pub struct VM {
     future_schedule_explicit: bool,
     next_process_instance_id: u64,
     process_kinds: BTreeMap<String, String>,
+    machine_graphs: BTreeMap<String, MachineGraphDef>,
     memory_runtime: BTreeMap<u64, MemoryRuntime>,
     machine_runtime: BTreeMap<u64, MachineRuntime>,
 }
@@ -133,6 +146,7 @@ impl VM {
             future_schedule_explicit: false,
             next_process_instance_id: 1,
             process_kinds: BTreeMap::new(),
+            machine_graphs: BTreeMap::new(),
             memory_runtime: BTreeMap::new(),
             machine_runtime: BTreeMap::new(),
         }
@@ -154,6 +168,8 @@ impl VM {
         self.scheduled_futures.clear();
         self.memory_runtime.clear();
         self.machine_runtime.clear();
+        self.machine_graphs.clear();
+        let mut machine_initials: BTreeMap<String, String> = BTreeMap::new();
         for addon in &module.addons {
             if let Some(name) = &addon.name {
                 if matches!(
@@ -167,6 +183,45 @@ impl VM {
                         | "pattern"
                 ) {
                     self.process_kinds.insert(name.clone(), addon.kind.clone());
+                }
+                if addon.kind == "machine.initial" {
+                    if let Some((machine, initial)) = name.split_once('=') {
+                        machine_initials.insert(machine.to_string(), initial.to_string());
+                    }
+                }
+                if addon.kind == "machine.state" {
+                    let mut parts = name.splitn(4, '|');
+                    if let (Some(machine), Some(state), Some(terminal_flag), Some(next_raw)) =
+                        (parts.next(), parts.next(), parts.next(), parts.next())
+                    {
+                        let terminal = terminal_flag == "1" || terminal_flag == "true";
+                        let transition_to = if next_raw.is_empty() {
+                            None
+                        } else {
+                            Some(next_raw.to_string())
+                        };
+                        self.machine_graphs
+                            .entry(machine.to_string())
+                            .or_default()
+                            .states
+                            .insert(
+                                state.to_string(),
+                                MachineStateDef {
+                                    terminal,
+                                    transition_to,
+                                },
+                            );
+                    }
+                }
+            }
+        }
+        for (machine, initial) in machine_initials {
+            self.machine_graphs.entry(machine).or_default().initial = initial;
+        }
+        for graph in self.machine_graphs.values_mut() {
+            if graph.initial.is_empty() {
+                if let Some(first_state) = graph.states.keys().next() {
+                    graph.initial = first_state.clone();
                 }
             }
         }
@@ -1605,25 +1660,60 @@ impl VM {
                 owner, method
             ))
         })?;
+        let graph = self.machine_graphs.get(owner).cloned();
         let state = self.machine_runtime.entry(instance_id).or_default();
         match method {
             "start" => {
                 state.started = true;
-                state.terminal = false;
                 state.steps = 0;
-                state.current_state = "started".to_string();
+                if let Some(graph) = graph.as_ref() {
+                    state.current_state = if graph.initial.is_empty() {
+                        "started".to_string()
+                    } else {
+                        graph.initial.clone()
+                    };
+                    state.terminal = graph
+                        .states
+                        .get(&state.current_state)
+                        .map(|s| s.terminal)
+                        .unwrap_or(false);
+                } else {
+                    state.terminal = false;
+                    state.current_state = "started".to_string();
+                }
                 Ok(Value::Null)
             }
             "step" => {
                 if !state.started {
                     state.started = true;
+                    if let Some(graph) = graph.as_ref() {
+                        state.current_state = if graph.initial.is_empty() {
+                            "started".to_string()
+                        } else {
+                            graph.initial.clone()
+                        };
+                    }
                 }
                 state.steps += 1;
-                if state.steps >= 1 {
-                    state.terminal = true;
-                    state.current_state = "terminal".to_string();
+                if let Some(graph) = graph.as_ref() {
+                    let current = state.current_state.clone();
+                    if let Some(def) = graph.states.get(&current) {
+                        if let Some(next) = &def.transition_to {
+                            state.current_state = next.clone();
+                        }
+                    }
+                    state.terminal = graph
+                        .states
+                        .get(&state.current_state)
+                        .map(|s| s.terminal)
+                        .unwrap_or(false);
                 } else {
-                    state.current_state = format!("step_{}", state.steps);
+                    if state.steps >= 1 {
+                        state.terminal = true;
+                        state.current_state = "terminal".to_string();
+                    } else {
+                        state.current_state = format!("step_{}", state.steps);
+                    }
                 }
                 Ok(Self::machine_state_value(owner, state))
             }
@@ -1631,16 +1721,62 @@ impl VM {
             "current_state" => Ok(Self::machine_state_value(owner, state)),
             "run" => {
                 state.started = true;
-                state.steps += 1;
-                state.terminal = true;
-                state.current_state = "terminal".to_string();
+                if let Some(graph) = graph.as_ref() {
+                    if state.current_state.is_empty() {
+                        state.current_state = graph.initial.clone();
+                    }
+                    if state.current_state.is_empty() {
+                        state.current_state = "started".to_string();
+                    }
+                    let mut guard = 0usize;
+                    let max_steps = graph.states.len().saturating_mul(4).max(1);
+                    while guard < max_steps {
+                        guard += 1;
+                        state.steps += 1;
+                        let Some(def) = graph.states.get(&state.current_state).cloned() else {
+                            break;
+                        };
+                        state.terminal = def.terminal;
+                        if state.terminal {
+                            break;
+                        }
+                        if let Some(next) = def.transition_to {
+                            state.current_state = next;
+                        } else {
+                            break;
+                        }
+                    }
+                    state.terminal = graph
+                        .states
+                        .get(&state.current_state)
+                        .map(|s| s.terminal)
+                        .unwrap_or(state.terminal);
+                } else {
+                    state.steps += 1;
+                    state.terminal = true;
+                    state.current_state = "terminal".to_string();
+                }
                 Ok(Self::machine_state_value(owner, state))
             }
             "resume_from" => {
                 state.started = true;
-                state.terminal = false;
                 state.steps = 0;
-                state.current_state = "resumed".to_string();
+                let target = args
+                    .get(1)
+                    .map(|v| v.as_string())
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| graph.as_ref().map(|g| g.initial.clone()))
+                    .unwrap_or_else(|| "resumed".to_string());
+                state.current_state = target;
+                if let Some(graph) = graph.as_ref() {
+                    state.terminal = graph
+                        .states
+                        .get(&state.current_state)
+                        .map(|s| s.terminal)
+                        .unwrap_or(false);
+                } else {
+                    state.terminal = false;
+                }
                 Ok(Self::machine_state_value(owner, state))
             }
             _ => Err(VmError::UndefinedCell(format!("{}.{}", owner, method))),
@@ -4137,6 +4273,58 @@ end
 "#,
         );
         assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn test_machine_graph_start_step_transitions_to_terminal_state() {
+        let result = run_main(
+            r#"
+machine TicketFlow
+  initial: Start
+  state Start
+    on_enter()
+      transition Done()
+    end
+  end
+  state Done
+    terminal: true
+  end
+end
+
+cell main() -> Bool
+  let machine = TicketFlow()
+  machine.start("ticket")
+  machine.step()
+  return machine.is_terminal()
+end
+"#,
+        );
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_machine_graph_current_state_starts_at_initial() {
+        let result = run_main(
+            r#"
+machine TicketFlow
+  initial: Start
+  state Start
+    transition Done()
+  end
+  state Done
+    terminal: true
+  end
+end
+
+cell main() -> String
+  let machine = TicketFlow()
+  machine.start("ticket")
+  let st = machine.current_state()
+  return st.name
+end
+"#,
+        );
+        assert_eq!(result, Value::String(StringRef::Owned("Start".to_string())));
     }
 
     fn make_spawn_await_module(worker_instrs: Vec<Instruction>, worker_consts: Vec<Constant>) -> LirModule {

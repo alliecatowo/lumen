@@ -190,6 +190,13 @@ Implemented expression families include:
 - comprehensions
 - null operators (`?.`, `??`, `!`)
 - `await`
+- orchestration await block forms:
+  - `await parallel for ... end`
+  - `await parallel ... end`
+  - `await race ... end`
+  - `await vote ... end`
+  - `await select ... end`
+- `spawn` builtin for async closure/cell scheduling
 - `try` operator for `result`
 
 ```lumen
@@ -331,8 +338,10 @@ Runtime scheduling behavior under deterministic profile:
 ## 8.1 Futures
 
 - `spawn` produces `Future` handles.
+- `spawn(...)` builtin creates futures for callable cells/closures.
 - futures have explicit runtime states: `pending`, `completed`, `error`.
 - `await` resolves completed futures, reports failed futures as runtime errors.
+- `await` recursively resolves futures nested inside collection/record values.
 - VM supports deterministic future scheduling modes (`eager`, `deferred FIFO`) for spawn execution.
 - runtime orchestration builtins `parallel`, `race`, `vote`, `select`, and `timeout` are implemented with deterministic argument-order behavior.
 
@@ -347,6 +356,9 @@ Process declarations compile to constructor-backed records.
 ### `machine` runtime methods
 
 - `run`, `start`, `step`, `is_terminal`, `current_state`, `resume_from`
+- machine declarations parse `initial` + `state` graph metadata (`terminal`, `transition ...`)
+- resolver validates machine graph consistency (unknown initial/transition targets, unreachable states, missing terminal states)
+- VM machine runtime uses the compiled graph for deterministic state transitions
 
 Process runtime state is instance-scoped.
 Two constructed objects do not share memory/machine state unless explicitly passed/shared.

@@ -144,6 +144,33 @@ Completed work should be removed from this list and reflected in docs/changelog.
 - [ ] Add compatibility tooling (API/symbol diff, semver checks).
 - [ ] Expand semantic conformance tests tied to spec sections.
 
+## Novel AI-First Features (P2)
+
+- [ ] Record types → JSON Schema compilation.
+  - Emit JSON schemas from record definitions for LLM structured output APIs.
+  - `lumen emit --schema RecordName` CLI command.
+  - Include schema in `ToolCall` opcode requests. Builds on existing `expect schema` opcode.
+
+- [ ] Typed prompt templates.
+  - New `prompt` declaration bundling `role` blocks with typed input/output annotations.
+  - Compiler verifies interpolated variables exist and have correct types.
+  - Output type compiles to JSON schema. Builds on existing `role` block parsing.
+
+- [ ] Cost-aware types with `@budget` enforcement.
+  - `cost` annotation on effect rows: `cell foo() -> String / cost[~2000]`.
+  - Compiler sums costs through call graph, checks against `@budget` directives.
+  - Extends existing `grant { max_tokens }` into type-level budgets.
+
+- [ ] Runtime `where` constraint enforcement with automatic retry.
+  - Evaluate `where` predicates on record construction at runtime.
+  - When LLM structured output violates constraints, auto-retry with violation feedback.
+  - Builds on existing `constraints.rs` compile-time validation.
+
+- [ ] First-class capability grants with attenuation.
+  - Grants become values: passable as args, storable in records, attenuable (narrow, never widen).
+  - Compiler verifies delegated capabilities never exceed delegator's.
+  - Builds on existing `grant` parsing and runtime policy enforcement.
+
 ## Documentation (Ongoing)
 
 - [ ] Keep `SPEC.md` implementation-accurate.

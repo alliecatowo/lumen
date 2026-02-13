@@ -334,6 +334,7 @@ Runtime scheduling behavior under deterministic profile:
 - futures have explicit runtime states: `pending`, `completed`, `error`.
 - `await` resolves completed futures, reports failed futures as runtime errors.
 - VM supports deterministic future scheduling modes (`eager`, `deferred FIFO`) for spawn execution.
+- runtime orchestration builtins `parallel`, `race`, `vote`, `select`, and `timeout` are implemented with deterministic argument-order behavior.
 
 ## 8.2 Process Runtime Objects
 

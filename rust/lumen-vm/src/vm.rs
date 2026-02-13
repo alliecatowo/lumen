@@ -1997,77 +1997,92 @@ impl VM {
         payload
     }
 
-    fn eval_machine_expr(expr: &MachineExpr, payload: &BTreeMap<String, Value>) -> Value {
+    fn eval_machine_expr(
+        expr: &MachineExpr,
+        payload: &BTreeMap<String, Value>,
+    ) -> Result<Value, VmError> {
         match expr {
-            MachineExpr::Int(n) => Value::Int(*n),
-            MachineExpr::Float(f) => Value::Float(*f),
-            MachineExpr::String(s) => Value::String(StringRef::Owned(s.clone())),
-            MachineExpr::Bool(b) => Value::Bool(*b),
-            MachineExpr::Null => Value::Null,
-            MachineExpr::Ident(name) => payload.get(name).cloned().unwrap_or(Value::Null),
+            MachineExpr::Int(n) => Ok(Value::Int(*n)),
+            MachineExpr::Float(f) => Ok(Value::Float(*f)),
+            MachineExpr::String(s) => Ok(Value::String(StringRef::Owned(s.clone()))),
+            MachineExpr::Bool(b) => Ok(Value::Bool(*b)),
+            MachineExpr::Null => Ok(Value::Null),
+            MachineExpr::Ident(name) => Ok(payload.get(name).cloned().unwrap_or(Value::Null)),
             MachineExpr::Unary { op, expr } => {
-                let value = Self::eval_machine_expr(expr, payload);
+                let value = Self::eval_machine_expr(expr, payload)?;
                 match op.as_str() {
                     "-" => match value {
-                        Value::Int(n) => Value::Int(-n),
-                        Value::Float(f) => Value::Float(-f),
-                        _ => Value::Null,
+                        Value::Int(n) => Ok(Value::Int(
+                            n.checked_neg().ok_or(VmError::ArithmeticOverflow)?,
+                        )),
+                        Value::Float(f) => Ok(Value::Float(-f)),
+                        _ => Ok(Value::Null),
                     },
-                    "not" => Value::Bool(!value.is_truthy()),
+                    "not" => Ok(Value::Bool(!value.is_truthy())),
                     "~" => match value {
-                        Value::Int(n) => Value::Int(!n),
-                        _ => Value::Null,
+                        Value::Int(n) => Ok(Value::Int(!n)),
+                        _ => Ok(Value::Null),
                     },
-                    _ => Value::Null,
+                    _ => Ok(Value::Null),
                 }
             }
             MachineExpr::Bin { op, lhs, rhs } => {
-                let left = Self::eval_machine_expr(lhs, payload);
-                let right = Self::eval_machine_expr(rhs, payload);
+                let left = Self::eval_machine_expr(lhs, payload)?;
+                let right = Self::eval_machine_expr(rhs, payload)?;
                 match op.as_str() {
                     "+" => match (left, right) {
-                        (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
-                        (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
-                        (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 + b),
-                        (Value::Float(a), Value::Int(b)) => Value::Float(a + b as f64),
-                        _ => Value::Null,
+                        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(
+                            a.checked_add(b).ok_or(VmError::ArithmeticOverflow)?,
+                        )),
+                        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
+                        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 + b)),
+                        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a + b as f64)),
+                        _ => Ok(Value::Null),
                     },
                     "-" => match (left, right) {
-                        (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
-                        (Value::Float(a), Value::Float(b)) => Value::Float(a - b),
-                        (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 - b),
-                        (Value::Float(a), Value::Int(b)) => Value::Float(a - b as f64),
-                        _ => Value::Null,
+                        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(
+                            a.checked_sub(b).ok_or(VmError::ArithmeticOverflow)?,
+                        )),
+                        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
+                        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 - b)),
+                        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a - b as f64)),
+                        _ => Ok(Value::Null),
                     },
                     "*" => match (left, right) {
-                        (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
-                        (Value::Float(a), Value::Float(b)) => Value::Float(a * b),
-                        (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 * b),
-                        (Value::Float(a), Value::Int(b)) => Value::Float(a * b as f64),
-                        _ => Value::Null,
+                        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(
+                            a.checked_mul(b).ok_or(VmError::ArithmeticOverflow)?,
+                        )),
+                        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
+                        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 * b)),
+                        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a * b as f64)),
+                        _ => Ok(Value::Null),
                     },
                     "/" => match (left, right) {
-                        (Value::Int(_), Value::Int(0)) => Value::Null,
-                        (Value::Int(a), Value::Int(b)) => Value::Int(a / b),
-                        (Value::Float(a), Value::Float(b)) => Value::Float(a / b),
-                        (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 / b),
-                        (Value::Float(a), Value::Int(b)) => Value::Float(a / b as f64),
-                        _ => Value::Null,
+                        (Value::Int(_), Value::Int(0)) => Err(VmError::DivisionByZero),
+                        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(
+                            a.checked_div(b).ok_or(VmError::ArithmeticOverflow)?,
+                        )),
+                        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
+                        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 / b)),
+                        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a / b as f64)),
+                        _ => Ok(Value::Null),
                     },
                     "%" => match (left, right) {
-                        (Value::Int(_), Value::Int(0)) => Value::Null,
-                        (Value::Int(a), Value::Int(b)) => Value::Int(a % b),
-                        _ => Value::Null,
+                        (Value::Int(_), Value::Int(0)) => Err(VmError::DivisionByZero),
+                        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(
+                            a.checked_rem(b).ok_or(VmError::ArithmeticOverflow)?,
+                        )),
+                        _ => Ok(Value::Null),
                     },
-                    "==" => Value::Bool(left == right),
-                    "!=" => Value::Bool(left != right),
-                    "<" => Value::Bool(left < right),
-                    "<=" => Value::Bool(left <= right),
-                    ">" => Value::Bool(left > right),
-                    ">=" => Value::Bool(left >= right),
-                    "and" => Value::Bool(left.is_truthy() && right.is_truthy()),
-                    "or" => Value::Bool(left.is_truthy() || right.is_truthy()),
-                    _ => Value::Null,
+                    "==" => Ok(Value::Bool(left == right)),
+                    "!=" => Ok(Value::Bool(left != right)),
+                    "<" => Ok(Value::Bool(left < right)),
+                    "<=" => Ok(Value::Bool(left <= right)),
+                    ">" => Ok(Value::Bool(left > right)),
+                    ">=" => Ok(Value::Bool(left >= right)),
+                    "and" => Ok(Value::Bool(left.is_truthy() && right.is_truthy())),
+                    "or" => Ok(Value::Bool(left.is_truthy() || right.is_truthy())),
+                    _ => Ok(Value::Null),
                 }
             }
         }
@@ -2141,7 +2156,11 @@ impl VM {
                         let guard_ok = def
                             .guard
                             .as_ref()
-                            .map(|expr| Self::eval_machine_expr(expr, &state.payload).is_truthy())
+                            .map(|expr| {
+                                Self::eval_machine_expr(expr, &state.payload)
+                                    .map(|value| value.is_truthy())
+                            })
+                            .transpose()?
                             .unwrap_or(true);
                         if guard_ok {
                             if let Some(next) = &def.transition_to {
@@ -2150,7 +2169,7 @@ impl VM {
                                         .transition_args
                                         .iter()
                                         .map(|expr| Self::eval_machine_expr(expr, &state.payload))
-                                        .collect();
+                                        .collect::<Result<Vec<_>, _>>()?;
                                     next_payload =
                                         Some(Self::bind_machine_payload(&next_def.params, &evaluated));
                                 }
@@ -2201,7 +2220,11 @@ impl VM {
                         let guard_ok = def
                             .guard
                             .as_ref()
-                            .map(|expr| Self::eval_machine_expr(expr, &state.payload).is_truthy())
+                            .map(|expr| {
+                                Self::eval_machine_expr(expr, &state.payload)
+                                    .map(|value| value.is_truthy())
+                            })
+                            .transpose()?
                             .unwrap_or(true);
                         if !guard_ok {
                             break;
@@ -2216,7 +2239,7 @@ impl VM {
                                     .transition_args
                                     .iter()
                                     .map(|expr| Self::eval_machine_expr(expr, &state.payload))
-                                    .collect();
+                                    .collect::<Result<Vec<_>, _>>()?;
                                 state.payload = Self::bind_machine_payload(&next_def.params, &evaluated);
                             }
                             state.current_state = next;
@@ -5597,6 +5620,70 @@ end
         assert_eq!(result, Value::Bool(false));
     }
 
+    #[test]
+    fn test_machine_graph_guard_divide_by_zero_returns_error() {
+        let md = r#"
+# test
+
+```lumen
+machine RiskyFlow
+  initial: Start
+  state Start(x: Int)
+    guard: x / 0 > 0
+    transition Done(x)
+  end
+  state Done(v: Int)
+    terminal: true
+  end
+end
+
+cell main() -> Bool
+  let m = RiskyFlow()
+  m.start(1)
+  m.step()
+  return m.is_terminal()
+end
+```
+"#;
+        let module = compile_lumen(md).expect("source should compile");
+        let mut vm = VM::new();
+        vm.load(module);
+        let err = vm.execute("main", vec![]).unwrap_err();
+        assert!(matches!(err, VmError::DivisionByZero));
+    }
+
+    #[test]
+    fn test_machine_graph_transition_modulo_by_zero_returns_error() {
+        let md = r#"
+# test
+
+```lumen
+machine RiskyFlow
+  initial: Start
+  state Start(x: Int)
+    guard: true
+    transition Done(x % 0)
+  end
+  state Done(v: Int)
+    terminal: true
+  end
+end
+
+cell main() -> Bool
+  let m = RiskyFlow()
+  m.start(1)
+  m.step()
+  return m.is_terminal()
+end
+```
+"#;
+        let module = compile_lumen(md).expect("source should compile");
+        let mut vm = VM::new();
+        vm.load(module);
+        let err = vm.execute("main", vec![]).unwrap_err();
+        assert!(matches!(err, VmError::DivisionByZero));
+    }
+
     fn make_spawn_await_module(worker_instrs: Vec<Instruction>, worker_consts: Vec<Constant>) -> LirModule {
         LirModule {
             version: "1.0.0".into(),
@@ -6027,11 +6114,7 @@ end
         let mut vm = VM::new();
         vm.load(module);
         let err = vm.execute("main", vec![]).unwrap_err();
-        assert!(
-            err.to_string().contains("division by zero"),
-            "expected division by zero, got: {}",
-            err
-        );
+        assert!(matches!(err, VmError::DivisionByZero));
     }
 
     #[test]
@@ -6065,11 +6148,7 @@ end
         let mut vm = VM::new();
         vm.load(module);
         let err = vm.execute("main", vec![]).unwrap_err();
-        assert!(
-            err.to_string().contains("division by zero"),
-            "expected division by zero, got: {}",
-            err
-        );
+        assert!(matches!(err, VmError::DivisionByZero));
     }
 
     #[test]

@@ -1061,6 +1061,16 @@ pub fn typecheck(program: &Program, symbols: &SymbolTable) -> Result<(), Vec<Typ
                     checker.check_agent_cell(cell);
                 }
             }
+            Item::Effect(e) => {
+                for op in &e.operations {
+                    checker.check_cell(op);
+                }
+            }
+            Item::Handler(h) => {
+                for handle in &h.handles {
+                    checker.check_cell(handle);
+                }
+            }
             _ => {}
         }
     }

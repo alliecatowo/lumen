@@ -397,8 +397,17 @@ impl Parser {
             }
             TokenKind::Ident(name) => match name.as_str() {
                 "agent" => Ok(Item::Agent(self.parse_agent_decl()?)),
-                "effect" | "bind" | "handler" | "pipeline" | "orchestration" | "machine"
-                | "memory" | "guardrail" | "eval" | "pattern" => {
+                "effect" => Ok(Item::Effect(self.parse_effect_decl()?)),
+                "handler" => Ok(Item::Handler(self.parse_handler_decl()?)),
+                "bind" => {
+                    if matches!(self.peek_n_kind(1), Some(TokenKind::Ident(s)) if s == "effect") {
+                        Ok(Item::EffectBind(self.parse_effect_bind_decl()?))
+                    } else {
+                        Ok(Item::Addon(self.parse_addon_decl()?))
+                    }
+                }
+                "pipeline" | "orchestration" | "machine" | "memory" | "guardrail" | "eval"
+                | "pattern" => {
                     Ok(Item::Addon(self.parse_addon_decl()?))
                 }
                 _ => {
@@ -1946,6 +1955,299 @@ impl Parser {
             name,
             cells,
             grants,
+            span: start.merge(end_span),
+        })
+    }
+
+    fn parse_effect_decl(&mut self) -> Result<EffectDecl, ParseError> {
+        let start = self.current().span;
+        let kw = self.expect_ident()?;
+        if kw != "effect" {
+            let tok = self.current().clone();
+            return Err(ParseError::Unexpected {
+                found: kw,
+                expected: "effect".into(),
+                line: tok.span.line,
+                col: tok.span.col,
+            });
+        }
+        let name = self
+            .parse_optional_decl_name()?
+            .unwrap_or_else(|| "Effect".to_string());
+        self.skip_newlines();
+        let mut operations = Vec::new();
+        let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
+        if has_indent {
+            self.advance();
+        }
+        self.skip_newlines();
+        while !matches!(
+            self.peek_kind(),
+            TokenKind::End | TokenKind::Dedent | TokenKind::Eof
+        ) {
+            self.skip_newlines();
+            if matches!(
+                self.peek_kind(),
+                TokenKind::End | TokenKind::Dedent | TokenKind::Eof
+            ) {
+                break;
+            }
+            if matches!(self.peek_kind(), TokenKind::Cell) {
+                operations.push(self.parse_cell()?);
+            } else {
+                self.consume_rest_of_line();
+            }
+            self.skip_newlines();
+        }
+        if has_indent && matches!(self.peek_kind(), TokenKind::Dedent) {
+            self.advance();
+        }
+        while matches!(
+            self.peek_kind(),
+            TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent
+        ) {
+            self.advance();
+        }
+        let end_span = if matches!(self.peek_kind(), TokenKind::End) {
+            self.advance().span
+        } else {
+            self.current().span
+        };
+        Ok(EffectDecl {
+            name,
+            operations,
+            span: start.merge(end_span),
+        })
+    }
+
+    fn parse_effect_bind_decl(&mut self) -> Result<EffectBindDecl, ParseError> {
+        let start = self.current().span;
+        let bind_kw = self.expect_ident()?;
+        if bind_kw != "bind" {
+            let tok = self.current().clone();
+            return Err(ParseError::Unexpected {
+                found: bind_kw,
+                expected: "bind".into(),
+                line: tok.span.line,
+                col: tok.span.col,
+            });
+        }
+        let effect_kw = self.expect_ident()?;
+        if effect_kw != "effect" {
+            let tok = self.current().clone();
+            return Err(ParseError::Unexpected {
+                found: effect_kw,
+                expected: "effect".into(),
+                line: tok.span.line,
+                col: tok.span.col,
+            });
+        }
+        let effect_path = self.parse_dotted_ident()?;
+        let to_kw = self.expect_ident()?;
+        if to_kw != "to" {
+            let tok = self.current().clone();
+            return Err(ParseError::Unexpected {
+                found: to_kw,
+                expected: "to".into(),
+                line: tok.span.line,
+                col: tok.span.col,
+            });
+        }
+        let tool_alias = self.parse_dotted_ident()?;
+        self.consume_rest_of_line();
+        Ok(EffectBindDecl {
+            effect_path,
+            tool_alias,
+            span: start.merge(self.current().span),
+        })
+    }
+
+    fn parse_handler_decl(&mut self) -> Result<HandlerDecl, ParseError> {
+        let start = self.current().span;
+        let kw = self.expect_ident()?;
+        if kw != "handler" {
+            let tok = self.current().clone();
+            return Err(ParseError::Unexpected {
+                found: kw,
+                expected: "handler".into(),
+                line: tok.span.line,
+                col: tok.span.col,
+            });
+        }
+        let name = self
+            .parse_optional_decl_name()?
+            .unwrap_or_else(|| "Handler".to_string());
+        self.skip_newlines();
+        let mut handles = Vec::new();
+        let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
+        if has_indent {
+            self.advance();
+        }
+        self.skip_newlines();
+        while !matches!(
+            self.peek_kind(),
+            TokenKind::End | TokenKind::Dedent | TokenKind::Eof
+        ) {
+            self.skip_newlines();
+            if matches!(
+                self.peek_kind(),
+                TokenKind::End | TokenKind::Dedent | TokenKind::Eof
+            ) {
+                break;
+            }
+            if matches!(self.peek_kind(), TokenKind::Ident(s) if s == "handle") {
+                handles.push(self.parse_handle_cell()?);
+            } else if matches!(self.peek_kind(), TokenKind::Cell) {
+                handles.push(self.parse_cell()?);
+            } else {
+                self.consume_rest_of_line();
+            }
+            self.skip_newlines();
+        }
+        if has_indent && matches!(self.peek_kind(), TokenKind::Dedent) {
+            self.advance();
+        }
+        while matches!(
+            self.peek_kind(),
+            TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent
+        ) {
+            self.advance();
+        }
+        let end_span = if matches!(self.peek_kind(), TokenKind::End) {
+            self.advance().span
+        } else {
+            self.current().span
+        };
+        Ok(HandlerDecl {
+            name,
+            handles,
+            span: start.merge(end_span),
+        })
+    }
+
+    fn parse_handle_cell(&mut self) -> Result<CellDef, ParseError> {
+        let start = self.current().span;
+        let kw = self.expect_ident()?;
+        if kw != "handle" {
+            let tok = self.current().clone();
+            return Err(ParseError::Unexpected {
+                found: kw,
+                expected: "handle".into(),
+                line: tok.span.line,
+                col: tok.span.col,
+            });
+        }
+        let name = self.parse_dotted_ident()?;
+        self.expect(&TokenKind::LParen)?;
+        self.bracket_depth += 1;
+        let mut params = Vec::new();
+        self.skip_whitespace_tokens();
+        while !matches!(self.peek_kind(), TokenKind::RParen) {
+            if !params.is_empty() {
+                self.expect(&TokenKind::Comma)?;
+                self.skip_whitespace_tokens();
+            }
+            let _variadic = if matches!(self.peek_kind(), TokenKind::DotDot | TokenKind::DotDotDot)
+            {
+                self.advance();
+                true
+            } else {
+                false
+            };
+            let ps = self.current().span;
+            let pname = self.expect_ident()?;
+            let pty = if matches!(self.peek_kind(), TokenKind::Colon) {
+                self.advance();
+                self.parse_type()?
+            } else {
+                TypeExpr::Named("Any".into(), ps)
+            };
+            let default_value = if matches!(self.peek_kind(), TokenKind::Assign) {
+                self.advance();
+                Some(self.parse_expr(0)?)
+            } else {
+                None
+            };
+            params.push(Param {
+                name: pname,
+                ty: pty,
+                default_value,
+                span: ps,
+            });
+            self.skip_whitespace_tokens();
+        }
+        self.bracket_depth -= 1;
+        self.expect(&TokenKind::RParen)?;
+        let ret = if matches!(self.peek_kind(), TokenKind::Arrow) {
+            self.advance();
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        let effects = self.parse_optional_effect_row()?;
+
+        if matches!(self.peek_kind(), TokenKind::Assign) {
+            self.advance();
+            let expr = self.parse_expr(0)?;
+            let span = start.merge(expr.span());
+            return Ok(CellDef {
+                name,
+                generic_params: vec![],
+                params,
+                return_type: ret,
+                effects,
+                body: vec![Stmt::Return(ReturnStmt { value: expr, span })],
+                is_pub: false,
+                is_async: false,
+                where_clauses: vec![],
+                span,
+            });
+        }
+
+        if matches!(
+            self.peek_kind(),
+            TokenKind::Newline | TokenKind::Eof | TokenKind::Dedent
+        ) {
+            let mut look = self.pos;
+            while matches!(
+                self.tokens.get(look).map(|t| &t.kind),
+                Some(TokenKind::Newline)
+            ) {
+                look += 1;
+            }
+            if !matches!(
+                self.tokens.get(look).map(|t| &t.kind),
+                Some(TokenKind::Indent)
+            ) {
+                let end_span = self.current().span;
+                return Ok(CellDef {
+                    name,
+                    generic_params: vec![],
+                    params,
+                    return_type: ret,
+                    effects,
+                    body: vec![],
+                    is_pub: false,
+                    is_async: false,
+                    where_clauses: vec![],
+                    span: start.merge(end_span),
+                });
+            }
+        }
+
+        self.skip_newlines();
+        let body = self.parse_block()?;
+        let end_span = self.expect(&TokenKind::End)?.span;
+        Ok(CellDef {
+            name,
+            generic_params: vec![],
+            params,
+            return_type: ret,
+            effects,
+            body,
+            is_pub: false,
+            is_async: false,
+            where_clauses: vec![],
             span: start.merge(end_span),
         })
     }

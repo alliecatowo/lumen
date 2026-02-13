@@ -24,6 +24,9 @@ pub enum Item {
     Enum(EnumDef),
     Cell(CellDef),
     Agent(AgentDecl),
+    Effect(EffectDecl),
+    EffectBind(EffectBindDecl),
+    Handler(HandlerDecl),
     Addon(AddonDecl),
     UseTool(UseToolDecl),
     Grant(GrantDecl),
@@ -42,6 +45,9 @@ impl Item {
             Item::Enum(e) => e.span,
             Item::Cell(c) => c.span,
             Item::Agent(a) => a.span,
+            Item::Effect(e) => e.span,
+            Item::EffectBind(b) => b.span,
+            Item::Handler(h) => h.span,
             Item::Addon(a) => a.span,
             Item::UseTool(u) => u.span,
             Item::Grant(g) => g.span,
@@ -168,6 +174,27 @@ pub struct AgentDecl {
     pub name: String,
     pub cells: Vec<CellDef>,
     pub grants: Vec<GrantDecl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectDecl {
+    pub name: String,
+    pub operations: Vec<CellDef>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectBindDecl {
+    pub effect_path: String,
+    pub tool_alias: String,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandlerDecl {
+    pub name: String,
+    pub handles: Vec<CellDef>,
     pub span: Span,
 }
 

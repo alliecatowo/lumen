@@ -7,7 +7,7 @@ use crate::values::{
     Value,
 };
 use lumen_compiler::compiler::lir::*;
-use lumen_runtime::tools::{ToolDispatcher, ToolRequest};
+use lumen_runtime::tools::{ProviderRegistry, ToolDispatcher, ToolRequest};
 use std::collections::{BTreeMap, VecDeque};
 use thiserror::Error;
 
@@ -184,6 +184,14 @@ impl VM {
             machine_runtime: BTreeMap::new(),
             await_fuel: MAX_AWAIT_RETRIES,
         }
+    }
+
+    /// Set a provider registry as the tool dispatcher.
+    ///
+    /// `ProviderRegistry` implements `ToolDispatcher`, so this replaces any
+    /// previously configured dispatcher.
+    pub fn set_provider_registry(&mut self, registry: ProviderRegistry) {
+        self.tool_dispatcher = Some(Box::new(registry));
     }
 
     /// Load a LIR module into the VM.
@@ -647,18 +655,24 @@ impl VM {
 
     /// Helper to get a constant from the current cell.
     #[allow(dead_code)]
-    fn get_constant(&self, cell_idx: usize, idx: usize) -> Constant {
-        self.module.as_ref().expect("module must be loaded").cells[cell_idx].constants[idx].clone()
+    fn get_constant(&self, cell_idx: usize, idx: usize) -> Result<Constant, VmError> {
+        let module = self.module.as_ref().ok_or(VmError::NoModule)?;
+        let cell = module.cells.get(cell_idx).ok_or_else(|| {
+            VmError::Runtime(format!("cell index {} out of bounds", cell_idx))
+        })?;
+        cell.constants.get(idx).cloned().ok_or_else(|| {
+            VmError::Runtime(format!("constant index {} out of bounds", idx))
+        })
     }
 
     /// Helper to get a string from the module string table.
     #[allow(dead_code)]
-    fn get_module_string(&self, idx: usize) -> String {
-        let module = self.module.as_ref().expect("module must be loaded");
+    fn get_module_string(&self, idx: usize) -> Result<String, VmError> {
+        let module = self.module.as_ref().ok_or(VmError::NoModule)?;
         if idx < module.strings.len() {
-            module.strings[idx].clone()
+            Ok(module.strings[idx].clone())
         } else {
-            String::new()
+            Ok(String::new())
         }
     }
 
@@ -1092,7 +1106,25 @@ impl VM {
                 OpCode::Eq => {
                     let lhs = &self.registers[base + b];
                     let rhs = &self.registers[base + c];
-                    let eq = lhs == rhs;
+                    // Resolve interned strings for cross-representation equality
+                    let eq = match (lhs, rhs) {
+                        (Value::String(a), Value::String(b)) => {
+                            let sa = match a {
+                                StringRef::Owned(s) => s.as_str(),
+                                StringRef::Interned(id) => {
+                                    self.strings.resolve(*id).unwrap_or("")
+                                }
+                            };
+                            let sb = match b {
+                                StringRef::Owned(s) => s.as_str(),
+                                StringRef::Interned(id) => {
+                                    self.strings.resolve(*id).unwrap_or("")
+                                }
+                            };
+                            sa == sb
+                        }
+                        _ => lhs == rhs,
+                    };
                     self.registers[base + a] = Value::Bool(eq);
                 }
                 OpCode::Lt => {
@@ -1330,25 +1362,11 @@ impl VM {
                 // Closures
                 OpCode::Closure => {
                     let bx = instr.bx() as usize;
-                    // Captures follow in registers A+1, A+2, ...
-                    // The number of captures is determined by the cell's params
-                    let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                    let cap_count = if bx < module.cells.len() {
-                        // Use the cell's param count as a hint, but for closures
-                        // we determine captures from subsequent GETUPVAL instructions
-                        // For now, scan forward for the capture count
-                        0 // Will be populated by subsequent Move instructions
-                    } else {
-                        0
-                    };
-                    let mut captures = Vec::new();
-                    // Read captures from registers after A
-                    for i in 0..cap_count {
-                        captures.push(self.registers[base + a + 1 + i].clone());
-                    }
+                    // Create closure with empty captures; subsequent SetUpval
+                    // instructions will populate the captures vector.
                     self.registers[base + a] = Value::Closure(ClosureValue {
                         cell_idx: bx,
-                        captures,
+                        captures: Vec::new(),
                     });
                 }
                 OpCode::GetUpval => {
@@ -1365,14 +1383,14 @@ impl VM {
                     }
                 }
                 OpCode::SetUpval => {
+                    // A = source register, B = capture index, C = closure register
                     let val = self.registers[base + a].clone();
-                    let frame = self
-                        .frames
-                        .last()
-                        .ok_or_else(|| VmError::Runtime("no frame for SetUpval".into()))?;
-                    let closure_reg = frame.base_register;
-                    if b < 256 {
-                        self.registers[closure_reg + b] = val;
+                    if let Value::Closure(ref mut cv) = self.registers[base + c] {
+                        // Grow captures vector if needed and insert at index B
+                        while cv.captures.len() <= b {
+                            cv.captures.push(Value::Null);
+                        }
+                        cv.captures[b] = val;
                     }
                 }
 
@@ -3004,9 +3022,214 @@ impl VM {
                     Ok(Value::List(vec![]))
                 }
             }
+            "window" => {
+                let arg = &self.registers[base + a + 1];
+                let n = self.registers[base + a + 2].as_int().unwrap_or(1) as usize;
+                if let Value::List(l) = arg {
+                    if n == 0 || n > l.len() {
+                        Ok(Value::List(vec![]))
+                    } else {
+                        let result: Vec<Value> =
+                            l.windows(n).map(|w| Value::List(w.to_vec())).collect();
+                        Ok(Value::List(result))
+                    }
+                } else {
+                    Ok(Value::List(vec![]))
+                }
+            }
+            // Higher-order functions called by name
+            "map" => {
+                let list = self.registers[base + a + 1].clone();
+                let closure_val = self.registers[base + a + 2].clone();
+                if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
+                    let mut result = Vec::with_capacity(l.len());
+                    for item in &l {
+                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        result.push(val);
+                    }
+                    Ok(Value::List(result))
+                } else {
+                    Ok(Value::List(vec![]))
+                }
+            }
+            "filter" => {
+                let list = self.registers[base + a + 1].clone();
+                let closure_val = self.registers[base + a + 2].clone();
+                if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
+                    let mut result = Vec::new();
+                    for item in &l {
+                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        if val.is_truthy() {
+                            result.push(item.clone());
+                        }
+                    }
+                    Ok(Value::List(result))
+                } else {
+                    Ok(Value::List(vec![]))
+                }
+            }
+            "reduce" => {
+                let list = self.registers[base + a + 1].clone();
+                let closure_val = self.registers[base + a + 2].clone();
+                let init = self.registers[base + a + 3].clone();
+                if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
+                    let mut acc = init;
+                    for item in &l {
+                        acc = self.call_closure_sync(&cv, &[acc, item.clone()])?;
+                    }
+                    Ok(acc)
+                } else {
+                    Ok(init)
+                }
+            }
+            "flat_map" => {
+                let list = self.registers[base + a + 1].clone();
+                let closure_val = self.registers[base + a + 2].clone();
+                if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
+                    let mut result = Vec::new();
+                    for item in &l {
+                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        if let Value::List(inner) = val {
+                            result.extend(inner);
+                        } else {
+                            result.push(val);
+                        }
+                    }
+                    Ok(Value::List(result))
+                } else {
+                    Ok(Value::List(vec![]))
+                }
+            }
+            "any" => {
+                let list = self.registers[base + a + 1].clone();
+                let closure_val = self.registers[base + a + 2].clone();
+                if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
+                    for item in &l {
+                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        if val.is_truthy() {
+                            return Ok(Value::Bool(true));
+                        }
+                    }
+                    Ok(Value::Bool(false))
+                } else {
+                    Ok(Value::Bool(false))
+                }
+            }
+            "all" => {
+                let list = self.registers[base + a + 1].clone();
+                let closure_val = self.registers[base + a + 2].clone();
+                if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
+                    for item in &l {
+                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        if !val.is_truthy() {
+                            return Ok(Value::Bool(false));
+                        }
+                    }
+                    Ok(Value::Bool(true))
+                } else {
+                    Ok(Value::Bool(true))
+                }
+            }
+            "find" => {
+                let list = self.registers[base + a + 1].clone();
+                let closure_val = self.registers[base + a + 2].clone();
+                if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
+                    for item in &l {
+                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        if val.is_truthy() {
+                            return Ok(item.clone());
+                        }
+                    }
+                    Ok(Value::Null)
+                } else {
+                    Ok(Value::Null)
+                }
+            }
+            "position" => {
+                let list = self.registers[base + a + 1].clone();
+                let closure_val = self.registers[base + a + 2].clone();
+                if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
+                    for (i, item) in l.iter().enumerate() {
+                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        if val.is_truthy() {
+                            return Ok(Value::Int(i as i64));
+                        }
+                    }
+                    Ok(Value::Int(-1))
+                } else {
+                    Ok(Value::Int(-1))
+                }
+            }
+            "group_by" => {
+                let list = self.registers[base + a + 1].clone();
+                let closure_val = self.registers[base + a + 2].clone();
+                if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
+                    let mut groups: BTreeMap<String, Value> = BTreeMap::new();
+                    for item in &l {
+                        let key = self.call_closure_sync(&cv, &[item.clone()])?;
+                        let key_str = key.as_string();
+                        match groups.get_mut(&key_str) {
+                            Some(Value::List(ref mut list)) => list.push(item.clone()),
+                            _ => {
+                                groups.insert(key_str, Value::List(vec![item.clone()]));
+                            }
+                        }
+                    }
+                    Ok(Value::Map(groups))
+                } else {
+                    Ok(Value::Map(BTreeMap::new()))
+                }
+            }
             "freeze" => Ok(self.registers[base + a + 1].clone()),
             _ => Err(VmError::UndefinedCell(name.to_string())),
         }
+    }
+
+    /// Synchronously call a closure with the given arguments, returning its result.
+    /// Used by HOF intrinsics (map, filter, reduce, etc.).
+    fn call_closure_sync(
+        &mut self,
+        closure: &ClosureValue,
+        args: &[Value],
+    ) -> Result<Value, VmError> {
+        if self.frames.len() >= MAX_CALL_DEPTH {
+            return Err(VmError::StackOverflow(MAX_CALL_DEPTH));
+        }
+        let cv = closure.clone();
+        let module = self.module.as_ref().ok_or(VmError::NoModule)?;
+        if cv.cell_idx >= module.cells.len() {
+            return Err(VmError::Runtime(format!(
+                "closure cell index {} out of bounds",
+                cv.cell_idx
+            )));
+        }
+        let callee_cell = &module.cells[cv.cell_idx];
+        let num_regs = callee_cell.registers as usize;
+        let params: Vec<LirParam> = callee_cell.params.clone();
+        let new_base = self.registers.len();
+        self.registers
+            .resize(new_base + num_regs.max(256), Value::Null);
+        // Copy captures into frame registers
+        for (i, cap) in cv.captures.iter().enumerate() {
+            self.registers[new_base + i] = cap.clone();
+        }
+        // Copy arguments into parameter registers (after captures)
+        let cap_count = cv.captures.len();
+        for (i, arg) in args.iter().enumerate() {
+            if cap_count + i < params.len() {
+                self.registers[new_base + params[cap_count + i].register as usize] = arg.clone();
+            }
+        }
+        // Push a call frame with a sentinel return_register
+        self.frames.push(CallFrame {
+            cell_idx: cv.cell_idx,
+            base_register: new_base,
+            ip: 0,
+            return_register: new_base, // result will be written here
+            future_id: None,
+        });
+        // Run the VM until this frame returns
+        self.run()
     }
 
     /// Execute an intrinsic function by ID.
@@ -3312,6 +3535,209 @@ impl VM {
                     Ok(Value::List(r))
                 } else {
                     Ok(arg.clone())
+                }
+            }
+            31 => {
+                // MAP: apply closure to each element
+                let closure_val = self.registers[base + arg_reg + 1].clone();
+                if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
+                    let mut result = Vec::with_capacity(l.len());
+                    for item in &l {
+                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        result.push(val);
+                    }
+                    Ok(Value::List(result))
+                } else {
+                    Ok(arg.clone())
+                }
+            }
+            32 => {
+                // FILTER: keep elements where closure returns truthy
+                let closure_val = self.registers[base + arg_reg + 1].clone();
+                if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
+                    let mut result = Vec::new();
+                    for item in &l {
+                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        if val.is_truthy() {
+                            result.push(item.clone());
+                        }
+                    }
+                    Ok(Value::List(result))
+                } else {
+                    Ok(arg.clone())
+                }
+            }
+            33 => {
+                // REDUCE: fold with accumulator
+                let closure_val = self.registers[base + arg_reg + 1].clone();
+                let init = self.registers[base + arg_reg + 2].clone();
+                if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
+                    let mut acc = init;
+                    for item in &l {
+                        acc = self.call_closure_sync(&cv, &[acc, item.clone()])?;
+                    }
+                    Ok(acc)
+                } else {
+                    Ok(init)
+                }
+            }
+            34 => {
+                // FLAT_MAP: map then flatten one level
+                let closure_val = self.registers[base + arg_reg + 1].clone();
+                if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
+                    let mut result = Vec::new();
+                    for item in &l {
+                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        if let Value::List(inner) = val {
+                            result.extend(inner);
+                        } else {
+                            result.push(val);
+                        }
+                    }
+                    Ok(Value::List(result))
+                } else {
+                    Ok(arg.clone())
+                }
+            }
+            35 => {
+                // ZIP: pair elements from two lists
+                let other = self.registers[base + arg_reg + 1].clone();
+                if let (Value::List(la), Value::List(lb)) = (arg, &other) {
+                    let result: Vec<Value> = la
+                        .iter()
+                        .zip(lb.iter())
+                        .map(|(x, y)| Value::Tuple(vec![x.clone(), y.clone()]))
+                        .collect();
+                    Ok(Value::List(result))
+                } else {
+                    Ok(Value::List(vec![]))
+                }
+            }
+            36 => {
+                // ENUMERATE: list of [index, element] tuples
+                if let Value::List(l) = arg {
+                    let result: Vec<Value> = l
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| Value::Tuple(vec![Value::Int(i as i64), v.clone()]))
+                        .collect();
+                    Ok(Value::List(result))
+                } else {
+                    Ok(Value::List(vec![]))
+                }
+            }
+            37 => {
+                // ANY: true if any element satisfies closure
+                let closure_val = self.registers[base + arg_reg + 1].clone();
+                if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
+                    for item in &l {
+                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        if val.is_truthy() {
+                            return Ok(Value::Bool(true));
+                        }
+                    }
+                    Ok(Value::Bool(false))
+                } else {
+                    Ok(Value::Bool(false))
+                }
+            }
+            38 => {
+                // ALL: true if all elements satisfy closure
+                let closure_val = self.registers[base + arg_reg + 1].clone();
+                if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
+                    for item in &l {
+                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        if !val.is_truthy() {
+                            return Ok(Value::Bool(false));
+                        }
+                    }
+                    Ok(Value::Bool(true))
+                } else {
+                    Ok(Value::Bool(true))
+                }
+            }
+            39 => {
+                // FIND: first element satisfying closure, or Null
+                let closure_val = self.registers[base + arg_reg + 1].clone();
+                if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
+                    for item in &l {
+                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        if val.is_truthy() {
+                            return Ok(item.clone());
+                        }
+                    }
+                    Ok(Value::Null)
+                } else {
+                    Ok(Value::Null)
+                }
+            }
+            40 => {
+                // POSITION: index of first element satisfying closure, or -1
+                let closure_val = self.registers[base + arg_reg + 1].clone();
+                if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
+                    for (i, item) in l.iter().enumerate() {
+                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        if val.is_truthy() {
+                            return Ok(Value::Int(i as i64));
+                        }
+                    }
+                    Ok(Value::Int(-1))
+                } else {
+                    Ok(Value::Int(-1))
+                }
+            }
+            41 => {
+                // GROUP_BY: group elements by closure result into a map
+                let closure_val = self.registers[base + arg_reg + 1].clone();
+                if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
+                    let mut groups: BTreeMap<String, Value> = BTreeMap::new();
+                    for item in &l {
+                        let key = self.call_closure_sync(&cv, &[item.clone()])?;
+                        let key_str = key.as_string();
+                        match groups.get_mut(&key_str) {
+                            Some(Value::List(ref mut list)) => list.push(item.clone()),
+                            _ => {
+                                groups.insert(key_str, Value::List(vec![item.clone()]));
+                            }
+                        }
+                    }
+                    Ok(Value::Map(groups))
+                } else {
+                    Ok(Value::Map(BTreeMap::new()))
+                }
+            }
+            42 => {
+                // CHUNK: split list into chunks of size N
+                let n = self.registers[base + arg_reg + 1]
+                    .as_int()
+                    .unwrap_or(1) as usize;
+                if let Value::List(l) = arg {
+                    let result: Vec<Value> = l
+                        .chunks(n.max(1))
+                        .map(|chunk| Value::List(chunk.to_vec()))
+                        .collect();
+                    Ok(Value::List(result))
+                } else {
+                    Ok(Value::List(vec![]))
+                }
+            }
+            43 => {
+                // WINDOW: sliding window of size N
+                let n = self.registers[base + arg_reg + 1]
+                    .as_int()
+                    .unwrap_or(1) as usize;
+                if let Value::List(l) = arg {
+                    if n == 0 || n > l.len() {
+                        Ok(Value::List(vec![]))
+                    } else {
+                        let result: Vec<Value> = l
+                            .windows(n)
+                            .map(|w| Value::List(w.to_vec()))
+                            .collect();
+                        Ok(Value::List(result))
+                    }
+                } else {
+                    Ok(Value::List(vec![]))
                 }
             }
             44 => {
@@ -3759,15 +4185,15 @@ fn validate_tool_policy(policy: &serde_json::Value, args: &serde_json::Value) ->
                     }
                 }
             }
-            "max_tokens" => {
-                let max_tokens = constraint
-                    .as_i64()
-                    .ok_or_else(|| "max_tokens constraint must be an integer".to_string())?;
-                if let Some(actual) = args_obj.get("max_tokens").and_then(|v| v.as_i64()) {
-                    if actual > max_tokens {
+            _ if key.starts_with("max_") && constraint.is_i64() => {
+                // Generic upper-bound constraint: any "max_<field>" policy key
+                // enforces that the corresponding argument does not exceed the limit.
+                let limit = constraint.as_i64().unwrap();
+                if let Some(actual) = args_obj.get(key).and_then(|v| v.as_i64()) {
+                    if actual > limit {
                         return Err(format!(
-                            "max_tokens {} exceeds allowed {}",
-                            actual, max_tokens
+                            "{} {} exceeds allowed {}",
+                            key, actual, limit
                         ));
                     }
                 }
@@ -4010,7 +4436,8 @@ fn simple_base64_decode(s: &str) -> Option<Vec<u8>> {
         if vals.iter().any(|v| v.is_none()) {
             return None;
         }
-        let v: Vec<usize> = vals.into_iter().map(|v| v.unwrap()).collect();
+        // Safe: we just verified none are None above
+        let v: Vec<usize> = vals.into_iter().flatten().collect();
         let triple = (v[0] << 18) | (v[1] << 12) | (v[2] << 6) | v[3];
         result.push(((triple >> 16) & 0xFF) as u8);
         if chunk[2] != b'=' {
@@ -4033,7 +4460,7 @@ impl Default for VM {
 mod tests {
     use super::*;
     use lumen_compiler::compile as compile_lumen;
-    use lumen_runtime::tools::StubDispatcher;
+    use lumen_runtime::tools::{StubDispatcher, ToolProvider, ToolSchema, ToolError as RtToolError};
 
     fn run_main(source: &str) -> Value {
         let md = format!("# test\n\n```lumen\n{}\n```\n", source.trim());
@@ -4983,6 +5410,7 @@ end
         let result = run_main_with_dispatcher(
             r#"
 use tool http.get as HttpGet
+bind effect http to HttpGet
 grant HttpGet
 
 cell main() -> String / {http}
@@ -5005,6 +5433,7 @@ end
         let err = run_main_with_dispatcher(
             r#"
 use tool http.get as HttpGet
+bind effect http to HttpGet
 grant HttpGet
   domain "*.example.com"
 
@@ -5345,5 +5774,729 @@ end
             });
         }
         assert_eq!(vm.frames.len(), MAX_CALL_DEPTH);
+    }
+
+    #[test]
+    fn test_closure_setupval_populates_captures() {
+        // Verify SetUpval writes into the closure's capture vector, not frame registers.
+        // Build a module with two cells: main creates a closure and calls it,
+        // the closure reads its captured variable via GetUpval.
+        //
+        // main:
+        //   r0 = 42               (LoadInt)
+        //   r1 = Closure(1)       (Closure referencing cell index 1)
+        //   SetUpval(r0, 0, r1)   (capture r0 into closure slot 0)
+        //   r2 = "call_closure"   (dummy -- we'll call r1 directly)
+        //   Call(r1, 0)           (call the closure with 0 args)
+        //   Return(r1)            (return result -- closure puts result in r1 after call)
+        //
+        // closure (cell 1):
+        //   GetUpval(r0, 0)       (read capture slot 0 into r0)
+        //   Return(r0)            (return captured value)
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![
+                LirCell {
+                    name: "main".into(),
+                    params: vec![],
+                    returns: Some("Int".into()),
+                    registers: 8,
+                    constants: vec![],
+                    instructions: vec![
+                        Instruction::abx(OpCode::LoadInt, 0, 42_u16),     // r0 = 42
+                        Instruction::abx(OpCode::Closure, 1, 1),          // r1 = Closure(cell 1)
+                        Instruction::abc(OpCode::SetUpval, 0, 0, 1),      // capture r0 -> closure[0] in r1
+                        Instruction::abc(OpCode::Call, 1, 0, 0),          // call r1 with 0 args
+                        Instruction::abc(OpCode::Return, 1, 1, 0),        // return result
+                    ],
+                },
+                LirCell {
+                    name: "__closure_0".into(),
+                    params: vec![],
+                    returns: Some("Int".into()),
+                    registers: 4,
+                    constants: vec![],
+                    instructions: vec![
+                        Instruction::abc(OpCode::GetUpval, 0, 0, 0),      // r0 = capture[0]
+                        Instruction::abc(OpCode::Return, 0, 1, 0),        // return r0
+                    ],
+                },
+            ],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+        let mut vm = VM::new();
+        vm.load(module);
+        let result = vm.execute("main", vec![]).unwrap();
+        assert_eq!(result, Value::Int(42));
+    }
+
+    #[test]
+    fn test_closure_multiple_captures() {
+        // Verify a closure can capture multiple values via SetUpval.
+        // main: r0=10, r1=20, create closure, capture both, call it
+        // closure: reads both captures and returns their sum
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![
+                LirCell {
+                    name: "main".into(),
+                    params: vec![],
+                    returns: Some("Int".into()),
+                    registers: 8,
+                    constants: vec![],
+                    instructions: vec![
+                        Instruction::abx(OpCode::LoadInt, 0, 10_u16),     // r0 = 10
+                        Instruction::abx(OpCode::LoadInt, 1, 20_u16),     // r1 = 20
+                        Instruction::abx(OpCode::Closure, 2, 1),          // r2 = Closure(cell 1)
+                        Instruction::abc(OpCode::SetUpval, 0, 0, 2),      // capture r0 -> closure[0]
+                        Instruction::abc(OpCode::SetUpval, 1, 1, 2),      // capture r1 -> closure[1]
+                        Instruction::abc(OpCode::Call, 2, 0, 0),          // call closure
+                        Instruction::abc(OpCode::Return, 2, 1, 0),        // return result
+                    ],
+                },
+                LirCell {
+                    name: "__closure_1".into(),
+                    params: vec![],
+                    returns: Some("Int".into()),
+                    registers: 4,
+                    constants: vec![],
+                    instructions: vec![
+                        Instruction::abc(OpCode::GetUpval, 0, 0, 0),      // r0 = capture[0] (10)
+                        Instruction::abc(OpCode::GetUpval, 1, 1, 0),      // r1 = capture[1] (20)
+                        Instruction::abc(OpCode::Add, 2, 0, 1),           // r2 = r0 + r1
+                        Instruction::abc(OpCode::Return, 2, 1, 0),        // return 30
+                    ],
+                },
+            ],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+        let mut vm = VM::new();
+        vm.load(module);
+        let result = vm.execute("main", vec![]).unwrap();
+        assert_eq!(result, Value::Int(30));
+    }
+
+    #[test]
+    fn test_closure_e2e_make_adder() {
+        // End-to-end test: compile and run a Lumen program with closures.
+        let result = run_main(
+            r#"
+cell make_adder(x: Int) -> fn(Int) -> Int
+  return fn(y: Int) => x + y
+end
+
+cell main() -> Int
+  let add5 = make_adder(5)
+  return add5(10)
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(15));
+    }
+
+    #[test]
+    fn test_value_is_truthy_interned_empty_string() {
+        // VM's value_is_truthy should resolve interned strings and check emptiness
+        let mut vm = VM::new();
+        let empty_id = vm.strings.intern("");
+        let nonempty_id = vm.strings.intern("hello");
+
+        assert!(!vm.value_is_truthy(&Value::String(StringRef::Interned(empty_id))));
+        assert!(vm.value_is_truthy(&Value::String(StringRef::Interned(nonempty_id))));
+    }
+
+    #[test]
+    fn test_get_constant_returns_error_on_no_module() {
+        let vm = VM::new();
+        let result = vm.get_constant(0, 0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_module_string_returns_error_on_no_module() {
+        let vm = VM::new();
+        let result = vm.get_module_string(0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_eq_opcode_interned_vs_owned_string() {
+        // Eq opcode should resolve interned strings for cross-representation equality.
+        // Build a module where r0 = owned "hello", r1 = interned "hello"
+        // then Eq(2, 0, 1) should produce true.
+        //
+        // We use the module string table for interning -- the VM interns all
+        // module.strings on load. We use NewRecord with string index 0 to
+        // get an interned reference, but that's complex. Instead, set up
+        // registers directly and run via the internal dispatch loop.
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec!["hello".to_string()],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("Bool".into()),
+                registers: 8,
+                constants: vec![Constant::String("hello".into())],
+                instructions: vec![
+                    // r0 = owned "hello" from constant
+                    Instruction::abx(OpCode::LoadK, 0, 0),
+                    // Eq(2, 0, 1): compare r0 (owned) with r1 (will be interned)
+                    Instruction::abc(OpCode::Eq, 2, 0, 1),
+                    Instruction::abc(OpCode::Return, 2, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        vm.load(module);
+
+        // Manually place an interned string in r1 before execution
+        let interned_id = vm.strings.intern("hello");
+        // We need to set r1 in the frame that execute() will create.
+        // execute() will create a frame at base = current registers.len().
+        // So we pre-size and set up r1 at the right offset.
+        let base = vm.registers.len();
+        vm.registers.resize(base + 256, Value::Null);
+        vm.registers[base + 1] = Value::String(StringRef::Interned(interned_id));
+
+        vm.frames.push(CallFrame {
+            cell_idx: 0,
+            base_register: base,
+            ip: 0,
+            return_register: 0,
+            future_id: None,
+        });
+
+        let result = vm.run().unwrap();
+        assert_eq!(result, Value::Bool(true), "interned 'hello' should equal owned 'hello'");
+    }
+
+    // ===== ProviderRegistry integration tests =====
+
+    /// A simple ToolProvider that returns a fixed JSON response.
+    struct FixedProvider {
+        name: String,
+        response: serde_json::Value,
+        schema: ToolSchema,
+    }
+
+    impl FixedProvider {
+        fn new(name: &str, response: serde_json::Value) -> Self {
+            Self {
+                name: name.to_string(),
+                response,
+                schema: ToolSchema {
+                    name: name.to_string(),
+                    description: format!("Fixed provider: {}", name),
+                    input_schema: serde_json::json!({}),
+                    output_schema: serde_json::json!({}),
+                    effects: vec!["http".to_string()],
+                },
+            }
+        }
+    }
+
+    impl ToolProvider for FixedProvider {
+        fn name(&self) -> &str { &self.name }
+        fn version(&self) -> &str { "1.0.0" }
+        fn schema(&self) -> &ToolSchema { &self.schema }
+        fn call(&self, _input: serde_json::Value) -> Result<serde_json::Value, RtToolError> {
+            Ok(self.response.clone())
+        }
+    }
+
+    fn run_main_with_registry(source: &str, registry: ProviderRegistry) -> Result<Value, VmError> {
+        let md = format!("# test\n\n```lumen\n{}\n```\n", source.trim());
+        let module = compile_lumen(&md).expect("source should compile");
+        let mut vm = VM::new();
+        vm.set_provider_registry(registry);
+        vm.load(module);
+        vm.execute("main", vec![])
+    }
+
+    #[test]
+    fn test_provider_registry_dispatches_tool_call() {
+        let mut registry = ProviderRegistry::new();
+        registry.register(
+            "http.get",
+            Box::new(FixedProvider::new("http.get", serde_json::json!({"body": "registry_ok"}))),
+        );
+
+        let result = run_main_with_registry(
+            r#"
+use tool http.get as HttpGet
+bind effect http to HttpGet
+grant HttpGet
+
+cell main() -> String / {http}
+  let resp = HttpGet(url: "https://api.example.com")
+  return resp.body
+end
+"#,
+            registry,
+        )
+        .expect("tool call via registry should succeed");
+
+        assert_eq!(result, Value::String(StringRef::Owned("registry_ok".to_string())));
+    }
+
+    #[test]
+    fn test_provider_registry_missing_provider_returns_error() {
+        let registry = ProviderRegistry::new(); // empty -- no providers
+
+        let err = run_main_with_registry(
+            r#"
+use tool http.get as HttpGet
+bind effect http to HttpGet
+grant HttpGet
+
+cell main() -> String / {http}
+  let resp = HttpGet(url: "https://api.example.com")
+  return resp.body
+end
+"#,
+            registry,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("not registered"),
+            "expected 'not registered' error, got: {}",
+            err
+        );
+    }
+
+    // ===== validate_tool_policy unit tests =====
+
+    #[test]
+    fn test_policy_generic_max_constraint_allows_within_limit() {
+        let policy = serde_json::json!({"max_tokens": 100});
+        let args = serde_json::json!({"max_tokens": 50});
+        assert!(validate_tool_policy(&policy, &args).is_ok());
+    }
+
+    #[test]
+    fn test_policy_generic_max_constraint_rejects_over_limit() {
+        let policy = serde_json::json!({"max_tokens": 100});
+        let args = serde_json::json!({"max_tokens": 200});
+        let err = validate_tool_policy(&policy, &args).unwrap_err();
+        assert!(err.contains("max_tokens"), "error should mention the key: {}", err);
+        assert!(err.contains("200"), "error should mention the actual value: {}", err);
+    }
+
+    #[test]
+    fn test_policy_generic_max_constraint_works_for_any_max_key() {
+        let policy = serde_json::json!({"max_retries": 3});
+        let args = serde_json::json!({"max_retries": 5});
+        let err = validate_tool_policy(&policy, &args).unwrap_err();
+        assert!(err.contains("max_retries"), "error should mention the key: {}", err);
+
+        let policy = serde_json::json!({"max_cost": 1000});
+        let args = serde_json::json!({"max_cost": 500});
+        assert!(validate_tool_policy(&policy, &args).is_ok());
+    }
+
+    #[test]
+    fn test_policy_domain_constraint() {
+        let policy = serde_json::json!({"domain": "*.example.com"});
+        let args = serde_json::json!({"url": "https://api.example.com/data"});
+        assert!(validate_tool_policy(&policy, &args).is_ok());
+
+        let args_bad = serde_json::json!({"url": "https://malicious.tld/data"});
+        assert!(validate_tool_policy(&policy, &args_bad).is_err());
+    }
+
+    #[test]
+    fn test_policy_timeout_ms_constraint() {
+        let policy = serde_json::json!({"timeout_ms": 5000});
+        let args = serde_json::json!({"timeout_ms": 3000});
+        assert!(validate_tool_policy(&policy, &args).is_ok());
+
+        let args_over = serde_json::json!({"timeout_ms": 10000});
+        let err = validate_tool_policy(&policy, &args_over).unwrap_err();
+        assert!(err.contains("timeout_ms"), "error should mention timeout_ms: {}", err);
+    }
+
+    // ---- Collection intrinsic tests ----
+
+    #[test]
+    fn test_intrinsic_sort() {
+        let result = run_main(
+            r#"
+cell main() -> list[Int]
+  let xs = [3, 1, 4, 1, 5, 9, 2]
+  return sort(xs)
+end
+"#,
+        );
+        assert_eq!(
+            result,
+            Value::List(vec![
+                Value::Int(1), Value::Int(1), Value::Int(2), Value::Int(3),
+                Value::Int(4), Value::Int(5), Value::Int(9),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_intrinsic_reverse() {
+        let result = run_main(
+            r#"
+cell main() -> list[Int]
+  let xs = [1, 2, 3]
+  return reverse(xs)
+end
+"#,
+        );
+        assert_eq!(
+            result,
+            Value::List(vec![Value::Int(3), Value::Int(2), Value::Int(1)])
+        );
+    }
+
+    #[test]
+    fn test_intrinsic_flatten() {
+        let result = run_main(
+            r#"
+cell main() -> list[Int]
+  let xs = [[1, 2], [3], [4, 5]]
+  return flatten(xs)
+end
+"#,
+        );
+        assert_eq!(
+            result,
+            Value::List(vec![
+                Value::Int(1), Value::Int(2), Value::Int(3),
+                Value::Int(4), Value::Int(5),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_intrinsic_unique() {
+        let result = run_main(
+            r#"
+cell main() -> list[Int]
+  let xs = [1, 2, 2, 3, 1, 4]
+  return unique(xs)
+end
+"#,
+        );
+        assert_eq!(
+            result,
+            Value::List(vec![
+                Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_intrinsic_take() {
+        let result = run_main(
+            r#"
+cell main() -> list[Int]
+  let xs = [10, 20, 30, 40, 50]
+  return take(xs, 3)
+end
+"#,
+        );
+        assert_eq!(
+            result,
+            Value::List(vec![Value::Int(10), Value::Int(20), Value::Int(30)])
+        );
+    }
+
+    #[test]
+    fn test_intrinsic_drop() {
+        let result = run_main(
+            r#"
+cell main() -> list[Int]
+  let xs = [10, 20, 30, 40, 50]
+  return drop(xs, 2)
+end
+"#,
+        );
+        assert_eq!(
+            result,
+            Value::List(vec![Value::Int(30), Value::Int(40), Value::Int(50)])
+        );
+    }
+
+    #[test]
+    fn test_intrinsic_chunk() {
+        let result = run_main(
+            r#"
+cell main() -> list[list[Int]]
+  let xs = [1, 2, 3, 4, 5]
+  return chunk(xs, 2)
+end
+"#,
+        );
+        assert_eq!(
+            result,
+            Value::List(vec![
+                Value::List(vec![Value::Int(1), Value::Int(2)]),
+                Value::List(vec![Value::Int(3), Value::Int(4)]),
+                Value::List(vec![Value::Int(5)]),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_intrinsic_zip() {
+        let result = run_main(
+            r#"
+cell main() -> list[list[Int]]
+  let a = [1, 2, 3]
+  let b = [4, 5, 6]
+  return zip(a, b)
+end
+"#,
+        );
+        // zip returns tuples, but let's check what we get
+        if let Value::List(items) = &result {
+            assert_eq!(items.len(), 3);
+        } else {
+            panic!("expected list from zip");
+        }
+    }
+
+    #[test]
+    fn test_intrinsic_enumerate() {
+        let result = run_main(
+            r#"
+cell main() -> list[list[Int]]
+  let xs = [10, 20, 30]
+  return enumerate(xs)
+end
+"#,
+        );
+        if let Value::List(items) = &result {
+            assert_eq!(items.len(), 3);
+            // First element should be tuple (0, 10)
+            if let Value::Tuple(t) = &items[0] {
+                assert_eq!(t[0], Value::Int(0));
+                assert_eq!(t[1], Value::Int(10));
+            }
+        } else {
+            panic!("expected list from enumerate");
+        }
+    }
+
+    // ---- String intrinsic tests ----
+
+    #[test]
+    fn test_intrinsic_starts_with() {
+        let result = run_main(
+            r#"
+cell main() -> Bool
+  return starts_with("hello world", "hello")
+end
+"#,
+        );
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_intrinsic_ends_with() {
+        let result = run_main(
+            r#"
+cell main() -> Bool
+  return ends_with("hello world", "world")
+end
+"#,
+        );
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_intrinsic_index_of() {
+        let result = run_main(
+            r#"
+cell main() -> Int
+  return index_of("hello world", "world")
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(6));
+    }
+
+    #[test]
+    fn test_intrinsic_index_of_not_found() {
+        let result = run_main(
+            r#"
+cell main() -> Int
+  return index_of("hello world", "xyz")
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(-1));
+    }
+
+    #[test]
+    fn test_intrinsic_pad_left() {
+        let result = run_main(
+            r#"
+cell main() -> String
+  return pad_left("hi", 5)
+end
+"#,
+        );
+        assert_eq!(
+            result,
+            Value::String(StringRef::Owned("   hi".into()))
+        );
+    }
+
+    #[test]
+    fn test_intrinsic_pad_right() {
+        let result = run_main(
+            r#"
+cell main() -> String
+  return pad_right("hi", 5)
+end
+"#,
+        );
+        assert_eq!(
+            result,
+            Value::String(StringRef::Owned("hi   ".into()))
+        );
+    }
+
+    // ---- Math intrinsic tests ----
+
+    #[test]
+    fn test_intrinsic_round() {
+        let result = run_main(
+            r#"
+cell main() -> Float
+  return round(3.7)
+end
+"#,
+        );
+        assert_eq!(result, Value::Float(4.0));
+    }
+
+    #[test]
+    fn test_intrinsic_ceil() {
+        let result = run_main(
+            r#"
+cell main() -> Float
+  return ceil(3.2)
+end
+"#,
+        );
+        assert_eq!(result, Value::Float(4.0));
+    }
+
+    #[test]
+    fn test_intrinsic_floor() {
+        let result = run_main(
+            r#"
+cell main() -> Float
+  return floor(3.9)
+end
+"#,
+        );
+        assert_eq!(result, Value::Float(3.0));
+    }
+
+    #[test]
+    fn test_intrinsic_sqrt() {
+        let result = run_main(
+            r#"
+cell main() -> Float
+  return sqrt(16.0)
+end
+"#,
+        );
+        assert_eq!(result, Value::Float(4.0));
+    }
+
+    #[test]
+    fn test_intrinsic_pow() {
+        let result = run_main(
+            r#"
+cell main() -> Int
+  return pow(2, 10)
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(1024));
+    }
+
+    #[test]
+    fn test_intrinsic_clamp() {
+        let result = run_main(
+            r#"
+cell main() -> Int
+  return clamp(15, 0, 10)
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(10));
+    }
+
+    #[test]
+    fn test_intrinsic_clamp_below() {
+        let result = run_main(
+            r#"
+cell main() -> Int
+  return clamp(-5, 0, 10)
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(0));
+    }
+
+    // ---- Window intrinsic test ----
+
+    #[test]
+    fn test_intrinsic_window() {
+        let result = run_main(
+            r#"
+cell main() -> list[list[Int]]
+  let xs = [1, 2, 3, 4, 5]
+  return window(xs, 3)
+end
+"#,
+        );
+        assert_eq!(
+            result,
+            Value::List(vec![
+                Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+                Value::List(vec![Value::Int(2), Value::Int(3), Value::Int(4)]),
+                Value::List(vec![Value::Int(3), Value::Int(4), Value::Int(5)]),
+            ])
+        );
     }
 }

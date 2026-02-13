@@ -6,14 +6,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build --release                    # Build all crates
-cargo test --workspace                   # Run all tests (~125 total)
+cargo test --workspace                   # Run all tests (~442 passing, 1 ignored)
 cargo test -p lumen-compiler             # Tests for compiler only
 cargo test -p lumen-vm                   # Tests for VM only
 cargo test -p lumen-runtime              # Tests for runtime only
 cargo test -p lumen-compiler -- spec_suite::test_name  # Single test by name
-cargo run --bin lumen -- check examples/hello.lm.md    # Type-check a file
-cargo run --bin lumen -- run examples/hello.lm.md      # Compile and execute
-cargo run --bin lumen -- emit examples/hello.lm.md --output out.json  # Emit LIR JSON
+```
+
+## CLI Commands
+
+```bash
+lumen check <file>                       # Type-check a .lm.md file
+lumen run <file>                         # Compile and execute (default cell: main)
+lumen run <file> --cell <name>           # Run specific cell
+lumen run <file> --trace-dir <dir>       # Enable trace recording
+lumen emit <file>                        # Emit LIR JSON to stdout
+lumen emit <file> --output <path>        # Emit LIR JSON to file
+lumen repl                               # Start interactive REPL
+lumen fmt <files>                        # Format source files
+lumen fmt --check <files>                # Check formatting (exit 1 if changes needed)
+lumen init                               # Create lumen.toml config file
+lumen pkg init [name]                    # Create new package
+lumen pkg build                          # Build package and dependencies
+lumen pkg check                          # Type-check package
+lumen trace show <run-id>                # Display trace events
+lumen cache clear                        # Clear tool result cache
 ```
 
 ## Project Overview
@@ -31,14 +48,21 @@ The Cargo workspace root is `/Cargo.toml` with members under `rust/`:
 
 Other key paths:
 - `SPEC.md` — Implementation-accurate language specification (source of truth)
-- `examples/*.lm.md` — Example programs
+- `examples/*.lm.md` — Example programs (13 total)
 - `tasks.md` — Outstanding implementation work
+- `docs/GETTING_STARTED.md` — Installation and tutorial guide
 - `docs/ARCHITECTURE.md` — Component overview
 - `docs/RUNTIME.md` — Runtime semantics (futures, processes, tool dispatch, traces)
+- `tree-sitter-lumen/` — Tree-sitter grammar for advanced tooling
+- `editors/vscode/` — VS Code extension with TextMate grammar
 
 ## Compiler Pipeline
 
 Entry point: `lumen_compiler::compile(source: &str) -> Result<LirModule, CompileError>` in `rust/lumen-compiler/src/lib.rs`.
+
+**Multi-file compilation**: Use `lumen_compiler::compile_with_imports(source, imports)` to compile with import resolution. The `imports` map provides module sources by path.
+
+**Error formatting**: `lumen_compiler::format_error(err, source, filename)` produces human-readable diagnostics with source context and location info.
 
 Seven sequential stages:
 1. **Markdown extraction** (`markdown/extract.rs`) — Pulls code blocks and `@directives` from `.lm.md`
@@ -92,11 +116,24 @@ Tool calls go through `validate_tool_policy()` at runtime dispatch. Merged grant
 
 **Pipeline stage arity**: Strict — exactly one data argument per stage interface. Compiler validates type flow between stages and auto-generates `run` cell if missing.
 
+## Tooling and Editor Support
+
+**Tree-sitter grammar**: Located at `tree-sitter-lumen/grammar.js`. Comprehensive coverage of all language constructs for building LSPs, formatters, and analysis tools.
+
+**VS Code extension**: Located at `editors/vscode/`. Includes TextMate grammar (`.tmLanguage.json`) for syntax highlighting. Supports `.lm` and `.lm.md` files with fenced code block recognition.
+
+**Diagnostics**: The `lumen_compiler::diagnostics` module provides error formatting with source context. `format_error()` generates human-readable output with line numbers, column offsets, and highlighted excerpts.
+
+**CLI architecture**: `rust/lumen-cli/` uses Clap for command parsing. Main commands in `main.rs`; REPL in `repl.rs`; formatter in `fmt.rs`; package manager in `pkg.rs`; config loading in `config.rs`.
+
+**LSP capabilities** (future): Planned support includes go-to-definition, hover documentation, completion, diagnostics, and code actions.
+
 ## Test Structure
 
 - `rust/lumen-compiler/tests/spec_markdown_sweep.rs` — Compiles every code block in `SPEC.md` (auto-stubs undefined types)
 - `rust/lumen-compiler/tests/spec_suite.rs` — Semantic compiler tests (compile-ok and compile-err cases)
 - Unit tests inline in source files across all crates
+- **Test counts**: ~442 tests passing, 1 ignored (breakdown: 25 + 115 + 14 + 8 + 1 + 81 + 22 + 104 + 72 across crates)
 - 12/13 examples compile; 6 run end-to-end (`role_interpolation.lm.md` has a known parse issue)
 
 ## Language Essentials

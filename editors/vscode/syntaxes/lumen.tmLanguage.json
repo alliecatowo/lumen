@@ -31,7 +31,7 @@
       "patterns": [
         {
           "name": "keyword.preprocessor.lumen",
-          "match": "@(deterministic|version|doc_mode|location|strict)\\b"
+          "match": "@\\w+"
         }
       ]
     },
@@ -136,7 +136,7 @@
       "patterns": [
         {
           "name": "keyword.control.lumen",
-          "match": "\\b(cell|end|let|if|else|for|in|match|return|break|continue|while|loop|when|fn|async|await|try|catch|halt|yield|with|then|as|mut|self)\\b"
+          "match": "\\b(cell|end|let|if|else|for|in|match|return|break|continue|while|loop|when|fn|async|await|try|catch|halt|yield|with|then|as|mut|self|spawn|finally)\\b"
         }
       ]
     },
@@ -144,7 +144,7 @@
       "patterns": [
         {
           "name": "keyword.declaration.lumen",
-          "match": "\\b(record|enum|use|tool|grant|bind|effect|handler|handle|agent|pipeline|orchestration|machine|memory|guardrail|eval|pattern|process|trait|impl|type|const|import|from|pub|mod|macro|extern|union)\\b"
+          "match": "\\b(record|enum|use|tool|grant|bind|effect|handler|handle|agent|pipeline|orchestration|machine|memory|guardrail|eval|pattern|process|trait|impl|type|const|import|from|pub|mod|macro|extern|union|state|transition|stage|to)\\b"
         }
       ]
     },
@@ -152,7 +152,7 @@
       "patterns": [
         {
           "name": "keyword.other.lumen",
-          "match": "\\b(role|expect|schema|emit|parallel|race|vote|select|timeout|observe|approve|checkpoint|escalate|comptime|where|step)\\b"
+          "match": "\\b(role|expect|schema|emit|parallel|race|vote|select|timeout|observe|approve|checkpoint|escalate|comptime|where|step|guard)\\b"
         }
       ]
     },

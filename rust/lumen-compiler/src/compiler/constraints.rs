@@ -34,7 +34,9 @@ fn validate_constraint_expr(expr: &Expr, field: &str, errors: &mut Vec<Constrain
             match op {
                 BinOp::And | BinOp::Or | BinOp::Eq | BinOp::NotEq
                 | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
-                | BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
+                | BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
+                | BinOp::Pow | BinOp::Concat | BinOp::In
+                | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
                     validate_constraint_expr(lhs, field, errors);
                     validate_constraint_expr(rhs, field, errors);
                 }

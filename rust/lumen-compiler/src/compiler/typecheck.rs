@@ -34,6 +34,8 @@ pub enum TypeError {
     UndefinedType { name: String, line: usize },
     #[error("missing return in cell '{name}' at line {line}")]
     MissingReturn { name: String, line: usize },
+    #[error("cannot assign to immutable variable '{name}' at line {line}")]
+    ImmutableAssign { name: String, line: usize },
 }
 
 /// Resolved type representation
@@ -46,6 +48,11 @@ pub enum Type {
     Enum(String),
     Result(Box<Type>, Box<Type>),
     Union(Vec<Type>),
+    Tuple(Vec<Type>),
+    Set(Box<Type>),
+    Fn(Vec<Type>, Box<Type>),
+    Generic(String),
+    TypeRef(String, Vec<Type>),
     Any, // For unresolved / error recovery
 }
 
@@ -64,6 +71,20 @@ impl std::fmt::Display for Type {
             Type::Union(ts) => {
                 let parts: Vec<_> = ts.iter().map(|t| format!("{}", t)).collect();
                 write!(f, "{}", parts.join(" | "))
+            }
+            Type::Tuple(ts) => {
+                let parts: Vec<_> = ts.iter().map(|t| format!("{}", t)).collect();
+                write!(f, "({})", parts.join(", "))
+            }
+            Type::Set(t) => write!(f, "set[{}]", t),
+            Type::Fn(params, ret) => {
+                let ps: Vec<_> = params.iter().map(|t| format!("{}", t)).collect();
+                write!(f, "fn({}) -> {}", ps.join(", "), ret)
+            }
+            Type::Generic(n) => write!(f, "{}", n),
+            Type::TypeRef(n, args) => {
+                let as_: Vec<_> = args.iter().map(|t| format!("{}", t)).collect();
+                write!(f, "{}[{}]", n, as_.join(", "))
             }
         }
     }
@@ -91,25 +112,43 @@ pub fn resolve_type_expr(ty: &TypeExpr, symbols: &SymbolTable) -> Type {
         TypeExpr::Result(ok, err, _) => Type::Result(Box::new(resolve_type_expr(ok, symbols)), Box::new(resolve_type_expr(err, symbols))),
         TypeExpr::Union(types, _) => Type::Union(types.iter().map(|t| resolve_type_expr(t, symbols)).collect()),
         TypeExpr::Null(_) => Type::Null,
+        TypeExpr::Tuple(types, _) => {
+            Type::Tuple(types.iter().map(|t| resolve_type_expr(t, symbols)).collect())
+        }
+        TypeExpr::Set(inner, _) => {
+            Type::Set(Box::new(resolve_type_expr(inner, symbols)))
+        }
+        TypeExpr::Fn(params, ret, _) => {
+            let param_types = params.iter().map(|t| resolve_type_expr(t, symbols)).collect();
+            let ret_type = resolve_type_expr(ret, symbols);
+            Type::Fn(param_types, Box::new(ret_type))
+        }
+        TypeExpr::Generic(name, args, _) => {
+            let arg_types: Vec<_> = args.iter().map(|t| resolve_type_expr(t, symbols)).collect();
+            Type::TypeRef(name.clone(), arg_types)
+        }
     }
 }
 
 struct TypeChecker<'a> {
     symbols: &'a SymbolTable,
     locals: HashMap<String, Type>,
+    mutables: HashMap<String, bool>,
     errors: Vec<TypeError>,
 }
 
 impl<'a> TypeChecker<'a> {
     fn new(symbols: &'a SymbolTable) -> Self {
-        Self { symbols, locals: HashMap::new(), errors: Vec::new() }
+        Self { symbols, locals: HashMap::new(), mutables: HashMap::new(), errors: Vec::new() }
     }
 
     fn check_cell(&mut self, cell: &CellDef) {
         self.locals.clear();
+        self.mutables.clear();
         for p in &cell.params {
             let ty = resolve_type_expr(&p.ty, self.symbols);
             self.locals.insert(p.name.clone(), ty);
+            self.mutables.insert(p.name.clone(), true); // params are mutable by default
         }
         let return_type = if let Some(ref rt) = cell.return_type {
             Some(resolve_type_expr(rt, self.symbols))
@@ -131,6 +170,9 @@ impl<'a> TypeChecker<'a> {
                     self.check_compat(&expected, &val_type, ls.span.line);
                 }
                 self.locals.insert(ls.name.clone(), val_type);
+                // In Lumen, all let bindings are reassignable by default
+                // `let mut` is just documentation; `const` is immutable
+                self.mutables.insert(ls.name.clone(), true);
             }
             Stmt::If(ifs) => {
                 let ct = self.infer_expr(&ifs.condition);
@@ -142,9 +184,11 @@ impl<'a> TypeChecker<'a> {
                 let iter_type = self.infer_expr(&fs.iter);
                 let elem_type = match &iter_type {
                     Type::List(inner) => *inner.clone(),
-                    Type::Any => Type::Any, // Accept Any (e.g. from built-in range())
+                    Type::Set(inner) => *inner.clone(),
+                    Type::Map(k, _) => *k.clone(),
+                    Type::Any => Type::Any,
                     _ => { self.errors.push(TypeError::Mismatch {
-                        expected: "list[T]".into(), actual: format!("{}", iter_type), line: fs.span.line,
+                        expected: "iterable".into(), actual: format!("{}", iter_type), line: fs.span.line,
                     }); Type::Any }
                 };
                 self.locals.insert(fs.var.clone(), elem_type);
@@ -235,9 +279,41 @@ impl<'a> TypeChecker<'a> {
             Stmt::Halt(hs) => { self.infer_expr(&hs.message); }
             Stmt::Assign(asgn) => {
                 let val_type = self.infer_expr(&asgn.value);
+                // Check mutability
+                if let Some(&is_mut) = self.mutables.get(&asgn.target) {
+                    if !is_mut {
+                        self.errors.push(TypeError::ImmutableAssign {
+                            name: asgn.target.clone(), line: asgn.span.line,
+                        });
+                    }
+                }
                 self.locals.insert(asgn.target.clone(), val_type);
             }
             Stmt::Expr(es) => { self.infer_expr(&es.expr); }
+            Stmt::While(ws) => {
+                let ct = self.infer_expr(&ws.condition);
+                self.check_compat(&Type::Bool, &ct, ws.span.line);
+                for s in &ws.body { self.check_stmt(s, expected_return); }
+            }
+            Stmt::Loop(ls) => {
+                for s in &ls.body { self.check_stmt(s, expected_return); }
+            }
+            Stmt::Break(_) | Stmt::Continue(_) => {}
+            Stmt::Emit(es) => { self.infer_expr(&es.value); }
+            Stmt::CompoundAssign(ca) => {
+                let val_type = self.infer_expr(&ca.value);
+                // Check mutability
+                if let Some(&is_mut) = self.mutables.get(&ca.target) {
+                    if !is_mut {
+                        self.errors.push(TypeError::ImmutableAssign {
+                            name: ca.target.clone(), line: ca.span.line,
+                        });
+                    }
+                }
+                if let Some(existing) = self.locals.get(&ca.target).cloned() {
+                    self.check_compat(&existing, &val_type, ca.span.line);
+                }
+            }
         }
     }
 
@@ -304,13 +380,15 @@ impl<'a> TypeChecker<'a> {
                                  self.errors.push(TypeError::UnknownField { field: fname.clone(), ty: name.clone(), line: span.line });
                              }
                          }
-                         // 2. Check for missing fields
+                         // 2. Check for missing fields (fields with defaults are optional)
                          for field_def in &def.fields {
-                             if !fields.iter().any(|(fname, _)| fname == &field_def.name) {
-                                  self.errors.push(TypeError::Mismatch { 
-                                      expected: format!("field '{}'", field_def.name), 
-                                      actual: "missing".into(), 
-                                      line: span.line 
+                             if field_def.default_value.is_none()
+                                 && !fields.iter().any(|(fname, _)| fname == &field_def.name)
+                             {
+                                  self.errors.push(TypeError::Mismatch {
+                                      expected: format!("field '{}'", field_def.name),
+                                      actual: "missing".into(),
+                                      line: span.line
                                   });
                              }
                          }
@@ -325,12 +403,21 @@ impl<'a> TypeChecker<'a> {
                 let rt = self.infer_expr(rhs);
                 match op {
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                        if lt == Type::String && *op == BinOp::Add { Type::String }
+                        if lt == Type::Any || rt == Type::Any { Type::Any }
+                        else if (lt == Type::String || rt == Type::String) && *op == BinOp::Add { Type::String }
                         else if lt == Type::Float || rt == Type::Float { Type::Float }
                         else { Type::Int }
                     }
                     BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => Type::Bool,
                     BinOp::And | BinOp::Or => Type::Bool,
+                    BinOp::Pow => {
+                        if lt == Type::Float || rt == Type::Float { Type::Float }
+                        else { Type::Int }
+                    }
+                    BinOp::PipeForward => rt,
+                    BinOp::Concat => lt,
+                    BinOp::In => Type::Bool,
+                    BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => Type::Int,
                 }
             }
             Expr::UnaryOp(op, inner, _) => {
@@ -338,6 +425,7 @@ impl<'a> TypeChecker<'a> {
                 match op {
                     UnaryOp::Neg => t,
                     UnaryOp::Not => Type::Bool,
+                    UnaryOp::BitNot => Type::Int,
                 }
             }
             Expr::Call(callee, args, _span) => {
@@ -396,19 +484,155 @@ impl<'a> TypeChecker<'a> {
                     Type::Record(schema_name.clone())
                 } else { Type::Any }
             }
+            Expr::RawStringLit(_, _) => Type::String,
+            Expr::BytesLit(_, _) => Type::Bytes,
+            Expr::Lambda { params, return_type, body, .. } => {
+                let mut param_types = Vec::new();
+                for p in params {
+                    let pt = resolve_type_expr(&p.ty, self.symbols);
+                    if let Some(ref def) = p.default_value { self.infer_expr(def); }
+                    param_types.push(pt);
+                }
+                let ret = if let Some(ref rt) = return_type {
+                    resolve_type_expr(rt, self.symbols)
+                } else {
+                    match body {
+                        LambdaBody::Expr(e) => self.infer_expr(e),
+                        LambdaBody::Block(stmts) => {
+                            for s in stmts { self.check_stmt(s, None); }
+                            Type::Any
+                        }
+                    }
+                };
+                Type::Fn(param_types, Box::new(ret))
+            }
+            Expr::TupleLit(elems, _) => {
+                let types: Vec<_> = elems.iter().map(|e| self.infer_expr(e)).collect();
+                Type::Tuple(types)
+            }
+            Expr::SetLit(elems, _) => {
+                if elems.is_empty() { Type::Set(Box::new(Type::Any)) }
+                else {
+                    let first = self.infer_expr(&elems[0]);
+                    for e in &elems[1..] { self.infer_expr(e); }
+                    Type::Set(Box::new(first))
+                }
+            }
+            Expr::RangeExpr { start, end, step, .. } => {
+                if let Some(ref s) = start { self.infer_expr(s); }
+                if let Some(ref e) = end { self.infer_expr(e); }
+                if let Some(ref st) = step { self.infer_expr(st); }
+                Type::List(Box::new(Type::Int))
+            }
+            Expr::TryExpr(inner, _) => {
+                let t = self.infer_expr(inner);
+                // If inner is Result[Ok, Err], return Ok type (propagating Err)
+                if let Type::Result(ok, _) = t {
+                    *ok
+                } else { t }
+            }
+            Expr::NullCoalesce(lhs, rhs, _) => {
+                let lt = self.infer_expr(lhs);
+                let rt = self.infer_expr(rhs);
+                // If lhs is T | Null, result is T (or rhs type)
+                match lt {
+                    Type::Union(ref types) => {
+                        let non_null: Vec<_> = types.iter().filter(|t| **t != Type::Null).cloned().collect();
+                        if non_null.len() == 1 { non_null.into_iter().next().unwrap() }
+                        else if non_null.is_empty() { rt }
+                        else { Type::Union(non_null) }
+                    }
+                    Type::Null => rt,
+                    _ => lt,
+                }
+            }
+            Expr::NullSafeAccess(obj, field, _span) => {
+                let ot = self.infer_expr(obj);
+                // Result is T | Null
+                let field_type = if let Type::Record(ref name) = ot {
+                    if let Some(ti) = self.symbols.types.get(name) {
+                        if let crate::compiler::resolve::TypeInfoKind::Record(ref rd) = ti.kind {
+                            if let Some(f) = rd.fields.iter().find(|f| f.name == *field) {
+                                resolve_type_expr(&f.ty, self.symbols)
+                            } else { Type::Any }
+                        } else { Type::Any }
+                    } else { Type::Any }
+                } else { Type::Any };
+                Type::Union(vec![field_type, Type::Null])
+            }
+            Expr::NullAssert(inner, _) => {
+                let t = self.infer_expr(inner);
+                // Strip Null from union types
+                match t {
+                    Type::Union(ref types) => {
+                        let non_null: Vec<_> = types.iter().filter(|t| **t != Type::Null).cloned().collect();
+                        if non_null.len() == 1 { non_null.into_iter().next().unwrap() }
+                        else if non_null.is_empty() { Type::Any }
+                        else { Type::Union(non_null) }
+                    }
+                    _ => t,
+                }
+            }
+            Expr::SpreadExpr(inner, _) => { self.infer_expr(inner) }
+            Expr::IfExpr { cond, then_val, else_val, .. } => {
+                let ct = self.infer_expr(cond);
+                self.check_compat(&Type::Bool, &ct, cond.span().line);
+                let tt = self.infer_expr(then_val);
+                self.infer_expr(else_val);
+                tt
+            }
+            Expr::AwaitExpr(inner, _) => { self.infer_expr(inner) }
+            Expr::Comprehension { body, var, iter, condition, kind, span: _ } => {
+                let iter_type = self.infer_expr(iter);
+                let elem_type = match &iter_type {
+                    Type::List(inner) => *inner.clone(),
+                    Type::Set(inner) => *inner.clone(),
+                    _ => Type::Any,
+                };
+                self.locals.insert(var.clone(), elem_type);
+                if let Some(ref cond) = condition {
+                    let ct = self.infer_expr(cond);
+                    self.check_compat(&Type::Bool, &ct, cond.span().line);
+                }
+                let body_type = self.infer_expr(body);
+                match kind {
+                    ComprehensionKind::List => Type::List(Box::new(body_type)),
+                    ComprehensionKind::Set => Type::Set(Box::new(body_type)),
+                    ComprehensionKind::Map => Type::Any, // map comprehension needs key+value
+                }
+            }
         }
     }
 
     fn check_compat(&mut self, expected: &Type, actual: &Type, line: usize) {
         if *expected == Type::Any || *actual == Type::Any { return; }
-        // Enum variant type checking: if actual is Enum(T), matches Enum(T)
-        // This is handled by default equality.
-        
-        if expected != actual {
-            self.errors.push(TypeError::Mismatch {
-                expected: format!("{}", expected), actual: format!("{}", actual), line,
-            });
+        if expected == actual { return; }
+
+        // Union compatibility: actual is compatible if it matches any member of expected union
+        if let Type::Union(ref types) = expected {
+            if types.iter().any(|t| t == actual || *t == Type::Any) { return; }
         }
+        // actual is union: compatible if all members are compatible with expected
+        if let Type::Union(ref types) = actual {
+            if types.iter().any(|t| t == expected || *t == Type::Any) { return; }
+        }
+
+        // Null is compatible with T | Null unions
+        if *actual == Type::Null {
+            if let Type::Union(ref types) = expected {
+                if types.contains(&Type::Null) { return; }
+            }
+        }
+
+        // Result compatibility: Result[A, B] is compatible with Result[C, D] if A compat C, B compat D
+        // Generic type refs are compatible if the base name matches
+        if let (Type::TypeRef(n1, _), Type::TypeRef(n2, _)) = (expected, actual) {
+            if n1 == n2 { return; }
+        }
+
+        self.errors.push(TypeError::Mismatch {
+            expected: format!("{}", expected), actual: format!("{}", actual), line,
+        });
     }
 }
 

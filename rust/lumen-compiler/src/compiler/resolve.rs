@@ -22,6 +22,10 @@ pub struct SymbolTable {
     pub types: HashMap<String, TypeInfo>,
     pub cells: HashMap<String, CellInfo>,
     pub tools: HashMap<String, ToolInfo>,
+    pub type_aliases: HashMap<String, TypeExpr>,
+    pub traits: HashMap<String, TraitInfo>,
+    pub impls: Vec<ImplInfo>,
+    pub consts: HashMap<String, ConstInfo>,
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +52,25 @@ pub struct ToolInfo {
     pub mcp_url: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct TraitInfo {
+    pub name: String,
+    pub methods: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImplInfo {
+    pub trait_name: Option<String>,
+    pub target_type: String,
+    pub methods: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConstInfo {
+    pub name: String,
+    pub ty: Option<TypeExpr>,
+}
+
 impl SymbolTable {
     pub fn new() -> Self {
         let mut types = HashMap::new();
@@ -55,7 +78,11 @@ impl SymbolTable {
         for name in &["String", "Int", "Float", "Bool", "Bytes", "Json", "ValidationError"] {
             types.insert(name.to_string(), TypeInfo { kind: TypeInfoKind::Builtin });
         }
-        Self { types, cells: HashMap::new(), tools: HashMap::new() }
+        Self {
+            types, cells: HashMap::new(), tools: HashMap::new(),
+            type_aliases: HashMap::new(), traits: HashMap::new(),
+            impls: Vec::new(), consts: HashMap::new(),
+        }
     }
 }
 
@@ -97,6 +124,29 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                 });
             }
             Item::Grant(_) => {} // Grants reference tools, checked below
+            Item::TypeAlias(ta) => {
+                table.type_aliases.insert(ta.name.clone(), ta.type_expr.clone());
+            }
+            Item::Trait(t) => {
+                let methods: Vec<String> = t.methods.iter().map(|m| m.name.clone()).collect();
+                table.traits.insert(t.name.clone(), TraitInfo {
+                    name: t.name.clone(), methods,
+                });
+            }
+            Item::Impl(i) => {
+                let methods: Vec<String> = i.cells.iter().map(|m| m.name.clone()).collect();
+                table.impls.push(ImplInfo {
+                    trait_name: Some(i.trait_name.clone()),
+                    target_type: i.target_type.clone(),
+                    methods,
+                });
+            }
+            Item::ConstDecl(c) => {
+                table.consts.insert(c.name.clone(), ConstInfo {
+                    name: c.name.clone(), ty: c.type_ann.clone(),
+                });
+            }
+            Item::Import(_) | Item::MacroDecl(_) => {}
         }
     }
 
@@ -136,6 +186,18 @@ fn check_type_refs(ty: &TypeExpr, table: &SymbolTable, errors: &mut Vec<ResolveE
         TypeExpr::Result(ok, err, _) => { check_type_refs(ok, table, errors); check_type_refs(err, table, errors); }
         TypeExpr::Union(types, _) => { for t in types { check_type_refs(t, table, errors); } }
         TypeExpr::Null(_) => {}
+        TypeExpr::Tuple(types, _) => { for t in types { check_type_refs(t, table, errors); } }
+        TypeExpr::Set(inner, _) => check_type_refs(inner, table, errors),
+        TypeExpr::Fn(params, ret, _) => {
+            for t in params { check_type_refs(t, table, errors); }
+            check_type_refs(ret, table, errors);
+        }
+        TypeExpr::Generic(name, args, span) => {
+            if !table.types.contains_key(name) {
+                errors.push(ResolveError::UndefinedType { name: name.clone(), line: span.line });
+            }
+            for t in args { check_type_refs(t, table, errors); }
+        }
     }
 }
 

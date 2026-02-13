@@ -23,12 +23,6 @@ Completed work should be removed from this list and reflected in docs/changelog.
   - Compile declaration blocks into executable runtime structures.
   - Add policy/eval execution paths with deterministic diagnostics.
 
-## Effect and Capability System
-
-- [ ] Replace heuristic grant matching with explicit policy semantics.
-  - Define policy AST and evaluator for static/resolve-time checks.
-  - Replace remaining heuristic grant/effect matching in resolver.
-
 ## Runtime and Determinism
 
 - [ ] Add replay/checkpoint model for long-running workflows.

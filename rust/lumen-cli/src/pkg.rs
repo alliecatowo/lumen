@@ -14,6 +14,7 @@ fn green(s: &str) -> String {
 fn red(s: &str) -> String {
     format!("\x1b[31m{}\x1b[0m", s)
 }
+#[allow(dead_code)]
 fn yellow(s: &str) -> String {
     format!("\x1b[33m{}\x1b[0m", s)
 }
@@ -29,6 +30,7 @@ fn status_label(label: &str) -> String {
 
 /// A resolved dependency ready for compilation.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ResolvedDep {
     pub name: String,
     pub path: PathBuf,
@@ -147,7 +149,7 @@ pub fn cmd_pkg_build() {
 
     // Compile each dependency
     for dep in &deps {
-        println!("{} {} {}", status_label("Compiling"), bold(&dep.name), gray(&format!("(dependency)")));
+        println!("{} {} {}", status_label("Compiling"), bold(&dep.name), gray("(dependency)"));
         match compile_package_sources(&dep.path) {
             Ok(_count) => {},
             Err(e) => {
@@ -210,7 +212,7 @@ pub fn cmd_pkg_check() {
     let mut errors = 0;
 
     for dep in &deps {
-        println!("{} {} {}", status_label("Checking"), bold(&dep.name), gray(&format!("(dependency)")));
+        println!("{} {} {}", status_label("Checking"), bold(&dep.name), gray("(dependency)"));
         match compile_package_sources(&dep.path) {
             Ok(_count) => {},
             Err(e) => {

@@ -314,7 +314,7 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
     for cell in &mut lowerer.lambda_cells {
         patch_lambda_closure_indices(cell, lambda_base);
     }
-    module.cells.extend(lowerer.lambda_cells.drain(..));
+    module.cells.append(&mut lowerer.lambda_cells);
 
     // Collect string table
     module.strings = lowerer.strings;
@@ -2229,16 +2229,16 @@ impl<'a> Lowerer<'a> {
                 span: _,
             } => {
                 // Lower as: result = new_collection; for var in iter { if cond { add(result, body) } }
-                let dest = ra.alloc_temp();
+                // For sets, build as list first (Append only works on lists), then convert using ToSet intrinsic
+                let temp_reg = ra.alloc_temp();
+                let build_as_list = matches!(kind, ComprehensionKind::Set);
+
                 match kind {
-                    ComprehensionKind::List => {
-                        instrs.push(Instruction::abc(OpCode::NewList, dest, 0, 0));
-                    }
-                    ComprehensionKind::Set => {
-                        instrs.push(Instruction::abc(OpCode::NewSet, dest, 0, 0));
+                    ComprehensionKind::List | ComprehensionKind::Set => {
+                        instrs.push(Instruction::abc(OpCode::NewList, temp_reg, 0, 0));
                     }
                     ComprehensionKind::Map => {
-                        instrs.push(Instruction::abc(OpCode::NewMap, dest, 0, 0));
+                        instrs.push(Instruction::abc(OpCode::NewMap, temp_reg, 0, 0));
                     }
                 }
 
@@ -2287,8 +2287,8 @@ impl<'a> Lowerer<'a> {
                 let body_reg = self.lower_expr(body, ra, consts, instrs);
                 match kind {
                     ComprehensionKind::List | ComprehensionKind::Set => {
-                        // For list and set, append the body value
-                        instrs.push(Instruction::abc(OpCode::Append, dest, body_reg, 0));
+                        // Append to list (for both list and set)
+                        instrs.push(Instruction::abc(OpCode::Append, temp_reg, body_reg, 0));
                     }
                     ComprehensionKind::Map => {
                         // For map comprehension, body should be a tuple (key, value).
@@ -2307,7 +2307,7 @@ impl<'a> Lowerer<'a> {
                         let val_reg = ra.alloc_temp();
                         instrs.push(Instruction::abc(OpCode::GetIndex, val_reg, body_reg, one_k));
 
-                        instrs.push(Instruction::abc(OpCode::SetIndex, dest, key_reg, val_reg));
+                        instrs.push(Instruction::abc(OpCode::SetIndex, temp_reg, key_reg, val_reg));
                     }
                 }
 
@@ -2328,7 +2328,20 @@ impl<'a> Lowerer<'a> {
                 let after_loop = instrs.len();
                 instrs[break_jmp] =
                     Instruction::sax(OpCode::Jmp, (after_loop - break_jmp - 1) as i32);
-                dest
+
+                // For set comprehensions, convert the list to a set using ToSet intrinsic
+                if build_as_list {
+                    let dest = ra.alloc_temp();
+                    instrs.push(Instruction::abc(
+                        OpCode::Intrinsic,
+                        dest,
+                        IntrinsicId::ToSet as u8,
+                        temp_reg,
+                    ));
+                    dest
+                } else {
+                    temp_reg
+                }
             }
             Expr::MatchExpr { subject, arms, .. } => {
                 let subj_reg = self.lower_expr(subject, ra, consts, instrs);

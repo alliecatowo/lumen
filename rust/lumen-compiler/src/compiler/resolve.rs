@@ -253,6 +253,12 @@ pub struct GrantPolicy {
     pub allowed_effects: Option<BTreeSet<String>>,
 }
 
+impl Default for SymbolTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SymbolTable {
     pub fn new() -> Self {
         let mut types = HashMap::new();
@@ -316,47 +322,48 @@ pub fn resolve_with_base(program: &Program, mut table: SymbolTable) -> Result<Sy
 
     // First pass: register all type and cell definitions
     for item in &program.items {
+        use std::collections::hash_map::Entry;
         match item {
             Item::Record(r) => {
-                if table.types.contains_key(&r.name) {
-                    errors.push(ResolveError::Duplicate {
-                        name: r.name.clone(),
-                        line: r.span.line,
-                    });
-                } else {
-                    table.types.insert(
-                        r.name.clone(),
-                        TypeInfo {
+                match table.types.entry(r.name.clone()) {
+                    Entry::Occupied(_) => {
+                        errors.push(ResolveError::Duplicate {
+                            name: r.name.clone(),
+                            line: r.span.line,
+                        });
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(TypeInfo {
                             kind: TypeInfoKind::Record(r.clone()),
-                        },
-                    );
+                        });
+                    }
                 }
             }
             Item::Enum(e) => {
-                if table.types.contains_key(&e.name) {
-                    errors.push(ResolveError::Duplicate {
-                        name: e.name.clone(),
-                        line: e.span.line,
-                    });
-                } else {
-                    table.types.insert(
-                        e.name.clone(),
-                        TypeInfo {
+                match table.types.entry(e.name.clone()) {
+                    Entry::Occupied(_) => {
+                        errors.push(ResolveError::Duplicate {
+                            name: e.name.clone(),
+                            line: e.span.line,
+                        });
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(TypeInfo {
                             kind: TypeInfoKind::Enum(e.clone()),
-                        },
-                    );
+                        });
+                    }
                 }
             }
             Item::Cell(c) => {
-                if table.cells.contains_key(&c.name) {
-                    errors.push(ResolveError::Duplicate {
-                        name: c.name.clone(),
-                        line: c.span.line,
-                    });
-                } else {
-                    table.cells.insert(
-                        c.name.clone(),
-                        CellInfo {
+                match table.cells.entry(c.name.clone()) {
+                    Entry::Occupied(_) => {
+                        errors.push(ResolveError::Duplicate {
+                            name: c.name.clone(),
+                            line: c.span.line,
+                        });
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(CellInfo {
                             params: c
                                 .params
                                 .iter()
@@ -364,24 +371,24 @@ pub fn resolve_with_base(program: &Program, mut table: SymbolTable) -> Result<Sy
                                 .collect(),
                             return_type: c.return_type.clone(),
                             effects: c.effects.clone(),
-                        },
-                    );
+                        });
+                    }
                 }
             }
             Item::Agent(a) => {
-                if table.agents.contains_key(&a.name) {
-                    errors.push(ResolveError::Duplicate {
-                        name: a.name.clone(),
-                        line: a.span.line,
-                    });
-                } else {
-                    table.agents.insert(
-                        a.name.clone(),
-                        AgentInfo {
+                match table.agents.entry(a.name.clone()) {
+                    Entry::Occupied(_) => {
+                        errors.push(ResolveError::Duplicate {
+                            name: a.name.clone(),
+                            line: a.span.line,
+                        });
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(AgentInfo {
                             name: a.name.clone(),
                             methods: a.cells.iter().map(|c| c.name.clone()).collect(),
-                        },
-                    );
+                        });
+                    }
                 }
 
                 if !table.types.contains_key(&a.name) {
@@ -412,15 +419,15 @@ pub fn resolve_with_base(program: &Program, mut table: SymbolTable) -> Result<Sy
 
                 for cell in &a.cells {
                     let method_name = format!("{}.{}", a.name, cell.name);
-                    if table.cells.contains_key(&method_name) {
-                        errors.push(ResolveError::Duplicate {
-                            name: method_name.clone(),
-                            line: cell.span.line,
-                        });
-                    } else {
-                        table.cells.insert(
-                            method_name,
-                            CellInfo {
+                    match table.cells.entry(method_name.clone()) {
+                        Entry::Occupied(_) => {
+                            errors.push(ResolveError::Duplicate {
+                                name: method_name,
+                                line: cell.span.line,
+                            });
+                        }
+                        Entry::Vacant(entry) => {
+                            entry.insert(CellInfo {
                                 params: cell
                                     .params
                                     .iter()
@@ -428,8 +435,8 @@ pub fn resolve_with_base(program: &Program, mut table: SymbolTable) -> Result<Sy
                                     .collect(),
                                 return_type: cell.return_type.clone(),
                                 effects: cell.effects.clone(),
-                            },
-                        );
+                            });
+                        }
                     }
                 }
 
@@ -442,38 +449,39 @@ pub fn resolve_with_base(program: &Program, mut table: SymbolTable) -> Result<Sy
             }
             Item::Process(p) => {
                 let process_key = format!("{}:{}", p.kind, p.name);
-                if table.processes.contains_key(&process_key) {
-                    errors.push(ResolveError::Duplicate {
-                        name: p.name.clone(),
-                        line: p.span.line,
-                    });
+                match table.processes.entry(process_key) {
+                    Entry::Occupied(_) => {
+                        errors.push(ResolveError::Duplicate {
+                            name: p.name.clone(),
+                            line: p.span.line,
+                        });
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(ProcessInfo {
+                            kind: p.kind.clone(),
+                            name: p.name.clone(),
+                            methods: p.cells.iter().map(|c| c.name.clone()).collect(),
+                            pipeline_stages: p.pipeline_stages.clone(),
+                            machine_initial: p.machine_initial.clone(),
+                            machine_states: p
+                                .machine_states
+                                .iter()
+                                .map(|s| MachineStateInfo {
+                                    name: s.name.clone(),
+                                    params: s
+                                        .params
+                                        .iter()
+                                        .map(|p| (p.name.clone(), p.ty.clone()))
+                                        .collect(),
+                                    terminal: s.terminal,
+                                    guard: s.guard.clone(),
+                                    transition_to: s.transition_to.clone(),
+                                    transition_args: s.transition_args.clone(),
+                                })
+                                .collect(),
+                        });
+                    }
                 }
-                table.processes.insert(
-                    process_key,
-                    ProcessInfo {
-                        kind: p.kind.clone(),
-                        name: p.name.clone(),
-                        methods: p.cells.iter().map(|c| c.name.clone()).collect(),
-                        pipeline_stages: p.pipeline_stages.clone(),
-                        machine_initial: p.machine_initial.clone(),
-                        machine_states: p
-                            .machine_states
-                            .iter()
-                            .map(|s| MachineStateInfo {
-                                name: s.name.clone(),
-                                params: s
-                                    .params
-                                    .iter()
-                                    .map(|p| (p.name.clone(), p.ty.clone()))
-                                    .collect(),
-                                terminal: s.terminal,
-                                guard: s.guard.clone(),
-                                transition_to: s.transition_to.clone(),
-                                transition_args: s.transition_args.clone(),
-                            })
-                            .collect(),
-                    },
-                );
                 if !table.types.contains_key(&p.name) {
                     table.types.insert(
                         p.name.clone(),
@@ -518,19 +526,20 @@ pub fn resolve_with_base(program: &Program, mut table: SymbolTable) -> Result<Sy
                 }
             }
             Item::Effect(e) => {
-                if table.effects.contains_key(&e.name) {
-                    errors.push(ResolveError::Duplicate {
-                        name: e.name.clone(),
-                        line: e.span.line,
-                    });
+                match table.effects.entry(e.name.clone()) {
+                    Entry::Occupied(_) => {
+                        errors.push(ResolveError::Duplicate {
+                            name: e.name.clone(),
+                            line: e.span.line,
+                        });
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(EffectInfo {
+                            name: e.name.clone(),
+                            operations: e.operations.iter().map(|c| c.name.clone()).collect(),
+                        });
+                    }
                 }
-                table.effects.insert(
-                    e.name.clone(),
-                    EffectInfo {
-                        name: e.name.clone(),
-                        operations: e.operations.iter().map(|c| c.name.clone()).collect(),
-                    },
-                );
                 for op in &e.operations {
                     let fq_name = format!("{}.{}", e.name, op.name);
                     table.cells.entry(fq_name).or_insert(CellInfo {
@@ -555,19 +564,20 @@ pub fn resolve_with_base(program: &Program, mut table: SymbolTable) -> Result<Sy
                 });
             }
             Item::Handler(h) => {
-                if table.handlers.contains_key(&h.name) {
-                    errors.push(ResolveError::Duplicate {
-                        name: h.name.clone(),
-                        line: h.span.line,
-                    });
+                match table.handlers.entry(h.name.clone()) {
+                    Entry::Occupied(_) => {
+                        errors.push(ResolveError::Duplicate {
+                            name: h.name.clone(),
+                            line: h.span.line,
+                        });
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(HandlerInfo {
+                            name: h.name.clone(),
+                            handles: h.handles.iter().map(|c| c.name.clone()).collect(),
+                        });
+                    }
                 }
-                table.handlers.insert(
-                    h.name.clone(),
-                    HandlerInfo {
-                        name: h.name.clone(),
-                        handles: h.handles.iter().map(|c| c.name.clone()).collect(),
-                    },
-                );
                 for handle in &h.handles {
                     let fq_name = format!("{}.{}", h.name, handle.name);
                     table.cells.entry(fq_name).or_insert(CellInfo {
@@ -598,31 +608,34 @@ pub fn resolve_with_base(program: &Program, mut table: SymbolTable) -> Result<Sy
             }
             Item::Grant(_) => {} // Grants reference tools, checked below
             Item::TypeAlias(ta) => {
-                if table.type_aliases.contains_key(&ta.name) {
-                    errors.push(ResolveError::Duplicate {
-                        name: ta.name.clone(),
-                        line: ta.span.line,
-                    });
+                match table.type_aliases.entry(ta.name.clone()) {
+                    Entry::Occupied(_) => {
+                        errors.push(ResolveError::Duplicate {
+                            name: ta.name.clone(),
+                            line: ta.span.line,
+                        });
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(ta.type_expr.clone());
+                    }
                 }
-                table
-                    .type_aliases
-                    .insert(ta.name.clone(), ta.type_expr.clone());
             }
             Item::Trait(t) => {
-                if table.traits.contains_key(&t.name) {
-                    errors.push(ResolveError::Duplicate {
-                        name: t.name.clone(),
-                        line: t.span.line,
-                    });
-                }
                 let methods: Vec<String> = t.methods.iter().map(|m| m.name.clone()).collect();
-                table.traits.insert(
-                    t.name.clone(),
-                    TraitInfo {
-                        name: t.name.clone(),
-                        methods,
-                    },
-                );
+                match table.traits.entry(t.name.clone()) {
+                    Entry::Occupied(_) => {
+                        errors.push(ResolveError::Duplicate {
+                            name: t.name.clone(),
+                            line: t.span.line,
+                        });
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(TraitInfo {
+                            name: t.name.clone(),
+                            methods,
+                        });
+                    }
+                }
             }
             Item::Impl(i) => {
                 let methods: Vec<String> = i.cells.iter().map(|m| m.name.clone()).collect();

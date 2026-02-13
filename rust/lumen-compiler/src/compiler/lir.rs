@@ -174,6 +174,7 @@ pub enum IntrinsicId {
     Clone = 66,
     Sizeof = 67,
     Debug = 68,
+    ToSet = 69,
 }
 
 /// A 32-bit instruction

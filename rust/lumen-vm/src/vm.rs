@@ -1768,7 +1768,7 @@ impl VM {
                 let key = args
                     .get(1)
                     .map(|v| v.as_string())
-                    .unwrap_or_else(String::new);
+                    .unwrap_or_default();
                 Ok(store.kv.get(&key).cloned().unwrap_or(Value::Null))
             }
             "query" => {
@@ -2004,13 +2004,11 @@ impl VM {
                         .get(&state.current_state)
                         .map(|s| s.terminal)
                         .unwrap_or(false);
+                } else if state.steps >= 1 {
+                    state.terminal = true;
+                    state.current_state = "terminal".to_string();
                 } else {
-                    if state.steps >= 1 {
-                        state.terminal = true;
-                        state.current_state = "terminal".to_string();
-                    } else {
-                        state.current_state = format!("step_{}", state.steps);
-                    }
+                    state.current_state = format!("step_{}", state.steps);
                 }
                 Ok(Self::machine_state_value(owner, state))
             }
@@ -2611,7 +2609,7 @@ impl VM {
                 let pad_char = pad.chars().next().unwrap_or(' ');
                 if s.len() < width {
                     let padding: String =
-                        std::iter::repeat(pad_char).take(width - s.len()).collect();
+                        std::iter::repeat_n(pad_char, width - s.len()).collect();
                     Ok(Value::String(StringRef::Owned(format!("{}{}", padding, s))))
                 } else {
                     Ok(Value::String(StringRef::Owned(s)))
@@ -2628,7 +2626,7 @@ impl VM {
                 let pad_char = pad.chars().next().unwrap_or(' ');
                 if s.len() < width {
                     let padding: String =
-                        std::iter::repeat(pad_char).take(width - s.len()).collect();
+                        std::iter::repeat_n(pad_char, width - s.len()).collect();
                     Ok(Value::String(StringRef::Owned(format!("{}{}", s, padding))))
                 } else {
                     Ok(Value::String(StringRef::Owned(s)))
@@ -2785,7 +2783,7 @@ impl VM {
             }
             "hex_decode" => {
                 let s = self.registers[base + a + 1].as_string();
-                if s.len() % 2 != 0 {
+                if !s.len().is_multiple_of(2) {
                     return Ok(Value::Null);
                 }
                 let bytes: Vec<u8> = (0..s.len())
@@ -2894,7 +2892,7 @@ impl VM {
             "camel_case" => {
                 let s = self.registers[base + a + 1].as_string();
                 let result: String = s
-                    .split(|c: char| c == '_' || c == ' ' || c == '-')
+                    .split(['_', ' ', '-'])
                     .enumerate()
                     .map(|(i, word)| {
                         if i == 0 {
@@ -3044,7 +3042,7 @@ impl VM {
                 if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
                     let mut result = Vec::with_capacity(l.len());
                     for item in &l {
-                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
                         result.push(val);
                     }
                     Ok(Value::List(result))
@@ -3058,7 +3056,7 @@ impl VM {
                 if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
                     let mut result = Vec::new();
                     for item in &l {
-                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
                         if val.is_truthy() {
                             result.push(item.clone());
                         }
@@ -3088,7 +3086,7 @@ impl VM {
                 if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
                     let mut result = Vec::new();
                     for item in &l {
-                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
                         if let Value::List(inner) = val {
                             result.extend(inner);
                         } else {
@@ -3105,7 +3103,7 @@ impl VM {
                 let closure_val = self.registers[base + a + 2].clone();
                 if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
                     for item in &l {
-                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
                         if val.is_truthy() {
                             return Ok(Value::Bool(true));
                         }
@@ -3120,7 +3118,7 @@ impl VM {
                 let closure_val = self.registers[base + a + 2].clone();
                 if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
                     for item in &l {
-                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
                         if !val.is_truthy() {
                             return Ok(Value::Bool(false));
                         }
@@ -3135,7 +3133,7 @@ impl VM {
                 let closure_val = self.registers[base + a + 2].clone();
                 if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
                     for item in &l {
-                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
                         if val.is_truthy() {
                             return Ok(item.clone());
                         }
@@ -3150,7 +3148,7 @@ impl VM {
                 let closure_val = self.registers[base + a + 2].clone();
                 if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
                     for (i, item) in l.iter().enumerate() {
-                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
                         if val.is_truthy() {
                             return Ok(Value::Int(i as i64));
                         }
@@ -3166,7 +3164,7 @@ impl VM {
                 if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
                     let mut groups: BTreeMap<String, Value> = BTreeMap::new();
                     for item in &l {
-                        let key = self.call_closure_sync(&cv, &[item.clone()])?;
+                        let key = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
                         let key_str = key.as_string();
                         match groups.get_mut(&key_str) {
                             Some(Value::List(ref mut list)) => list.push(item.clone()),
@@ -3543,7 +3541,7 @@ impl VM {
                 if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
                     let mut result = Vec::with_capacity(l.len());
                     for item in &l {
-                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
                         result.push(val);
                     }
                     Ok(Value::List(result))
@@ -3557,7 +3555,7 @@ impl VM {
                 if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
                     let mut result = Vec::new();
                     for item in &l {
-                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
                         if val.is_truthy() {
                             result.push(item.clone());
                         }
@@ -3587,7 +3585,7 @@ impl VM {
                 if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
                     let mut result = Vec::new();
                     for item in &l {
-                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
                         if let Value::List(inner) = val {
                             result.extend(inner);
                         } else {
@@ -3631,7 +3629,7 @@ impl VM {
                 let closure_val = self.registers[base + arg_reg + 1].clone();
                 if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
                     for item in &l {
-                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
                         if val.is_truthy() {
                             return Ok(Value::Bool(true));
                         }
@@ -3646,7 +3644,7 @@ impl VM {
                 let closure_val = self.registers[base + arg_reg + 1].clone();
                 if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
                     for item in &l {
-                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
                         if !val.is_truthy() {
                             return Ok(Value::Bool(false));
                         }
@@ -3661,7 +3659,7 @@ impl VM {
                 let closure_val = self.registers[base + arg_reg + 1].clone();
                 if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
                     for item in &l {
-                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
                         if val.is_truthy() {
                             return Ok(item.clone());
                         }
@@ -3676,7 +3674,7 @@ impl VM {
                 let closure_val = self.registers[base + arg_reg + 1].clone();
                 if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
                     for (i, item) in l.iter().enumerate() {
-                        let val = self.call_closure_sync(&cv, &[item.clone()])?;
+                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
                         if val.is_truthy() {
                             return Ok(Value::Int(i as i64));
                         }
@@ -3692,7 +3690,7 @@ impl VM {
                 if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
                     let mut groups: BTreeMap<String, Value> = BTreeMap::new();
                     for item in &l {
-                        let key = self.call_closure_sync(&cv, &[item.clone()])?;
+                        let key = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
                         let key_str = key.as_string();
                         match groups.get_mut(&key_str) {
                             Some(Value::List(ref mut list)) => list.push(item.clone()),
@@ -3925,6 +3923,22 @@ impl VM {
                 self.output.push(output);
                 Ok(Value::Null)
             }
+            69 => {
+                // TOSET - convert list to set (deduplicating elements)
+                Ok(match arg {
+                    Value::List(l) => {
+                        let mut set_elems = Vec::with_capacity(l.len());
+                        for elem in l {
+                            if !set_elems.contains(elem) {
+                                set_elems.push(elem.clone());
+                            }
+                        }
+                        Value::Set(set_elems)
+                    }
+                    Value::Set(_) => arg.clone(), // already a set
+                    _ => Value::Set(vec![]), // empty set for other types
+                })
+            }
             _ => Ok(Value::Null),
         }
     }
@@ -4113,9 +4127,9 @@ impl VM {
             (Value::Int(x), Value::Float(y)) => Value::Float(float_op(*x as f64, *y)),
             (Value::Float(x), Value::Int(y)) => Value::Float(float_op(*x, *y as f64)),
             _ => {
-                return Err(VmError::TypeError(format!(
-                    "arithmetic on non-numeric types"
-                )))
+                return Err(VmError::TypeError(
+                    "arithmetic on non-numeric types".to_string()
+                ))
             }
         };
         Ok(())

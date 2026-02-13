@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Deserialize, Default, Clone)]
+#[allow(dead_code)]
 pub struct LumenConfig {
     #[serde(default)]
     pub providers: ProviderSection,
@@ -18,6 +19,7 @@ pub struct LumenConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[allow(dead_code)]
 pub struct PackageInfo {
     pub name: String,
     pub version: Option<String>,
@@ -33,6 +35,7 @@ pub enum DependencySpec {
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
+#[allow(dead_code)]
 pub struct ProviderSection {
     /// Tool name -> provider type mapping (e.g., "llm.chat" = "openai-compatible")
     #[serde(flatten)]
@@ -48,6 +51,7 @@ pub struct ProviderSection {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[allow(dead_code)]
 pub struct ProviderConfig {
     pub base_url: Option<String>,
     pub api_key_env: Option<String>,
@@ -58,6 +62,7 @@ pub struct ProviderConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[allow(dead_code)]
 pub struct McpConfig {
     pub uri: String,
     #[serde(default)]
@@ -110,6 +115,7 @@ impl LumenConfig {
     }
 
     /// Parse a TOML string directly (useful for testing and embedding).
+    #[allow(dead_code)]
     pub fn from_str(s: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(s)
     }

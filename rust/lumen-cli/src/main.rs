@@ -6,7 +6,7 @@ mod pkg;
 mod repl;
 
 use clap::{Parser as ClapParser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // ANSI color helpers
 fn green(s: &str) -> String {
@@ -265,7 +265,7 @@ fn cmd_emit(file: &PathBuf, output: Option<PathBuf>) {
     }
 }
 
-fn cmd_trace_show(run_id: &str, trace_dir: &PathBuf) {
+fn cmd_trace_show(run_id: &str, trace_dir: &Path) {
     let path = trace_dir.join(format!("{}.jsonl", run_id));
     match std::fs::read_to_string(&path) {
         Ok(content) => {

@@ -397,7 +397,7 @@ impl Lexer {
         trimmed.to_string()
     }
 
-    fn dedent_interp_segments(&self, segments: &mut Vec<(bool, String)>) {
+    fn dedent_interp_segments(&self, segments: &mut [(bool, String)]) {
         // Apply dedent to text-only segments
         for seg in segments.iter_mut() {
             if !seg.0 {
@@ -761,7 +761,7 @@ impl Lexer {
         self.advance(); // skip o
         let mut oct = String::new();
         while let Some(ch) = self.current() {
-            if ch >= '0' && ch <= '7' {
+            if ('0'..='7').contains(&ch) {
                 oct.push(ch);
                 self.advance();
             } else if ch == '_' {

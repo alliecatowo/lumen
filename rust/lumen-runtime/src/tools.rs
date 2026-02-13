@@ -53,15 +53,14 @@ pub trait ToolDispatcher: Send + Sync {
 }
 
 /// Stub tool dispatcher for testing (returns configured responses).
+#[derive(Default)]
 pub struct StubDispatcher {
     responses: HashMap<String, serde_json::Value>,
 }
 
 impl StubDispatcher {
     pub fn new() -> Self {
-        Self {
-            responses: HashMap::new(),
-        }
+        Self::default()
     }
 
     pub fn set_response(&mut self, tool_id: &str, response: serde_json::Value) {

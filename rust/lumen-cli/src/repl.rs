@@ -78,10 +78,12 @@ pub fn run_repl() {
                     continue;
                 }
                 _ if trimmed.starts_with(":type ") || trimmed.starts_with(":t ") => {
-                    let expr = if trimmed.starts_with(":type ") {
-                        &trimmed[6..]
+                    let expr = if let Some(stripped) = trimmed.strip_prefix(":type ") {
+                        stripped
+                    } else if let Some(stripped) = trimmed.strip_prefix(":t ") {
+                        stripped
                     } else {
-                        &trimmed[3..]
+                        unreachable!()
                     };
                     cmd_type(expr);
                     continue;

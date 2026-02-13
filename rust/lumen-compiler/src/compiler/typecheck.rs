@@ -645,34 +645,20 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         Type::Any
                     }
-                } else if self.symbols.cells.contains_key(name) {
-                    Type::Any
                 }
-                // cell ref
-                else if self.symbols.tools.contains_key(name) {
-                    Type::Any
-                }
-                // tool ref
-                else if self.symbols.agents.contains_key(name) {
-                    Type::Any
-                }
-                // agent constructor ref
-                else if self
-                    .symbols
-                    .addons
-                    .iter()
-                    .any(|a| a.name.as_deref() == Some(name.as_str()))
-                {
-                    Type::Any
-                }
-                // addendum decl refs (handlers, guardrails, etc.)
-                else if self.symbols.types.contains_key(name)
+                // cell ref, tool ref, agent constructor ref, addendum decl refs, type/value references, built-in
+                else if self.symbols.cells.contains_key(name)
+                    || self.symbols.tools.contains_key(name)
+                    || self.symbols.agents.contains_key(name)
+                    || self
+                        .symbols
+                        .addons
+                        .iter()
+                        .any(|a| a.name.as_deref() == Some(name.as_str()))
+                    || self.symbols.types.contains_key(name)
                     || self.symbols.type_aliases.contains_key(name)
+                    || is_builtin_function(name)
                 {
-                    Type::Any
-                }
-                // type/value references in spec snippets
-                else if is_builtin_function(name) {
                     Type::Any
                 }
                 // built-in

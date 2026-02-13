@@ -1,0 +1,19 @@
+# Lumen Configuration
+# See https://lumen-lang.org/docs/config for details
+
+# Map tool names to provider implementations
+[providers]
+# "llm.chat" = "openai-compatible"
+# "http.get" = "builtin-http"
+# "http.post" = "builtin-http"
+
+# Provider-specific configuration
+# [providers.config.openai-compatible]
+# base_url = "https://api.openai.com/v1"
+# api_key_env = "OPENAI_API_KEY"
+# default_model = "gpt-4"
+
+# MCP server bridges (every MCP server = automatic Lumen tools)
+# [providers.mcp.github]
+# uri = "npx -y @modelcontextprotocol/server-github"
+# tools = ["github.create_issue", "github.search_repos"]

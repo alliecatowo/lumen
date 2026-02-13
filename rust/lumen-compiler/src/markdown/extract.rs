@@ -67,9 +67,9 @@ pub fn extract_blocks(source: &str) -> ExtractResult {
                     code_start_line = line_num + 1;
                     code_start_offset = byte_offset + line.len() + 1; // +1 for newline
                 }
-            } else if trimmed.starts_with('@') {
+            } else if let Some(stripped) = trimmed.strip_prefix('@') {
                 // Parse directive
-                let directive_text = trimmed[1..].trim();
+                let directive_text = stripped.trim();
                 let (name, value) =
                     if let Some(space_idx) = directive_text.find(|c: char| c.is_whitespace()) {
                         let n = directive_text[..space_idx].to_string();

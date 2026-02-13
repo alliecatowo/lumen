@@ -10,6 +10,12 @@ pub struct RegAlloc {
     bindings: HashMap<String, u8>,
 }
 
+impl Default for RegAlloc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RegAlloc {
     pub fn new() -> Self {
         Self {

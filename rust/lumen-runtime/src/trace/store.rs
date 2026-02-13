@@ -38,7 +38,7 @@ impl TraceStore {
         self.prev_hash = "sha256:genesis".to_string();
 
         let path = self.trace_dir.join(format!("{}.jsonl", &run_id));
-        self.current_file = OpenOptions::new().create(true).write(true).open(path).ok();
+        self.current_file = OpenOptions::new().create(true).truncate(true).write(true).open(path).ok();
 
         self.emit_event(TraceEventKind::RunStart, None, None);
         run_id

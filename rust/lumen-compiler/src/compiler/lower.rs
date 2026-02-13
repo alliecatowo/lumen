@@ -160,7 +160,15 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
         }
     }
 
-    // Collect lambda cells
+    // Lambda cells are appended after top-level cells. Patch closure opcodes
+    // to absolute module cell indices before we append.
+    let lambda_base = module.cells.len() as u16;
+    for cell in &mut module.cells {
+        patch_lambda_closure_indices(cell, lambda_base);
+    }
+    for cell in &mut lowerer.lambda_cells {
+        patch_lambda_closure_indices(cell, lambda_base);
+    }
     module.cells.extend(lowerer.lambda_cells.drain(..));
 
     // Collect string table
@@ -1927,12 +1935,7 @@ impl<'a> Lowerer<'a> {
                 }
 
                 let body_reg = self.lower_expr(body, ra, consts, instrs);
-                instrs.push(Instruction::abc(
-                    OpCode::Intrinsic,
-                    dest,
-                    IntrinsicId::Append as u8,
-                    body_reg,
-                ));
+                instrs.push(Instruction::abc(OpCode::Append, dest, body_reg, 0));
 
                 if let Some(cj) = cond_jmp {
                     let after_body = instrs.len();
@@ -2053,6 +2056,15 @@ fn format_type_expr(ty: &TypeExpr) -> String {
         TypeExpr::Generic(name, args, _) => {
             let as_: Vec<_> = args.iter().map(format_type_expr).collect();
             format!("{}[{}]", name, as_.join(", "))
+        }
+    }
+}
+
+fn patch_lambda_closure_indices(cell: &mut LirCell, lambda_base: u16) {
+    for instr in &mut cell.instructions {
+        if instr.op == OpCode::Closure {
+            let patched = instr.bx().saturating_add(lambda_base);
+            *instr = Instruction::abx(OpCode::Closure, instr.a, patched);
         }
     }
 }

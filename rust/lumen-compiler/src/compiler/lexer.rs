@@ -58,6 +58,21 @@ impl Lexer {
         self.source.get(self.pos + 2).copied()
     }
 
+    fn looks_like_interpolation_start(&self) -> bool {
+        let mut i = self.pos + 1; // after '{'
+        while let Some(ch) = self.source.get(i).copied() {
+            if ch.is_whitespace() {
+                i += 1;
+                continue;
+            }
+            return matches!(
+                ch,
+                'a'..='z' | 'A'..='Z' | '_' | '(' | '[' | '-' | '0'..='9'
+            );
+        }
+        false
+    }
+
     fn advance(&mut self) -> Option<char> {
         let ch = self.source.get(self.pos).copied()?;
         self.pos += 1;
@@ -277,7 +292,7 @@ impl Lexer {
                     self.advance();
                     self.process_escape(&mut cur_segment, sl, sc)?;
                 }
-                Some('{') => {
+                Some('{') if self.looks_like_interpolation_start() => {
                     is_interp = true;
                     if !cur_segment.is_empty() {
                         segments.push((false, cur_segment.clone()));
@@ -321,6 +336,10 @@ impl Lexer {
                     }
                     self.advance(); // skip }
                     segments.push((true, expr_str.trim().to_string()));
+                }
+                Some('{') => {
+                    cur_segment.push('{');
+                    self.advance();
                 }
                 Some(c) => {
                     cur_segment.push(c);
@@ -538,7 +557,7 @@ impl Lexer {
                     self.advance();
                     self.process_escape(&mut cur_segment, sl, sc)?;
                 }
-                Some('{') => {
+                Some('{') if self.looks_like_interpolation_start() => {
                     // Start of interpolation
                     is_interp = true;
                     if !cur_segment.is_empty() {
@@ -585,6 +604,10 @@ impl Lexer {
                     }
                     self.advance(); // skip }
                     segments.push((true, expr_str.trim().to_string()));
+                }
+                Some('{') => {
+                    cur_segment.push('{');
+                    self.advance();
                 }
                 Some('"') => {
                     self.advance();

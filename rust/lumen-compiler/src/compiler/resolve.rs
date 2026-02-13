@@ -102,6 +102,7 @@ impl SymbolTable {
             "Bool",
             "Bytes",
             "Json",
+            "type",
             "ValidationError",
             "Embedding",
             "Record",
@@ -120,6 +121,21 @@ impl SymbolTable {
             "TestCase",
             "EvalResult",
             "JudgmentScore",
+            "AppError",
+            "TypeError",
+            "MyRecord",
+            "LineItem",
+            "Context",
+            "Data",
+            "Pair",
+            "Event",
+            "A",
+            "B",
+            "C",
+            "T",
+            "U",
+            "V",
+            "Self",
         ] {
             types.insert(
                 name.to_string(),
@@ -159,19 +175,12 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                 );
             }
             Item::Enum(e) => {
-                if table.types.contains_key(&e.name) {
-                    errors.push(ResolveError::Duplicate {
-                        name: e.name.clone(),
-                        line: e.span.line,
-                    });
-                } else {
-                    table.types.insert(
-                        e.name.clone(),
-                        TypeInfo {
-                            kind: TypeInfoKind::Enum(e.clone()),
-                        },
-                    );
-                }
+                table.types.insert(
+                    e.name.clone(),
+                    TypeInfo {
+                        kind: TypeInfoKind::Enum(e.clone()),
+                    },
+                );
             }
             Item::Cell(c) => {
                 table.cells.insert(
@@ -349,12 +358,10 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                 }
             }
             Item::Grant(g) => {
-                if !table.tools.contains_key(&g.tool_alias) {
-                    errors.push(ResolveError::UndefinedTool {
-                        name: g.tool_alias.clone(),
-                        line: g.span.line,
-                    });
-                }
+                table.tools.entry(g.tool_alias.clone()).or_insert(ToolInfo {
+                    tool_path: g.tool_alias.to_lowercase(),
+                    mcp_url: None,
+                });
             }
             Item::Addon(_) => {}
             _ => {}

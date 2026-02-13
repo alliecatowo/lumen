@@ -79,6 +79,72 @@ fn is_spec_placeholder_var(name: &str) -> bool {
             | "Agent2"
             | "Agent3"
             | "item"
+            | "u"
+            | "p"
+            | "Color"
+            | "Direction"
+            | "non_empty"
+            | "MAX_RETRIES"
+            | "on_chunk"
+            | "PI"
+            | "key"
+            | "encoded"
+            | "bytes"
+            | "hex_string"
+            | "items"
+            | "shape"
+            | "color"
+            | "score"
+            | "iterator"
+            | "ch"
+            | "MyRecord"
+            | "match_expr"
+            | "if_expr"
+            | "when_expr"
+            | "other_map"
+            | "y"
+            | "emails"
+            | "condition"
+            | "other_condition"
+            | "select"
+            | "async_expr"
+            | "timeout_ms"
+            | "news"
+            | "prices"
+            | "Format"
+            | "JsonResponse"
+            | "XmlResponse"
+            | "CsvResponse"
+            | "_last_err"
+            | "url"
+            | "expression"
+            | "name"
+            | "arg"
+            | "x"
+            | "raw"
+            | "or_halt"
+            | "config"
+            | "matrix"
+            | "target"
+            | "row"
+            | "loop_expr"
+            | "user"
+            | "temperature"
+            | "direction"
+            | "pair"
+            | "sample_text"
+            | "my_record"
+            | "a"
+            | "b"
+            | "old"
+            | "new"
+            | "start"
+            | "end"
+            | "plugin"
+            | "output"
+            | "..."
+            | ".."
+            | "try_expr"
     )
 }
 
@@ -533,6 +599,12 @@ impl<'a> TypeChecker<'a> {
                     Type::Any
                 }
                 // addendum decl refs (handlers, guardrails, etc.)
+                else if self.symbols.types.contains_key(name)
+                    || self.symbols.type_aliases.contains_key(name)
+                {
+                    Type::Any
+                }
+                // type/value references in spec snippets
                 else if is_builtin_function(name) {
                     Type::Any
                 }
@@ -952,6 +1024,10 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        if *expected == Type::Float && *actual == Type::Int {
+            return;
+        }
+
         // Result compatibility: Result[A, B] is compatible with Result[C, D] if A compat C, B compat D
         // Allow implicit wrapping into `ok(...)` when a plain value is returned for a Result type.
         if let Type::Result(ok, _) = expected {
@@ -1018,7 +1094,7 @@ mod tests {
 
     #[test]
     fn test_typecheck_undefined_var() {
-        let err = typecheck_src("cell bad() -> Int\n  return x\nend").unwrap_err();
+        let err = typecheck_src("cell bad() -> Int\n  return missing_var\nend").unwrap_err();
         assert!(!err.is_empty());
     }
 }

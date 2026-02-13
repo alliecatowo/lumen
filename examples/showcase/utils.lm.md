@@ -1,66 +1,44 @@
-# Task Utilities
+# Showcase Utilities
 
-Helper functions for task manipulation.
+Utility-facing types and helper cells used by the showcase.
 
 ```lumen
-import models.{Task, TaskId, Priority, TaskStatus}
+type SectionTitle = String
 
-# Convert priority to string representation
-cell priority_to_string(p: Priority) -> string
-  match p
-    | Priority::Low => "low"
-    | Priority::Medium => "medium"
-    | Priority::High => "high"
-    | Priority::Urgent => "urgent"
-  end
+record RenderOptions
+  show_points: Bool
+  prefix_done: String
+  prefix_open: String
 end
 
-# Get numeric score for priority
-cell priority_score(p: Priority) -> int
-  match p
-    | Priority::Low => 1
-    | Priority::Medium => 2
-    | Priority::High => 3
-    | Priority::Urgent => 4
-  end
+record DisplayLine
+  text: String
+  priority: Int
 end
 
-# Validate task title
-cell validate_task_title(title: string) -> result[string, string]
-  if len(title) == 0 then
-    Err("Title cannot be empty")
-  else if len(title) > 100 then
-    Err("Title too long (max 100 characters)")
-  else
-    Ok(title)
-  end
+cell default_options() -> RenderOptions
+  return RenderOptions(
+    show_points: true,
+    prefix_done: "[x]",
+    prefix_open: "[ ]"
+  )
 end
 
-# Format task summary for display
-cell format_task_summary(task: Task) -> string
-  let priority_str = priority_to_string(task.priority)
-  let tag_count = len(task.tags)
-  "Task: " ++ task.title ++ " [" ++ priority_str ++ "] (" ++ string(tag_count) ++ " tags)"
+cell choose_prefix(done: Bool, options: RenderOptions) -> String
+  if done
+    return options.prefix_done
+  end
+  return options.prefix_open
 end
 
-# Get human-readable status description
-cell task_status_description(status: TaskStatus) -> string
-  match status
-    | TaskStatus::Pending => "waiting to start"
-    | TaskStatus::InProgress => "actively working"
-    | TaskStatus::Completed => "finished"
-    | TaskStatus::Cancelled => "no longer needed"
-  end
+cell make_line(text: String, priority: Int) -> DisplayLine
+  return DisplayLine(text: text, priority: priority)
 end
 
-# Extract completion timestamp if available
-cell get_completed_timestamp(task: Task) -> string
-  if let Ok(timestamp) = task.completed_at then
-    "Completed at: " ++ string(timestamp)
-  else
-    "Not completed"
-  end
+cell main() -> String
+  let options = default_options()
+  let prefix = choose_prefix(false, options)
+  let line = make_line(prefix + " utility smoke test", 1)
+  return line.text
 end
 ```
-
-**Note**: This file is a design target for when multi-file imports are fully supported. Currently not imported by main.lm.md.

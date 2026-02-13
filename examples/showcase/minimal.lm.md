@@ -1,21 +1,12 @@
-# Minimal Task Showcase
+# Minimal Showcase
+
+Smallest runnable import-based example.
 
 ```lumen
-enum Priority
-  Low
-  High
-end
+import models: Task
 
-cell priority_score(p: Priority) -> int
-  match p
-    | Priority::Low => 1
-    | Priority::High => 3
-  end
-end
-
-cell main() -> string
-  let p = Priority::High
-  let score = priority_score(p)
-  "Priority score: " ++ string(score)
+cell main() -> String
+  let task = Task(id: "M-1", title: "Minimal import demo", done: false, points: 1)
+  return task.id + ": " + task.title
 end
 ```

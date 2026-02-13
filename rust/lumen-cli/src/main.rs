@@ -148,12 +148,14 @@ fn read_source(path: &PathBuf) -> String {
 
 fn cmd_check(file: &PathBuf) {
     let source = read_source(file);
+    let filename = file.display().to_string();
     match lumen_compiler::compile(&source) {
         Ok(_module) => {
             println!("✓ {} — no errors", file.display());
         }
         Err(e) => {
-            eprintln!("✗ {} — {}", file.display(), e);
+            let formatted = lumen_compiler::format_error(&e, &source, &filename);
+            eprint!("{}", formatted);
             std::process::exit(1);
         }
     }
@@ -161,10 +163,12 @@ fn cmd_check(file: &PathBuf) {
 
 fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
     let source = read_source(file);
+    let filename = file.display().to_string();
     let module = match lumen_compiler::compile(&source) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("compile error: {}", e);
+            let formatted = lumen_compiler::format_error(&e, &source, &filename);
+            eprint!("{}", formatted);
             std::process::exit(1);
         }
     };
@@ -207,10 +211,12 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
 
 fn cmd_emit(file: &PathBuf, output: Option<PathBuf>) {
     let source = read_source(file);
+    let filename = file.display().to_string();
     let module = match lumen_compiler::compile(&source) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("compile error: {}", e);
+            let formatted = lumen_compiler::format_error(&e, &source, &filename);
+            eprint!("{}", formatted);
             std::process::exit(1);
         }
     };

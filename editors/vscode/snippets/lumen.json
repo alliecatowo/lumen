@@ -1,0 +1,141 @@
+{
+  "Cell": {
+    "prefix": "cell",
+    "body": [
+      "cell ${1:name}(${2:params}) -> ${3:ReturnType}",
+      "  $0",
+      "end"
+    ],
+    "description": "Define a cell (function)"
+  },
+  "Cell with effects": {
+    "prefix": "celleff",
+    "body": [
+      "cell ${1:name}(${2:params}) -> ${3:ReturnType} / {${4:effects}}",
+      "  $0",
+      "end"
+    ],
+    "description": "Define a cell with effects"
+  },
+  "Record": {
+    "prefix": "record",
+    "body": [
+      "record ${1:Name} {",
+      "  ${2:field}: ${3:Type},",
+      "}"
+    ],
+    "description": "Define a record"
+  },
+  "Enum": {
+    "prefix": "enum",
+    "body": [
+      "enum ${1:Name} {",
+      "  ${2:Variant}(${3:Type}),",
+      "}"
+    ],
+    "description": "Define an enum"
+  },
+  "Match": {
+    "prefix": "match",
+    "body": [
+      "match ${1:expr}",
+      "  | ${2:pattern} => ${3:body}",
+      "end"
+    ],
+    "description": "Match expression"
+  },
+  "If": {
+    "prefix": "if",
+    "body": [
+      "if ${1:condition}",
+      "  $0",
+      "end"
+    ],
+    "description": "If statement"
+  },
+  "If-else": {
+    "prefix": "ifelse",
+    "body": [
+      "if ${1:condition}",
+      "  ${2}",
+      "else",
+      "  ${3}",
+      "end"
+    ],
+    "description": "If-else statement"
+  },
+  "For": {
+    "prefix": "for",
+    "body": [
+      "for ${1:item} in ${2:iterable}",
+      "  $0",
+      "end"
+    ],
+    "description": "For loop"
+  },
+  "While": {
+    "prefix": "while",
+    "body": [
+      "while ${1:condition}",
+      "  $0",
+      "end"
+    ],
+    "description": "While loop"
+  },
+  "Lambda": {
+    "prefix": "fn",
+    "body": [
+      "fn(${1:params}) -> ${2:ReturnType} => ${3:expr}"
+    ],
+    "description": "Lambda expression"
+  },
+  "Lambda block": {
+    "prefix": "fnblock",
+    "body": [
+      "fn(${1:params}) -> ${2:ReturnType}",
+      "  $0",
+      "end"
+    ],
+    "description": "Lambda with block body"
+  },
+  "Process memory": {
+    "prefix": "memory",
+    "body": [
+      "process ${1:name} = memory[${2:Type}] {",
+      "  $0",
+      "}"
+    ],
+    "description": "Define a memory process"
+  },
+  "Process machine": {
+    "prefix": "machine",
+    "body": [
+      "process ${1:name} = machine {",
+      "  states {",
+      "    ${2:Initial}(${3:Type}),",
+      "  }",
+      "  ",
+      "  cell run() -> ${4:ReturnType}",
+      "    $0",
+      "  end",
+      "}"
+    ],
+    "description": "Define a machine process"
+  },
+  "Grant": {
+    "prefix": "grant",
+    "body": [
+      "grant ${1:alias} = use tool \"${2:provider}:${3:tool}\" {",
+      "  $0",
+      "}"
+    ],
+    "description": "Define a grant"
+  },
+  "Use tool": {
+    "prefix": "use",
+    "body": [
+      "use tool \"${1:provider}:${2:tool}\""
+    ],
+    "description": "Use a tool"
+  }
+}

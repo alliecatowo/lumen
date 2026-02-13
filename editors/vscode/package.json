@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "publisher": "lumen-lang",
   "license": "MIT",
+  "icon": "icon.svg",
   "engines": {
     "vscode": "^1.75.0"
   },
@@ -57,6 +58,46 @@
         }
       }
     ],
+    "commands": [
+      {
+        "command": "lumen.check",
+        "title": "Lumen: Check Current File",
+        "icon": "$(check)"
+      },
+      {
+        "command": "lumen.run",
+        "title": "Lumen: Run Current File",
+        "icon": "$(run)"
+      },
+      {
+        "command": "lumen.fmt",
+        "title": "Lumen: Format Current File",
+        "icon": "$(symbol-color)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "lumen.check",
+        "key": "ctrl+shift+b",
+        "mac": "cmd+shift+b",
+        "when": "editorLangId == lumen || editorLangId == lumen-markdown"
+      },
+      {
+        "command": "lumen.run",
+        "key": "f5",
+        "when": "editorLangId == lumen || editorLangId == lumen-markdown"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "lumen",
+        "path": "./snippets/lumen.json"
+      },
+      {
+        "language": "lumen-markdown",
+        "path": "./snippets/lumen.json"
+      }
+    ],
     "configuration": {
       "title": "Lumen",
       "properties": {
@@ -64,6 +105,11 @@
           "type": "string",
           "default": "lumen-lsp",
           "description": "Path to the lumen-lsp binary. Defaults to finding it on PATH."
+        },
+        "lumen.binPath": {
+          "type": "string",
+          "default": "lumen",
+          "description": "Path to the lumen CLI binary. Defaults to finding it on PATH."
         }
       }
     }

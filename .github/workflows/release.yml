@@ -4,6 +4,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build ${{ matrix.target }}
@@ -13,41 +16,69 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact_name: lumen
-            asset_name: lumen-linux-x64
+            name: lumen-linux-x64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            name: lumen-linux-x64-musl
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            name: lumen-linux-arm64
+            cross: true
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact_name: lumen
-            asset_name: lumen-macos-x64
+            name: lumen-macos-x64
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact_name: lumen
-            asset_name: lumen-macos-arm64
+            name: lumen-macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: lumen-windows-x64
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+
+      - name: Install musl tools (Linux musl)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install cross (for cross-compilation)
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
       - name: Build
-        run: cargo build --release --bin lumen --target ${{ matrix.target }}
-      - name: Prepare artifact
         run: |
-          mkdir -p artifacts
-          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} artifacts/${{ matrix.asset_name }}
-          chmod +x artifacts/${{ matrix.asset_name }}
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }} --bin lumen
+          else
+            cargo build --release --target ${{ matrix.target }} --bin lumen
+          fi
+        shell: bash
+
+      - name: Package (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../${{ matrix.name }}.tar.gz lumen
+
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          cd target/${{ matrix.target }}/release
+          Compress-Archive -Path lumen.exe -DestinationPath ../../../${{ matrix.name }}.zip
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset_name }}
-          path: artifacts/${{ matrix.asset_name }}
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}.*
 
   release:
     name: Create Release
     needs: build
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Download all artifacts
@@ -55,11 +86,9 @@ jobs:
         with:
           path: artifacts
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*/*
           draft: false
           prerelease: false
           generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,21 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background circle -->
+  <circle cx="64" cy="64" r="60" fill="#FDB813" stroke="#F39C12" stroke-width="2"/>
+
+  <!-- Sun rays (representing "Lumen" - light) -->
+  <g stroke="#F39C12" stroke-width="3" stroke-linecap="round">
+    <line x1="64" y1="12" x2="64" y2="24"/>
+    <line x1="64" y1="104" x2="64" y2="116"/>
+    <line x1="12" y1="64" x2="24" y2="64"/>
+    <line x1="104" y1="64" x2="116" y2="64"/>
+    <line x1="26" y1="26" x2="35" y2="35"/>
+    <line x1="93" y1="93" x2="102" y2="102"/>
+    <line x1="26" y1="102" x2="35" y2="93"/>
+    <line x1="93" y1="35" x2="102" y2="26"/>
+  </g>
+
+  <!-- Letter "L" -->
+  <g fill="#2C3E50" font-family="Arial, sans-serif" font-weight="bold" font-size="72">
+    <text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" dy="5">L</text>
+  </g>
+</svg>

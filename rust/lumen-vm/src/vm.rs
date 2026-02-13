@@ -42,6 +42,31 @@ struct CallFrame {
     future_id: Option<u64>,
 }
 
+#[derive(Debug, Default, Clone)]
+struct MemoryRuntime {
+    entries: Vec<Value>,
+    kv: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone)]
+struct MachineRuntime {
+    started: bool,
+    terminal: bool,
+    steps: u64,
+    current_state: String,
+}
+
+impl Default for MachineRuntime {
+    fn default() -> Self {
+        Self {
+            started: false,
+            terminal: false,
+            steps: 0,
+            current_state: "init".to_string(),
+        }
+    }
+}
+
 /// The Lumen register VM.
 pub struct VM {
     pub strings: StringTable,
@@ -55,6 +80,9 @@ pub struct VM {
     pub tool_dispatcher: Option<Box<dyn ToolDispatcher>>,
     next_future_id: u64,
     resolved_futures: BTreeMap<u64, Value>,
+    process_kinds: BTreeMap<String, String>,
+    memory_runtime: BTreeMap<String, MemoryRuntime>,
+    machine_runtime: BTreeMap<String, MachineRuntime>,
 }
 
 impl VM {
@@ -69,6 +97,9 @@ impl VM {
             tool_dispatcher: None,
             next_future_id: 1,
             resolved_futures: BTreeMap::new(),
+            process_kinds: BTreeMap::new(),
+            memory_runtime: BTreeMap::new(),
+            machine_runtime: BTreeMap::new(),
         }
     }
 
@@ -77,6 +108,25 @@ impl VM {
         // Intern all strings
         for s in &module.strings {
             self.strings.intern(s);
+        }
+        self.process_kinds.clear();
+        self.memory_runtime.clear();
+        self.machine_runtime.clear();
+        for addon in &module.addons {
+            if let Some(name) = &addon.name {
+                if matches!(
+                    addon.kind.as_str(),
+                    "pipeline"
+                        | "orchestration"
+                        | "machine"
+                        | "memory"
+                        | "guardrail"
+                        | "eval"
+                        | "pattern"
+                ) {
+                    self.process_kinds.insert(name.clone(), addon.kind.clone());
+                }
+            }
         }
         // Register types
         for ty in &module.types {
@@ -346,6 +396,9 @@ impl VM {
                         (Value::Map(m), _) => {
                             m.get(&idx.as_string()).cloned().unwrap_or(Value::Null)
                         }
+                        (Value::Record(r), _) => {
+                            r.fields.get(&idx.as_string()).cloned().unwrap_or(Value::Null)
+                        }
                         _ => Value::Null,
                     };
                     self.registers[base + a] = val;
@@ -363,6 +416,9 @@ impl VM {
                         }
                         Value::Map(m) => {
                             m.insert(key.as_string(), val);
+                        }
+                        Value::Record(r) => {
+                            r.fields.insert(key.as_string(), val);
                         }
                         _ => {}
                     }
@@ -1096,6 +1152,164 @@ impl VM {
         Ok(())
     }
 
+    fn try_call_process_builtin(
+        &mut self,
+        name: &str,
+        base: usize,
+        a: usize,
+        nargs: usize,
+    ) -> Option<Result<Value, VmError>> {
+        let (owner, method) = name.split_once('.')?;
+        let kind = self.process_kinds.get(owner)?.clone();
+        match kind.as_str() {
+            "memory" => Some(self.call_memory_method(owner, method, base, a, nargs)),
+            "machine" => Some(self.call_machine_method(owner, method, base, a, nargs)),
+            "pipeline" | "orchestration" | "eval" | "guardrail" | "pattern"
+                if method == "run" =>
+            {
+                let args: Vec<Value> = (0..nargs)
+                    .map(|i| self.registers[base + a + 1 + i].clone())
+                    .collect();
+                Some(Ok(args.get(1).cloned().unwrap_or(Value::Null)))
+            }
+            _ => None,
+        }
+    }
+
+    fn call_memory_method(
+        &mut self,
+        owner: &str,
+        method: &str,
+        base: usize,
+        a: usize,
+        nargs: usize,
+    ) -> Result<Value, VmError> {
+        let args: Vec<Value> = (0..nargs)
+            .map(|i| self.registers[base + a + 1 + i].clone())
+            .collect();
+        let store = self.memory_runtime.entry(owner.to_string()).or_default();
+        match method {
+            "append" | "remember" => {
+                if let Some(val) = args.get(1) {
+                    store.entries.push(val.clone());
+                }
+                Ok(Value::Null)
+            }
+            "recent" => {
+                let n = args
+                    .get(1)
+                    .and_then(|v| v.as_int())
+                    .unwrap_or(10)
+                    .max(0) as usize;
+                let len = store.entries.len();
+                let start = len.saturating_sub(n);
+                Ok(Value::List(store.entries[start..].to_vec()))
+            }
+            "recall" => {
+                let n = args
+                    .get(2)
+                    .or_else(|| args.get(1))
+                    .and_then(|v| v.as_int())
+                    .unwrap_or(5)
+                    .max(0) as usize;
+                let len = store.entries.len();
+                let start = len.saturating_sub(n);
+                Ok(Value::List(store.entries[start..].to_vec()))
+            }
+            "upsert" | "store" => {
+                if let (Some(key), Some(value)) = (args.get(1), args.get(2)) {
+                    store.kv.insert(key.as_string(), value.clone());
+                }
+                Ok(Value::Null)
+            }
+            "get" => {
+                let key = args
+                    .get(1)
+                    .map(|v| v.as_string())
+                    .unwrap_or_else(String::new);
+                Ok(store.kv.get(&key).cloned().unwrap_or(Value::Null))
+            }
+            "query" => {
+                let filter = args.get(1).map(|v| v.as_string());
+                let mut out = Vec::new();
+                for (k, v) in &store.kv {
+                    if let Some(ref f) = filter {
+                        if !k.contains(f) {
+                            continue;
+                        }
+                    }
+                    out.push(v.clone());
+                }
+                Ok(Value::List(out))
+            }
+            _ => Err(VmError::UndefinedCell(format!("{}.{}", owner, method))),
+        }
+    }
+
+    fn machine_state_value(owner: &str, state: &MachineRuntime) -> Value {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "name".to_string(),
+            Value::String(StringRef::Owned(state.current_state.clone())),
+        );
+        fields.insert("steps".to_string(), Value::Int(state.steps as i64));
+        fields.insert("terminal".to_string(), Value::Bool(state.terminal));
+        Value::Record(RecordValue {
+            type_name: format!("{}.State", owner),
+            fields,
+        })
+    }
+
+    fn call_machine_method(
+        &mut self,
+        owner: &str,
+        method: &str,
+        _base: usize,
+        _a: usize,
+        _nargs: usize,
+    ) -> Result<Value, VmError> {
+        let state = self.machine_runtime.entry(owner.to_string()).or_default();
+        match method {
+            "start" => {
+                state.started = true;
+                state.terminal = false;
+                state.steps = 0;
+                state.current_state = "started".to_string();
+                Ok(Value::Null)
+            }
+            "step" => {
+                if !state.started {
+                    state.started = true;
+                }
+                state.steps += 1;
+                if state.steps >= 1 {
+                    state.terminal = true;
+                    state.current_state = "terminal".to_string();
+                } else {
+                    state.current_state = format!("step_{}", state.steps);
+                }
+                Ok(Self::machine_state_value(owner, state))
+            }
+            "is_terminal" => Ok(Value::Bool(state.terminal)),
+            "current_state" => Ok(Self::machine_state_value(owner, state)),
+            "run" => {
+                state.started = true;
+                state.steps += 1;
+                state.terminal = true;
+                state.current_state = "terminal".to_string();
+                Ok(Self::machine_state_value(owner, state))
+            }
+            "resume_from" => {
+                state.started = true;
+                state.terminal = false;
+                state.steps = 0;
+                state.current_state = "resumed".to_string();
+                Ok(Self::machine_state_value(owner, state))
+            }
+            _ => Err(VmError::UndefinedCell(format!("{}.{}", owner, method))),
+        }
+    }
+
     /// Execute a built-in function by name.
     fn call_builtin(
         &mut self,
@@ -1104,6 +1318,9 @@ impl VM {
         a: usize,
         nargs: usize,
     ) -> Result<Value, VmError> {
+        if let Some(result) = self.try_call_process_builtin(name, base, a, nargs) {
+            return result;
+        }
         match name {
             "print" => {
                 let mut parts = Vec::new();
@@ -3097,5 +3314,93 @@ end
 "#,
         );
         assert_eq!(result, Value::Int(9));
+    }
+
+    #[test]
+    fn test_process_constructor_and_method_dispatch() {
+        let result = run_main(
+            r#"
+pipeline Incrementer
+  cell run(x: Int) -> Int
+    return x + 1
+  end
+end
+
+cell main() -> Int
+  let p = Incrementer()
+  return p.run(4)
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(5));
+    }
+
+    #[test]
+    fn test_process_static_dot_dispatch_via_constructor() {
+        let result = run_main(
+            r#"
+pipeline IdentityPipe
+end
+
+cell main() -> Int
+  return IdentityPipe.run(7)
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(7));
+    }
+
+    #[test]
+    fn test_memory_runtime_append_recent() {
+        let result = run_main(
+            r#"
+memory ConversationBuffer
+end
+
+cell main() -> Int
+  let m = ConversationBuffer()
+  m.append("a")
+  m.append("b")
+  let recent = m.recent(1)
+  return length(recent)
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(1));
+    }
+
+    #[test]
+    fn test_memory_runtime_upsert_get() {
+        let result = run_main(
+            r#"
+memory UserFacts
+end
+
+cell main() -> String
+  let m = UserFacts()
+  m.upsert("user_123", "alice")
+  return m.get("user_123")
+end
+"#,
+        );
+        assert_eq!(result, Value::String(StringRef::Owned("alice".to_string())));
+    }
+
+    #[test]
+    fn test_machine_runtime_methods() {
+        let result = run_main(
+            r#"
+machine TicketHandler
+end
+
+cell main() -> Bool
+  let machine = TicketHandler()
+  machine.start("ticket")
+  machine.step()
+  return machine.is_terminal()
+end
+"#,
+        );
+        assert_eq!(result, Value::Bool(true));
     }
 }

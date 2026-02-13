@@ -63,6 +63,10 @@ pub enum OpCode {
 
     // List append
     Append = 34,     // A, B: append B to list A
+
+    // Type checks
+    IsVariant = 35,  // A, Bx: if A is variant w/ tag Bx, skip next; else execute next (Jmp)
+    Unbox = 36,      // A, B: A = B.payload (for unions)
 }
 
 /// Intrinsic function IDs

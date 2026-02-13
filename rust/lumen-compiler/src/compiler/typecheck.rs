@@ -2,7 +2,7 @@
 
 use crate::compiler::ast::*;
 use crate::compiler::resolve::SymbolTable;
-use crate::compiler::tokens::Span;
+
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -30,6 +30,8 @@ pub enum TypeError {
     ArgCount { expected: usize, actual: usize, line: usize },
     #[error("unknown field '{field}' on type '{ty}' at line {line}")]
     UnknownField { field: String, ty: String, line: usize },
+    #[error("undefined type '{name}' at line {line}")]
+    UndefinedType { name: String, line: usize },
     #[error("missing return in cell '{name}' at line {line}")]
     MissingReturn { name: String, line: usize },
 }
@@ -109,12 +111,18 @@ impl<'a> TypeChecker<'a> {
             let ty = resolve_type_expr(&p.ty, self.symbols);
             self.locals.insert(p.name.clone(), ty);
         }
+        let return_type = if let Some(ref rt) = cell.return_type {
+            Some(resolve_type_expr(rt, self.symbols))
+        } else {
+            None
+        };
+        
         for stmt in &cell.body {
-            self.check_stmt(stmt);
+            self.check_stmt(stmt, return_type.as_ref());
         }
     }
 
-    fn check_stmt(&mut self, stmt: &Stmt) {
+    fn check_stmt(&mut self, stmt: &Stmt, expected_return: Option<&Type>) {
         match stmt {
             Stmt::Let(ls) => {
                 let val_type = self.infer_expr(&ls.value);
@@ -127,8 +135,8 @@ impl<'a> TypeChecker<'a> {
             Stmt::If(ifs) => {
                 let ct = self.infer_expr(&ifs.condition);
                 self.check_compat(&Type::Bool, &ct, ifs.span.line);
-                for s in &ifs.then_body { self.check_stmt(s); }
-                if let Some(ref eb) = ifs.else_body { for s in eb { self.check_stmt(s); } }
+                for s in &ifs.then_body { self.check_stmt(s, expected_return); }
+                if let Some(ref eb) = ifs.else_body { for s in eb { self.check_stmt(s, expected_return); } }
             }
             Stmt::For(fs) => {
                 let iter_type = self.infer_expr(&fs.iter);
@@ -140,21 +148,90 @@ impl<'a> TypeChecker<'a> {
                     }); Type::Any }
                 };
                 self.locals.insert(fs.var.clone(), elem_type);
-                for s in &fs.body { self.check_stmt(s); }
+                for s in &fs.body { self.check_stmt(s, expected_return); }
             }
             Stmt::Match(ms) => {
-                let _sub_type = self.infer_expr(&ms.subject);
+                let subject_type = self.infer_expr(&ms.subject);
+                let mut covered_variants = Vec::new();
+                let mut has_catchall = false;
+
                 for arm in &ms.arms {
-                    // Bind pattern variables
                     match &arm.pattern {
-                        Pattern::Variant(_, Some(binding), _) => { self.locals.insert(binding.clone(), Type::Any); }
-                        Pattern::Ident(name, _) => { self.locals.insert(name.clone(), Type::Any); }
+                        Pattern::Variant(tag, binding, _) => {
+                            let mut valid_variant = false;
+                            let mut bind_type = Type::Any;
+
+                            if let Type::Enum(ref name) = subject_type {
+                                if let Some(ti) = self.symbols.types.get(name) {
+                                    if let crate::compiler::resolve::TypeInfoKind::Enum(def) = &ti.kind {
+                                        if def.variants.iter().any(|v| v.name == *tag) {
+                                            valid_variant = true;
+                                            covered_variants.push(tag.clone());
+                                            bind_type = subject_type.clone();
+                                        }
+                                    }
+                                }
+                                if !valid_variant {
+                                    self.errors.push(TypeError::Mismatch {
+                                        expected: format!("variant of {}", name), actual: tag.clone(), line: arm.span.line
+                                    });
+                                }
+                            } else if let Type::Result(ref ok, ref err) = subject_type {
+                                if tag == "ok" {
+                                    valid_variant = true;
+                                    bind_type = *ok.clone();
+                                } else if tag == "err" {
+                                    valid_variant = true;
+                                    bind_type = *err.clone();
+                                }
+                                if !valid_variant {
+                                     self.errors.push(TypeError::Mismatch {
+                                        expected: "ok or err".into(), actual: tag.clone(), line: arm.span.line
+                                    });
+                                }
+                            }
+                            
+                            if let Some(b) = binding {
+                                self.locals.insert(b.clone(), bind_type);
+                            }
+                        }
+                        Pattern::Ident(name, _) => {
+                            self.locals.insert(name.clone(), subject_type.clone());
+                            has_catchall = true;
+                        }
+                        Pattern::Wildcard(_) => { has_catchall = true; }
                         _ => {}
                     }
-                    for s in &arm.body { self.check_stmt(s); }
+                    for s in &arm.body { self.check_stmt(s, expected_return); }
+                }
+
+                // Exhaustiveness Check for Enums
+                if let Type::Enum(ref name) = subject_type {
+                     if !has_catchall {
+                         if let Some(ti) = self.symbols.types.get(name) {
+                             if let crate::compiler::resolve::TypeInfoKind::Enum(def) = &ti.kind {
+                                 let missing: Vec<_> = def.variants.iter()
+                                     .filter(|v| !covered_variants.contains(&v.name))
+                                     .map(|v| v.name.clone())
+                                     .collect();
+                                 if !missing.is_empty() {
+                                     self.errors.push(TypeError::Mismatch { 
+                                         expected: format!("variants {:?}", missing), 
+                                         actual: "incomplete match".into(), 
+                                         line: ms.span.line 
+                                     });
+                                 }
+                             }
+                         }
+                     }
                 }
             }
-            Stmt::Return(rs) => { self.infer_expr(&rs.value); }
+            Stmt::Return(rs) => { 
+                let val_type = self.infer_expr(&rs.value);
+                if let Some(expected) = expected_return {
+                    self.check_compat(expected, &val_type, rs.span.line);
+                }
+            }
             Stmt::Halt(hs) => { self.infer_expr(&hs.message); }
             Stmt::Assign(asgn) => {
                 let val_type = self.infer_expr(&asgn.value);
@@ -179,8 +256,22 @@ impl<'a> TypeChecker<'a> {
                 else if is_builtin_function(name) { Type::Any } // built-in
                 else if name == "null" { Type::Null }
                 else {
-                    self.errors.push(TypeError::UndefinedVar { name: name.clone(), line: span.line });
-                    Type::Any
+                    // Check for Enum Variant
+                    let mut found_enum = None;
+                    for (type_name, type_info) in &self.symbols.types {
+                        if let crate::compiler::resolve::TypeInfoKind::Enum(def) = &type_info.kind {
+                             if def.variants.iter().any(|v| v.name == *name) {
+                                 found_enum = Some(Type::Enum(type_name.clone()));
+                                 break;
+                             }
+                        }
+                    }
+                    if let Some(ty) = found_enum {
+                        ty
+                    } else {
+                        self.errors.push(TypeError::UndefinedVar { name: name.clone(), line: span.line });
+                        Type::Any
+                    }
                 }
             }
             Expr::ListLit(elems, _) => {
@@ -200,11 +291,36 @@ impl<'a> TypeChecker<'a> {
                     Type::Map(Box::new(kt), Box::new(vt))
                 }
             }
-            Expr::RecordLit(name, fields, _) => {
-                for (_, val) in fields { self.infer_expr(val); }
+            Expr::RecordLit(name, fields, span) => {
+                if let Some(ti) = self.symbols.types.get(name) {
+                    if let crate::compiler::resolve::TypeInfoKind::Record(def) = &ti.kind {
+                         // 1. Check provided fields (unknown & type mismatch)
+                         for (fname, fval) in fields {
+                             let val_type = self.infer_expr(fval);
+                             if let Some(field_def) = def.fields.iter().find(|f| f.name == *fname) {
+                                 let expected = resolve_type_expr(&field_def.ty, self.symbols);
+                                 self.check_compat(&expected, &val_type, span.line);
+                             } else {
+                                 self.errors.push(TypeError::UnknownField { field: fname.clone(), ty: name.clone(), line: span.line });
+                             }
+                         }
+                         // 2. Check for missing fields
+                         for field_def in &def.fields {
+                             if !fields.iter().any(|(fname, _)| fname == &field_def.name) {
+                                  self.errors.push(TypeError::Mismatch { 
+                                      expected: format!("field '{}'", field_def.name), 
+                                      actual: "missing".into(), 
+                                      line: span.line 
+                                  });
+                             }
+                         }
+                    } 
+                } else {
+                     self.errors.push(TypeError::UndefinedType { name: name.clone(), line: span.line });
+                }
                 Type::Record(name.clone())
             }
-            Expr::BinOp(lhs, op, rhs, span) => {
+            Expr::BinOp(lhs, op, rhs, _span) => {
                 let lt = self.infer_expr(lhs);
                 let rt = self.infer_expr(rhs);
                 match op {
@@ -224,7 +340,7 @@ impl<'a> TypeChecker<'a> {
                     UnaryOp::Not => Type::Bool,
                 }
             }
-            Expr::Call(callee, args, span) => {
+            Expr::Call(callee, args, _span) => {
                 for arg in args {
                     match arg {
                         CallArg::Positional(e) => { self.infer_expr(e); }
@@ -248,7 +364,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 Type::Any
             }
-            Expr::DotAccess(obj, field, span) => {
+            Expr::DotAccess(obj, field, _span) => {
                 let ot = self.infer_expr(obj);
                 if let Type::Record(ref name) = ot {
                     if let Some(ti) = self.symbols.types.get(name) {
@@ -270,7 +386,10 @@ impl<'a> TypeChecker<'a> {
                     _ => Type::Any,
                 }
             }
-            Expr::RoleBlock(_, _, _) => Type::String,
+            Expr::RoleBlock(_, content, _) => {
+                self.infer_expr(content);
+                Type::String
+            },
             Expr::ExpectSchema(inner, schema_name, _) => {
                 self.infer_expr(inner);
                 if self.symbols.types.contains_key(schema_name) {
@@ -282,6 +401,9 @@ impl<'a> TypeChecker<'a> {
 
     fn check_compat(&mut self, expected: &Type, actual: &Type, line: usize) {
         if *expected == Type::Any || *actual == Type::Any { return; }
+        // Enum variant type checking: if actual is Enum(T), matches Enum(T)
+        // This is handled by default equality.
+        
         if expected != actual {
             self.errors.push(TypeError::Mismatch {
                 expected: format!("{}", expected), actual: format!("{}", actual), line,

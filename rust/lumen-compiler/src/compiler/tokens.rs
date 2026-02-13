@@ -123,6 +123,7 @@ impl fmt::Display for TokenKind {
             TokenKind::IntLit(n) => write!(f, "{}", n),
             TokenKind::FloatLit(n) => write!(f, "{}", n),
             TokenKind::StringLit(s) => write!(f, "\"{}\"", s),
+            TokenKind::StringInterpLit(_) => write!(f, "string-interp"),
             TokenKind::BoolLit(b) => write!(f, "{}", b),
             TokenKind::Ident(s) => write!(f, "{}", s),
             TokenKind::Record => write!(f, "record"),

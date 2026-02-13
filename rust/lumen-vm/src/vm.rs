@@ -269,39 +269,49 @@ impl VM {
                     let lhs = &self.registers[base + b];
                     let rhs = &self.registers[base + c];
                     let eq = lhs == rhs;
-                    // If A == 0, test for equality; if A != 0, test for inequality
-                    let test = if a == 0 { !eq } else { eq };
-                    if test {
-                        // Skip next instruction
-                        if let Some(f) = self.frames.last_mut() { f.ip += 1; }
-                    }
-                    // Also store the result in case it's used as a value
-                    // We store based on b == c comparison result into the first operand position
                     self.registers[base + a] = Value::Bool(eq);
                 }
                 OpCode::Lt => {
-                    let lhs = &self.registers[base + b];
-                    let rhs = &self.registers[base + c];
-                    let result = match (lhs, rhs) {
-                        (Value::Int(a), Value::Int(b)) => a < b,
-                        (Value::Float(a), Value::Float(b)) => a < b,
-                        (Value::Int(a), Value::Float(b)) => (*a as f64) < *b,
-                        (Value::Float(a), Value::Int(b)) => *a < (*b as f64),
+                    let b_val = &self.registers[base + b];
+                    let c_val = &self.registers[base + c];
+                    let result = match (b_val, c_val) {
+                        (Value::Int(x), Value::Int(y)) => x < y,
+                        (Value::Float(x), Value::Float(y)) => x < y,
+                        (Value::Int(x), Value::Float(y)) => (*x as f64) < *y,
+                        (Value::Float(x), Value::Int(y)) => *x < (*y as f64),
+                        (Value::String(x), Value::String(y)) => {
+                            let s1 = match x { StringRef::Owned(s) => s, StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or("") };
+                            let s2 = match y { StringRef::Owned(s) => s, StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or("") };
+                            s1 < s2
+                        }
                         _ => false,
                     };
                     self.registers[base + a] = Value::Bool(result);
                 }
                 OpCode::Le => {
-                    let lhs = &self.registers[base + b];
-                    let rhs = &self.registers[base + c];
-                    let result = match (lhs, rhs) {
-                        (Value::Int(a), Value::Int(b)) => a <= b,
-                        (Value::Float(a), Value::Float(b)) => a <= b,
-                        (Value::Int(a), Value::Float(b)) => (*a as f64) <= *b,
-                        (Value::Float(a), Value::Int(b)) => *a <= (*b as f64),
-                        _ => false,
+                    let b_val = &self.registers[base + b];
+                    let c_val = &self.registers[base + c];
+                    let result = match (b_val, c_val) {
+                         (Value::Int(x), Value::Int(y)) => x <= y,
+                         (Value::Float(x), Value::Float(y)) => x <= y,
+                         (Value::Int(x), Value::Float(y)) => (*x as f64) <= *y,
+                         (Value::Float(x), Value::Int(y)) => *x <= (*y as f64),
+                         (Value::String(x), Value::String(y)) => {
+                            let s1 = match x { StringRef::Owned(s) => s, StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or("") };
+                            let s2 = match y { StringRef::Owned(s) => s, StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or("") };
+                            s1 <= s2
+                         }
+                         _ => false,
                     };
                     self.registers[base + a] = Value::Bool(result);
+                }
+                OpCode::Test => {
+                    let val = &self.registers[base + a];
+                    let truthy = val.is_truthy();
+                    // c is u8 derived from instr.c
+                    if truthy != (c != 0) {
+                        if let Some(f) = self.frames.last_mut() { f.ip += 1; }
+                    }
                 }
                 OpCode::Not => {
                     let val = &self.registers[base + b];

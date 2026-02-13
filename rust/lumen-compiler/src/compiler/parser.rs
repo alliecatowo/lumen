@@ -482,7 +482,18 @@ impl Parser {
     fn parse_expr(&mut self, min_bp: u8) -> Result<Expr, ParseError> {
         let mut lhs = self.parse_prefix()?;
         loop {
-            let (op, bp) = match self.peek_kind() {
+            // DEBUG: Print peek kind
+            if let TokenKind::Ident(ref n) = self.peek_kind() {
+               // println!("peek ident {}", n);
+            }
+            // self.skip_whitespace_tokens(); // Removed for now as it breaks Dedent
+            let kind = self.peek_kind();
+            if let Expr::Ident(ref n, _) = &lhs {
+                if n == "compute_score" {
+                    println!("Debug compute_score: peek={:?}", kind);
+                }
+            }
+            let (op, bp) = match kind {
                 TokenKind::Plus => (BinOp::Add, (10, 11)),
                 TokenKind::Minus => (BinOp::Sub, (10, 11)),
                 TokenKind::Star => (BinOp::Mul, (12, 13)),

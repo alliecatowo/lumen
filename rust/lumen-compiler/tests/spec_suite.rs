@@ -46,6 +46,29 @@ fn assert_compile_err(case: &ErrorCase) {
     }
 }
 
+fn assert_compile_err_contains_all(id: &str, source: &str, expected_fragments: &[&str]) {
+    let md = markdown_from_code(source);
+    match compile(&md) {
+        Ok(_) => panic!(
+            "case '{}' unexpectedly compiled\n--- source ---\n{}",
+            id, source
+        ),
+        Err(err) => {
+            let msg = err.to_string().to_lowercase();
+            for fragment in expected_fragments {
+                let expect = fragment.to_lowercase();
+                assert!(
+                    msg.contains(&expect),
+                    "case '{}' error mismatch\nmissing fragment: {}\nactual: {}",
+                    id,
+                    fragment,
+                    err
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn spec_markdown_directives_compile() {
     let src = r#"
@@ -1807,9 +1830,7 @@ end
 #[test]
 fn error_duplicate_record_definition() {
     // Two records with the same name should be rejected
-    let case = ErrorCase {
-        id: "duplicate_record",
-        source: r#"
+    let source = r#"
 record Foo
   x: Int
 end
@@ -1817,10 +1838,37 @@ end
 record Foo
   y: String
 end
-"#,
-        expect_substring: "duplicate",
-    };
-    assert_compile_err(&case);
+"#;
+    assert_compile_err_contains_all("duplicate_record", source, &["duplicate", "foo"]);
+}
+
+#[test]
+fn error_duplicate_enum_definition() {
+    let source = r#"
+enum Color
+  Red
+  Blue
+end
+
+enum Color
+  Green
+end
+"#;
+    assert_compile_err_contains_all("duplicate_enum", source, &["duplicate", "color"]);
+}
+
+#[test]
+fn error_duplicate_cell_definition() {
+    let source = r#"
+cell compute() -> Int
+  return 1
+end
+
+cell compute() -> Int
+  return 2
+end
+"#;
+    assert_compile_err_contains_all("duplicate_cell", source, &["duplicate", "compute"]);
 }
 
 #[test]

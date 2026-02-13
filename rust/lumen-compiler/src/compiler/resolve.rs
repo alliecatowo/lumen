@@ -269,8 +269,6 @@ impl SymbolTable {
         // Register builtin types
         for name in &[
             "String", "Int", "Float", "Bool", "Bytes", "Json", "Null", "Self",
-            // Generic type params -- pragmatic workaround until full generics support
-            "A", "B", "C", "T", "U", "V",
         ] {
             types.insert(
                 name.to_string(),
@@ -780,6 +778,11 @@ pub fn resolve_with_base(
                     tool_path: g.tool_alias.to_lowercase(),
                     mcp_url: None,
                 });
+            }
+            Item::TypeAlias(ta) => {
+                let generics: Vec<String> =
+                    ta.generic_params.iter().map(|g| g.name.clone()).collect();
+                check_type_refs_with_generics(&ta.type_expr, &table, &mut errors, &generics);
             }
             Item::Addon(_) => {}
             _ => {}
@@ -3114,6 +3117,9 @@ mod tests {
         assert!(table.types.contains_key("Bytes"));
         assert!(table.types.contains_key("Json"));
         assert!(table.types.contains_key("Null"));
+        // Generic placeholders should not be implicitly accepted.
+        assert!(!table.types.contains_key("A"));
+        assert!(!table.types.contains_key("T"));
         // App-specific types should NOT be present
         assert!(!table.types.contains_key("Invoice"));
         assert!(!table.types.contains_key("MyRecord"));
@@ -3148,5 +3154,14 @@ mod tests {
         .unwrap();
         let effects = &table.cells.get("main").unwrap().effects;
         assert!(effects.contains(&"http".to_string()));
+    }
+
+    #[test]
+    fn test_generic_type_alias_resolves_without_placeholder_builtins() {
+        let table = resolve_src(
+            "type Box[T] = map[String, T]\n\ncell main() -> Box[Int]\n  return {\"ok\": 1}\nend",
+        )
+        .unwrap();
+        assert!(table.type_aliases.contains_key("Box"));
     }
 }

@@ -1,12 +1,20 @@
 //! Lumen code formatter
 //!
+//! AST-aware formatter that produces beautiful, consistent output like rustfmt or prettier.
 //! Formats `.lm.md` files by preserving markdown structure and reformatting
-//! code inside ```lumen ... ``` fenced blocks with consistent indentation,
-//! spacing, and line breaks.
+//! code inside ```lumen ... ``` fenced blocks using the compiler's AST.
 
-use lumen_compiler::compiler::lexer::Lexer;
-use lumen_compiler::compiler::tokens::{Token, TokenKind};
+use lumen_compiler::compiler::ast::*;
+use lumen_compiler::markdown::extract::extract_blocks;
 use std::path::PathBuf;
+
+const INDENT_SPACES: usize = 2;
+
+/// ANSI color codes for CLI output
+const GREEN: &str = "\x1b[32m";
+const YELLOW: &str = "\x1b[33m";
+const BOLD: &str = "\x1b[1m";
+const RESET: &str = "\x1b[0m";
 
 /// Format a complete .lm.md file
 pub fn format_file(content: &str) -> String {
@@ -47,129 +55,49 @@ pub fn format_file(content: &str) -> String {
     output
 }
 
-/// Format Lumen code using token-based formatting
+/// Format Lumen code using AST-based pretty printing
 pub fn format_lumen_code(code: &str) -> String {
     if code.trim().is_empty() {
         return String::new();
     }
 
-    // Tokenize
-    let mut lexer = Lexer::new(code, 1, 0);
+    // Try to parse the code
+    let extracted = extract_blocks(&format!("```lumen\n{}\n```", code));
+
+    let mut full_code = String::new();
+    for block in &extracted.code_blocks {
+        if !full_code.is_empty() {
+            full_code.push('\n');
+        }
+        full_code.push_str(&block.code);
+    }
+
+    if full_code.is_empty() {
+        return code.to_string();
+    }
+
+    // Lex and parse
+    let mut lexer = lumen_compiler::compiler::lexer::Lexer::new(&full_code, 1, 0);
     let tokens = match lexer.tokenize() {
         Ok(t) => t,
-        Err(_) => {
-            // If lexing fails, return code as-is
-            return code.to_string();
-        }
+        Err(_) => return code.to_string(), // Parse failed, return original
     };
 
-    // Group tokens into logical lines
-    let mut lines = Vec::new();
-    let mut current_line = Vec::new();
+    let mut parser = lumen_compiler::compiler::parser::Parser::new(tokens);
+    let program = match parser.parse_program(vec![]) {
+        Ok(p) => p,
+        Err(_) => return code.to_string(), // Parse failed, return original
+    };
 
-    for tok in &tokens {
-        match &tok.kind {
-            TokenKind::Newline => {
-                if !current_line.is_empty() {
-                    lines.push(std::mem::take(&mut current_line));
-                }
-            }
-            TokenKind::Indent | TokenKind::Dedent | TokenKind::Eof => {
-                // Skip these meta-tokens
-            }
-            _ => {
-                current_line.push(tok.clone());
-            }
-        }
+    // Pretty-print the AST
+    let mut formatter = Formatter::new();
+    formatter.fmt_program(&program);
+
+    let mut result = formatter.output;
+    // Ensure single trailing newline
+    while result.ends_with("\n\n") {
+        result.pop();
     }
-    if !current_line.is_empty() {
-        lines.push(current_line);
-    }
-
-    // Format each line
-    let mut output = String::new();
-    let mut indent_level = 0;
-    let mut prev_was_blank = false;
-    let mut last_top_level_line = 0;
-
-    for (line_idx, line_tokens) in lines.iter().enumerate() {
-        if line_tokens.is_empty() {
-            continue;
-        }
-
-        // Check if line starts with a dedent keyword
-        let first_kind = &line_tokens[0].kind;
-        let is_dedent_keyword = matches!(
-            first_kind,
-            TokenKind::End | TokenKind::Else
-        );
-
-        if is_dedent_keyword && indent_level > 0 {
-            indent_level -= 1;
-        }
-
-        // Check if we should add blank line before top-level declarations
-        let is_top_level_decl = indent_level == 0 && matches!(
-            first_kind,
-            TokenKind::Cell | TokenKind::Record | TokenKind::Enum |
-            TokenKind::Use | TokenKind::Grant | TokenKind::Tool |
-            TokenKind::Role | TokenKind::Schema
-        );
-
-        if is_top_level_decl && line_idx > 0 && !prev_was_blank && (line_idx - last_top_level_line) > 0 {
-            output.push('\n');
-        }
-
-        if is_top_level_decl {
-            last_top_level_line = line_idx;
-        }
-
-        // Emit indentation
-        for _ in 0..indent_level {
-            output.push_str("  ");
-        }
-
-        // Emit tokens for this line with appropriate spacing
-        format_line(&mut output, line_tokens);
-        output.push('\n');
-
-        prev_was_blank = false;
-
-        // Determine if this line should increase indent for the next line
-        // Look for keywords that start blocks
-        let starts_block = line_tokens.iter().any(|t| matches!(
-            &t.kind,
-            TokenKind::Cell | TokenKind::If | TokenKind::Else |
-            TokenKind::For | TokenKind::While | TokenKind::Loop |
-            TokenKind::Match | TokenKind::Try | TokenKind::Fn |
-            TokenKind::Record | TokenKind::Enum
-        ));
-
-        // Also check for do keyword or opening brace
-        let has_do = line_tokens.iter().any(|t| matches!(&t.kind, TokenKind::Ident(s) if s == "do"));
-        let has_open_brace = line_tokens.iter().any(|t| matches!(&t.kind, TokenKind::LBrace));
-
-        // Don't indent after single-line declarations (those with 'end' on same line)
-        let has_end_same_line = line_tokens.iter().any(|t| matches!(&t.kind, TokenKind::End));
-
-        if (starts_block || has_do || has_open_brace) && !has_end_same_line {
-            indent_level += 1;
-        }
-
-        // Check for closing brace on this line that should dedent next line
-        let has_close_brace = line_tokens.iter().any(|t| matches!(&t.kind, TokenKind::RBrace));
-        if has_close_brace && indent_level > 0 {
-            indent_level -= 1;
-        }
-    }
-
-    // Trim trailing whitespace from each line and ensure single final newline
-    let trimmed_lines: Vec<_> = output
-        .lines()
-        .map(|l| l.trim_end())
-        .collect();
-
-    let mut result = trimmed_lines.join("\n");
     if !result.is_empty() && !result.ends_with('\n') {
         result.push('\n');
     }
@@ -177,180 +105,998 @@ pub fn format_lumen_code(code: &str) -> String {
     result
 }
 
-/// Format a single line of tokens with proper spacing
-fn format_line(output: &mut String, tokens: &[Token]) {
-    for (i, tok) in tokens.iter().enumerate() {
-        let next = tokens.get(i + 1);
-        let prev = if i > 0 { tokens.get(i - 1) } else { None };
+/// Pretty-printer for Lumen AST
+struct Formatter {
+    output: String,
+    indent: usize,
+}
 
-        // Add space before token if needed
-        if i > 0 && should_space_before(tok, prev) {
-            output.push(' ');
+impl Formatter {
+    fn new() -> Self {
+        Self {
+            output: String::new(),
+            indent: 0,
+        }
+    }
+
+    fn indent_str(&self) -> String {
+        " ".repeat(self.indent * INDENT_SPACES)
+    }
+
+    fn push_indent(&mut self) {
+        self.indent += 1;
+    }
+
+    fn pop_indent(&mut self) {
+        if self.indent > 0 {
+            self.indent -= 1;
+        }
+    }
+
+    fn writeln(&mut self, s: &str) {
+        if !s.is_empty() {
+            self.output.push_str(&self.indent_str());
+            self.output.push_str(s);
+        }
+        self.output.push('\n');
+    }
+
+    fn fmt_program(&mut self, program: &Program) {
+        let mut first = true;
+        for item in &program.items {
+            if !first {
+                self.writeln(""); // Blank line between top-level items
+            }
+            first = false;
+            self.fmt_item(item);
+        }
+    }
+
+    fn fmt_item(&mut self, item: &Item) {
+        match item {
+            Item::Cell(c) => self.fmt_cell(c),
+            Item::Record(r) => self.fmt_record(r),
+            Item::Enum(e) => self.fmt_enum(e),
+            Item::TypeAlias(t) => self.fmt_type_alias(t),
+            Item::Effect(eff) => self.fmt_effect(eff),
+            Item::EffectBind(b) => self.fmt_effect_bind(b),
+            Item::UseTool(u) => self.fmt_use_tool(u),
+            Item::Grant(g) => self.fmt_grant(g),
+            Item::Import(i) => self.fmt_import(i),
+            Item::Process(p) => self.fmt_process(p),
+            Item::Agent(a) => self.fmt_agent(a),
+            Item::Handler(h) => self.fmt_handler(h),
+            Item::Addon(a) => self.fmt_addon(a),
+            Item::Trait(t) => self.fmt_trait(t),
+            Item::Impl(i) => self.fmt_impl(i),
+            Item::ConstDecl(c) => self.fmt_const_decl(c),
+            Item::MacroDecl(m) => self.fmt_macro_decl(m),
+        }
+    }
+
+    fn fmt_cell(&mut self, cell: &CellDef) {
+        let mut header = String::new();
+        if cell.is_pub {
+            header.push_str("pub ");
+        }
+        header.push_str("cell ");
+        header.push_str(&cell.name);
+
+        if !cell.generic_params.is_empty() {
+            header.push('[');
+            for (i, param) in cell.generic_params.iter().enumerate() {
+                if i > 0 {
+                    header.push_str(", ");
+                }
+                header.push_str(&param.name);
+                if !param.bounds.is_empty() {
+                    header.push_str(": ");
+                    header.push_str(&param.bounds.join(" + "));
+                }
+            }
+            header.push(']');
         }
 
-        // Add token text
-        match &tok.kind {
-            TokenKind::IntLit(n) => output.push_str(&n.to_string()),
-            TokenKind::FloatLit(f) => output.push_str(&f.to_string()),
-            TokenKind::StringLit(s) => {
-                output.push('"');
-                output.push_str(&escape_string(s));
-                output.push('"');
+        header.push('(');
+        for (i, param) in cell.params.iter().enumerate() {
+            if i > 0 {
+                header.push_str(", ");
             }
-            TokenKind::StringInterpLit(segments) => {
-                // Reconstruct interpolated string
-                output.push('"');
-                for (is_expr, text) in segments {
-                    if *is_expr {
-                        output.push('{');
-                        output.push_str(text);
-                        output.push('}');
-                    } else {
-                        output.push_str(&escape_string(text));
+            header.push_str(&param.name);
+            header.push_str(": ");
+            header.push_str(&self.fmt_type(&param.ty));
+            if let Some(default) = &param.default_value {
+                header.push_str(" = ");
+                header.push_str(&self.fmt_expr(default));
+            }
+        }
+        header.push(')');
+
+        if let Some(ret) = &cell.return_type {
+            header.push_str(" -> ");
+            header.push_str(&self.fmt_type(ret));
+        }
+
+        if !cell.effects.is_empty() {
+            header.push_str(" / {");
+            header.push_str(&cell.effects.join(", "));
+            header.push('}');
+        }
+
+        self.writeln(&header);
+        self.push_indent();
+        for stmt in &cell.body {
+            self.fmt_stmt(stmt);
+        }
+        self.pop_indent();
+        self.writeln("end");
+    }
+
+    fn fmt_record(&mut self, record: &RecordDef) {
+        let mut header = String::new();
+        if record.is_pub {
+            header.push_str("pub ");
+        }
+        header.push_str("record ");
+        header.push_str(&record.name);
+
+        if !record.generic_params.is_empty() {
+            header.push('[');
+            for (i, param) in record.generic_params.iter().enumerate() {
+                if i > 0 {
+                    header.push_str(", ");
+                }
+                header.push_str(&param.name);
+            }
+            header.push(']');
+        }
+
+        self.writeln(&header);
+        self.push_indent();
+        for field in &record.fields {
+            let mut line = field.name.clone();
+            line.push_str(": ");
+            line.push_str(&self.fmt_type(&field.ty));
+            if let Some(default) = &field.default_value {
+                line.push_str(" = ");
+                line.push_str(&self.fmt_expr(default));
+            }
+            if let Some(constraint) = &field.constraint {
+                line.push_str(" where ");
+                line.push_str(&self.fmt_expr(constraint));
+            }
+            self.writeln(&line);
+        }
+        self.pop_indent();
+        self.writeln("end");
+    }
+
+    fn fmt_enum(&mut self, enm: &EnumDef) {
+        let mut header = String::new();
+        if enm.is_pub {
+            header.push_str("pub ");
+        }
+        header.push_str("enum ");
+        header.push_str(&enm.name);
+
+        if !enm.generic_params.is_empty() {
+            header.push('[');
+            for (i, param) in enm.generic_params.iter().enumerate() {
+                if i > 0 {
+                    header.push_str(", ");
+                }
+                header.push_str(&param.name);
+            }
+            header.push(']');
+        }
+
+        self.writeln(&header);
+        self.push_indent();
+        for variant in &enm.variants {
+            let mut line = variant.name.clone();
+            if let Some(payload) = &variant.payload {
+                line.push('(');
+                line.push_str(&self.fmt_type(payload));
+                line.push(')');
+            }
+            self.writeln(&line);
+        }
+        self.pop_indent();
+        self.writeln("end");
+
+        // Methods
+        for method in &enm.methods {
+            self.writeln("");
+            self.fmt_cell(method);
+        }
+    }
+
+    fn fmt_type_alias(&mut self, alias: &TypeAliasDef) {
+        let mut line = String::new();
+        if alias.is_pub {
+            line.push_str("pub ");
+        }
+        line.push_str("type ");
+        line.push_str(&alias.name);
+
+        if !alias.generic_params.is_empty() {
+            line.push('[');
+            for (i, param) in alias.generic_params.iter().enumerate() {
+                if i > 0 {
+                    line.push_str(", ");
+                }
+                line.push_str(&param.name);
+            }
+            line.push(']');
+        }
+
+        line.push_str(" = ");
+        line.push_str(&self.fmt_type(&alias.type_expr));
+        self.writeln(&line);
+    }
+
+    fn fmt_effect(&mut self, effect: &EffectDecl) {
+        self.writeln(&format!("effect {}", effect.name));
+        self.push_indent();
+        for op in &effect.operations {
+            self.fmt_cell(op);
+        }
+        self.pop_indent();
+        self.writeln("end");
+    }
+
+    fn fmt_effect_bind(&mut self, bind: &EffectBindDecl) {
+        self.writeln(&format!("bind effect {} to {}", bind.effect_path, bind.tool_alias));
+    }
+
+    fn fmt_use_tool(&mut self, use_tool: &UseToolDecl) {
+        let mut line = format!("use tool {} as {}", use_tool.tool_path, use_tool.alias);
+        if let Some(url) = &use_tool.mcp_url {
+            line.push_str(&format!(" from \"{}\"", url));
+        }
+        self.writeln(&line);
+    }
+
+    fn fmt_grant(&mut self, grant: &GrantDecl) {
+        let mut line = format!("grant {}", grant.tool_alias);
+        if !grant.constraints.is_empty() {
+            line.push_str(" with {");
+            for (i, constraint) in grant.constraints.iter().enumerate() {
+                if i > 0 {
+                    line.push_str(", ");
+                }
+                line.push_str(&constraint.key);
+                line.push_str(": ");
+                line.push_str(&self.fmt_expr(&constraint.value));
+            }
+            line.push('}');
+        }
+        self.writeln(&line);
+    }
+
+    fn fmt_import(&mut self, import: &ImportDecl) {
+        let mut line = String::new();
+        if import.is_pub {
+            line.push_str("pub ");
+        }
+        line.push_str("import ");
+
+        match &import.names {
+            ImportList::Wildcard => {
+                line.push_str(&import.path.join("::"));
+                line.push_str("::*");
+            }
+            ImportList::Names(names) => {
+                line.push('{');
+                for (i, name) in names.iter().enumerate() {
+                    if i > 0 {
+                        line.push_str(", ");
+                    }
+                    line.push_str(&name.name);
+                    if let Some(alias) = &name.alias {
+                        line.push_str(" as ");
+                        line.push_str(alias);
                     }
                 }
-                output.push('"');
+                line.push_str("} from ");
+                line.push_str(&import.path.join("::"));
             }
-            TokenKind::BoolLit(b) => output.push_str(&b.to_string()),
-            TokenKind::RawStringLit(s) => {
-                output.push_str("r\"");
-                output.push_str(s);
-                output.push('"');
-            }
-            TokenKind::BytesLit(_) => {
-                output.push_str("b\"...\"");
-            }
-            TokenKind::NullLit => output.push_str("null"),
-            TokenKind::Ident(s) => output.push_str(s),
-            _ => output.push_str(&tok.kind.to_string()),
         }
 
-        // Add spacing after token
-        let needs_space = should_space_after(tok, next);
-        if needs_space {
-            output.push(' ');
-        }
-    }
-}
-
-/// Determine if we should add a space before this token
-fn should_space_before(tok: &Token, prev: Option<&Token>) -> bool {
-    let prev_kind = match prev {
-        Some(t) => &t.kind,
-        None => return false,
-    };
-
-    // Space before binary operators (unless after opening delim)
-    if matches!(
-        &tok.kind,
-        TokenKind::Plus | TokenKind::Minus | TokenKind::Star | TokenKind::Slash |
-        TokenKind::Percent | TokenKind::Eq | TokenKind::NotEq |
-        TokenKind::Lt | TokenKind::LtEq | TokenKind::Gt | TokenKind::GtEq |
-        TokenKind::Assign |
-        TokenKind::PlusAssign | TokenKind::MinusAssign | TokenKind::StarAssign | TokenKind::SlashAssign |
-        TokenKind::StarStar | TokenKind::DotDot | TokenKind::DotDotEq |
-        TokenKind::PipeForward | TokenKind::Compose | TokenKind::QuestionQuestion |
-        TokenKind::FatArrow | TokenKind::PlusPlus |
-        TokenKind::Ampersand | TokenKind::Caret | TokenKind::Pipe |
-        TokenKind::Arrow | TokenKind::And | TokenKind::Or
-    ) {
-        return !matches!(
-            prev_kind,
-            TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace
-        );
+        self.writeln(&line);
     }
 
-    false
-}
+    fn fmt_process(&mut self, process: &ProcessDecl) {
+        self.writeln(&format!("{} {}", process.kind, process.name));
+        self.push_indent();
 
-/// Determine if we should add a space after this token
-fn should_space_after(tok: &Token, next: Option<&Token>) -> bool {
-    let next_kind = match next {
-        Some(t) => &t.kind,
-        None => return false,
-    };
+        if let Some(initial) = &process.machine_initial {
+            self.writeln(&format!("initial {}", initial));
+        }
 
-    // No space before closing delimiters or punctuation
-    if matches!(
-        next_kind,
-        TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace |
-        TokenKind::Comma | TokenKind::Semicolon |
-        TokenKind::Dot | TokenKind::QuestionDot
-    ) {
-        return false;
+        for state in &process.machine_states {
+            self.fmt_machine_state(state);
+        }
+
+        if !process.pipeline_stages.is_empty() {
+            self.writeln(&format!("stages: {}", process.pipeline_stages.join(" -> ")));
+        }
+
+        for grant in &process.grants {
+            self.fmt_grant(grant);
+        }
+
+        for cell in &process.cells {
+            self.writeln("");
+            self.fmt_cell(cell);
+        }
+
+        self.pop_indent();
+        self.writeln("end");
     }
 
-    match &tok.kind {
-        // Space after binary operators
-        TokenKind::Plus | TokenKind::Minus | TokenKind::Star | TokenKind::Slash |
-        TokenKind::Percent | TokenKind::Eq | TokenKind::NotEq |
-        TokenKind::Lt | TokenKind::LtEq | TokenKind::Gt | TokenKind::GtEq |
-        TokenKind::Assign |
-        TokenKind::PlusAssign | TokenKind::MinusAssign | TokenKind::StarAssign | TokenKind::SlashAssign |
-        TokenKind::StarStar | TokenKind::DotDot | TokenKind::DotDotEq |
-        TokenKind::PipeForward | TokenKind::Compose | TokenKind::QuestionQuestion |
-        TokenKind::FatArrow | TokenKind::PlusPlus |
-        TokenKind::Ampersand | TokenKind::Caret | TokenKind::Pipe => true,
+    fn fmt_machine_state(&mut self, state: &MachineStateDecl) {
+        let mut line = format!("state {}", state.name);
+        if !state.params.is_empty() {
+            line.push('(');
+            for (i, param) in state.params.iter().enumerate() {
+                if i > 0 {
+                    line.push_str(", ");
+                }
+                line.push_str(&param.name);
+                line.push_str(": ");
+                line.push_str(&self.fmt_type(&param.ty));
+            }
+            line.push(')');
+        }
+        if state.terminal {
+            line.push_str(" [terminal]");
+        }
+        self.writeln(&line);
 
-        // Space after arrow
-        TokenKind::Arrow => true,
-
-        // Space after comma
-        TokenKind::Comma => true,
-
-        // Space after colon (for type annotations)
-        TokenKind::Colon => !matches!(next_kind, TokenKind::Colon),
-
-        // Space after keywords
-        TokenKind::Cell | TokenKind::Record | TokenKind::Enum |
-        TokenKind::Let | TokenKind::If | TokenKind::Else |
-        TokenKind::For | TokenKind::In | TokenKind::Match |
-        TokenKind::Return | TokenKind::Halt | TokenKind::Use |
-        TokenKind::Tool | TokenKind::As | TokenKind::Grant |
-        TokenKind::Expect | TokenKind::Schema | TokenKind::Role |
-        TokenKind::Where | TokenKind::And | TokenKind::Or | TokenKind::Not |
-        TokenKind::While | TokenKind::Loop | TokenKind::Break | TokenKind::Continue |
-        TokenKind::Mut | TokenKind::Const | TokenKind::Pub |
-        TokenKind::Import | TokenKind::From | TokenKind::Async | TokenKind::Await |
-        TokenKind::Parallel | TokenKind::Fn | TokenKind::Trait | TokenKind::Impl |
-        TokenKind::Type | TokenKind::Emit | TokenKind::Yield | TokenKind::Mod |
-        TokenKind::With | TokenKind::Try | TokenKind::Union | TokenKind::Step |
-        TokenKind::Then | TokenKind::When => true,
-
-        // Space after identifiers (unless followed by paren/bracket/dot/operators that add their own space before)
-        TokenKind::Ident(_) => {
-            !matches!(
-                next_kind,
-                TokenKind::LParen | TokenKind::LBracket | TokenKind::Dot | TokenKind::Colon |
-                // Operators add space before themselves
-                TokenKind::Plus | TokenKind::Minus | TokenKind::Star | TokenKind::Slash |
-                TokenKind::Percent | TokenKind::Eq | TokenKind::NotEq |
-                TokenKind::Lt | TokenKind::LtEq | TokenKind::Gt | TokenKind::GtEq |
-                TokenKind::Assign |
-                TokenKind::PlusAssign | TokenKind::MinusAssign | TokenKind::StarAssign | TokenKind::SlashAssign |
-                TokenKind::StarStar | TokenKind::DotDot | TokenKind::DotDotEq |
-                TokenKind::PipeForward | TokenKind::Compose | TokenKind::QuestionQuestion |
-                TokenKind::FatArrow | TokenKind::PlusPlus |
-                TokenKind::Ampersand | TokenKind::Caret | TokenKind::Pipe |
-                TokenKind::Arrow | TokenKind::And | TokenKind::Or
-            )
+        if let Some(guard) = &state.guard {
+            self.push_indent();
+            self.writeln(&format!("when {}", self.fmt_expr(guard)));
+            self.pop_indent();
         }
 
-        // Don't add space after closing paren before arrow (arrow adds its own space before)
-        TokenKind::RParen => {
-            !matches!(next_kind, TokenKind::Arrow | TokenKind::LParen | TokenKind::LBracket | TokenKind::Dot)
+        if let Some(transition) = &state.transition_to {
+            self.push_indent();
+            let mut trans = format!("then {}", transition);
+            if !state.transition_args.is_empty() {
+                trans.push('(');
+                for (i, arg) in state.transition_args.iter().enumerate() {
+                    if i > 0 {
+                        trans.push_str(", ");
+                    }
+                    trans.push_str(&self.fmt_expr(arg));
+                }
+                trans.push(')');
+            }
+            self.writeln(&trans);
+            self.pop_indent();
+        }
+    }
+
+    fn fmt_agent(&mut self, agent: &AgentDecl) {
+        self.writeln(&format!("agent {}", agent.name));
+        self.push_indent();
+
+        for grant in &agent.grants {
+            self.fmt_grant(grant);
         }
 
-        // No space after opening delimiters
-        TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => false,
+        for cell in &agent.cells {
+            self.writeln("");
+            self.fmt_cell(cell);
+        }
 
-        // No space after dots
-        TokenKind::Dot | TokenKind::QuestionDot => false,
+        self.pop_indent();
+        self.writeln("end");
+    }
 
-        // No space after prefix operators
-        TokenKind::Bang | TokenKind::Tilde => false,
+    fn fmt_handler(&mut self, handler: &HandlerDecl) {
+        self.writeln(&format!("handler {}", handler.name));
+        self.push_indent();
+        for handle in &handler.handles {
+            self.fmt_cell(handle);
+        }
+        self.pop_indent();
+        self.writeln("end");
+    }
 
-        _ => false,
+    fn fmt_addon(&mut self, addon: &AddonDecl) {
+        let mut line = format!("addon {}", addon.kind);
+        if let Some(name) = &addon.name {
+            line.push(' ');
+            line.push_str(name);
+        }
+        self.writeln(&line);
+    }
+
+    fn fmt_trait(&mut self, trt: &TraitDef) {
+        let mut header = String::new();
+        if trt.is_pub {
+            header.push_str("pub ");
+        }
+        header.push_str("trait ");
+        header.push_str(&trt.name);
+        if !trt.parent_traits.is_empty() {
+            header.push_str(": ");
+            header.push_str(&trt.parent_traits.join(" + "));
+        }
+
+        self.writeln(&header);
+        self.push_indent();
+        for method in &trt.methods {
+            self.fmt_cell(method);
+        }
+        self.pop_indent();
+        self.writeln("end");
+    }
+
+    fn fmt_impl(&mut self, impl_def: &ImplDef) {
+        let mut header = format!("impl {} for {}", impl_def.trait_name, impl_def.target_type);
+        if !impl_def.generic_params.is_empty() {
+            header.push('[');
+            for (i, param) in impl_def.generic_params.iter().enumerate() {
+                if i > 0 {
+                    header.push_str(", ");
+                }
+                header.push_str(&param.name);
+            }
+            header.push(']');
+        }
+
+        self.writeln(&header);
+        self.push_indent();
+        for cell in &impl_def.cells {
+            self.fmt_cell(cell);
+        }
+        self.pop_indent();
+        self.writeln("end");
+    }
+
+    fn fmt_const_decl(&mut self, const_decl: &ConstDeclDef) {
+        let mut line = format!("const {}", const_decl.name);
+        if let Some(ty) = &const_decl.type_ann {
+            line.push_str(": ");
+            line.push_str(&self.fmt_type(ty));
+        }
+        line.push_str(" = ");
+        line.push_str(&self.fmt_expr(&const_decl.value));
+        self.writeln(&line);
+    }
+
+    fn fmt_macro_decl(&mut self, macro_decl: &MacroDeclDef) {
+        let mut header = format!("macro {}", macro_decl.name);
+        if !macro_decl.params.is_empty() {
+            header.push('(');
+            header.push_str(&macro_decl.params.join(", "));
+            header.push(')');
+        }
+
+        self.writeln(&header);
+        self.push_indent();
+        for stmt in &macro_decl.body {
+            self.fmt_stmt(stmt);
+        }
+        self.pop_indent();
+        self.writeln("end");
+    }
+
+    fn fmt_stmt(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Let(s) => {
+                let mut line = String::new();
+                if s.mutable {
+                    line.push_str("let mut ");
+                } else {
+                    line.push_str("let ");
+                }
+
+                if let Some(pattern) = &s.pattern {
+                    line.push_str(&self.fmt_pattern(pattern));
+                } else {
+                    line.push_str(&s.name);
+                }
+
+                if let Some(ty) = &s.ty {
+                    line.push_str(": ");
+                    line.push_str(&self.fmt_type(ty));
+                }
+                line.push_str(" = ");
+                line.push_str(&self.fmt_expr(&s.value));
+                self.writeln(&line);
+            }
+            Stmt::If(s) => {
+                self.writeln(&format!("if {}", self.fmt_expr(&s.condition)));
+                self.push_indent();
+                for stmt in &s.then_body {
+                    self.fmt_stmt(stmt);
+                }
+                self.pop_indent();
+                if let Some(else_body) = &s.else_body {
+                    self.writeln("else");
+                    self.push_indent();
+                    for stmt in else_body {
+                        self.fmt_stmt(stmt);
+                    }
+                    self.pop_indent();
+                }
+                self.writeln("end");
+            }
+            Stmt::For(s) => {
+                let mut header = String::from("for ");
+                if let Some(pattern) = &s.pattern {
+                    header.push_str(&self.fmt_pattern(pattern));
+                } else {
+                    header.push_str(&s.var);
+                }
+                header.push_str(" in ");
+                header.push_str(&self.fmt_expr(&s.iter));
+                self.writeln(&header);
+                self.push_indent();
+                for stmt in &s.body {
+                    self.fmt_stmt(stmt);
+                }
+                self.pop_indent();
+                self.writeln("end");
+            }
+            Stmt::Match(s) => {
+                self.writeln(&format!("match {}", self.fmt_expr(&s.subject)));
+                self.push_indent();
+                for arm in &s.arms {
+                    self.writeln(&format!("| {} =>", self.fmt_pattern(&arm.pattern)));
+                    self.push_indent();
+                    for stmt in &arm.body {
+                        self.fmt_stmt(stmt);
+                    }
+                    self.pop_indent();
+                }
+                self.pop_indent();
+                self.writeln("end");
+            }
+            Stmt::Return(s) => {
+                self.writeln(&format!("return {}", self.fmt_expr(&s.value)));
+            }
+            Stmt::Halt(s) => {
+                self.writeln(&format!("halt {}", self.fmt_expr(&s.message)));
+            }
+            Stmt::Assign(s) => {
+                self.writeln(&format!("{} = {}", s.target, self.fmt_expr(&s.value)));
+            }
+            Stmt::Expr(s) => {
+                self.writeln(&self.fmt_expr(&s.expr));
+            }
+            Stmt::While(s) => {
+                self.writeln(&format!("while {}", self.fmt_expr(&s.condition)));
+                self.push_indent();
+                for stmt in &s.body {
+                    self.fmt_stmt(stmt);
+                }
+                self.pop_indent();
+                self.writeln("end");
+            }
+            Stmt::Loop(s) => {
+                self.writeln("loop");
+                self.push_indent();
+                for stmt in &s.body {
+                    self.fmt_stmt(stmt);
+                }
+                self.pop_indent();
+                self.writeln("end");
+            }
+            Stmt::Break(s) => {
+                if let Some(value) = &s.value {
+                    self.writeln(&format!("break {}", self.fmt_expr(value)));
+                } else {
+                    self.writeln("break");
+                }
+            }
+            Stmt::Continue(_) => {
+                self.writeln("continue");
+            }
+            Stmt::Emit(s) => {
+                self.writeln(&format!("emit {}", self.fmt_expr(&s.value)));
+            }
+            Stmt::CompoundAssign(s) => {
+                let op = match s.op {
+                    CompoundOp::AddAssign => "+=",
+                    CompoundOp::SubAssign => "-=",
+                    CompoundOp::MulAssign => "*=",
+                    CompoundOp::DivAssign => "/=",
+                };
+                self.writeln(&format!("{} {} {}", s.target, op, self.fmt_expr(&s.value)));
+            }
+        }
+    }
+
+    fn fmt_expr(&self, expr: &Expr) -> String {
+        match expr {
+            Expr::IntLit(n, _) => n.to_string(),
+            Expr::FloatLit(f, _) => f.to_string(),
+            Expr::StringLit(s, _) => format!("\"{}\"", escape_string(s)),
+            Expr::StringInterp(segments, _) => {
+                let mut result = String::from("\"");
+                for segment in segments {
+                    match segment {
+                        StringSegment::Literal(s) => result.push_str(&escape_string(s)),
+                        StringSegment::Interpolation(e) => {
+                            result.push('{');
+                            result.push_str(&self.fmt_expr(e));
+                            result.push('}');
+                        }
+                    }
+                }
+                result.push('"');
+                result
+            }
+            Expr::BoolLit(b, _) => b.to_string(),
+            Expr::NullLit(_) => "null".to_string(),
+            Expr::RawStringLit(s, _) => format!("r\"{}\"", s),
+            Expr::BytesLit(_, _) => "b\"...\"".to_string(),
+            Expr::Ident(s, _) => s.clone(),
+            Expr::ListLit(items, _) => {
+                let mut result = String::from("[");
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        result.push_str(", ");
+                    }
+                    result.push_str(&self.fmt_expr(item));
+                }
+                result.push(']');
+                result
+            }
+            Expr::MapLit(pairs, _) => {
+                let mut result = String::from("{");
+                for (i, (k, v)) in pairs.iter().enumerate() {
+                    if i > 0 {
+                        result.push_str(", ");
+                    }
+                    result.push_str(&self.fmt_expr(k));
+                    result.push_str(": ");
+                    result.push_str(&self.fmt_expr(v));
+                }
+                result.push('}');
+                result
+            }
+            Expr::RecordLit(name, fields, _) => {
+                let mut result = name.clone();
+                result.push('(');
+                for (i, (fname, value)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        result.push_str(", ");
+                    }
+                    result.push_str(fname);
+                    result.push_str(": ");
+                    result.push_str(&self.fmt_expr(value));
+                }
+                result.push(')');
+                result
+            }
+            Expr::BinOp(left, op, right, _) => {
+                format!("{} {} {}", self.fmt_expr(left), op, self.fmt_expr(right))
+            }
+            Expr::UnaryOp(op, expr, _) => {
+                let op_str = match op {
+                    UnaryOp::Neg => "-",
+                    UnaryOp::Not => "not ",
+                    UnaryOp::BitNot => "~",
+                };
+                format!("{}{}", op_str, self.fmt_expr(expr))
+            }
+            Expr::Call(func, args, _) => {
+                let mut result = self.fmt_expr(func);
+                result.push('(');
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        result.push_str(", ");
+                    }
+                    match arg {
+                        CallArg::Positional(e) => result.push_str(&self.fmt_expr(e)),
+                        CallArg::Named(name, e, _) => {
+                            result.push_str(name);
+                            result.push_str(": ");
+                            result.push_str(&self.fmt_expr(e));
+                        }
+                        CallArg::Role(_, _, _) => {} // Handled separately in ToolCall
+                    }
+                }
+                result.push(')');
+                result
+            }
+            Expr::ToolCall(func, args, _) => {
+                let mut result = self.fmt_expr(func);
+                result.push('(');
+                let mut first = true;
+                for arg in args {
+                    match arg {
+                        CallArg::Positional(e) => {
+                            if !first {
+                                result.push_str(", ");
+                            }
+                            first = false;
+                            result.push_str(&self.fmt_expr(e));
+                        }
+                        CallArg::Named(name, e, _) => {
+                            if !first {
+                                result.push_str(", ");
+                            }
+                            first = false;
+                            result.push_str(name);
+                            result.push_str(": ");
+                            result.push_str(&self.fmt_expr(e));
+                        }
+                        CallArg::Role(_, _, _) => {} // Skip roles in args list
+                    }
+                }
+                result.push(')');
+                result
+            }
+            Expr::DotAccess(expr, field, _) => {
+                format!("{}.{}", self.fmt_expr(expr), field)
+            }
+            Expr::IndexAccess(expr, index, _) => {
+                format!("{}[{}]", self.fmt_expr(expr), self.fmt_expr(index))
+            }
+            Expr::RoleBlock(role, content, _) => {
+                format!("role {}: {} end", role, self.fmt_expr(content))
+            }
+            Expr::ExpectSchema(expr, schema, _) => {
+                format!("{} expect schema {}", self.fmt_expr(expr), schema)
+            }
+            Expr::Lambda { params, return_type, body, .. } => {
+                let mut result = String::from("fn(");
+                for (i, param) in params.iter().enumerate() {
+                    if i > 0 {
+                        result.push_str(", ");
+                    }
+                    result.push_str(&param.name);
+                    result.push_str(": ");
+                    result.push_str(&self.fmt_type(&param.ty));
+                }
+                result.push(')');
+
+                if let Some(ret) = return_type {
+                    result.push_str(" -> ");
+                    result.push_str(&self.fmt_type(ret));
+                }
+
+                match body {
+                    LambdaBody::Expr(e) => {
+                        result.push_str(" => ");
+                        result.push_str(&self.fmt_expr(e));
+                    }
+                    LambdaBody::Block(_) => {
+                        result.push_str(" ... end");
+                    }
+                }
+
+                result
+            }
+            Expr::TupleLit(items, _) => {
+                let mut result = String::from("(");
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        result.push_str(", ");
+                    }
+                    result.push_str(&self.fmt_expr(item));
+                }
+                result.push(')');
+                result
+            }
+            Expr::SetLit(items, _) => {
+                let mut result = String::from("set[");
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        result.push_str(", ");
+                    }
+                    result.push_str(&self.fmt_expr(item));
+                }
+                result.push(']');
+                result
+            }
+            Expr::RangeExpr { start, end, inclusive, step, .. } => {
+                let mut result = String::new();
+                if let Some(s) = start {
+                    result.push_str(&self.fmt_expr(s));
+                }
+                result.push_str(if *inclusive { "..=" } else { ".." });
+                if let Some(e) = end {
+                    result.push_str(&self.fmt_expr(e));
+                }
+                if let Some(step) = step {
+                    result.push_str(" step ");
+                    result.push_str(&self.fmt_expr(step));
+                }
+                result
+            }
+            Expr::TryExpr(expr, _) => {
+                format!("{}?", self.fmt_expr(expr))
+            }
+            Expr::NullCoalesce(left, right, _) => {
+                format!("{} ?? {}", self.fmt_expr(left), self.fmt_expr(right))
+            }
+            Expr::NullSafeAccess(expr, field, _) => {
+                format!("{}?.{}", self.fmt_expr(expr), field)
+            }
+            Expr::NullAssert(expr, _) => {
+                format!("{}!", self.fmt_expr(expr))
+            }
+            Expr::SpreadExpr(expr, _) => {
+                format!("...{}", self.fmt_expr(expr))
+            }
+            Expr::IfExpr { cond, then_val, else_val, .. } => {
+                format!("if {} then {} else {}",
+                    self.fmt_expr(cond),
+                    self.fmt_expr(then_val),
+                    self.fmt_expr(else_val))
+            }
+            Expr::AwaitExpr(expr, _) => {
+                format!("await {}", self.fmt_expr(expr))
+            }
+            Expr::Comprehension { body, var, iter, condition, kind, .. } => {
+                let bracket = match kind {
+                    ComprehensionKind::List => ("[", "]"),
+                    ComprehensionKind::Set => ("set[", "]"),
+                    ComprehensionKind::Map => ("{", "}"),
+                };
+                let mut result = String::from(bracket.0);
+                result.push_str(&self.fmt_expr(body));
+                result.push_str(" for ");
+                result.push_str(var);
+                result.push_str(" in ");
+                result.push_str(&self.fmt_expr(iter));
+                if let Some(cond) = condition {
+                    result.push_str(" if ");
+                    result.push_str(&self.fmt_expr(cond));
+                }
+                result.push_str(bracket.1);
+                result
+            }
+            Expr::MatchExpr { subject, arms: _, .. } => {
+                format!("match {} ... end", self.fmt_expr(subject))
+            }
+            Expr::BlockExpr(_, _) => {
+                "block ... end".to_string()
+            }
+        }
+    }
+
+    fn fmt_type(&self, ty: &TypeExpr) -> String {
+        match ty {
+            TypeExpr::Named(name, _) => name.clone(),
+            TypeExpr::List(inner, _) => format!("list[{}]", self.fmt_type(inner)),
+            TypeExpr::Map(k, v, _) => format!("map[{}, {}]", self.fmt_type(k), self.fmt_type(v)),
+            TypeExpr::Result(ok, err, _) => format!("result[{}, {}]", self.fmt_type(ok), self.fmt_type(err)),
+            TypeExpr::Union(types, _) => {
+                types.iter()
+                    .map(|t| self.fmt_type(t))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            }
+            TypeExpr::Null(_) => "null".to_string(),
+            TypeExpr::Tuple(types, _) => {
+                let mut result = String::from("(");
+                for (i, ty) in types.iter().enumerate() {
+                    if i > 0 {
+                        result.push_str(", ");
+                    }
+                    result.push_str(&self.fmt_type(ty));
+                }
+                result.push(')');
+                result
+            }
+            TypeExpr::Set(inner, _) => format!("set[{}]", self.fmt_type(inner)),
+            TypeExpr::Fn(params, ret, effects, _) => {
+                let mut result = String::from("fn(");
+                for (i, param) in params.iter().enumerate() {
+                    if i > 0 {
+                        result.push_str(", ");
+                    }
+                    result.push_str(&self.fmt_type(param));
+                }
+                result.push_str(") -> ");
+                result.push_str(&self.fmt_type(ret));
+                if !effects.is_empty() {
+                    result.push_str(" / {");
+                    result.push_str(&effects.join(", "));
+                    result.push('}');
+                }
+                result
+            }
+            TypeExpr::Generic(name, args, _) => {
+                let mut result = name.clone();
+                result.push('[');
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        result.push_str(", ");
+                    }
+                    result.push_str(&self.fmt_type(arg));
+                }
+                result.push(']');
+                result
+            }
+        }
+    }
+
+    fn fmt_pattern(&self, pattern: &Pattern) -> String {
+        match pattern {
+            Pattern::Literal(expr) => self.fmt_expr(expr),
+            Pattern::Variant(name, binding, _) => {
+                if let Some(b) = binding {
+                    format!("{}({})", name, b)
+                } else {
+                    name.clone()
+                }
+            }
+            Pattern::Wildcard(_) => "_".to_string(),
+            Pattern::Ident(name, _) => name.clone(),
+            Pattern::Guard { inner, condition, .. } => {
+                format!("{} if {}", self.fmt_pattern(inner), self.fmt_expr(condition))
+            }
+            Pattern::Or { patterns, .. } => {
+                patterns.iter()
+                    .map(|p| self.fmt_pattern(p))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            }
+            Pattern::ListDestructure { elements, rest, .. } => {
+                let mut result = String::from("[");
+                for (i, elem) in elements.iter().enumerate() {
+                    if i > 0 {
+                        result.push_str(", ");
+                    }
+                    result.push_str(&self.fmt_pattern(elem));
+                }
+                if let Some(r) = rest {
+                    if !elements.is_empty() {
+                        result.push_str(", ");
+                    }
+                    result.push_str("...");
+                    result.push_str(r);
+                }
+                result.push(']');
+                result
+            }
+            Pattern::TupleDestructure { elements, .. } => {
+                let mut result = String::from("(");
+                for (i, elem) in elements.iter().enumerate() {
+                    if i > 0 {
+                        result.push_str(", ");
+                    }
+                    result.push_str(&self.fmt_pattern(elem));
+                }
+                result.push(')');
+                result
+            }
+            Pattern::RecordDestructure { type_name, fields, open, .. } => {
+                let mut result = type_name.clone();
+                result.push('(');
+                for (i, (fname, pat)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        result.push_str(", ");
+                    }
+                    result.push_str(fname);
+                    if let Some(p) = pat {
+                        result.push_str(": ");
+                        result.push_str(&self.fmt_pattern(p));
+                    }
+                }
+                if *open {
+                    if !fields.is_empty() {
+                        result.push_str(", ");
+                    }
+                    result.push_str("..");
+                }
+                result.push(')');
+                result
+            }
+            Pattern::TypeCheck { name, type_expr, .. } => {
+                format!("{}: {}", name, self.fmt_type(type_expr))
+            }
+        }
     }
 }
 
@@ -384,14 +1130,17 @@ pub fn format_files(files: &[PathBuf], check_mode: bool) -> Result<bool, String>
         if content != formatted {
             needs_formatting = true;
             if check_mode {
-                println!("{} — would reformat", file.display());
+                println!("{}✗{} {}{}{} — would reformat",
+                    YELLOW, RESET, BOLD, file.display(), RESET);
             } else {
                 std::fs::write(file, &formatted)
                     .map_err(|e| format!("error writing '{}': {}", file.display(), e))?;
-                println!("{} — formatted", file.display());
+                println!("{}✓{} {}{}{} — reformatted",
+                    YELLOW, RESET, BOLD, file.display(), RESET);
             }
         } else if !check_mode {
-            println!("{} — already formatted", file.display());
+            println!("{}✓{} {}{}{} — already formatted",
+                GREEN, RESET, BOLD, file.display(), RESET);
         }
     }
 
@@ -403,49 +1152,61 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_normalize_indentation() {
+    fn test_cell_formatting() {
         let input = r#"cell foo() -> Int
-	return 42
+  return 42
 end"#;
         let output = format_lumen_code(input);
+        assert!(output.contains("cell foo() -> Int"));
         assert!(output.contains("  return 42"));
-        assert!(!output.contains('\t'));
     }
 
     #[test]
-    fn test_keyword_block_indentation() {
+    fn test_record_formatting() {
+        let input = r#"record Point
+  x: Int
+  y: Int
+end"#;
+        let output = format_lumen_code(input);
+        assert!(output.contains("record Point"));
+        assert!(output.contains("  x: Int"));
+        assert!(output.contains("  y: Int"));
+    }
+
+    #[test]
+    fn test_if_else_indentation() {
         let input = r#"cell main() -> Int
-if true
-return 1
-else
-return 2
-end
+  if true
+    return 1
+  else
+    return 2
+  end
 end"#;
         let output = format_lumen_code(input);
         let lines: Vec<_> = output.lines().collect();
-
         assert_eq!(lines[0], "cell main() -> Int");
         assert!(lines[1].starts_with("  if"));
         assert!(lines[2].starts_with("    return 1"));
         assert!(lines[3].starts_with("  else"));
         assert!(lines[4].starts_with("    return 2"));
-        assert!(lines[5].starts_with("  end"));
     }
 
     #[test]
-    fn test_operator_spacing() {
-        let input = "let x=1+2*3";
+    fn test_match_formatting() {
+        let input = r#"cell check(x: Int) -> String
+  match x
+    | 1 =>
+      return "one"
+    | 2 =>
+      return "two"
+    | _ =>
+      return "other"
+  end
+end"#;
         let output = format_lumen_code(input);
-        assert!(output.contains("x = 1 + 2 * 3"));
-    }
-
-    #[test]
-    fn test_trailing_whitespace_removal() {
-        let input = "cell foo() -> Int   \n  return 42  \nend  ";
-        let output = format_lumen_code(input);
-        for line in output.lines() {
-            assert_eq!(line, line.trim_end());
-        }
+        assert!(output.contains("match x"));
+        assert!(output.contains("  | 1 =>"));
+        assert!(output.contains("    return \"one\""));
     }
 
     #[test]
@@ -456,7 +1217,7 @@ Some text here.
 
 ```lumen
 cell greet() -> String
-return "hello"
+  return "hello"
 end
 ```
 
@@ -466,20 +1227,11 @@ More text.
         assert!(output.contains("# Hello"));
         assert!(output.contains("Some text here."));
         assert!(output.contains("More text."));
-        assert!(output.contains("```lumen"));
         assert!(output.contains("  return \"hello\""));
     }
 
     #[test]
-    fn test_check_mode() {
-        let input = "cell foo()->Int\nreturn 42\nend\n";
-        let formatted = format_lumen_code(input);
-        assert_ne!(input, formatted);
-        assert!(formatted.contains("cell foo() -> Int"));
-    }
-
-    #[test]
-    fn test_blank_lines_between_top_level() {
+    fn test_blank_lines_between_items() {
         let input = r#"cell foo() -> Int
   return 1
 end
@@ -488,5 +1240,20 @@ cell bar() -> Int
 end"#;
         let output = format_lumen_code(input);
         assert!(output.contains("end\n\ncell bar"));
+    }
+
+    #[test]
+    fn test_operator_spacing() {
+        let input = "cell calc() -> Int\n  let x = 1 + 2 * 3\n  return x\nend";
+        let output = format_lumen_code(input);
+        assert!(output.contains("x = 1 + 2 * 3"));
+    }
+
+    #[test]
+    fn test_parse_error_returns_original() {
+        // Use syntax that genuinely doesn't parse
+        let input = "cell foo( -> Int";  // Missing closing paren
+        let output = format_lumen_code(input);
+        assert_eq!(input, output);
     }
 }

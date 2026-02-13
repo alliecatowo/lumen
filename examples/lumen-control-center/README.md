@@ -1,4 +1,4 @@
-# Advanced Workspace Example
+# Lumen Control Center Example
 
 Realistic multi-file workspace showing how to structure domain models, workflow stages, and provider/tool contracts for LLM + MCP style orchestration.
 
@@ -24,13 +24,13 @@ Realistic multi-file workspace showing how to structure domain models, workflow 
 From repo root:
 
 ```bash
-./target/debug/lumen check examples/advanced_workspace/src/main.lm.md
-./target/debug/lumen run examples/advanced_workspace/src/main.lm.md
+./target/debug/lumen check examples/lumen-control-center/src/main.lm.md
+./target/debug/lumen run examples/lumen-control-center/src/main.lm.md
 ```
 
 Optional package-wide validation (from the example directory):
 
 ```bash
-cd examples/advanced_workspace
+cd examples/lumen-control-center
 ../../target/debug/lumen pkg check
 ```

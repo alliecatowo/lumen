@@ -1,4 +1,4 @@
-# Advanced Workspace Main
+# Lumen Control Center Main
 
 Runnable entrypoint for a realistic multi-module AI workspace.
 
@@ -78,7 +78,7 @@ cell render(
   routes: list[ToolRoute],
   bindings: list[ProviderBinding]
 ) -> String
-  let out = "Advanced Workspace Demo\n"
+  let out = "Lumen Control Center Demo\n"
   let out = out + "workspace: " + summary.workspace + " (" + summary.mode + ")\n"
   let out = out + "tasks: " + string(summary.tasks_total) + ", routes: " + string(summary.routes_total) + "\n"
   let out = out + "planner: " + planner.selected_tool + " -> " + planner.plan_preview + "\n"

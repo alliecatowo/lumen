@@ -1,7 +1,7 @@
 [package]
-name = "advanced-workspace"
+name = "lumen-control-center"
 version = "0.1.0"
-description = "Advanced multi-module workspace example for LLM + MCP style orchestration"
+description = "Flagship multi-module control center example for LLM + MCP style orchestration"
 authors = ["Lumen Team <team@lumen.local>"]
 license = "MIT"
 readme = "README.md"

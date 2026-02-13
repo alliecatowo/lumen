@@ -49,6 +49,7 @@ fn is_builtin_function(name: &str) -> bool {
             | "vote"
             | "select"
             | "timeout"
+            | "spawn"
             | "resume"
     )
 }

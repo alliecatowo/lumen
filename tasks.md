@@ -30,10 +30,6 @@ Completed work should be removed from this list and reflected in docs/changelog.
   - Replay verifier for deterministic mode.
   - Checkpoint resume primitives for machine/orchestration states.
 
-- [ ] Harden future/async semantics.
-  - Lower block-form orchestration syntax (`await parallel for ...`, `select` blocks) onto VM spawn/await scheduling.
-  - Add end-to-end conformance tests for parser-level orchestration syntax through runtime scheduling.
-
 ## Toolchain and Ecosystem
 
 - [ ] Build first-party LSP server.

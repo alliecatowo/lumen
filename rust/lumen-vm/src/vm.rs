@@ -53,7 +53,14 @@ enum FutureState {
 #[derive(Debug, Clone)]
 struct FutureTask {
     future_id: u64,
-    cell_idx: usize,
+    target: FutureTarget,
+    args: Vec<Value>,
+}
+
+#[derive(Debug, Clone)]
+enum FutureTarget {
+    Cell(usize),
+    Closure(ClosureValue),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,6 +246,124 @@ impl VM {
         true
     }
 
+    fn start_future_task(&mut self, task: FutureTask) -> Result<(), VmError> {
+        if self.frames.len() >= MAX_CALL_DEPTH {
+            return Err(VmError::StackOverflow(MAX_CALL_DEPTH));
+        }
+        let module = self.module.as_ref().ok_or(VmError::NoModule)?;
+        match task.target {
+            FutureTarget::Cell(cell_idx) => {
+                if cell_idx >= module.cells.len() {
+                    self.future_states.insert(
+                        task.future_id,
+                        FutureState::Error(format!(
+                            "spawn target cell index {} not found",
+                            cell_idx
+                        )),
+                    );
+                    return Ok(());
+                }
+                let callee_cell = &module.cells[cell_idx];
+                let num_regs = (callee_cell.registers as usize).max(256);
+                let params = callee_cell.params.clone();
+                let new_base = self.registers.len();
+                self.registers.resize(new_base + num_regs, Value::Null);
+                for (i, arg) in task.args.into_iter().enumerate() {
+                    if i < params.len() {
+                        self.registers[new_base + params[i].register as usize] = arg;
+                    }
+                }
+                self.frames.push(CallFrame {
+                    cell_idx,
+                    base_register: new_base,
+                    ip: 0,
+                    return_register: 0,
+                    future_id: Some(task.future_id),
+                });
+            }
+            FutureTarget::Closure(cv) => {
+                if cv.cell_idx >= module.cells.len() {
+                    self.future_states.insert(
+                        task.future_id,
+                        FutureState::Error(format!(
+                            "spawn target closure cell index {} not found",
+                            cv.cell_idx
+                        )),
+                    );
+                    return Ok(());
+                }
+                let callee_cell = &module.cells[cv.cell_idx];
+                let num_regs = (callee_cell.registers as usize).max(256);
+                let params = callee_cell.params.clone();
+                let new_base = self.registers.len();
+                self.registers.resize(new_base + num_regs, Value::Null);
+                for (i, cap) in cv.captures.iter().enumerate() {
+                    self.registers[new_base + i] = cap.clone();
+                }
+                let cap_count = cv.captures.len();
+                for (i, arg) in task.args.into_iter().enumerate() {
+                    if cap_count + i < params.len() {
+                        self.registers[new_base + params[cap_count + i].register as usize] = arg;
+                    }
+                }
+                self.frames.push(CallFrame {
+                    cell_idx: cv.cell_idx,
+                    base_register: new_base,
+                    ip: 0,
+                    return_register: 0,
+                    future_id: Some(task.future_id),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn schedule_future_task(&mut self, task: FutureTask) -> Result<(), VmError> {
+        match self.future_schedule {
+            FutureSchedule::Eager => self.start_future_task(task),
+            FutureSchedule::DeferredFifo => {
+                self.scheduled_futures.push_back(task);
+                Ok(())
+            }
+        }
+    }
+
+    fn spawn_future(&mut self, target: FutureTarget, args: Vec<Value>) -> Result<Value, VmError> {
+        let future_id = self.next_future_id;
+        self.next_future_id += 1;
+        if let Some(module) = self.module.as_ref() {
+            let invalid_target = match &target {
+                FutureTarget::Cell(idx) => *idx >= module.cells.len(),
+                FutureTarget::Closure(cv) => cv.cell_idx >= module.cells.len(),
+            };
+            if invalid_target {
+                let msg = match &target {
+                    FutureTarget::Cell(idx) => format!("spawn target cell index {} not found", idx),
+                    FutureTarget::Closure(cv) => {
+                        format!("spawn target closure cell index {} not found", cv.cell_idx)
+                    }
+                };
+                self.future_states
+                    .insert(future_id, FutureState::Error(msg.clone()));
+                return Ok(Value::Future(FutureValue {
+                    id: future_id,
+                    state: FutureStatus::Error,
+                }));
+            }
+        }
+        self.future_states.insert(future_id, FutureState::Pending);
+        let task = FutureTask {
+            future_id,
+            target,
+            args,
+        };
+        self.schedule_future_task(task)?;
+        Ok(Value::Future(FutureValue {
+            id: future_id,
+            state: FutureStatus::Pending,
+        }))
+    }
+
     fn start_scheduled_future(&mut self, id: u64) -> Result<bool, VmError> {
         let Some(pos) = self
             .scheduled_futures
@@ -251,29 +376,96 @@ impl VM {
             .scheduled_futures
             .remove(pos)
             .ok_or_else(|| VmError::Runtime("scheduled future queue corruption".to_string()))?;
-        let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-        if task.cell_idx >= module.cells.len() {
-            self.future_states.insert(
-                id,
-                FutureState::Error(format!("spawn target cell index {} not found", task.cell_idx)),
-            );
-            return Ok(false);
-        }
-        if self.frames.len() >= MAX_CALL_DEPTH {
-            return Err(VmError::StackOverflow(MAX_CALL_DEPTH));
-        }
-        let callee_cell = &module.cells[task.cell_idx];
-        let new_base = self.registers.len();
-        self.registers
-            .resize(new_base + (callee_cell.registers as usize).max(256), Value::Null);
-        self.frames.push(CallFrame {
-            cell_idx: task.cell_idx,
-            base_register: new_base,
-            ip: 0,
-            return_register: 0,
-            future_id: Some(id),
-        });
+        self.start_future_task(task)?;
         Ok(true)
+    }
+
+    fn await_future_value(&mut self, future: &FutureValue) -> Result<Option<Value>, VmError> {
+        match self.future_states.get(&future.id).cloned() {
+            Some(FutureState::Completed(val)) => Ok(Some(val)),
+            Some(FutureState::Error(msg)) => Err(VmError::Runtime(format!(
+                "await failed for future {}: {}",
+                future.id, msg
+            ))),
+            Some(FutureState::Pending) => {
+                let has_task = self
+                    .scheduled_futures
+                    .iter()
+                    .any(|task| task.future_id == future.id);
+                if has_task {
+                    let _ = self.start_scheduled_future(future.id)?;
+                    Ok(None)
+                } else {
+                    Err(VmError::Runtime(format!(
+                        "future {} is pending with no runnable task",
+                        future.id
+                    )))
+                }
+            }
+            None => Err(VmError::Runtime(format!("unknown future id {}", future.id))),
+        }
+    }
+
+    fn await_value_recursive(&mut self, value: Value) -> Result<Option<Value>, VmError> {
+        match value {
+            Value::Future(f) => self.await_future_value(&f),
+            Value::List(items) => {
+                let mut out = Vec::with_capacity(items.len());
+                for item in items {
+                    match self.await_value_recursive(item)? {
+                        Some(v) => out.push(v),
+                        None => return Ok(None),
+                    }
+                }
+                Ok(Some(Value::List(out)))
+            }
+            Value::Tuple(items) => {
+                let mut out = Vec::with_capacity(items.len());
+                for item in items {
+                    match self.await_value_recursive(item)? {
+                        Some(v) => out.push(v),
+                        None => return Ok(None),
+                    }
+                }
+                Ok(Some(Value::Tuple(out)))
+            }
+            Value::Set(items) => {
+                let mut out = Vec::with_capacity(items.len());
+                for item in items {
+                    match self.await_value_recursive(item)? {
+                        Some(v) => out.push(v),
+                        None => return Ok(None),
+                    }
+                }
+                Ok(Some(Value::Set(out)))
+            }
+            Value::Map(entries) => {
+                let mut out = BTreeMap::new();
+                for (k, v) in entries {
+                    match self.await_value_recursive(v)? {
+                        Some(resolved) => {
+                            out.insert(k, resolved);
+                        }
+                        None => return Ok(None),
+                    }
+                }
+                Ok(Some(Value::Map(out)))
+            }
+            Value::Record(mut record) => {
+                let mut out = BTreeMap::new();
+                for (k, v) in std::mem::take(&mut record.fields) {
+                    match self.await_value_recursive(v)? {
+                        Some(resolved) => {
+                            out.insert(k, resolved);
+                        }
+                        None => return Ok(None),
+                    }
+                }
+                record.fields = out;
+                Ok(Some(Value::Record(record)))
+            }
+            other => Ok(Some(other)),
+        }
     }
 
     /// Execute a cell by name with arguments.
@@ -1094,93 +1286,24 @@ impl VM {
                     });
                 }
                 OpCode::Await => {
-                    match self.registers[base + b].clone() {
-                        Value::Future(f) => {
-                            match self.future_states.get(&f.id).cloned() {
-                                Some(FutureState::Completed(val)) => {
-                                    self.registers[base + a] = val;
-                                }
-                                Some(FutureState::Error(msg)) => {
-                                    return Err(VmError::Runtime(format!(
-                                        "await failed for future {}: {}",
-                                        f.id, msg
-                                    )));
-                                }
-                                Some(FutureState::Pending) => {
-                                    let has_task =
-                                        self.scheduled_futures.iter().any(|t| t.future_id == f.id);
-                                    if has_task {
-                                        if let Some(frame) = self.frames.last_mut() {
-                                            frame.ip = frame.ip.saturating_sub(1);
-                                        }
-                                        let _ = self.start_scheduled_future(f.id)?;
-                                        continue;
-                                    }
-                                    return Err(VmError::Runtime(format!(
-                                        "future {} is pending with no runnable task",
-                                        f.id
-                                    )));
-                                }
-                                None => {
-                                    return Err(VmError::Runtime(format!(
-                                        "unknown future id {}",
-                                        f.id
-                                    )));
-                                }
-                            }
+                    let caller_frame_idx = self.frames.len().saturating_sub(1);
+                    let awaited = self.await_value_recursive(self.registers[base + b].clone())?;
+                    match awaited {
+                        Some(value) => {
+                            self.registers[base + a] = value;
                         }
-                        other => {
-                            // Backward compatibility: awaiting a concrete value yields it directly.
-                            self.registers[base + a] = other;
+                        None => {
+                            if let Some(frame) = self.frames.get_mut(caller_frame_idx) {
+                                frame.ip = frame.ip.saturating_sub(1);
+                            }
+                            continue;
                         }
                     }
                 }
                 OpCode::Spawn => {
                     let bx = instr.bx() as usize;
-                    let module = self.module.as_ref().unwrap();
-                    let future_id = self.next_future_id;
-                    self.next_future_id += 1;
-                    if bx < module.cells.len() {
-                        self.future_states.insert(future_id, FutureState::Pending);
-                        self.registers[base + a] = Value::Future(FutureValue {
-                            id: future_id,
-                            state: FutureStatus::Pending,
-                        });
-                        match self.future_schedule {
-                            FutureSchedule::Eager => {
-                                if self.frames.len() >= MAX_CALL_DEPTH {
-                                    return Err(VmError::StackOverflow(MAX_CALL_DEPTH));
-                                }
-                                let callee_cell = &module.cells[bx];
-                                let new_base = self.registers.len();
-                                self.registers.resize(
-                                    new_base + (callee_cell.registers as usize).max(256),
-                                    Value::Null,
-                                );
-                                self.frames.push(CallFrame {
-                                    cell_idx: bx,
-                                    base_register: new_base,
-                                    ip: 0,
-                                    return_register: 0,
-                                    future_id: Some(future_id),
-                                });
-                            }
-                            FutureSchedule::DeferredFifo => {
-                                self.scheduled_futures.push_back(FutureTask {
-                                    future_id,
-                                    cell_idx: bx,
-                                });
-                            }
-                        }
-                    } else {
-                        let msg = format!("spawn target cell index {} not found", bx);
-                        self.future_states
-                            .insert(future_id, FutureState::Error(msg.clone()));
-                        self.registers[base + a] = Value::Future(FutureValue {
-                            id: future_id,
-                            state: FutureStatus::Error,
-                        });
-                    }
+                    self.registers[base + a] =
+                        self.spawn_future(FutureTarget::Cell(bx), Vec::new())?;
                 }
 
                 // List ops
@@ -1524,6 +1647,19 @@ impl VM {
         }
     }
 
+    fn orchestration_args(&self, base: usize, a: usize, nargs: usize) -> Vec<Value> {
+        if nargs == 1 {
+            let first = self.registers[base + a + 1].clone();
+            if let Value::List(items) = first {
+                return items;
+            }
+            return vec![first];
+        }
+        (0..nargs)
+            .map(|i| self.registers[base + a + 1 + i].clone())
+            .collect()
+    }
+
     /// Execute a built-in function by name.
     fn call_builtin(
         &mut self,
@@ -1717,36 +1853,88 @@ impl VM {
                 let list: Vec<Value> = (start..end).map(Value::Int).collect();
                 Ok(Value::List(list))
             }
+            "spawn" => {
+                if nargs == 0 {
+                    return Err(VmError::TypeError(
+                        "spawn requires a callable argument".to_string(),
+                    ));
+                }
+                let callee = self.registers[base + a + 1].clone();
+                let args: Vec<Value> = (1..nargs)
+                    .map(|i| self.registers[base + a + 1 + i].clone())
+                    .collect();
+                match callee {
+                    Value::Closure(cv) => self.spawn_future(FutureTarget::Closure(cv), args),
+                    Value::String(sr) => {
+                        let name = match sr {
+                            StringRef::Owned(s) => s,
+                            StringRef::Interned(id) => {
+                                self.strings.resolve(id).unwrap_or("").to_string()
+                            }
+                        };
+                        let module = self.module.as_ref().ok_or(VmError::NoModule)?;
+                        let cell_idx = module
+                            .cells
+                            .iter()
+                            .position(|c| c.name == name)
+                            .ok_or_else(|| {
+                                VmError::TypeError(format!(
+                                    "spawn target '{}' is not a cell or closure",
+                                    name
+                                ))
+                            })?;
+                        self.spawn_future(FutureTarget::Cell(cell_idx), args)
+                    }
+                    other => Err(VmError::TypeError(format!(
+                        "spawn expects a callable, got {}",
+                        other
+                    ))),
+                }
+            }
             "parallel" => {
-                let mut out = Vec::with_capacity(nargs);
-                for i in 0..nargs {
-                    let arg = &self.registers[base + a + 1 + i];
+                let args = self.orchestration_args(base, a, nargs);
+                let mut out = Vec::with_capacity(args.len());
+                for arg in args {
                     match arg {
-                        Value::Future(f) => match self.future_states.get(&f.id) {
+                        Value::Future(ref f) => match self.future_states.get(&f.id) {
                             Some(FutureState::Completed(v)) => out.push(v.clone()),
-                            Some(FutureState::Pending) => out.push(Value::Future(FutureValue {
-                                id: f.id,
-                                state: FutureStatus::Pending,
-                            })),
+                            Some(FutureState::Pending) => out.push(arg.clone()),
                             Some(FutureState::Error(_)) | None => {
                                 out.push(Value::Future(FutureValue {
                                     id: f.id,
                                     state: FutureStatus::Error,
-                                }))
+                                }));
                             }
                         },
-                        other => out.push(other.clone()),
+                        other => out.push(other),
                     }
                 }
                 Ok(Value::List(out))
             }
             "race" => {
                 let mut first_pending: Option<Value> = None;
-                for i in 0..nargs {
-                    let arg = &self.registers[base + a + 1 + i];
+                for arg in self.orchestration_args(base, a, nargs) {
                     match arg {
-                        Value::Future(f) => match self.future_states.get(&f.id) {
+                        Value::Future(ref f) => match self.future_states.get(&f.id) {
                             Some(FutureState::Completed(v)) => return Ok(v.clone()),
+                            Some(FutureState::Pending) => {
+                                if first_pending.is_none() {
+                                    first_pending = Some(arg.clone());
+                                }
+                            }
+                            Some(FutureState::Error(_)) | None => {}
+                        },
+                        other => return Ok(other),
+                    }
+                }
+                Ok(first_pending.unwrap_or(Value::Null))
+            }
+            "select" => {
+                let mut first_pending: Option<Value> = None;
+                for arg in self.orchestration_args(base, a, nargs) {
+                    let candidate = match arg {
+                        Value::Future(ref f) => match self.future_states.get(&f.id) {
+                            Some(FutureState::Completed(v)) => Some(v.clone()),
                             Some(FutureState::Pending) => {
                                 if first_pending.is_none() {
                                     first_pending = Some(Value::Future(FutureValue {
@@ -1754,23 +1942,11 @@ impl VM {
                                         state: FutureStatus::Pending,
                                     }));
                                 }
+                                None
                             }
-                            Some(FutureState::Error(_)) | None => {}
-                        },
-                        other => return Ok(other.clone()),
-                    }
-                }
-                Ok(first_pending.unwrap_or(Value::Null))
-            }
-            "select" => {
-                for i in 0..nargs {
-                    let arg = &self.registers[base + a + 1 + i];
-                    let candidate = match arg {
-                        Value::Future(f) => match self.future_states.get(&f.id) {
-                            Some(FutureState::Completed(v)) => Some(v.clone()),
                             _ => None,
                         },
-                        other => Some(other.clone()),
+                        other => Some(other),
                     };
                     if let Some(value) = candidate {
                         if !matches!(value, Value::Null) {
@@ -1778,18 +1954,27 @@ impl VM {
                         }
                     }
                 }
-                Ok(Value::Null)
+                Ok(first_pending.unwrap_or(Value::Null))
             }
             "vote" => {
                 let mut counts: BTreeMap<Value, (usize, usize)> = BTreeMap::new();
-                for i in 0..nargs {
-                    let arg = &self.registers[base + a + 1 + i];
+                let mut first_pending: Option<Value> = None;
+                for (i, arg) in self.orchestration_args(base, a, nargs).into_iter().enumerate() {
                     let value = match arg {
-                        Value::Future(f) => match self.future_states.get(&f.id) {
+                        Value::Future(ref f) => match self.future_states.get(&f.id) {
                             Some(FutureState::Completed(v)) => Some(v.clone()),
+                            Some(FutureState::Pending) => {
+                                if first_pending.is_none() {
+                                    first_pending = Some(Value::Future(FutureValue {
+                                        id: f.id,
+                                        state: FutureStatus::Pending,
+                                    }));
+                                }
+                                None
+                            }
                             _ => None,
                         },
-                        other => Some(other.clone()),
+                        other => Some(other),
                     };
                     if let Some(value) = value {
                         let entry = counts.entry(value).or_insert((0, i));
@@ -1797,7 +1982,7 @@ impl VM {
                     }
                 }
                 if counts.is_empty() {
-                    return Ok(Value::Null);
+                    return Ok(first_pending.unwrap_or(Value::Null));
                 }
                 let mut best: Option<(Value, usize, usize)> = None;
                 for (value, (count, first_idx)) in counts {
@@ -4130,6 +4315,57 @@ end
 "#,
         );
         assert_eq!(result, Value::Int(42));
+    }
+
+    #[test]
+    fn test_await_parallel_for_block_runtime_deferred_schedule() {
+        let result = run_main(
+            r#"
+@deterministic true
+
+cell main() -> Int / {async}
+  let values = await parallel for i in 0..5
+    i * 2
+  end
+  return length(values)
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(5));
+    }
+
+    #[test]
+    fn test_await_race_block_runtime_deferred_schedule() {
+        let result = run_main(
+            r#"
+@deterministic true
+
+cell main() -> Int / {async}
+  return await race
+    7
+    9
+  end
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(7));
+    }
+
+    #[test]
+    fn test_await_parallel_block_runtime() {
+        let result = run_main(
+            r#"
+cell main() -> Int / {async}
+  let values = await parallel
+    1
+    2
+    3
+  end
+  return length(values)
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(3));
     }
 
     #[test]

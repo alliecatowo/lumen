@@ -1,7 +1,7 @@
 //! Recursive descent parser with Pratt expression parsing for Lumen.
 
 use crate::compiler::ast::*;
-use crate::compiler::tokens::{Token, TokenKind};
+use crate::compiler::tokens::{Span, Token, TokenKind};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -3556,12 +3556,8 @@ impl Parser {
             TokenKind::Await => {
                 let s = self.advance().span;
                 let expr = self.parse_expr(0)?;
-                let mut span = s.merge(expr.span());
-                if self.await_block_follows() && self.is_await_orchestration_expr(&expr) {
-                    self.skip_newlines();
-                    self.consume_block_until_end();
-                    span = span.merge(self.current().span);
-                }
+                let expr = self.rewrite_await_orchestration(expr)?;
+                let span = s.merge(expr.span());
                 Ok(Expr::AwaitExpr(Box::new(expr), span))
             }
             TokenKind::Fn => self.parse_lambda(),
@@ -4464,6 +4460,142 @@ impl Parser {
         }
     }
 
+    fn rewrite_await_orchestration(&mut self, expr: Expr) -> Result<Expr, ParseError> {
+        if let Some((name, base_args, span)) = self.orchestration_call_parts(&expr) {
+            if name == "parallel" && matches!(self.peek_kind(), TokenKind::For) {
+                return self.rewrite_await_parallel_for(base_args, span);
+            }
+            if self.await_block_follows() {
+                return self.rewrite_await_orchestration_block(name, base_args, span);
+            }
+        }
+        Ok(expr)
+    }
+
+    fn rewrite_await_parallel_for(
+        &mut self,
+        mut base_args: Vec<CallArg>,
+        call_span: Span,
+    ) -> Result<Expr, ParseError> {
+        self.expect(&TokenKind::For)?;
+        let var = self.expect_ident()?;
+        self.expect(&TokenKind::In)?;
+        let iter = self.parse_expr(0)?;
+        self.skip_newlines();
+
+        if matches!(self.peek_kind(), TokenKind::Indent) {
+            self.advance();
+            self.skip_newlines();
+        }
+        let body_expr = self.parse_expr(0)?;
+        self.skip_newlines();
+        if matches!(self.peek_kind(), TokenKind::Dedent) {
+            self.advance();
+        }
+        let end_span = self.expect(&TokenKind::End)?.span;
+
+        let body_span = body_expr.span();
+        let lambda = Expr::Lambda {
+            params: vec![Param {
+                name: var.clone(),
+                ty: TypeExpr::Named("Any".into(), body_span),
+                default_value: None,
+                span: body_span,
+            }],
+            return_type: None,
+            body: LambdaBody::Expr(Box::new(body_expr)),
+            span: body_span,
+        };
+        let spawn_body = Expr::Call(
+            Box::new(Expr::Ident("spawn".into(), body_span)),
+            vec![
+                CallArg::Positional(lambda),
+                CallArg::Positional(Expr::Ident(var.clone(), body_span)),
+            ],
+            body_span,
+        );
+        let comp = Expr::Comprehension {
+            body: Box::new(spawn_body),
+            var,
+            iter: Box::new(iter),
+            condition: None,
+            kind: ComprehensionKind::List,
+            span: call_span.merge(end_span),
+        };
+        base_args.push(CallArg::Positional(comp));
+        Ok(Expr::Call(
+            Box::new(Expr::Ident("parallel".into(), call_span)),
+            base_args,
+            call_span.merge(end_span),
+        ))
+    }
+
+    fn rewrite_await_orchestration_block(
+        &mut self,
+        name: String,
+        mut base_args: Vec<CallArg>,
+        call_span: Span,
+    ) -> Result<Expr, ParseError> {
+        self.skip_newlines();
+        let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
+        if has_indent {
+            self.advance();
+        }
+        self.skip_newlines();
+
+        while !matches!(
+            self.peek_kind(),
+            TokenKind::End | TokenKind::Dedent | TokenKind::Eof
+        ) {
+            let branch_expr = self.parse_expr(0)?;
+            base_args.push(CallArg::Positional(self.make_spawn_lambda(branch_expr)));
+            self.skip_newlines();
+        }
+        if has_indent && matches!(self.peek_kind(), TokenKind::Dedent) {
+            self.advance();
+        }
+        let end_span = self.expect(&TokenKind::End)?.span;
+        Ok(Expr::Call(
+            Box::new(Expr::Ident(name, call_span)),
+            base_args,
+            call_span.merge(end_span),
+        ))
+    }
+
+    fn make_spawn_lambda(&self, body_expr: Expr) -> Expr {
+        let body_span = body_expr.span();
+        let lambda = Expr::Lambda {
+            params: vec![],
+            return_type: None,
+            body: LambdaBody::Expr(Box::new(body_expr)),
+            span: body_span,
+        };
+        Expr::Call(
+            Box::new(Expr::Ident("spawn".into(), body_span)),
+            vec![CallArg::Positional(lambda)],
+            body_span,
+        )
+    }
+
+    fn orchestration_call_parts(&self, expr: &Expr) -> Option<(String, Vec<CallArg>, Span)> {
+        match expr {
+            Expr::Ident(name, span)
+                if matches!(name.as_str(), "parallel" | "race" | "vote" | "select") =>
+            {
+                Some((name.clone(), vec![], *span))
+            }
+            Expr::Call(callee, args, span) => {
+                if let Expr::Ident(name, _) = callee.as_ref() {
+                    if matches!(name.as_str(), "parallel" | "race" | "vote" | "select") {
+                        return Some((name.clone(), args.clone(), *span));
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
     fn await_block_follows(&self) -> bool {
         let mut i = self.pos;
         if !matches!(
@@ -4478,23 +4610,7 @@ impl Parser {
         ) {
             i += 1;
         }
-        matches!(
-            self.tokens.get(i).map(|t| &t.kind),
-            Some(TokenKind::Indent | TokenKind::Ident(_))
-        )
-    }
-
-    fn is_await_orchestration_expr(&self, expr: &Expr) -> bool {
-        match expr {
-            Expr::Ident(name, _) => matches!(
-                name.as_str(),
-                "parallel" | "race" | "vote" | "select" | "timeout"
-            ),
-            Expr::Call(callee, _, _) => {
-                matches!(callee.as_ref(), Expr::Ident(name, _) if matches!(name.as_str(), "parallel" | "race" | "vote" | "select" | "timeout"))
-            }
-            _ => false,
-        }
+        matches!(self.tokens.get(i).map(|t| &t.kind), Some(TokenKind::Indent))
     }
 
     fn parse_dotted_ident(&mut self) -> Result<String, ParseError> {
@@ -4660,5 +4776,64 @@ end"#;
         let prog = parse_src(src).unwrap();
         assert_eq!(prog.items.len(), 1);
         assert!(matches!(prog.items[0], Item::Process(_)));
+    }
+
+    #[test]
+    fn test_parse_await_parallel_for_desugars_to_spawn_comprehension() {
+        let src = r#"cell main() -> Int / {async}
+  let values = await parallel for i in 0..3
+    i * 2
+  end
+  return length(values)
+end"#;
+        let prog = parse_src(src).unwrap();
+        let Item::Cell(cell) = &prog.items[0] else {
+            panic!("expected cell");
+        };
+        let Stmt::Let(let_stmt) = &cell.body[0] else {
+            panic!("expected let");
+        };
+        let Expr::AwaitExpr(inner, _) = &let_stmt.value else {
+            panic!("expected await expression");
+        };
+        let Expr::Call(callee, args, _) = inner.as_ref() else {
+            panic!("expected orchestration call");
+        };
+        assert!(matches!(callee.as_ref(), Expr::Ident(name, _) if name == "parallel"));
+        assert_eq!(args.len(), 1);
+        let CallArg::Positional(Expr::Comprehension { body, var, .. }) = &args[0] else {
+            panic!("expected list comprehension argument");
+        };
+        assert_eq!(var, "i");
+        assert!(matches!(body.as_ref(), Expr::Call(_, _, _)));
+    }
+
+    #[test]
+    fn test_parse_await_race_block_desugars_to_spawn_calls() {
+        let src = r#"cell main() -> Int / {async}
+  let fastest = await race
+    10
+    20
+  end
+  return fastest
+end"#;
+        let prog = parse_src(src).unwrap();
+        let Item::Cell(cell) = &prog.items[0] else {
+            panic!("expected cell");
+        };
+        let Stmt::Let(let_stmt) = &cell.body[0] else {
+            panic!("expected let");
+        };
+        let Expr::AwaitExpr(inner, _) = &let_stmt.value else {
+            panic!("expected await expression");
+        };
+        let Expr::Call(callee, args, _) = inner.as_ref() else {
+            panic!("expected orchestration call");
+        };
+        assert!(matches!(callee.as_ref(), Expr::Ident(name, _) if name == "race"));
+        assert_eq!(args.len(), 2);
+        for arg in args {
+            assert!(matches!(arg, CallArg::Positional(Expr::Call(_, _, _))));
+        }
     }
 }

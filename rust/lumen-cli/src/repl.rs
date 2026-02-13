@@ -4,6 +4,23 @@ use std::io::{self, BufRead, Write};
 
 use lumen_vm::values::Value;
 
+// ANSI color helpers
+fn green(s: &str) -> String {
+    format!("\x1b[32m{}\x1b[0m", s)
+}
+fn red(s: &str) -> String {
+    format!("\x1b[31m{}\x1b[0m", s)
+}
+fn cyan(s: &str) -> String {
+    format!("\x1b[36m{}\x1b[0m", s)
+}
+fn bold(s: &str) -> String {
+    format!("\x1b[1m{}\x1b[0m", s)
+}
+fn gray(s: &str) -> String {
+    format!("\x1b[90m{}\x1b[0m", s)
+}
+
 /// Keywords that open a block and require a matching `end`.
 const BLOCK_OPENERS: &[&str] = &[
     "cell", "if", "while", "for", "match", "record", "enum", "loop",
@@ -17,8 +34,8 @@ const ITEM_KEYWORDS: &[&str] = &[
 ];
 
 pub fn run_repl() {
-    println!("Lumen REPL v0.1.0");
-    println!("Type :help for help, :quit to exit\n");
+    println!("{}", bold(&cyan("Lumen REPL v0.1.0")));
+    println!("{}\n", gray("Type :help for help, :quit to exit"));
 
     let stdin = io::stdin();
     let mut reader = stdin.lock();
@@ -27,9 +44,9 @@ pub fn run_repl() {
     loop {
         // Show prompt
         if buffer.is_empty() {
-            print!("lumen> ");
+            print!("{} ", green("lumen>"));
         } else {
-            print!("  ... ");
+            print!("{}    ", gray("..."));
         }
         if io::stdout().flush().is_err() {
             break;
@@ -57,7 +74,7 @@ pub fn run_repl() {
                     continue;
                 }
                 ":reset" | ":r" => {
-                    println!("State reset.");
+                    println!("{}", gray("State reset."));
                     continue;
                 }
                 _ if trimmed.starts_with(":type ") || trimmed.starts_with(":t ") => {
@@ -91,7 +108,7 @@ pub fn run_repl() {
         eval_input(&input);
     }
 
-    println!("\nGoodbye!");
+    println!("\n{}", cyan("Goodbye!"));
 }
 
 /// Determine if input has unmatched block openers that need more lines.
@@ -149,7 +166,7 @@ fn eval_input(input: &str) {
     let module = match lumen_compiler::compile(&source) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("{} {}", red("Error:"), e);
             return;
         }
     };
@@ -163,7 +180,7 @@ fn eval_input(input: &str) {
         module.cells[0].name.clone()
     } else {
         // Definition-only input (records, enums, etc.) — nothing to execute
-        println!("(defined)");
+        println!("{}", gray("(defined)"));
         return;
     };
 
@@ -176,11 +193,12 @@ fn eval_input(input: &str) {
         Ok(result) => {
             // Don't print Null for side-effect-only statements
             if !matches!(result, Value::Null) {
-                println!("{}", result);
+                let type_name = value_type_name(&result);
+                println!("{} {}", result, gray(&format!(": {}", type_name)));
             }
         }
         Err(e) => {
-            eprintln!("Runtime error: {}", e);
+            eprintln!("{} {}", red("Runtime error:"), e);
         }
     }
 }
@@ -195,7 +213,7 @@ fn cmd_type(expr: &str) {
     let module = match lumen_compiler::compile(&source) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("{} {}", red("Error:"), e);
             return;
         }
     };
@@ -206,8 +224,8 @@ fn cmd_type(expr: &str) {
     vm.load(module);
 
     match vm.execute("main", vec![]) {
-        Ok(result) => println!("{}", value_type_name(&result)),
-        Err(e) => eprintln!("Error: {}", e),
+        Ok(result) => println!("{}", cyan(value_type_name(&result))),
+        Err(e) => eprintln!("{} {}", red("Error:"), e),
     }
 }
 
@@ -233,13 +251,13 @@ fn value_type_name(val: &Value) -> &'static str {
 }
 
 fn print_help() {
-    println!("Commands:");
-    println!("  :help, :h    Show this help");
-    println!("  :quit, :q    Exit the REPL");
-    println!("  :reset, :r   Reset REPL state");
-    println!("  :type, :t    Show the type of an expression");
+    println!("{}", bold("Commands:"));
+    println!("  {}  {}", cyan(":help, :h"), gray("Show this help"));
+    println!("  {}  {}", cyan(":quit, :q"), gray("Exit the REPL"));
+    println!("  {}  {}", cyan(":reset, :r"), gray("Reset REPL state"));
+    println!("  {}  {}", cyan(":type, :t"), gray("Show the type of an expression"));
     println!();
-    println!("Enter Lumen expressions or definitions.");
-    println!("Multi-line input is supported — open blocks are");
-    println!("continued until a matching `end` is found.");
+    println!("{}", gray("Enter Lumen expressions or definitions."));
+    println!("{}", gray("Multi-line input is supported — open blocks are"));
+    println!("{}", gray("continued until a matching `end` is found."));
 }

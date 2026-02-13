@@ -7,6 +7,26 @@ use crate::config::{DependencySpec, LumenConfig};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+// ANSI color helpers
+fn green(s: &str) -> String {
+    format!("\x1b[32m{}\x1b[0m", s)
+}
+fn red(s: &str) -> String {
+    format!("\x1b[31m{}\x1b[0m", s)
+}
+fn yellow(s: &str) -> String {
+    format!("\x1b[33m{}\x1b[0m", s)
+}
+fn bold(s: &str) -> String {
+    format!("\x1b[1m{}\x1b[0m", s)
+}
+fn gray(s: &str) -> String {
+    format!("\x1b[90m{}\x1b[0m", s)
+}
+fn status_label(label: &str) -> String {
+    format!("\x1b[1;32m{:>12}\x1b[0m", label)
+}
+
 /// A resolved dependency ready for compilation.
 #[derive(Debug, Clone)]
 pub struct ResolvedDep {
@@ -21,11 +41,11 @@ pub fn cmd_pkg_init(name: Option<String>) {
         Some(n) => {
             let p = PathBuf::from(n);
             if p.exists() {
-                eprintln!("error: directory '{}' already exists", n);
+                eprintln!("{} directory '{}' already exists", red("error:"), n);
                 std::process::exit(1);
             }
             std::fs::create_dir_all(p.join("src")).unwrap_or_else(|e| {
-                eprintln!("error: cannot create directory: {}", e);
+                eprintln!("{} cannot create directory: {}", red("error:"), e);
                 std::process::exit(1);
             });
             p
@@ -44,7 +64,7 @@ pub fn cmd_pkg_init(name: Option<String>) {
 
     let toml_path = base.join("lumen.toml");
     if toml_path.exists() {
-        eprintln!("error: lumen.toml already exists in '{}'", base.display());
+        eprintln!("{} lumen.toml already exists in '{}'", red("error:"), base.display());
         std::process::exit(1);
     }
 
@@ -62,7 +82,7 @@ version = "0.1.0"
     );
 
     std::fs::write(&toml_path, &toml_content).unwrap_or_else(|e| {
-        eprintln!("error writing lumen.toml: {}", e);
+        eprintln!("{} writing lumen.toml: {}", red("error:"), e);
         std::process::exit(1);
     });
 
@@ -70,7 +90,7 @@ version = "0.1.0"
     let src_dir = base.join("src");
     if !src_dir.exists() {
         std::fs::create_dir_all(&src_dir).unwrap_or_else(|e| {
-            eprintln!("error creating src directory: {}", e);
+            eprintln!("{} creating src directory: {}", red("error:"), e);
             std::process::exit(1);
         });
     }
@@ -88,17 +108,13 @@ end
 
     let main_path = src_dir.join("main.lm.md");
     std::fs::write(&main_path, &main_content).unwrap_or_else(|e| {
-        eprintln!("error writing main.lm.md: {}", e);
+        eprintln!("{} writing main.lm.md: {}", red("error:"), e);
         std::process::exit(1);
     });
 
-    if name.is_some() {
-        println!("created package '{}' in {}/", pkg_name, base.display());
-    } else {
-        println!("initialized package '{}' in current directory", pkg_name);
-    }
-    println!("  lumen.toml");
-    println!("  src/main.lm.md");
+    println!("{} package {}", status_label("Created"), bold(&format!("\"{}\"", pkg_name)));
+    println!("  {}", gray("lumen.toml"));
+    println!("  {}", gray("src/main.lm.md"));
 }
 
 /// Build a Lumen package: resolve dependencies and compile.
@@ -106,7 +122,7 @@ pub fn cmd_pkg_build() {
     let (config_path, config) = match LumenConfig::load_with_path() {
         Some(pair) => pair,
         None => {
-            eprintln!("error: no lumen.toml found (run `lumen pkg init` first)");
+            eprintln!("{} no lumen.toml found (run `lumen pkg init` first)", red("error:"));
             std::process::exit(1);
         }
     };
@@ -122,7 +138,7 @@ pub fn cmd_pkg_build() {
     let deps = match resolve_dependencies(&config, project_dir) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("dependency error: {}", e);
+            eprintln!("{} {}", red("dependency error:"), e);
             std::process::exit(1);
         }
     };
@@ -131,35 +147,34 @@ pub fn cmd_pkg_build() {
 
     // Compile each dependency
     for dep in &deps {
-        print!("  compiling dependency '{}' ... ", dep.name);
+        println!("{} {} {}", status_label("Compiling"), bold(&dep.name), gray(&format!("(dependency)")));
         match compile_package_sources(&dep.path) {
-            Ok(count) => println!("ok ({} file{})", count, if count == 1 { "" } else { "s" }),
+            Ok(_count) => {},
             Err(e) => {
-                println!("FAILED");
-                eprintln!("    {}", e);
+                eprintln!("    {}", red(&e));
                 errors += 1;
             }
         }
     }
 
     // Compile the main package
-    print!("  compiling '{}' ... ", pkg_name);
+    println!("{} {}", status_label("Compiling"), bold(pkg_name));
     match compile_package_sources(project_dir) {
-        Ok(count) => println!("ok ({} file{})", count, if count == 1 { "" } else { "s" }),
+        Ok(_count) => {},
         Err(e) => {
-            println!("FAILED");
-            eprintln!("    {}", e);
+            eprintln!("    {}", red(&e));
             errors += 1;
         }
     }
 
     if errors > 0 {
-        eprintln!("\nbuild failed with {} error{}", errors, if errors == 1 { "" } else { "s" });
+        eprintln!("\n{} build failed with {} error{}", red("error:"), errors, if errors == 1 { "" } else { "s" });
         std::process::exit(1);
     } else {
         let total = deps.len() + 1;
         println!(
-            "\nbuild succeeded ({} package{})",
+            "\n{} build succeeded ({} package{})",
+            green("✓"),
             total,
             if total == 1 { "" } else { "s" }
         );
@@ -171,7 +186,7 @@ pub fn cmd_pkg_check() {
     let (config_path, config) = match LumenConfig::load_with_path() {
         Some(pair) => pair,
         None => {
-            eprintln!("error: no lumen.toml found (run `lumen pkg init` first)");
+            eprintln!("{} no lumen.toml found (run `lumen pkg init` first)", red("error:"));
             std::process::exit(1);
         }
     };
@@ -187,7 +202,7 @@ pub fn cmd_pkg_check() {
     let deps = match resolve_dependencies(&config, project_dir) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("dependency error: {}", e);
+            eprintln!("{} {}", red("dependency error:"), e);
             std::process::exit(1);
         }
     };
@@ -195,30 +210,29 @@ pub fn cmd_pkg_check() {
     let mut errors = 0;
 
     for dep in &deps {
-        print!("  checking dependency '{}' ... ", dep.name);
+        println!("{} {} {}", status_label("Checking"), bold(&dep.name), gray(&format!("(dependency)")));
         match compile_package_sources(&dep.path) {
-            Ok(count) => println!("ok ({} file{})", count, if count == 1 { "" } else { "s" }),
+            Ok(_count) => {},
             Err(e) => {
-                println!("FAILED");
-                eprintln!("    {}", e);
+                eprintln!("    {}", red(&e));
                 errors += 1;
             }
         }
     }
 
-    print!("  checking '{}' ... ", pkg_name);
+    println!("{} {}", status_label("Checking"), bold(pkg_name));
     match compile_package_sources(project_dir) {
-        Ok(count) => println!("ok ({} file{})", count, if count == 1 { "" } else { "s" }),
+        Ok(_count) => {},
         Err(e) => {
-            println!("FAILED");
-            eprintln!("    {}", e);
+            eprintln!("    {}", red(&e));
             errors += 1;
         }
     }
 
     if errors > 0 {
         eprintln!(
-            "\ncheck failed with {} error{}",
+            "\n{} check failed with {} error{}",
+            red("error:"),
             errors,
             if errors == 1 { "" } else { "s" }
         );
@@ -226,7 +240,8 @@ pub fn cmd_pkg_check() {
     } else {
         let total = deps.len() + 1;
         println!(
-            "\ncheck passed ({} package{})",
+            "\n{} check passed ({} package{})",
+            green("✓"),
             total,
             if total == 1 { "" } else { "s" }
         );

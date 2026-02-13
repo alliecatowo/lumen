@@ -8,6 +8,29 @@ mod repl;
 use clap::{Parser as ClapParser, Subcommand};
 use std::path::PathBuf;
 
+// ANSI color helpers
+fn green(s: &str) -> String {
+    format!("\x1b[32m{}\x1b[0m", s)
+}
+fn red(s: &str) -> String {
+    format!("\x1b[31m{}\x1b[0m", s)
+}
+fn yellow(s: &str) -> String {
+    format!("\x1b[33m{}\x1b[0m", s)
+}
+fn cyan(s: &str) -> String {
+    format!("\x1b[36m{}\x1b[0m", s)
+}
+fn bold(s: &str) -> String {
+    format!("\x1b[1m{}\x1b[0m", s)
+}
+fn gray(s: &str) -> String {
+    format!("\x1b[90m{}\x1b[0m", s)
+}
+fn status_label(label: &str) -> String {
+    format!("\x1b[1;32m{:>12}\x1b[0m", label)
+}
+
 #[derive(ClapParser)]
 #[command(name = "lumen", version, about = "The Lumen programming language")]
 struct Cli {
@@ -141,7 +164,7 @@ fn main() {
 
 fn read_source(path: &PathBuf) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|e| {
-        eprintln!("error: cannot read file '{}': {}", path.display(), e);
+        eprintln!("{} cannot read file '{}': {}", red("error:"), bold(&path.display().to_string()), e);
         std::process::exit(1);
     })
 }
@@ -151,7 +174,7 @@ fn cmd_check(file: &PathBuf) {
     let filename = file.display().to_string();
     match lumen_compiler::compile(&source) {
         Ok(_module) => {
-            println!("✓ {} — no errors", file.display());
+            println!("{} {} {}", green("✓"), bold(&filename), gray("— no errors found"));
         }
         Err(e) => {
             let formatted = lumen_compiler::format_error(&e, &source, &filename);
@@ -164,9 +187,12 @@ fn cmd_check(file: &PathBuf) {
 fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
     let source = read_source(file);
     let filename = file.display().to_string();
+
+    println!("{} {}", status_label("Compiling"), filename);
     let module = match lumen_compiler::compile(&source) {
         Ok(m) => m,
         Err(e) => {
+            eprintln!("{} compilation failed", red("error:"));
             let formatted = lumen_compiler::format_error(&e, &source, &filename);
             eprint!("{}", formatted);
             std::process::exit(1);
@@ -186,6 +212,7 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
         ts.cell_start(cell);
     }
 
+    println!("{} {}", status_label("Running"), cell);
     let mut vm = lumen_vm::vm::VM::new();
     vm.set_provider_registry(registry);
     vm.load(module);
@@ -194,7 +221,7 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
             if let Some(ref mut ts) = trace_store {
                 ts.cell_end(cell);
                 ts.end_run();
-                println!("trace: {}", ts.run_id());
+                println!("{} {}", gray("trace:"), ts.run_id());
             }
             println!("{}", result);
         }
@@ -203,7 +230,7 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
                 ts.error(Some(cell), &format!("{}", e));
                 ts.end_run();
             }
-            eprintln!("runtime error: {}", e);
+            eprintln!("{} {}", red("runtime error:"), e);
             std::process::exit(1);
         }
     }
@@ -212,9 +239,12 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
 fn cmd_emit(file: &PathBuf, output: Option<PathBuf>) {
     let source = read_source(file);
     let filename = file.display().to_string();
+
+    println!("{} {}", status_label("Compiling"), filename);
     let module = match lumen_compiler::compile(&source) {
         Ok(m) => m,
         Err(e) => {
+            eprintln!("{} compilation failed", red("error:"));
             let formatted = lumen_compiler::format_error(&e, &source, &filename);
             eprint!("{}", formatted);
             std::process::exit(1);
@@ -224,12 +254,13 @@ fn cmd_emit(file: &PathBuf, output: Option<PathBuf>) {
     let json = lumen_compiler::compiler::emit::emit_json(&module);
 
     if let Some(ref out_path) = output {
+        println!("{} LIR to {}", status_label("Emitting"), out_path.display());
         std::fs::write(out_path, &json).unwrap_or_else(|e| {
-            eprintln!("error writing to '{}': {}", out_path.display(), e);
+            eprintln!("{} writing to '{}': {}", red("error:"), out_path.display(), e);
             std::process::exit(1);
         });
-        println!("wrote LIR to {}", out_path.display());
     } else {
+        println!("{} LIR to stdout", status_label("Emitting"));
         println!("{}", json);
     }
 }
@@ -238,6 +269,7 @@ fn cmd_trace_show(run_id: &str, trace_dir: &PathBuf) {
     let path = trace_dir.join(format!("{}.jsonl", run_id));
     match std::fs::read_to_string(&path) {
         Ok(content) => {
+            println!("{} trace for run {}", status_label("Showing"), cyan(run_id));
             for line in content.lines() {
                 if let Ok(event) = serde_json::from_str::<serde_json::Value>(line) {
                     if let Ok(pretty) = serde_json::to_string_pretty(&event) {
@@ -247,7 +279,7 @@ fn cmd_trace_show(run_id: &str, trace_dir: &PathBuf) {
             }
         }
         Err(e) => {
-            eprintln!("error: cannot read trace '{}': {}", path.display(), e);
+            eprintln!("{} cannot read trace '{}': {}", red("error:"), path.display(), e);
             std::process::exit(1);
         }
     }
@@ -256,31 +288,31 @@ fn cmd_trace_show(run_id: &str, trace_dir: &PathBuf) {
 fn cmd_cache_clear(cache_dir: &PathBuf) {
     if cache_dir.exists() {
         std::fs::remove_dir_all(cache_dir).unwrap_or_else(|e| {
-            eprintln!("error clearing cache: {}", e);
+            eprintln!("{} clearing cache: {}", red("error:"), e);
             std::process::exit(1);
         });
-        println!("cache cleared");
+        println!("{} cache cleared", green("✓"));
     } else {
-        println!("cache directory does not exist: {}", cache_dir.display());
+        println!("{} cache directory does not exist: {}", yellow("warning:"), cache_dir.display());
     }
 }
 
 fn cmd_init() {
     let path = PathBuf::from("lumen.toml");
     if path.exists() {
-        eprintln!("lumen.toml already exists — not overwriting");
+        eprintln!("{} lumen.toml already exists — not overwriting", red("error:"));
         std::process::exit(1);
     }
     std::fs::write(&path, config::LumenConfig::default_template()).unwrap_or_else(|e| {
-        eprintln!("error writing lumen.toml: {}", e);
+        eprintln!("{} writing lumen.toml: {}", red("error:"), e);
         std::process::exit(1);
     });
-    println!("created lumen.toml");
+    println!("{} lumen.toml", status_label("Created"));
 }
 
 fn cmd_fmt(files: Vec<PathBuf>, check: bool) {
     if files.is_empty() {
-        eprintln!("error: no files specified");
+        eprintln!("{} no files specified", red("error:"));
         std::process::exit(1);
     }
 
@@ -291,7 +323,7 @@ fn cmd_fmt(files: Vec<PathBuf>, check: bool) {
             }
         }
         Err(e) => {
-            eprintln!("{}", e);
+            eprintln!("{} {}", red("error:"), e);
             std::process::exit(1);
         }
     }

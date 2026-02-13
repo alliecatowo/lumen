@@ -13,10 +13,9 @@ Completed work should be removed from this list and reflected in docs/changelog.
   - Add continuation-aware `handler` execution model.
   - Support scoped handling (`with <handler> in ...`) with interception/resume behavior.
 
-- [ ] Implement declarative `pipeline` and `orchestration` semantics.
-  - Compile stage graphs and coordinator/worker patterns.
-  - Type-check stage interfaces end-to-end.
-  - Define deterministic scheduling/merge behavior.
+- [ ] Complete declarative `pipeline` and `orchestration` semantics.
+  - Expand beyond implemented pipeline stage chains (compiled `pipeline.run` + stage interface checks) to full orchestration graph/coordinator-worker semantics.
+  - Define deterministic scheduling/merge behavior for orchestration-level constructs.
 
 - [ ] Implement guardrail and eval semantics end-to-end.
   - Compile declaration blocks into executable runtime structures.

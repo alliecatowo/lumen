@@ -349,6 +349,12 @@ Runtime scheduling behavior under deterministic profile:
 
 Process declarations compile to constructor-backed records.
 
+For `pipeline` declarations:
+
+- declarative `stages:` chains are parsed and validated against known stage cells
+- stage interfaces are type-checked end-to-end (single data-argument pipeline shape)
+- compiler generates executable `<Pipeline>.run` semantics from the stage chain when not user-defined
+
 ### `memory` runtime methods
 
 - `append`, `recent`, `remember`, `recall`, `upsert`, `get`, `query`, `store`

@@ -185,6 +185,7 @@ pub struct ProcessDecl {
     pub name: String,
     pub cells: Vec<CellDef>,
     pub grants: Vec<GrantDecl>,
+    pub pipeline_stages: Vec<String>,
     pub machine_initial: Option<String>,
     pub machine_states: Vec<MachineStateDecl>,
     pub span: Span,

@@ -2153,6 +2153,7 @@ impl Parser {
             .unwrap_or_else(|| "Process".to_string());
         let mut cells = Vec::new();
         let mut grants = Vec::new();
+        let mut pipeline_stages = Vec::new();
         let mut machine_initial = None;
         let mut machine_states = Vec::new();
 
@@ -2198,6 +2199,9 @@ impl Parser {
                     cells.push(cell);
                 }
                 TokenKind::Grant => grants.push(self.parse_grant()?),
+                TokenKind::Ident(name) if kind == "pipeline" && name == "stages" => {
+                    pipeline_stages = self.parse_pipeline_stages_decl()?;
+                }
                 TokenKind::Ident(name) if kind == "machine" && name == "initial" => {
                     machine_initial = Some(self.parse_machine_initial_decl()?);
                 }
@@ -2262,10 +2266,62 @@ impl Parser {
             name,
             cells,
             grants,
+            pipeline_stages,
             machine_initial,
             machine_states,
             span: start.merge(end_span),
         })
+    }
+
+    fn parse_pipeline_stages_decl(&mut self) -> Result<Vec<String>, ParseError> {
+        let kw = self.expect_ident()?;
+        if kw != "stages" {
+            let tok = self.current().clone();
+            return Err(ParseError::Unexpected {
+                found: kw,
+                expected: "stages".into(),
+                line: tok.span.line,
+                col: tok.span.col,
+            });
+        }
+        if matches!(self.peek_kind(), TokenKind::Colon) {
+            self.advance();
+        }
+        self.skip_newlines();
+        let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
+        if has_indent {
+            self.advance();
+        }
+        self.skip_newlines();
+        let mut stages = Vec::new();
+        while !matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
+            self.skip_newlines();
+            if matches!(self.peek_kind(), TokenKind::Dedent) {
+                self.advance();
+                continue;
+            }
+            if matches!(self.peek_kind(), TokenKind::Indent) {
+                self.advance();
+                continue;
+            }
+            if matches!(self.peek_kind(), TokenKind::Arrow) {
+                self.advance();
+                self.skip_whitespace_tokens();
+            }
+            if matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
+                break;
+            }
+            stages.push(self.parse_dotted_ident()?);
+            self.consume_rest_of_line();
+            self.skip_newlines();
+        }
+        if has_indent && matches!(self.peek_kind(), TokenKind::Dedent) {
+            self.advance();
+        }
+        if matches!(self.peek_kind(), TokenKind::End) {
+            self.advance();
+        }
+        Ok(stages)
     }
 
     fn parse_machine_initial_decl(&mut self) -> Result<String, ParseError> {
@@ -5015,6 +5071,30 @@ end"#;
         let prog = parse_src(src).unwrap();
         assert_eq!(prog.items.len(), 1);
         assert!(matches!(prog.items[0], Item::Process(_)));
+    }
+
+    #[test]
+    fn test_parse_pipeline_stages_chain() {
+        let src = r#"pipeline InvoicePipeline
+  stages:
+    Extractor.extract
+      -> Validator.validate
+      -> Writer.store
+  end
+end"#;
+        let prog = parse_src(src).unwrap();
+        let Item::Process(p) = &prog.items[0] else {
+            panic!("expected process");
+        };
+        assert_eq!(p.kind, "pipeline");
+        assert_eq!(
+            p.pipeline_stages,
+            vec![
+                "Extractor.extract".to_string(),
+                "Validator.validate".to_string(),
+                "Writer.store".to_string()
+            ]
+        );
     }
 
     #[test]

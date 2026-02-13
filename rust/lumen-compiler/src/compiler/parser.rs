@@ -932,7 +932,7 @@ impl Parser {
         self.consume_rest_of_line();
 
         // Addendum block statements carry DSL metadata. For now we preserve payload
-        // by lowering them to `emit(payload)` and skip their optional body.
+        // for compilation and keep optional `in` bodies executable.
         if matches!(self.peek_kind(), TokenKind::Newline) {
             self.skip_newlines();
             if matches!(self.peek_kind(), TokenKind::Indent) {
@@ -946,19 +946,26 @@ impl Parser {
             }
         }
 
+        let mut in_block_end = None;
+        let mut in_block = None;
         self.skip_newlines();
         if matches!(self.peek_kind(), TokenKind::In) {
             self.advance();
             self.skip_newlines();
-            if matches!(self.peek_kind(), TokenKind::Indent) {
-                self.consume_indented_payload();
-                self.skip_newlines();
-                if matches!(self.peek_kind(), TokenKind::End) {
-                    self.advance();
-                }
-            } else {
-                self.consume_block_until_end();
-            }
+            let body = self.parse_block()?;
+            let end = self.expect(&TokenKind::End)?.span;
+            in_block_end = Some(end);
+            in_block = Some(body);
+        }
+
+        if let Some(body) = in_block {
+            let end = in_block_end.unwrap_or(start);
+            return Ok(Stmt::If(IfStmt {
+                condition: Expr::BoolLit(true, start),
+                then_body: body,
+                else_body: None,
+                span: start.merge(end),
+            }));
         }
 
         let value = Expr::StringLit(kind, start);
@@ -4334,5 +4341,54 @@ mod tests {
         let src = "cell test(x: Int) -> String\n  match x\n    1 -> return \"one\"\n    _ -> return \"other\"\n  end\nend";
         let prog = parse_src(src).unwrap();
         assert_eq!(prog.items.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_addon_stmt_in_block_preserved() {
+        let src = r#"cell main() -> Int
+  observe "batch"
+    metrics:
+      counter items_processed
+    end
+  in
+    return 1
+  end
+end"#;
+        let prog = parse_src(src).unwrap();
+        if let Item::Cell(c) = &prog.items[0] {
+            assert_eq!(c.body.len(), 1);
+            match &c.body[0] {
+                Stmt::If(ifs) => {
+                    assert_eq!(ifs.then_body.len(), 1);
+                    assert!(matches!(ifs.then_body[0], Stmt::Return(_)));
+                }
+                _ => panic!("expected addon in-body to lower to executable block"),
+            }
+        } else {
+            panic!("expected cell");
+        }
+    }
+
+    #[test]
+    fn test_parse_machine_state_block() {
+        let src = r#"machine TicketFlow
+  initial: Start
+  state Start
+    on_enter() / {trace}
+      transition Done()
+    end
+  end
+  state Done
+    terminal: true
+  end
+end"#;
+        let prog = parse_src(src).unwrap();
+        assert_eq!(prog.items.len(), 1);
+        if let Item::Process(p) = &prog.items[0] {
+            assert_eq!(p.kind, "machine");
+            assert_eq!(p.name, "TicketFlow");
+        } else {
+            panic!("expected process");
+        }
     }
 }

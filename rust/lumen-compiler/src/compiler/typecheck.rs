@@ -51,7 +51,7 @@ fn is_builtin_function(name: &str) -> bool {
     )
 }
 
-fn is_spec_placeholder_var(name: &str) -> bool {
+fn is_doc_placeholder_var(name: &str) -> bool {
     matches!(
         name,
         "text"
@@ -319,15 +319,17 @@ pub fn resolve_type_expr(ty: &TypeExpr, symbols: &SymbolTable) -> Type {
 
 struct TypeChecker<'a> {
     symbols: &'a SymbolTable,
+    allow_placeholders: bool,
     locals: HashMap<String, Type>,
     mutables: HashMap<String, bool>,
     errors: Vec<TypeError>,
 }
 
 impl<'a> TypeChecker<'a> {
-    fn new(symbols: &'a SymbolTable) -> Self {
+    fn new(symbols: &'a SymbolTable, allow_placeholders: bool) -> Self {
         Self {
             symbols,
+            allow_placeholders,
             locals: HashMap::new(),
             mutables: HashMap::new(),
             errors: Vec::new(),
@@ -428,60 +430,13 @@ impl<'a> TypeChecker<'a> {
                 let mut has_catchall = false;
 
                 for arm in &ms.arms {
-                    match &arm.pattern {
-                        Pattern::Variant(tag, binding, _) => {
-                            let mut valid_variant = false;
-                            let mut bind_type = Type::Any;
-
-                            if let Type::Enum(ref name) = subject_type {
-                                if let Some(ti) = self.symbols.types.get(name) {
-                                    if let crate::compiler::resolve::TypeInfoKind::Enum(def) =
-                                        &ti.kind
-                                    {
-                                        if def.variants.iter().any(|v| v.name == *tag) {
-                                            valid_variant = true;
-                                            covered_variants.push(tag.clone());
-                                            bind_type = subject_type.clone();
-                                        }
-                                    }
-                                }
-                                if !valid_variant {
-                                    self.errors.push(TypeError::Mismatch {
-                                        expected: format!("variant of {}", name),
-                                        actual: tag.clone(),
-                                        line: arm.span.line,
-                                    });
-                                }
-                            } else if let Type::Result(ref ok, ref err) = subject_type {
-                                if tag == "ok" {
-                                    valid_variant = true;
-                                    bind_type = *ok.clone();
-                                } else if tag == "err" {
-                                    valid_variant = true;
-                                    bind_type = *err.clone();
-                                }
-                                if !valid_variant {
-                                    self.errors.push(TypeError::Mismatch {
-                                        expected: "ok or err".into(),
-                                        actual: tag.clone(),
-                                        line: arm.span.line,
-                                    });
-                                }
-                            }
-
-                            if let Some(b) = binding {
-                                self.locals.insert(b.clone(), bind_type);
-                            }
-                        }
-                        Pattern::Ident(name, _) => {
-                            self.locals.insert(name.clone(), subject_type.clone());
-                            has_catchall = true;
-                        }
-                        Pattern::Wildcard(_) => {
-                            has_catchall = true;
-                        }
-                        _ => {}
-                    }
+                    self.bind_match_pattern(
+                        &arm.pattern,
+                        &subject_type,
+                        &mut covered_variants,
+                        &mut has_catchall,
+                        arm.span.line,
+                    );
                     for s in &arm.body {
                         self.check_stmt(s, expected_return);
                     }
@@ -569,6 +524,184 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    fn bind_match_pattern(
+        &mut self,
+        pattern: &Pattern,
+        subject_type: &Type,
+        covered_variants: &mut Vec<String>,
+        has_catchall: &mut bool,
+        line: usize,
+    ) {
+        match pattern {
+            Pattern::Variant(tag, binding, _) => {
+                let mut valid_variant = false;
+                let mut bind_type = Type::Any;
+
+                if let Type::Enum(ref name) = subject_type {
+                    if let Some(ti) = self.symbols.types.get(name) {
+                        if let crate::compiler::resolve::TypeInfoKind::Enum(def) = &ti.kind {
+                            if def.variants.iter().any(|v| v.name == *tag) {
+                                valid_variant = true;
+                                covered_variants.push(tag.clone());
+                                bind_type = subject_type.clone();
+                            }
+                        }
+                    }
+                    if !valid_variant {
+                        self.errors.push(TypeError::Mismatch {
+                            expected: format!("variant of {}", name),
+                            actual: tag.clone(),
+                            line,
+                        });
+                    }
+                } else if let Type::Result(ref ok, ref err) = subject_type {
+                    if tag == "ok" {
+                        valid_variant = true;
+                        bind_type = *ok.clone();
+                    } else if tag == "err" {
+                        valid_variant = true;
+                        bind_type = *err.clone();
+                    }
+                    if !valid_variant {
+                        self.errors.push(TypeError::Mismatch {
+                            expected: "ok or err".into(),
+                            actual: tag.clone(),
+                            line,
+                        });
+                    }
+                }
+
+                if let Some(b) = binding {
+                    self.locals.insert(b.clone(), bind_type);
+                }
+            }
+            Pattern::Ident(name, _) => {
+                self.locals.insert(name.clone(), subject_type.clone());
+                *has_catchall = true;
+            }
+            Pattern::Wildcard(_) => {
+                *has_catchall = true;
+            }
+            Pattern::Guard {
+                inner, condition, ..
+            } => {
+                self.bind_match_pattern(inner, subject_type, covered_variants, has_catchall, line);
+                let guard_ty = self.infer_expr(condition);
+                self.check_compat(&Type::Bool, &guard_ty, line);
+            }
+            Pattern::Or { patterns, .. } => {
+                for p in patterns {
+                    self.bind_match_pattern(p, subject_type, covered_variants, has_catchall, line);
+                }
+            }
+            Pattern::ListDestructure { elements, rest, .. } => {
+                let elem_type = match subject_type {
+                    Type::List(inner) => *inner.clone(),
+                    Type::Any => Type::Any,
+                    other => {
+                        self.errors.push(TypeError::Mismatch {
+                            expected: "List".into(),
+                            actual: format!("{}", other),
+                            line,
+                        });
+                        Type::Any
+                    }
+                };
+                for p in elements {
+                    self.bind_match_pattern(p, &elem_type, covered_variants, has_catchall, line);
+                }
+                if let Some(rest_name) = rest {
+                    self.locals
+                        .insert(rest_name.clone(), Type::List(Box::new(elem_type)));
+                }
+            }
+            Pattern::TupleDestructure { elements, .. } => {
+                match subject_type {
+                    Type::Tuple(types) => {
+                        for (idx, p) in elements.iter().enumerate() {
+                            let ty = types.get(idx).cloned().unwrap_or(Type::Any);
+                            self.bind_match_pattern(
+                                p,
+                                &ty,
+                                covered_variants,
+                                has_catchall,
+                                line,
+                            );
+                        }
+                    }
+                    Type::Any => {
+                        for p in elements {
+                            self.bind_match_pattern(
+                                p,
+                                &Type::Any,
+                                covered_variants,
+                                has_catchall,
+                                line,
+                            );
+                        }
+                    }
+                    other => {
+                        self.errors.push(TypeError::Mismatch {
+                            expected: "Tuple".into(),
+                            actual: format!("{}", other),
+                            line,
+                        });
+                    }
+                }
+            }
+            Pattern::RecordDestructure {
+                type_name,
+                fields,
+                open: _,
+                ..
+            } => {
+                if let Type::Record(actual_name) = subject_type {
+                    if actual_name != type_name {
+                        self.errors.push(TypeError::Mismatch {
+                            expected: type_name.clone(),
+                            actual: actual_name.clone(),
+                            line,
+                        });
+                    }
+                }
+                for (field_name, field_pat) in fields {
+                    let field_ty = if let Some(ti) = self.symbols.types.get(type_name) {
+                        if let crate::compiler::resolve::TypeInfoKind::Record(def) = &ti.kind {
+                            if let Some(field) = def.fields.iter().find(|f| f.name == *field_name) {
+                                resolve_type_expr(&field.ty, self.symbols)
+                            } else {
+                                Type::Any
+                            }
+                        } else {
+                            Type::Any
+                        }
+                    } else {
+                        Type::Any
+                    };
+                    if let Some(p) = field_pat {
+                        self.bind_match_pattern(
+                            p,
+                            &field_ty,
+                            covered_variants,
+                            has_catchall,
+                            line,
+                        );
+                    } else {
+                        self.locals.insert(field_name.clone(), field_ty);
+                    }
+                }
+            }
+            Pattern::TypeCheck {
+                name, type_expr, ..
+            } => {
+                let expected = resolve_type_expr(type_expr, self.symbols);
+                self.check_compat(&expected, subject_type, line);
+                self.locals.insert(name.clone(), expected);
+            }
+            Pattern::Literal(_) => {}
+        }
+    }
+
     fn infer_expr(&mut self, expr: &Expr) -> Type {
         match expr {
             Expr::IntLit(_, _) => Type::Int,
@@ -630,7 +763,7 @@ impl<'a> TypeChecker<'a> {
                 // built-in
                 else if name == "null" {
                     Type::Null
-                } else if is_spec_placeholder_var(name) {
+                } else if self.allow_placeholders && is_doc_placeholder_var(name) {
                     Type::Any
                 } else {
                     // Check for Enum Variant
@@ -1069,9 +1202,29 @@ impl<'a> TypeChecker<'a> {
     }
 }
 
+fn parse_directive_bool(program: &Program, name: &str) -> Option<bool> {
+    let raw = program
+        .directives
+        .iter()
+        .find(|d| d.name.eq_ignore_ascii_case(name))?
+        .value
+        .as_deref()
+        .unwrap_or("true")
+        .trim()
+        .to_ascii_lowercase();
+    match raw.as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 /// Typecheck a program.
 pub fn typecheck(program: &Program, symbols: &SymbolTable) -> Result<(), Vec<TypeError>> {
-    let mut checker = TypeChecker::new(symbols);
+    let strict = parse_directive_bool(program, "strict").unwrap_or(true);
+    let doc_mode = parse_directive_bool(program, "doc_mode").unwrap_or(false);
+    let allow_placeholders = doc_mode || !strict;
+    let mut checker = TypeChecker::new(symbols, allow_placeholders);
     for item in &program.items {
         match item {
             Item::Cell(c) => checker.check_cell(c),

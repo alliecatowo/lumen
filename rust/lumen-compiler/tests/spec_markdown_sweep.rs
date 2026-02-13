@@ -47,7 +47,7 @@ fn compile_block_with_type_stubs(code: &str) -> Result<(), String> {
         } else {
             format!("{}\n\n{}", prelude, code)
         };
-        let md = format!("# sweep\n\n```lumen\n{}\n```\n", full_code);
+        let md = format!("@doc_mode true\n\n# sweep\n\n```lumen\n{}\n```\n", full_code);
 
         match compile(&md) {
             Ok(_) => return Ok(()),

@@ -22,6 +22,7 @@ pub enum Value {
     Union(UnionValue),
     Closure(ClosureValue),
     TraceRef(TraceRefValue),
+    Future(FutureValue),
 }
 
 /// A string reference (interned ID or owned)
@@ -55,6 +56,11 @@ pub struct TraceRefValue {
     pub seq: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FutureValue {
+    pub id: u64,
+}
+
 impl Value {
     pub fn is_truthy(&self) -> bool {
         match self {
@@ -67,6 +73,7 @@ impl Value {
             Value::List(l) => !l.is_empty(),
             Value::Tuple(t) => !t.is_empty(),
             Value::Set(s) => !s.is_empty(),
+            Value::Future(_) => true,
             _ => true,
         }
     }
@@ -130,6 +137,7 @@ impl Value {
                 c.captures.len()
             ),
             Value::TraceRef(t) => format!("<trace:{}:{}>", t.trace_id, t.seq),
+            Value::Future(f) => format!("<future:{}>", f.id),
         }
     }
 
@@ -187,6 +195,7 @@ impl Value {
             Value::Union(_) => 11,
             Value::Closure(_) => 12,
             Value::TraceRef(_) => 13,
+            Value::Future(_) => 14,
         }
     }
 
@@ -207,6 +216,7 @@ impl Value {
             Value::Union(u) => &u.tag,
             Value::Closure(_) => "Closure",
             Value::TraceRef(_) => "TraceRef",
+            Value::Future(_) => "Future",
         }
     }
 
@@ -258,6 +268,7 @@ impl Value {
                 }
             }
             Value::Closure(c) => format!("<closure:cell={}>", c.cell_idx),
+            Value::Future(f) => format!("<future:{}>", f.id),
             _ => self.as_string(),
         }
     }
@@ -313,6 +324,8 @@ impl PartialEq for Value {
             (Value::Closure(a), Value::Closure(b)) => {
                 a.cell_idx == b.cell_idx && a.captures == b.captures
             }
+            (Value::TraceRef(a), Value::TraceRef(b)) => a.trace_id == b.trace_id && a.seq == b.seq,
+            (Value::Future(a), Value::Future(b)) => a.id == b.id,
             _ => false,
         }
     }
@@ -400,6 +413,7 @@ impl Ord for Value {
             (Value::TraceRef(a), Value::TraceRef(b)) => {
                 a.trace_id.cmp(&b.trace_id).then_with(|| a.seq.cmp(&b.seq))
             }
+            (Value::Future(a), Value::Future(b)) => a.id.cmp(&b.id),
             _ => Ordering::Equal,
         }
     }

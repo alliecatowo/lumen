@@ -40,6 +40,8 @@ pub enum TokenKind {
     IntLit(i64),
     FloatLit(f64),
     StringLit(String),
+    /// Interpolated string segments: (is_expr, text). is_expr=true means {expr}, false means literal text.
+    StringInterpLit(Vec<(bool, String)>),
     BoolLit(bool),
 
     // Identifiers and keywords

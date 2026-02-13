@@ -15,11 +15,12 @@ pub enum ParseError {
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    bracket_depth: usize,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+        Self { tokens, pos: 0, bracket_depth: 0 }
     }
 
     fn current(&self) -> &Token {
@@ -48,7 +49,18 @@ impl Parser {
     }
 
     fn skip_newlines(&mut self) {
-        while matches!(self.peek_kind(), TokenKind::Newline) { self.advance(); }
+        if self.bracket_depth > 0 {
+            self.skip_whitespace_tokens();
+        } else {
+            while matches!(self.peek_kind(), TokenKind::Newline) { self.advance(); }
+        }
+    }
+
+    /// Skip newlines, indents, and dedents — used inside bracketed contexts
+    fn skip_whitespace_tokens(&mut self) {
+        while matches!(self.peek_kind(), TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) {
+            self.advance();
+        }
     }
 
     fn at_end(&self) -> bool { matches!(self.peek_kind(), TokenKind::Eof) }
@@ -204,6 +216,14 @@ impl Parser {
             TokenKind::Match => self.parse_match(),
             TokenKind::Return => self.parse_return(),
             TokenKind::Halt => self.parse_halt(),
+            TokenKind::Ident(_) => {
+                // Check if this is an assignment: ident = expr
+                if self.is_assignment() {
+                    self.parse_assign()
+                } else {
+                    self.parse_expr_stmt()
+                }
+            }
             _ => self.parse_expr_stmt(),
         }
     }
@@ -265,11 +285,19 @@ impl Parser {
             let arm_start = self.current().span;
             let pattern = self.parse_pattern()?;
             self.expect(&TokenKind::Arrow)?;
-            // Single-line arm or block
-            let body = if matches!(self.peek_kind(), TokenKind::Return | TokenKind::Let | TokenKind::If | TokenKind::For | TokenKind::Match | TokenKind::Halt) {
-                vec![self.parse_stmt()?]
+            // Check for block body (indent after arrow) or single-line
+            let body = if matches!(self.peek_kind(), TokenKind::Newline) {
+                // Multi-line arm body: newline followed by indent
+                self.skip_newlines();
+                if matches!(self.peek_kind(), TokenKind::Indent) {
+                    self.parse_block()?
+                } else {
+                    // Just whitespace, parse single statement
+                    vec![self.parse_stmt()?]
+                }
             } else {
-                vec![Stmt::Expr(ExprStmt { expr: self.parse_expr(0)?, span: self.current().span })]
+                // Single-line arm: parse one statement
+                vec![self.parse_stmt()?]
             };
             let arm_span = arm_start.merge(body.last().map(|s| s.span()).unwrap_or(arm_start));
             arms.push(MatchArm { pattern, body, span: arm_span });
@@ -332,6 +360,26 @@ impl Parser {
         let expr = self.parse_expr(0)?;
         let span = expr.span();
         Ok(Stmt::Expr(ExprStmt { expr, span }))
+    }
+
+    /// Check if the current position is an assignment (ident followed by =)
+    fn is_assignment(&self) -> bool {
+        if matches!(self.peek_kind(), TokenKind::Ident(_)) {
+            if self.pos + 1 < self.tokens.len() {
+                return matches!(self.tokens[self.pos + 1].kind, TokenKind::Assign);
+            }
+        }
+        false
+    }
+
+    /// Parse an assignment statement: ident = expr
+    fn parse_assign(&mut self) -> Result<Stmt, ParseError> {
+        let start = self.tokens[self.pos].span;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::Assign)?;
+        let value = self.parse_expr(0)?;
+        let span = start.merge(value.span());
+        Ok(Stmt::Assign(AssignStmt { target: name, value, span }))
     }
 
     // ── Use Tool / Grant ──
@@ -534,29 +582,35 @@ impl Parser {
     fn parse_call(&mut self, callee: Expr) -> Result<Expr, ParseError> {
         let start = callee.span();
         self.expect(&TokenKind::LParen)?;
+        self.bracket_depth += 1;
         let mut args = Vec::new();
+        self.skip_whitespace_tokens();
         while !matches!(self.peek_kind(), TokenKind::RParen) {
-            if !args.is_empty() { self.expect(&TokenKind::Comma)?; }
-            self.skip_newlines();
+            if !args.is_empty() {
+                self.expect(&TokenKind::Comma)?;
+                self.skip_whitespace_tokens();
+            }
             // Check for role blocks inline
             if matches!(self.peek_kind(), TokenKind::Role) {
                 self.advance();
                 let role_name = self.expect_ident()?;
                 self.expect(&TokenKind::Colon)?;
                 let mut content = String::new();
-                self.skip_newlines();
+                self.skip_whitespace_tokens();
                 // Read until 'end' or next 'role' or close paren
-                let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
-                if has_indent { self.advance(); }
                 loop {
                     match self.peek_kind() {
                         TokenKind::End => { self.advance(); break; }
-                        TokenKind::Dedent => { self.advance(); break; }
                         TokenKind::Eof | TokenKind::RParen => break,
+                        TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => {
+                            if !content.is_empty() { content.push('\n'); }
+                            self.advance();
+                        }
+                        TokenKind::Role => break, // next role block
                         _ => {
                             // Accumulate tokens as text
                             let tok = self.advance().clone();
-                            if !content.is_empty() { content.push(' '); }
+                            if !content.is_empty() && !content.ends_with('\n') { content.push(' '); }
                             content.push_str(&format!("{}", tok.kind));
                         }
                     }
@@ -570,7 +624,7 @@ impl Parser {
                 self.advance();
                 if matches!(self.peek_kind(), TokenKind::Colon) {
                     self.advance();
-                    self.skip_newlines();
+                    self.skip_whitespace_tokens();
                     let val = self.parse_expr(0)?;
                     let span = val.span();
                     args.push(CallArg::Named(name_clone, val, span));
@@ -583,33 +637,63 @@ impl Parser {
                 let expr = self.parse_expr(0)?;
                 args.push(CallArg::Positional(expr));
             }
-            self.skip_newlines();
+            self.skip_whitespace_tokens();
         }
+        self.bracket_depth -= 1;
         let end = self.expect(&TokenKind::RParen)?.span;
+
+        // Convert Call with all-named-args + Ident callee to RecordLit
+        if let Expr::Ident(ref name, _) = callee {
+            if !args.is_empty() && args.iter().all(|a| matches!(a, CallArg::Named(..))) {
+                // Check if name starts with uppercase (record constructor convention)
+                if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                    let fields: Vec<(String, Expr)> = args.into_iter().map(|a| {
+                        if let CallArg::Named(n, e, _) = a { (n, e) } else { unreachable!() }
+                    }).collect();
+                    return Ok(Expr::RecordLit(name.clone(), fields, start.merge(end)));
+                }
+            }
+        }
+
         Ok(Expr::Call(Box::new(callee), args, start.merge(end)))
     }
 
     fn parse_list_lit(&mut self) -> Result<Expr, ParseError> {
         let start = self.expect(&TokenKind::LBracket)?.span;
+        self.bracket_depth += 1;
         let mut elems = Vec::new();
+        self.skip_whitespace_tokens();
         while !matches!(self.peek_kind(), TokenKind::RBracket) {
-            if !elems.is_empty() { self.expect(&TokenKind::Comma)?; }
+            if !elems.is_empty() {
+                self.expect(&TokenKind::Comma)?;
+                self.skip_whitespace_tokens();
+            }
             elems.push(self.parse_expr(0)?);
+            self.skip_whitespace_tokens();
         }
+        self.bracket_depth -= 1;
         let end = self.expect(&TokenKind::RBracket)?.span;
         Ok(Expr::ListLit(elems, start.merge(end)))
     }
 
     fn parse_map_lit(&mut self) -> Result<Expr, ParseError> {
         let start = self.expect(&TokenKind::LBrace)?.span;
+        self.bracket_depth += 1;
         let mut pairs = Vec::new();
+        self.skip_whitespace_tokens();
         while !matches!(self.peek_kind(), TokenKind::RBrace) {
-            if !pairs.is_empty() { self.expect(&TokenKind::Comma)?; }
+            if !pairs.is_empty() {
+                self.expect(&TokenKind::Comma)?;
+                self.skip_whitespace_tokens();
+            }
             let key = self.parse_expr(0)?;
             self.expect(&TokenKind::Colon)?;
+            self.skip_whitespace_tokens();
             let val = self.parse_expr(0)?;
+            self.skip_whitespace_tokens();
             pairs.push((key, val));
         }
+        self.bracket_depth -= 1;
         let end = self.expect(&TokenKind::RBrace)?.span;
         Ok(Expr::MapLit(pairs, start.merge(end)))
     }

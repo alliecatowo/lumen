@@ -6,6 +6,18 @@ use crate::compiler::tokens::Span;
 use std::collections::HashMap;
 use thiserror::Error;
 
+/// Check if a name is a built-in function
+fn is_builtin_function(name: &str) -> bool {
+    matches!(name,
+        "print" | "len" | "length" | "append" | "range" |
+        "to_string" | "str" | "to_int" | "int" | "to_float" | "float" |
+        "type_of" | "keys" | "values" | "contains" |
+        "join" | "split" | "trim" | "upper" | "lower" | "replace" |
+        "abs" | "min" | "max" | "hash" | "not" | "count" | "matches" |
+        "slice" | "sort" | "reverse" | "map" | "filter" | "reduce"
+    )
+}
+
 #[derive(Debug, Error)]
 pub enum TypeError {
     #[error("type mismatch at line {line}: expected {expected}, got {actual}")]
@@ -122,6 +134,7 @@ impl<'a> TypeChecker<'a> {
                 let iter_type = self.infer_expr(&fs.iter);
                 let elem_type = match &iter_type {
                     Type::List(inner) => *inner.clone(),
+                    Type::Any => Type::Any, // Accept Any (e.g. from built-in range())
                     _ => { self.errors.push(TypeError::Mismatch {
                         expected: "list[T]".into(), actual: format!("{}", iter_type), line: fs.span.line,
                     }); Type::Any }
@@ -143,6 +156,10 @@ impl<'a> TypeChecker<'a> {
             }
             Stmt::Return(rs) => { self.infer_expr(&rs.value); }
             Stmt::Halt(hs) => { self.infer_expr(&hs.message); }
+            Stmt::Assign(asgn) => {
+                let val_type = self.infer_expr(&asgn.value);
+                self.locals.insert(asgn.target.clone(), val_type);
+            }
             Stmt::Expr(es) => { self.infer_expr(&es.expr); }
         }
     }
@@ -159,6 +176,8 @@ impl<'a> TypeChecker<'a> {
                 if let Some(ty) = self.locals.get(name) { ty.clone() }
                 else if self.symbols.cells.contains_key(name) { Type::Any } // cell ref
                 else if self.symbols.tools.contains_key(name) { Type::Any } // tool ref
+                else if is_builtin_function(name) { Type::Any } // built-in
+                else if name == "null" { Type::Null }
                 else {
                     self.errors.push(TypeError::UndefinedVar { name: name.clone(), line: span.line });
                     Type::Any

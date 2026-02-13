@@ -275,6 +275,7 @@ end
 - cells may declare effect rows (`/ {http, trace}`)
 - resolver infers effects for cells that omit explicit rows
 - strict mode reports inferred-but-undeclared effects for explicitly declared rows
+- effectful external capabilities require matching grants in scope
 
 ```lumen
 cell a() -> Int / {emit}
@@ -288,6 +289,12 @@ end
 ```
 
 `b` inherits inferred `emit` effect.
+
+Capability checks use grant scope:
+
+- top-level cells use top-level `grant` declarations
+- agent/process methods use top-level grants plus local grants declared in that agent/process
+- effect bindings (`bind effect ... to <ToolAlias>`) are preferred for mapping custom/bound effects to tools
 
 ## 7.4 Deterministic Profile
 

@@ -319,6 +319,12 @@ end
 
 This is rejected under deterministic mode.
 
+Runtime scheduling behavior under deterministic profile:
+
+- compiler lowers directives into module metadata
+- VM defaults future scheduling to deferred FIFO when `@deterministic true` is present
+- explicit VM scheduler overrides still take precedence
+
 ## 8. Runtime Semantics (Current)
 
 ## 8.1 Futures

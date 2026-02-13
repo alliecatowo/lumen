@@ -1,0 +1,11 @@
+[package]
+name = "task-showcase"
+version = "0.1.0"
+description = "Comprehensive showcase of Lumen language features"
+
+[dependencies]
+# No external dependencies - this is a standalone showcase
+
+# Future: When package registry is available
+# std = "^1.0"
+# collections = "^1.0"

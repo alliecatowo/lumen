@@ -1,0 +1,20 @@
+[package]
+name = "lumen-provider-crypto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lumen-runtime = { path = "../lumen-runtime" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+sha2 = "0.10"
+md-5 = "0.10"
+base64 = "0.22"
+uuid = { version = "1.11", features = ["v4"] }
+rand = "0.8"
+hmac = "0.12"
+hex = "0.4"
+
+[dev-dependencies]

@@ -10,6 +10,8 @@ members = [
     "rust/lumen-provider-json",
     "rust/lumen-provider-fs",
     "rust/lumen-provider-mcp",
+    "rust/lumen-provider-env",
+    "rust/lumen-provider-crypto",
 ]
 
 [workspace.package]

@@ -278,6 +278,7 @@ end
 - strict mode enforces call-boundary effect compatibility for statically resolved cell/tool calls
 - undeclared-effect diagnostics include source-level cause hints (for example, specific call sites/tool calls)
 - effectful external capabilities require matching grants in scope
+- runtime tool calls apply merged grant-policy constraints (for example `domain`, `timeout_ms`, `max_tokens`) and reject violations
 
 ```lumen
 cell a() -> Int / {emit}

@@ -36,6 +36,14 @@ Current runtime support:
 
 Process runtime state is instance-scoped, not globally shared by type name.
 
+## Tool Dispatch and Policy
+
+- Tool aliases lower to VM `ToolCall` operations.
+- Runtime dispatch builds a structured args object from call arguments.
+- Grant policies are merged per tool alias and enforced at dispatch boundaries.
+- Current enforced constraint keys include `domain`, `timeout_ms`, `max_tokens`, and exact-match keys.
+- Policy violations fail execution with tool-policy errors before dispatcher invocation.
+
 ## Deterministic Profile
 
 `@deterministic` enables stricter resolver checks that reject nondeterministic operations/effects.

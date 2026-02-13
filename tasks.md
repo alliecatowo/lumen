@@ -26,8 +26,8 @@ Completed work should be removed from this list and reflected in docs/changelog.
 ## Effect and Capability System
 
 - [ ] Replace heuristic grant matching with explicit policy semantics.
-  - Define policy AST and evaluator.
-  - Integrate policy checks in resolve + runtime tool call boundaries.
+  - Define policy AST and evaluator for static/resolve-time checks.
+  - Replace remaining heuristic grant/effect matching in resolver.
 
 ## Runtime and Determinism
 

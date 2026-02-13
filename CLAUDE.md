@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build --release                    # Build all crates
-cargo test --workspace                   # Run all tests (~442 passing, 1 ignored)
+cargo test --workspace                   # Run all tests (~454 passing, 1 ignored)
 cargo test -p lumen-compiler             # Tests for compiler only
 cargo test -p lumen-vm                   # Tests for VM only
 cargo test -p lumen-runtime              # Tests for runtime only
@@ -45,15 +45,20 @@ The Cargo workspace root is `/Cargo.toml` with members under `rust/`:
 - **lumen-vm** — Register VM that executes LIR bytecode (values, string interning, type tables, process runtimes)
 - **lumen-runtime** — Infrastructure: tool dispatch trait, result caching, trace event storage
 - **lumen-cli** — Clap-based CLI (`main.rs`) orchestrating compiler → VM
+- **lumen-lsp** — Language Server Protocol implementation
+- **lumen-provider-http** — HTTP provider for tool calls
+- **lumen-provider-json** — JSON provider for tool calls
+- **lumen-provider-fs** — Filesystem provider for tool calls
+- **lumen-provider-mcp** — MCP (Model Context Protocol) provider bridge
 
 Other key paths:
 - `SPEC.md` — Implementation-accurate language specification (source of truth)
-- `examples/*.lm.md` — Example programs (13 total)
+- `examples/*.lm.md` — Example programs (22 total)
 - `tasks.md` — Outstanding implementation work
 - `docs/GETTING_STARTED.md` — Installation and tutorial guide
 - `docs/ARCHITECTURE.md` — Component overview
 - `docs/RUNTIME.md` — Runtime semantics (futures, processes, tool dispatch, traces)
-- `tree-sitter-lumen/` — Tree-sitter grammar for advanced tooling
+- `tree-sitter-lumen/` — Tree-sitter grammar for advanced tooling (located at `tree-sitter-lumen/grammar.js`)
 - `editors/vscode/` — VS Code extension with TextMate grammar
 
 ## Compiler Pipeline
@@ -126,6 +131,25 @@ Tool calls go through `validate_tool_policy()` at runtime dispatch. Merged grant
 
 **CLI architecture**: `rust/lumen-cli/` uses Clap for command parsing. Main commands in `main.rs`; REPL in `repl.rs`; formatter in `fmt.rs`; package manager in `pkg.rs`; config loading in `config.rs`.
 
+**REPL features**: The interactive REPL (`lumen repl`) supports:
+- Multi-line input with automatic detection
+- Command history and navigation
+- Line editing with rustyline
+- Immediate execution and output display
+- Access to previously defined functions and variables within the session
+
+**Formatter**: `lumen fmt` provides code formatting with:
+- Consistent indentation and spacing
+- Alignment of field declarations and match arms
+- Preservation of comments and documentation
+- `--check` mode for CI/CD integration
+
+**VM debug capabilities**: The VM includes:
+- Instruction tracing with `--trace-dir` flag
+- Stack frame capture for error diagnostics
+- Future state tracking for async operations
+- Tool call recording and replay via trace events
+
 **LSP capabilities** (future): Planned support includes go-to-definition, hover documentation, completion, diagnostics, and code actions.
 
 ## Test Structure
@@ -133,8 +157,8 @@ Tool calls go through `validate_tool_policy()` at runtime dispatch. Merged grant
 - `rust/lumen-compiler/tests/spec_markdown_sweep.rs` — Compiles every code block in `SPEC.md` (auto-stubs undefined types)
 - `rust/lumen-compiler/tests/spec_suite.rs` — Semantic compiler tests (compile-ok and compile-err cases)
 - Unit tests inline in source files across all crates
-- **Test counts**: ~442 tests passing, 1 ignored (breakdown: 25 + 115 + 14 + 8 + 1 + 81 + 22 + 104 + 72 across crates)
-- 12/13 examples compile; 6 run end-to-end (`role_interpolation.lm.md` has a known parse issue)
+- **Test counts**: ~454 tests passing, 1 ignored (breakdown: 18 + 31 + 131 + 14 + 8 + 1 + 81 + 8 + 11 + 11 + 10 + 22 + 111 across crates)
+- All 22 examples type-check successfully; most run end-to-end
 
 ## Language Essentials
 

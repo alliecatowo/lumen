@@ -89,6 +89,11 @@ pub fn format_lumen_code(code: &str) -> String {
         Err(_) => return code.to_string(), // Parse failed, return original
     };
 
+    // If the AST is empty (no declarations), return original code
+    if program.items.is_empty() {
+        return code.to_string();
+    }
+
     // Pretty-print the AST
     let mut formatter = Formatter::new();
     formatter.fmt_program(&program);

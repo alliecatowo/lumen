@@ -59,6 +59,14 @@ pub struct TraceRefValue {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FutureValue {
     pub id: u64,
+    pub state: FutureStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FutureStatus {
+    Pending,
+    Completed,
+    Error,
 }
 
 impl Value {
@@ -137,7 +145,7 @@ impl Value {
                 c.captures.len()
             ),
             Value::TraceRef(t) => format!("<trace:{}:{}>", t.trace_id, t.seq),
-            Value::Future(f) => format!("<future:{}>", f.id),
+            Value::Future(f) => format!("<future:{}:{}>", f.id, future_status_name(f.state)),
         }
     }
 
@@ -268,7 +276,7 @@ impl Value {
                 }
             }
             Value::Closure(c) => format!("<closure:cell={}>", c.cell_idx),
-            Value::Future(f) => format!("<future:{}>", f.id),
+            Value::Future(f) => format!("<future:{}:{}>", f.id, future_status_name(f.state)),
             _ => self.as_string(),
         }
     }
@@ -325,7 +333,7 @@ impl PartialEq for Value {
                 a.cell_idx == b.cell_idx && a.captures == b.captures
             }
             (Value::TraceRef(a), Value::TraceRef(b)) => a.trace_id == b.trace_id && a.seq == b.seq,
-            (Value::Future(a), Value::Future(b)) => a.id == b.id,
+            (Value::Future(a), Value::Future(b)) => a.id == b.id && a.state == b.state,
             _ => false,
         }
     }
@@ -413,9 +421,28 @@ impl Ord for Value {
             (Value::TraceRef(a), Value::TraceRef(b)) => {
                 a.trace_id.cmp(&b.trace_id).then_with(|| a.seq.cmp(&b.seq))
             }
-            (Value::Future(a), Value::Future(b)) => a.id.cmp(&b.id),
+            (Value::Future(a), Value::Future(b)) => a
+                .id
+                .cmp(&b.id)
+                .then_with(|| future_status_ord(a.state).cmp(&future_status_ord(b.state))),
             _ => Ordering::Equal,
         }
+    }
+}
+
+fn future_status_name(state: FutureStatus) -> &'static str {
+    match state {
+        FutureStatus::Pending => "pending",
+        FutureStatus::Completed => "completed",
+        FutureStatus::Error => "error",
+    }
+}
+
+fn future_status_ord(state: FutureStatus) -> u8 {
+    match state {
+        FutureStatus::Pending => 0,
+        FutureStatus::Completed => 1,
+        FutureStatus::Error => 2,
     }
 }
 

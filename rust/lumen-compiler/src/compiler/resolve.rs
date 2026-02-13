@@ -20,11 +20,12 @@ pub enum ResolveError {
         effect: String,
         line: usize,
     },
-    #[error("cell '{cell}' performs effect '{effect}' but it is not declared in its effect row (line {line})")]
+    #[error("cell '{cell}' performs effect '{effect}' but it is not declared in its effect row (line {line}){cause}")]
     UndeclaredEffect {
         cell: String,
         effect: String,
         line: usize,
+        cause: String,
     },
     #[error("cell '{caller}' calls '{callee}' which requires effect '{effect}' not present in caller effect row (line {line})")]
     EffectContractViolation {
@@ -992,6 +993,25 @@ struct CallRequirement {
     line: usize,
 }
 
+#[derive(Debug, Clone)]
+struct EffectEvidence {
+    effect: String,
+    line: usize,
+    cause: String,
+}
+
+fn push_effect_evidence(out: &mut Vec<EffectEvidence>, effect: &str, line: usize, cause: String) {
+    let effect = normalize_effect(effect);
+    if effect.is_empty() || effect == "pure" {
+        return;
+    }
+    out.push(EffectEvidence {
+        effect,
+        line,
+        cause,
+    });
+}
+
 fn resolve_call_target_effects(
     callee: &Expr,
     table: &SymbolTable,
@@ -1251,6 +1271,372 @@ fn collect_expr_call_requirements(
         | Expr::RawStringLit(_, _)
         | Expr::BytesLit(_, _) => {}
     }
+}
+
+fn collect_pattern_effect_evidence(
+    pat: &Pattern,
+    table: &SymbolTable,
+    current: &HashMap<String, BTreeSet<String>>,
+    out: &mut Vec<EffectEvidence>,
+) {
+    match pat {
+        Pattern::Guard {
+            inner, condition, ..
+        } => {
+            collect_pattern_effect_evidence(inner, table, current, out);
+            collect_expr_effect_evidence(condition, table, current, out);
+        }
+        Pattern::Or { patterns, .. } => {
+            for p in patterns {
+                collect_pattern_effect_evidence(p, table, current, out);
+            }
+        }
+        Pattern::ListDestructure { elements, .. } | Pattern::TupleDestructure { elements, .. } => {
+            for p in elements {
+                collect_pattern_effect_evidence(p, table, current, out);
+            }
+        }
+        Pattern::RecordDestructure { fields, .. } => {
+            for (_, p) in fields {
+                if let Some(p) = p {
+                    collect_pattern_effect_evidence(p, table, current, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_stmt_effect_evidence(
+    stmt: &Stmt,
+    table: &SymbolTable,
+    current: &HashMap<String, BTreeSet<String>>,
+    out: &mut Vec<EffectEvidence>,
+) {
+    match stmt {
+        Stmt::Let(s) => collect_expr_effect_evidence(&s.value, table, current, out),
+        Stmt::If(s) => {
+            collect_expr_effect_evidence(&s.condition, table, current, out);
+            for st in &s.then_body {
+                collect_stmt_effect_evidence(st, table, current, out);
+            }
+            if let Some(else_body) = &s.else_body {
+                for st in else_body {
+                    collect_stmt_effect_evidence(st, table, current, out);
+                }
+            }
+        }
+        Stmt::For(s) => {
+            collect_expr_effect_evidence(&s.iter, table, current, out);
+            for st in &s.body {
+                collect_stmt_effect_evidence(st, table, current, out);
+            }
+        }
+        Stmt::Match(s) => {
+            collect_expr_effect_evidence(&s.subject, table, current, out);
+            for arm in &s.arms {
+                collect_pattern_effect_evidence(&arm.pattern, table, current, out);
+                for st in &arm.body {
+                    collect_stmt_effect_evidence(st, table, current, out);
+                }
+            }
+        }
+        Stmt::Return(s) => collect_expr_effect_evidence(&s.value, table, current, out),
+        Stmt::Halt(s) => collect_expr_effect_evidence(&s.message, table, current, out),
+        Stmt::Assign(s) => collect_expr_effect_evidence(&s.value, table, current, out),
+        Stmt::Expr(s) => collect_expr_effect_evidence(&s.expr, table, current, out),
+        Stmt::While(s) => {
+            collect_expr_effect_evidence(&s.condition, table, current, out);
+            for st in &s.body {
+                collect_stmt_effect_evidence(st, table, current, out);
+            }
+        }
+        Stmt::Loop(s) => {
+            for st in &s.body {
+                collect_stmt_effect_evidence(st, table, current, out);
+            }
+        }
+        Stmt::Emit(s) => {
+            collect_expr_effect_evidence(&s.value, table, current, out);
+            push_effect_evidence(out, "emit", s.span.line, "emit statement".to_string());
+        }
+        Stmt::CompoundAssign(s) => collect_expr_effect_evidence(&s.value, table, current, out),
+        Stmt::Break(_) | Stmt::Continue(_) => {}
+    }
+}
+
+fn collect_expr_effect_evidence(
+    expr: &Expr,
+    table: &SymbolTable,
+    current: &HashMap<String, BTreeSet<String>>,
+    out: &mut Vec<EffectEvidence>,
+) {
+    match expr {
+        Expr::BinOp(lhs, _, rhs, _) | Expr::NullCoalesce(lhs, rhs, _) => {
+            collect_expr_effect_evidence(lhs, table, current, out);
+            collect_expr_effect_evidence(rhs, table, current, out);
+        }
+        Expr::UnaryOp(_, inner, _)
+        | Expr::ExpectSchema(inner, _, _)
+        | Expr::TryExpr(inner, _)
+        | Expr::NullAssert(inner, _)
+        | Expr::SpreadExpr(inner, _) => {
+            collect_expr_effect_evidence(inner, table, current, out);
+        }
+        Expr::AwaitExpr(inner, span) => {
+            collect_expr_effect_evidence(inner, table, current, out);
+            push_effect_evidence(out, "async", span.line, "await expression".to_string());
+        }
+        Expr::Call(callee, args, span) => {
+            collect_expr_effect_evidence(callee, table, current, out);
+            for a in args {
+                match a {
+                    CallArg::Positional(e) | CallArg::Named(_, e, _) | CallArg::Role(_, e, _) => {
+                        collect_expr_effect_evidence(e, table, current, out)
+                    }
+                }
+            }
+            match callee.as_ref() {
+                Expr::Ident(name, _) => {
+                    if let Some(effects) = current.get(name) {
+                        for effect in effects {
+                            push_effect_evidence(
+                                out,
+                                effect,
+                                span.line,
+                                format!("call to '{}'", name),
+                            );
+                        }
+                    }
+                    if table.tools.contains_key(name) {
+                        let effect =
+                            effect_from_tool(name, table).unwrap_or_else(|| "external".into());
+                        push_effect_evidence(
+                            out,
+                            &effect,
+                            span.line,
+                            format!("tool call '{}'", name),
+                        );
+                    }
+                    if name == "emit" || name == "print" {
+                        push_effect_evidence(
+                            out,
+                            "emit",
+                            span.line,
+                            format!("call to '{}'", name),
+                        );
+                    }
+                    if name == "parallel" || name == "race" {
+                        push_effect_evidence(
+                            out,
+                            "async",
+                            span.line,
+                            format!("call to '{}'", name),
+                        );
+                    }
+                    if matches!(name.as_str(), "uuid" | "uuid_v4") {
+                        push_effect_evidence(
+                            out,
+                            "random",
+                            span.line,
+                            format!("call to '{}'", name),
+                        );
+                    }
+                    if matches!(name.as_str(), "timestamp") {
+                        push_effect_evidence(
+                            out,
+                            "time",
+                            span.line,
+                            format!("call to '{}'", name),
+                        );
+                    }
+                }
+                Expr::DotAccess(obj, field, _) => {
+                    if let Expr::Ident(owner, _) = obj.as_ref() {
+                        let fq = format!("{}.{}", owner, field);
+                        if let Some(effects) = current.get(&fq) {
+                            for effect in effects {
+                                push_effect_evidence(
+                                    out,
+                                    effect,
+                                    span.line,
+                                    format!("call to '{}'", fq),
+                                );
+                            }
+                        }
+                        if let Some(process) = table.processes.values().find(|p| p.name == *owner) {
+                            match process.kind.as_str() {
+                                "memory" => {
+                                    if matches!(
+                                        field.as_str(),
+                                        "append"
+                                            | "remember"
+                                            | "upsert"
+                                            | "store"
+                                            | "recent"
+                                            | "recall"
+                                            | "query"
+                                            | "get"
+                                    ) {
+                                        push_effect_evidence(
+                                            out,
+                                            "state",
+                                            span.line,
+                                            format!("process call '{}'", fq),
+                                        );
+                                    }
+                                }
+                                "machine" => {
+                                    if matches!(
+                                        field.as_str(),
+                                        "run"
+                                            | "start"
+                                            | "step"
+                                            | "is_terminal"
+                                            | "current_state"
+                                            | "resume_from"
+                                    ) {
+                                        push_effect_evidence(
+                                            out,
+                                            "state",
+                                            span.line,
+                                            format!("process call '{}'", fq),
+                                        );
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Expr::ToolCall(callee, args, span) => {
+            for a in args {
+                match a {
+                    CallArg::Positional(e) | CallArg::Named(_, e, _) | CallArg::Role(_, e, _) => {
+                        collect_expr_effect_evidence(e, table, current, out)
+                    }
+                }
+            }
+            match callee.as_ref() {
+                Expr::Ident(alias, _) => {
+                    let effect = effect_from_tool(alias, table).unwrap_or_else(|| "external".into());
+                    push_effect_evidence(
+                        out,
+                        &effect,
+                        span.line,
+                        format!("tool call '{}'", alias),
+                    );
+                }
+                _ => push_effect_evidence(
+                    out,
+                    "external",
+                    span.line,
+                    "dynamic tool call".to_string(),
+                ),
+            }
+        }
+        Expr::ListLit(items, _) | Expr::TupleLit(items, _) | Expr::SetLit(items, _) => {
+            for e in items {
+                collect_expr_effect_evidence(e, table, current, out);
+            }
+        }
+        Expr::MapLit(items, _) => {
+            for (k, v) in items {
+                collect_expr_effect_evidence(k, table, current, out);
+                collect_expr_effect_evidence(v, table, current, out);
+            }
+        }
+        Expr::RecordLit(_, fields, _) => {
+            for (_, e) in fields {
+                collect_expr_effect_evidence(e, table, current, out);
+            }
+        }
+        Expr::DotAccess(obj, _, _) | Expr::NullSafeAccess(obj, _, _) => {
+            collect_expr_effect_evidence(obj, table, current, out);
+        }
+        Expr::IndexAccess(obj, idx, _) => {
+            collect_expr_effect_evidence(obj, table, current, out);
+            collect_expr_effect_evidence(idx, table, current, out);
+        }
+        Expr::RoleBlock(_, inner, _) => collect_expr_effect_evidence(inner, table, current, out),
+        Expr::Lambda { body, .. } => match body {
+            LambdaBody::Expr(e) => collect_expr_effect_evidence(e, table, current, out),
+            LambdaBody::Block(stmts) => {
+                for s in stmts {
+                    collect_stmt_effect_evidence(s, table, current, out);
+                }
+            }
+        },
+        Expr::IfExpr {
+            cond,
+            then_val,
+            else_val,
+            ..
+        } => {
+            collect_expr_effect_evidence(cond, table, current, out);
+            collect_expr_effect_evidence(then_val, table, current, out);
+            collect_expr_effect_evidence(else_val, table, current, out);
+        }
+        Expr::Comprehension {
+            body,
+            iter,
+            condition,
+            ..
+        } => {
+            collect_expr_effect_evidence(iter, table, current, out);
+            if let Some(c) = condition {
+                collect_expr_effect_evidence(c, table, current, out);
+            }
+            collect_expr_effect_evidence(body, table, current, out);
+        }
+        Expr::RangeExpr {
+            start, end, step, ..
+        } => {
+            if let Some(s) = start {
+                collect_expr_effect_evidence(s, table, current, out);
+            }
+            if let Some(e) = end {
+                collect_expr_effect_evidence(e, table, current, out);
+            }
+            if let Some(st) = step {
+                collect_expr_effect_evidence(st, table, current, out);
+            }
+        }
+        Expr::IntLit(_, _)
+        | Expr::FloatLit(_, _)
+        | Expr::StringLit(_, _)
+        | Expr::StringInterp(_, _)
+        | Expr::BoolLit(_, _)
+        | Expr::NullLit(_)
+        | Expr::Ident(_, _)
+        | Expr::RawStringLit(_, _)
+        | Expr::BytesLit(_, _) => {}
+    }
+}
+
+fn collect_cell_effect_evidence(
+    cell: &EffectCell,
+    table: &SymbolTable,
+    current: &HashMap<String, BTreeSet<String>>,
+) -> HashMap<String, EffectEvidence> {
+    let mut raw = Vec::new();
+    for stmt in &cell.body {
+        collect_stmt_effect_evidence(stmt, table, current, &mut raw);
+    }
+
+    let mut by_effect: HashMap<String, EffectEvidence> = HashMap::new();
+    for ev in raw {
+        match by_effect.get(&ev.effect) {
+            Some(existing) if existing.line <= ev.line => {}
+            _ => {
+                by_effect.insert(ev.effect.clone(), ev);
+            }
+        }
+    }
+    by_effect
 }
 
 fn infer_stmt_effects(
@@ -1554,16 +1940,23 @@ fn apply_effect_inference(
 
     for cell in &cells {
         let inferred = infer_cell_effects(cell, table, &effective);
+        let evidence = collect_cell_effect_evidence(cell, table, &effective);
         let declared: BTreeSet<String> = cell.declared.iter().map(|e| normalize_effect(e)).collect();
         let final_effects = if declared.is_empty() {
             inferred.clone()
         } else {
             if enforce_declared_effect_rows {
                 for missing in inferred.difference(&declared) {
+                    let (line, cause) = if let Some(ev) = evidence.get(missing) {
+                        (ev.line, format!("; cause: {}", ev.cause))
+                    } else {
+                        (cell.line, String::new())
+                    };
                     errors.push(ResolveError::UndeclaredEffect {
                         cell: cell.name.clone(),
                         effect: missing.clone(),
-                        line: cell.line,
+                        line,
+                        cause,
                     });
                 }
             }
@@ -1908,5 +2301,31 @@ mod tests {
         .unwrap();
         let effects = &table.cells.get("main").unwrap().effects;
         assert!(effects.contains(&"http".to_string()));
+    }
+
+    #[test]
+    fn test_undeclared_effect_includes_call_cause() {
+        let err = resolve_src(
+            "use tool http.get as HttpGet\ngrant HttpGet\n\ncell fetch() -> Int / {http}\n  return 1\nend\n\ncell main() -> Int / {emit}\n  return fetch()\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::UndeclaredEffect { cell, effect, cause, .. }
+            if cell == "main" && effect == "http" && cause.contains("call to 'fetch'")
+        )));
+    }
+
+    #[test]
+    fn test_undeclared_effect_includes_tool_cause() {
+        let err = resolve_src(
+            "use tool http.get as HttpGet\ngrant HttpGet\n\ncell main() -> String / {emit}\n  return string(HttpGet(url: \"https://example.com\"))\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::UndeclaredEffect { cell, effect, cause, .. }
+            if cell == "main" && effect == "http" && cause.contains("tool call 'HttpGet'")
+        )));
     }
 }

@@ -5,43 +5,56 @@ Completed work should be removed from this list and reflected in docs/changelog.
 
 ---
 
+## Research Alignment Snapshot (February 2026)
+
+Recently completed (verified in code and commit history):
+
+- [x] `!=` lowering now emits `Eq` + `Not` (`8449533`, `rust/lumen-compiler/src/compiler/lower.rs`).
+- [x] Core VM arithmetic safety landed (`f73bc03`, `c709de2`, `rust/lumen-vm/src/vm.rs`): checked overflow, div/mod by zero errors, and shift-range guards.
+- [x] VM UTF-8/encoding safety fixes landed (`f73bc03`, `rust/lumen-vm/src/vm.rs`): UTF-8-safe string slicing, odd-length `hex_decode` guard, byte-wise `url_encode`.
+- [x] LSP feature surface expanded (`d7a19db`, `rust/lumen-lsp/src/main.rs`): document/workspace symbols, semantic tokens, signature help, inlay hints, code actions, folding, references.
+
+Execution tracker for next three rounds: `docs/research/EXECUTION_TRACKER.md`.
+
+---
+
 ## P0 — Critical Bugs and Safety Issues (Blocking V1 Release)
 
 ### Arithmetic Safety
 
-- [ ] **Fix `!=` operator**: `BinOp::NotEq` maps to `OpCode::Eq` but never emits a `Not` inversion.
+- [x] **Fix `!=` operator**: `BinOp::NotEq` now lowers to `OpCode::Eq` followed by `OpCode::Not`.
   - **File**: `rust/lumen-compiler/src/compiler/lower.rs:1465`
   - **Fix**: Add `Not` instruction after `Eq` when op is `NotEq`.
 
-- [ ] **Fix integer arithmetic overflow**: Unchecked ops panic in debug, wrap in release.
+- [x] **Fix integer arithmetic overflow**: Integer Add/Sub/Mul/Pow now use checked semantics and error on overflow.
   - **File**: `rust/lumen-vm/src/vm.rs` Add/Sub/Mul/Pow handlers
   - **Fix**: Use `checked_*` or `wrapping_*` with defined semantics.
 
-- [ ] **Fix integer division/modulo by zero**: Silently returns 0.
+- [x] **Fix integer division/modulo by zero**: Integer `Div`/`Mod` now return `VmError::DivisionByZero`.
   - **File**: `rust/lumen-vm/src/vm.rs:911-928`
-  - **Fix**: Return `VmError::Runtime` on zero divisor.
+  - **Fix**: Return `VmError::DivisionByZero` on zero divisor.
 
-- [ ] **Fix bit shift panic on negative amounts**: `-1i64 as u32` causes panic.
+- [x] **Fix bit shift panic on negative amounts**: VM now validates shift amounts and errors if out of range.
   - **File**: `rust/lumen-vm/src/vm.rs:1018,1026`
   - **Fix**: Clamp or error on out-of-range shift amounts.
 
 ### String/Bytes Safety
 
-- [ ] **Fix string slice panic on non-ASCII**: Byte-indexed `s[start..end]` panics mid-codepoint.
+- [x] **Fix string slice panic on non-ASCII**: String slicing now uses character boundaries.
   - **File**: `rust/lumen-vm/src/vm.rs:3157-3169`
   - **Fix**: Use `char_indices()` for character-based slicing.
 
-- [ ] **Fix `hex_decode` panic on odd-length input**.
+- [x] **Fix `hex_decode` panic on odd-length input**.
   - **File**: `rust/lumen-vm/src/vm.rs:2696-2703`
   - **Fix**: Guard against odd-length strings.
 
-- [ ] **Fix `url_encode` for multi-byte UTF-8**: Encodes codepoint instead of UTF-8 bytes.
+- [x] **Fix `url_encode` for multi-byte UTF-8**: Encoding now iterates UTF-8 bytes.
   - **File**: `rust/lumen-vm/src/vm.rs:2706-2718`
   - **Fix**: Iterate bytes, not chars.
 
 ### Control Flow Safety
 
-- [ ] **Fix `Await` potential infinite loop**: Future never resolves.
+- [x] **Fix `Await` potential infinite loop**: Await retries are now fuel-bounded and return an error on exhaustion.
   - **File**: `rust/lumen-vm/src/vm.rs:1411-1425`
   - **Fix**: Add fuel/timeout mechanism.
 
@@ -243,21 +256,21 @@ The VM implements 69 intrinsics but only ~18 are callable from source code. The 
   - **Competitive**: Gap 2 in COMPETITIVE_ANALYSIS.md — 10x slower than TypeScript LSP.
   - **Target**: <100ms diagnostics after typing (match TypeScript LSP).
 
-- [ ] **Add semantic tokens for syntax highlighting**.
-  - **Status**: LSP currently only uses TextMate grammar.
+- [x] **Add semantic tokens for syntax highlighting**.
+  - **Status**: Implemented in `rust/lumen-lsp/src/main.rs` (`textDocument/semanticTokens/full`).
 
-- [ ] **Add code actions** (quick fixes, refactorings).
+- [x] **Add code actions** (quick fixes, refactorings).
   - Examples: Auto-import, extract cell, rename symbol.
 
-- [ ] **Add workspace symbol search**.
-  - **Status**: Currently only searches open documents.
+- [x] **Add workspace symbol search**.
+  - **Status**: Implemented (`workspace/symbol`) across indexed open documents.
 
-- [ ] **Add document outline/symbols**.
+- [x] **Add document outline/symbols**.
   - **Purpose**: Show cells, records, enums in editor sidebar.
 
-- [ ] **Add signature help for function calls**.
+- [x] **Add signature help for function calls**.
 
-- [ ] **Add inlay hints for type annotations**.
+- [x] **Add inlay hints for type annotations**.
 
 ### Formatter
 
@@ -407,7 +420,7 @@ The VM implements 69 intrinsics but only ~18 are callable from source code. The 
 
 - [ ] **`lumen-provider-mcp` crate** (MCP server bridge — universal tool adapter).
   - **Competitive**: Gap 3 in COMPETITIVE_ANALYSIS.md — P0 ecosystem blocker.
-  - **Status**: Provider crate exists but not functional.
+  - **Status**: Provider crate + stdio transport exist; end-to-end external server reliability and one-command UX remain incomplete.
   - **Target**: `lumen run example.lm.md` with MCP GitHub server works in one command.
 
 - [ ] **`lumen-provider-openai` crate** (OpenAI-compatible chat/embeddings).
@@ -595,7 +608,7 @@ These build on Lumen's unique strengths to create capabilities no other language
    - Blocks type-safe collections, ecosystem growth.
 
 2. **Gap 3: MCP Bridge** (P0) — Ecosystem blocker
-   - Cannot use any MCP servers (GitHub, Slack, Notion, Postgres, filesystem).
+   - Basic bridge exists; remaining gap is production-ready external server reliability and UX.
 
 3. **Gap 5: Parser Error Recovery** (P1) — Behind Rust/TypeScript
    - Fails on first error, slow iteration.

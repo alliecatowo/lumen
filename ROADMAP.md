@@ -5,6 +5,17 @@ It intentionally avoids dates and fixed timelines.
 
 ## Current Status (February 2026)
 
+### Execution Alignment Snapshot (February 2026)
+
+Recently completed (implementation verified):
+
+- `!=` lowering fix (`8449533`, `rust/lumen-compiler/src/compiler/lower.rs`)
+- VM arithmetic and UTF-8 safety pass (`f73bc03`, `c709de2`, `rust/lumen-vm/src/vm.rs`)
+- LSP capability expansion (`d7a19db`, `rust/lumen-lsp/src/main.rs`)
+- MCP provider crate + stdio transport (`1a80db2`, `1e6541d`, `rust/lumen-provider-mcp/src/lib.rs`)
+
+Execution plan and measurable acceptance criteria for the next three rounds are tracked in `docs/research/EXECUTION_TRACKER.md`.
+
 ### What's Built
 
 **Compiler Pipeline (Complete):**
@@ -32,11 +43,11 @@ It intentionally avoids dates and fixed timelines.
 - `lumen.toml` config file parsing (`lumen-cli/src/config.rs`, 335 lines)
 - CLI wired to load config and populate registry
 - `lumen init` command generates default config
-- Three provider crates started: http, fs, json
+- Four provider crates started: http, fs, json, mcp
 
 **Tooling (Functional):**
 - CLI with 12 commands: check, run, emit, trace, cache, init, repl, pkg, fmt, doc, lint, build
-- LSP server (676 lines): diagnostics, go-to-definition, hover, completion
+- LSP server: diagnostics, go-to-definition, hover, completion, semantic tokens, symbols, signature help, inlay hints, code actions, folding, references
 - REPL (265 lines): basic interactive loop
 - Formatter (1259 lines): AST-based code formatting
 - Package manager: path dependency resolution, lockfile generation, and registry-facing stubs
@@ -58,17 +69,15 @@ It intentionally avoids dates and fixed timelines.
 - `lumen-provider-http` — HTTP client provider
 - `lumen-provider-fs` — filesystem provider
 - `lumen-provider-json` — JSON utilities provider
+- `lumen-provider-mcp` — MCP bridge provider
 
 ### What's Missing (V1 Blockers)
 
 **Critical Bugs (P0):**
-- `!=` operator broken (emits `Eq` without `Not`)
 - Closure upvalue capture broken (no capture list)
 - Set/map comprehensions broken (always emit list)
 - `if let` / `while let` broken (discard pattern)
-- Integer overflow/division-by-zero panics
-- String slicing panics on non-ASCII
-- Multiple VM safety issues (unchecked unwraps, no bounds checking)
+- Remaining VM safety issues (register bounds checks, NaN/interned-string ordering, global instruction fuel)
 
 **Type System Gaps (P1):**
 - Generic type instantiation (parsed but never checked)
@@ -83,7 +92,7 @@ It intentionally avoids dates and fixed timelines.
 - 51 of 69 intrinsics unmapped from source names
 
 **Provider Gaps (P3):**
-- No MCP bridge (critical for ecosystem)
+- MCP bridge hardening (external server reliability + one-command setup)
 - No LLM providers (OpenAI, Anthropic)
 - Effect kinds hardcoded (should come from providers)
 
@@ -99,8 +108,7 @@ The V1 release focuses on **core correctness and essential tooling**, not featur
 
 ### Must-Fix for V1
 
-- [ ] Fix all P0 critical bugs (9 items)
-  - `!=`, closures, comprehensions, `if let`, arithmetic safety, string slicing
+- [ ] Close remaining P0 correctness and VM safety bugs (see `tasks.md`)
 - [ ] Add parser error recovery (collect multiple errors)
 - [ ] Wire trace system into VM
 - [ ] Complete intrinsic stdlib mapping (51 unmapped functions)
@@ -112,7 +120,7 @@ The V1 release focuses on **core correctness and essential tooling**, not featur
 ### Nice-to-Have for V1
 
 - [ ] Generic type instantiation (enables real type-safe collections)
-- [ ] Basic MCP bridge (unlocks entire MCP ecosystem)
+- [ ] MCP bridge hardening (external server reliability + setup UX)
 - [ ] LSP incremental parsing (performance)
 - [ ] Field defaults and runtime `where` (correctness)
 

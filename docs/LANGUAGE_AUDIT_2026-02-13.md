@@ -7,12 +7,16 @@ It is the implementation source of truth for closing all known gaps.
 
 - SPEC extracted blocks compile: 125/125.
 - SPEC_ADDENDUM extracted blocks compile: 53/53.
+- Automated conformance sweep tests are now in-tree:
+  - `rust/lumen-compiler/tests/spec_markdown_sweep.rs`
+  - SPEC: 125/125
+  - SPEC_ADDENDUM: 53/53
 - This indicates strong syntax coverage, not full semantic/runtime coverage.
 
 ## Confirmed Gaps
 
-1. Addendum declarations are not all first-class IR/runtime constructs.
-- `effect`, `handler`, `machine`, `memory`, `guardrail`, `eval`, `pipeline`, `orchestration`, `pattern` are still routed through generic addon handling in many cases.
+1. Addendum runtime semantics remain incomplete.
+- Declaration parsing/lowering coverage is now substantially improved, but runtime behavior for orchestration/state/memory/guardrail/eval remains mostly metadata-level.
 
 2. Some declarations are skipped in lowering.
 - `TypeAlias`, `Trait`, `Impl`, `Import`, `ConstDecl`, `MacroDecl` are currently not fully lowered to executable semantics.
@@ -70,3 +74,9 @@ It is the implementation source of truth for closing all known gaps.
 
 - 2026-02-13: Baseline parity established for all extracted spec blocks.
 - 2026-02-13: Audit document created; implementation phase started.
+- 2026-02-13: `effect`, `bind effect`, and `handler` added as first-class declarations in AST/resolve/lower/typecheck.
+- 2026-02-13: Process-family declarations (`pipeline`, `orchestration`, `machine`, `memory`, `guardrail`, `eval`, `pattern`) moved to first-class parse/resolve/lower path.
+- 2026-02-13: Lowering no longer drops `TypeAlias`, `Trait`, `Impl`, `Import`, `ConstDecl`, `MacroDecl`; all preserved in IR metadata.
+- 2026-02-13: Parser hardened for multiline/null-coalescing continuations, role-block literal braces vs interpolation, machine/state nested sections, and executable `in` blocks in addendum statements.
+- 2026-02-13: Ignored parity targets in `spec_suite.rs` enabled by default.
+- 2026-02-13: Added automated SPEC/SPEC_ADDENDUM markdown sweep conformance tests in CI.

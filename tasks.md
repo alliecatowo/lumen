@@ -31,8 +31,8 @@ Completed work should be removed from this list and reflected in docs/changelog.
   - Checkpoint resume primitives for machine/orchestration states.
 
 - [ ] Harden future/async semantics.
-  - Lower high-level `parallel`/`race` constructs onto VM spawn/await scheduling.
-  - Add end-to-end conformance tests from source syntax through runtime scheduling.
+  - Lower block-form orchestration syntax (`await parallel for ...`, `select` blocks) onto VM spawn/await scheduling.
+  - Add end-to-end conformance tests for parser-level orchestration syntax through runtime scheduling.
 
 ## Toolchain and Ecosystem
 

@@ -27,6 +27,7 @@ Core value families:
   - `Eager` executes spawned futures immediately.
   - `DeferredFifo` queues spawned futures and runs deterministically when awaited.
 - `@deterministic true` is lowered into module metadata; VM load defaults scheduling to `DeferredFifo` from that metadata unless an explicit runtime override is set.
+- Orchestration builtins (`parallel`, `race`, `vote`, `select`, `timeout`) execute with deterministic argument-order semantics and integrate with future state tracking.
 
 ## Process Runtime Objects
 

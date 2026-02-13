@@ -1,7 +1,7 @@
 {
   "name": "lumen-lang",
   "displayName": "Lumen",
-  "description": "Syntax highlighting for the Lumen programming language",
+  "description": "Syntax highlighting and language support for the Lumen programming language",
   "version": "0.1.0",
   "publisher": "lumen-lang",
   "license": "MIT",
@@ -11,6 +11,11 @@
   "categories": [
     "Programming Languages"
   ],
+  "activationEvents": [
+    "onLanguage:lumen",
+    "onLanguage:lumen-markdown"
+  ],
+  "main": "./out/extension.js",
   "contributes": {
     "languages": [
       {
@@ -51,6 +56,27 @@
           "meta.embedded.block.lumen": "lumen"
         }
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Lumen",
+      "properties": {
+        "lumen.lspPath": {
+          "type": "string",
+          "default": "lumen-lsp",
+          "description": "Path to the lumen-lsp binary. Defaults to finding it on PATH."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.0.0"
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
   }
 }

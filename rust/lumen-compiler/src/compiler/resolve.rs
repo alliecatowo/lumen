@@ -1,7 +1,7 @@
 //! Name resolution pass — resolve cells, types, and tool aliases.
 
 use crate::compiler::ast::*;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -16,6 +16,12 @@ pub enum ResolveError {
     Duplicate { name: String, line: usize },
     #[error("cell '{cell}' requires effect '{effect}' but no compatible grant is in scope (line {line})")]
     MissingEffectGrant {
+        cell: String,
+        effect: String,
+        line: usize,
+    },
+    #[error("cell '{cell}' performs effect '{effect}' but it is not declared in its effect row (line {line})")]
+    UndeclaredEffect {
         cell: String,
         effect: String,
         line: usize,
@@ -56,6 +62,7 @@ pub enum TypeInfoKind {
 pub struct CellInfo {
     pub params: Vec<(String, TypeExpr)>,
     pub return_type: Option<TypeExpr>,
+    pub effects: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -226,6 +233,7 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                             .map(|p| (p.name.clone(), p.ty.clone()))
                             .collect(),
                         return_type: c.return_type.clone(),
+                        effects: c.effects.clone(),
                     },
                 );
             }
@@ -266,6 +274,7 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                         CellInfo {
                             params: vec![],
                             return_type: Some(TypeExpr::Named(a.name.clone(), a.span)),
+                            effects: vec![],
                         },
                     );
                 }
@@ -287,6 +296,7 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                                     .map(|p| (p.name.clone(), p.ty.clone()))
                                     .collect(),
                                 return_type: cell.return_type.clone(),
+                                effects: cell.effects.clone(),
                             },
                         );
                     }
@@ -309,6 +319,30 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                         methods: p.cells.iter().map(|c| c.name.clone()).collect(),
                     },
                 );
+                if !table.types.contains_key(&p.name) {
+                    table.types.insert(
+                        p.name.clone(),
+                        TypeInfo {
+                            kind: TypeInfoKind::Record(RecordDef {
+                                name: p.name.clone(),
+                                generic_params: vec![],
+                                fields: vec![],
+                                is_pub: true,
+                                span: p.span,
+                            }),
+                        },
+                    );
+                }
+                if !table.cells.contains_key(&p.name) {
+                    table.cells.insert(
+                        p.name.clone(),
+                        CellInfo {
+                            params: vec![],
+                            return_type: Some(TypeExpr::Named(p.name.clone(), p.span)),
+                            effects: vec![],
+                        },
+                    );
+                }
                 for cell in &p.cells {
                     let method_name = format!("{}.{}", p.name, cell.name);
                     table.cells.entry(method_name).or_insert(CellInfo {
@@ -318,6 +352,7 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                             .map(|p| (p.name.clone(), p.ty.clone()))
                             .collect(),
                         return_type: cell.return_type.clone(),
+                        effects: cell.effects.clone(),
                     });
                 }
                 for g in &p.grants {
@@ -344,6 +379,7 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                             .map(|p| (p.name.clone(), p.ty.clone()))
                             .collect(),
                         return_type: op.return_type.clone(),
+                        effects: op.effects.clone(),
                     });
                 }
             }
@@ -374,6 +410,7 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                             .map(|p| (p.name.clone(), p.ty.clone()))
                             .collect(),
                         return_type: handle.return_type.clone(),
+                        effects: handle.effects.clone(),
                     });
                 }
             }
@@ -536,6 +573,8 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
         }
     }
 
+    apply_effect_inference(program, &mut table, &mut errors);
+
     if errors.is_empty() {
         Ok(table)
     } else {
@@ -544,7 +583,17 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
 }
 
 fn check_effect_grants(cell: &CellDef, table: &SymbolTable, errors: &mut Vec<ResolveError>) {
-    if cell.effects.is_empty() {
+    check_effect_grants_for(&cell.name, cell.span.line, &cell.effects, table, errors);
+}
+
+fn check_effect_grants_for(
+    cell_name: &str,
+    line: usize,
+    effects: &[String],
+    table: &SymbolTable,
+    errors: &mut Vec<ResolveError>,
+) {
+    if effects.is_empty() {
         return;
     }
     if table.tools.is_empty() {
@@ -555,7 +604,8 @@ fn check_effect_grants(cell: &CellDef, table: &SymbolTable, errors: &mut Vec<Res
     // declared tools as a conservative capability proxy.
     let granted_tools: Vec<&ToolInfo> = table.tools.values().collect();
 
-    for effect in &cell.effects {
+    for effect in effects {
+        let effect = normalize_effect(effect);
         if matches!(
             effect.as_str(),
             "pure" | "trace" | "state" | "approve" | "emit" | "cache"
@@ -585,10 +635,490 @@ fn check_effect_grants(cell: &CellDef, table: &SymbolTable, errors: &mut Vec<Res
 
         if !satisfied {
             errors.push(ResolveError::MissingEffectGrant {
-                cell: cell.name.clone(),
-                effect: effect.clone(),
-                line: cell.span.line,
+                cell: cell_name.to_string(),
+                effect,
+                line,
             });
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct EffectCell {
+    name: String,
+    declared: Vec<String>,
+    body: Vec<Stmt>,
+    line: usize,
+}
+
+fn normalize_effect(effect: &str) -> String {
+    effect.trim().to_ascii_lowercase()
+}
+
+fn parse_directive_bool(program: &Program, name: &str) -> Option<bool> {
+    let raw = program
+        .directives
+        .iter()
+        .find(|d| d.name.eq_ignore_ascii_case(name))?
+        .value
+        .as_deref()
+        .unwrap_or("true")
+        .trim()
+        .to_ascii_lowercase();
+    match raw.as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn collect_effect_cells(program: &Program) -> Vec<EffectCell> {
+    let mut out = Vec::new();
+    for item in &program.items {
+        match item {
+            Item::Cell(c) => out.push(EffectCell {
+                name: c.name.clone(),
+                declared: c.effects.clone(),
+                body: c.body.clone(),
+                line: c.span.line,
+            }),
+            Item::Agent(a) => {
+                for c in &a.cells {
+                    out.push(EffectCell {
+                        name: format!("{}.{}", a.name, c.name),
+                        declared: c.effects.clone(),
+                        body: c.body.clone(),
+                        line: c.span.line,
+                    });
+                }
+            }
+            Item::Process(p) => {
+                for c in &p.cells {
+                    out.push(EffectCell {
+                        name: format!("{}.{}", p.name, c.name),
+                        declared: c.effects.clone(),
+                        body: c.body.clone(),
+                        line: c.span.line,
+                    });
+                }
+            }
+            Item::Effect(e) => {
+                for op in &e.operations {
+                    out.push(EffectCell {
+                        name: format!("{}.{}", e.name, op.name),
+                        declared: op.effects.clone(),
+                        body: op.body.clone(),
+                        line: op.span.line,
+                    });
+                }
+            }
+            Item::Handler(h) => {
+                for handle in &h.handles {
+                    out.push(EffectCell {
+                        name: format!("{}.{}", h.name, handle.name),
+                        declared: handle.effects.clone(),
+                        body: handle.body.clone(),
+                        line: handle.span.line,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn effect_from_tool(alias: &str, table: &SymbolTable) -> Option<String> {
+    if let Some(bind) = table.effect_binds.iter().find(|b| b.tool_alias == alias) {
+        let root = bind
+            .effect_path
+            .split('.')
+            .next()
+            .unwrap_or(bind.effect_path.as_str());
+        return Some(normalize_effect(root));
+    }
+
+    let lower = alias.to_ascii_lowercase();
+    if lower.contains("http") {
+        return Some("http".into());
+    }
+    if lower.contains("llm") || lower.contains("chat") {
+        return Some("llm".into());
+    }
+    if lower.contains("db") || lower.contains("sql") || lower.contains("postgres") {
+        return Some("database".into());
+    }
+    if lower.contains("email") {
+        return Some("email".into());
+    }
+    if lower.contains("file") || lower.contains("fs") {
+        return Some("fs".into());
+    }
+    if let Some(tool) = table.tools.get(alias) {
+        let path = tool.tool_path.to_ascii_lowercase();
+        if path.contains("http") {
+            return Some("http".into());
+        }
+        if path.contains("llm") || path.contains("chat") {
+            return Some("llm".into());
+        }
+        if path.contains("db") || path.contains("sql") || path.contains("postgres") {
+            return Some("database".into());
+        }
+        if path.contains("email") {
+            return Some("email".into());
+        }
+        if path.contains("file") || path.contains("fs") {
+            return Some("fs".into());
+        }
+        if tool.mcp_url.is_some() {
+            return Some("mcp".into());
+        }
+    }
+    None
+}
+
+fn infer_pattern_effects(
+    pat: &Pattern,
+    table: &SymbolTable,
+    current: &HashMap<String, BTreeSet<String>>,
+    out: &mut BTreeSet<String>,
+) {
+    match pat {
+        Pattern::Guard {
+            inner, condition, ..
+        } => {
+            infer_pattern_effects(inner, table, current, out);
+            infer_expr_effects(condition, table, current, out);
+        }
+        Pattern::Or { patterns, .. } => {
+            for p in patterns {
+                infer_pattern_effects(p, table, current, out);
+            }
+        }
+        Pattern::ListDestructure { elements, .. } | Pattern::TupleDestructure { elements, .. } => {
+            for p in elements {
+                infer_pattern_effects(p, table, current, out);
+            }
+        }
+        Pattern::RecordDestructure { fields, .. } => {
+            for (_, p) in fields {
+                if let Some(p) = p {
+                    infer_pattern_effects(p, table, current, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn infer_stmt_effects(
+    stmt: &Stmt,
+    table: &SymbolTable,
+    current: &HashMap<String, BTreeSet<String>>,
+    out: &mut BTreeSet<String>,
+) {
+    match stmt {
+        Stmt::Let(s) => infer_expr_effects(&s.value, table, current, out),
+        Stmt::If(s) => {
+            infer_expr_effects(&s.condition, table, current, out);
+            for st in &s.then_body {
+                infer_stmt_effects(st, table, current, out);
+            }
+            if let Some(else_body) = &s.else_body {
+                for st in else_body {
+                    infer_stmt_effects(st, table, current, out);
+                }
+            }
+        }
+        Stmt::For(s) => {
+            infer_expr_effects(&s.iter, table, current, out);
+            for st in &s.body {
+                infer_stmt_effects(st, table, current, out);
+            }
+        }
+        Stmt::Match(s) => {
+            infer_expr_effects(&s.subject, table, current, out);
+            for arm in &s.arms {
+                infer_pattern_effects(&arm.pattern, table, current, out);
+                for st in &arm.body {
+                    infer_stmt_effects(st, table, current, out);
+                }
+            }
+        }
+        Stmt::Return(s) => infer_expr_effects(&s.value, table, current, out),
+        Stmt::Halt(s) => infer_expr_effects(&s.message, table, current, out),
+        Stmt::Assign(s) => infer_expr_effects(&s.value, table, current, out),
+        Stmt::Expr(s) => infer_expr_effects(&s.expr, table, current, out),
+        Stmt::While(s) => {
+            infer_expr_effects(&s.condition, table, current, out);
+            for st in &s.body {
+                infer_stmt_effects(st, table, current, out);
+            }
+        }
+        Stmt::Loop(s) => {
+            for st in &s.body {
+                infer_stmt_effects(st, table, current, out);
+            }
+        }
+        Stmt::Emit(s) => {
+            infer_expr_effects(&s.value, table, current, out);
+            out.insert("emit".into());
+        }
+        Stmt::CompoundAssign(s) => infer_expr_effects(&s.value, table, current, out),
+        Stmt::Break(_) | Stmt::Continue(_) => {}
+    }
+}
+
+fn infer_expr_effects(
+    expr: &Expr,
+    table: &SymbolTable,
+    current: &HashMap<String, BTreeSet<String>>,
+    out: &mut BTreeSet<String>,
+) {
+    match expr {
+        Expr::BinOp(lhs, _, rhs, _) | Expr::NullCoalesce(lhs, rhs, _) => {
+            infer_expr_effects(lhs, table, current, out);
+            infer_expr_effects(rhs, table, current, out);
+        }
+        Expr::UnaryOp(_, inner, _)
+        | Expr::ExpectSchema(inner, _, _)
+        | Expr::TryExpr(inner, _)
+        | Expr::AwaitExpr(inner, _)
+        | Expr::NullAssert(inner, _)
+        | Expr::SpreadExpr(inner, _) => {
+            infer_expr_effects(inner, table, current, out);
+            if matches!(expr, Expr::AwaitExpr(_, _)) {
+                out.insert("async".into());
+            }
+        }
+        Expr::Call(callee, args, _) => {
+            infer_expr_effects(callee, table, current, out);
+            for a in args {
+                match a {
+                    CallArg::Positional(e) | CallArg::Named(_, e, _) | CallArg::Role(_, e, _) => {
+                        infer_expr_effects(e, table, current, out)
+                    }
+                }
+            }
+            match callee.as_ref() {
+                Expr::Ident(name, _) => {
+                    if let Some(effects) = current.get(name) {
+                        out.extend(effects.iter().cloned());
+                    }
+                    if name == "emit" || name == "print" {
+                        out.insert("emit".into());
+                    }
+                    if name == "parallel" || name == "race" {
+                        out.insert("async".into());
+                    }
+                }
+                Expr::DotAccess(obj, field, _) => {
+                    if let Expr::Ident(owner, _) = obj.as_ref() {
+                        let fq = format!("{}.{}", owner, field);
+                        if let Some(effects) = current.get(&fq) {
+                            out.extend(effects.iter().cloned());
+                        }
+                        if let Some(process) = table.processes.values().find(|p| p.name == *owner) {
+                            match process.kind.as_str() {
+                                "memory" => {
+                                    if matches!(
+                                        field.as_str(),
+                                        "append"
+                                            | "remember"
+                                            | "upsert"
+                                            | "store"
+                                            | "recent"
+                                            | "recall"
+                                            | "query"
+                                            | "get"
+                                    ) {
+                                        out.insert("state".into());
+                                    }
+                                }
+                                "machine" => {
+                                    if matches!(
+                                        field.as_str(),
+                                        "run"
+                                            | "start"
+                                            | "step"
+                                            | "is_terminal"
+                                            | "current_state"
+                                            | "resume_from"
+                                    ) {
+                                        out.insert("state".into());
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Expr::ToolCall(callee, args, _) => {
+            for a in args {
+                match a {
+                    CallArg::Positional(e) | CallArg::Named(_, e, _) | CallArg::Role(_, e, _) => {
+                        infer_expr_effects(e, table, current, out)
+                    }
+                }
+            }
+            if let Expr::Ident(alias, _) = callee.as_ref() {
+                if let Some(effect) = effect_from_tool(alias, table) {
+                    out.insert(effect);
+                }
+            }
+        }
+        Expr::ListLit(items, _) | Expr::TupleLit(items, _) | Expr::SetLit(items, _) => {
+            for e in items {
+                infer_expr_effects(e, table, current, out);
+            }
+        }
+        Expr::MapLit(items, _) => {
+            for (k, v) in items {
+                infer_expr_effects(k, table, current, out);
+                infer_expr_effects(v, table, current, out);
+            }
+        }
+        Expr::RecordLit(_, fields, _) => {
+            for (_, e) in fields {
+                infer_expr_effects(e, table, current, out);
+            }
+        }
+        Expr::DotAccess(obj, _, _) | Expr::NullSafeAccess(obj, _, _) => {
+            infer_expr_effects(obj, table, current, out);
+        }
+        Expr::IndexAccess(obj, idx, _) => {
+            infer_expr_effects(obj, table, current, out);
+            infer_expr_effects(idx, table, current, out);
+        }
+        Expr::RoleBlock(_, inner, _) => infer_expr_effects(inner, table, current, out),
+        Expr::Lambda { body, .. } => match body {
+            LambdaBody::Expr(e) => infer_expr_effects(e, table, current, out),
+            LambdaBody::Block(stmts) => {
+                for s in stmts {
+                    infer_stmt_effects(s, table, current, out);
+                }
+            }
+        },
+        Expr::IfExpr {
+            cond,
+            then_val,
+            else_val,
+            ..
+        } => {
+            infer_expr_effects(cond, table, current, out);
+            infer_expr_effects(then_val, table, current, out);
+            infer_expr_effects(else_val, table, current, out);
+        }
+        Expr::Comprehension {
+            body,
+            iter,
+            condition,
+            ..
+        } => {
+            infer_expr_effects(iter, table, current, out);
+            if let Some(c) = condition {
+                infer_expr_effects(c, table, current, out);
+            }
+            infer_expr_effects(body, table, current, out);
+        }
+        Expr::IntLit(_, _)
+        | Expr::FloatLit(_, _)
+        | Expr::StringLit(_, _)
+        | Expr::StringInterp(_, _)
+        | Expr::BoolLit(_, _)
+        | Expr::NullLit(_)
+        | Expr::Ident(_, _)
+        | Expr::RawStringLit(_, _)
+        | Expr::BytesLit(_, _)
+        | Expr::RangeExpr { .. } => {}
+    }
+}
+
+fn infer_cell_effects(
+    cell: &EffectCell,
+    table: &SymbolTable,
+    current: &HashMap<String, BTreeSet<String>>,
+) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for s in &cell.body {
+        infer_stmt_effects(s, table, current, &mut out);
+    }
+    out
+}
+
+fn apply_effect_inference(
+    program: &Program,
+    table: &mut SymbolTable,
+    errors: &mut Vec<ResolveError>,
+) {
+    let strict = parse_directive_bool(program, "strict").unwrap_or(true);
+    let doc_mode = parse_directive_bool(program, "doc_mode").unwrap_or(false);
+    let enforce_declared_effect_rows = strict && !doc_mode;
+    let cells = collect_effect_cells(program);
+    if cells.is_empty() {
+        return;
+    }
+
+    let mut effective: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for cell in &cells {
+        let declared: BTreeSet<String> = cell.declared.iter().map(|e| normalize_effect(e)).collect();
+        effective.insert(
+            cell.name.clone(),
+            if declared.is_empty() {
+                BTreeSet::new()
+            } else {
+                declared
+            },
+        );
+    }
+
+    for _ in 0..32 {
+        let mut changed = false;
+        for cell in &cells {
+            if !cell.declared.is_empty() {
+                continue;
+            }
+            let inferred = infer_cell_effects(cell, table, &effective);
+            let entry = effective.entry(cell.name.clone()).or_default();
+            if *entry != inferred {
+                *entry = inferred;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    for cell in &cells {
+        let inferred = infer_cell_effects(cell, table, &effective);
+        let declared: BTreeSet<String> = cell.declared.iter().map(|e| normalize_effect(e)).collect();
+        let final_effects = if declared.is_empty() {
+            inferred.clone()
+        } else {
+            if enforce_declared_effect_rows {
+                for missing in inferred.difference(&declared) {
+                    errors.push(ResolveError::UndeclaredEffect {
+                        cell: cell.name.clone(),
+                        effect: missing.clone(),
+                        line: cell.line,
+                    });
+                }
+            }
+            declared
+        };
+
+        if cell.declared.is_empty() {
+            let inferred_vec: Vec<String> = final_effects.iter().cloned().collect();
+            check_effect_grants_for(&cell.name, cell.line, &inferred_vec, table, errors);
+        }
+
+        if let Some(info) = table.cells.get_mut(&cell.name) {
+            info.effects = final_effects.iter().cloned().collect();
         }
     }
 }
@@ -657,6 +1187,7 @@ mod tests {
     use super::*;
     use crate::compiler::lexer::Lexer;
     use crate::compiler::parser::Parser;
+    use crate::compiler::tokens::Span;
 
     fn resolve_src(src: &str) -> Result<SymbolTable, Vec<ResolveError>> {
         let mut lexer = Lexer::new(src, 1, 0);
@@ -664,6 +1195,15 @@ mod tests {
         let mut parser = Parser::new(tokens);
         let prog = parser.parse_program(vec![]).unwrap();
         resolve(&prog)
+    }
+
+    fn s() -> Span {
+        Span {
+            start: 0,
+            end: 0,
+            line: 1,
+            col: 1,
+        }
     }
 
     #[test]
@@ -679,5 +1219,89 @@ mod tests {
     fn test_resolve_undefined_type() {
         let err = resolve_src("record Bar\n  x: Unknown\nend").unwrap_err();
         assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn test_effect_inference_for_implicit_row() {
+        let table = resolve_src("cell main() -> Int\n  emit(\"x\")\n  return 1\nend").unwrap();
+        let effects = &table.cells.get("main").unwrap().effects;
+        assert!(effects.contains(&"emit".to_string()));
+    }
+
+    #[test]
+    fn test_effect_inference_transitive_cell_call() {
+        let table = resolve_src(
+            "cell a() -> Int / {emit}\n  emit(\"x\")\n  return 1\nend\n\ncell b() -> Int\n  return a()\nend",
+        )
+        .unwrap();
+        let effects = &table.cells.get("b").unwrap().effects;
+        assert!(effects.contains(&"emit".to_string()));
+    }
+
+    #[test]
+    fn test_undeclared_effect_error_in_strict_mode() {
+        let sp = s();
+        let program = Program {
+            directives: vec![],
+            items: vec![Item::Cell(CellDef {
+                name: "main".into(),
+                generic_params: vec![],
+                params: vec![],
+                return_type: Some(TypeExpr::Named("Int".into(), sp)),
+                effects: vec!["emit".into()],
+                body: vec![Stmt::Expr(ExprStmt {
+                    expr: Expr::Call(
+                        Box::new(Expr::Ident("parallel".into(), sp)),
+                        vec![CallArg::Positional(Expr::IntLit(1, sp))],
+                        sp,
+                    ),
+                    span: sp,
+                })],
+                is_pub: false,
+                is_async: false,
+                where_clauses: vec![],
+                span: sp,
+            })],
+            span: sp,
+        };
+        let err = resolve(&program).unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::UndeclaredEffect { cell, effect, .. } if cell == "main" && effect == "async"
+        )));
+    }
+
+    #[test]
+    fn test_doc_mode_allows_undeclared_effects() {
+        let sp = s();
+        let program = Program {
+            directives: vec![Directive {
+                name: "doc_mode".into(),
+                value: Some("true".into()),
+                span: sp,
+            }],
+            items: vec![Item::Cell(CellDef {
+                name: "main".into(),
+                generic_params: vec![],
+                params: vec![],
+                return_type: Some(TypeExpr::Named("Int".into(), sp)),
+                effects: vec!["emit".into()],
+                body: vec![Stmt::Expr(ExprStmt {
+                    expr: Expr::Call(
+                        Box::new(Expr::Ident("parallel".into(), sp)),
+                        vec![CallArg::Positional(Expr::IntLit(1, sp))],
+                        sp,
+                    ),
+                    span: sp,
+                })],
+                is_pub: false,
+                is_async: false,
+                where_clauses: vec![],
+                span: sp,
+            })],
+            span: sp,
+        };
+        let table = resolve(&program).unwrap();
+        assert!(table.cells.contains_key("main"));
     }
 }

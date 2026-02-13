@@ -26,6 +26,12 @@ pub enum ResolveError {
         effect: String,
         line: usize,
     },
+    #[error("cell '{cell}' uses nondeterministic operation/effect '{operation}' under @deterministic (line {line})")]
+    NondeterministicOperation {
+        cell: String,
+        operation: String,
+        line: usize,
+    },
 }
 
 /// Symbol table built during resolution
@@ -656,20 +662,36 @@ fn normalize_effect(effect: &str) -> String {
 }
 
 fn parse_directive_bool(program: &Program, name: &str) -> Option<bool> {
-    let raw = program
+    if let Some(directive) = program
         .directives
         .iter()
-        .find(|d| d.name.eq_ignore_ascii_case(name))?
-        .value
-        .as_deref()
-        .unwrap_or("true")
-        .trim()
-        .to_ascii_lowercase();
-    match raw.as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
+        .find(|d| d.name.eq_ignore_ascii_case(name))
+    {
+        let raw = directive
+            .value
+            .as_deref()
+            .unwrap_or("true")
+            .trim()
+            .to_ascii_lowercase();
+        return match raw.as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        };
     }
+
+    // Support attribute-style toggles in source snippets, e.g. `@deterministic`.
+    let has_attr = program.items.iter().any(|item| {
+        matches!(
+            item,
+            Item::Addon(AddonDecl {
+                kind,
+                name: Some(attr_name),
+                ..
+            }) if kind == "attribute" && attr_name.eq_ignore_ascii_case(name)
+        )
+    });
+    if has_attr { Some(true) } else { None }
 }
 
 fn collect_effect_cells(program: &Program) -> Vec<EffectCell> {
@@ -912,6 +934,12 @@ fn infer_expr_effects(
                     if name == "parallel" || name == "race" {
                         out.insert("async".into());
                     }
+                    if matches!(name.as_str(), "uuid" | "uuid_v4") {
+                        out.insert("random".into());
+                    }
+                    if matches!(name.as_str(), "timestamp") {
+                        out.insert("time".into());
+                    }
                 }
                 Expr::DotAccess(obj, field, _) => {
                     if let Expr::Ident(owner, _) = obj.as_ref() {
@@ -968,7 +996,11 @@ fn infer_expr_effects(
             if let Expr::Ident(alias, _) = callee.as_ref() {
                 if let Some(effect) = effect_from_tool(alias, table) {
                     out.insert(effect);
+                } else {
+                    out.insert("external".into());
                 }
+            } else {
+                out.insert("external".into());
             }
         }
         Expr::ListLit(items, _) | Expr::TupleLit(items, _) | Expr::SetLit(items, _) => {
@@ -1119,6 +1151,50 @@ fn apply_effect_inference(
 
         if let Some(info) = table.cells.get_mut(&cell.name) {
             info.effects = final_effects.iter().cloned().collect();
+        }
+    }
+
+    enforce_deterministic_profile(program, table, &cells, errors);
+}
+
+fn enforce_deterministic_profile(
+    program: &Program,
+    table: &SymbolTable,
+    cells: &[EffectCell],
+    errors: &mut Vec<ResolveError>,
+) {
+    let deterministic = parse_directive_bool(program, "deterministic").unwrap_or(false);
+    let doc_mode = parse_directive_bool(program, "doc_mode").unwrap_or(false);
+    if !deterministic || doc_mode {
+        return;
+    }
+
+    const NONDETERMINISTIC_EFFECTS: &[&str] = &[
+        "http",
+        "llm",
+        "fs",
+        "database",
+        "email",
+        "mcp",
+        "random",
+        "time",
+        "external",
+    ];
+
+    for cell in cells {
+        let Some(info) = table.cells.get(&cell.name) else {
+            continue;
+        };
+        let mut seen = BTreeSet::new();
+        for effect in &info.effects {
+            let effect = normalize_effect(effect);
+            if NONDETERMINISTIC_EFFECTS.contains(&effect.as_str()) && seen.insert(effect.clone()) {
+                errors.push(ResolveError::NondeterministicOperation {
+                    cell: cell.name.clone(),
+                    operation: effect,
+                    line: cell.line,
+                });
+            }
         }
     }
 }
@@ -1303,5 +1379,29 @@ mod tests {
         };
         let table = resolve(&program).unwrap();
         assert!(table.cells.contains_key("main"));
+    }
+
+    #[test]
+    fn test_effect_inference_marks_uuid_and_timestamp() {
+        let table = resolve_src(
+            "cell main() -> String\n  let id = uuid()\n  let ts = timestamp()\n  return to_string(ts) + id\nend",
+        )
+        .unwrap();
+        let effects = &table.cells.get("main").unwrap().effects;
+        assert!(effects.contains(&"random".to_string()));
+        assert!(effects.contains(&"time".to_string()));
+    }
+
+    #[test]
+    fn test_deterministic_profile_rejects_nondeterminism() {
+        let err = resolve_src(
+            "@deterministic true\n\ncell main() -> String\n  return uuid()\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::NondeterministicOperation { cell, operation, .. }
+            if cell == "main" && operation == "random"
+        )));
     }
 }

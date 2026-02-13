@@ -275,6 +275,7 @@ end
 - cells may declare effect rows (`/ {http, trace}`)
 - resolver infers effects for cells that omit explicit rows
 - strict mode reports inferred-but-undeclared effects for explicitly declared rows
+- strict mode enforces call-boundary effect compatibility for statically resolved cell/tool calls
 - effectful external capabilities require matching grants in scope
 
 ```lumen

@@ -29,10 +29,6 @@ Completed work should be removed from this list and reflected in docs/changelog.
   - Define policy AST and evaluator.
   - Integrate policy checks in resolve + runtime tool call boundaries.
 
-- [ ] Add effect row call-site compatibility checks.
-  - Enforce effect-subtyping rules at call boundaries.
-  - Reject calls that violate declared effect contracts.
-
 - [ ] Add effect diagnostics improvements.
   - Include source-level cause chains for inferred effects.
   - Surface per-expression effect provenance in errors.

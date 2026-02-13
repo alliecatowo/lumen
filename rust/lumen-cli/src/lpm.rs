@@ -41,9 +41,17 @@ enum Commands {
     /// List dependencies
     List,
     /// Install dependencies from lumen.toml
-    Install,
+    Install {
+        /// Fail if lumen.lock would be changed
+        #[arg(long, alias = "locked")]
+        frozen: bool,
+    },
     /// Update dependencies to latest compatible versions
-    Update,
+    Update {
+        /// Fail if lumen.lock would be changed
+        #[arg(long, alias = "locked")]
+        frozen: bool,
+    },
     /// Search for packages in the registry
     Search {
         /// Search query
@@ -61,8 +69,8 @@ fn main() {
         Commands::Add { package, path } => pkg::cmd_pkg_add(&package, path.as_deref()),
         Commands::Remove { package } => pkg::cmd_pkg_remove(&package),
         Commands::List => pkg::cmd_pkg_list(),
-        Commands::Install => pkg::cmd_pkg_install(),
-        Commands::Update => pkg::cmd_pkg_update(),
+        Commands::Install { frozen } => pkg::cmd_pkg_install_with_lock(frozen),
+        Commands::Update { frozen } => pkg::cmd_pkg_update_with_lock(frozen),
         Commands::Search { query } => pkg::cmd_pkg_search(&query),
     }
 }

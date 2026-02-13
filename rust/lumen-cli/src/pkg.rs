@@ -41,6 +41,13 @@ pub struct ResolvedDep {
     pub config: LumenConfig,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LockSyncOutcome {
+    Unchanged,
+    Created,
+    Updated,
+}
+
 /// Scaffold a new Lumen package in the current directory (or a named subdirectory).
 pub fn cmd_pkg_init(name: Option<String>) {
     let base = match &name {
@@ -59,18 +66,20 @@ pub fn cmd_pkg_init(name: Option<String>) {
         None => PathBuf::from("."),
     };
 
-    let pkg_name = name
-        .clone()
-        .unwrap_or_else(|| {
-            std::env::current_dir()
-                .ok()
-                .and_then(|p| p.file_name().map(|f| f.to_string_lossy().to_string()))
-                .unwrap_or_else(|| "my-package".to_string())
-        });
+    let pkg_name = name.clone().unwrap_or_else(|| {
+        std::env::current_dir()
+            .ok()
+            .and_then(|p| p.file_name().map(|f| f.to_string_lossy().to_string()))
+            .unwrap_or_else(|| "my-package".to_string())
+    });
 
     let toml_path = base.join("lumen.toml");
     if toml_path.exists() {
-        eprintln!("{} lumen.toml already exists in '{}'", red("error:"), base.display());
+        eprintln!(
+            "{} lumen.toml already exists in '{}'",
+            red("error:"),
+            base.display()
+        );
         std::process::exit(1);
     }
 
@@ -118,7 +127,11 @@ end
         std::process::exit(1);
     });
 
-    println!("{} package {}", status_label("Created"), bold(&format!("\"{}\"", pkg_name)));
+    println!(
+        "{} package {}",
+        status_label("Created"),
+        bold(&format!("\"{}\"", pkg_name))
+    );
     println!("  {}", gray("lumen.toml"));
     println!("  {}", gray("src/main.lm.md"));
 }
@@ -128,7 +141,10 @@ pub fn cmd_pkg_build() {
     let (config_path, config) = match LumenConfig::load_with_path() {
         Some(pair) => pair,
         None => {
-            eprintln!("{} no lumen.toml found (run `lumen pkg init` first)", red("error:"));
+            eprintln!(
+                "{} no lumen.toml found (run `lumen pkg init` first)",
+                red("error:")
+            );
             std::process::exit(1);
         }
     };
@@ -153,9 +169,14 @@ pub fn cmd_pkg_build() {
 
     // Compile each dependency
     for dep in &deps {
-        println!("{} {} {}", status_label("Compiling"), bold(&dep.name), gray("(dependency)"));
+        println!(
+            "{} {} {}",
+            status_label("Compiling"),
+            bold(&dep.name),
+            gray("(dependency)")
+        );
         match compile_package_sources(&dep.path) {
-            Ok(_count) => {},
+            Ok(_count) => {}
             Err(e) => {
                 eprintln!("    {}", red(&e));
                 errors += 1;
@@ -166,7 +187,7 @@ pub fn cmd_pkg_build() {
     // Compile the main package
     println!("{} {}", status_label("Compiling"), bold(pkg_name));
     match compile_package_sources(project_dir) {
-        Ok(_count) => {},
+        Ok(_count) => {}
         Err(e) => {
             eprintln!("    {}", red(&e));
             errors += 1;
@@ -174,7 +195,12 @@ pub fn cmd_pkg_build() {
     }
 
     if errors > 0 {
-        eprintln!("\n{} build failed with {} error{}", red("error:"), errors, if errors == 1 { "" } else { "s" });
+        eprintln!(
+            "\n{} build failed with {} error{}",
+            red("error:"),
+            errors,
+            if errors == 1 { "" } else { "s" }
+        );
         std::process::exit(1);
     } else {
         let total = deps.len() + 1;
@@ -192,7 +218,10 @@ pub fn cmd_pkg_check() {
     let (config_path, config) = match LumenConfig::load_with_path() {
         Some(pair) => pair,
         None => {
-            eprintln!("{} no lumen.toml found (run `lumen pkg init` first)", red("error:"));
+            eprintln!(
+                "{} no lumen.toml found (run `lumen pkg init` first)",
+                red("error:")
+            );
             std::process::exit(1);
         }
     };
@@ -216,9 +245,14 @@ pub fn cmd_pkg_check() {
     let mut errors = 0;
 
     for dep in &deps {
-        println!("{} {} {}", status_label("Checking"), bold(&dep.name), gray("(dependency)"));
+        println!(
+            "{} {} {}",
+            status_label("Checking"),
+            bold(&dep.name),
+            gray("(dependency)")
+        );
         match compile_package_sources(&dep.path) {
-            Ok(_count) => {},
+            Ok(_count) => {}
             Err(e) => {
                 eprintln!("    {}", red(&e));
                 errors += 1;
@@ -228,7 +262,7 @@ pub fn cmd_pkg_check() {
 
     println!("{} {}", status_label("Checking"), bold(pkg_name));
     match compile_package_sources(project_dir) {
-        Ok(_count) => {},
+        Ok(_count) => {}
         Err(e) => {
             eprintln!("    {}", red(&e));
             errors += 1;
@@ -271,7 +305,10 @@ pub fn resolve_dependencies(
         .unwrap_or_else(|| "(root)".to_string());
     stack.insert(root_name.clone());
 
-    for (name, spec) in &config.dependencies {
+    let mut entries: Vec<_> = config.dependencies.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+
+    for (name, spec) in entries {
         resolve_dep(
             name,
             spec,
@@ -350,7 +387,10 @@ fn resolve_dep(
     };
 
     // Resolve transitive dependencies
-    for (sub_name, sub_spec) in &dep_config.dependencies {
+    let mut entries: Vec<_> = dep_config.dependencies.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+
+    for (sub_name, sub_spec) in entries {
         resolve_dep(sub_name, sub_spec, &dep_path, resolved, visited, stack)?;
     }
 
@@ -505,25 +545,126 @@ fn canonicalize_or_clean(path: &Path) -> PathBuf {
     })
 }
 
+fn relative_path(from: &Path, to: &Path) -> Option<PathBuf> {
+    let from_components: Vec<_> = from.components().collect();
+    let to_components: Vec<_> = to.components().collect();
+
+    if from_components.is_empty() || to_components.is_empty() {
+        return None;
+    }
+
+    if from_components[0] != to_components[0] {
+        return None;
+    }
+
+    let mut common_len = 0usize;
+    while common_len < from_components.len()
+        && common_len < to_components.len()
+        && from_components[common_len] == to_components[common_len]
+    {
+        common_len += 1;
+    }
+
+    let mut out = PathBuf::new();
+    for _ in common_len..from_components.len() {
+        out.push("..");
+    }
+    for component in &to_components[common_len..] {
+        out.push(component.as_os_str());
+    }
+
+    if out.as_os_str().is_empty() {
+        out.push(".");
+    }
+    Some(out)
+}
+
+fn lock_source_path(project_dir: &Path, dep_path: &Path) -> String {
+    let project_abs = canonicalize_or_clean(project_dir);
+    let dep_abs = canonicalize_or_clean(dep_path);
+    let lock_path = relative_path(&project_abs, &dep_abs).unwrap_or(dep_abs);
+    lock_path.to_string_lossy().replace('\\', "/")
+}
+
+fn build_lockfile(config: &LumenConfig, project_dir: &Path) -> Result<(LockFile, usize), String> {
+    let deps = resolve_dependencies(config, project_dir)?;
+    let mut lock = LockFile::default();
+
+    for dep in &deps {
+        let version = dep
+            .config
+            .package
+            .as_ref()
+            .and_then(|p| p.version.clone())
+            .unwrap_or_else(|| "0.1.0".to_string());
+        let mut locked_pkg =
+            LockedPackage::from_path(dep.name.clone(), lock_source_path(project_dir, &dep.path));
+        locked_pkg.version = version;
+        lock.add_package(locked_pkg);
+    }
+
+    Ok((lock, deps.len()))
+}
+
+fn sync_lockfile(
+    lock_path: &Path,
+    desired: &LockFile,
+    frozen: bool,
+) -> Result<LockSyncOutcome, String> {
+    let existing = LockFile::load(lock_path)?;
+    if existing == *desired {
+        return Ok(LockSyncOutcome::Unchanged);
+    }
+
+    if frozen {
+        if lock_path.exists() {
+            return Err(
+                "lumen.lock is out of date and --frozen was passed; run `lpm install` to update it"
+                    .to_string(),
+            );
+        }
+        return Err(
+            "lumen.lock is missing and --frozen was passed; run `lpm install` once to create it"
+                .to_string(),
+        );
+    }
+
+    let existed = lock_path.exists();
+    desired.save(lock_path)?;
+    if existed {
+        Ok(LockSyncOutcome::Updated)
+    } else {
+        Ok(LockSyncOutcome::Created)
+    }
+}
+
 /// Add a dependency to lumen.toml
 pub fn cmd_pkg_add(package: &str, path_opt: Option<&str>) {
     let (config_path, mut config) = match LumenConfig::load_with_path() {
         Some(pair) => pair,
         None => {
-            eprintln!("{} no lumen.toml found (run `lumen pkg init` first)", red("error:"));
+            eprintln!(
+                "{} no lumen.toml found (run `lumen pkg init` first)",
+                red("error:")
+            );
             std::process::exit(1);
         }
     };
 
     let path = path_opt.unwrap_or_else(|| {
-        eprintln!("{} --path is required for now (registry support coming soon)", red("error:"));
+        eprintln!(
+            "{} --path is required for now (registry support coming soon)",
+            red("error:")
+        );
         std::process::exit(1);
     });
 
     // Add to dependencies map
     config.dependencies.insert(
         package.to_string(),
-        DependencySpec::Path { path: path.to_string() },
+        DependencySpec::Path {
+            path: path.to_string(),
+        },
     );
 
     // Serialize back to TOML
@@ -537,7 +678,12 @@ pub fn cmd_pkg_add(package: &str, path_opt: Option<&str>) {
         std::process::exit(1);
     });
 
-    println!("{} dependency {} {{ path = \"{}\" }}", status_label("Added"), bold(package), path);
+    println!(
+        "{} dependency {} {{ path = \"{}\" }}",
+        status_label("Added"),
+        bold(package),
+        path
+    );
 }
 
 /// Remove a dependency from lumen.toml
@@ -552,7 +698,11 @@ pub fn cmd_pkg_remove(package: &str) {
     };
 
     if config.dependencies.remove(package).is_none() {
-        eprintln!("{} dependency '{}' not found in lumen.toml", red("error:"), package);
+        eprintln!(
+            "{} dependency '{}' not found in lumen.toml",
+            red("error:"),
+            package
+        );
         std::process::exit(1);
     }
 
@@ -605,12 +755,22 @@ pub fn cmd_pkg_list() {
     }
 }
 
-/// Install dependencies from lumen.toml and generate lumen.lock
+/// Install dependencies from lumen.toml and generate lumen.lock.
+#[allow(dead_code)]
 pub fn cmd_pkg_install() {
+    cmd_pkg_install_with_lock(false);
+}
+
+/// Install dependencies from lumen.toml and generate lumen.lock.
+/// When `frozen` is true, fail instead of writing if the lockfile would change.
+pub fn cmd_pkg_install_with_lock(frozen: bool) {
     let (config_path, config) = match LumenConfig::load_with_path() {
         Some(pair) => pair,
         None => {
-            eprintln!("{} no lumen.toml found (run `lumen pkg init` first)", red("error:"));
+            eprintln!(
+                "{} no lumen.toml found (run `lumen pkg init` first)",
+                red("error:")
+            );
             std::process::exit(1);
         }
     };
@@ -618,16 +778,7 @@ pub fn cmd_pkg_install() {
     let project_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
     println!("{} dependencies", status_label("Resolving"));
 
-    let deps = match resolve_dependencies(&config, project_dir) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("{} {}", red("error:"), e);
-            std::process::exit(1);
-        }
-    };
-
-    let lock_path = project_dir.join("lumen.lock");
-    let mut lock = match LockFile::load(&lock_path) {
+    let (lock, dep_count) = match build_lockfile(&config, project_dir) {
         Ok(lock) => lock,
         Err(e) => {
             eprintln!("{} {}", red("error:"), e);
@@ -635,27 +786,42 @@ pub fn cmd_pkg_install() {
         }
     };
 
-    for dep in &deps {
-        let version = dep.config.package.as_ref().and_then(|p| p.version.clone()).unwrap_or_else(|| "0.1.0".to_string());
-        let mut locked_pkg =
-            LockedPackage::from_path(dep.name.clone(), dep.path.display().to_string());
-        locked_pkg.version = version;
-        lock.add_package(locked_pkg);
-    }
+    let lock_path = project_dir.join("lumen.lock");
+    let outcome = match sync_lockfile(&lock_path, &lock, frozen) {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            eprintln!("{} {}", red("error:"), e);
+            std::process::exit(1);
+        }
+    };
 
-    if let Err(e) = lock.save(&lock_path) {
-        eprintln!("{} {}", red("error:"), e);
-        std::process::exit(1);
+    println!(
+        "{} {} package{} resolved",
+        green("✓"),
+        dep_count,
+        if dep_count == 1 { "" } else { "s" }
+    );
+    match outcome {
+        LockSyncOutcome::Unchanged => println!("{} lumen.lock", status_label("Unchanged")),
+        LockSyncOutcome::Created => println!("{} lumen.lock", status_label("Created")),
+        LockSyncOutcome::Updated => println!("{} lumen.lock", status_label("Updated")),
     }
-
-    println!("{} {} package{} resolved", green("✓"), deps.len(), if deps.len() == 1 { "" } else { "s" });
-    println!("{} lumen.lock", status_label("Created"));
 }
 
-/// Update dependencies to latest compatible versions
+/// Update dependencies to latest compatible versions.
+#[allow(dead_code)]
 pub fn cmd_pkg_update() {
-    println!("{} note: update is equivalent to install for now (registry support coming soon)", gray(""));
-    cmd_pkg_install();
+    cmd_pkg_update_with_lock(false);
+}
+
+/// Update dependencies to latest compatible versions.
+/// When `frozen` is true, fail instead of writing if the lockfile would change.
+pub fn cmd_pkg_update_with_lock(frozen: bool) {
+    println!(
+        "{} note: update is equivalent to install for now (registry support coming soon)",
+        gray("")
+    );
+    cmd_pkg_install_with_lock(frozen);
 }
 
 /// Search for packages in the registry
@@ -664,7 +830,10 @@ pub fn cmd_pkg_search(_query: &str) {
     println!();
     println!("Registry support is planned for a future release.");
     println!("For now, use path dependencies:");
-    println!("  {} = {{ path = \"../package-name\" }}", gray("package-name"));
+    println!(
+        "  {} = {{ path = \"../package-name\" }}",
+        gray("package-name")
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -675,6 +844,7 @@ pub fn cmd_pkg_search(_query: &str) {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn make_config(deps: Vec<(&str, &str)>) -> LumenConfig {
         let mut dependencies = HashMap::new();
@@ -744,8 +914,16 @@ mod tests {
         let src_b = pkg_b.join("src");
         std::fs::create_dir_all(&src_a).unwrap();
         std::fs::create_dir_all(&src_b).unwrap();
-        std::fs::write(src_a.join("main.lm.md"), "# A\n```lumen\ncell a() -> Int\n  return 1\nend\n```\n").unwrap();
-        std::fs::write(src_b.join("main.lm.md"), "# B\n```lumen\ncell b() -> Int\n  return 2\nend\n```\n").unwrap();
+        std::fs::write(
+            src_a.join("main.lm.md"),
+            "# A\n```lumen\ncell a() -> Int\n  return 1\nend\n```\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src_b.join("main.lm.md"),
+            "# B\n```lumen\ncell b() -> Int\n  return 2\nend\n```\n",
+        )
+        .unwrap();
 
         let cfg_a = LumenConfig::load_from(&pkg_a.join("lumen.toml")).unwrap();
         let result = resolve_dependencies(&cfg_a, &pkg_a);
@@ -762,11 +940,7 @@ mod tests {
         let lib_dir = tmp.join("mylib");
         let lib_src = lib_dir.join("src");
         std::fs::create_dir_all(&lib_src).unwrap();
-        std::fs::write(
-            lib_dir.join("lumen.toml"),
-            "[package]\nname = \"mylib\"\n",
-        )
-        .unwrap();
+        std::fs::write(lib_dir.join("lumen.toml"), "[package]\nname = \"mylib\"\n").unwrap();
         std::fs::write(
             lib_src.join("main.lm.md"),
             "# Lib\n```lumen\ncell helper() -> Int\n  return 42\nend\n```\n",
@@ -829,11 +1003,152 @@ foo = { path = "./foo" }
         let src = tmp.join("src");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("main.lm"), "cell main() -> Int\n  return 1\nend\n").unwrap();
-        std::fs::write(src.join("models.lm.md"), "# m\n```lumen\ncell x() -> Int\n  return 1\nend\n```\n").unwrap();
+        std::fs::write(
+            src.join("models.lm.md"),
+            "# m\n```lumen\ncell x() -> Int\n  return 1\nend\n```\n",
+        )
+        .unwrap();
 
         let sources = find_lumen_sources(&tmp);
         assert_eq!(sources.len(), 2);
         assert!(sources.iter().all(|p| is_lumen_source(p)));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    fn unique_tmp_dir(prefix: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("{}_{}_{}", prefix, std::process::id(), stamp))
+    }
+
+    #[test]
+    fn lock_source_path_is_project_relative() {
+        let tmp = unique_tmp_dir("lumen_lock_source_relative");
+        let app_dir = tmp.join("app");
+        let dep_dir = tmp.join("dep");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::create_dir_all(&dep_dir).unwrap();
+
+        let source = lock_source_path(&app_dir, &dep_dir);
+        assert_eq!(source, "../dep");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn build_lockfile_uses_relative_path_sources() {
+        let tmp = unique_tmp_dir("lumen_build_lockfile_relative");
+        let app_dir = tmp.join("app");
+        let lib_dir = tmp.join("mylib");
+        std::fs::create_dir_all(app_dir.join("src")).unwrap();
+        std::fs::create_dir_all(lib_dir.join("src")).unwrap();
+
+        std::fs::write(
+            app_dir.join("lumen.toml"),
+            "[package]\nname = \"app\"\n\n[dependencies]\nmylib = { path = \"../mylib\" }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            lib_dir.join("lumen.toml"),
+            "[package]\nname = \"mylib\"\nversion = \"0.3.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            lib_dir.join("src/main.lm.md"),
+            "# lib\n```lumen\ncell helper() -> Int\n  return 1\nend\n```\n",
+        )
+        .unwrap();
+
+        let cfg = LumenConfig::load_from(&app_dir.join("lumen.toml")).unwrap();
+        let (lock, _) = build_lockfile(&cfg, &app_dir).unwrap();
+        let mylib = lock.get_package("mylib").unwrap();
+        assert_eq!(mylib.version, "0.3.0");
+        assert_eq!(mylib.get_path(), Some("../mylib"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn sync_lockfile_frozen_fails_when_missing() {
+        let tmp = unique_tmp_dir("lumen_sync_frozen_missing");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let lock_path = tmp.join("lumen.lock");
+        let mut desired = LockFile::default();
+        desired.add_package(LockedPackage::from_path(
+            "dep".to_string(),
+            "../dep".to_string(),
+        ));
+
+        let err = sync_lockfile(&lock_path, &desired, true).unwrap_err();
+        assert!(err.contains("missing"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn sync_lockfile_frozen_fails_when_outdated() {
+        let tmp = unique_tmp_dir("lumen_sync_frozen_outdated");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let lock_path = tmp.join("lumen.lock");
+
+        let mut existing = LockFile::default();
+        let mut dep = LockedPackage::from_path("dep".to_string(), "../dep".to_string());
+        dep.version = "0.1.0".to_string();
+        existing.add_package(dep);
+        existing.save(&lock_path).unwrap();
+
+        let mut desired = LockFile::default();
+        let mut dep = LockedPackage::from_path("dep".to_string(), "../dep".to_string());
+        dep.version = "0.2.0".to_string();
+        desired.add_package(dep);
+
+        let err = sync_lockfile(&lock_path, &desired, true).unwrap_err();
+        assert!(err.contains("out of date"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn sync_lockfile_frozen_succeeds_when_matching() {
+        let tmp = unique_tmp_dir("lumen_sync_frozen_match");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let lock_path = tmp.join("lumen.lock");
+        let mut desired = LockFile::default();
+        let mut dep = LockedPackage::from_path("dep".to_string(), "../dep".to_string());
+        dep.version = "0.2.0".to_string();
+        desired.add_package(dep);
+        desired.save(&lock_path).unwrap();
+
+        let outcome = sync_lockfile(&lock_path, &desired, true).unwrap();
+        assert_eq!(outcome, LockSyncOutcome::Unchanged);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn sync_lockfile_updates_when_not_frozen() {
+        let tmp = unique_tmp_dir("lumen_sync_not_frozen_update");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let lock_path = tmp.join("lumen.lock");
+
+        let mut existing = LockFile::default();
+        let mut dep = LockedPackage::from_path("dep".to_string(), "../dep".to_string());
+        dep.version = "0.1.0".to_string();
+        existing.add_package(dep);
+        existing.save(&lock_path).unwrap();
+
+        let mut desired = LockFile::default();
+        let mut dep = LockedPackage::from_path("dep".to_string(), "../dep".to_string());
+        dep.version = "0.2.0".to_string();
+        desired.add_package(dep);
+
+        let outcome = sync_lockfile(&lock_path, &desired, false).unwrap();
+        assert_eq!(outcome, LockSyncOutcome::Updated);
+        let loaded = LockFile::load(&lock_path).unwrap();
+        assert_eq!(loaded.get_package("dep").unwrap().version, "0.2.0");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

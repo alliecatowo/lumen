@@ -48,6 +48,34 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                     });
                 }
             }
+            Item::Process(p) => {
+                module.addons.push(LirAddon {
+                    kind: p.kind.clone(),
+                    name: Some(p.name.clone()),
+                });
+                for cell in &p.cells {
+                    let mut lowered = cell.clone();
+                    lowered.name = format!("{}.{}", p.name, cell.name);
+                    module.cells.push(lowerer.lower_cell(&lowered));
+                }
+                for g in &p.grants {
+                    let mut grants = serde_json::Map::new();
+                    for c in &g.constraints {
+                        let val = match &c.value {
+                            Expr::StringLit(s, _) => serde_json::Value::String(s.clone()),
+                            Expr::IntLit(n, _) => serde_json::json!(*n),
+                            Expr::FloatLit(f, _) => serde_json::json!(*f),
+                            Expr::BoolLit(b, _) => serde_json::json!(*b),
+                            _ => serde_json::Value::Null,
+                        };
+                        grants.insert(c.key.clone(), val);
+                    }
+                    module.policies.push(LirPolicy {
+                        tool_alias: g.tool_alias.clone(),
+                        grants: serde_json::Value::Object(grants),
+                    });
+                }
+            }
             Item::Effect(e) => module.effects.push(lowerer.lower_effect(e)),
             Item::EffectBind(b) => module.effect_binds.push(LirEffectBind {
                 effect_path: b.effect_path.clone(),

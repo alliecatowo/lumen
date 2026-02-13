@@ -24,6 +24,7 @@ pub enum Item {
     Enum(EnumDef),
     Cell(CellDef),
     Agent(AgentDecl),
+    Process(ProcessDecl),
     Effect(EffectDecl),
     EffectBind(EffectBindDecl),
     Handler(HandlerDecl),
@@ -45,6 +46,7 @@ impl Item {
             Item::Enum(e) => e.span,
             Item::Cell(c) => c.span,
             Item::Agent(a) => a.span,
+            Item::Process(p) => p.span,
             Item::Effect(e) => e.span,
             Item::EffectBind(b) => b.span,
             Item::Handler(h) => h.span,
@@ -171,6 +173,15 @@ pub struct CellDef {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentDecl {
+    pub name: String,
+    pub cells: Vec<CellDef>,
+    pub grants: Vec<GrantDecl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessDecl {
+    pub kind: String,
     pub name: String,
     pub cells: Vec<CellDef>,
     pub grants: Vec<GrantDecl>,

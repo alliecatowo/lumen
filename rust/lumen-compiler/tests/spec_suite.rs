@@ -464,6 +464,7 @@ fn spec_v2_addendum_coverage_targets() {
             id: "effect_rows",
             source: r#"
 use tool http.get as HttpGet
+bind effect http to HttpGet
 grant HttpGet
 
 cell fetch(url: String) -> Bytes / {http}
@@ -501,6 +502,7 @@ end
             id: "agent_declaration",
             source: r#"
 use tool llm.chat as Chat
+bind effect llm to Chat
 grant Chat
 
 agent Assistant
@@ -1191,4 +1193,959 @@ end
         expect_substring: "unknown constraint function",
     };
     assert_compile_err(&case);
+}
+
+// ─── Deep regression tests: LIR-level inspection ───
+
+#[test]
+fn regression_while_loop_backward_jump_is_negative() {
+    // Verify that while loops emit a negative (backward) Jmp offset.
+    // The bug was that backward jumps used unsigned ax() instead of sax(),
+    // causing the offset to wrap to a large positive value.
+    use lumen_compiler::compiler::lir::OpCode;
+
+    let md = markdown_from_code(
+        r#"
+cell main() -> Int
+  let mut x = 0
+  let mut i = 0
+  while i < 5
+    x = x + 1
+    i = i + 1
+  end
+  x
+end
+"#,
+    );
+    let module = compile(&md).expect("while loop should compile");
+    let main_cell = module
+        .cells
+        .iter()
+        .find(|c| c.name == "main")
+        .expect("main cell should exist");
+
+    // Find any Jmp instruction with a negative signed offset (backward jump)
+    let has_backward_jump = main_cell.instructions.iter().any(|inst| {
+        inst.op == OpCode::Jmp && inst.sax_val() < 0
+    });
+    assert!(
+        has_backward_jump,
+        "while loop should contain a backward jump (negative sax_val), instructions: {:?}",
+        main_cell.instructions
+    );
+}
+
+#[test]
+fn regression_while_loop_countdown_has_backward_jump() {
+    // Another variant: counting down. Ensures backward jump works for countdown loops.
+    use lumen_compiler::compiler::lir::OpCode;
+
+    let md = markdown_from_code(
+        r#"
+cell main() -> Int
+  let mut i = 10
+  while i > 0
+    i = i - 1
+  end
+  i
+end
+"#,
+    );
+    let module = compile(&md).expect("countdown should compile");
+    let main_cell = module
+        .cells
+        .iter()
+        .find(|c| c.name == "main")
+        .expect("main cell should exist");
+
+    let backward_jumps: Vec<_> = main_cell
+        .instructions
+        .iter()
+        .filter(|inst| inst.op == OpCode::Jmp && inst.sax_val() < 0)
+        .collect();
+    assert!(
+        !backward_jumps.is_empty(),
+        "countdown while loop should contain a backward jump"
+    );
+}
+
+#[test]
+fn regression_match_literal_does_not_clobber_param_register() {
+    // The bug was Eq(0, subj, lit) writing the bool result into register 0,
+    // clobbering the first parameter. Verify no Eq instruction targets r0.
+    use lumen_compiler::compiler::lir::OpCode;
+
+    let md = markdown_from_code(
+        r#"
+cell check(x: Int) -> String
+  match x
+    1 -> "one"
+    2 -> "two"
+    _ -> "other"
+  end
+end
+
+cell main() -> String
+  return check(2)
+end
+"#,
+    );
+    let module = compile(&md).expect("match should compile");
+    let check_cell = module
+        .cells
+        .iter()
+        .find(|c| c.name == "check")
+        .expect("check cell should exist");
+
+    // Verify that no Eq instruction writes to register 0 (the parameter register)
+    for inst in &check_cell.instructions {
+        if inst.op == OpCode::Eq {
+            assert_ne!(
+                inst.a, 0,
+                "Eq should not write to r0 (param register), instruction: {:?}",
+                inst
+            );
+        }
+    }
+}
+
+#[test]
+fn regression_nested_while_loops_both_have_backward_jumps() {
+    // Ensure nested while loops both produce backward jumps correctly.
+    use lumen_compiler::compiler::lir::OpCode;
+
+    let md = markdown_from_code(
+        r#"
+cell main() -> Int
+  let mut total = 0
+  let mut i = 0
+  while i < 3
+    let mut j = 0
+    while j < 3
+      total = total + 1
+      j = j + 1
+    end
+    i = i + 1
+  end
+  total
+end
+"#,
+    );
+    let module = compile(&md).expect("nested while should compile");
+    let main_cell = module
+        .cells
+        .iter()
+        .find(|c| c.name == "main")
+        .expect("main cell should exist");
+
+    let backward_jump_count = main_cell
+        .instructions
+        .iter()
+        .filter(|inst| inst.op == OpCode::Jmp && inst.sax_val() < 0)
+        .count();
+    assert!(
+        backward_jump_count >= 2,
+        "nested while loops should produce at least 2 backward jumps, found {}",
+        backward_jump_count
+    );
+}
+
+// ─── Additional compile-ok tests: deeper coverage ───
+
+#[test]
+fn compile_ok_while_loop_accumulation() {
+    let case = CompileCase {
+        id: "while_accumulation",
+        source: r#"
+cell main() -> Int
+  let mut total = 0
+  let mut i = 1
+  while i <= 100
+    total = total + i
+    i = i + 1
+  end
+  return total
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_for_loop_with_range() {
+    let case = CompileCase {
+        id: "for_range",
+        source: r#"
+cell main() -> Int
+  let mut sum = 0
+  for i in 0..10
+    sum += i
+  end
+  return sum
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_string_interpolation_complex() {
+    let case = CompileCase {
+        id: "string_interpolation_complex",
+        source: r#"
+cell main() -> String
+  let name = "world"
+  let count = 42
+  return "Hello {name}, you have {count} items!"
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_null_coalesce_nested() {
+    let case = CompileCase {
+        id: "null_coalesce_nested",
+        source: r#"
+cell main() -> Int
+  let a: Int | Null = null
+  let b: Int | Null = null
+  let c: Int | Null = 42
+  return a ?? b ?? c ?? 0
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_compound_assignment_all() {
+    let case = CompileCase {
+        id: "compound_assignment_all",
+        source: r#"
+cell main() -> Int
+  let mut x = 100
+  x += 10
+  x -= 5
+  x *= 2
+  return x
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_if_else_as_expression() {
+    // If/else used as expression returning a value
+    let case = CompileCase {
+        id: "if_else_expression",
+        source: r#"
+cell max(a: Int, b: Int) -> Int
+  if a > b
+    return a
+  else
+    return b
+  end
+end
+
+cell main() -> Int
+  return max(10, 20)
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_float_arithmetic_operations() {
+    let case = CompileCase {
+        id: "float_arithmetic_ops",
+        source: r#"
+cell main() -> Float
+  let a = 3.14
+  let b = 2.71
+  let sum = a + b
+  let diff = a - b
+  let prod = a * b
+  let quot = a / b
+  return sum + diff + prod + quot
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_list_operations_all() {
+    let case = CompileCase {
+        id: "list_operations_all",
+        source: r#"
+cell main() -> Int
+  let xs = [10, 20, 30, 40, 50]
+  let len = length(xs)
+  let ys = append(xs, 60)
+  return length(ys)
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_record_construction_and_access() {
+    let case = CompileCase {
+        id: "record_construction_access",
+        source: r#"
+record Point
+  x: Int
+  y: Int
+end
+
+cell distance_sq(p: Point) -> Int
+  return p.x * p.x + p.y * p.y
+end
+
+cell main() -> Int
+  let p = Point(x: 3, y: 4)
+  return distance_sq(p)
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_enum_variant_construction() {
+    let case = CompileCase {
+        id: "enum_variant_construction",
+        source: r#"
+enum Result
+  Ok(value: Int)
+  Err(message: String)
+end
+
+cell main() -> Int
+  let r = Ok(value: 42)
+  match r
+    Ok(v) -> return v
+    Err(e) -> return 0
+  end
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_match_with_wildcard_only() {
+    let case = CompileCase {
+        id: "match_wildcard_only",
+        source: r#"
+cell main() -> String
+  let x = 42
+  match x
+    _ -> return "always"
+  end
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_recursive_fibonacci() {
+    let case = CompileCase {
+        id: "recursive_fibonacci",
+        source: r#"
+cell fib(n: Int) -> Int
+  if n <= 1
+    return n
+  end
+  return fib(n - 1) + fib(n - 2)
+end
+
+cell main() -> Int
+  return fib(10)
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_multiple_returns() {
+    let case = CompileCase {
+        id: "multiple_returns",
+        source: r#"
+cell classify(x: Int) -> String
+  if x < 0
+    return "negative"
+  end
+  if x == 0
+    return "zero"
+  end
+  return "positive"
+end
+
+cell main() -> String
+  return classify(5)
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_deeply_nested_control_flow() {
+    let case = CompileCase {
+        id: "deeply_nested_control",
+        source: r#"
+cell main() -> Int
+  let mut result = 0
+  let mut i = 0
+  while i < 5
+    if i % 2 == 0
+      let mut j = 0
+      while j < 3
+        result = result + 1
+        j = j + 1
+      end
+    else
+      result = result + 10
+    end
+    i = i + 1
+  end
+  return result
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_string_operations() {
+    let case = CompileCase {
+        id: "string_operations",
+        source: r#"
+cell main() -> String
+  let a = "hello"
+  let b = "world"
+  let c = a + " " + b
+  let upper_c = upper(c)
+  return upper_c
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_bool_logic_complex() {
+    let case = CompileCase {
+        id: "bool_logic_complex",
+        source: r#"
+cell main() -> Bool
+  let a = true
+  let b = false
+  let c = true
+  return (a and b) or (not b and c)
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_negative_int_literal() {
+    let case = CompileCase {
+        id: "negative_int_literal",
+        source: r#"
+cell main() -> Int
+  let x = -42
+  return x
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_empty_list() {
+    let case = CompileCase {
+        id: "empty_list",
+        source: r#"
+cell main() -> list[Int]
+  return []
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_map_construction() {
+    let case = CompileCase {
+        id: "map_construction",
+        source: r#"
+cell main() -> map[String, Int]
+  return {"x": 1, "y": 2, "z": 3}
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_loop_with_break_and_continue() {
+    let case = CompileCase {
+        id: "loop_break_continue",
+        source: r#"
+cell main() -> Int
+  let mut sum = 0
+  let mut i = 0
+  loop
+    i = i + 1
+    if i > 10
+      break
+    end
+    if i % 3 == 0
+      continue
+    end
+    sum = sum + i
+  end
+  return sum
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_const_declaration() {
+    let case = CompileCase {
+        id: "const_declaration",
+        source: r#"
+const MAX: Int = 100
+const PI: Float = 3.14159
+
+cell main() -> Int
+  return MAX
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_multiple_records() {
+    let case = CompileCase {
+        id: "multiple_records",
+        source: r#"
+record Point
+  x: Int
+  y: Int
+end
+
+record Rect
+  origin: Point
+  width: Int
+  height: Int
+end
+
+cell main() -> Rect
+  let p = Point(x: 0, y: 0)
+  return Rect(origin: p, width: 100, height: 50)
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_cell_with_many_params() {
+    let case = CompileCase {
+        id: "cell_many_params",
+        source: r#"
+cell add3(a: Int, b: Int, c: Int) -> Int
+  return a + b + c
+end
+
+cell main() -> Int
+  return add3(1, 2, 3)
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_chained_cell_calls() {
+    let case = CompileCase {
+        id: "chained_cell_calls",
+        source: r#"
+cell inc(x: Int) -> Int
+  return x + 1
+end
+
+cell double(x: Int) -> Int
+  return x * 2
+end
+
+cell main() -> Int
+  return double(inc(double(inc(0))))
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+// ─── Additional compile-error tests ───
+
+#[test]
+fn error_duplicate_record_definition() {
+    // Two records with the same name should be rejected
+    let case = ErrorCase {
+        id: "duplicate_record",
+        source: r#"
+record Foo
+  x: Int
+end
+
+record Foo
+  y: String
+end
+"#,
+        expect_substring: "duplicate",
+    };
+    assert_compile_err(&case);
+}
+
+#[test]
+fn error_type_mismatch_int_vs_string_return() {
+    let case = ErrorCase {
+        id: "type_mismatch_int_string",
+        source: r#"
+cell main() -> String
+  return 42
+end
+"#,
+        expect_substring: "mismatch",
+    };
+    assert_compile_err(&case);
+}
+
+#[test]
+fn error_type_mismatch_bool_vs_int_return() {
+    let case = ErrorCase {
+        id: "type_mismatch_bool_int",
+        source: r#"
+cell main() -> Int
+  return true
+end
+"#,
+        expect_substring: "mismatch",
+    };
+    assert_compile_err(&case);
+}
+
+#[test]
+fn error_unknown_variable_in_expression() {
+    let case = ErrorCase {
+        id: "unknown_variable_expr",
+        source: r#"
+cell main() -> Int
+  let x = 1
+  return x + undefined_var
+end
+"#,
+        expect_substring: "undefinedvar",
+    };
+    assert_compile_err(&case);
+}
+
+#[test]
+fn error_undefined_type_in_list() {
+    let case = ErrorCase {
+        id: "undefined_type_in_list",
+        source: r#"
+cell main() -> list[NonExistentType]
+  return []
+end
+"#,
+        expect_substring: "undefinedtype",
+    };
+    assert_compile_err(&case);
+}
+
+#[test]
+fn error_incomplete_match_three_variants() {
+    let case = ErrorCase {
+        id: "incomplete_match_three_variants",
+        source: r#"
+enum Traffic
+  Red
+  Yellow
+  Green
+end
+
+cell main(t: Traffic) -> Int
+  match t
+    Red() -> return 1
+  end
+end
+"#,
+        expect_substring: "incomplete match",
+    };
+    assert_compile_err(&case);
+}
+
+#[test]
+fn error_undefined_type_in_cell_param() {
+    let case = ErrorCase {
+        id: "undefined_type_param",
+        source: r#"
+cell process(x: NonExistentType) -> Int
+  return 1
+end
+"#,
+        expect_substring: "undefinedtype",
+    };
+    assert_compile_err(&case);
+}
+
+#[test]
+fn error_undefined_type_in_cell_return() {
+    let case = ErrorCase {
+        id: "undefined_type_return",
+        source: r#"
+cell main() -> NonExistentType
+  return 1
+end
+"#,
+        expect_substring: "undefinedtype",
+    };
+    assert_compile_err(&case);
+}
+
+// ─── Constraint validation tests ───
+
+#[test]
+fn compile_ok_valid_constraint_gte() {
+    let case = CompileCase {
+        id: "valid_constraint_gte",
+        source: r#"
+record Config
+  min_value: Int where min_value >= 0
+end
+
+cell main() -> Config
+  return Config(min_value: 10)
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_valid_constraint_length() {
+    let case = CompileCase {
+        id: "valid_constraint_length",
+        source: r#"
+record User
+  name: String where length(name) > 0
+end
+
+cell main() -> User
+  return User(name: "alice")
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn compile_ok_valid_constraint_combined() {
+    let case = CompileCase {
+        id: "valid_constraint_combined",
+        source: r#"
+record Range
+  lo: Int where lo >= 0
+  hi: Int where hi >= 0
+end
+
+cell main() -> Range
+  return Range(lo: 1, hi: 10)
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn error_constraint_unknown_function() {
+    let case = ErrorCase {
+        id: "constraint_unknown_fn",
+        source: r#"
+record Data
+  value: String where bogus_function(value)
+end
+"#,
+        expect_substring: "unknown constraint function",
+    };
+    assert_compile_err(&case);
+}
+
+// ─── LIR module structure tests ───
+
+#[test]
+fn lir_module_has_cells() {
+    let md = markdown_from_code(
+        r#"
+cell add(a: Int, b: Int) -> Int
+  return a + b
+end
+
+cell main() -> Int
+  return add(1, 2)
+end
+"#,
+    );
+    let module = compile(&md).expect("should compile");
+    assert_eq!(module.cells.len(), 2, "should have 2 cells");
+
+    let add_cell = module.cells.iter().find(|c| c.name == "add").unwrap();
+    assert_eq!(add_cell.params.len(), 2, "add should have 2 params");
+    assert_eq!(add_cell.params[0].name, "a");
+    assert_eq!(add_cell.params[1].name, "b");
+
+    let main_cell = module.cells.iter().find(|c| c.name == "main").unwrap();
+    assert_eq!(main_cell.params.len(), 0, "main should have no params");
+}
+
+#[test]
+fn lir_module_has_types() {
+    let md = markdown_from_code(
+        r#"
+record Point
+  x: Int
+  y: Int
+end
+
+enum Color
+  Red
+  Green
+  Blue
+end
+
+cell main() -> Int
+  return 1
+end
+"#,
+    );
+    let module = compile(&md).expect("should compile");
+    assert!(module.types.len() >= 2, "should have at least 2 types");
+}
+
+#[test]
+fn lir_module_has_constants() {
+    let md = markdown_from_code(
+        r#"
+cell main() -> Int
+  let x = 42
+  let y = "hello"
+  return x
+end
+"#,
+    );
+    let module = compile(&md).expect("should compile");
+    let main_cell = module.cells.iter().find(|c| c.name == "main").unwrap();
+    // Should have constants for 42 and "hello"
+    assert!(
+        !main_cell.constants.is_empty(),
+        "main should have constants"
+    );
+}
+
+#[test]
+fn lir_module_tools_and_policies() {
+    let md = markdown_from_code(
+        r#"
+use tool http.get as HttpGet
+grant HttpGet
+  domain "*.example.com"
+  timeout_ms 5000
+
+cell main() -> Int
+  return 1
+end
+"#,
+    );
+    let module = compile(&md).expect("should compile");
+    assert!(!module.tools.is_empty(), "should have tool declarations");
+    assert!(!module.policies.is_empty(), "should have policies");
+}
+
+#[test]
+fn lir_module_effects() {
+    let md = markdown_from_code(
+        r#"
+effect database
+  cell query(sql: String) -> list[String]
+end
+
+cell main() -> Int
+  return 1
+end
+"#,
+    );
+    let module = compile(&md).expect("should compile");
+    assert!(!module.effects.is_empty(), "should have effect declarations");
+    assert_eq!(module.effects[0].name, "database");
+}
+
+#[test]
+fn lir_cell_has_instructions() {
+    let md = markdown_from_code(
+        r#"
+cell main() -> Int
+  return 42
+end
+"#,
+    );
+    let module = compile(&md).expect("should compile");
+    let main_cell = module.cells.iter().find(|c| c.name == "main").unwrap();
+    assert!(
+        !main_cell.instructions.is_empty(),
+        "main cell should have instructions"
+    );
+}
+
+#[test]
+fn lir_cell_return_type() {
+    let md = markdown_from_code(
+        r#"
+cell greet(name: String) -> String
+  return "hello " + name
+end
+
+cell main() -> Int
+  return 1
+end
+"#,
+    );
+    let module = compile(&md).expect("should compile");
+    let greet_cell = module.cells.iter().find(|c| c.name == "greet").unwrap();
+    assert_eq!(
+        greet_cell.returns.as_deref(),
+        Some("String"),
+        "greet should return String"
+    );
+    let main_cell = module.cells.iter().find(|c| c.name == "main").unwrap();
+    assert_eq!(
+        main_cell.returns.as_deref(),
+        Some("Int"),
+        "main should return Int"
+    );
 }

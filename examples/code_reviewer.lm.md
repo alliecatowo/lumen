@@ -126,6 +126,16 @@ cell format_grade_icon(grade: String) -> String
   end
 end
 
+cell summarize_review(pr: PullRequest, grade: String, score: Int) -> String
+  # Use LLM to generate a summary
+  # We use role blocks here
+  role system: You are a helpful code review assistant.
+  role user: Summarize the review for PR {pr.number} ({pr.title}). Grade: {grade}, Score: {score}.
+  
+  # Mock response
+  return "PR #" + to_string(pr.number) + " received a grade of " + grade + " (" + to_string(score) + "/100)."
+end
+
 cell main() -> Null
   print("═══════════════════════════════════════════")
   print("  🔍 Lumen Code Reviewer Agent")
@@ -139,20 +149,26 @@ cell main() -> Null
   print("")
 
   let issues = []
-  issues = append(issues, make_issue("src/parser.rs", 42, "Warning", "Complex function exceeds 50 lines"))
-  issues = append(issues, make_issue("src/lexer.rs", 15, "Info", "Consider extracting helper function"))
-  issues = append(issues, make_issue("src/vm.rs", 230, "Error", "Missing bounds check on register access"))
-  issues = append(issues, make_issue("src/lower.rs", 88, "Warning", "Unused variable 'tmp_reg'"))
+  let i1 = make_issue("src/parser.rs", 42, "Warning", "Complex function exceeds 50 lines")
+  issues = append(issues, i1)
+  let i2 = make_issue("src/lexer.rs", 15, "Info", "Consider extracting helper function")
+  issues = append(issues, i2)
+  let i3 = make_issue("src/vm.rs", 230, "Error", "Missing bounds check on register access")
+  issues = append(issues, i3)
+  let i4 = make_issue("src/lower.rs", 88, "Warning", "Unused variable 'tmp_reg'")
+  issues = append(issues, i4)
 
   let grade = compute_grade(issues)
   let score = compute_score(issues)
+  let summary = summarize_review(pr, grade, score)
 
   print("─── Review Results ───")
   print("  Grade: " + format_grade_icon(grade) + " " + grade)
   print("  Score: " + to_string(score) + "/100")
+  print("  Summary: " + summary)
   print("")
 
-  print("Issues (" + to_string(len(issues)) + "):")
+  print("Issues (" + to_string(length(issues)) + "):")
   for issue in issues
     let icon = format_severity_icon(issue.severity)
     print("  " + icon + " " + issue.file + ":" + to_string(issue.line))
@@ -160,7 +176,7 @@ cell main() -> Null
   end
 
   print("")
-  print("Review complete. Trace recorded for audit.")
+  print("Review complete.")
   return null
 end
 ```

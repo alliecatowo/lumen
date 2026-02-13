@@ -39,6 +39,16 @@ impl RegAlloc {
     pub fn max_regs(&self) -> u8 {
         self.next_reg
     }
+
+    /// Manually bind a name to an existing register (for temporary shadowing)
+    pub fn bind(&mut self, name: &str, reg: u8) {
+        self.bindings.insert(name.to_string(), reg);
+    }
+    
+    /// Unbind a name (for temporary shadowing)
+    pub fn unbind(&mut self, name: &str) {
+        self.bindings.remove(name);
+    }
 }
 
 #[cfg(test)]

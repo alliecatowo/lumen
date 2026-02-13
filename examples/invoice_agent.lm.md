@@ -22,9 +22,9 @@ record Invoice
   vendor: String
   date: String
   currency: String
-  subtotal: Float
-  tax: Float
-  total: Float
+  subtotal: Float where subtotal >= 0.0
+  tax: Float where tax >= 0.0
+  total: Float where total == subtotal + tax
 end
 
 record AuditResult
@@ -34,71 +34,62 @@ record AuditResult
   summary: String
 end
 
-cell validate_totals(invoice: Invoice) -> list[String]
+cell validate_invoice(invoice: Invoice) -> AuditResult
+  # Constraints on Record will auto-validate subtotal/tax/total logic upon construction.
+  # If we get here, the invoice is valid structurally and mathematically.
+  
   let issues = []
-  let expected_total = invoice.subtotal + invoice.tax
-  if invoice.total != expected_total
-    issues = append(issues, "Total mismatch: " + to_string(invoice.total) + " != " + to_string(expected_total))
+  if invoice.currency != "USD"
+    issues = append(issues, "Non-USD currency: " + invoice.currency)
   end
-  if invoice.subtotal < 0.0
-    issues = append(issues, "Negative subtotal: " + to_string(invoice.subtotal))
+  
+  let status = "APPROVED"
+  if length(issues) > 0
+    status = "FLAGGED"
   end
-  if invoice.tax < 0.0
-    issues = append(issues, "Negative tax: " + to_string(invoice.tax))
-  end
-  return issues
+  
+  # Use LLM to summarize
+  let prompt = "Summarize this invoice for " + invoice.vendor + " amount " + to_string(invoice.total)
+  role system: You are a financial auditor.
+  role user: {prompt}
+  
+  # Mock LLM response for now as we don't have real API keys in tests
+  let summary = "Invoice " + invoice.id + " generally looks good."
+
+  return AuditResult(
+    invoice_id: invoice.id,
+    status: status,
+    issue_count: length(issues),
+    summary: summary
+  )
 end
 
-cell audit_invoice(invoice: Invoice) -> AuditResult
-  let issues = validate_totals(invoice)
-  let status = "pass"
-  if len(issues) > 0
-    status = "fail"
-  end
-  let summary = "Validated " + invoice.vendor + " invoice " + invoice.id
-  return AuditResult(invoice_id: invoice.id, status: status, issue_count: len(issues), summary: summary)
-end
+cell main() -> Int
+  # Valid Invoice
+  let inv1 = Invoice(
+    id: "INV-001",
+    vendor: "Acme Corp",
+    date: "2023-10-27",
+    currency: "USD",
+    subtotal: 100.0,
+    tax: 10.0,
+    total: 110.0
+  )
+  
+  let res1 = validate_invoice(inv1)
+  print("Audit 1: " + res1.status + " - " + res1.summary)
 
-cell main() -> Null
-  print("═══════════════════════════════════════")
-  print("  🧾 Lumen Invoice Audit Agent")
-  print("═══════════════════════════════════════")
-  print("")
+  # Invalid Invoice (Mathematical error) - Should Halt
+  # let inv2 = Invoice(
+  #   id: "INV-002",
+  #   vendor: "Bad Corp",
+  #   date: "2023-10-28",
+  #   currency: "USD",
+  #   subtotal: 100.0,
+  #   tax: 10.0,
+  #   total: 120.0 
+  # ) 
 
-  let inv1 = Invoice(id: "INV-001", vendor: "Acme Corp", date: "2024-01-15", currency: "USD", subtotal: 1000.0, tax: 80.0, total: 1080.0)
-  let inv2 = Invoice(id: "INV-002", vendor: "Beta Inc", date: "2024-01-16", currency: "EUR", subtotal: 500.0, tax: 50.0, total: 555.0)
-  let inv3 = Invoice(id: "INV-003", vendor: "Gamma LLC", date: "2024-01-17", currency: "GBP", subtotal: 750.0, tax: 112.5, total: 862.5)
-
-  let invoices = [inv1, inv2, inv3]
-  let audit_results = []
-
-  for inv in invoices
-    print("Auditing " + inv.id + " from " + inv.vendor + "...")
-    let audit = audit_invoice(inv)
-    audit_results = append(audit_results, audit)
-    match audit.status
-      "pass" -> print("  ✅ " + audit.invoice_id + ": PASS")
-      "fail" -> print("  ❌ " + audit.invoice_id + ": FAIL — " + to_string(audit.issue_count) + " issues")
-      _ -> print("  ⚠️  " + audit.invoice_id + ": UNKNOWN")
-    end
-  end
-
-  print("")
-  print("─── Audit Summary ───")
-  let pass_count = 0
-  let fail_count = 0
-  for r in audit_results
-    if r.status == "pass"
-      pass_count = pass_count + 1
-    else
-      fail_count = fail_count + 1
-    end
-  end
-  print("  Passed: " + to_string(pass_count))
-  print("  Failed: " + to_string(fail_count))
-  print("  Total:  " + to_string(len(audit_results)))
-  print("")
-  print("All invoices audited. Trace recorded.")
-  return null
+  return 0
 end
 ```

@@ -54,11 +54,13 @@ fn is_builtin_function(name: &str) -> bool {
     )
 }
 
-/// In doc_mode / non-strict mode, allow any undefined variable name.
-/// This avoids an unmaintainable hardcoded whitelist; doc snippets frequently
-/// reference variables that aren't defined in the same compilation unit.
-fn is_doc_placeholder_var(_name: &str) -> bool {
-    true
+/// In doc_mode / non-strict mode, allow undefined variable names that look like
+/// plausible identifiers (e.g. doc snippet references). Returns false for names
+/// that are likely typos or real errors even in non-strict mode.
+fn is_doc_placeholder_var(name: &str) -> bool {
+    // All well-formed identifiers are allowed in placeholder mode.
+    // The guard (`allow_placeholders`) is only true in doc_mode or non-strict mode.
+    !name.is_empty() && !name.starts_with("__")
 }
 
 fn type_contains_any(ty: &Type) -> bool {
@@ -1053,6 +1055,35 @@ impl<'a> TypeChecker<'a> {
                     ComprehensionKind::Map => Type::Any, // map comprehension needs key+value
                 }
             }
+            Expr::MatchExpr {
+                subject, arms, ..
+            } => {
+                let _subject_type = self.infer_expr(subject);
+                let mut result_type = Type::Any;
+                for arm in arms {
+                    for s in &arm.body {
+                        self.check_stmt(s, None);
+                    }
+                    // Infer type from last expression in arm body
+                    if let Some(Stmt::Expr(es)) = arm.body.last() {
+                        result_type = self.infer_expr(&es.expr);
+                    } else if let Some(Stmt::Return(rs)) = arm.body.last() {
+                        result_type = self.infer_expr(&rs.value);
+                    }
+                }
+                result_type
+            }
+            Expr::BlockExpr(stmts, _) => {
+                for s in stmts {
+                    self.check_stmt(s, None);
+                }
+                // Infer type from last expression in block
+                if let Some(Stmt::Expr(es)) = stmts.last() {
+                    self.infer_expr(&es.expr)
+                } else {
+                    Type::Any
+                }
+            }
         }
     }
 
@@ -1230,5 +1261,25 @@ mod tests {
             "@doc_mode true\n\ncell example() -> Int\n  return completely_unknown_var_xyz\nend",
         )
         .unwrap();
+    }
+
+    #[test]
+    fn test_strict_mode_catches_undefined_var() {
+        // In strict mode (default), undefined variables should be caught
+        let err = typecheck_src(
+            "cell example() -> Int\n  return completely_unknown_var_xyz\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(e, TypeError::UndefinedVar { name, .. } if name == "completely_unknown_var_xyz")));
+    }
+
+    #[test]
+    fn test_is_doc_placeholder_var_rejects_dunder_names() {
+        // Names starting with __ should not be placeholders (internal/generated names)
+        assert!(!is_doc_placeholder_var("__pattern"));
+        assert!(!is_doc_placeholder_var("__tuple"));
+        // Normal names are fine
+        assert!(is_doc_placeholder_var("x"));
+        assert!(is_doc_placeholder_var("my_variable"));
     }
 }

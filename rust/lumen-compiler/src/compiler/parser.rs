@@ -1028,14 +1028,46 @@ impl Parser {
             (pat_name, Some(pat))
         } else if matches!(self.peek_kind(), TokenKind::LBrace) {
             // Record destructuring: let { a, b } = ...
-            self.consume_balanced_group();
-            ("__pattern".to_string(), None)
+            let brace_span = self.advance().span; // consume {
+            let mut fields = Vec::new();
+            while !matches!(self.peek_kind(), TokenKind::RBrace | TokenKind::Eof) {
+                if matches!(self.peek_kind(), TokenKind::Comma) {
+                    self.advance();
+                    continue;
+                }
+                let field_name = self.expect_ident()?;
+                fields.push((field_name, None));
+            }
+            if matches!(self.peek_kind(), TokenKind::RBrace) {
+                self.advance();
+            }
+            let first_name = fields.first()
+                .map(|(n, _)| n.clone())
+                .unwrap_or_else(|| "__pattern".to_string());
+            let pat = Pattern::RecordDestructure {
+                type_name: String::new(), // anonymous destructure
+                fields,
+                open: false,
+                span: brace_span,
+            };
+            (first_name, Some(pat))
         } else {
             let first = self.expect_ident()?;
             if matches!(self.peek_kind(), TokenKind::LParen) {
-                // Variant destructuring: let Name(x) = ...
-                self.consume_balanced_group();
-                ("__pattern".to_string(), None)
+                // Variant/record destructuring: let Name(x) = ... or let ok(v) = ...
+                // Back up pos to include the ident we already consumed
+                self.pos -= 1;
+                let pat = self.parse_pattern()?;
+                let pat_name = match &pat {
+                    Pattern::Variant(_, Some(binding), _) => binding.clone(),
+                    Pattern::RecordDestructure { fields, .. } => {
+                        fields.first()
+                            .map(|(n, _)| n.clone())
+                            .unwrap_or_else(|| "__pattern".to_string())
+                    }
+                    _ => first.clone(),
+                };
+                (pat_name, Some(pat))
             } else {
                 (first, None)
             }
@@ -1061,20 +1093,67 @@ impl Parser {
 
     fn parse_if(&mut self) -> Result<Stmt, ParseError> {
         let start = self.expect(&TokenKind::If)?.span;
-        let cond = if matches!(self.peek_kind(), TokenKind::Let) {
+
+        // Detect `if let <pattern> = <expr>` and desugar to match
+        if matches!(self.peek_kind(), TokenKind::Let) {
             self.advance();
-            // Parse `if let <pattern> = <expr>` — consume the binding pattern and
-            // the expression so the parser stays in sync, but since IfStmt has no
-            // pattern field we desugar to `BoolLit(true)` for now.
-            let _ = self.parse_pattern()?;
-            if matches!(self.peek_kind(), TokenKind::Assign) {
+            let pattern = self.parse_pattern()?;
+            let subject = if matches!(self.peek_kind(), TokenKind::Assign) {
                 self.advance();
-                let _ = self.parse_expr(0)?;
+                self.parse_expr(0)?
+            } else {
+                // Malformed: treat as matching against true
+                Expr::BoolLit(true, start)
+            };
+
+            // Parse the then body (block-style only for if-let)
+            self.skip_newlines();
+            let then_body = self.parse_block()?;
+
+            // Parse optional else
+            let else_body = if matches!(self.peek_kind(), TokenKind::Else) {
+                self.advance();
+                self.skip_newlines();
+                if matches!(self.peek_kind(), TokenKind::If) {
+                    let elif = self.parse_if()?;
+                    Some(vec![elif])
+                } else {
+                    Some(self.parse_block()?)
+                }
+            } else {
+                None
+            };
+
+            let end_span = if matches!(self.peek_kind(), TokenKind::End) {
+                self.expect(&TokenKind::End)?.span
+            } else if let Some(ref eb) = else_body {
+                eb.last().map(|s| s.span()).unwrap_or(start)
+            } else {
+                start
+            };
+
+            // Build match arms: pattern => then_body, _ => else_body
+            let mut arms = vec![MatchArm {
+                pattern,
+                body: then_body,
+                span: start,
+            }];
+            if let Some(eb) = else_body {
+                arms.push(MatchArm {
+                    pattern: Pattern::Wildcard(start),
+                    body: eb,
+                    span: start,
+                });
             }
-            Expr::BoolLit(true, start)
-        } else {
-            self.parse_expr(0)?
-        };
+
+            return Ok(Stmt::Match(MatchStmt {
+                subject,
+                arms,
+                span: start.merge(end_span),
+            }));
+        }
+
+        let cond = self.parse_expr(0)?;
         if matches!(self.peek_kind(), TokenKind::Then) {
             self.advance();
             let then_expr = self.parse_expr(0)?;
@@ -1140,24 +1219,22 @@ impl Parser {
 
     fn parse_for(&mut self) -> Result<Stmt, ParseError> {
         let start = self.expect(&TokenKind::For)?.span;
-        let var = if matches!(self.peek_kind(), TokenKind::LParen) {
-            self.advance();
-            let mut names = vec![self.expect_ident()?];
-            while matches!(self.peek_kind(), TokenKind::Comma) {
-                self.advance(); // consume comma
-                if matches!(self.peek_kind(), TokenKind::RParen) {
-                    break; // trailing comma
+        let (var, pattern) = if matches!(self.peek_kind(), TokenKind::LParen) {
+            // Tuple destructuring: for (k, v) in ...
+            let pat = self.parse_pattern()?;
+            let first_name = match &pat {
+                Pattern::TupleDestructure { elements, .. } => {
+                    elements.first().and_then(|p| match p {
+                        Pattern::Ident(n, _) => Some(n.clone()),
+                        _ => None,
+                    }).unwrap_or_else(|| "__tuple".to_string())
                 }
-                names.push(self.expect_ident()?);
-            }
-            if matches!(self.peek_kind(), TokenKind::RParen) {
-                self.advance();
-            }
-            // ForStmt.var is a single String; use first ident as the loop variable.
-            // Full tuple destructuring requires AST changes.
-            names.into_iter().next().unwrap_or_default()
+                Pattern::Ident(n, _) => n.clone(),
+                _ => "__pattern".to_string(),
+            };
+            (first_name, Some(pat))
         } else {
-            self.expect_ident()?
+            (self.expect_ident()?, None)
         };
         self.expect(&TokenKind::In)?;
         let iter = self.parse_expr(0)?;
@@ -1170,6 +1247,7 @@ impl Parser {
         let end_span = self.expect(&TokenKind::End)?.span;
         Ok(Stmt::For(ForStmt {
             var,
+            pattern,
             iter,
             body,
             span: start.merge(end_span),
@@ -1475,18 +1553,55 @@ impl Parser {
 
     fn parse_while(&mut self) -> Result<Stmt, ParseError> {
         let start = self.expect(&TokenKind::While)?.span;
-        let cond = if matches!(self.peek_kind(), TokenKind::Let) {
+
+        // Detect `while let <pattern> = <expr>` and desugar to loop + match
+        if matches!(self.peek_kind(), TokenKind::Let) {
             self.advance();
-            // Parse `while let <pattern> = <expr>` — same desugar approach as if-let.
-            let _ = self.parse_pattern()?;
-            if matches!(self.peek_kind(), TokenKind::Assign) {
+            let pattern = self.parse_pattern()?;
+            let subject = if matches!(self.peek_kind(), TokenKind::Assign) {
                 self.advance();
-                let _ = self.parse_expr(0)?;
-            }
-            Expr::BoolLit(true, start)
-        } else {
-            self.parse_expr(0)?
-        };
+                self.parse_expr(0)?
+            } else {
+                Expr::BoolLit(true, start)
+            };
+            self.skip_newlines();
+            let body = self.parse_block()?;
+            let end_span = self.expect(&TokenKind::End)?.span;
+
+            // Desugar to:
+            //   loop
+            //     match <subject>
+            //       <pattern> => <body>
+            //       _ => break
+            //     end
+            //   end
+            let match_stmt = Stmt::Match(MatchStmt {
+                subject,
+                arms: vec![
+                    MatchArm {
+                        pattern,
+                        body,
+                        span: start,
+                    },
+                    MatchArm {
+                        pattern: Pattern::Wildcard(start),
+                        body: vec![Stmt::Break(BreakStmt {
+                            value: None,
+                            span: start,
+                        })],
+                        span: start,
+                    },
+                ],
+                span: start,
+            });
+
+            return Ok(Stmt::Loop(LoopStmt {
+                body: vec![match_stmt],
+                span: start.merge(end_span),
+            }));
+        }
+
+        let cond = self.parse_expr(0)?;
         self.skip_newlines();
         let body = self.parse_block()?;
         let end_span = self.expect(&TokenKind::End)?.span;
@@ -3866,20 +3981,25 @@ impl Parser {
                 Ok(Expr::Ident("parallel".into(), s))
             }
             TokenKind::Match => {
-                // Reuse the statement-level match parser for correct token consumption.
-                // Back up since parse_match expects to consume the Match token itself.
-                let s = self.current().span;
+                // Reuse the statement-level match parser, then extract the AST
                 let stmt = self.parse_match()?;
-                let end_span = stmt.span();
-                // AST has no MatchExpr; return a placeholder that preserves the span.
-                Ok(Expr::Ident("match_expr".into(), s.merge(end_span)))
+                if let Stmt::Match(ms) = stmt {
+                    let span = ms.span;
+                    Ok(Expr::MatchExpr {
+                        subject: Box::new(ms.subject),
+                        arms: ms.arms,
+                        span,
+                    })
+                } else {
+                    let span = stmt.span();
+                    Ok(Expr::BlockExpr(vec![stmt], span))
+                }
             }
             TokenKind::If => {
-                // Reuse the statement-level if parser for correct token consumption.
-                let s = self.current().span;
+                // Reuse the statement-level if parser, wrap result as block expr
                 let stmt = self.parse_if()?;
-                let end_span = stmt.span();
-                Ok(Expr::Ident("if_expr".into(), s.merge(end_span)))
+                let span = stmt.span();
+                Ok(Expr::BlockExpr(vec![stmt], span))
             }
             TokenKind::When => {
                 let s = self.advance().span;
@@ -3888,16 +4008,16 @@ impl Parser {
                 Ok(Expr::Ident("when_expr".into(), s))
             }
             TokenKind::Loop => {
-                let s = self.current().span;
+                // Reuse statement-level loop parser, wrap as block expr
                 let stmt = self.parse_loop()?;
-                let end_span = stmt.span();
-                Ok(Expr::Ident("loop_expr".into(), s.merge(end_span)))
+                let span = stmt.span();
+                Ok(Expr::BlockExpr(vec![stmt], span))
             }
             TokenKind::Let => {
-                let s = self.current().span;
+                // Reuse statement-level let parser, wrap as block expr
                 let stmt = self.parse_let()?;
-                let end_span = stmt.span();
-                Ok(Expr::Ident("let_expr".into(), s.merge(end_span)))
+                let span = stmt.span();
+                Ok(Expr::BlockExpr(vec![stmt], span))
             }
             TokenKind::Try => {
                 let s = self.advance().span;
@@ -3910,18 +4030,24 @@ impl Parser {
                 // async block: `async ... end` or `async <expr>`
                 if matches!(self.peek_kind(), TokenKind::Newline | TokenKind::Indent) {
                     self.skip_newlines();
-                    let _ = self.parse_block()?;
-                    if matches!(self.peek_kind(), TokenKind::End) {
-                        self.advance();
-                    }
+                    let block = self.parse_block()?;
+                    let end_span = if matches!(self.peek_kind(), TokenKind::End) {
+                        self.advance().span
+                    } else {
+                        s
+                    };
+                    Ok(Expr::BlockExpr(block, s.merge(end_span)))
                 } else if !matches!(
                     self.peek_kind(),
                     TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace
                         | TokenKind::Comma | TokenKind::Eof
                 ) {
-                    let _ = self.parse_expr(0)?;
+                    let inner = self.parse_expr(0)?;
+                    let span = s.merge(inner.span());
+                    Ok(Expr::AwaitExpr(Box::new(inner), span))
+                } else {
+                    Ok(Expr::BlockExpr(vec![], s))
                 }
-                Ok(Expr::Ident("async_expr".into(), s))
             }
             TokenKind::Comptime => {
                 let s = self.advance().span;
@@ -5167,5 +5293,240 @@ end"#;
         for arg in args {
             assert!(matches!(arg, CallArg::Positional(Expr::Call(_, _, _))));
         }
+    }
+
+    #[test]
+    fn test_if_let_desugars_to_match() {
+        let src = r#"cell test(x: Int) -> Int
+  if let ok(val) = get_result()
+    return val
+  else
+    return 0
+  end
+end"#;
+        let prog = parse_src(src).unwrap();
+        let Item::Cell(c) = &prog.items[0] else {
+            panic!("expected cell");
+        };
+        // if let should desugar to a match statement
+        let Stmt::Match(ms) = &c.body[0] else {
+            panic!("expected match from if-let desugar, got {:?}", c.body[0]);
+        };
+        assert_eq!(ms.arms.len(), 2);
+        // First arm should be the pattern (ok(val))
+        assert!(matches!(&ms.arms[0].pattern, Pattern::Variant(name, Some(binding), _)
+            if name == "ok" && binding == "val"));
+        // Second arm should be the wildcard (else branch)
+        assert!(matches!(&ms.arms[1].pattern, Pattern::Wildcard(_)));
+    }
+
+    #[test]
+    fn test_if_let_no_else() {
+        let src = r#"cell test(x: Int) -> Int
+  if let ok(val) = get_result()
+    print(val)
+  end
+  return 0
+end"#;
+        let prog = parse_src(src).unwrap();
+        let Item::Cell(c) = &prog.items[0] else {
+            panic!("expected cell");
+        };
+        let Stmt::Match(ms) = &c.body[0] else {
+            panic!("expected match from if-let desugar");
+        };
+        // No else branch means only one match arm
+        assert_eq!(ms.arms.len(), 1);
+        assert!(matches!(&ms.arms[0].pattern, Pattern::Variant(name, _, _)
+            if name == "ok"));
+    }
+
+    #[test]
+    fn test_while_let_desugars_to_loop_match() {
+        let src = r#"cell test(items: list[Int]) -> Int
+  while let ok(item) = next(items)
+    print(item)
+  end
+  return 0
+end"#;
+        let prog = parse_src(src).unwrap();
+        let Item::Cell(c) = &prog.items[0] else {
+            panic!("expected cell");
+        };
+        // while let should desugar to a loop
+        let Stmt::Loop(ls) = &c.body[0] else {
+            panic!("expected loop from while-let desugar, got {:?}", c.body[0]);
+        };
+        // Loop body should contain a match
+        assert_eq!(ls.body.len(), 1);
+        let Stmt::Match(ms) = &ls.body[0] else {
+            panic!("expected match inside loop");
+        };
+        assert_eq!(ms.arms.len(), 2);
+        // First arm: the pattern
+        assert!(matches!(&ms.arms[0].pattern, Pattern::Variant(name, _, _)
+            if name == "ok"));
+        // Second arm: wildcard with break
+        assert!(matches!(&ms.arms[1].pattern, Pattern::Wildcard(_)));
+        assert!(matches!(&ms.arms[1].body[0], Stmt::Break(_)));
+    }
+
+    #[test]
+    fn test_expr_position_match_produces_match_expr() {
+        let src = r#"cell test(x: Int) -> String
+  let y = match x
+    1 -> "one"
+    _ -> "other"
+  end
+  return y
+end"#;
+        let prog = parse_src(src).unwrap();
+        let Item::Cell(c) = &prog.items[0] else {
+            panic!("expected cell");
+        };
+        let Stmt::Let(ls) = &c.body[0] else {
+            panic!("expected let");
+        };
+        // The value should be a MatchExpr, not an Ident placeholder
+        assert!(
+            matches!(&ls.value, Expr::MatchExpr { arms, .. } if arms.len() == 2),
+            "expected MatchExpr with 2 arms, got {:?}",
+            ls.value
+        );
+    }
+
+    #[test]
+    fn test_expr_position_if_produces_block_expr() {
+        let src = r#"cell test(x: Int) -> Int
+  let y = if x > 0
+    return 1
+  else
+    return 0
+  end
+  return y
+end"#;
+        let prog = parse_src(src).unwrap();
+        let Item::Cell(c) = &prog.items[0] else {
+            panic!("expected cell");
+        };
+        let Stmt::Let(ls) = &c.body[0] else {
+            panic!("expected let");
+        };
+        // The value should be a BlockExpr containing an If statement
+        assert!(
+            matches!(&ls.value, Expr::BlockExpr(stmts, _) if matches!(&stmts[0], Stmt::If(_))),
+            "expected BlockExpr with If, got {:?}",
+            ls.value
+        );
+    }
+
+    #[test]
+    fn test_expr_position_loop_produces_block_expr() {
+        let src = r#"cell test() -> Int
+  let y = loop
+    break 42
+  end
+  return y
+end"#;
+        let prog = parse_src(src).unwrap();
+        let Item::Cell(c) = &prog.items[0] else {
+            panic!("expected cell");
+        };
+        let Stmt::Let(ls) = &c.body[0] else {
+            panic!("expected let");
+        };
+        assert!(
+            matches!(&ls.value, Expr::BlockExpr(stmts, _) if matches!(&stmts[0], Stmt::Loop(_))),
+            "expected BlockExpr with Loop, got {:?}",
+            ls.value
+        );
+    }
+
+    #[test]
+    fn test_for_loop_tuple_destructuring() {
+        let src = r#"cell test(m: map[String, Int]) -> Int
+  for (k, v) in m
+    print(k)
+  end
+  return 0
+end"#;
+        let prog = parse_src(src).unwrap();
+        let Item::Cell(c) = &prog.items[0] else {
+            panic!("expected cell");
+        };
+        let Stmt::For(fs) = &c.body[0] else {
+            panic!("expected for, got {:?}", c.body[0]);
+        };
+        // var should be the first name for backwards compat
+        assert_eq!(fs.var, "k");
+        // pattern should capture both names
+        let Some(Pattern::TupleDestructure { elements, .. }) = &fs.pattern else {
+            panic!("expected tuple destructure pattern, got {:?}", fs.pattern);
+        };
+        assert_eq!(elements.len(), 2);
+        assert!(matches!(&elements[0], Pattern::Ident(n, _) if n == "k"));
+        assert!(matches!(&elements[1], Pattern::Ident(n, _) if n == "v"));
+    }
+
+    #[test]
+    fn test_let_variant_destructuring() {
+        let src = r#"cell test() -> Int
+  let ok(val) = get_result()
+  return val
+end"#;
+        let prog = parse_src(src).unwrap();
+        let Item::Cell(c) = &prog.items[0] else {
+            panic!("expected cell");
+        };
+        let Stmt::Let(ls) = &c.body[0] else {
+            panic!("expected let");
+        };
+        assert_eq!(ls.name, "val");
+        let Some(Pattern::Variant(name, binding, _)) = &ls.pattern else {
+            panic!("expected variant pattern, got {:?}", ls.pattern);
+        };
+        assert_eq!(name, "ok");
+        assert_eq!(binding.as_deref(), Some("val"));
+    }
+
+    #[test]
+    fn test_let_brace_destructuring() {
+        let src = r#"cell test() -> Int
+  let { x, y } = get_point()
+  return x
+end"#;
+        let prog = parse_src(src).unwrap();
+        let Item::Cell(c) = &prog.items[0] else {
+            panic!("expected cell");
+        };
+        let Stmt::Let(ls) = &c.body[0] else {
+            panic!("expected let");
+        };
+        assert_eq!(ls.name, "x");
+        let Some(Pattern::RecordDestructure { fields, .. }) = &ls.pattern else {
+            panic!("expected record destructure pattern, got {:?}", ls.pattern);
+        };
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].0, "x");
+        assert_eq!(fields[1].0, "y");
+    }
+
+    #[test]
+    fn test_for_loop_simple_var_no_pattern() {
+        let src = r#"cell test(items: list[Int]) -> Int
+  for item in items
+    print(item)
+  end
+  return 0
+end"#;
+        let prog = parse_src(src).unwrap();
+        let Item::Cell(c) = &prog.items[0] else {
+            panic!("expected cell");
+        };
+        let Stmt::For(fs) = &c.body[0] else {
+            panic!("expected for");
+        };
+        assert_eq!(fs.var, "item");
+        assert!(fs.pattern.is_none());
     }
 }

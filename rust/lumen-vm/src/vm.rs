@@ -11,6 +11,9 @@ use lumen_runtime::tools::{ProviderRegistry, ToolDispatcher, ToolRequest};
 use std::collections::{BTreeMap, VecDeque};
 use thiserror::Error;
 
+/// Type alias for debug callback to simplify type signatures
+pub type DebugCallback = Option<Box<dyn FnMut(&DebugEvent)>>;
+
 /// Debug events emitted during VM execution.
 /// Used for step-through debugging and execution tracing.
 #[derive(Debug, Clone)]
@@ -223,7 +226,7 @@ pub struct VM {
     /// Optional tool dispatcher
     pub tool_dispatcher: Option<Box<dyn ToolDispatcher>>,
     /// Optional debug callback for step-through debugging
-    pub debug_callback: Option<Box<dyn FnMut(&DebugEvent)>>,
+    pub debug_callback: DebugCallback,
     next_future_id: u64,
     future_states: BTreeMap<u64, FutureState>,
     scheduled_futures: VecDeque<FutureTask>,
@@ -452,6 +455,7 @@ impl VM {
 
     /// Checked register access (read-only).
     #[inline]
+    #[allow(dead_code)]
     fn reg(&self, index: usize) -> Result<&Value, VmError> {
         self.registers
             .get(index)
@@ -460,6 +464,7 @@ impl VM {
 
     /// Checked register access (mutable).
     #[inline]
+    #[allow(dead_code)]
     fn reg_mut(&mut self, index: usize) -> Result<&mut Value, VmError> {
         self.registers
             .get_mut(index)
@@ -7147,7 +7152,7 @@ end
             assert!(matches!(e, VmError::DivisionByZero));
             let trace = vm.capture_stack_trace();
             // Should have frames for divide, helper, and main
-            assert!(trace.len() >= 1);
+            assert!(!trace.is_empty());
         }
     }
 }

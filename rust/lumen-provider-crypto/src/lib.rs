@@ -473,7 +473,7 @@ mod tests {
         let input = json!({"min": 1, "max": 10});
         let result = provider.call(input).unwrap();
         let value = result.as_i64().unwrap();
-        assert!(value >= 1 && value <= 10);
+        assert!((1..=10).contains(&value));
     }
 
     #[test]

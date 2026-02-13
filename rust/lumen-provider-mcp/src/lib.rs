@@ -293,7 +293,7 @@ impl ToolProvider for McpToolProvider {
 
         self.transport
             .send_request("tools/call", params)
-            .map_err(|e| ToolError::InvocationFailed(e))
+            .map_err(ToolError::InvocationFailed)
     }
 
     fn effects(&self) -> Vec<String> {

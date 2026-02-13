@@ -496,7 +496,7 @@ mod tests {
     #[test]
     fn test_as_helpers() {
         assert_eq!(Value::Int(42).as_int(), Some(42));
-        assert_eq!(Value::Float(3.14).as_float(), Some(3.14));
+        assert_eq!(Value::Float(2.5).as_float(), Some(2.5));
         assert_eq!(Value::Int(42).as_float(), Some(42.0));
         assert!(Value::List(vec![]).as_list().is_some());
         assert!(Value::Null.as_list().is_none());

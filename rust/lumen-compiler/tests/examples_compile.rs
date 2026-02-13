@@ -25,7 +25,7 @@ fn all_example_files() -> Vec<PathBuf> {
                 && path
                     .file_name()
                     .and_then(|s| s.to_str())
-                    .map_or(false, |n| n.ends_with(".lm.md"))
+                    .is_some_and(|n| n.ends_with(".lm.md"))
             {
                 Some(path)
             } else {

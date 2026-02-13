@@ -1,5 +1,9 @@
 //! Lumen CLI — command-line interface for the Lumen language.
 
+mod config;
+mod pkg;
+mod repl;
+
 use clap::{Parser as ClapParser, Subcommand};
 use std::path::PathBuf;
 
@@ -52,6 +56,10 @@ enum Commands {
         #[command(subcommand)]
         sub: CacheCommands,
     },
+    /// Create a lumen.toml config file in the current directory
+    Init,
+    /// Start an interactive REPL
+    Repl,
 }
 
 #[derive(Subcommand)]
@@ -93,6 +101,8 @@ fn main() {
         Commands::Cache { sub } => match sub {
             CacheCommands::Clear { cache_dir } => cmd_cache_clear(&cache_dir),
         },
+        Commands::Init => cmd_init(),
+        Commands::Repl => repl::run_repl(),
     }
 }
 
@@ -126,6 +136,11 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
         }
     };
 
+    // Load project config and build provider registry
+    let _config = config::LumenConfig::load();
+    let registry = lumen_runtime::tools::ProviderRegistry::new();
+    // TODO: populate registry from _config.providers once concrete providers exist
+
     // Optionally set up tracing
     let mut trace_store = trace_dir.map(|dir| lumen_runtime::trace::store::TraceStore::new(&dir));
 
@@ -135,6 +150,7 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
     }
 
     let mut vm = lumen_vm::vm::VM::new();
+    vm.set_provider_registry(registry);
     vm.load(module);
     match vm.execute(cell, vec![]) {
         Ok(result) => {
@@ -208,4 +224,17 @@ fn cmd_cache_clear(cache_dir: &PathBuf) {
     } else {
         println!("cache directory does not exist: {}", cache_dir.display());
     }
+}
+
+fn cmd_init() {
+    let path = PathBuf::from("lumen.toml");
+    if path.exists() {
+        eprintln!("lumen.toml already exists — not overwriting");
+        std::process::exit(1);
+    }
+    std::fs::write(&path, config::LumenConfig::default_template()).unwrap_or_else(|e| {
+        eprintln!("error writing lumen.toml: {}", e);
+        std::process::exit(1);
+    });
+    println!("created lumen.toml");
 }

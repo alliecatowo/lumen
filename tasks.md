@@ -37,8 +37,8 @@ Completed work should be removed from this list and reflected in docs/changelog.
   - Checkpoint resume primitives for machine/orchestration states.
 
 - [ ] Harden future/async semantics.
-  - Explicit pending/completed/error future states.
-  - Deterministic scheduling controls for parallel constructs.
+  - Lower high-level `parallel`/`race` constructs onto VM spawn/await scheduling.
+  - Add end-to-end conformance tests from source syntax through runtime scheduling.
 
 ## Toolchain and Ecosystem
 

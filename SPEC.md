@@ -324,7 +324,9 @@ This is rejected under deterministic mode.
 ## 8.1 Futures
 
 - `spawn` produces `Future` handles.
-- `await` resolves completed futures.
+- futures have explicit runtime states: `pending`, `completed`, `error`.
+- `await` resolves completed futures, reports failed futures as runtime errors.
+- VM supports deterministic future scheduling modes (`eager`, `deferred FIFO`) for spawn execution.
 
 ## 8.2 Process Runtime Objects
 

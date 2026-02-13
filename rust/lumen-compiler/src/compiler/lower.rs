@@ -152,10 +152,15 @@ impl<'a> Lowerer<'a> {
                 let cmp_dest = ra.alloc_temp();
 
                 // Skip if Equal (cond == true)
-                // Eq(dest, cond, true): 
-                // If cond is true: eq=true. dest!=0 -> test=eq=true. Skip. (Executes Then).
-                // If cond is false: eq=false. dest!=0 -> test=eq=false. Don't skip. (Jumps).
+                // Eq(dest, cond, true) -> dest = (cond == true)
                 instrs.push(Instruction::abc(OpCode::Eq, cmp_dest, cond_reg, true_reg));
+                
+                // If cmp_dest is FALSE, we want to JUMP to Else.
+                // Test(cmp_dest, 0) -> If cmp_dest is Truthy (True) != 0 (False) -> True -> Skip Next.
+                // So if True, Skip Jump.
+                // If False, Don't Skip Jump -> Jump.
+                instrs.push(Instruction::abc(OpCode::Test, cmp_dest, 0, 0));
+                
                 let jmp_idx = instrs.len();
                 instrs.push(Instruction::ax(OpCode::Jmp, 0)); // Jump to else/end
 
@@ -195,7 +200,15 @@ impl<'a> Lowerer<'a> {
 
                 let loop_start = instrs.len();
                 // if idx >= len, break
-                instrs.push(Instruction::abc(OpCode::Lt, 1, idx_reg, len_reg));
+                // Lt evaluates to True if idx < len.
+                // We want to Continue (Skip Break) if idx < len.
+                // Break if Not (idx < len).
+                let lt_reg = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::Lt, lt_reg, idx_reg, len_reg));
+                
+                // If lt_reg is True, Skip Next (Break).
+                // Test(lt, 0): Skip if True.
+                instrs.push(Instruction::abc(OpCode::Test, lt_reg, 0, 0));
                 let break_jmp = instrs.len();
                 instrs.push(Instruction::ax(OpCode::Jmp, 0)); // placeholder
 

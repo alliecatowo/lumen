@@ -67,6 +67,9 @@ pub enum OpCode {
     // Type checks
     IsVariant = 35,  // A, Bx: if A is variant w/ tag Bx, skip next; else execute next (Jmp)
     Unbox = 36,      // A, B: A = B.payload (for unions)
+    
+    // Control
+    Test = 37,       // A, C: if (Reg[A] is truthy) != C then skip next
 }
 
 /// Intrinsic function IDs

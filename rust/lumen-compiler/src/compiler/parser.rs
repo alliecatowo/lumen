@@ -398,9 +398,7 @@ impl Parser {
                     }
                 }
                 "pipeline" | "orchestration" | "machine" | "memory" | "guardrail" | "eval"
-                | "pattern" => {
-                    Ok(Item::Addon(self.parse_addon_decl()?))
-                }
+                | "pattern" => Ok(Item::Process(self.parse_process_decl()?)),
                 _ => {
                     let start = self.current().span;
                     let name = self.expect_ident().ok();
@@ -2048,6 +2046,88 @@ impl Parser {
         Ok(EffectDecl {
             name,
             operations,
+            span: start.merge(end_span),
+        })
+    }
+
+    fn parse_process_decl(&mut self) -> Result<ProcessDecl, ParseError> {
+        let start = self.current().span;
+        let kind = self.expect_ident()?;
+        let name = self
+            .parse_optional_decl_name()?
+            .unwrap_or_else(|| "Process".to_string());
+        let mut cells = Vec::new();
+        let mut grants = Vec::new();
+
+        self.skip_newlines();
+        let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
+        if has_indent {
+            self.advance();
+        }
+        self.skip_newlines();
+
+        while !matches!(
+            self.peek_kind(),
+            TokenKind::End | TokenKind::Dedent | TokenKind::Eof
+        ) {
+            self.skip_newlines();
+            if matches!(
+                self.peek_kind(),
+                TokenKind::End | TokenKind::Dedent | TokenKind::Eof
+            ) {
+                break;
+            }
+
+            let is_async = matches!(self.peek_kind(), TokenKind::Async);
+            if is_async {
+                self.advance();
+                self.skip_newlines();
+            }
+
+            match self.peek_kind() {
+                TokenKind::Cell => {
+                    let mut cell = self.parse_cell()?;
+                    cell.is_async = is_async;
+                    cells.push(cell);
+                }
+                TokenKind::Grant => grants.push(self.parse_grant()?),
+                TokenKind::At => {
+                    let _ = self.parse_attribute_decl()?;
+                }
+                TokenKind::Role | TokenKind::Tool => {
+                    self.advance();
+                    self.consume_section_or_line_after_name();
+                }
+                TokenKind::Ident(_) => {
+                    self.consume_named_section_or_line();
+                }
+                _ => {
+                    self.consume_rest_of_line();
+                }
+            }
+            self.skip_newlines();
+        }
+
+        if has_indent && matches!(self.peek_kind(), TokenKind::Dedent) {
+            self.advance();
+        }
+        while matches!(
+            self.peek_kind(),
+            TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent
+        ) {
+            self.advance();
+        }
+        let end_span = if matches!(self.peek_kind(), TokenKind::End) {
+            self.advance().span
+        } else {
+            self.current().span
+        };
+
+        Ok(ProcessDecl {
+            kind,
+            name,
+            cells,
+            grants,
             span: start.merge(end_span),
         })
     }

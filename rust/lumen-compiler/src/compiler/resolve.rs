@@ -29,6 +29,7 @@ pub struct SymbolTable {
     pub cells: HashMap<String, CellInfo>,
     pub tools: HashMap<String, ToolInfo>,
     pub agents: HashMap<String, AgentInfo>,
+    pub processes: HashMap<String, ProcessInfo>,
     pub effects: HashMap<String, EffectInfo>,
     pub effect_binds: Vec<EffectBindInfo>,
     pub handlers: HashMap<String, HandlerInfo>,
@@ -65,6 +66,13 @@ pub struct ToolInfo {
 
 #[derive(Debug, Clone)]
 pub struct AgentInfo {
+    pub name: String,
+    pub methods: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProcessInfo {
+    pub kind: String,
     pub name: String,
     pub methods: Vec<String>,
 }
@@ -171,6 +179,7 @@ impl SymbolTable {
             cells: HashMap::new(),
             tools: HashMap::new(),
             agents: HashMap::new(),
+            processes: HashMap::new(),
             effects: HashMap::new(),
             effect_binds: Vec::new(),
             handlers: HashMap::new(),
@@ -284,6 +293,34 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                 }
 
                 for g in &a.grants {
+                    table.tools.entry(g.tool_alias.clone()).or_insert(ToolInfo {
+                        tool_path: g.tool_alias.to_lowercase(),
+                        mcp_url: None,
+                    });
+                }
+            }
+            Item::Process(p) => {
+                let process_key = format!("{}:{}", p.kind, p.name);
+                table.processes.insert(
+                    process_key,
+                    ProcessInfo {
+                        kind: p.kind.clone(),
+                        name: p.name.clone(),
+                        methods: p.cells.iter().map(|c| c.name.clone()).collect(),
+                    },
+                );
+                for cell in &p.cells {
+                    let method_name = format!("{}.{}", p.name, cell.name);
+                    table.cells.entry(method_name).or_insert(CellInfo {
+                        params: cell
+                            .params
+                            .iter()
+                            .map(|p| (p.name.clone(), p.ty.clone()))
+                            .collect(),
+                        return_type: cell.return_type.clone(),
+                    });
+                }
+                for g in &p.grants {
                     table.tools.entry(g.tool_alias.clone()).or_insert(ToolInfo {
                         tool_path: g.tool_alias.to_lowercase(),
                         mcp_url: None,
@@ -431,6 +468,28 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                         check_type_refs_with_generics(rt, &table, &mut errors, &generics);
                     }
                     check_effect_grants(c, &table, &mut errors);
+                }
+            }
+            Item::Process(p) => {
+                for c in &p.cells {
+                    if c.body.is_empty() {
+                        continue;
+                    }
+                    let generics: Vec<String> =
+                        c.generic_params.iter().map(|g| g.name.clone()).collect();
+                    for par in &c.params {
+                        check_type_refs_with_generics(&par.ty, &table, &mut errors, &generics);
+                    }
+                    if let Some(ref rt) = c.return_type {
+                        check_type_refs_with_generics(rt, &table, &mut errors, &generics);
+                    }
+                    check_effect_grants(c, &table, &mut errors);
+                }
+                for g in &p.grants {
+                    table.tools.entry(g.tool_alias.clone()).or_insert(ToolInfo {
+                        tool_path: g.tool_alias.to_lowercase(),
+                        mcp_url: None,
+                    });
                 }
             }
             Item::Effect(e) => {

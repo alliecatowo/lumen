@@ -97,26 +97,80 @@ impl Lexer {
     fn read_string(&mut self) -> Result<Token, LexError> {
         let (so, sl, sc) = (self.byte_offset, self.line, self.col);
         self.advance(); // opening quote
-        let mut s = String::new();
+        let mut segments = Vec::new();
+        let mut cur_segment = String::new();
+        let mut is_interp = false;
+
         loop {
             match self.current() {
                 None | Some('\n') => return Err(LexError::UnterminatedString { line: self.base_line + sl - 1, col: sc }),
                 Some('\\') => {
                     self.advance();
                     match self.current() {
-                        Some('n') => { s.push('\n'); self.advance(); }
-                        Some('t') => { s.push('\t'); self.advance(); }
-                        Some('\\') => { s.push('\\'); self.advance(); }
-                        Some('"') => { s.push('"'); self.advance(); }
-                        Some(c) => { s.push('\\'); s.push(c); self.advance(); }
+                        Some('n') => { cur_segment.push('\n'); self.advance(); }
+                        Some('t') => { cur_segment.push('\t'); self.advance(); }
+                        Some('\\') => { cur_segment.push('\\'); self.advance(); }
+                        Some('"') => { cur_segment.push('"'); self.advance(); }
+                        Some('{') => { cur_segment.push('{'); self.advance(); } // Escaped brace
+                        Some(c) => { cur_segment.push('\\'); cur_segment.push(c); self.advance(); }
                         None => return Err(LexError::UnterminatedString { line: self.base_line + sl - 1, col: sc }),
                     }
                 }
+                Some('{') => {
+                    // Start of interpolation
+                    is_interp = true;
+                    if !cur_segment.is_empty() {
+                        segments.push((false, cur_segment.clone()));
+                        cur_segment.clear();
+                    }
+                    self.advance(); // skip {
+                    // Read until }
+                    let mut expr_str = String::new();
+                    let mut brace_balance = 1;
+                    while let Some(c) = self.current() {
+                        if c == '}' {
+                            brace_balance -= 1;
+                            if brace_balance == 0 { break; }
+                            expr_str.push(c);
+                            self.advance();
+                        } else if c == '{' {
+                            brace_balance += 1;
+                            expr_str.push(c);
+                            self.advance();
+                        } else if c == '"' {
+                            // Handle strings inside interpolation to avoid incorrect brace matching
+                            expr_str.push(c);
+                            self.advance();
+                            while let Some(ic) = self.current() {
+                                expr_str.push(ic);
+                                self.advance();
+                                if ic == '"' && !expr_str.ends_with("\\\"") { break; }
+                            }
+                        } else {
+                            expr_str.push(c);
+                            self.advance();
+                        }
+                    }
+                    if brace_balance != 0 {
+                        return Err(LexError::UnterminatedString { line: self.base_line + sl - 1, col: sc });
+                    }
+                    self.advance(); // skip }
+                    segments.push((true, expr_str.trim().to_string()));
+                }
                 Some('"') => { self.advance(); break; }
-                Some(c) => { s.push(c); self.advance(); }
+                Some(c) => { cur_segment.push(c); self.advance(); }
             }
         }
-        Ok(Token::new(TokenKind::StringLit(s), self.span_from(so, sl, sc)))
+        
+        let span = self.span_from(so, sl, sc);
+        if is_interp {
+            if !cur_segment.is_empty() {
+                segments.push((false, cur_segment));
+            }
+            Ok(Token::new(TokenKind::StringInterpLit(segments), span))
+        } else {
+            Ok(Token::new(TokenKind::StringLit(cur_segment), span))
+        }
     }
 
     fn read_number(&mut self) -> Result<Token, LexError> {

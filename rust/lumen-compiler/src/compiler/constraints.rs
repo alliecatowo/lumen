@@ -1,7 +1,7 @@
 //! Constraint validation for `where` clauses on record fields.
 
 use crate::compiler::ast::*;
-use crate::compiler::tokens::Span;
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -49,7 +49,7 @@ fn validate_constraint_expr(expr: &Expr, field: &str, errors: &mut Vec<Constrain
         Expr::UnaryOp(UnaryOp::Not, inner, _) => {
             validate_constraint_expr(inner, field, errors);
         }
-        Expr::Call(callee, args, span) => {
+        Expr::Call(callee, _args, span) => {
             // Only allow known constraint functions: length, count, matches
             if let Expr::Ident(name, _) = callee.as_ref() {
                 match name.as_str() {

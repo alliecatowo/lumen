@@ -1,6 +1,6 @@
 //! Register VM dispatch loop for executing LIR bytecode.
 
-use crate::values::{Value, StringRef, RecordValue};
+use crate::values::{Value, StringRef, RecordValue, TraceRefValue};
 use crate::strings::StringTable;
 use crate::types::{TypeTable, RuntimeType, RuntimeTypeKind, RuntimeField, RuntimeVariant};
 use lumen_compiler::compiler::lir::*;
@@ -543,6 +543,28 @@ impl VM {
                     let msg = self.registers[base + a].as_string();
                     return Err(VmError::Halt(msg));
                 }
+
+                OpCode::IsVariant => {
+                    let val = &self.registers[base + a];
+                    let tag = self.strings.resolve(instr.bx() as u32).unwrap_or("");
+                    let matched = match val {
+                        Value::Union(u) => u.tag == tag,
+                        _ => false,
+                    };
+                    if matched {
+                        if let Some(f) = self.frames.last_mut() {
+                            f.ip += 1;
+                        }
+                    }
+                }
+                OpCode::Unbox => {
+                    let val = &self.registers[base + b];
+                    if let Value::Union(u) = val {
+                        self.registers[base + a] = *u.payload.clone();
+                    } else {
+                        self.registers[base + a] = Value::Null;
+                    }
+                }
                 OpCode::Intrinsic => {
                     let func_id = b;
                     let arg_reg = c;
@@ -579,6 +601,25 @@ impl VM {
                             use sha2::{Sha256, Digest};
                             let hash = format!("{:x}", Sha256::digest(arg.as_string().as_bytes()));
                             Value::String(StringRef::Owned(format!("sha256:{}", hash)))
+                        }
+                        4 => { // DIFF
+                            // Placeholder
+                            Value::Null
+                        }
+                        5 => { // PATCH
+                             // Placeholder
+                            Value::Null
+                        }
+                        6 => { // REDACT
+                            // Placeholder
+                            Value::Null
+                        }
+                        7 => { // VALIDATE
+                            // Placeholder
+                            Value::Bool(true)
+                        }
+                        8 => { // TRACEREF
+                            Value::TraceRef(TraceRefValue { trace_id: "trace".into(), seq: 0 })
                         }
                         9 => { // PRINT
                             let output = arg.display_pretty();
@@ -622,6 +663,149 @@ impl VM {
                             };
                             Value::String(StringRef::Owned(type_name.to_string()))
                         }
+                        14 => { // KEYS
+                            match arg {
+                                Value::Map(m) => {
+                                    let keys: Vec<Value> = m.keys().map(|k| Value::String(StringRef::Owned(k.clone()))).collect();
+                                    Value::List(keys)
+                                }
+                                _ => Value::List(vec![]),
+                            }
+                        }
+                        15 => { // VALUES
+                            match arg {
+                                Value::Map(m) => {
+                                    let vals: Vec<Value> = m.values().cloned().collect();
+                                    Value::List(vals)
+                                }
+                                _ => Value::List(vec![]),
+                            }
+                        }
+                        16 => { // CONTAINS
+                            let item = &self.registers[base + arg_reg + 1];
+                            match arg {
+                                Value::List(l) => Value::Bool(l.contains(item)),
+                                Value::Map(m) => {
+                                    let key = item.as_string();
+                                    Value::Bool(m.contains_key(&key))
+                                }
+                                Value::String(StringRef::Owned(s)) => Value::Bool(s.contains(&item.as_string())),
+                                _ => Value::Bool(false),
+                            }
+                        }
+                        17 => { // JOIN
+                            let sep = self.registers[base + arg_reg + 1].as_string();
+                            match arg {
+                                Value::List(l) => {
+                                    let s = l.iter().map(|v| v.as_string()).collect::<Vec<_>>().join(&sep);
+                                    Value::String(StringRef::Owned(s))
+                                }
+                                _ => Value::String(StringRef::Owned("".into())),
+                            }
+                        }
+                        18 => { // SPLIT
+                            let sep = self.registers[base + arg_reg + 1].as_string();
+                            match arg {
+                                Value::String(StringRef::Owned(s)) => {
+                                    let parts: Vec<Value> = s.split(&sep).map(|p| Value::String(StringRef::Owned(p.to_string()))).collect();
+                                    Value::List(parts)
+                                }
+                                _ => Value::List(vec![]),
+                            }
+                        }
+                        19 => { // TRIM
+                            match arg {
+                                Value::String(StringRef::Owned(s)) => Value::String(StringRef::Owned(s.trim().to_string())),
+                                _ => arg.clone(),
+                            }
+                        }
+                        20 => { // UPPER
+                            match arg {
+                                Value::String(StringRef::Owned(s)) => Value::String(StringRef::Owned(s.to_uppercase())),
+                                _ => arg.clone(),
+                            }
+                        }
+                        21 => { // LOWER
+                             match arg {
+                                Value::String(StringRef::Owned(s)) => Value::String(StringRef::Owned(s.to_lowercase())),
+                                _ => arg.clone(),
+                            }
+                        }
+                        22 => { // REPLACE
+                            let pat = self.registers[base + arg_reg + 1].as_string();
+                            let with = self.registers[base + arg_reg + 2].as_string();
+                             match arg {
+                                Value::String(StringRef::Owned(s)) => Value::String(StringRef::Owned(s.replace(&pat, &with))),
+                                _ => arg.clone(),
+                            }
+                        }
+                         23 => { // SLICE
+                            let start_val = &self.registers[base + arg_reg + 1];
+                            let end_val = &self.registers[base + arg_reg + 2];
+                            let start = start_val.as_int().unwrap_or(0);
+                            let end = end_val.as_int().unwrap_or(0); // 0 means end? Or optional? LIR doesn't do optional. Assuming required.
+                             match arg {
+                                Value::List(l) => {
+                                    let start = start.max(0) as usize;
+                                    let end = if end <= 0 { l.len() } else { (end as usize).min(l.len()) };
+                                    if start < end {
+                                        Value::List(l[start..end].to_vec())
+                                    } else {
+                                        Value::List(vec![])
+                                    }
+                                }
+                                Value::String(StringRef::Owned(s)) => {
+                                    let start = start.max(0) as usize;
+                                    let end = if end <= 0 { s.len() } else { (end as usize).min(s.len()) };
+                                    if start < end && start <= s.len() {
+                                        Value::String(StringRef::Owned(s[start..end].to_string())) // simple byte slice (utf8 risks!)
+                                    } else {
+                                        Value::String(StringRef::Owned("".into()))
+                                    }
+                                }
+                                _ => Value::Null,
+                            }
+                        }
+                        24 => { // APPEND (returns list)
+                             let item = self.registers[base + arg_reg + 1].clone();
+                             match arg {
+                                Value::List(l) => {
+                                    let mut new_l = l.clone();
+                                    new_l.push(item);
+                                    Value::List(new_l)
+                                }
+                                _ => Value::Null,
+                            }
+                        }
+                        25 => { // RANGE
+                             let end = self.registers[base + arg_reg + 1].as_int().unwrap_or(0);
+                             let start = arg.as_int().unwrap_or(0);
+                             let list: Vec<Value> = (start..end).map(Value::Int).collect();
+                             Value::List(list)
+                        }
+                        26 => { // ABS
+                             match arg {
+                                 Value::Int(n) => Value::Int(n.abs()),
+                                 Value::Float(f) => Value::Float(f.abs()),
+                                 _ => Value::Null,
+                             }
+                        }
+                        27 => { // MIN
+                             let other = &self.registers[base + arg_reg + 1];
+                             match (arg, other) {
+                                 (Value::Int(a), Value::Int(b)) => Value::Int(*a.min(b)),
+                                 (Value::Float(a), Value::Float(b)) => Value::Float(a.min(*b)),
+                                 _ => arg.clone(),
+                             }
+                        }
+                        28 => { // MAX
+                             let other = &self.registers[base + arg_reg + 1];
+                             match (arg, other) {
+                                 (Value::Int(a), Value::Int(b)) => Value::Int(*a.max(b)),
+                                 (Value::Float(a), Value::Float(b)) => Value::Float(a.max(*b)),
+                                 _ => arg.clone(),
+                             }
+                        }
                         _ => Value::Null,
                     };
                     self.registers[base + a] = result;
@@ -632,10 +816,26 @@ impl VM {
                     self.registers[base + a] = Value::String(StringRef::Owned("<<tool call pending>>".into()));
                 }
                 OpCode::Schema => {
-                    // Schema validation — check against type registry
                     let bx = instr.bx() as usize;
-                    let _type_name = if bx < module.strings.len() { &module.strings[bx] } else { "" };
-                    // For now, pass through — validation is advisory
+                    let type_name = if bx < module.strings.len() { &module.strings[bx] } else { "" };
+                    let val = &self.registers[base + a];
+                    
+                    let valid = match type_name {
+                        "Int" => matches!(val, Value::Int(_)),
+                        "Float" => matches!(val, Value::Float(_)),
+                        "String" => matches!(val, Value::String(_)),
+                        "Bool" => matches!(val, Value::Bool(_)),
+                        "List" => matches!(val, Value::List(_)),
+                        "Map" => matches!(val, Value::Map(_)),
+                        _ => match val {
+                            Value::Record(r) => r.type_name == type_name,
+                            _ => false,
+                        }
+                    };
+
+                    if !valid {
+                        return Err(VmError::Runtime(format!("value {} does not match schema {}", val, type_name)));
+                    }
                 }
                 OpCode::ForPrep => {
                     // A = iterator state register, Bx = jump offset past loop on empty

@@ -1,7 +1,7 @@
 //! Recursive descent parser with Pratt expression parsing for Lumen.
 
 use crate::compiler::ast::*;
-use crate::compiler::tokens::{Span, Token, TokenKind};
+use crate::compiler::tokens::{Token, TokenKind};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -541,6 +541,33 @@ impl Parser {
             TokenKind::IntLit(n) => { let s = self.advance().span; Ok(Expr::IntLit(n, s)) }
             TokenKind::FloatLit(n) => { let s = self.advance().span; Ok(Expr::FloatLit(n, s)) }
             TokenKind::StringLit(ref sv) => { let sv = sv.clone(); let s = self.advance().span; Ok(Expr::StringLit(sv, s)) }
+            TokenKind::StringInterpLit(ref segments) => {
+                let segments = segments.clone();
+                let span = self.advance().span;
+                let mut ast_segments = Vec::new();
+                for (is_expr, text) in segments {
+                    if is_expr {
+                        // Parse the expression string
+                        // We need a fresh lexer/parser for the snippet
+                        // Use base offsets from the current span? 
+                        // For simplicity in v1, we won't perfectly map the span inside the string, 
+                        // but we could if we tracked offsets in StringInterpLit.
+                        // The Lexer change I made doesn't track offsets per segment yet, just strings.
+                        // So correct source mapping is a TODO for v2.
+                        let mut lexer = crate::compiler::lexer::Lexer::new(&text, span.line, span.col);
+                        let tokens = lexer.tokenize().map_err(|e| ParseError::Unexpected {
+                            found: format!("lexer error: {}", e), expected: "expression".into(),
+                            line: span.line, col: span.col 
+                        })?;
+                        let mut parser = Parser::new(tokens);
+                        let expr = parser.parse_expr(0)?;
+                        ast_segments.push(StringSegment::Interpolation(Box::new(expr)));
+                    } else {
+                        ast_segments.push(StringSegment::Literal(text));
+                    }
+                }
+                Ok(Expr::StringInterp(ast_segments, span))
+            }
             TokenKind::BoolLit(b) => { let s = self.advance().span; Ok(Expr::BoolLit(b, s)) }
             TokenKind::Null => { let s = self.advance().span; Ok(Expr::NullLit(s)) }
             TokenKind::Minus => {
@@ -564,6 +591,14 @@ impl Parser {
             TokenKind::LBracket => self.parse_list_lit(),
             TokenKind::LBrace => self.parse_map_lit(),
             TokenKind::Role => self.parse_role_block_expr(),
+            TokenKind::Ok_ => {
+                let s = self.advance().span;
+                Ok(Expr::Ident("ok".into(), s))
+            }
+            TokenKind::Err_ => {
+                let s = self.advance().span;
+                Ok(Expr::Ident("err".into(), s))
+            }
             TokenKind::Ident(_) => {
                 let name = self.expect_ident()?;
                 let span = self.current().span;
@@ -595,29 +630,14 @@ impl Parser {
                 self.advance();
                 let role_name = self.expect_ident()?;
                 self.expect(&TokenKind::Colon)?;
-                let mut content = String::new();
-                self.skip_whitespace_tokens();
-                // Read until 'end' or next 'role' or close paren
-                loop {
-                    match self.peek_kind() {
-                        TokenKind::End => { self.advance(); break; }
-                        TokenKind::Eof | TokenKind::RParen => break,
-                        TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => {
-                            if !content.is_empty() { content.push('\n'); }
-                            self.advance();
-                        }
-                        TokenKind::Role => break, // next role block
-                        _ => {
-                            // Accumulate tokens as text
-                            let tok = self.advance().clone();
-                            if !content.is_empty() && !content.ends_with('\n') { content.push(' '); }
-                            content.push_str(&format!("{}", tok.kind));
-                        }
-                    }
-                }
-                let span = start;
-                args.push(CallArg::Role(role_name, content.trim().to_string(), span));
-            } else if let TokenKind::Ident(ref name) = self.peek_kind().clone() {
+                
+                let content_expr = self.parse_role_content()?;
+                
+                let span = role_name.span().merge(content_expr.span());
+                args.push(CallArg::Role(role_name, content_expr, span));
+                continue;
+            }
+            if let TokenKind::Ident(ref name) = self.peek_kind().clone() {
                 // Check if named arg: name: expr
                 let name_clone = name.clone();
                 let save = self.pos;
@@ -702,28 +722,132 @@ impl Parser {
         let start = self.expect(&TokenKind::Role)?.span;
         let name = self.expect_ident()?;
         self.expect(&TokenKind::Colon)?;
-        // Read content until 'end'
-        let mut content = String::new();
-        self.skip_newlines();
-        let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
+        
+        let content_expr = self.parse_role_content()?;
+        let end_span = self.expect(&TokenKind::End)?.span;
+        Ok(Expr::RoleBlock(name, Box::new(content_expr), start.merge(end_span)))
+    }
+
+    /// Parse role block content with interpolation support.
+    /// Stops at TokenKind::End, TokenKind::Role (peeked), or EOF/Dedent.
+    /// Does NOT consume 'end' or 'role', but consumes the content.
+    fn parse_role_content(&mut self) -> Result<Expr, ParseError> {
+        let start = self.current().span;
+        let mut segments = Vec::new();
+        let mut text_buf = String::new();
+        let mut has_indent = matches!(self.peek_kind(), TokenKind::Indent);
         if has_indent { self.advance(); }
+        self.skip_newlines();
+
         loop {
             match self.peek_kind() {
-                TokenKind::End => { let end = self.advance().span; return Ok(Expr::RoleBlock(name, content.trim().to_string(), start.merge(end))); }
-                TokenKind::Dedent if has_indent => { self.advance(); break; }
-                TokenKind::Eof => break,
+                TokenKind::End | TokenKind::Role | TokenKind::Eof | TokenKind::RParen => break,
+                TokenKind::Dedent if has_indent => { break; }
+                TokenKind::LBrace => {
+                    // Interpolation start
+                    self.advance(); // consume {
+                    
+                    // Flush existing text
+                    if !text_buf.is_empty() {
+                        segments.push(StringSegment::Literal(text_buf.clone()));
+                        text_buf.clear();
+                    }
+                    
+                    // Parse expression
+                    let expr = self.parse_expr(0)?;
+                    segments.push(StringSegment::Interpolation(Box::new(expr)));
+                    
+                    // Expect }
+                    self.expect(&TokenKind::RBrace)?;
+                }
+                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => {
+                    if !text_buf.is_empty() { text_buf.push('\n'); }
+                    self.advance();
+                }
                 _ => {
+                    // Accumulate text
                     let tok = self.advance().clone();
-                    if !content.is_empty() { content.push(' '); }
-                    content.push_str(&format!("{}", tok.kind));
+                    if !text_buf.is_empty() && !text_buf.ends_with('\n') { text_buf.push(' '); }
+                    text_buf.push_str(&format!("{}", tok.kind));
                 }
             }
         }
-        let end_span = self.expect(&TokenKind::End)?.span;
-        Ok(Expr::RoleBlock(name, content.trim().to_string(), start.merge(end_span)))
+        
+        if !text_buf.is_empty() {
+            segments.push(StringSegment::Literal(text_buf));
+        }
+
+        if has_indent && matches!(self.peek_kind(), TokenKind::Dedent) { self.advance(); }
+        
+        // If we stopped at End, consume it? 
+        // parse_role_block_expr expects to consume 'End'.
+        // parse_call expects to NOT consume 'Role' (next block).
+        // So this helper should just parse content.
+        
+        let span = if segments.is_empty() { start } else { start.merge(self.current().span) };
+        
+        if segments.len() == 1 {
+            if let StringSegment::Literal(ref s) = segments[0] {
+                return Ok(Expr::StringLit(s.clone(), span));
+            }
+        }
+        
+        Ok(Expr::StringInterp(segments, span))
     }
 
     // ── Helpers ──
+
+    /// Parse role block content with interpolation support.
+    fn parse_role_content(&mut self) -> Result<Expr, ParseError> {
+        let start = self.current().span;
+        let mut segments = Vec::new();
+        let mut text_buf = String::new();
+        let mut has_indent = matches!(self.peek_kind(), TokenKind::Indent);
+        if has_indent { self.advance(); }
+        self.skip_newlines();
+
+        loop {
+            match self.peek_kind() {
+                TokenKind::End | TokenKind::Role | TokenKind::Eof | TokenKind::RParen => break,
+                TokenKind::Dedent if has_indent => { break; }
+                TokenKind::LBrace => {
+                    self.advance(); // consume {
+                    if !text_buf.is_empty() {
+                        segments.push(StringSegment::Literal(text_buf.clone()));
+                        text_buf.clear();
+                    }
+                    let expr = self.parse_expr(0)?;
+                    segments.push(StringSegment::Interpolation(Box::new(expr)));
+                    self.expect(&TokenKind::RBrace)?;
+                }
+                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => {
+                    if !text_buf.is_empty() { text_buf.push('\n'); }
+                    self.advance();
+                }
+                _ => {
+                    let tok = self.advance().clone();
+                    if !text_buf.is_empty() && !text_buf.ends_with('\n') { text_buf.push(' '); }
+                    text_buf.push_str(&format!("{}", tok.kind));
+                }
+            }
+        }
+        
+        if !text_buf.is_empty() {
+            segments.push(StringSegment::Literal(text_buf));
+        }
+
+        if has_indent && matches!(self.peek_kind(), TokenKind::Dedent) { self.advance(); }
+        
+        let span = if segments.is_empty() { start } else { start.merge(self.current().span) };
+        
+        if segments.len() == 1 {
+            if let StringSegment::Literal(ref s) = segments[0] {
+                return Ok(Expr::StringLit(s.clone(), span));
+            }
+        }
+        
+        Ok(Expr::StringInterp(segments, span))
+    }
 
     fn expect_ident(&mut self) -> Result<String, ParseError> {
         let tok = self.current().clone();

@@ -5,9 +5,9 @@
 pub mod compiler;
 pub mod markdown;
 
-use compiler::ast::{Directive, Program};
+use compiler::ast::Directive;
 use compiler::lir::LirModule;
-use compiler::tokens::Span;
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]

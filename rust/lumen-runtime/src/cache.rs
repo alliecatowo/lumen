@@ -1,6 +1,6 @@
 //! Content-addressed cache for tool invocation results.
 
-use crate::trace::hasher::{sha256_hash, canonical_hash};
+use crate::trace::hasher::canonical_hash;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;

@@ -1,11 +1,11 @@
-# Hello World
-
-> The simplest Lumen program — demonstrates basic cells and output.
+# Hello World Example
 
 ```lumen
-cell main() -> String
-  print("Hello, World!")
-  print("Welcome to Lumen — the capability-safe language for AI agents.")
-  return "Hello, World!"
+cell main()
+    print("Hello, world!")
+    let name = "Lumen"
+    print("Interpolation check: Hello, {name}!")
+    let x = 10
+    print("Number check: {x}")
 end
 ```

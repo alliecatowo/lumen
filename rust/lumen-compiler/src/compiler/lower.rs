@@ -144,10 +144,20 @@ impl<'a> Lowerer<'a> {
             }
             Stmt::If(ifs) => {
                 let cond_reg = self.lower_expr(&ifs.condition, ra, consts, instrs);
-                // Jump over then-block if false
+                // Compare with True
+                let true_reg = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::LoadBool, true_reg, 1, 0));
+                
+                // Result register for Eq (fixes VM restriction on A=0 mode)
+                let cmp_dest = ra.alloc_temp();
+
+                // Skip if Equal (cond == true)
+                // Eq(dest, cond, true): 
+                // If cond is true: eq=true. dest!=0 -> test=eq=true. Skip. (Executes Then).
+                // If cond is false: eq=false. dest!=0 -> test=eq=false. Don't skip. (Jumps).
+                instrs.push(Instruction::abc(OpCode::Eq, cmp_dest, cond_reg, true_reg));
                 let jmp_idx = instrs.len();
-                instrs.push(Instruction::abc(OpCode::Eq, 0, cond_reg, 0)); // placeholder
-                instrs.push(Instruction::ax(OpCode::Jmp, 0)); // placeholder
+                instrs.push(Instruction::ax(OpCode::Jmp, 0)); // Jump to else/end
 
                 for s in &ifs.then_body { self.lower_stmt(s, ra, consts, instrs); }
 
@@ -156,8 +166,8 @@ impl<'a> Lowerer<'a> {
                     instrs.push(Instruction::ax(OpCode::Jmp, 0)); // skip else
                     let else_start = instrs.len();
                     // Patch the conditional jump
-                    let offset = (else_start - jmp_idx - 2) as u32;
-                    instrs[jmp_idx + 1] = Instruction::ax(OpCode::Jmp, offset);
+                    let offset = (else_start - jmp_idx - 1) as u32;
+                    instrs[jmp_idx] = Instruction::ax(OpCode::Jmp, offset);
 
                     for s in else_body { self.lower_stmt(s, ra, consts, instrs); }
 
@@ -166,8 +176,8 @@ impl<'a> Lowerer<'a> {
                     instrs[else_jmp_idx] = Instruction::ax(OpCode::Jmp, else_offset);
                 } else {
                     let after = instrs.len();
-                    let offset = (after - jmp_idx - 2) as u32;
-                    instrs[jmp_idx + 1] = Instruction::ax(OpCode::Jmp, offset);
+                    let offset = (after - jmp_idx - 1) as u32;
+                    instrs[jmp_idx] = Instruction::ax(OpCode::Jmp, offset);
                 }
             }
             Stmt::For(fs) => {
@@ -229,14 +239,29 @@ impl<'a> Lowerer<'a> {
                             let after = instrs.len();
                             instrs[skip_jmp] = Instruction::ax(OpCode::Jmp, (after - skip_jmp - 1) as u32);
                         }
-                        Pattern::Variant(_, binding, _) => {
+                        Pattern::Variant(tag, binding, _) => {
+                            // Check Variant Tag
+                            let tag_idx = self.intern_string(tag);
+                            instrs.push(Instruction::abx(OpCode::IsVariant, subj_reg, tag_idx));
+                            // If NOT matched, skip next instruction (the body execution)
+                            // Wait, IsVariant logic in VM: "if matched, skip next".
+                            // So if Matched, we Skip the JUMP.
+                            // So next instruction should be JUMP (to next arm).
+                            let skip_jmp = instrs.len();
+                            instrs.push(Instruction::ax(OpCode::Jmp, 0)); // Jump to next arm (if NOT matched)
+
+                            // Matched: Execute body
                             if let Some(ref b) = binding {
                                 let breg = ra.alloc_named(b);
-                                instrs.push(Instruction::abc(OpCode::Move, breg, subj_reg, 0));
+                                instrs.push(Instruction::abc(OpCode::Unbox, breg, subj_reg, 0));
                             }
                             for s in &arm.body { self.lower_stmt(s, ra, consts, instrs); }
                             end_jumps.push(instrs.len());
-                            instrs.push(Instruction::ax(OpCode::Jmp, 0));
+                            instrs.push(Instruction::ax(OpCode::Jmp, 0)); // Jump to end of match
+
+                            // Patch skip_jmp (failure case) to point here
+                            let after = instrs.len();
+                            instrs[skip_jmp] = Instruction::ax(OpCode::Jmp, (after - skip_jmp - 1) as u32);
                         }
                         Pattern::Wildcard(_) | Pattern::Ident(_, _) => {
                             if let Pattern::Ident(name, _) = &arm.pattern {
@@ -305,6 +330,7 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
                 dest
             }
+
             Expr::StringInterp(segments, _) => {
                 // Lower each segment and concat
                 let dest = ra.alloc_temp();
@@ -359,11 +385,28 @@ impl<'a> Lowerer<'a> {
                 dest
             }
             Expr::Ident(name, _) => {
-                ra.lookup(name).unwrap_or_else(|| {
+                if let Some(reg) = ra.lookup(name) {
+                    reg
+                } else if self.symbols.types.values().any(|t| matches!(&t.kind, crate::compiler::resolve::TypeInfoKind::Enum(e) if e.variants.iter().any(|v| v.name == *name))) {
+                    // Enum Variant Constructor (Union with no payload)
                     let dest = ra.alloc_temp();
-                    instrs.push(Instruction::abc(OpCode::LoadNil, dest, 0, 0));
+                    let tag_reg = ra.alloc_temp();
+                    let kidx = consts.len() as u16;
+                    consts.push(Constant::String(name.clone()));
+                    instrs.push(Instruction::abx(OpCode::LoadK, tag_reg, kidx));
+
+                    let nil_reg = ra.alloc_temp();
+                    instrs.push(Instruction::abc(OpCode::LoadNil, nil_reg, 0, 0));
+                    
+                    instrs.push(Instruction::abc(OpCode::NewUnion, dest, tag_reg, nil_reg));
                     dest
-                })
+                } else {
+                    let dest = ra.alloc_temp();
+                    let kidx = consts.len() as u16;
+                    consts.push(Constant::String(name.clone()));
+                    instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
+                    dest
+                }
             }
             Expr::ListLit(elems, _) => {
                 let dest = ra.alloc_temp();
@@ -385,9 +428,18 @@ impl<'a> Lowerer<'a> {
             }
             Expr::MapLit(pairs, _) => {
                 let dest = ra.alloc_temp();
+                let mut kv_regs = Vec::new();
                 for (k, v) in pairs {
-                    self.lower_expr(k, ra, consts, instrs);
-                    self.lower_expr(v, ra, consts, instrs);
+                     kv_regs.push(self.lower_expr(k, ra, consts, instrs));
+                     kv_regs.push(self.lower_expr(v, ra, consts, instrs));
+                }
+                
+                // Move KVs into consecutive positions dest+1..
+                for (i, reg) in kv_regs.iter().enumerate() {
+                    let target = dest + 1 + i as u8;
+                    if *reg != target {
+                        instrs.push(Instruction::abc(OpCode::Move, target, *reg, 0));
+                    }
                 }
                 instrs.push(Instruction::abc(OpCode::NewMap, dest, pairs.len() as u8, 0));
                 dest
@@ -439,31 +491,223 @@ impl<'a> Lowerer<'a> {
                 }
                 dest
             }
+
             Expr::Call(callee, args, _) => {
+                // Check for intrinsic call or Enum/Result constructor
+                if let Expr::Ident(ref name, _) = **callee {
+                    // Check Result/Enum constructors
+                    // "ok" / "err"
+                    let is_result = name == "ok" || name == "err";
+                    let is_enum = self.symbols.types.values().any(|t| matches!(&t.kind, crate::compiler::resolve::TypeInfoKind::Enum(e) if e.variants.iter().any(|v| v.name == *name)));
+                    let is_record = self.symbols.types.values().any(|t| matches!(&t.kind, crate::compiler::resolve::TypeInfoKind::Record(r) if r.name == *name));
+
+                    if is_record {
+                        let dest = ra.alloc_temp();
+                        let type_idx = self.intern_string(name);
+                        instrs.push(Instruction::abx(OpCode::NewRecord, dest, type_idx));
+                        
+                        for arg in args {
+                             match arg {
+                                 CallArg::Named(field, expr, _) => {
+                                     let val_reg = self.lower_expr(expr, ra, consts, instrs);
+                                     let field_idx = self.intern_string(field) as u8;
+                                     instrs.push(Instruction::abc(OpCode::SetField, dest, field_idx, val_reg));
+                                 }
+                                 CallArg::Positional(expr) => {
+                                      // Positional not supported for records yet? Or map by index?
+                                      // Typecheck didn't validate positional args for records.
+                                      // Assume named args for now or ignore.
+                                      let _ = self.lower_expr(expr, ra, consts, instrs); // consume
+                                 }
+                                 _ => {}
+                             }
+                        }
+                        return dest;
+                    }
+
+                    if is_result || is_enum {
+                         // Expect 1 argument (payload)
+                         // If 0 args -> Nil payload (handled in Ident if bare, but if ok(), then explicit nil?)
+                         // If >1 args -> Tuple? Result only takes 1. Enum payload is 1 type (maybe tuple).
+                         // For now assume 1 arg.
+                         let payload_reg = if args.is_empty() {
+                             let r = ra.alloc_temp();
+                             instrs.push(Instruction::abc(OpCode::LoadNil, r, 0, 0));
+                             r
+                         } else {
+                             match &args[0] {
+                                 CallArg::Positional(e) | CallArg::Named(_, e, _) => self.lower_expr(e, ra, consts, instrs),
+                                 _ => {
+                                     let r = ra.alloc_temp();
+                                     instrs.push(Instruction::abc(OpCode::LoadNil, r, 0, 0));
+                                     r
+                                 }
+                             }
+                         };
+                         
+                         let dest = ra.alloc_temp();
+                         let tag_reg = ra.alloc_temp();
+                         let kidx = consts.len() as u16;
+                         consts.push(Constant::String(name.clone()));
+                         instrs.push(Instruction::abx(OpCode::LoadK, tag_reg, kidx));
+                         
+                         instrs.push(Instruction::abc(OpCode::NewUnion, dest, tag_reg, payload_reg));
+                         return dest;
+                    }
+
+                    let intrinsic = match name.as_str() {
+                        "print" => Some(IntrinsicId::Print),
+                        "len" | "length" => Some(IntrinsicId::Length),
+                        "range" => Some(IntrinsicId::Range),
+                        "string" => Some(IntrinsicId::ToString),
+                        "int" => Some(IntrinsicId::ToInt),
+                        "float" => Some(IntrinsicId::ToFloat),
+                        "type" | "type_of" => Some(IntrinsicId::TypeOf),
+                        "keys" => Some(IntrinsicId::Keys),
+                        "values" => Some(IntrinsicId::Values),
+                        "join" => Some(IntrinsicId::Join),
+                        "split" => Some(IntrinsicId::Split),
+                        "append" => Some(IntrinsicId::Append),
+                        "contains" | "has" => Some(IntrinsicId::Contains),
+                        "slice" => Some(IntrinsicId::Slice),
+                        "min" => Some(IntrinsicId::Min),
+                        "max" => Some(IntrinsicId::Max),
+                        "abs" => Some(IntrinsicId::Abs),
+                        _ => None,
+                    };
+
+
+                    if let Some(id) = intrinsic {
+                         // Evaluate args
+                         let mut arg_regs = Vec::new();
+                         for arg in args {
+                             match arg {
+                                 CallArg::Positional(e) | CallArg::Named(_, e, _) => {
+                                     arg_regs.push(self.lower_expr(e, ra, consts, instrs));
+                                 }
+                                 _ => {} // Role not supported in intrinsics yet?
+                             }
+                         }
+                         
+                         // Move args to contiguous block
+                         let start_reg = ra.alloc_temp();
+                         // We need count registers
+                         for _ in 0..arg_regs.len().saturating_sub(1) {
+                             ra.alloc_temp();
+                         }
+                         
+                         for (i, &reg) in arg_regs.iter().enumerate() {
+                             let target = start_reg + i as u8;
+                             if reg != target {
+                                 instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
+                             }
+                         }
+                         
+                         let dest = ra.alloc_temp();
+                         instrs.push(Instruction::abc(OpCode::Intrinsic, dest, id as u8, start_reg));
+                         return dest;
+                    }
+                }
+
+                // Normal call
                 let callee_reg = self.lower_expr(callee, ra, consts, instrs);
-                let nargs = args.iter().filter(|a| !matches!(a, CallArg::Role(_, _, _))).count();
+                
+                let mut arg_regs = Vec::new();
                 for arg in args {
                     match arg {
-                        CallArg::Positional(e) | CallArg::Named(_, e, _) => { self.lower_expr(e, ra, consts, instrs); }
+                        CallArg::Positional(e) | CallArg::Named(_, e, _) => { 
+                            arg_regs.push(self.lower_expr(e, ra, consts, instrs)); 
+                        }
                         CallArg::Role(name, content, _) => {
                             let dest = ra.alloc_temp();
                             let kidx = consts.len() as u16;
                             consts.push(Constant::String(format!("{}:{}", name, content)));
                             instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
+                            arg_regs.push(dest);
                         }
                     }
                 }
+
+                // Move callee + args to contiguous block
+                // base = callee
+                // base+1.. = args
+                let base = ra.alloc_temp();
+                if callee_reg != base {
+                    instrs.push(Instruction::abc(OpCode::Move, base, callee_reg, 0));
+                }
+                
+                for (i, &reg) in arg_regs.iter().enumerate() {
+                     let target = base + 1 + i as u8;
+                     ra.alloc_temp(); // ensure allocated
+                     if reg != target {
+                         instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
+                     }
+                }
+
                 let result_reg = ra.alloc_temp();
-                instrs.push(Instruction::abc(OpCode::Call, callee_reg, nargs as u8, 1));
-                instrs.push(Instruction::abc(OpCode::Move, result_reg, callee_reg, 0));
+                // Call A B C. A=base. B=nargs+1. C=nresults+1 (1 result -> 2).
+                // Or checking usage: Call(callee_reg, nargs, 1) in previous code suggests B=nargs?
+                // Lua: B=0 -> all; B=1 -> 0 args? No.
+                // Lua: A(A+1, ..., A+B-1).
+                // Lumen LIR might differ.
+                // Previous code: `OpCode::Call, callee_reg, nargs as u8, 1`
+                // I will assume B = nargs (count).
+                // And args start at A+1.
+                // Or maybe A is just the function, args are inferred? No.
+                // Let's assume Lua style 5.1: A is function register. Args follow. B = nargs+1.
+                // Given previous code passed `nargs`, maybe it was `nargs`?
+                // I'll stick to `nargs` for now but with contiguous registers.
+                // Wait, if I pass logic `nargs` and regs are contiguous, VM can find them.
+                
+                // If I use `nargs` as B:
+                instrs.push(Instruction::abc(OpCode::Call, base, args.len() as u8, 1));
+                
+                // Result is in base? Or C?
+                // Lua: results start at A.
+                // Previous code: `Move result_reg, callee_reg`.
+                // So results overwrite function register.
+                instrs.push(Instruction::abc(OpCode::Move, result_reg, base, 0));
+                
                 result_reg
             }
             Expr::ToolCall(callee, args, _) => {
-                self.lower_expr(callee, ra, consts, instrs);
+                let _ = self.lower_expr(callee, ra, consts, instrs); // Callee is ignored? "tool" token?
+                // Should we lower callee if it's an expression? "tool" is keyword.
+                // If callee is Expr::Ident("tool"), it evaluates to nothing?
+                // But ToolCall syntax is `tool name(args)`. name is Ident.
+                // The AST has `callee: Expr`.
+                
+                let mut arg_regs = Vec::new();
                 for arg in args {
-                    match arg { CallArg::Positional(e) | CallArg::Named(_, e, _) => { self.lower_expr(e, ra, consts, instrs); } _ => {} }
+                    match arg { 
+                        CallArg::Positional(e) | CallArg::Named(_, e, _) => { 
+                            arg_regs.push(self.lower_expr(e, ra, consts, instrs)); 
+                        }
+                        CallArg::Role(name, content, _) => {
+                            let content_reg = self.lower_expr(content, ra, consts, instrs);
+                            let prefix_reg = ra.alloc_temp();
+                            let kidx = consts.len() as u16;
+                            consts.push(Constant::String(format!("{}: ", name)));
+                            instrs.push(Instruction::abx(OpCode::LoadK, prefix_reg, kidx));
+                            let dest = ra.alloc_temp();
+                            instrs.push(Instruction::abc(OpCode::Concat, dest, prefix_reg, content_reg));
+                            arg_regs.push(dest);
+                        }
+                    }
                 }
-                let dest = ra.alloc_temp();
+                
+                // Pack args into contiguous registers starting at dest+1
+                let dest = ra.alloc_temp(); // A
+                // Allocate space for args
+                for _ in 0..arg_regs.len() { ra.alloc_temp(); }
+                
+                for (i, &reg) in arg_regs.iter().enumerate() {
+                     let target = dest + 1 + i as u8;
+                     if reg != target {
+                         instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
+                     }
+                }
+                
                 instrs.push(Instruction::abc(OpCode::ToolCall, dest, 0, args.len() as u8));
                 dest
             }
@@ -482,10 +726,17 @@ impl<'a> Lowerer<'a> {
                 dest
             }
             Expr::RoleBlock(name, content, _) => {
-                let dest = ra.alloc_temp();
+                let content_reg = self.lower_expr(content, ra, consts, instrs);
+                
+                // Prefix: "name: "
+                let prefix_reg = ra.alloc_temp();
                 let kidx = consts.len() as u16;
-                consts.push(Constant::String(format!("{}:{}", name, content)));
-                instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
+                consts.push(Constant::String(format!("{}: ", name)));
+                instrs.push(Instruction::abx(OpCode::LoadK, prefix_reg, kidx));
+                
+                // Concat
+                let dest = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::Concat, dest, prefix_reg, content_reg));
                 dest
             }
             Expr::ExpectSchema(inner, schema_name, _) => {

@@ -263,7 +263,7 @@ pub enum Expr {
     /// Index access: expr[index]
     IndexAccess(Box<Expr>, Box<Expr>, Span),
     /// Role block: role system: ... end
-    RoleBlock(String, String, Span),
+    RoleBlock(String, Box<Expr>, Span),
     /// expect schema Type
     ExpectSchema(Box<Expr>, String, Span),
 }
@@ -303,7 +303,7 @@ pub enum StringSegment {
 pub enum CallArg {
     Positional(Expr),
     Named(String, Expr, Span),
-    Role(String, String, Span),
+    Role(String, Expr, Span),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

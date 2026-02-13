@@ -18,7 +18,7 @@ pub fn canonical_json(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::Object(map) => {
             let mut pairs: Vec<_> = map.iter().collect();
-            pairs.sort_by_key(|(k, _)| k.clone());
+            pairs.sort_by_key(|(k, _)| k.as_str());
             let entries: Vec<String> = pairs.iter()
                 .map(|(k, v)| format!("{}:{}", serde_json::to_string(k).unwrap(), canonical_json(v)))
                 .collect();

@@ -276,6 +276,7 @@ end
 - resolver infers effects for cells that omit explicit rows
 - strict mode reports inferred-but-undeclared effects for explicitly declared rows
 - strict mode enforces call-boundary effect compatibility for statically resolved cell/tool calls
+- undeclared-effect diagnostics include source-level cause hints (for example, specific call sites/tool calls)
 - effectful external capabilities require matching grants in scope
 
 ```lumen

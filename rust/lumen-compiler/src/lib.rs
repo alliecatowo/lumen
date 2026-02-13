@@ -3,10 +3,13 @@
 //! Transforms `.lm.md` source files into LIR modules.
 
 pub mod compiler;
+pub mod diagnostics;
 pub mod markdown;
 
-use compiler::ast::Directive;
+use compiler::ast::{Directive, Item, ImportDecl, ImportList};
 use compiler::lir::LirModule;
+use compiler::resolve::SymbolTable;
+use std::collections::HashSet;
 
 use thiserror::Error;
 
@@ -22,6 +25,226 @@ pub enum CompileError {
     Type(Vec<compiler::typecheck::TypeError>),
     #[error("constraint errors: {0:?}")]
     Constraint(Vec<compiler::constraints::ConstraintError>),
+}
+
+/// Compile with access to external modules for import resolution.
+///
+/// The `resolve_import` callback takes a module path (e.g., "mathlib") and returns
+/// the source content of that module if it exists, or None if not found.
+pub fn compile_with_imports(
+    source: &str,
+    resolve_import: &dyn Fn(&str) -> Option<String>,
+) -> Result<LirModule, CompileError> {
+    let mut compilation_stack = HashSet::new();
+    compile_with_imports_internal(source, resolve_import, &mut compilation_stack, None)
+}
+
+/// Internal implementation that tracks the compilation stack for circular import detection
+fn compile_with_imports_internal(
+    source: &str,
+    resolve_import: &dyn Fn(&str) -> Option<String>,
+    compilation_stack: &mut HashSet<String>,
+    _current_module: Option<&str>,
+) -> Result<LirModule, CompileError> {
+    // 1. Extract Markdown blocks
+    let extracted = markdown::extract::extract_blocks(source);
+
+    // 2. Build directives
+    let directives: Vec<Directive> = extracted
+        .directives
+        .iter()
+        .map(|d| Directive {
+            name: d.name.clone(),
+            value: d.value.clone(),
+            span: d.span,
+        })
+        .collect();
+
+    // 3. Concatenate all code blocks
+    let mut full_code = String::new();
+    let mut first_block_line = 1;
+    let mut first_block_offset = 0;
+
+    for (i, block) in extracted.code_blocks.iter().enumerate() {
+        if i == 0 {
+            first_block_line = block.code_start_line;
+            first_block_offset = block.code_offset;
+        }
+        if !full_code.is_empty() {
+            full_code.push('\n');
+        }
+        full_code.push_str(&block.code);
+    }
+
+    if full_code.is_empty() {
+        return Ok(LirModule::new("sha256:empty".to_string()));
+    }
+
+    // 4. Lex
+    let mut lexer = compiler::lexer::Lexer::new(&full_code, first_block_line, first_block_offset);
+    let tokens = lexer.tokenize()?;
+
+    // 5. Parse
+    let mut parser = compiler::parser::Parser::new(tokens);
+    let program = parser.parse_program(directives)?;
+
+    // 6. Process imports before resolution
+    let mut base_symbols = SymbolTable::new();
+    let mut import_errors = Vec::new();
+
+    // Collect all imports
+    let imports: Vec<&ImportDecl> = program
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let Item::Import(imp) = item {
+                Some(imp)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Process each import
+    for import in imports {
+        let module_path = import.path.join(".");
+
+        // Check for circular imports
+        if compilation_stack.contains(&module_path) {
+            let chain: Vec<String> = compilation_stack.iter().cloned().collect();
+            let chain_str = format!("{} -> {}", chain.join(" -> "), module_path);
+            import_errors.push(compiler::resolve::ResolveError::CircularImport {
+                module: module_path.clone(),
+                chain: chain_str,
+            });
+            continue;
+        }
+
+        // Resolve the module source
+        let imported_source = match resolve_import(&module_path) {
+            Some(src) => src,
+            None => {
+                import_errors.push(compiler::resolve::ResolveError::ModuleNotFound {
+                    module: module_path.clone(),
+                    line: import.span.line,
+                });
+                continue;
+            }
+        };
+
+        // Track this module in the compilation stack
+        compilation_stack.insert(module_path.clone());
+
+        // Recursively compile the imported module (we only need it for validation)
+        let _imported_module = compile_with_imports_internal(
+            &imported_source,
+            resolve_import,
+            compilation_stack,
+            Some(&module_path),
+        )?;
+
+        // Remove from stack after compilation
+        compilation_stack.remove(&module_path);
+
+        // Extract symbols from the imported module
+        // Re-parse to get the AST and symbol table
+        let imported_extracted = markdown::extract::extract_blocks(&imported_source);
+        let mut imported_code = String::new();
+        for block in &imported_extracted.code_blocks {
+            if !imported_code.is_empty() {
+                imported_code.push('\n');
+            }
+            imported_code.push_str(&block.code);
+        }
+
+        if !imported_code.is_empty() {
+            let imported_directives: Vec<Directive> = imported_extracted
+                .directives
+                .iter()
+                .map(|d| Directive {
+                    name: d.name.clone(),
+                    value: d.value.clone(),
+                    span: d.span,
+                })
+                .collect();
+
+            let mut imported_lexer = compiler::lexer::Lexer::new(&imported_code, 1, 0);
+            if let Ok(imported_tokens) = imported_lexer.tokenize() {
+                let mut imported_parser = compiler::parser::Parser::new(imported_tokens);
+                if let Ok(imported_program) = imported_parser.parse_program(imported_directives) {
+                    if let Ok(imported_symbols) = compiler::resolve::resolve(&imported_program) {
+                        // Import the requested symbols
+                        match &import.names {
+                            ImportList::Wildcard => {
+                                // Import all top-level definitions
+                                for (name, info) in imported_symbols.cells {
+                                    base_symbols.import_cell(name, info);
+                                }
+                                for (name, info) in imported_symbols.types {
+                                    base_symbols.import_type(name, info);
+                                }
+                                for (name, type_expr) in imported_symbols.type_aliases {
+                                    base_symbols.import_type_alias(name, type_expr);
+                                }
+                            }
+                            ImportList::Names(names) => {
+                                for import_name in names {
+                                    let symbol_name = &import_name.name;
+                                    let local_name = import_name.alias.as_ref().unwrap_or(symbol_name);
+
+                                    // Try to find the symbol in cells, types, or type aliases
+                                    let mut found = false;
+
+                                    if let Some(cell_info) = imported_symbols.cells.get(symbol_name) {
+                                        base_symbols.import_cell(local_name.clone(), cell_info.clone());
+                                        found = true;
+                                    }
+
+                                    if let Some(type_info) = imported_symbols.types.get(symbol_name) {
+                                        base_symbols.import_type(local_name.clone(), type_info.clone());
+                                        found = true;
+                                    }
+
+                                    if let Some(type_expr) = imported_symbols.type_aliases.get(symbol_name) {
+                                        base_symbols.import_type_alias(local_name.clone(), type_expr.clone());
+                                        found = true;
+                                    }
+
+                                    if !found {
+                                        import_errors.push(compiler::resolve::ResolveError::ImportedSymbolNotFound {
+                                            symbol: symbol_name.clone(),
+                                            module: module_path.clone(),
+                                            line: import_name.span.line,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if !import_errors.is_empty() {
+        return Err(CompileError::Resolve(import_errors));
+    }
+
+    // 7. Resolve with imported symbols pre-populated
+    // Use resolve_with_base so imported symbols are available during resolution
+    let symbols = compiler::resolve::resolve_with_base(&program, base_symbols)
+        .map_err(CompileError::Resolve)?;
+
+    // 8. Typecheck
+    compiler::typecheck::typecheck(&program, &symbols).map_err(CompileError::Type)?;
+
+    // 9. Validate constraints
+    compiler::constraints::validate_constraints(&program).map_err(CompileError::Constraint)?;
+
+    // 10. Lower to LIR
+    let module = compiler::lower::lower(&program, &symbols, source);
+
+    Ok(module)
 }
 
 /// Compile a `.lm.md` source file to a LIR module.
@@ -81,6 +304,18 @@ pub fn compile(source: &str) -> Result<LirModule, CompileError> {
     let module = compiler::lower::lower(&program, &symbols, source);
 
     Ok(module)
+}
+
+/// Format a compile error with rich diagnostics (colors, source snippets, suggestions).
+///
+/// This is a convenience function that wraps `diagnostics::format_compile_error`
+/// and renders all diagnostics with ANSI colors for terminal display.
+pub fn format_error(error: &CompileError, source: &str, filename: &str) -> String {
+    diagnostics::format_compile_error(error, source, filename)
+        .iter()
+        .map(|d| d.render_ansi())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]

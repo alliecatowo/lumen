@@ -75,6 +75,63 @@ fn type_contains_any(ty: &Type) -> bool {
     }
 }
 
+/// Compute Levenshtein edit distance between two strings
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let a_len = a_chars.len();
+    let b_len = b_chars.len();
+
+    if a_len == 0 {
+        return b_len;
+    }
+    if b_len == 0 {
+        return a_len;
+    }
+
+    let mut matrix = vec![vec![0; b_len + 1]; a_len + 1];
+
+    for i in 0..=a_len {
+        matrix[i][0] = i;
+    }
+    for j in 0..=b_len {
+        matrix[0][j] = j;
+    }
+
+    for i in 1..=a_len {
+        for j in 1..=b_len {
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
+            matrix[i][j] = (matrix[i - 1][j] + 1)
+                .min(matrix[i][j - 1] + 1)
+                .min(matrix[i - 1][j - 1] + cost);
+        }
+    }
+
+    matrix[a_len][b_len]
+}
+
+/// Find similar names for "did you mean?" suggestions
+fn suggest_similar(name: &str, candidates: &[&str], max_distance: usize) -> Vec<String> {
+    let mut matches: Vec<(usize, String)> = candidates
+        .iter()
+        .filter_map(|c| {
+            let d = edit_distance(name, c);
+            if d <= max_distance && d < name.len() {
+                Some((d, c.to_string()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    matches.sort_by_key(|(d, _)| *d);
+    matches.into_iter().map(|(_, s)| s).take(3).collect()
+}
+
 #[derive(Debug, Error)]
 pub enum TypeError {
     #[error("type mismatch at line {line}: expected {expected}, got {actual}")]
@@ -98,6 +155,7 @@ pub enum TypeError {
         field: String,
         ty: String,
         line: usize,
+        suggestions: Vec<String>,
     },
     #[error("undefined type '{name}' at line {line}")]
     UndefinedType { name: String, line: usize },
@@ -105,6 +163,12 @@ pub enum TypeError {
     MissingReturn { name: String, line: usize },
     #[error("cannot assign to immutable variable '{name}' at line {line}")]
     ImmutableAssign { name: String, line: usize },
+    #[error("incomplete match at line {line}: missing variants {missing:?}")]
+    IncompleteMatch {
+        enum_name: String,
+        missing: Vec<String>,
+        line: usize,
+    },
 }
 
 /// Resolved type representation
@@ -369,9 +433,9 @@ impl<'a> TypeChecker<'a> {
                                     .map(|v| v.name.clone())
                                     .collect();
                                 if !missing.is_empty() {
-                                    self.errors.push(TypeError::Mismatch {
-                                        expected: format!("variants {:?}", missing),
-                                        actual: "incomplete match".into(),
+                                    self.errors.push(TypeError::IncompleteMatch {
+                                        enum_name: name.clone(),
+                                        missing,
                                         line: ms.span.line,
                                     });
                                 }
@@ -722,10 +786,14 @@ impl<'a> TypeChecker<'a> {
                                 let expected = resolve_type_expr(&field_def.ty, self.symbols);
                                 self.check_compat(&expected, &val_type, span.line);
                             } else {
+                                let field_names: Vec<&str> =
+                                    def.fields.iter().map(|f| f.name.as_str()).collect();
+                                let suggestions = suggest_similar(fname, &field_names, 2);
                                 self.errors.push(TypeError::UnknownField {
                                     field: fname.clone(),
                                     ty: name.clone(),
                                     line: span.line,
+                                    suggestions,
                                 });
                             }
                         }

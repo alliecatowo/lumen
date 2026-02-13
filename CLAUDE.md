@@ -31,6 +31,7 @@ lumen pkg build                          # Build package and dependencies
 lumen pkg check                          # Type-check package
 lumen trace show <run-id>                # Display trace events
 lumen cache clear                        # Clear tool result cache
+lumen build wasm --target <web|nodejs|wasi>  # Build WASM target (requires wasm-pack)
 ```
 
 ## Project Overview
@@ -46,6 +47,7 @@ The Cargo workspace root is `/Cargo.toml` with members under `rust/`:
 - **lumen-runtime** — Infrastructure: tool dispatch trait, result caching, trace event storage
 - **lumen-cli** — Clap-based CLI (`main.rs`) orchestrating compiler → VM
 - **lumen-lsp** — Language Server Protocol implementation
+- **lumen-wasm** — WebAssembly bindings (excluded from workspace, built via wasm-pack)
 - **lumen-provider-http** — HTTP provider for tool calls
 - **lumen-provider-json** — JSON provider for tool calls
 - **lumen-provider-fs** — Filesystem provider for tool calls
@@ -169,3 +171,31 @@ Tool calls go through `validate_tool_policy()` at runtime dispatch. Merged grant
 - **Processes** (memory, machine, pipeline, etc.) are constructor-backed runtime objects with typed methods
 - **Grants** provide capability-scoped tool access with policy constraints
 - Source format is always markdown with fenced `lumen` code blocks
+
+
+## WebAssembly Support
+
+Lumen compiles to WebAssembly for browser and server deployment. The `lumen-wasm` crate provides WASM bindings by compiling the entire VM to WASM using Rust's wasm-pack toolchain.
+
+**Building for WASM**:
+```bash
+cd rust/lumen-wasm
+wasm-pack build --target web        # Browser (ES modules)
+wasm-pack build --target nodejs     # Node.js (CommonJS)
+cargo build --target wasm32-wasi    # WASI (Wasmtime, etc.)
+```
+
+Or use the CLI:
+```bash
+lumen build wasm --target web
+lumen build wasm --target nodejs
+```
+
+**API**: The WASM module exposes `check(source)`, `compile(source)`, `run(source, cell)`, and `version()` functions via wasm-bindgen. All functions return `LumenResult` with `.is_ok()`, `.is_err()`, and `.to_json()` methods.
+
+**Examples**: See `examples/wasm_hello.lm.md` for Lumen code examples and `examples/wasm_browser.html` for interactive browser demo.
+
+**Strategy**: See `docs/WASM_STRATEGY.md` for architecture rationale, roadmap, and deployment options. The VM-to-WASM approach leverages existing code and enables both browser (zero-latency AI inference) and server (WASI edge functions) use cases.
+
+**Current Limitations**: No filesystem in browser (use WASI), no tool providers yet (Phase 3), no multi-file imports. See roadmap for planned enhancements.
+

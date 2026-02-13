@@ -77,6 +77,33 @@ impl VmError {
         }
         msg
     }
+
+    /// Create a runtime error with context about current location
+    pub fn runtime_with_context(
+        message: String,
+        cell_name: &str,
+        ip: usize,
+    ) -> Self {
+        VmError::Runtime(format!(
+            "{} (in cell '{}' at instruction {})",
+            message, cell_name, ip
+        ))
+    }
+
+    /// Create a type error with context about the values involved
+    pub fn type_error_with_values(
+        operation: &str,
+        expected: &str,
+        actual: &Value,
+    ) -> Self {
+        VmError::TypeError(format!(
+            "cannot {} with {} (expected {}, got {})",
+            operation,
+            actual.display_pretty(),
+            expected,
+            actual.type_name()
+        ))
+    }
 }
 
 const MAX_CALL_DEPTH: usize = 256;
@@ -1028,9 +1055,14 @@ impl VM {
                             StringRef::Owned(format!("{}{}", lhs.as_string(), rhs.as_string())),
                         ),
                         _ => {
+                            let lhs_clone = lhs.clone();
+                            let rhs_clone = rhs.clone();
                             return Err(VmError::TypeError(format!(
-                                "cannot add {} and {}",
-                                lhs, rhs
+                                "cannot add {} ({}) to {} ({})",
+                                lhs_clone.display_pretty(),
+                                lhs_clone.type_name(),
+                                rhs_clone.display_pretty(),
+                                rhs_clone.type_name()
                             )))
                         }
                     };
@@ -3366,12 +3398,12 @@ impl VM {
         let arg = &self.registers[base + arg_reg];
         match func_id {
             0 => {
-                // LENGTH
+                // LENGTH (Unicode-aware for strings)
                 Ok(match arg {
-                    Value::String(StringRef::Owned(s)) => Value::Int(s.len() as i64),
+                    Value::String(StringRef::Owned(s)) => Value::Int(s.chars().count() as i64),
                     Value::String(StringRef::Interned(id)) => {
                         let s = self.strings.resolve(*id).unwrap_or("");
-                        Value::Int(s.len() as i64)
+                        Value::Int(s.chars().count() as i64)
                     }
                     Value::List(l) => Value::Int(l.len() as i64),
                     Value::Map(m) => Value::Int(m.len() as i64),
@@ -3382,11 +3414,11 @@ impl VM {
                 })
             }
             1 => {
-                // COUNT
+                // COUNT (Unicode-aware for strings)
                 Ok(match arg {
                     Value::List(l) => Value::Int(l.len() as i64),
                     Value::Map(m) => Value::Int(m.len() as i64),
-                    Value::String(StringRef::Owned(s)) => Value::Int(s.len() as i64),
+                    Value::String(StringRef::Owned(s)) => Value::Int(s.chars().count() as i64),
                     _ => Value::Int(0),
                 })
             }
@@ -3945,37 +3977,38 @@ impl VM {
                 Ok(Value::Bool(arg.as_string().ends_with(&suffix)))
             }
             54 => {
-                // INDEXOF
+                // INDEXOF (Unicode-aware: returns character index, not byte index)
                 let needle = self.registers[base + arg_reg + 1].as_string();
-                Ok(match arg.as_string().find(&needle) {
-                    Some(i) => Value::Int(i as i64),
+                let haystack = arg.as_string();
+                Ok(match haystack.find(&needle) {
+                    Some(byte_idx) => {
+                        // Convert byte index to character index
+                        let char_idx = haystack[..byte_idx].chars().count();
+                        Value::Int(char_idx as i64)
+                    }
                     None => Value::Int(-1),
                 })
             }
             55 => {
-                // PADLEFT
+                // PADLEFT (Unicode-aware)
                 let width = self.registers[base + arg_reg + 1].as_int().unwrap_or(0) as usize;
                 let s = arg.as_string();
-                if s.len() < width {
-                    Ok(Value::String(StringRef::Owned(format!(
-                        "{:>width$}",
-                        s,
-                        width = width
-                    ))))
+                let char_count = s.chars().count();
+                if char_count < width {
+                    let padding = " ".repeat(width - char_count);
+                    Ok(Value::String(StringRef::Owned(format!("{}{}", padding, s))))
                 } else {
                     Ok(Value::String(StringRef::Owned(s)))
                 }
             }
             56 => {
-                // PADRIGHT
+                // PADRIGHT (Unicode-aware)
                 let width = self.registers[base + arg_reg + 1].as_int().unwrap_or(0) as usize;
                 let s = arg.as_string();
-                if s.len() < width {
-                    Ok(Value::String(StringRef::Owned(format!(
-                        "{:<width$}",
-                        s,
-                        width = width
-                    ))))
+                let char_count = s.chars().count();
+                if char_count < width {
+                    let padding = " ".repeat(width - char_count);
+                    Ok(Value::String(StringRef::Owned(format!("{}{}", s, padding))))
                 } else {
                     Ok(Value::String(StringRef::Owned(s)))
                 }
@@ -4064,7 +4097,105 @@ impl VM {
                     _ => Value::Set(vec![]), // empty set for other types
                 })
             }
-            _ => Ok(Value::Null),
+            70 => {
+                // HAS_KEY - check if map has a key
+                let key = self.registers[base + arg_reg + 1].as_string();
+                Ok(match arg {
+                    Value::Map(m) => Value::Bool(m.contains_key(&key)),
+                    Value::Record(r) => Value::Bool(r.fields.contains_key(&key)),
+                    _ => Value::Bool(false),
+                })
+            }
+            71 => {
+                // MERGE - merge two maps (second overwrites first)
+                let other = &self.registers[base + arg_reg + 1];
+                Ok(match (arg, other) {
+                    (Value::Map(m1), Value::Map(m2)) => {
+                        let mut result = m1.clone();
+                        result.extend(m2.iter().map(|(k, v)| (k.clone(), v.clone())));
+                        Value::Map(result)
+                    }
+                    _ => arg.clone(),
+                })
+            }
+            72 => {
+                // SIZE - alias for length/count
+                Ok(match arg {
+                    Value::String(StringRef::Owned(s)) => Value::Int(s.chars().count() as i64),
+                    Value::String(StringRef::Interned(id)) => {
+                        let s = self.strings.resolve(*id).unwrap_or("");
+                        Value::Int(s.chars().count() as i64)
+                    }
+                    Value::List(l) => Value::Int(l.len() as i64),
+                    Value::Map(m) => Value::Int(m.len() as i64),
+                    Value::Set(s) => Value::Int(s.len() as i64),
+                    Value::Tuple(t) => Value::Int(t.len() as i64),
+                    Value::Bytes(b) => Value::Int(b.len() as i64),
+                    _ => Value::Int(0),
+                })
+            }
+            73 => {
+                // ADD - add element to set (returns new set)
+                let item = self.registers[base + arg_reg + 1].clone();
+                Ok(match arg {
+                    Value::Set(s) => {
+                        let mut new_set = s.clone();
+                        if !new_set.contains(&item) {
+                            new_set.push(item);
+                        }
+                        Value::Set(new_set)
+                    }
+                    _ => Value::Set(vec![item]),
+                })
+            }
+            74 => {
+                // REMOVE - remove element from set or key from map (returns new collection)
+                let item = self.registers[base + arg_reg + 1].clone();
+                Ok(match arg {
+                    Value::Set(s) => {
+                        let new_set: Vec<Value> = s.iter()
+                            .filter(|v| *v != &item)
+                            .cloned()
+                            .collect();
+                        Value::Set(new_set)
+                    }
+                    Value::Map(m) => {
+                        let key = item.as_string();
+                        let mut new_map = m.clone();
+                        new_map.remove(&key);
+                        Value::Map(new_map)
+                    }
+                    _ => arg.clone(),
+                })
+            }
+            75 => {
+                // ENTRIES - list of [key, value] tuples for maps
+                Ok(match arg {
+                    Value::Map(m) => {
+                        let entries: Vec<Value> = m.iter()
+                            .map(|(k, v)| Value::Tuple(vec![
+                                Value::String(StringRef::Owned(k.clone())),
+                                v.clone()
+                            ]))
+                            .collect();
+                        Value::List(entries)
+                    }
+                    Value::Record(r) => {
+                        let entries: Vec<Value> = r.fields.iter()
+                            .map(|(k, v)| Value::Tuple(vec![
+                                Value::String(StringRef::Owned(k.clone())),
+                                v.clone()
+                            ]))
+                            .collect();
+                        Value::List(entries)
+                    }
+                    _ => Value::List(vec![]),
+                })
+            }
+            _ => Err(VmError::Runtime(format!(
+                "Unknown intrinsic ID {} - this is a compiler/VM mismatch bug",
+                func_id
+            ))),
         }
     }
 
@@ -4241,9 +4372,9 @@ impl VM {
         int_op: impl Fn(i64, i64) -> Option<i64>,
         float_op: impl Fn(f64, f64) -> f64,
     ) -> Result<(), VmError> {
-        let lhs = &self.registers[base + b];
-        let rhs = &self.registers[base + c];
-        self.registers[base + a] = match (lhs, rhs) {
+        let lhs = self.registers[base + b].clone();
+        let rhs = self.registers[base + c].clone();
+        self.registers[base + a] = match (&lhs, &rhs) {
             (Value::Int(x), Value::Int(y)) => {
                 Value::Int(int_op(*x, *y).ok_or(VmError::ArithmeticOverflow)?)
             }
@@ -4251,9 +4382,13 @@ impl VM {
             (Value::Int(x), Value::Float(y)) => Value::Float(float_op(*x as f64, *y)),
             (Value::Float(x), Value::Int(y)) => Value::Float(float_op(*x, *y as f64)),
             _ => {
-                return Err(VmError::TypeError(
-                    "arithmetic on non-numeric types".to_string()
-                ))
+                return Err(VmError::TypeError(format!(
+                    "arithmetic on non-numeric types: {} ({}) and {} ({})",
+                    lhs.display_pretty(),
+                    lhs.type_name(),
+                    rhs.display_pretty(),
+                    rhs.type_name()
+                )))
             }
         };
         Ok(())

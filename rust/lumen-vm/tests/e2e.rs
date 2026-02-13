@@ -1708,3 +1708,204 @@ end
     );
     assert_eq!(result, Value::Int(40)); // 1+2+3+4+6+7+8+9 (skip 5, break at 10)
 }
+
+// ─── Unicode string operations ───
+
+#[test]
+fn e2e_unicode_length() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  return length("café")
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(4)); // 4 characters, not 5 bytes
+}
+
+#[test]
+fn e2e_unicode_slice() {
+    let result = run_main(
+        r#"
+cell main() -> String
+  return slice("café", 0, 3)
+end
+"#,
+    );
+    assert_eq!(result, Value::String(StringRef::Owned("caf".to_string())));
+}
+
+#[test]
+fn e2e_unicode_index_of() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  return index_of("café", "é")
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(3)); // character index, not byte index
+}
+
+#[test]
+fn e2e_unicode_pad_left() {
+    let result = run_main(
+        r#"
+cell main() -> String
+  return pad_left("café", 6)
+end
+"#,
+    );
+    assert_eq!(result, Value::String(StringRef::Owned("  café".to_string())));
+}
+
+#[test]
+fn e2e_unicode_pad_right() {
+    let result = run_main(
+        r#"
+cell main() -> String
+  return pad_right("café", 6)
+end
+"#,
+    );
+    assert_eq!(result, Value::String(StringRef::Owned("café  ".to_string())));
+}
+
+#[test]
+fn e2e_unicode_chars() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let chars = chars("café")
+  return length(chars)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(4));
+}
+
+// ─── Map/Set operations ───
+
+#[test]
+fn e2e_has_key() {
+    let result = run_main(
+        r#"
+cell main() -> Bool
+  let m = #{"a": 1, "b": 2}
+  return has_key(m, "a")
+end
+"#,
+    );
+    assert_eq!(result, Value::Bool(true));
+}
+
+#[test]
+fn e2e_has_key_false() {
+    let result = run_main(
+        r#"
+cell main() -> Bool
+  let m = #{"a": 1, "b": 2}
+  return has_key(m, "c")
+end
+"#,
+    );
+    assert_eq!(result, Value::Bool(false));
+}
+
+#[test]
+fn e2e_merge_maps() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let m1 = #{"a": 1, "b": 2}
+  let m2 = #{"b": 3, "c": 4}
+  let merged = merge(m1, m2)
+  return length(merged)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(3)); // a, b (overwritten), c
+}
+
+#[test]
+fn e2e_size() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let m = #{"a": 1, "b": 2, "c": 3}
+  return size(m)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(3));
+}
+
+#[test]
+fn e2e_set_add() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let s = set[1, 2, 3]
+  let s2 = add(s, 4)
+  return size(s2)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(4));
+}
+
+#[test]
+fn e2e_set_add_duplicate() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let s = set[1, 2, 3]
+  let s2 = add(s, 2)
+  return size(s2)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(3)); // no duplicate added
+}
+
+#[test]
+fn e2e_set_remove() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let s = set[1, 2, 3]
+  let s2 = remove(s, 2)
+  return size(s2)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(2));
+}
+
+#[test]
+fn e2e_map_remove() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let m = #{"a": 1, "b": 2, "c": 3}
+  let m2 = remove(m, "b")
+  return size(m2)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(2));
+}
+
+#[test]
+fn e2e_entries() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let m = #{"a": 1, "b": 2}
+  let e = entries(m)
+  return length(e)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(2));
+}

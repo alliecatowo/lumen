@@ -118,6 +118,24 @@ enum Commands {
         #[arg(long)]
         strict: bool,
     },
+    /// Build commands
+    Build {
+        #[command(subcommand)]
+        sub: BuildCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum BuildCommands {
+    /// Build for WebAssembly target
+    Wasm {
+        /// Target type (web, nodejs, or wasi)
+        #[arg(long, default_value = "web")]
+        target: String,
+        /// Release build (optimized)
+        #[arg(long)]
+        release: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -254,6 +272,9 @@ fn main() {
             output,
         } => cmd_doc(&path, &format, output),
         Commands::Lint { files, strict } => cmd_lint(files, strict),
+        Commands::Build { sub } => match sub {
+            BuildCommands::Wasm { target, release } => cmd_build_wasm(&target, release),
+        },
     }
 }
 
@@ -444,13 +465,85 @@ fn cmd_fmt(files: Vec<PathBuf>, check: bool) {
     }
 }
 
-// Lint command implementation pending
-// fn cmd_lint(files: Vec<PathBuf>, strict: bool) {
-//     match lint::cmd_lint(&files, strict) {
-//         Ok(()) => {}
-//         Err(e) => {
-//             eprintln!("{} {}", red("error:"), e);
-//             std::process::exit(1);
-//         }
-//     }
-// }
+fn cmd_build_wasm(target: &str, release: bool) {
+    // Check if wasm-pack is installed
+    let wasm_pack_check = std::process::Command::new("wasm-pack")
+        .arg("--version")
+        .output();
+
+    match wasm_pack_check {
+        Ok(output) if output.status.success() => {
+            // wasm-pack is installed
+            let version = String::from_utf8_lossy(&output.stdout);
+            println!("{} wasm-pack {}", status_label("Found"), version.trim());
+        }
+        _ => {
+            eprintln!("{} wasm-pack not found", yellow("warning:"));
+            eprintln!("\nInstall wasm-pack to build WASM targets:");
+            eprintln!("  {}", cyan("cargo install wasm-pack"));
+            eprintln!("\nAlternatively, build manually:");
+            match target {
+                "web" | "nodejs" => {
+                    eprintln!("  {}", cyan("cd rust/lumen-wasm && wasm-pack build --target web"));
+                }
+                "wasi" => {
+                    eprintln!("  {}", cyan("cd rust/lumen-wasm && cargo build --target wasm32-wasi"));
+                }
+                _ => {}
+            }
+            std::process::exit(1);
+        }
+    }
+
+    let wasm_crate_dir = PathBuf::from("rust/lumen-wasm");
+    if !wasm_crate_dir.exists() {
+        eprintln!("{} lumen-wasm crate not found at rust/lumen-wasm", red("error:"));
+        eprintln!("\nThe WASM compilation target is still in development.");
+        eprintln!("See docs/WASM_STRATEGY.md for more information.");
+        std::process::exit(1);
+    }
+
+    println!("{} WASM target: {}", status_label("Building"), cyan(target));
+
+    let mut cmd = std::process::Command::new("wasm-pack");
+    cmd.arg("build");
+    cmd.arg("--target").arg(target);
+
+    if release {
+        cmd.arg("--release");
+    }
+
+    cmd.current_dir(&wasm_crate_dir);
+
+    let status = cmd.status().unwrap_or_else(|e| {
+        eprintln!("{} executing wasm-pack: {}", red("error:"), e);
+        std::process::exit(1);
+    });
+
+    if !status.success() {
+        eprintln!("{} wasm-pack build failed", red("error:"));
+        std::process::exit(1);
+    }
+
+    println!("{} WASM build complete", green("✓"));
+    println!("\nOutput in: {}", bold("rust/lumen-wasm/pkg/"));
+
+    match target {
+        "web" => {
+            println!("\nUsage in browser:");
+            println!("  {}", cyan("import init, {{ run, compile, check }} from './pkg/lumen_wasm.js';"));
+            println!("  {}", cyan("await init();"));
+            println!("  {}", cyan("const result = run(sourceCode, 'main');"));
+        }
+        "nodejs" => {
+            println!("\nUsage in Node.js:");
+            println!("  {}", cyan("const {{ run, compile, check }} = require('./pkg/lumen_wasm.js');"));
+            println!("  {}", cyan("const result = run(sourceCode, 'main');"));
+        }
+        "wasi" => {
+            println!("\nRun with Wasmtime:");
+            println!("  {}", cyan("wasmtime rust/lumen-wasm/target/wasm32-wasi/release/lumen_wasm.wasm"));
+        }
+        _ => {}
+    }
+}

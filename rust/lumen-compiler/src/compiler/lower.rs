@@ -1798,6 +1798,13 @@ impl<'a> Lowerer<'a> {
                         "patch" => Some(IntrinsicId::Patch),
                         "redact" => Some(IntrinsicId::Redact),
                         "validate" => Some(IntrinsicId::Validate),
+                        // Map/Set operations
+                        "has_key" => Some(IntrinsicId::HasKey),
+                        "merge" => Some(IntrinsicId::Merge),
+                        "size" => Some(IntrinsicId::Size),
+                        "add" => Some(IntrinsicId::Add),
+                        "remove" => Some(IntrinsicId::Remove),
+                        "entries" => Some(IntrinsicId::Entries),
                         _ => None,
                     };
 

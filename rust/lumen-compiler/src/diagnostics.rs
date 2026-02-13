@@ -408,7 +408,11 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
 
 fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> Diagnostic {
     match error {
-        ResolveError::UndefinedType { name, line } => {
+        ResolveError::UndefinedType {
+            name,
+            line,
+            suggestions: error_suggestions,
+        } => {
             let source_line = get_source_line(source, *line);
             let underline = source_line.as_ref().map(|l| {
                 if let Some(pos) = l.find(name) {
@@ -418,10 +422,9 @@ fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> D
                 }
             });
 
-            let suggestions = suggest_similar(name, KEYWORDS, 2);
-            let help = if !suggestions.is_empty() {
-                suggestions
-                    .into_iter()
+            let help = if !error_suggestions.is_empty() {
+                error_suggestions
+                    .iter()
                     .map(|s| format!("did you mean '{}'?", s))
                     .collect()
             } else {
@@ -440,7 +443,11 @@ fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> D
                 suggestions: help,
             }
         }
-        ResolveError::UndefinedCell { name, line } => {
+        ResolveError::UndefinedCell {
+            name,
+            line,
+            suggestions: error_suggestions,
+        } => {
             let source_line = get_source_line(source, *line);
             let underline = source_line.as_ref().map(|l| {
                 if let Some(pos) = l.find(name) {
@@ -450,10 +457,9 @@ fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> D
                 }
             });
 
-            let suggestions = suggest_similar(name, BUILTINS, 2);
-            let help = if !suggestions.is_empty() {
-                suggestions
-                    .into_iter()
+            let help = if !error_suggestions.is_empty() {
+                error_suggestions
+                    .iter()
                     .map(|s| format!("did you mean '{}'?", s))
                     .collect()
             } else {
@@ -621,7 +627,12 @@ fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnos
                 suggestions: help,
             }
         }
-        TypeError::UnknownField { field, ty, line } => {
+        TypeError::UnknownField {
+            field,
+            ty,
+            line,
+            suggestions: error_suggestions,
+        } => {
             let source_line = get_source_line(source, *line);
             let underline = source_line.as_ref().map(|l| {
                 if let Some(pos) = l.find(field) {
@@ -630,6 +641,15 @@ fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnos
                     make_underline(1, 1)
                 }
             });
+
+            let help = if !error_suggestions.is_empty() {
+                error_suggestions
+                    .iter()
+                    .map(|s| format!("did you mean '{}'?", s))
+                    .collect()
+            } else {
+                vec![]
+            };
 
             Diagnostic {
                 severity: Severity::Error,
@@ -640,7 +660,36 @@ fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnos
                 col: None,
                 source_line,
                 underline,
-                suggestions: vec![],
+                suggestions: help,
+            }
+        }
+        TypeError::IncompleteMatch {
+            enum_name,
+            missing,
+            line,
+        } => {
+            let source_line = get_source_line(source, *line);
+            let underline = source_line.as_ref().map(|_| make_underline(1, 1));
+
+            let missing_list = missing.join(", ");
+            let suggestions = vec![format!(
+                "add patterns for missing variants: {}",
+                missing_list
+            )];
+
+            Diagnostic {
+                severity: Severity::Error,
+                code: Some("E043".to_string()),
+                message: format!(
+                    "incomplete match on enum '{}': missing variants [{}]",
+                    enum_name, missing_list
+                ),
+                file: Some(filename.to_string()),
+                line: Some(*line),
+                col: None,
+                source_line,
+                underline,
+                suggestions,
             }
         }
         _ => {
@@ -650,7 +699,8 @@ fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnos
                 | TypeError::ArgCount { line, .. }
                 | TypeError::Mismatch { line, .. }
                 | TypeError::UndefinedVar { line, .. }
-                | TypeError::UnknownField { line, .. } => Some(*line),
+                | TypeError::UnknownField { line, .. }
+                | TypeError::IncompleteMatch { line, .. } => Some(*line),
                 _ => None,
             };
 

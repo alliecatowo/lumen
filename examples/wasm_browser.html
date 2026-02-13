@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lumen WASM Browser Example</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-top: 20px;
+        }
+        .panel {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        textarea {
+            width: 100%;
+            height: 300px;
+            font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+            font-size: 14px;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+            resize: vertical;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-right: 10px;
+            margin-top: 10px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .output {
+            background: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 12px;
+            min-height: 100px;
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+            font-size: 13px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .output.error {
+            background: #fff5f5;
+            border-color: #feb2b2;
+            color: #c53030;
+        }
+        .output.success {
+            background: #f0fff4;
+            border-color: #9ae6b4;
+            color: #22543d;
+        }
+        .status {
+            margin-top: 10px;
+            padding: 8px;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        .status.loading {
+            background: #bee3f8;
+            color: #2c5282;
+        }
+        .status.ready {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+        .status.error {
+            background: #fed7d7;
+            color: #c53030;
+        }
+        h3 {
+            margin-top: 0;
+            color: #333;
+        }
+        .examples {
+            margin-bottom: 20px;
+        }
+        .examples select {
+            padding: 8px;
+            font-size: 14px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+    <h1>🌙 Lumen WASM Browser Demo</h1>
+
+    <div class="status loading" id="status">Loading WASM module...</div>
+
+    <div class="container">
+        <div class="panel">
+            <h3>Lumen Source Code</h3>
+            <div class="examples">
+                <select id="exampleSelect" onchange="loadExample()">
+                    <option value="factorial">Factorial</option>
+                    <option value="greet">String Operations</option>
+                    <option value="point">Record Types</option>
+                    <option value="fib">Fibonacci</option>
+                    <option value="custom">Custom...</option>
+                </select>
+            </div>
+            <textarea id="sourceCode">cell factorial(n: Int) -> Int
+    if n <= 1
+        1
+    else
+        n * factorial(n - 1)
+    end
+end
+
+cell main() -> Int
+    factorial(5)
+end</textarea>
+            <div>
+                <button onclick="checkCode()">Check</button>
+                <button onclick="compileCode()">Compile</button>
+                <button onclick="runCode()">Run</button>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h3>Output</h3>
+            <div class="output" id="output">Results will appear here...</div>
+        </div>
+    </div>
+
+    <script type="module">
+        import init, { run, compile, check, version } from '../rust/lumen-wasm/pkg/lumen_wasm.js';
+
+        let wasmReady = false;
+
+        // Initialize WASM module
+        async function initWasm() {
+            try {
+                await init();
+                wasmReady = true;
+                document.getElementById('status').textContent = `✓ Lumen WASM v${version()} ready`;
+                document.getElementById('status').className = 'status ready';
+            } catch (error) {
+                document.getElementById('status').textContent = `✗ Failed to load WASM: ${error.message}`;
+                document.getElementById('status').className = 'status error';
+                console.error('WASM init error:', error);
+            }
+        }
+
+        // Parse JSON result
+        function parseResult(result) {
+            const json = JSON.parse(result.to_json());
+            return json;
+        }
+
+        // Display output
+        function displayOutput(text, isError = false) {
+            const output = document.getElementById('output');
+            output.textContent = text;
+            output.className = isError ? 'output error' : 'output success';
+        }
+
+        // Check code
+        window.checkCode = function() {
+            if (!wasmReady) {
+                displayOutput('WASM not ready yet', true);
+                return;
+            }
+
+            const source = document.getElementById('sourceCode').value;
+            const result = check(source);
+            const parsed = parseResult(result);
+
+            if (parsed.ok) {
+                displayOutput('✓ Type-checked successfully\n\n' + parsed.ok);
+            } else {
+                displayOutput('✗ Type-check failed\n\n' + parsed.error, true);
+            }
+        };
+
+        // Compile code
+        window.compileCode = function() {
+            if (!wasmReady) {
+                displayOutput('WASM not ready yet', true);
+                return;
+            }
+
+            const source = document.getElementById('sourceCode').value;
+            const result = compile(source);
+            const parsed = parseResult(result);
+
+            if (parsed.ok) {
+                const lir = JSON.parse(parsed.ok);
+                const summary = `✓ Compiled successfully\n\n` +
+                    `Functions: ${lir.functions?.length || 0}\n` +
+                    `Constants: ${lir.constants?.length || 0}\n` +
+                    `Doc hash: ${lir.doc_hash}\n\n` +
+                    `Full LIR:\n${JSON.stringify(lir, null, 2)}`;
+                displayOutput(summary);
+            } else {
+                displayOutput('✗ Compilation failed\n\n' + parsed.error, true);
+            }
+        };
+
+        // Run code
+        window.runCode = function() {
+            if (!wasmReady) {
+                displayOutput('WASM not ready yet', true);
+                return;
+            }
+
+            const source = document.getElementById('sourceCode').value;
+            const result = run(source, "main");
+            const parsed = parseResult(result);
+
+            if (parsed.ok) {
+                displayOutput('✓ Execution completed\n\nResult: ' + parsed.ok);
+            } else {
+                displayOutput('✗ Execution failed\n\n' + parsed.error, true);
+            }
+        };
+
+        // Example programs
+        const examples = {
+            factorial: `cell factorial(n: Int) -> Int
+    if n <= 1
+        1
+    else
+        n * factorial(n - 1)
+    end
+end
+
+cell main() -> Int
+    factorial(5)
+end`,
+            greet: `cell greet(name: String) -> String
+    "Hello, " ++ name ++ "!"
+end
+
+cell main() -> String
+    greet("WASM")
+end`,
+            point: `record Point
+    x: Int
+    y: Int
+end
+
+cell distance(p: Point) -> Int
+    let dx = p.x * p.x
+    let dy = p.y * p.y
+    dx + dy
+end
+
+cell main() -> Int
+    let p = Point { x: 3, y: 4 }
+    distance(p)
+end`,
+            fib: `cell fib(n: Int) -> Int
+    if n <= 1
+        n
+    else
+        fib(n - 1) + fib(n - 2)
+    end
+end
+
+cell main() -> Int
+    fib(10)
+end`
+        };
+
+        // Load example
+        window.loadExample = function() {
+            const select = document.getElementById('exampleSelect');
+            const example = examples[select.value];
+            if (example) {
+                document.getElementById('sourceCode').value = example;
+            }
+        };
+
+        // Initialize on load
+        initWasm();
+    </script>
+</body>
+</html>

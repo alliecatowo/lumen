@@ -12,6 +12,8 @@ members = [
     "rust/lumen-provider-mcp",
     "rust/lumen-provider-gemini",
 ]
+# lumen-wasm excluded - built separately via wasm-pack
+exclude = ["rust/lumen-wasm"]
 
 [workspace.package]
 version = "0.1.0"

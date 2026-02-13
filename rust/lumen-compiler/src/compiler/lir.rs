@@ -175,6 +175,13 @@ pub enum IntrinsicId {
     Sizeof = 67,
     Debug = 68,
     ToSet = 69,
+    // Map/Set operations
+    HasKey = 70,
+    Merge = 71,
+    Size = 72,
+    Add = 73,
+    Remove = 74,
+    Entries = 75,
 }
 
 /// A 32-bit instruction

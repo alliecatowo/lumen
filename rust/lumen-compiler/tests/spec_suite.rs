@@ -414,7 +414,7 @@ cell main(c: Color) -> Int
   end
 end
 "#,
-            expect_substring: "incomplete match",
+            expect_substring: "IncompleteMatch",
         },
         ErrorCase {
             id: "return_type_mismatch",
@@ -1176,7 +1176,7 @@ cell main(d: Direction) -> Int
   end
 end
 "#,
-        expect_substring: "incomplete match",
+        expect_substring: "IncompleteMatch",
     };
     assert_compile_err(&case);
 }
@@ -1896,7 +1896,7 @@ cell main(t: Traffic) -> Int
   end
 end
 "#,
-        expect_substring: "incomplete match",
+        expect_substring: "IncompleteMatch",
     };
     assert_compile_err(&case);
 }
@@ -2356,6 +2356,224 @@ import app.models: User as AppUser
 
 cell main() -> Int
   return 1
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn generics_builtin_types() {
+    let case = CompileCase {
+        id: "generics_builtin",
+        source: r#"
+cell test_list() -> list[Int]
+  let items: list[Int] = [1, 2, 3]
+  return items
+end
+
+cell test_map() -> map[String, Int]
+  let m: map[String, Int] = {"a": 1}
+  return m
+end
+
+cell test_result_ok() -> result[String, String]
+  return ok("success")
+end
+
+cell test_set() -> set[String]
+  let s: set[String] = {"tag1", "tag2"}
+  return s
+end
+
+cell main() -> Int
+  return 0
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn generics_custom_record_single_param() {
+    let case = CompileCase {
+        id: "generics_custom_single",
+        source: r#"
+record Box[T]
+  value: T
+end
+
+cell make_box() -> Box[Int]
+  return Box[Int] { value: 42 }
+end
+
+cell main() -> Int
+  return 0
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn generics_custom_record_multiple_params() {
+    let case = CompileCase {
+        id: "generics_custom_multiple",
+        source: r#"
+record Pair[A, B]
+  first: A
+  second: B
+end
+
+cell make_pair() -> Pair[String, Int]
+  return Pair[String, Int] { first: "count", second: 10 }
+end
+
+cell main() -> Int
+  return 0
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn generics_nested() {
+    let case = CompileCase {
+        id: "generics_nested",
+        source: r#"
+cell nested_generics() -> list[map[String, Int]]
+  let data: list[map[String, Int]] = [{"a": 1}, {"b": 2}]
+  return data
+end
+
+cell main() -> Int
+  return 0
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn type_alias_function_params() {
+    let case = CompileCase {
+        id: "type_alias_params",
+        source: r#"
+type UserId = Int
+type UserName = String
+
+cell greet(id: UserId, name: UserName) -> String
+  return "hello"
+end
+
+cell main() -> Int
+  let result = greet(123, "Alice")
+  return 0
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn type_alias_return_type() {
+    let case = CompileCase {
+        id: "type_alias_return",
+        source: r#"
+type Score = Int
+
+cell get_score() -> Score
+  return 100
+end
+
+cell main() -> Int
+  let s: Score = get_score()
+  return 0
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn type_alias_record_fields() {
+    let case = CompileCase {
+        id: "type_alias_record_fields",
+        source: r#"
+type Timestamp = Int
+type Email = String
+
+record User
+  id: Int
+  email: Email
+  created: Timestamp
+end
+
+cell main() -> Int
+  let u = User { id: 1, email: "a@example.com", created: 1234567890 }
+  return 0
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn type_alias_let_binding() {
+    let case = CompileCase {
+        id: "type_alias_let",
+        source: r#"
+type Count = Int
+
+cell main() -> Int
+  let c: Count = 42
+  return c
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn type_alias_complex_types() {
+    let case = CompileCase {
+        id: "type_alias_complex",
+        source: r#"
+type StringMap = map[String, String]
+type IntList = list[Int]
+type MaybeInt = result[Int, String]
+
+cell test_aliases() -> Int
+  let m: StringMap = {"k": "v"}
+  let l: IntList = [1, 2, 3]
+  let r: MaybeInt = ok(42)
+  return 0
+end
+
+cell main() -> Int
+  return test_aliases()
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn type_alias_nested() {
+    let case = CompileCase {
+        id: "type_alias_nested",
+        source: r#"
+type UserId = Int
+type UserList = list[UserId]
+
+cell get_users() -> UserList
+  return [1, 2, 3]
+end
+
+cell main() -> Int
+  let users: UserList = get_users()
+  return 0
 end
 "#,
     };

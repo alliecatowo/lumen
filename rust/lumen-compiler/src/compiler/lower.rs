@@ -3261,6 +3261,33 @@ mod tests {
     }
 
     #[test]
+    fn test_noteq_in_if_condition_emits_inversion_before_test() {
+        let src = "cell pick(a: Int, b: Int) -> Int\n  if a != b\n    return 1\n  else\n    return 0\n  end\nend";
+        let module = lower_src(src);
+        let instrs = &module.cells[0].instructions;
+
+        let found_noteq_inversion_pair = instrs.windows(2).any(|window| {
+            let eq = &window[0];
+            let not = &window[1];
+            eq.op == OpCode::Eq
+                && not.op == OpCode::Not
+                && eq.a == not.a
+                && eq.a == not.b
+                && eq.a != eq.b
+                && eq.a != eq.c
+        });
+        assert!(
+            found_noteq_inversion_pair,
+            "expected NotEq condition to lower as Eq(dest, lhs, rhs) then Not(dest, dest)"
+        );
+
+        assert!(
+            instrs.iter().any(|i| i.op == OpCode::Test),
+            "if condition should emit Test"
+        );
+    }
+
+    #[test]
     fn test_closure_capture_count_matches_setupval() {
         // Verify that the number of SetUpval instructions matches the number of captures
         let src = "cell make_adder(x: Int) -> fn(Int) -> Int\n  return fn(y: Int) => x + y\nend";

@@ -39,6 +39,7 @@ pub enum ResolveError {
 pub struct SymbolTable {
     pub types: HashMap<String, TypeInfo>,
     pub cells: HashMap<String, CellInfo>,
+    pub cell_grants: HashMap<String, BTreeSet<String>>,
     pub tools: HashMap<String, ToolInfo>,
     pub agents: HashMap<String, AgentInfo>,
     pub processes: HashMap<String, ProcessInfo>,
@@ -190,6 +191,7 @@ impl SymbolTable {
         Self {
             types,
             cells: HashMap::new(),
+            cell_grants: HashMap::new(),
             tools: HashMap::new(),
             agents: HashMap::new(),
             processes: HashMap::new(),
@@ -209,6 +211,7 @@ impl SymbolTable {
 pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
     let mut table = SymbolTable::new();
     let mut errors = Vec::new();
+    let doc_mode = parse_directive_bool(program, "doc_mode").unwrap_or(false);
 
     // First pass: register all type and cell definitions
     for item in &program.items {
@@ -473,6 +476,8 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
         }
     }
 
+    table.cell_grants = build_cell_grants(program);
+
     // Second pass: verify all type references exist
     for item in &program.items {
         match item {
@@ -495,7 +500,15 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                 if let Some(ref rt) = c.return_type {
                     check_type_refs_with_generics(rt, &table, &mut errors, &generics);
                 }
-                check_effect_grants(c, &table, &mut errors);
+                if !doc_mode {
+                    check_effect_grants_for(
+                        &c.name,
+                        c.span.line,
+                        &c.effects,
+                        &table,
+                        &mut errors,
+                    );
+                }
             }
             Item::Agent(a) => {
                 for c in &a.cells {
@@ -510,7 +523,16 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                     if let Some(ref rt) = c.return_type {
                         check_type_refs_with_generics(rt, &table, &mut errors, &generics);
                     }
-                    check_effect_grants(c, &table, &mut errors);
+                    if !doc_mode {
+                        let fq = format!("{}.{}", a.name, c.name);
+                        check_effect_grants_for(
+                            &fq,
+                            c.span.line,
+                            &c.effects,
+                            &table,
+                            &mut errors,
+                        );
+                    }
                 }
             }
             Item::Process(p) => {
@@ -526,7 +548,16 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                     if let Some(ref rt) = c.return_type {
                         check_type_refs_with_generics(rt, &table, &mut errors, &generics);
                     }
-                    check_effect_grants(c, &table, &mut errors);
+                    if !doc_mode {
+                        let fq = format!("{}.{}", p.name, c.name);
+                        check_effect_grants_for(
+                            &fq,
+                            c.span.line,
+                            &c.effects,
+                            &table,
+                            &mut errors,
+                        );
+                    }
                 }
                 for g in &p.grants {
                     table.tools.entry(g.tool_alias.clone()).or_insert(ToolInfo {
@@ -563,8 +594,15 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                     if let Some(ref rt) = c.return_type {
                         check_type_refs_with_generics(rt, &table, &mut errors, &generics);
                     }
-                    if !c.body.is_empty() {
-                        check_effect_grants(c, &table, &mut errors);
+                    if !doc_mode && !c.body.is_empty() {
+                        let fq = format!("{}.{}", h.name, c.name);
+                        check_effect_grants_for(
+                            &fq,
+                            c.span.line,
+                            &c.effects,
+                            &table,
+                            &mut errors,
+                        );
                     }
                 }
             }
@@ -588,10 +626,6 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
     }
 }
 
-fn check_effect_grants(cell: &CellDef, table: &SymbolTable, errors: &mut Vec<ResolveError>) {
-    check_effect_grants_for(&cell.name, cell.span.line, &cell.effects, table, errors);
-}
-
 fn check_effect_grants_for(
     cell_name: &str,
     line: usize,
@@ -602,42 +636,32 @@ fn check_effect_grants_for(
     if effects.is_empty() {
         return;
     }
-    if table.tools.is_empty() {
-        return;
-    }
-
-    // Grants are represented as top-level declarations today, so we use
-    // declared tools as a conservative capability proxy.
-    let granted_tools: Vec<&ToolInfo> = table.tools.values().collect();
+    let granted_aliases = table
+        .cell_grants
+        .get(cell_name)
+        .cloned()
+        .unwrap_or_default();
+    let effect_bind_map = build_effect_bind_map(table);
 
     for effect in effects {
         let effect = normalize_effect(effect);
         if matches!(
             effect.as_str(),
-            "pure" | "trace" | "state" | "approve" | "emit" | "cache"
+            "pure"
+                | "trace"
+                | "state"
+                | "approve"
+                | "emit"
+                | "cache"
+                | "async"
+                | "random"
+                | "time"
         ) {
             continue;
         }
 
-        let mut satisfied = false;
-        for tool in &granted_tools {
-            let path = tool.tool_path.to_lowercase();
-            let has_mcp = tool.mcp_url.is_some();
-            satisfied = match effect.as_str() {
-                "http" => path.contains("http"),
-                "llm" => path.contains("llm") || path.contains("chat"),
-                "fs" => path.contains("fs") || path.contains("file"),
-                "database" => {
-                    path.contains("db") || path.contains("sql") || path.contains("postgres")
-                }
-                "email" => path.contains("email"),
-                "mcp" => has_mcp,
-                _ => true,
-            };
-            if satisfied {
-                break;
-            }
-        }
+        let satisfied =
+            is_effect_satisfied_by_grants(&effect, table, &granted_aliases, &effect_bind_map);
 
         if !satisfied {
             errors.push(ResolveError::MissingEffectGrant {
@@ -646,6 +670,118 @@ fn check_effect_grants_for(
                 line,
             });
         }
+    }
+}
+
+fn build_cell_grants(program: &Program) -> HashMap<String, BTreeSet<String>> {
+    let mut map: HashMap<String, BTreeSet<String>> = HashMap::new();
+    let mut global_grants: BTreeSet<String> = BTreeSet::new();
+
+    for item in &program.items {
+        if let Item::Grant(g) = item {
+            global_grants.insert(g.tool_alias.clone());
+        }
+    }
+
+    for item in &program.items {
+        match item {
+            Item::Cell(c) => {
+                map.insert(c.name.clone(), global_grants.clone());
+            }
+            Item::Agent(a) => {
+                let mut scoped = global_grants.clone();
+                for g in &a.grants {
+                    scoped.insert(g.tool_alias.clone());
+                }
+                for c in &a.cells {
+                    map.insert(format!("{}.{}", a.name, c.name), scoped.clone());
+                }
+            }
+            Item::Process(p) => {
+                let mut scoped = global_grants.clone();
+                for g in &p.grants {
+                    scoped.insert(g.tool_alias.clone());
+                }
+                for c in &p.cells {
+                    map.insert(format!("{}.{}", p.name, c.name), scoped.clone());
+                }
+            }
+            Item::Effect(e) => {
+                for op in &e.operations {
+                    map.insert(format!("{}.{}", e.name, op.name), global_grants.clone());
+                }
+            }
+            Item::Handler(h) => {
+                for handle in &h.handles {
+                    map.insert(
+                        format!("{}.{}", h.name, handle.name),
+                        global_grants.clone(),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    map
+}
+
+fn build_effect_bind_map(table: &SymbolTable) -> HashMap<String, BTreeSet<String>> {
+    let mut map: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for bind in &table.effect_binds {
+        let root = bind
+            .effect_path
+            .split('.')
+            .next()
+            .unwrap_or(bind.effect_path.as_str())
+            .to_ascii_lowercase();
+        map.entry(root).or_default().insert(bind.tool_alias.clone());
+    }
+    map
+}
+
+fn is_effect_satisfied_by_grants(
+    effect: &str,
+    table: &SymbolTable,
+    granted_aliases: &BTreeSet<String>,
+    effect_bind_map: &HashMap<String, BTreeSet<String>>,
+) -> bool {
+    if granted_aliases.is_empty() {
+        return false;
+    }
+
+    if let Some(bound_aliases) = effect_bind_map.get(effect) {
+        if granted_aliases.iter().any(|a| bound_aliases.contains(a)) {
+            return true;
+        }
+    }
+
+    match effect {
+        "mcp" => granted_aliases.iter().any(|alias| {
+            table
+                .tools
+                .get(alias)
+                .map(|t| t.mcp_url.is_some())
+                .unwrap_or(false)
+        }),
+        "external" => !granted_aliases.is_empty(),
+        "http" | "llm" | "fs" | "database" | "email" => granted_aliases.iter().any(|alias| {
+            let Some(tool) = table.tools.get(alias) else {
+                return false;
+            };
+            let path = tool.tool_path.to_ascii_lowercase();
+            match effect {
+                "http" => path.contains("http"),
+                "llm" => path.contains("llm") || path.contains("chat"),
+                "fs" => path.contains("fs") || path.contains("file"),
+                "database" => {
+                    path.contains("db") || path.contains("sql") || path.contains("postgres")
+                }
+                "email" => path.contains("email"),
+                _ => false,
+            }
+        }),
+        _ => false,
     }
 }
 
@@ -1144,7 +1280,7 @@ fn apply_effect_inference(
             declared
         };
 
-        if cell.declared.is_empty() {
+        if cell.declared.is_empty() && !doc_mode {
             let inferred_vec: Vec<String> = final_effects.iter().cloned().collect();
             check_effect_grants_for(&cell.name, cell.line, &inferred_vec, table, errors);
         }

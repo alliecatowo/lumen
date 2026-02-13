@@ -5,6 +5,7 @@ members = [
     "rust/lumen-vm",
     "rust/lumen-runtime",
     "rust/lumen-cli",
+    "rust/lumen-lsp",
 ]
 
 [workspace.package]
@@ -20,3 +21,4 @@ thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
 clap = { version = "4", features = ["derive"] }
+toml = "0.8"

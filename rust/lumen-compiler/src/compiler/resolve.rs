@@ -115,6 +115,22 @@ pub enum ResolveError {
         actual: String,
         line: usize,
     },
+    #[error("circular import detected: module '{module}' is already being compiled (chain: {chain})")]
+    CircularImport {
+        module: String,
+        chain: String,
+    },
+    #[error("module '{module}' not found at line {line}")]
+    ModuleNotFound {
+        module: String,
+        line: usize,
+    },
+    #[error("imported symbol '{symbol}' not found in module '{module}' at line {line}")]
+    ImportedSymbolNotFound {
+        symbol: String,
+        module: String,
+        line: usize,
+    },
 }
 
 /// Symbol table built during resolution
@@ -270,11 +286,31 @@ impl SymbolTable {
             consts: HashMap::new(),
         }
     }
+
+    /// Import a cell from an external module
+    pub fn import_cell(&mut self, name: String, info: CellInfo) {
+        self.cells.insert(name, info);
+    }
+
+    /// Import a type from an external module
+    pub fn import_type(&mut self, name: String, info: TypeInfo) {
+        self.types.insert(name, info);
+    }
+
+    /// Import a type alias from an external module
+    pub fn import_type_alias(&mut self, name: String, type_expr: TypeExpr) {
+        self.type_aliases.insert(name, type_expr);
+    }
 }
 
 /// Resolve all names in a program, building the symbol table.
 pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
-    let mut table = SymbolTable::new();
+    resolve_with_base(program, SymbolTable::new())
+}
+
+/// Resolve all names in a program, using a pre-populated symbol table as the base.
+/// This is useful for multi-file compilation where imported symbols need to be available.
+pub fn resolve_with_base(program: &Program, mut table: SymbolTable) -> Result<SymbolTable, Vec<ResolveError>> {
     let mut errors = Vec::new();
     let doc_mode = parse_directive_bool(program, "doc_mode").unwrap_or(false);
 

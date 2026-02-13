@@ -29,10 +29,6 @@ Completed work should be removed from this list and reflected in docs/changelog.
   - Define policy AST and evaluator.
   - Integrate policy checks in resolve + runtime tool call boundaries.
 
-- [ ] Add effect diagnostics improvements.
-  - Include source-level cause chains for inferred effects.
-  - Surface per-expression effect provenance in errors.
-
 ## Runtime and Determinism
 
 - [ ] Add replay/checkpoint model for long-running workflows.

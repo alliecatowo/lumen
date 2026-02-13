@@ -193,8 +193,11 @@ pub struct ProcessDecl {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineStateDecl {
     pub name: String,
+    pub params: Vec<Param>,
     pub terminal: bool,
+    pub guard: Option<Expr>,
     pub transition_to: Option<String>,
+    pub transition_args: Vec<Expr>,
     pub span: Span,
 }
 

@@ -42,6 +42,7 @@ Current runtime support:
 - `machine` methods:
   - `run`, `start`, `step`, `is_terminal`, `current_state`, `resume_from`
 - machine graph metadata is lowered via addons (`machine.initial`, `machine.state`) and drives deterministic runtime state transitions.
+- machine state metadata includes typed payload params, optional guard expressions, and transition arg expressions; runtime evaluates guards and rebinds payload on transitions.
 
 Process runtime state is instance-scoped, not globally shared by type name.
 

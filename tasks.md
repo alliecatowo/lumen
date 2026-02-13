@@ -5,10 +5,9 @@ Completed work should be removed from this list and reflected in docs/changelog.
 
 ## Language Semantics
 
-- [ ] Complete full typed `machine` graph semantics.
-  - Extend current parsed/validated machine graphs (initial state, reachability, terminal coverage, deterministic transition stepping) to typed transition payloads and guard evaluation.
-  - Validate transition argument compatibility end-to-end.
-  - Emit machine transition trace events and replay hooks.
+- [ ] Add machine transition trace events and replay hooks.
+  - Emit transition/guard evaluation events from runtime stepping.
+  - Integrate machine stepping into replay/checkpoint verifier.
 
 - [ ] Implement real effect handler semantics.
   - Add continuation-aware `handler` execution model.

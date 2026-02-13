@@ -2300,8 +2300,15 @@ impl Parser {
             });
         }
         let name = self.expect_ident()?;
+        let params = if matches!(self.peek_kind(), TokenKind::LParen) {
+            self.parse_machine_state_params()?
+        } else {
+            vec![]
+        };
         let mut terminal = false;
+        let mut guard = None;
         let mut transition_to = None;
+        let mut transition_args = Vec::new();
 
         self.skip_newlines();
         let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
@@ -2339,12 +2346,19 @@ impl Parser {
                     };
                     self.consume_rest_of_line();
                 }
+                TokenKind::Ident(id) if id == "guard" => {
+                    self.advance();
+                    if matches!(self.peek_kind(), TokenKind::Colon) {
+                        self.advance();
+                    }
+                    guard = Some(self.parse_expr(0)?);
+                    self.consume_rest_of_line();
+                }
                 TokenKind::Ident(id) if id == "transition" => {
                     self.advance();
-                    transition_to = Some(self.expect_ident()?);
-                    if matches!(self.peek_kind(), TokenKind::LParen) {
-                        self.consume_balanced_group();
-                    }
+                    let (target, args) = self.parse_machine_transition_decl()?;
+                    transition_to = Some(target);
+                    transition_args = args;
                     self.consume_rest_of_line();
                 }
                 TokenKind::Ident(id)
@@ -2367,10 +2381,9 @@ impl Parser {
                         if let TokenKind::Ident(id2) = self.peek_kind() {
                             if id2 == "transition" {
                                 self.advance();
-                                transition_to = Some(self.expect_ident()?);
-                                if matches!(self.peek_kind(), TokenKind::LParen) {
-                                    self.consume_balanced_group();
-                                }
+                                let (target, args) = self.parse_machine_transition_decl()?;
+                                transition_to = Some(target);
+                                transition_args = args;
                                 self.consume_rest_of_line();
                                 continue;
                             }
@@ -2402,10 +2415,65 @@ impl Parser {
 
         Ok(MachineStateDecl {
             name,
+            params,
             terminal,
+            guard,
             transition_to,
+            transition_args,
             span: start.merge(end_span),
         })
+    }
+
+    fn parse_machine_state_params(&mut self) -> Result<Vec<Param>, ParseError> {
+        let mut params = Vec::new();
+        self.expect(&TokenKind::LParen)?;
+        self.bracket_depth += 1;
+        self.skip_whitespace_tokens();
+        while !matches!(self.peek_kind(), TokenKind::RParen | TokenKind::Eof) {
+            if !params.is_empty() {
+                self.expect(&TokenKind::Comma)?;
+                self.skip_whitespace_tokens();
+            }
+            let ps = self.current().span;
+            let pname = self.expect_ident()?;
+            let pty = if matches!(self.peek_kind(), TokenKind::Colon) {
+                self.advance();
+                self.parse_type()?
+            } else {
+                TypeExpr::Named("Any".into(), ps)
+            };
+            params.push(Param {
+                name: pname,
+                ty: pty,
+                default_value: None,
+                span: ps,
+            });
+            self.skip_whitespace_tokens();
+        }
+        self.bracket_depth -= 1;
+        self.expect(&TokenKind::RParen)?;
+        Ok(params)
+    }
+
+    fn parse_machine_transition_decl(&mut self) -> Result<(String, Vec<Expr>), ParseError> {
+        let target = self.expect_ident()?;
+        let mut args = Vec::new();
+        if matches!(self.peek_kind(), TokenKind::LParen) {
+            self.expect(&TokenKind::LParen)?;
+            self.bracket_depth += 1;
+            self.skip_whitespace_tokens();
+            while !matches!(self.peek_kind(), TokenKind::RParen | TokenKind::Eof) {
+                if !args.is_empty() {
+                    self.expect(&TokenKind::Comma)?;
+                    self.skip_whitespace_tokens();
+                }
+                args.push(self.parse_expr(0)?);
+                self.skip_whitespace_tokens();
+            }
+            self.bracket_depth -= 1;
+            self.expect(&TokenKind::RParen)?;
+        }
+        Ok((target, args))
     }
 
     fn parse_effect_bind_decl(&mut self) -> Result<EffectBindDecl, ParseError> {
@@ -4868,12 +4936,13 @@ end"#;
     fn test_parse_machine_state_block() {
         let src = r#"machine TicketFlow
   initial: Start
-  state Start
+  state Start(ticket: Int)
+    guard: ticket > 0
     on_enter() / {trace}
-      transition Done()
+      transition Done(ticket)
     end
   end
-  state Done
+  state Done(value: Int)
     terminal: true
   end
 end"#;
@@ -4889,12 +4958,18 @@ end"#;
                 .iter()
                 .find(|s| s.name == "Start")
                 .expect("Start state should be parsed");
+            assert_eq!(start_state.params.len(), 1);
+            assert_eq!(start_state.params[0].name, "ticket");
+            assert!(start_state.guard.is_some());
             assert_eq!(start_state.transition_to.as_deref(), Some("Done"));
+            assert_eq!(start_state.transition_args.len(), 1);
             let done_state = p
                 .machine_states
                 .iter()
                 .find(|s| s.name == "Done")
                 .expect("Done state should be parsed");
+            assert_eq!(done_state.params.len(), 1);
+            assert_eq!(done_state.params[0].name, "value");
             assert!(done_state.terminal);
         } else {
             panic!("expected process");

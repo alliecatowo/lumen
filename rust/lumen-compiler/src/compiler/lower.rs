@@ -83,13 +83,30 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                     grants: serde_json::Value::Object(grants),
                 });
             }
-            // New item types: skip for now (no LIR lowering yet)
-            Item::TypeAlias(_)
-            | Item::Trait(_)
-            | Item::Impl(_)
-            | Item::Import(_)
-            | Item::ConstDecl(_)
-            | Item::MacroDecl(_) => {}
+            Item::TypeAlias(ta) => module.addons.push(LirAddon {
+                kind: "type_alias".into(),
+                name: Some(ta.name.clone()),
+            }),
+            Item::Trait(t) => module.addons.push(LirAddon {
+                kind: "trait".into(),
+                name: Some(t.name.clone()),
+            }),
+            Item::Impl(i) => module.addons.push(LirAddon {
+                kind: "impl".into(),
+                name: Some(format!("{} for {}", i.trait_name, i.target_type)),
+            }),
+            Item::Import(i) => module.addons.push(LirAddon {
+                kind: "import".into(),
+                name: Some(i.path.join(".")),
+            }),
+            Item::ConstDecl(c) => module.addons.push(LirAddon {
+                kind: "const".into(),
+                name: Some(c.name.clone()),
+            }),
+            Item::MacroDecl(m) => module.addons.push(LirAddon {
+                kind: "macro_decl".into(),
+                name: Some(m.name.clone()),
+            }),
         }
     }
 
@@ -739,6 +756,14 @@ impl<'a> Lowerer<'a> {
             Expr::Ident(name, _) => {
                 if let Some(reg) = ra.lookup(name) {
                     reg
+                } else if let Some(const_info) = self.symbols.consts.get(name) {
+                    if let Some(ref value_expr) = const_info.value {
+                        self.lower_expr(value_expr, ra, consts, instrs)
+                    } else {
+                        let dest = ra.alloc_temp();
+                        instrs.push(Instruction::abc(OpCode::LoadNil, dest, 0, 0));
+                        dest
+                    }
                 } else if self.symbols.types.values().any(|t| matches!(&t.kind, crate::compiler::resolve::TypeInfoKind::Enum(e) if e.variants.iter().any(|v| v.name == *name))) {
                     // Enum Variant Constructor (Union with no payload)
                     let dest = ra.alloc_temp();

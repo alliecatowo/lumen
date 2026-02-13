@@ -364,16 +364,7 @@ impl Parser {
             TokenKind::Impl => Ok(Item::Impl(self.parse_impl_def()?)),
             TokenKind::Import => Ok(Item::Import(self.parse_import(is_pub)?)),
             TokenKind::Const => Ok(Item::ConstDecl(self.parse_const_decl()?)),
-            TokenKind::Macro => {
-                let start = self.current().span;
-                self.advance();
-                self.consume_block_until_end();
-                Ok(Item::Addon(AddonDecl {
-                    kind: "macro".into(),
-                    name: None,
-                    span: start.merge(self.current().span),
-                }))
-            }
+            TokenKind::Macro => Ok(Item::MacroDecl(self.parse_macro_decl()?)),
             TokenKind::Schema => {
                 let start = self.current().span;
                 self.advance();
@@ -1685,6 +1676,47 @@ impl Parser {
             name,
             type_ann,
             value,
+            span,
+        })
+    }
+
+    fn parse_macro_decl(&mut self) -> Result<MacroDeclDef, ParseError> {
+        let start = self.expect(&TokenKind::Macro)?.span;
+        let mut name = if matches!(self.peek_kind(), TokenKind::Ident(_)) {
+            self.expect_ident()?
+        } else {
+            "__macro".to_string()
+        };
+        if matches!(self.peek_kind(), TokenKind::Bang) {
+            self.advance();
+            name.push('!');
+        }
+
+        let mut params = Vec::new();
+        if matches!(self.peek_kind(), TokenKind::LParen) {
+            self.advance();
+            while !matches!(self.peek_kind(), TokenKind::RParen | TokenKind::Eof) {
+                if matches!(self.peek_kind(), TokenKind::Comma) {
+                    self.advance();
+                    continue;
+                }
+                if Self::is_identifier_like(self.peek_kind()) {
+                    params.push(self.expect_ident()?);
+                } else {
+                    self.advance();
+                }
+            }
+            if matches!(self.peek_kind(), TokenKind::RParen) {
+                self.advance();
+            }
+        }
+
+        self.consume_block_until_end();
+        let span = start.merge(self.current().span);
+        Ok(MacroDeclDef {
+            name,
+            params,
+            body: vec![],
             span,
         })
     }

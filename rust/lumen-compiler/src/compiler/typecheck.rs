@@ -578,6 +578,23 @@ impl<'a> TypeChecker<'a> {
             Expr::Ident(name, span) => {
                 if let Some(ty) = self.locals.get(name) {
                     ty.clone()
+                } else if let Some(const_info) = self.symbols.consts.get(name) {
+                    if let Some(ref ty) = const_info.ty {
+                        resolve_type_expr(ty, self.symbols)
+                    } else if let Some(ref val) = const_info.value {
+                        match val {
+                            Expr::IntLit(_, _) => Type::Int,
+                            Expr::FloatLit(_, _) => Type::Float,
+                            Expr::StringLit(_, _) | Expr::StringInterp(_, _) => Type::String,
+                            Expr::BoolLit(_, _) => Type::Bool,
+                            Expr::NullLit(_) => Type::Null,
+                            Expr::ListLit(_, _) => Type::List(Box::new(Type::Any)),
+                            Expr::MapLit(_, _) => Type::Map(Box::new(Type::String), Box::new(Type::Any)),
+                            _ => Type::Any,
+                        }
+                    } else {
+                        Type::Any
+                    }
                 } else if self.symbols.cells.contains_key(name) {
                     Type::Any
                 }

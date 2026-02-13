@@ -110,6 +110,7 @@ pub struct ImplInfo {
 pub struct ConstInfo {
     pub name: String,
     pub ty: Option<TypeExpr>,
+    pub value: Option<Expr>,
 }
 
 impl SymbolTable {
@@ -384,6 +385,7 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
                     ConstInfo {
                         name: c.name.clone(),
                         ty: c.type_ann.clone(),
+                        value: Some(c.value.clone()),
                     },
                 );
             }

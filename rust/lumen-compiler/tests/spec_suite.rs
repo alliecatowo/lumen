@@ -434,6 +434,22 @@ end
 "#,
             expect_substring: "unknown constraint function",
         },
+        ErrorCase {
+            id: "effect_contract_violation",
+            source: r#"
+use tool http.get as HttpGet
+grant HttpGet
+
+cell fetch() -> Int / {http}
+  return 1
+end
+
+cell main() -> Int / {emit}
+  return fetch()
+end
+"#,
+            expect_substring: "effectcontractviolation",
+        },
     ];
 
     for case in &cases {
@@ -447,6 +463,9 @@ fn spec_v2_addendum_coverage_targets() {
         CompileCase {
             id: "effect_rows",
             source: r#"
+use tool http.get as HttpGet
+grant HttpGet
+
 cell fetch(url: String) -> Bytes / {http}
   return HttpGet(url: url).body
 end
@@ -476,11 +495,10 @@ end
         CompileCase {
             id: "agent_declaration",
             source: r#"
-agent Assistant
-  role:
-    You are helpful.
-  end
+use tool llm.chat as Chat
+grant Chat
 
+agent Assistant
   cell respond(input: String) -> String / {llm}
     return Chat(role user: input)
   end
@@ -523,7 +541,7 @@ end
         CompileCase {
             id: "approval_checkpoint_escalate_confirm",
             source: r#"
-cell main() -> Bool / {approve}
+cell main() -> Bool / {approve, emit}
   approve "proceed?"
     on_approve:
       continue
@@ -596,6 +614,9 @@ end
         CompileCase {
             id: "distributed_execution_annotations",
             source: r#"
+use tool http.get as HttpGet
+grant HttpGet
+
 @remote("us-east-1")
 cell fetch_data() -> Int / {http}
   return 1

@@ -26,6 +26,13 @@ pub enum ResolveError {
         effect: String,
         line: usize,
     },
+    #[error("cell '{caller}' calls '{callee}' which requires effect '{effect}' not present in caller effect row (line {line})")]
+    EffectContractViolation {
+        caller: String,
+        callee: String,
+        effect: String,
+        line: usize,
+    },
     #[error("cell '{cell}' uses nondeterministic operation/effect '{operation}' under @deterministic (line {line})")]
     NondeterministicOperation {
         cell: String,
@@ -797,6 +804,14 @@ fn normalize_effect(effect: &str) -> String {
     effect.trim().to_ascii_lowercase()
 }
 
+fn normalized_non_pure_effects(effects: &[String]) -> BTreeSet<String> {
+    effects
+        .iter()
+        .map(|e| normalize_effect(e))
+        .filter(|e| !e.is_empty() && e != "pure")
+        .collect()
+}
+
 fn parse_directive_bool(program: &Program, name: &str) -> Option<bool> {
     if let Some(directive) = program
         .directives
@@ -970,6 +985,274 @@ fn infer_pattern_effects(
     }
 }
 
+#[derive(Debug, Clone)]
+struct CallRequirement {
+    callee: String,
+    effects: BTreeSet<String>,
+    line: usize,
+}
+
+fn resolve_call_target_effects(
+    callee: &Expr,
+    table: &SymbolTable,
+) -> Option<(String, BTreeSet<String>)> {
+    match callee {
+        Expr::Ident(name, _) => {
+            if let Some(info) = table.cells.get(name) {
+                return Some((name.clone(), normalized_non_pure_effects(&info.effects)));
+            }
+            if table.tools.contains_key(name) {
+                let mut effects = BTreeSet::new();
+                effects.insert(
+                    effect_from_tool(name, table).unwrap_or_else(|| "external".to_string()),
+                );
+                return Some((format!("tool {}", name), effects));
+            }
+            None
+        }
+        Expr::DotAccess(obj, field, _) => {
+            if let Expr::Ident(owner, _) = obj.as_ref() {
+                let fq = format!("{}.{}", owner, field);
+                table
+                    .cells
+                    .get(&fq)
+                    .map(|info| (fq, normalized_non_pure_effects(&info.effects)))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn resolve_tool_call_effect(callee: &Expr, table: &SymbolTable) -> (String, String) {
+    match callee {
+        Expr::Ident(alias, _) => {
+            let effect = effect_from_tool(alias, table).unwrap_or_else(|| "external".into());
+            (format!("tool {}", alias), effect)
+        }
+        _ => ("tool <dynamic>".into(), "external".into()),
+    }
+}
+
+fn collect_pattern_call_requirements(
+    pat: &Pattern,
+    table: &SymbolTable,
+    out: &mut Vec<CallRequirement>,
+) {
+    match pat {
+        Pattern::Guard {
+            inner, condition, ..
+        } => {
+            collect_pattern_call_requirements(inner, table, out);
+            collect_expr_call_requirements(condition, table, out);
+        }
+        Pattern::Or { patterns, .. } => {
+            for p in patterns {
+                collect_pattern_call_requirements(p, table, out);
+            }
+        }
+        Pattern::ListDestructure { elements, .. } | Pattern::TupleDestructure { elements, .. } => {
+            for p in elements {
+                collect_pattern_call_requirements(p, table, out);
+            }
+        }
+        Pattern::RecordDestructure { fields, .. } => {
+            for (_, p) in fields {
+                if let Some(p) = p {
+                    collect_pattern_call_requirements(p, table, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_stmt_call_requirements(
+    stmt: &Stmt,
+    table: &SymbolTable,
+    out: &mut Vec<CallRequirement>,
+) {
+    match stmt {
+        Stmt::Let(s) => collect_expr_call_requirements(&s.value, table, out),
+        Stmt::If(s) => {
+            collect_expr_call_requirements(&s.condition, table, out);
+            for st in &s.then_body {
+                collect_stmt_call_requirements(st, table, out);
+            }
+            if let Some(else_body) = &s.else_body {
+                for st in else_body {
+                    collect_stmt_call_requirements(st, table, out);
+                }
+            }
+        }
+        Stmt::For(s) => {
+            collect_expr_call_requirements(&s.iter, table, out);
+            for st in &s.body {
+                collect_stmt_call_requirements(st, table, out);
+            }
+        }
+        Stmt::Match(s) => {
+            collect_expr_call_requirements(&s.subject, table, out);
+            for arm in &s.arms {
+                collect_pattern_call_requirements(&arm.pattern, table, out);
+                for st in &arm.body {
+                    collect_stmt_call_requirements(st, table, out);
+                }
+            }
+        }
+        Stmt::Return(s) => collect_expr_call_requirements(&s.value, table, out),
+        Stmt::Halt(s) => collect_expr_call_requirements(&s.message, table, out),
+        Stmt::Assign(s) => collect_expr_call_requirements(&s.value, table, out),
+        Stmt::Expr(s) => collect_expr_call_requirements(&s.expr, table, out),
+        Stmt::While(s) => {
+            collect_expr_call_requirements(&s.condition, table, out);
+            for st in &s.body {
+                collect_stmt_call_requirements(st, table, out);
+            }
+        }
+        Stmt::Loop(s) => {
+            for st in &s.body {
+                collect_stmt_call_requirements(st, table, out);
+            }
+        }
+        Stmt::Emit(s) => collect_expr_call_requirements(&s.value, table, out),
+        Stmt::CompoundAssign(s) => collect_expr_call_requirements(&s.value, table, out),
+        Stmt::Break(_) | Stmt::Continue(_) => {}
+    }
+}
+
+fn collect_expr_call_requirements(
+    expr: &Expr,
+    table: &SymbolTable,
+    out: &mut Vec<CallRequirement>,
+) {
+    match expr {
+        Expr::BinOp(lhs, _, rhs, _) | Expr::NullCoalesce(lhs, rhs, _) => {
+            collect_expr_call_requirements(lhs, table, out);
+            collect_expr_call_requirements(rhs, table, out);
+        }
+        Expr::UnaryOp(_, inner, _)
+        | Expr::ExpectSchema(inner, _, _)
+        | Expr::TryExpr(inner, _)
+        | Expr::AwaitExpr(inner, _)
+        | Expr::NullAssert(inner, _)
+        | Expr::SpreadExpr(inner, _) => collect_expr_call_requirements(inner, table, out),
+        Expr::Call(callee, args, span) => {
+            collect_expr_call_requirements(callee, table, out);
+            for a in args {
+                match a {
+                    CallArg::Positional(e) | CallArg::Named(_, e, _) | CallArg::Role(_, e, _) => {
+                        collect_expr_call_requirements(e, table, out)
+                    }
+                }
+            }
+            if let Some((target, effects)) = resolve_call_target_effects(callee, table) {
+                if !effects.is_empty() {
+                    out.push(CallRequirement {
+                        callee: target,
+                        effects,
+                        line: span.line,
+                    });
+                }
+            }
+        }
+        Expr::ToolCall(callee, args, span) => {
+            for a in args {
+                match a {
+                    CallArg::Positional(e) | CallArg::Named(_, e, _) | CallArg::Role(_, e, _) => {
+                        collect_expr_call_requirements(e, table, out)
+                    }
+                }
+            }
+            let (callee_name, effect) = resolve_tool_call_effect(callee, table);
+            let mut effects = BTreeSet::new();
+            effects.insert(normalize_effect(&effect));
+            out.push(CallRequirement {
+                callee: callee_name,
+                effects,
+                line: span.line,
+            });
+        }
+        Expr::ListLit(items, _) | Expr::TupleLit(items, _) | Expr::SetLit(items, _) => {
+            for e in items {
+                collect_expr_call_requirements(e, table, out);
+            }
+        }
+        Expr::MapLit(items, _) => {
+            for (k, v) in items {
+                collect_expr_call_requirements(k, table, out);
+                collect_expr_call_requirements(v, table, out);
+            }
+        }
+        Expr::RecordLit(_, fields, _) => {
+            for (_, e) in fields {
+                collect_expr_call_requirements(e, table, out);
+            }
+        }
+        Expr::DotAccess(obj, _, _) | Expr::NullSafeAccess(obj, _, _) => {
+            collect_expr_call_requirements(obj, table, out);
+        }
+        Expr::IndexAccess(obj, idx, _) => {
+            collect_expr_call_requirements(obj, table, out);
+            collect_expr_call_requirements(idx, table, out);
+        }
+        Expr::RoleBlock(_, inner, _) => collect_expr_call_requirements(inner, table, out),
+        Expr::Lambda { body, .. } => match body {
+            LambdaBody::Expr(e) => collect_expr_call_requirements(e, table, out),
+            LambdaBody::Block(stmts) => {
+                for s in stmts {
+                    collect_stmt_call_requirements(s, table, out);
+                }
+            }
+        },
+        Expr::IfExpr {
+            cond,
+            then_val,
+            else_val,
+            ..
+        } => {
+            collect_expr_call_requirements(cond, table, out);
+            collect_expr_call_requirements(then_val, table, out);
+            collect_expr_call_requirements(else_val, table, out);
+        }
+        Expr::Comprehension {
+            body,
+            iter,
+            condition,
+            ..
+        } => {
+            collect_expr_call_requirements(iter, table, out);
+            if let Some(c) = condition {
+                collect_expr_call_requirements(c, table, out);
+            }
+            collect_expr_call_requirements(body, table, out);
+        }
+        Expr::RangeExpr {
+            start, end, step, ..
+        } => {
+            if let Some(s) = start {
+                collect_expr_call_requirements(s, table, out);
+            }
+            if let Some(e) = end {
+                collect_expr_call_requirements(e, table, out);
+            }
+            if let Some(st) = step {
+                collect_expr_call_requirements(st, table, out);
+            }
+        }
+        Expr::IntLit(_, _)
+        | Expr::FloatLit(_, _)
+        | Expr::StringLit(_, _)
+        | Expr::StringInterp(_, _)
+        | Expr::BoolLit(_, _)
+        | Expr::NullLit(_)
+        | Expr::Ident(_, _)
+        | Expr::RawStringLit(_, _)
+        | Expr::BytesLit(_, _) => {}
+    }
+}
+
 fn infer_stmt_effects(
     stmt: &Stmt,
     table: &SymbolTable,
@@ -1063,6 +1346,13 @@ fn infer_expr_effects(
                 Expr::Ident(name, _) => {
                     if let Some(effects) = current.get(name) {
                         out.extend(effects.iter().cloned());
+                    }
+                    if table.tools.contains_key(name) {
+                        if let Some(effect) = effect_from_tool(name, table) {
+                            out.insert(effect);
+                        } else {
+                            out.insert("external".into());
+                        }
                     }
                     if name == "emit" || name == "print" {
                         out.insert("emit".into());
@@ -1290,7 +1580,50 @@ fn apply_effect_inference(
         }
     }
 
+    enforce_effect_call_compatibility(program, table, &cells, errors);
     enforce_deterministic_profile(program, table, &cells, errors);
+}
+
+fn enforce_effect_call_compatibility(
+    program: &Program,
+    table: &SymbolTable,
+    cells: &[EffectCell],
+    errors: &mut Vec<ResolveError>,
+) {
+    let strict = parse_directive_bool(program, "strict").unwrap_or(true);
+    let doc_mode = parse_directive_bool(program, "doc_mode").unwrap_or(false);
+    if !strict || doc_mode {
+        return;
+    }
+
+    for cell in cells {
+        let Some(info) = table.cells.get(&cell.name) else {
+            continue;
+        };
+        let caller_effects = normalized_non_pure_effects(&info.effects);
+
+        let mut reqs = Vec::new();
+        for stmt in &cell.body {
+            collect_stmt_call_requirements(stmt, table, &mut reqs);
+        }
+
+        let mut seen = BTreeSet::new();
+        for req in reqs {
+            for effect in req.effects {
+                if caller_effects.contains(&effect) {
+                    continue;
+                }
+                if seen.insert((req.callee.clone(), effect.clone(), req.line)) {
+                    errors.push(ResolveError::EffectContractViolation {
+                        caller: cell.name.clone(),
+                        callee: req.callee.clone(),
+                        effect,
+                        line: req.line,
+                    });
+                }
+            }
+        }
+    }
 }
 
 fn enforce_deterministic_profile(
@@ -1539,5 +1872,41 @@ mod tests {
             ResolveError::NondeterministicOperation { cell, operation, .. }
             if cell == "main" && operation == "random"
         )));
+    }
+
+    #[test]
+    fn test_effect_contract_violation_on_cell_call() {
+        let err = resolve_src(
+            "use tool http.get as HttpGet\ngrant HttpGet\n\ncell fetch() -> Int / {http}\n  return 1\nend\n\ncell main() -> Int / {emit}\n  return fetch()\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::EffectContractViolation { caller, callee, effect, .. }
+            if caller == "main" && callee == "fetch" && effect == "http"
+        )));
+    }
+
+    #[test]
+    fn test_effect_contract_violation_on_tool_call() {
+        let err = resolve_src(
+            "use tool http.get as HttpGet\n\ngrant HttpGet\n\ncell main() -> String / {emit}\n  return string(HttpGet(url: \"https://example.com\"))\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::EffectContractViolation { caller, callee, effect, .. }
+            if caller == "main" && callee == "tool HttpGet" && effect == "http"
+        )));
+    }
+
+    #[test]
+    fn test_effect_contract_allows_declared_callee_effects() {
+        let table = resolve_src(
+            "use tool http.get as HttpGet\ngrant HttpGet\n\ncell fetch() -> Int / {http}\n  return 1\nend\n\ncell main() -> Int / {http}\n  return fetch()\nend",
+        )
+        .unwrap();
+        let effects = &table.cells.get("main").unwrap().effects;
+        assert!(effects.contains(&"http".to_string()));
     }
 }

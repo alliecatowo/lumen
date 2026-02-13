@@ -2980,7 +2980,7 @@ impl Parser {
     fn parse_type(&mut self) -> Result<TypeExpr, ParseError> {
         let base = self.parse_base_type()?;
         // Check for union: T | U
-        let ty = if matches!(self.peek_kind(), TokenKind::Pipe | TokenKind::Ampersand) {
+        if matches!(self.peek_kind(), TokenKind::Pipe | TokenKind::Ampersand) {
             let mut types = vec![base];
             while matches!(self.peek_kind(), TokenKind::Pipe | TokenKind::Ampersand) {
                 self.advance();
@@ -2991,17 +2991,10 @@ impl Parser {
                 .unwrap()
                 .span()
                 .merge(types.last().unwrap().span());
-            TypeExpr::Union(types, span)
+            Ok(TypeExpr::Union(types, span))
         } else {
-            base
-        };
-
-        // Optional effect row in type position: fn(...) -> T / E
-        if matches!(self.peek_kind(), TokenKind::Slash) {
-            let _ = self.parse_optional_effect_row()?;
+            Ok(base)
         }
-
-        Ok(ty)
     }
 
     fn parse_base_type(&mut self) -> Result<TypeExpr, ParseError> {
@@ -4545,6 +4538,17 @@ mod tests {
         if let Item::Cell(c) = &prog.items[0] {
             assert_eq!(c.name, "add");
             assert_eq!(c.params.len(), 2);
+        } else {
+            panic!("expected cell");
+        }
+    }
+
+    #[test]
+    fn test_parse_cell_effect_row_preserved_after_return_type() {
+        let prog = parse_src("cell main() -> Int / {http, emit}\n  return 1\nend").unwrap();
+        assert_eq!(prog.items.len(), 1);
+        if let Item::Cell(c) = &prog.items[0] {
+            assert_eq!(c.effects, vec!["http".to_string(), "emit".to_string()]);
         } else {
             panic!("expected cell");
         }

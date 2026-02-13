@@ -185,6 +185,16 @@ pub struct ProcessDecl {
     pub name: String,
     pub cells: Vec<CellDef>,
     pub grants: Vec<GrantDecl>,
+    pub machine_initial: Option<String>,
+    pub machine_states: Vec<MachineStateDecl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineStateDecl {
+    pub name: String,
+    pub terminal: bool,
+    pub transition_to: Option<String>,
     pub span: Span,
 }
 

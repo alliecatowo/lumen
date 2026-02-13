@@ -80,6 +80,30 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                     kind: p.kind.clone(),
                     name: Some(p.name.clone()),
                 });
+                if p.kind == "machine" && !p.machine_states.is_empty() {
+                    let initial = p
+                        .machine_initial
+                        .clone()
+                        .or_else(|| p.machine_states.first().map(|s| s.name.clone()))
+                        .unwrap_or_default();
+                    module.addons.push(LirAddon {
+                        kind: "machine.initial".to_string(),
+                        name: Some(format!("{}={}", p.name, initial)),
+                    });
+                    for state in &p.machine_states {
+                        let next = state.transition_to.clone().unwrap_or_default();
+                        module.addons.push(LirAddon {
+                            kind: "machine.state".to_string(),
+                            name: Some(format!(
+                                "{}|{}|{}|{}",
+                                p.name,
+                                state.name,
+                                if state.terminal { "1" } else { "0" },
+                                next
+                            )),
+                        });
+                    }
+                }
                 for cell in &p.cells {
                     let mut lowered = cell.clone();
                     lowered.name = format!("{}.{}", p.name, cell.name);

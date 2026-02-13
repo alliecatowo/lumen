@@ -1153,3 +1153,558 @@ end
     );
     assert_eq!(result, Value::Int(24));
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Higher-order functions and closures
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn e2e_higher_order_map() {
+    let result = run_main(
+        r#"
+cell apply_to_list(f: fn(Int) -> Int, xs: list[Int]) -> list[Int]
+  let mut result = []
+  for x in xs
+    result = append(result, f(x))
+  end
+  return result
+end
+
+cell double(x: Int) -> Int
+  return x * 2
+end
+
+cell main() -> list[Int]
+  return apply_to_list(double, [1, 2, 3])
+end
+"#,
+    );
+    if let Value::List(items) = &result {
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0], Value::Int(2));
+        assert_eq!(items[1], Value::Int(4));
+        assert_eq!(items[2], Value::Int(6));
+    } else {
+        panic!("expected list, got {:?}", result);
+    }
+}
+
+#[test]
+fn e2e_higher_order_filter() {
+    let result = run_main(
+        r#"
+cell filter_list(pred: fn(Int) -> Bool, xs: list[Int]) -> list[Int]
+  let mut result = []
+  for x in xs
+    if pred(x)
+      result = append(result, x)
+    end
+  end
+  return result
+end
+
+cell is_even(x: Int) -> Bool
+  return x % 2 == 0
+end
+
+cell main() -> list[Int]
+  return filter_list(is_even, [1, 2, 3, 4, 5, 6])
+end
+"#,
+    );
+    if let Value::List(items) = &result {
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0], Value::Int(2));
+        assert_eq!(items[1], Value::Int(4));
+        assert_eq!(items[2], Value::Int(6));
+    } else {
+        panic!("expected list, got {:?}", result);
+    }
+}
+
+#[test]
+fn e2e_higher_order_reduce() {
+    let result = run_main(
+        r#"
+cell reduce_list(f: fn(Int, Int) -> Int, init: Int, xs: list[Int]) -> Int
+  let mut acc = init
+  for x in xs
+    acc = f(acc, x)
+  end
+  return acc
+end
+
+cell add(a: Int, b: Int) -> Int
+  return a + b
+end
+
+cell main() -> Int
+  return reduce_list(add, 0, [1, 2, 3, 4, 5])
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(15));
+}
+
+#[test]
+fn e2e_closure_capture_single() {
+    let result = run_main(
+        r#"
+cell make_adder(n: Int) -> fn(Int) -> Int
+  return fn(x: Int) => x + n
+end
+
+cell main() -> Int
+  let add5 = make_adder(5)
+  return add5(10)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(15));
+}
+
+#[test]
+fn e2e_closure_nested() {
+    let result = run_main(
+        r#"
+cell make_multiplier(factor: Int) -> fn(Int) -> Int
+  return fn(x: Int) => x * factor
+end
+
+cell main() -> Int
+  let mul3 = make_multiplier(3)
+  let mul4 = make_multiplier(4)
+  return mul3(5) + mul4(5)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(35)); // 15 + 20
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Recursive function calls
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn e2e_recursive_sum_to_n() {
+    let result = run_main(
+        r#"
+cell sum_to(n: Int) -> Int
+  if n <= 0
+    return 0
+  end
+  return n + sum_to(n - 1)
+end
+
+cell main() -> Int
+  return sum_to(10)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(55)); // 1+2+3+...+10
+}
+
+#[test]
+fn e2e_recursive_power() {
+    let result = run_main(
+        r#"
+cell power(base: Int, exp: Int) -> Int
+  if exp == 0
+    return 1
+  end
+  return base * power(base, exp - 1)
+end
+
+cell main() -> Int
+  return power(2, 10)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(1024));
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// String intrinsics
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn e2e_string_split() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let parts = split("a,b,c", ",")
+  return length(parts)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(3));
+}
+
+#[test]
+fn e2e_string_join() {
+    let result = run_main(
+        r#"
+cell main() -> String
+  let parts = ["hello", "world"]
+  return join(parts, " ")
+end
+"#,
+    );
+    match &result {
+        Value::String(StringRef::Owned(s)) => assert_eq!(s, "hello world"),
+        other => panic!("expected 'hello world', got {:?}", other),
+    }
+}
+
+#[test]
+fn e2e_string_replace() {
+    let result = run_main(
+        r#"
+cell main() -> String
+  return replace("hello world", "world", "Lumen")
+end
+"#,
+    );
+    match &result {
+        Value::String(StringRef::Owned(s)) => assert_eq!(s, "hello Lumen"),
+        other => panic!("expected 'hello Lumen', got {:?}", other),
+    }
+}
+
+#[test]
+fn e2e_string_trim() {
+    let result = run_main(
+        r#"
+cell main() -> String
+  return trim("  hello  ")
+end
+"#,
+    );
+    match &result {
+        Value::String(StringRef::Owned(s)) => assert_eq!(s, "hello"),
+        other => panic!("expected 'hello', got {:?}", other),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Math intrinsics
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn e2e_math_abs() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  return abs(-42)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(42));
+}
+
+#[test]
+fn e2e_math_min() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  return min(10, 5)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(5));
+}
+
+#[test]
+fn e2e_math_max() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  return max(10, 5)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(10));
+}
+
+#[test]
+fn e2e_math_clamp() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  return clamp(15, 0, 10)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(10));
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// List intrinsics
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn e2e_list_sort() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  return sort([3, 1, 4, 1, 5, 9, 2, 6])
+end
+"#,
+    );
+    if let Value::List(items) = &result {
+        assert_eq!(items[0], Value::Int(1));
+        assert_eq!(items[1], Value::Int(1));
+        assert_eq!(items[2], Value::Int(2));
+        assert_eq!(items[3], Value::Int(3));
+    } else {
+        panic!("expected list, got {:?}", result);
+    }
+}
+
+#[test]
+fn e2e_list_reverse() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  return reverse([1, 2, 3, 4, 5])
+end
+"#,
+    );
+    if let Value::List(items) = &result {
+        assert_eq!(items.len(), 5);
+        assert_eq!(items[0], Value::Int(5));
+        assert_eq!(items[1], Value::Int(4));
+        assert_eq!(items[2], Value::Int(3));
+    } else {
+        panic!("expected list, got {:?}", result);
+    }
+}
+
+#[test]
+fn e2e_list_flatten() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  let nested = [[1, 2], [3, 4], [5]]
+  return flatten(nested)
+end
+"#,
+    );
+    if let Value::List(items) = &result {
+        assert_eq!(items.len(), 5);
+        assert_eq!(items[0], Value::Int(1));
+        assert_eq!(items[4], Value::Int(5));
+    } else {
+        panic!("expected list, got {:?}", result);
+    }
+}
+
+#[test]
+fn e2e_list_unique() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  return unique([1, 2, 2, 3, 3, 3, 4])
+end
+"#,
+    );
+    if let Value::List(items) = &result {
+        assert_eq!(items.len(), 4);
+        assert_eq!(items[0], Value::Int(1));
+        assert_eq!(items[3], Value::Int(4));
+    } else {
+        panic!("expected list, got {:?}", result);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Record operations
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn e2e_record_construction_and_field_access() {
+    let result = run_main(
+        r#"
+record Person
+  name: String
+  age: Int
+end
+
+cell get_age(p: Person) -> Int
+  return p.age
+end
+
+cell main() -> Int
+  let person = Person(name: "Alice", age: 30)
+  return get_age(person)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(30));
+}
+
+#[test]
+fn e2e_record_nested_access() {
+    let result = run_main(
+        r#"
+record Address
+  city: String
+  zip: Int
+end
+
+record Person
+  name: String
+  address: Address
+end
+
+cell main() -> Int
+  let addr = Address(city: "NYC", zip: 10001)
+  let person = Person(name: "Bob", address: addr)
+  return person.address.zip
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(10001));
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Enum construction and pattern matching
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn e2e_enum_construction_and_match() {
+    let result = run_main(
+        r#"
+enum Color
+  Red
+  Green
+  Blue
+end
+
+cell to_number(c: Color) -> Int
+  match c
+    Red() -> return 1
+    Green() -> return 2
+    Blue() -> return 3
+  end
+end
+
+cell main() -> Int
+  let c1 = Red
+  let c2 = Blue
+  return to_number(c1) + to_number(c2)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(4)); // 1 + 3
+}
+
+#[test]
+fn e2e_enum_complex_payload() {
+    let result = run_main(
+        r#"
+enum Shape
+  Circle(radius: Int)
+  Square(side: Int)
+end
+
+cell area(s: Shape) -> Int
+  match s
+    Circle(r) -> return r * r * 3
+    Square(side) -> return side * side
+  end
+end
+
+cell main() -> Int
+  let circle = Circle(radius: 5)
+  let square = Square(side: 4)
+  return area(circle) + area(square)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(91)); // 75 + 16
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// For loop with ranges
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn e2e_for_loop_range() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let mut sum = 0
+  for i in 0..10
+    sum += i
+  end
+  return sum
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(45)); // 0+1+2+...+9
+}
+
+#[test]
+fn e2e_for_loop_range_with_step() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let mut sum = 0
+  for i in 0..10
+    if i % 2 == 0
+      sum += i
+    end
+  end
+  return sum
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(20)); // 0+2+4+6+8
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// While loop with complex conditions
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn e2e_while_loop_complex_condition() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let mut x = 0
+  let mut y = 100
+  while x < 10 and y > 90
+    x += 1
+    y -= 1
+  end
+  return x + y
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(100)); // x=10, y=90
+}
+
+#[test]
+fn e2e_while_loop_with_multiple_breaks() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let mut i = 0
+  let mut sum = 0
+  while i < 100
+    i += 1
+    if i == 5
+      continue
+    end
+    if i == 10
+      break
+    end
+    sum += i
+  end
+  return sum
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(40)); // 1+2+3+4+6+7+8+9 (skip 5, break at 10)
+}

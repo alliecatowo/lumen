@@ -2149,3 +2149,215 @@ end
         "main should return Int"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Additional spec_suite tests: process constructs, advanced features
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn spec_process_memory_operations() {
+    let case = CompileCase {
+        id: "process_memory_ops",
+        source: r#"
+memory ConversationHistory: short_term
+  window: 20
+end
+
+cell main() -> Int
+  return 1
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn spec_process_machine_transitions() {
+    let case = CompileCase {
+        id: "process_machine_transitions",
+        source: r#"
+machine SimpleFlow
+  initial: Start
+  state Start
+    on_enter()
+      transition Done()
+    end
+  end
+  state Done
+    terminal: true
+  end
+end
+
+cell main() -> Int
+  return 1
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn spec_grant_with_policy_constraints() {
+    let case = CompileCase {
+        id: "grant_policy_constraints",
+        source: r#"
+use tool http.get as HttpGet
+grant HttpGet
+  domain "*.example.com"
+  timeout_ms 5000
+  max_tokens 1000
+
+cell main() -> Int
+  return 1
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn spec_bind_effect_to_tool() {
+    let case = CompileCase {
+        id: "bind_effect_tool",
+        source: r#"
+use tool http.get as HttpGet
+bind effect http to HttpGet
+grant HttpGet
+
+cell main() -> Int
+  return 1
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn spec_complex_pattern_matching_nested() {
+    let case = CompileCase {
+        id: "complex_pattern_nested",
+        source: r#"
+enum Color
+  Red
+  Green
+  Blue
+end
+
+cell is_primary(c: Color) -> Bool
+  match c
+    Red() -> return true
+    Green() -> return true
+    Blue() -> return true
+  end
+end
+
+cell main() -> Bool
+  return is_primary(Red)
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn spec_complex_pattern_with_guard() {
+    let case = CompileCase {
+        id: "pattern_with_guard",
+        source: r#"
+enum Value
+  Number(n: Int)
+  Text(s: String)
+end
+
+cell is_positive(v: Value) -> Bool
+  match v
+    Number(n) if n > 0 -> return true
+    _ -> return false
+  end
+end
+
+cell main() -> Bool
+  return is_positive(Number(n: 5))
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn spec_string_interpolation_complex() {
+    let case = CompileCase {
+        id: "string_interp_complex",
+        source: r#"
+cell format_user(name: String, age: Int, active: Bool) -> String
+  return "User: {name}, Age: {age}, Active: {active}"
+end
+
+cell main() -> String
+  return format_user("Alice", 30, true)
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn spec_pipe_operator_chain() {
+    let case = CompileCase {
+        id: "pipe_operator",
+        source: r#"
+cell double(x: Int) -> Int
+  return x * 2
+end
+
+cell inc(x: Int) -> Int
+  return x + 1
+end
+
+cell main() -> Int
+  return 5 |> double |> inc
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn spec_null_coalesce_chain() {
+    let case = CompileCase {
+        id: "null_coalesce_chain",
+        source: r#"
+cell get_value(flag: Int) -> Int | Null
+  if flag == 1
+    return 10
+  end
+  return null
+end
+
+cell main() -> Int
+  let a = get_value(0)
+  let b = get_value(0)
+  let c = get_value(1)
+  return a ?? b ?? c ?? 99
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn spec_import_statement_multiple() {
+    let case = CompileCase {
+        id: "import_multiple",
+        source: r#"
+import std.core: *
+import std.collections: List, Map
+import app.models: User as AppUser
+
+cell main() -> Int
+  return 1
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}

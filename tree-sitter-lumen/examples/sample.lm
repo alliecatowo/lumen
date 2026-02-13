@@ -1,0 +1,55 @@
+// Sample Lumen code for testing the tree-sitter grammar
+
+@strict true
+@deterministic false
+
+record User
+  name: String
+  age: Int where age >= 0
+  email: String
+end
+
+enum Status
+  Pending
+  Active
+  Done(String)
+end
+
+cell greet(name: String) -> String
+  return "Hello, " + name + "!"
+end
+
+cell calculate(x: Int, y: Int) -> Int
+  let result = x + y
+  if result > 100
+    return 100
+  else
+    return result
+  end
+end
+
+cell main() -> Null
+  let user = User(
+    name: "Alice",
+    age: 30,
+    email: "alice@example.com"
+  )
+
+  let greeting = greet(user.name)
+  print(greeting)
+
+  let items = [1, 2, 3, 4, 5]
+  let sum = 0
+
+  for item in items
+    sum = sum + item
+  end
+
+  match sum
+    0 -> print("zero")
+    15 -> print("fifteen")
+    _ -> print("other")
+  end
+
+  return null
+end

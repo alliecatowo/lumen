@@ -429,7 +429,7 @@ end
             id: "invalid_constraint_function",
             source: r#"
 record User
-  email: String where is_valid_email(email)
+  email: String where definitely_not_a_builtin(email)
 end
 "#,
             expect_substring: "unknown constraint function",

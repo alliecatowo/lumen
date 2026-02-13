@@ -76,7 +76,7 @@ fn validate_constraint_expr(expr: &Expr, field: &str, errors: &mut Vec<Constrain
             // Only allow known constraint functions: length, count, matches
             if let Expr::Ident(name, _) = callee.as_ref() {
                 match name.as_str() {
-                    "length" | "count" | "matches" => {}
+                    "length" | "count" | "matches" | "is_valid_email" => {}
                     _ => {
                         errors.push(ConstraintError::Invalid {
                             field: field.to_string(),

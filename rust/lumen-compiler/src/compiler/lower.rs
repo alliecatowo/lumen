@@ -1707,6 +1707,8 @@ impl<'a> Lowerer<'a> {
                     BinOp::BitAnd => OpCode::BitAnd,
                     BinOp::BitOr => OpCode::BitOr,
                     BinOp::BitXor => OpCode::BitXor,
+                    BinOp::Shl => OpCode::Shl,
+                    BinOp::Shr => OpCode::Shr,
                     BinOp::PipeForward => unreachable!(), // handled above
                 };
                 match op {
@@ -2357,12 +2359,12 @@ impl<'a> Lowerer<'a> {
             Expr::NullSafeAccess(obj, field, _) => {
                 let or = self.lower_expr(obj, ra, consts, instrs);
                 let dest = ra.alloc_temp();
-                // Test if obj is null
+                // Test if obj is null: skip Jmp (to null case) when NOT null
                 let nil_reg = ra.alloc_temp();
                 instrs.push(Instruction::abc(OpCode::LoadNil, nil_reg, 0, 0));
                 let cmp = ra.alloc_temp();
                 instrs.push(Instruction::abc(OpCode::Eq, cmp, or, nil_reg));
-                instrs.push(Instruction::abc(OpCode::Test, cmp, 0, 0));
+                instrs.push(Instruction::abc(OpCode::Test, cmp, 0, 1));
                 let jmp_null = instrs.len();
                 instrs.push(Instruction::sax(OpCode::Jmp, 0));
                 // Not null: get field
@@ -2381,12 +2383,12 @@ impl<'a> Lowerer<'a> {
             Expr::NullSafeIndex(obj, index, _) => {
                 let or = self.lower_expr(obj, ra, consts, instrs);
                 let dest = ra.alloc_temp();
-                // Test if obj is null
+                // Test if obj is null: skip Jmp (to null case) when NOT null
                 let nil_reg = ra.alloc_temp();
                 instrs.push(Instruction::abc(OpCode::LoadNil, nil_reg, 0, 0));
                 let cmp = ra.alloc_temp();
                 instrs.push(Instruction::abc(OpCode::Eq, cmp, or, nil_reg));
-                instrs.push(Instruction::abc(OpCode::Test, cmp, 0, 0));
+                instrs.push(Instruction::abc(OpCode::Test, cmp, 0, 1));
                 let jmp_null = instrs.len();
                 instrs.push(Instruction::sax(OpCode::Jmp, 0));
                 // Not null: get index
@@ -3099,6 +3101,8 @@ fn encode_machine_expr(expr: &Expr) -> Option<serde_json::Value> {
                 BinOp::BitAnd => "&",
                 BinOp::BitOr => "|",
                 BinOp::BitXor => "^",
+                BinOp::Shl => "<<",
+                BinOp::Shr => ">>",
                 BinOp::PipeForward => "|>",
             };
             Some(serde_json::json!({

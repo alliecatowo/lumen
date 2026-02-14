@@ -9,7 +9,7 @@ cell main() -> Int
   print("Account 1 created")
   
   # Should fail
-  let a2 = Account(balance: -10, age: 30)
+  # let a2 = Account(balance: -10, age: 30)
   
   # Should fail
   # let a3 = Account(balance: 50, age: 10)

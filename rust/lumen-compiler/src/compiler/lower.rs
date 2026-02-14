@@ -1893,16 +1893,24 @@ impl<'a> Lowerer<'a> {
                                         ));
 
                                         // Eq(cond, false)
-                                        // If cond is false (Invalid), equality is true -> Skip Next (Jmp) -> Execute Halt
-                                        // If cond is true (Valid), equality is false -> Exec Next (Jmp) -> Jump Over Halt
+                                        // result = (cond == false)
+                                        let cmp_reg = ra.alloc_temp();
                                         instrs.push(Instruction::abc(
                                             OpCode::Eq,
-                                            0,
+                                            cmp_reg,
                                             cond_reg,
                                             false_reg,
                                         ));
 
-                                        // If true, skip Halt
+                                        // If cmp_reg is True (Constraint Failed), we want to Halt.
+                                        // If cmp_reg is False (Constraint OK), we want to Jmp over Halt.
+                                        
+                                        // Test(cmp_reg, 0, 0) skips next instruction if cmp_reg is Truthy.
+                                        // So if Failed (True), Skip Next (Jmp) -> Execute Halt.
+                                        // If OK (False), Don't Skip -> Execute Next (Jmp) -> Skip Halt.
+                                        instrs.push(Instruction::abc(OpCode::Test, cmp_reg, 0, 0));
+
+                                        // If OK, jump over Halt
                                         let jmp_idx = instrs.len();
                                         instrs.push(Instruction::sax(OpCode::Jmp, 0));
 

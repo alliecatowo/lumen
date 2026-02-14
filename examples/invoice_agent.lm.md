@@ -24,7 +24,7 @@ record Invoice
   currency: String
   subtotal: Float where subtotal >= 0.0
   tax: Float where tax >= 0.0
-  total: Float where total == subtotal + tax
+  total: Float # where total == subtotal + tax (Dependent constraints not supported yet)
 end
 
 record AuditResult

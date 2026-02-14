@@ -1,0 +1,16 @@
+cell bad1() -> Int
+  let x =
+  return 1
+end
+
+cell bad2(param Int) -> Int
+  return param
+end
+
+record Broken
+  x:
+end
+
+cell bad3() -> Int
+  return
+end

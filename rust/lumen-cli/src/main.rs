@@ -880,16 +880,20 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
             &dir,
         )))
     });
+    let mut trace_run_id: Option<String> = None;
 
     if let Some(trace_store) = trace_store.as_ref() {
         if let Ok(mut ts) = trace_store.lock() {
-            ts.start_run(&module.doc_hash);
+            trace_run_id = Some(ts.start_run(&module.doc_hash));
             ts.cell_start(cell);
         }
     }
 
     println!("{} {}", status_label("Running"), cyan(cell));
     let mut vm = lumen_vm::vm::VM::new();
+    if let Some(run_id) = trace_run_id.as_ref() {
+        vm.set_trace_id(run_id.clone());
+    }
     vm.set_provider_registry(registry);
     if let Some(trace_store) = trace_store.as_ref() {
         let trace_store = Arc::clone(trace_store);
@@ -1051,26 +1055,7 @@ fn read_trace_events(path: &Path) -> Result<Vec<lumen_runtime::trace::events::Tr
 }
 
 fn verify_trace_chain(events: &[lumen_runtime::trace::events::TraceEvent]) -> Result<(), String> {
-    let mut expected_seq = 1_u64;
-    let mut expected_prev = "sha256:genesis".to_string();
-
-    for event in events {
-        if event.seq != expected_seq {
-            return Err(format!(
-                "trace sequence mismatch at seq {} (expected {})",
-                event.seq, expected_seq
-            ));
-        }
-        if event.prev_hash != expected_prev {
-            return Err(format!(
-                "trace hash chain mismatch at seq {} (expected prev '{}', got '{}')",
-                event.seq, expected_prev, event.prev_hash
-            ));
-        }
-        expected_seq += 1;
-        expected_prev = event.hash.clone();
-    }
-    Ok(())
+    lumen_runtime::trace::store::verify_event_chain(events)
 }
 
 fn replay_line(event: &lumen_runtime::trace::events::TraceEvent) -> String {
@@ -1334,6 +1319,48 @@ fn cmd_build_wasm(target: &str, release: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lumen_runtime::trace::events::TraceEventKind;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn write_temp_lumen_file(contents: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after unix epoch")
+            .as_nanos();
+        path.push(format!(
+            "lumen-recovery-{}-{}.lm",
+            std::process::id(),
+            timestamp
+        ));
+        std::fs::write(&path, contents).expect("failed to write temp lumen file");
+        path
+    }
+
+    fn write_temp_trace_events() -> Vec<lumen_runtime::trace::events::TraceEvent> {
+        let mut base = std::env::temp_dir();
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after unix epoch")
+            .as_nanos();
+        base.push(format!(
+            "lumen-trace-test-{}-{}",
+            std::process::id(),
+            timestamp
+        ));
+        let trace_dir = base.join("trace");
+        std::fs::create_dir_all(&trace_dir).expect("trace dir should be created");
+
+        let mut store = lumen_runtime::trace::store::TraceStore::new(&base);
+        let run_id = store.start_run("doc-123");
+        store.cell_start("main");
+        store.end_run();
+
+        let path = trace_dir.join(format!("{}.jsonl", run_id));
+        let events = read_trace_events(&path).expect("trace events should be readable");
+        let _ = std::fs::remove_dir_all(&base);
+        events
+    }
 
     #[test]
     fn parses_test_command_with_defaults() {
@@ -1387,5 +1414,56 @@ mod tests {
             }
             _ => panic!("expected ci command"),
         }
+    }
+
+    #[test]
+    fn check_path_collects_multiple_parse_diagnostics_for_one_file() {
+        let source = include_str!("../tests/fixtures/recovery_multi_diag.lm");
+        let temp_file = write_temp_lumen_file(source);
+        let filename = temp_file.display().to_string();
+
+        let result = compile_source_file(&temp_file, source);
+        let _ = std::fs::remove_file(&temp_file);
+
+        let err = result.expect_err("expected malformed file to fail compilation");
+        let parse_count = match &err {
+            lumen_compiler::CompileError::Parse(errors) => errors.len(),
+            other => panic!("expected parse errors, got {:?}", other),
+        };
+        assert!(
+            parse_count >= 3,
+            "expected at least 3 parse errors, got {}",
+            parse_count
+        );
+
+        let rendered = lumen_compiler::format_error(&err, source, &filename);
+        let rendered_count = rendered.matches("PARSE ERROR").count();
+        assert!(
+            rendered_count >= 3,
+            "expected at least 3 rendered parse diagnostics, got {}",
+            rendered_count
+        );
+    }
+
+    #[test]
+    fn verify_trace_chain_accepts_valid_hash_chain() {
+        let events = write_temp_trace_events();
+        verify_trace_chain(&events).expect("valid chain should pass");
+    }
+
+    #[test]
+    fn verify_trace_chain_rejects_tampered_payload() {
+        let mut events = write_temp_trace_events();
+        let target = events
+            .iter_mut()
+            .find(|event| event.kind == TraceEventKind::CellStart)
+            .expect("cell start should exist");
+        target.message = Some("tampered".to_string());
+        let err = verify_trace_chain(&events).expect_err("tampered event should fail");
+        assert!(
+            err.contains("trace event hash mismatch"),
+            "unexpected error: {}",
+            err
+        );
     }
 }

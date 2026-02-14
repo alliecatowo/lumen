@@ -25,10 +25,7 @@ pub fn build_goto_definition(
                     return Some(GotoDefinitionResponse::Scalar(Location {
                         uri: uri.clone(),
                         range: Range {
-                            start: Position {
-                                line,
-                                character: 0,
-                            },
+                            start: Position { line, character: 0 },
                             end: Position {
                                 line,
                                 character: u32::MAX,
@@ -46,10 +43,7 @@ pub fn build_goto_definition(
                     return Some(GotoDefinitionResponse::Scalar(Location {
                         uri: uri.clone(),
                         range: Range {
-                            start: Position {
-                                line,
-                                character: 0,
-                            },
+                            start: Position { line, character: 0 },
                             end: Position {
                                 line,
                                 character: u32::MAX,
@@ -67,10 +61,7 @@ pub fn build_goto_definition(
                     return Some(GotoDefinitionResponse::Scalar(Location {
                         uri: uri.clone(),
                         range: Range {
-                            start: Position {
-                                line,
-                                character: 0,
-                            },
+                            start: Position { line, character: 0 },
                             end: Position {
                                 line,
                                 character: u32::MAX,
@@ -88,10 +79,7 @@ pub fn build_goto_definition(
                     return Some(GotoDefinitionResponse::Scalar(Location {
                         uri: uri.clone(),
                         range: Range {
-                            start: Position {
-                                line,
-                                character: 0,
-                            },
+                            start: Position { line, character: 0 },
                             end: Position {
                                 line,
                                 character: u32::MAX,
@@ -109,10 +97,7 @@ pub fn build_goto_definition(
                     return Some(GotoDefinitionResponse::Scalar(Location {
                         uri: uri.clone(),
                         range: Range {
-                            start: Position {
-                                line,
-                                character: 0,
-                            },
+                            start: Position { line, character: 0 },
                             end: Position {
                                 line,
                                 character: u32::MAX,
@@ -130,10 +115,7 @@ pub fn build_goto_definition(
                     return Some(GotoDefinitionResponse::Scalar(Location {
                         uri: uri.clone(),
                         range: Range {
-                            start: Position {
-                                line,
-                                character: 0,
-                            },
+                            start: Position { line, character: 0 },
                             end: Position {
                                 line,
                                 character: u32::MAX,
@@ -154,10 +136,7 @@ pub fn build_goto_definition(
                             return Some(GotoDefinitionResponse::Scalar(Location {
                                 uri: uri.clone(),
                                 range: Range {
-                                    start: Position {
-                                        line,
-                                        character: 0,
-                                    },
+                                    start: Position { line, character: 0 },
                                     end: Position {
                                         line,
                                         character: u32::MAX,

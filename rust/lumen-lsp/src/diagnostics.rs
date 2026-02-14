@@ -15,10 +15,9 @@ pub fn compile_error_to_diagnostics(error: &CompileError, _source: &str) -> Vec<
         CompileError::Parse(errors) => errors.iter().map(parse_error_to_diagnostic).collect(),
         CompileError::Resolve(errors) => errors.iter().map(resolve_error_to_diagnostic).collect(),
         CompileError::Type(errors) => errors.iter().map(type_error_to_diagnostic).collect(),
-        CompileError::Constraint(errors) => errors
-            .iter()
-            .map(constraint_error_to_diagnostic)
-            .collect(),
+        CompileError::Constraint(errors) => {
+            errors.iter().map(constraint_error_to_diagnostic).collect()
+        }
     }
 }
 
@@ -252,7 +251,10 @@ fn parse_error_to_diagnostic(error: &ParseError) -> Diagnostic {
                 severity: Some(DiagnosticSeverity::ERROR),
                 code: Some(lsp_types::NumberOrString::String("E012".to_string())),
                 source: Some("lumen".to_string()),
-                message: format!("unclosed '{}' opened at line {}, col {}", bracket, open_line, open_col),
+                message: format!(
+                    "unclosed '{}' opened at line {}, col {}",
+                    bracket, open_line, open_col
+                ),
                 related_information: None,
                 tags: None,
                 code_description: None,
@@ -282,7 +284,10 @@ fn parse_error_to_diagnostic(error: &ParseError) -> Diagnostic {
                 severity: Some(DiagnosticSeverity::ERROR),
                 code: Some(lsp_types::NumberOrString::String("E013".to_string())),
                 source: Some("lumen".to_string()),
-                message: format!("expected 'end' to close '{}' at line {}, col {}", construct, open_line, open_col),
+                message: format!(
+                    "expected 'end' to close '{}' at line {}, col {}",
+                    construct, open_line, open_col
+                ),
                 related_information: None,
                 tags: None,
                 code_description: None,
@@ -337,7 +342,12 @@ fn parse_error_to_diagnostic(error: &ParseError) -> Diagnostic {
                 data: None,
             }
         }
-        ParseError::MalformedConstruct { construct, reason, line, col } => {
+        ParseError::MalformedConstruct {
+            construct,
+            reason,
+            line,
+            col,
+        } => {
             let line_zero = line.saturating_sub(1) as u32;
             let col_zero = col.saturating_sub(1) as u32;
             Diagnostic {
@@ -367,7 +377,9 @@ fn parse_error_to_diagnostic(error: &ParseError) -> Diagnostic {
 fn resolve_error_to_diagnostic(error: &ResolveError) -> Diagnostic {
     match error {
         ResolveError::UndefinedType {
-            name, line, suggestions,
+            name,
+            line,
+            suggestions,
         } => {
             let line_zero = line.saturating_sub(1) as u32;
             let mut message = format!("undefined type '{}'", name);
@@ -404,7 +416,9 @@ fn resolve_error_to_diagnostic(error: &ResolveError) -> Diagnostic {
             }
         }
         ResolveError::UndefinedCell {
-            name, line, suggestions,
+            name,
+            line,
+            suggestions,
         } => {
             let line_zero = line.saturating_sub(1) as u32;
             let mut message = format!("undefined cell '{}'", name);

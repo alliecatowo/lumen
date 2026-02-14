@@ -95,9 +95,9 @@ fn compile_with_imports_internal(
 
     // 5. Parse
     let mut parser = compiler::parser::Parser::new(tokens);
-    let program = parser.parse_program(directives)?;
-    if !parser.errors().is_empty() {
-        return Err(CompileError::Parse(parser.errors().to_vec()));
+    let (program, parse_errors) = parser.parse_program_with_recovery(directives);
+    if !parse_errors.is_empty() {
+        return Err(CompileError::Parse(parse_errors));
     }
 
     // 6. Process imports before resolution
@@ -321,9 +321,9 @@ fn compile_raw_with_imports_internal(
 
     // 2. Parse (no directives for raw source)
     let mut parser = compiler::parser::Parser::new(tokens);
-    let program = parser.parse_program(vec![])?;
-    if !parser.errors().is_empty() {
-        return Err(CompileError::Parse(parser.errors().to_vec()));
+    let (program, parse_errors) = parser.parse_program_with_recovery(vec![]);
+    if !parse_errors.is_empty() {
+        return Err(CompileError::Parse(parse_errors));
     }
 
     // 3. Process imports before resolution
@@ -531,9 +531,9 @@ pub fn compile_raw(source: &str) -> Result<LirModule, CompileError> {
 
     // 2. Parse (no directives for raw source)
     let mut parser = compiler::parser::Parser::new(tokens);
-    let program = parser.parse_program(vec![])?;
-    if !parser.errors().is_empty() {
-        return Err(CompileError::Parse(parser.errors().to_vec()));
+    let (program, parse_errors) = parser.parse_program_with_recovery(vec![]);
+    if !parse_errors.is_empty() {
+        return Err(CompileError::Parse(parse_errors));
     }
 
     // 3. Resolve
@@ -592,9 +592,9 @@ pub fn compile(source: &str) -> Result<LirModule, CompileError> {
 
     // 5. Parse
     let mut parser = compiler::parser::Parser::new(tokens);
-    let program = parser.parse_program(directives)?;
-    if !parser.errors().is_empty() {
-        return Err(CompileError::Parse(parser.errors().to_vec()));
+    let (program, parse_errors) = parser.parse_program_with_recovery(directives);
+    if !parse_errors.is_empty() {
+        return Err(CompileError::Parse(parse_errors));
     }
 
     // 6. Resolve
@@ -689,5 +689,76 @@ end
         assert_eq!(module.types.len(), 1);
         assert_eq!(module.cells.len(), 1);
         assert_eq!(module.version, "1.0.0");
+    }
+
+    #[test]
+    fn test_compile_raw_collects_multiple_parse_errors() {
+        let src = r#"
+cell bad1() -> Int
+  let x =
+  return 1
+end
+
+cell bad2(param Int) -> Int
+  return param
+end
+
+record Broken
+  x:
+end
+
+cell bad3() -> Int
+  return
+end
+"#;
+
+        let err = compile_raw(src).expect_err("expected parse errors");
+        match err {
+            CompileError::Parse(errors) => {
+                assert!(
+                    errors.len() >= 3,
+                    "expected at least 3 parse errors, got {}",
+                    errors.len()
+                );
+            }
+            other => panic!("expected parse errors, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_compile_markdown_collects_multiple_parse_errors() {
+        let src = r#"# Broken
+
+```lumen
+cell bad1() -> Int
+  let x =
+  return 1
+end
+
+cell bad2(param Int) -> Int
+  return param
+end
+
+record Broken
+  x:
+end
+
+cell bad3() -> Int
+  return
+end
+```
+"#;
+
+        let err = compile(src).expect_err("expected parse errors");
+        match err {
+            CompileError::Parse(errors) => {
+                assert!(
+                    errors.len() >= 3,
+                    "expected at least 3 parse errors, got {}",
+                    errors.len()
+                );
+            }
+            other => panic!("expected parse errors, got {:?}", other),
+        }
     }
 }

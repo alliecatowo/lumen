@@ -25,11 +25,7 @@ pub fn build_inlay_hints(
 }
 
 #[allow(clippy::only_used_in_recursion)]
-fn extract_hints_from_stmt(
-    stmt: &Stmt,
-    hints: &mut Vec<InlayHint>,
-    symbols: Option<&SymbolTable>,
-) {
+fn extract_hints_from_stmt(stmt: &Stmt, hints: &mut Vec<InlayHint>, symbols: Option<&SymbolTable>) {
     match stmt {
         Stmt::Let(let_stmt) => {
             // Only show hints for bindings without explicit type annotation

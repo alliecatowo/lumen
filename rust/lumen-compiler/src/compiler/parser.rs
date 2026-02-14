@@ -5496,19 +5496,23 @@ impl Parser {
         directives: Vec<Directive>,
     ) -> (Program, Vec<ParseError>) {
         let result = self.parse_program(directives);
-        let program = result.unwrap_or_else(|_| {
-            // If parse_program itself failed catastrophically, return empty program
-            Program {
-                directives: vec![],
-                items: vec![],
-                span: Span {
-                    start: 0,
-                    end: 0,
-                    line: 1,
-                    col: 1,
-                },
+        let program = match result {
+            Ok(program) => program,
+            Err(err) => {
+                // Preserve fatal parser failure so callers still emit diagnostics.
+                self.record_error(err);
+                Program {
+                    directives: vec![],
+                    items: vec![],
+                    span: Span {
+                        start: 0,
+                        end: 0,
+                        line: 1,
+                        col: 1,
+                    },
+                }
             }
-        });
+        };
         let errors = std::mem::take(&mut self.errors);
         (program, errors)
     }

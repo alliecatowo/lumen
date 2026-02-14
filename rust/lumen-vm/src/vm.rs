@@ -249,6 +249,8 @@ pub struct VM {
     /// Optional fuel counter. Each instruction decrements fuel by 1.
     /// When fuel hits 0, execution stops with a "fuel exhausted" error.
     fuel: Option<u64>,
+    trace_id: Option<String>,
+    trace_seq: u64,
 }
 
 const MAX_AWAIT_RETRIES: u32 = 10_000;
@@ -279,6 +281,8 @@ impl VM {
             max_instructions: DEFAULT_MAX_INSTRUCTIONS,
             instruction_count: 0,
             fuel: None,
+            trace_id: None,
+            trace_seq: 0,
         }
     }
 
@@ -444,6 +448,11 @@ impl VM {
     pub fn set_future_schedule(&mut self, schedule: FutureSchedule) {
         self.future_schedule = schedule;
         self.future_schedule_explicit = true;
+    }
+
+    pub fn set_trace_id<S: Into<String>>(&mut self, trace_id: S) {
+        self.trace_id = Some(trace_id.into());
+        self.trace_seq = 0;
     }
 
     pub fn future_schedule(&self) -> FutureSchedule {
@@ -910,6 +919,24 @@ impl VM {
         }
     }
 
+    fn resolve_trace_id(&self) -> String {
+        if let Some(trace_id) = self.trace_id.as_ref() {
+            return trace_id.clone();
+        }
+        self.module
+            .as_ref()
+            .map(|module| format!("doc:{}", module.doc_hash))
+            .unwrap_or_else(|| "trace:unbound".to_string())
+    }
+
+    fn next_trace_ref(&mut self) -> TraceRefValue {
+        self.trace_seq = self.trace_seq.saturating_add(1);
+        TraceRefValue {
+            trace_id: self.resolve_trace_id(),
+            seq: self.trace_seq,
+        }
+    }
+
     /// Execute a cell by name with arguments.
     pub fn execute(&mut self, cell_name: &str, args: Vec<Value>) -> Result<Value, VmError> {
         let module = self.module.as_ref().ok_or(VmError::NoModule)?;
@@ -937,6 +964,7 @@ impl VM {
 
         // Push initial frame
         self.instruction_count = 0;
+        self.trace_seq = 0;
         self.frames.push(CallFrame {
             cell_idx,
             base_register: base,
@@ -1855,10 +1883,7 @@ impl VM {
                     self.output.push(val);
                 }
                 OpCode::TraceRef => {
-                    self.registers[base + a] = Value::TraceRef(TraceRefValue {
-                        trace_id: "trace".into(),
-                        seq: 0,
-                    });
+                    self.registers[base + a] = Value::TraceRef(self.next_trace_ref());
                 }
                 OpCode::Await => {
                     let caller_frame_idx = self.frames.len().saturating_sub(1);
@@ -3756,10 +3781,7 @@ impl VM {
             }
             8 => {
                 // TRACEREF
-                Ok(Value::TraceRef(TraceRefValue {
-                    trace_id: "trace".into(),
-                    seq: 0,
-                }))
+                Ok(Value::TraceRef(self.next_trace_ref()))
             }
             9 => {
                 // PRINT
@@ -5142,6 +5164,114 @@ mod tests {
             .execute("add", vec![Value::Int(10), Value::Int(32)])
             .unwrap();
         assert_eq!(result, Value::Int(42));
+    }
+
+    #[test]
+    fn test_trace_ref_defaults_to_doc_hash_and_resets_each_execute() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "doc-hash-abc".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: None,
+                registers: 2,
+                constants: vec![],
+                instructions: vec![
+                    Instruction::abc(OpCode::TraceRef, 0, 0, 0),
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        vm.load(module);
+
+        let first = vm.execute("main", vec![]).expect("first run should succeed");
+        let second = vm.execute("main", vec![]).expect("second run should succeed");
+
+        match first {
+            Value::TraceRef(trace) => {
+                assert_eq!(trace.trace_id, "doc:doc-hash-abc");
+                assert_eq!(trace.seq, 1);
+            }
+            other => panic!("expected trace ref, got {:?}", other),
+        }
+
+        match second {
+            Value::TraceRef(trace) => {
+                assert_eq!(trace.trace_id, "doc:doc-hash-abc");
+                assert_eq!(trace.seq, 1);
+            }
+            other => panic!("expected trace ref, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_trace_ref_uses_explicit_trace_id_and_monotonic_seq() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "doc-hash-abc".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: None,
+                registers: 6,
+                constants: vec![],
+                instructions: vec![
+                    Instruction::abc(OpCode::TraceRef, 0, 0, 0),
+                    Instruction::abc(OpCode::Intrinsic, 1, 8, 0),
+                    Instruction::abc(OpCode::Move, 3, 0, 0),
+                    Instruction::abc(OpCode::Move, 4, 1, 0),
+                    Instruction::abc(OpCode::NewList, 2, 2, 0),
+                    Instruction::abc(OpCode::Return, 2, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        vm.set_trace_id("run-123");
+        vm.load(module);
+        let result = vm.execute("main", vec![]).expect("main should succeed");
+
+        let refs = match result {
+            Value::List(values) => values,
+            other => panic!("expected list return, got {:?}", other),
+        };
+
+        assert_eq!(refs.len(), 2);
+        match &refs[0] {
+            Value::TraceRef(trace) => {
+                assert_eq!(trace.trace_id, "run-123");
+                assert_eq!(trace.seq, 1);
+            }
+            other => panic!("expected trace ref at index 0, got {:?}", other),
+        }
+        match &refs[1] {
+            Value::TraceRef(trace) => {
+                assert_eq!(trace.trace_id, "run-123");
+                assert_eq!(trace.seq, 2);
+            }
+            other => panic!("expected trace ref at index 1, got {:?}", other),
+        }
     }
 
     #[test]

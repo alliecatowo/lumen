@@ -283,7 +283,10 @@ const BUILTINS: &[&str] = &[
 pub fn format_compile_error(error: &CompileError, source: &str, filename: &str) -> Vec<Diagnostic> {
     match error {
         CompileError::Lex(e) => vec![format_lex_error(e, source, filename)],
-        CompileError::Parse(e) => vec![format_parse_error(e, source, filename)],
+        CompileError::Parse(errors) => errors
+            .iter()
+            .map(|e| format_parse_error(e, source, filename))
+            .collect(),
         CompileError::Resolve(errors) => errors
             .iter()
             .map(|e| format_resolve_error(e, source, filename))

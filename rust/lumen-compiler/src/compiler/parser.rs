@@ -39,6 +39,10 @@ impl Parser {
         self.errors.push(error);
     }
 
+    pub fn errors(&self) -> &[ParseError] {
+        &self.errors
+    }
+
     /// Synchronize parser state by skipping tokens until we reach a declaration boundary
     fn synchronize(&mut self) {
         // Skip tokens until we reach a synchronization point:
@@ -89,6 +93,38 @@ impl Parser {
             }
         }
     }
+    fn synchronize_stmt(&mut self) {
+        while !self.at_end() {
+            match self.peek_kind() {
+                TokenKind::Newline => {
+                    self.advance();
+                    break;
+                }
+                TokenKind::End
+                | TokenKind::Else
+                | TokenKind::Dedent
+                | TokenKind::Eof => break,
+                // Top-level keywords checking to be safe
+                TokenKind::Cell
+                | TokenKind::Record
+                | TokenKind::Enum
+                | TokenKind::Type
+                | TokenKind::Grant
+                | TokenKind::Import
+                | TokenKind::Use
+                | TokenKind::Pub
+                | TokenKind::Schema
+                | TokenKind::Fn
+                | TokenKind::Mod
+                | TokenKind::Trait
+                | TokenKind::Impl => break,
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+    }
+
 
     fn current(&self) -> &Token {
         self.tokens
@@ -421,7 +457,7 @@ impl Parser {
                 Ok(Item::Enum(e))
             }
             TokenKind::Cell => {
-                let mut c = self.parse_cell()?;
+                let mut c = self.parse_cell(true)?;
                 c.is_pub = is_pub;
                 c.is_async = is_async;
                 Ok(Item::Cell(c))
@@ -470,25 +506,26 @@ impl Parser {
                 "pipeline" | "orchestration" | "machine" | "memory" | "guardrail" | "eval"
                 | "pattern" => Ok(Item::Process(self.parse_process_decl()?)),
                 _ => {
-                    let start = self.current().span;
-                    let name = self.expect_ident().ok();
-                    self.consume_rest_of_line();
-                    Ok(Item::Addon(AddonDecl {
-                        kind: "unknown".into(),
-                        name,
-                        span: start.merge(self.current().span),
-                    }))
+                    eprintln!("DEBUG: Ident fallback for {}", name);
+                    let tok = self.current().clone();
+                    Err(ParseError::Unexpected {
+                        found: name.clone(),
+                        expected: "top-level declaration".into(),
+                        line: tok.span.line,
+                        col: tok.span.col,
+                    })
                 }
             },
             _ => {
-                let start = self.current().span;
                 let kind = format!("{}", self.peek_kind());
-                self.consume_rest_of_line();
-                Ok(Item::Addon(AddonDecl {
-                    kind: "unknown".into(),
-                    name: Some(kind),
-                    span: start.merge(self.current().span),
-                }))
+                eprintln!("DEBUG: General fallback for {}", kind);
+                let tok = self.current().clone();
+                Err(ParseError::Unexpected {
+                    found: kind,
+                    expected: "top-level declaration".into(),
+                    line: tok.span.line,
+                    col: tok.span.col,
+                })
             }
         }
     }
@@ -631,7 +668,7 @@ impl Parser {
                 break;
             }
             if matches!(self.peek_kind(), TokenKind::Cell) {
-                methods.push(self.parse_cell()?);
+                methods.push(self.parse_cell(true)?);
                 self.skip_newlines();
                 continue;
             }
@@ -705,7 +742,7 @@ impl Parser {
 
     // ── Cell ──
 
-    fn parse_cell(&mut self) -> Result<CellDef, ParseError> {
+    fn parse_cell(&mut self, require_body: bool) -> Result<CellDef, ParseError> {
         let start = self.expect(&TokenKind::Cell)?.span;
         let name = self.expect_ident()?;
         let generic_params = self.parse_optional_generic_params()?;
@@ -777,7 +814,7 @@ impl Parser {
 
         // Prototype/signature form (used in effect declarations and trait-like stubs):
         // cell f(x: Int) -> Int / {http}
-        if matches!(
+        if !require_body && matches!(
             self.peek_kind(),
             TokenKind::Newline | TokenKind::Eof | TokenKind::Dedent
         ) {
@@ -834,12 +871,42 @@ impl Parser {
         self.skip_newlines();
         while !matches!(
             self.peek_kind(),
-            TokenKind::End | TokenKind::Eof | TokenKind::Else
+            TokenKind::End
+                | TokenKind::Eof
+                | TokenKind::Else
+                | TokenKind::Cell
+                | TokenKind::Record
+                | TokenKind::Enum
+                | TokenKind::Type
+                | TokenKind::Grant
+                | TokenKind::Import
+                | TokenKind::Use
+                | TokenKind::Pub
+                | TokenKind::Schema
+                | TokenKind::Fn
+                | TokenKind::Mod
+                | TokenKind::Trait
+                | TokenKind::Impl
         ) {
             self.skip_newlines();
             if matches!(
                 self.peek_kind(),
-                TokenKind::End | TokenKind::Eof | TokenKind::Else
+                TokenKind::End
+                    | TokenKind::Eof
+                    | TokenKind::Else
+                    | TokenKind::Cell
+                    | TokenKind::Record
+                    | TokenKind::Enum
+                    | TokenKind::Type
+                    | TokenKind::Grant
+                    | TokenKind::Import
+                    | TokenKind::Use
+                    | TokenKind::Pub
+                    | TokenKind::Schema
+                    | TokenKind::Fn
+                    | TokenKind::Mod
+                    | TokenKind::Trait
+                    | TokenKind::Impl
             ) {
                 break;
             }
@@ -853,14 +920,37 @@ impl Parser {
                 }
                 if matches!(
                     self.tokens.get(i).map(|t| &t.kind),
-                    Some(TokenKind::End | TokenKind::Else | TokenKind::Eof)
+                    Some(
+                        TokenKind::End
+                            | TokenKind::Else
+                            | TokenKind::Eof
+                            | TokenKind::Cell
+                            | TokenKind::Record
+                            | TokenKind::Enum
+                            | TokenKind::Type
+                            | TokenKind::Grant
+                            | TokenKind::Import
+                            | TokenKind::Use
+                            | TokenKind::Pub
+                            | TokenKind::Schema
+                            | TokenKind::Fn
+                            | TokenKind::Mod
+                            | TokenKind::Trait
+                            | TokenKind::Impl
+                    )
                 ) {
                     break;
                 }
                 self.advance();
                 continue;
             }
-            stmts.push(self.parse_stmt()?);
+            match self.parse_stmt() {
+                Ok(stmt) => stmts.push(stmt),
+                Err(err) => {
+                    self.record_error(err);
+                    self.synchronize_stmt();
+                }
+            }
             self.skip_newlines();
         }
         if has_indent && matches!(self.peek_kind(), TokenKind::Dedent) {
@@ -876,7 +966,24 @@ impl Parser {
             }
             if matches!(
                 self.tokens.get(i).map(|t| &t.kind),
-                Some(TokenKind::End | TokenKind::Else | TokenKind::Eof)
+                Some(
+                    TokenKind::End
+                        | TokenKind::Else
+                        | TokenKind::Eof
+                        | TokenKind::Cell
+                        | TokenKind::Record
+                        | TokenKind::Enum
+                        | TokenKind::Type
+                        | TokenKind::Grant
+                        | TokenKind::Import
+                        | TokenKind::Use
+                        | TokenKind::Pub
+                        | TokenKind::Schema
+                        | TokenKind::Fn
+                        | TokenKind::Mod
+                        | TokenKind::Trait
+                        | TokenKind::Impl
+                )
             ) {
                 self.advance();
             } else {
@@ -1849,7 +1956,7 @@ impl Parser {
             if matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
                 break;
             }
-            methods.push(self.parse_cell()?);
+            methods.push(self.parse_cell(false)?);
             self.skip_newlines();
         }
         if has_indent && matches!(self.peek_kind(), TokenKind::Dedent) {
@@ -1914,7 +2021,7 @@ impl Parser {
             if matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
                 break;
             }
-            cells.push(self.parse_cell()?);
+            cells.push(self.parse_cell(true)?);
             self.skip_newlines();
         }
         if has_indent && matches!(self.peek_kind(), TokenKind::Dedent) {
@@ -2245,7 +2352,7 @@ impl Parser {
 
             match self.peek_kind() {
                 TokenKind::Cell => {
-                    let mut cell = self.parse_cell()?;
+                    let mut cell = self.parse_cell(true)?;
                     cell.is_async = is_async;
                     if cell.params.first().map(|p| p.name.as_str()) != Some("self") {
                         let self_span = cell.span;
@@ -2339,7 +2446,7 @@ impl Parser {
                 break;
             }
             if matches!(self.peek_kind(), TokenKind::Cell) {
-                operations.push(self.parse_cell()?);
+                operations.push(self.parse_cell(false)?);
             } else {
                 self.consume_rest_of_line();
             }
@@ -2403,7 +2510,7 @@ impl Parser {
 
             match self.peek_kind() {
                 TokenKind::Cell => {
-                    let mut cell = self.parse_cell()?;
+                    let mut cell = self.parse_cell(true)?;
                     cell.is_async = is_async;
                     if cell.params.first().map(|p| p.name.as_str()) != Some("self") {
                         let self_span = cell.span;
@@ -2831,7 +2938,7 @@ impl Parser {
             if matches!(self.peek_kind(), TokenKind::Ident(s) if s == "handle") {
                 handles.push(self.parse_handle_cell()?);
             } else if matches!(self.peek_kind(), TokenKind::Cell) {
-                handles.push(self.parse_cell()?);
+                handles.push(self.parse_cell(true)?);
             } else {
                 self.consume_rest_of_line();
             }

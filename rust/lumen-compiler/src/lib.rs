@@ -17,14 +17,20 @@ use thiserror::Error;
 pub enum CompileError {
     #[error("lex error: {0}")]
     Lex(#[from] compiler::lexer::LexError),
-    #[error("parse error: {0}")]
-    Parse(#[from] compiler::parser::ParseError),
+    #[error("parse errors: {0:?}")]
+    Parse(Vec<compiler::parser::ParseError>),
     #[error("resolve errors: {0:?}")]
     Resolve(Vec<compiler::resolve::ResolveError>),
     #[error("type errors: {0:?}")]
     Type(Vec<compiler::typecheck::TypeError>),
     #[error("constraint errors: {0:?}")]
     Constraint(Vec<compiler::constraints::ConstraintError>),
+}
+
+impl From<compiler::parser::ParseError> for CompileError {
+    fn from(err: compiler::parser::ParseError) -> Self {
+        CompileError::Parse(vec![err])
+    }
 }
 
 /// Compile with access to external modules for import resolution.
@@ -61,19 +67,21 @@ fn compile_with_imports_internal(
         .collect();
 
     // 3. Concatenate all code blocks
+    // 3. Concatenate all code blocks preserving line numbers
     let mut full_code = String::new();
-    let mut first_block_line = 1;
-    let mut first_block_offset = 0;
+    let mut current_line = 1;
 
-    for (i, block) in extracted.code_blocks.iter().enumerate() {
-        if i == 0 {
-            first_block_line = block.code_start_line;
-            first_block_offset = block.code_offset;
-        }
-        if !full_code.is_empty() {
+    for block in extracted.code_blocks.iter() {
+        // Pad with newlines to reach the block's start line
+        while current_line < block.code_start_line {
             full_code.push('\n');
+            current_line += 1;
         }
+
         full_code.push_str(&block.code);
+        
+        let lines_in_block = block.code.chars().filter(|&c| c == '\n').count();
+        current_line += lines_in_block;
     }
 
     if full_code.is_empty() {
@@ -81,12 +89,16 @@ fn compile_with_imports_internal(
     }
 
     // 4. Lex
-    let mut lexer = compiler::lexer::Lexer::new(&full_code, first_block_line, first_block_offset);
+    // We start at line 1 because we padded the code to match the file structure
+    let mut lexer = compiler::lexer::Lexer::new(&full_code, 1, 0);
     let tokens = lexer.tokenize()?;
 
     // 5. Parse
     let mut parser = compiler::parser::Parser::new(tokens);
     let program = parser.parse_program(directives)?;
+    if !parser.errors().is_empty() {
+        return Err(CompileError::Parse(parser.errors().to_vec()));
+    }
 
     // 6. Process imports before resolution
     let mut base_symbols = SymbolTable::new();
@@ -301,6 +313,9 @@ fn compile_raw_with_imports_internal(
     // 2. Parse (no directives for raw source)
     let mut parser = compiler::parser::Parser::new(tokens);
     let program = parser.parse_program(vec![])?;
+    if !parser.errors().is_empty() {
+        return Err(CompileError::Parse(parser.errors().to_vec()));
+    }
 
     // 3. Process imports before resolution
     let mut base_symbols = SymbolTable::new();
@@ -499,6 +514,9 @@ pub fn compile_raw(source: &str) -> Result<LirModule, CompileError> {
     // 2. Parse (no directives for raw source)
     let mut parser = compiler::parser::Parser::new(tokens);
     let program = parser.parse_program(vec![])?;
+    if !parser.errors().is_empty() {
+        return Err(CompileError::Parse(parser.errors().to_vec()));
+    }
 
     // 3. Resolve
     let symbols = compiler::resolve::resolve(&program).map_err(CompileError::Resolve)?;
@@ -557,6 +575,9 @@ pub fn compile(source: &str) -> Result<LirModule, CompileError> {
     // 5. Parse
     let mut parser = compiler::parser::Parser::new(tokens);
     let program = parser.parse_program(directives)?;
+    if !parser.errors().is_empty() {
+        return Err(CompileError::Parse(parser.errors().to_vec()));
+    }
 
     // 6. Resolve
     let symbols = compiler::resolve::resolve(&program).map_err(CompileError::Resolve)?;

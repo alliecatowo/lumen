@@ -163,7 +163,7 @@ fn handle_notification(not: &Notification, connection: &Connection, store: &mut 
 
             store.update(uri.clone(), text.clone());
 
-            let diagnostics = diagnose(&text);
+            let diagnostics = diagnose(&text, &uri);
             publish(connection, uri, diagnostics);
         }
     } else if not.method == notification::DidChangeTextDocument::METHOD {
@@ -176,7 +176,7 @@ fn handle_notification(not: &Notification, connection: &Connection, store: &mut 
 
                 store.update(uri.clone(), text.clone());
 
-                let diagnostics = diagnose(&text);
+                let diagnostics = diagnose(&text, &uri);
                 publish(connection, uri, diagnostics);
             }
         }
@@ -712,8 +712,14 @@ fn span_to_location(span: lumen_compiler::compiler::tokens::Span, uri: &Uri) -> 
     }
 }
 
-fn diagnose(source: &str) -> Vec<Diagnostic> {
-    match lumen_compiler::compile(source) {
+fn diagnose(source: &str, uri: &Uri) -> Vec<Diagnostic> {
+    let is_markdown = uri.path().as_str().ends_with(".md");
+    let result = if is_markdown {
+        lumen_compiler::compile(source)
+    } else {
+        lumen_compiler::compile_raw(source)
+    };
+    match result {
         Ok(_) => vec![],
         Err(err) => compile_error_to_diagnostics(&err),
     }
@@ -721,34 +727,51 @@ fn diagnose(source: &str) -> Vec<Diagnostic> {
 
 fn compile_error_to_diagnostics(err: &CompileError) -> Vec<Diagnostic> {
     match err {
-        CompileError::Lex(e) => vec![make_diagnostic(lex_error_line(e), &e.to_string())],
-        CompileError::Parse(e) => vec![make_diagnostic(parse_error_line(e), &e.to_string())],
+        CompileError::Lex(e) => {
+            let (line, col, len) = lex_error_details(e);
+            vec![make_diagnostic(line, col, len, &e.to_string())]
+        }
+        CompileError::Parse(errors) => errors
+            .iter()
+            .map(|e| {
+                let (line, col, len) = parse_error_details(e);
+                make_diagnostic(line, col, len, &e.to_string())
+            })
+            .collect(),
         CompileError::Resolve(errors) => errors
             .iter()
-            .map(|e| make_diagnostic(resolve_error_line(e), &e.to_string()))
+            .map(|e| make_diagnostic(resolve_error_line(e), 0, u32::MAX, &e.to_string()))
             .collect(),
         CompileError::Type(errors) => errors
             .iter()
-            .map(|e| make_diagnostic(type_error_line(e), &e.to_string()))
+            .map(|e| make_diagnostic(type_error_line(e), 0, u32::MAX, &e.to_string()))
             .collect(),
         CompileError::Constraint(errors) => errors
             .iter()
-            .map(|e| make_diagnostic(constraint_error_line(e), &e.to_string()))
+            .map(|e| make_diagnostic(constraint_error_line(e), 0, u32::MAX, &e.to_string()))
             .collect(),
     }
 }
 
-fn make_diagnostic(line: usize, message: &str) -> Diagnostic {
+fn make_diagnostic(line: usize, col: usize, len: u32, message: &str) -> Diagnostic {
     let line_zero = if line > 0 { line - 1 } else { 0 };
+    let col_zero = if col > 0 { col - 1 } else { 0 };
+
+    let end_char = if len == u32::MAX {
+        u32::MAX
+    } else {
+        col_zero as u32 + len
+    };
+
     Diagnostic {
         range: Range {
             start: Position {
                 line: line_zero as u32,
-                character: 0,
+                character: col_zero as u32,
             },
             end: Position {
                 line: line_zero as u32,
-                character: u32::MAX,
+                character: end_char,
             },
         },
         severity: Some(DiagnosticSeverity::ERROR),
@@ -757,21 +780,23 @@ fn make_diagnostic(line: usize, message: &str) -> Diagnostic {
     }
 }
 
-fn lex_error_line(e: &LexError) -> usize {
+fn lex_error_details(e: &LexError) -> (usize, usize, u32) {
     match e {
-        LexError::UnexpectedChar { line, .. } => *line,
-        LexError::UnterminatedString { line, .. } => *line,
-        LexError::InconsistentIndent { line } => *line,
-        LexError::InvalidNumber { line, .. } => *line,
-        LexError::InvalidBytesLiteral { line, .. } => *line,
-        LexError::InvalidUnicodeEscape { line, .. } => *line,
+        LexError::UnexpectedChar { line, col, ch } => (*line, *col, ch.len_utf8() as u32),
+        LexError::UnterminatedString { line, col } => (*line, *col, 1),
+        LexError::InconsistentIndent { line } => (*line, 1, u32::MAX),
+        LexError::InvalidNumber { line, col, .. } => (*line, *col, 1),
+        LexError::InvalidBytesLiteral { line, col } => (*line, *col, 1),
+        LexError::InvalidUnicodeEscape { line, col } => (*line, *col, 1),
     }
 }
 
-fn parse_error_line(e: &ParseError) -> usize {
+fn parse_error_details(e: &ParseError) -> (usize, usize, u32) {
     match e {
-        ParseError::Unexpected { line, .. } => *line,
-        ParseError::UnexpectedEof => 1,
+        ParseError::Unexpected {
+            line, col, found, ..
+        } => (*line, *col, found.len() as u32),
+        ParseError::UnexpectedEof => (1, 1, 1), // Fallback
     }
 }
 

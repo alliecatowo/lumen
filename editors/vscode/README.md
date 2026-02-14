@@ -1,6 +1,6 @@
 # Lumen for Visual Studio Code
 
-Syntax highlighting and language support for the [Lumen](https://github.com/lumen-lang/lumen) programming language.
+Syntax highlighting and language support for the [Lumen](https://github.com/alliecatowo/lumen) programming language.
 
 ## Features
 
@@ -142,7 +142,7 @@ The tree-sitter grammar covers all Lumen constructs including declarations, stat
 
 ## Contributing
 
-Contributions are welcome! Please see the main [Lumen repository](https://github.com/lumen-lang/lumen) for contribution guidelines.
+Contributions are welcome! Please see the main [Lumen repository](https://github.com/alliecatowo/lumen) for contribution guidelines.
 
 ### Building from Source
 ```bash
@@ -164,7 +164,7 @@ MIT — See LICENSE file in the main repository.
 
 ## Links
 
-- [Lumen Language](https://github.com/lumen-lang/lumen)
-- [Documentation](https://github.com/lumen-lang/lumen/tree/main/docs)
-- [Examples](https://github.com/lumen-lang/lumen/tree/main/examples)
-- [Language Specification](https://github.com/lumen-lang/lumen/blob/main/SPEC.md)
+- [Lumen Language](https://github.com/alliecatowo/lumen)
+- [Documentation](https://github.com/alliecatowo/lumen/tree/main/docs)
+- [Examples](https://github.com/alliecatowo/lumen/tree/main/examples)
+- [Language Specification](https://github.com/alliecatowo/lumen/blob/main/SPEC.md)

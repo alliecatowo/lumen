@@ -60,7 +60,7 @@ representative at an online or offline event.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders through a private security advisory:
-https://github.com/lumen-lang/lumen/security/advisories/new
+https://github.com/alliecatowo/lumen/security/advisories/new
 
 All complaints will be reviewed and investigated promptly and fairly.
 

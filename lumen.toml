@@ -13,6 +13,10 @@
 # api_key_env = "OPENAI_API_KEY"
 # default_model = "gpt-4"
 
+# [providers.config.gemini]
+# api_key_env = "GEMINI_API_KEY"
+# default_model = "gemini-1.5-pro-latest"
+
 # MCP server bridges (every MCP server = automatic Lumen tools)
 # [providers.mcp.github]
 # uri = "npx -y @modelcontextprotocol/server-github"

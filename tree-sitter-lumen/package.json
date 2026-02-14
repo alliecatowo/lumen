@@ -15,7 +15,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/lumen-lang/lumen"
+    "url": "https://github.com/alliecatowo/lumen.git"
   },
   "dependencies": {
     "node-addon-api": "^8.0.0",

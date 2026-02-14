@@ -142,7 +142,7 @@ cell main() -> Null
   print("═══════════════════════════════════════════")
   print("")
 
-  let pr = PullRequest(repo: "lumen-lang/lumen", number: 42, title: "Add string interpolation", author: "alice", additions: 350, deletions: 120)
+  let pr = PullRequest(repo: "alliecatowo/lumen", number: 42, title: "Add string interpolation", author: "alice", additions: 350, deletions: 120)
   print("Reviewing PR #" + to_string(pr.number) + ": " + pr.title)
   print("Author: " + pr.author)
   print("Changes: +" + to_string(pr.additions) + " / -" + to_string(pr.deletions))

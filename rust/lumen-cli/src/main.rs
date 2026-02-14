@@ -44,7 +44,7 @@ fn status_label(label: &str) -> String {
     version,
     about = "The Lumen programming language — statically typed, AI-native systems",
     long_about = "Lumen is a statically typed programming language for AI-native systems.\n\n\
-                  Learn more at: https://github.com/lumen-lang/lumen",
+                  Learn more at: https://github.com/alliecatowo/lumen",
     help_template = "\
 {before-help}{name} {version}
 {about-with-newline}

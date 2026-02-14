@@ -1,10 +1,12 @@
 [package]
 name = "lumen-wasm"
-version = "0.1.1"
+version.workspace = true
 edition = "2021"
 authors = ["Lumen Contributors"]
 description = "WebAssembly bindings for the Lumen compiler and VM"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/alliecatowo/lumen"
+homepage = "https://alliecatowo.github.io/lumen/"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

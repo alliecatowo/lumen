@@ -13,7 +13,7 @@ Welcome to Lumen, a statically typed programming language for AI-native systems.
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/lumen-lang/lumen.git
+   git clone https://github.com/alliecatowo/lumen.git
    cd lumen
    ```
 
@@ -272,7 +272,7 @@ Lumen includes powerful features for AI-native systems:
 
 ### Contributing
 
-- Report issues at: https://github.com/lumen-lang/lumen/issues
+- Report issues at: https://github.com/alliecatowo/lumen/issues
 - See `docs/research/EXECUTION_TRACKER.md` and `ROADMAP.md` for implementation roadmap
 - Run tests: `cargo test --workspace`
 

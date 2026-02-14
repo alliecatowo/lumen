@@ -161,6 +161,7 @@ impl GeminiProvider {
     fn execute_generate(&self, input: Value) -> Result<Value, ToolError> {
         let prompt = input
             .get("prompt")
+            .or_else(|| input.get("arg0"))
             .and_then(|p| p.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("missing 'prompt' field".to_string()))?;
         let system = input.get("system").and_then(|s| s.as_str());
@@ -225,6 +226,7 @@ impl GeminiProvider {
     fn execute_chat(&self, input: Value) -> Result<Value, ToolError> {
         let messages = input
             .get("messages")
+            .or_else(|| input.get("arg0"))
             .and_then(|m| m.as_array())
             .ok_or_else(|| ToolError::InvalidArgs("missing 'messages' array".to_string()))?;
 
@@ -280,6 +282,7 @@ impl GeminiProvider {
     fn execute_embed(&self, input: Value) -> Result<Value, ToolError> {
         let text = input
             .get("text")
+            .or_else(|| input.get("arg0"))
             .and_then(|t| t.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("missing 'text' field".to_string()))?;
 

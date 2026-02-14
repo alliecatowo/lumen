@@ -11,7 +11,7 @@ Try Lumen directly in your browser. Edit the code and click **Run** to see the r
 
 ## Quick Examples
 
-<ExampleBlock title="Hello World" :initialOpen="true" :source="'cell main() -> String\n  return \"Hello, World!\"\nend'">
+<ExampleBlock title="Hello World" :initialOpen="true">
 
 ```lumen
 cell main() -> String
@@ -21,7 +21,7 @@ end
 
 </ExampleBlock>
 
-<ExampleBlock title="Fibonacci" :source="'cell fibonacci(n: Int) -> Int\n  if n <= 1\n    return n\n  end\n  return fibonacci(n - 1) + fibonacci(n - 2)\nend\n\ncell main() -> Int\n  return fibonacci(10)\nend'">
+<ExampleBlock title="Fibonacci">
 
 ```lumen
 cell fibonacci(n: Int) -> Int
@@ -38,7 +38,7 @@ end
 
 </ExampleBlock>
 
-<ExampleBlock title="Pattern Matching" :source="'cell classify(n: Int) -> String\n  match n\n    0 -> return \"zero\"\n    1 -> return \"one\"\n    _ -> return \"many\"\n  end\nend\n\ncell main() -> String\n  return classify(5)\nend'">
+<ExampleBlock title="Pattern Matching">
 
 ```lumen
 cell classify(n: Int) -> String
@@ -56,7 +56,7 @@ end
 
 </ExampleBlock>
 
-<ExampleBlock title="Records with Constraints" :source="'record Product\n  name: String where length(name) > 0\n  price: Float where price >= 0.0\nend\n\ncell total(products: list[Product]) -> Float\n  let sum = 0.0\n  for p in products\n    sum += p.price\n  end\n  return sum\nend\n\ncell main() -> Float\n  let items = [\n    Product(name: \"Apple\", price: 1.50),\n    Product(name: \"Banana\", price: 0.75)\n  ]\n  return total(items)\nend'">
+<ExampleBlock title="Records with Constraints">
 
 ```lumen
 record Product
@@ -83,7 +83,7 @@ end
 
 </ExampleBlock>
 
-<ExampleBlock title="Error Handling" :source="'cell divide(a: Int, b: Int) -> result[Int, String]\n  if b == 0\n    return err(\"Division by zero\")\n  end\n  return ok(a / b)\nend\n\ncell main() -> String\n  match divide(10, 2)\n    ok(value) -> return \"Result: {value}\"\n    err(msg) -> return \"Error: {msg}\"\n  end\nend'">
+<ExampleBlock title="Error Handling">
 
 ```lumen
 cell divide(a: Int, b: Int) -> result[Int, String]

@@ -1,22 +1,24 @@
-<script setup lang="ts">
 import { ref } from 'vue';
-import { loadIntoPlayground } from './playground-state';
+import { loadIntoPlayground } from '../playground-state';
 
 const props = defineProps<{
   title: string;
-  source: string;
   initialOpen?: boolean;
 }>();
 
 const isOpen = ref(props.initialOpen ?? false);
+const container = ref<HTMLElement | null>(null);
 
 function tryItOut() {
-  loadIntoPlayground(props.source);
+  const code = container.value?.querySelector('code')?.textContent;
+  if (code) {
+    loadIntoPlayground(code);
+  }
 }
 </script>
 
 <template>
-  <div class="example-block" :class="{ 'is-open': isOpen }">
+  <div ref="container" class="example-block" :class="{ 'is-open': isOpen }">
     <div class="example-header" @click="isOpen = !isOpen">
       <div class="example-title">
         <svg :class="{ 'is-rotated': isOpen }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">

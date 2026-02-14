@@ -178,6 +178,6 @@ end
 
 ## Next Steps
 
-- [Tutorial: Basics](/learn/tutorial/basics) — Deep dive into syntax
-- [Pattern Matching](/learn/tutorial/pattern-matching) — More match patterns
-- [Error Handling](/learn/tutorial/error-handling) — Working with results
+- [Tutorial: Basics](./tutorial/basics) — Deep dive into syntax
+- [Pattern Matching](./tutorial/pattern-matching) — More match patterns
+- [Error Handling](./tutorial/error-handling) — Working with results

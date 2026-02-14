@@ -290,5 +290,5 @@ end
 
 ## Next Steps
 
-- [Functions](/learn/tutorial/functions) — Define reusable code
-- [Pattern Matching](/learn/tutorial/pattern-matching) — Destructure data
+- [Functions](./functions) — Define reusable code
+- [Pattern Matching](./pattern-matching) — Destructure data

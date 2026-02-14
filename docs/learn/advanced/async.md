@@ -285,5 +285,5 @@ end
 
 ## Next Steps
 
-- [Orchestration](/learn/ai-native/orchestration) — Full orchestration guide
-- [Effects](/learn/advanced/effects) — Effect system
+- [Orchestration](../ai-native/orchestration) — Full orchestration guide
+- [Effects](./effects) — Effect system

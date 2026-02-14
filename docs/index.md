@@ -17,7 +17,7 @@ hero:
       link: /reference/overview
     - theme: alt
       text: Try Playground
-      link: /playground
+      link: ./playground
 
 features:
   - icon: "📝"
@@ -69,7 +69,7 @@ Building AI systems today means juggling Python notebooks, API clients, prompt t
 
 ## Try It Now
 
-Head to the [Playground](/playground) to run Lumen code directly in your browser—no installation required.
+Head to the [Playground](./playground) to run Lumen code directly in your browser—no installation required.
 
 ## Example: AI Chat Agent
 
@@ -98,4 +98,4 @@ end
 ## Community
 
 - [GitHub](https://github.com/alliecatowo/lumen) — Source code and issues
-- [Examples](/examples/hello-world) — Working code samples
+- [Examples](./examples/hello-world) — Working code samples

@@ -89,6 +89,6 @@ Lumen makes AI systems auditable:
 
 ## Next Steps
 
-- [Install Lumen](/learn/installation)
-- [Write your first program](/learn/first-program)
-- [Learn the basics](/learn/tutorial/basics)
+- [Install Lumen](./installation)
+- [Write your first program](./first-program)
+- [Learn the basics](./tutorial/basics)

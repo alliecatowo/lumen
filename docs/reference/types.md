@@ -75,7 +75,7 @@ match result
 end
 ```
 
-See [Error Handling](/learn/tutorial/error-handling) for details.
+See [Error Handling](../learn/tutorial/error-handling) for details.
 
 ## Union Types
 
@@ -226,5 +226,5 @@ Use sparingly—prefer specific types.
 
 ## Next Steps
 
-- [Expressions](/reference/expressions) — Operators and literals
-- [Pattern Matching](/reference/patterns) — Destructuring values
+- [Expressions](./expressions) — Operators and literals
+- [Pattern Matching](./patterns) — Destructuring values

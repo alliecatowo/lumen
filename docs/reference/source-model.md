@@ -241,5 +241,5 @@ end
 
 ## Next Steps
 
-- [Types](/reference/types) — Type system overview
-- [Declarations](/reference/declarations) — Top-level declarations
+- [Types](./types) — Type system overview
+- [Declarations](./declarations) — Top-level declarations

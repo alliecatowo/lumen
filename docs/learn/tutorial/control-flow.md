@@ -252,5 +252,5 @@ end
 
 ## Next Steps
 
-- [Data Structures](/learn/tutorial/data-structures) — Records and enums
-- [Functions](/learn/tutorial/functions) — Define reusable code
+- [Data Structures](./data-structures) — Records and enums
+- [Functions](./functions) — Define reusable code

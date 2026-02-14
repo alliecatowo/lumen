@@ -223,6 +223,5 @@ lumen trace show <run-id>
 
 ## Next Steps
 
-- [Grants Reference](/reference/grants) — Policy constraints
-- [Configuration](/guide/configuration) — Provider setup
-- [MCP Integration](/guide/mcp) — MCP tools
+- [Grants Reference](./grants) — Policy constraints
+- [Configuration](../guide/configuration) — Provider setup

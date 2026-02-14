@@ -274,5 +274,5 @@ end
 
 ## Next Steps
 
-- [Declarations](/reference/declarations) — Records, enums, cells
-- [Error Handling](/learn/tutorial/error-handling) — Using result types
+- [Declarations](./declarations) — Records, enums, cells
+- [Error Handling](../learn/tutorial/error-handling) — Using result types

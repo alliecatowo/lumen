@@ -128,16 +128,7 @@ Or ensure the binaries are on your PATH and configure `lumen.executablePath` and
 
 ## Screenshots
 
-### Syntax Highlighting
-![Syntax highlighting example showing a Lumen function with type annotations, effects, and control flow](preview/syntax-highlight.png)
 
-### Code Snippets
-![Autocomplete showing available Lumen snippets like cell, record, match](preview/snippets.png)
-
-### Markdown Preview
-![Lumen code blocks rendered with syntax highlighting in VS Code's markdown preview](preview/markdown-preview.png)
-
-> Note: Screenshot images are illustrative. Actual appearance depends on your color theme.
 
 ## Tree-sitter Grammar
 

@@ -4,7 +4,7 @@ This guide walks you through creating and running your first Lumen program.
 
 ## Prerequisites
 
-Make sure you have [installed Lumen](/learn/installation).
+Make sure you have [installed Lumen](./installation).
 
 ## Create Your First Program
 
@@ -101,6 +101,6 @@ REPL commands:
 
 Now that you can run Lumen programs, continue with:
 
-- [Tutorial: Basics](/learn/tutorial/basics) — Learn core syntax
-- [Tutorial: Control Flow](/learn/tutorial/control-flow) — Conditionals and loops
-- [Language Reference](/reference/overview) — Complete specification
+- [Tutorial: Basics](./tutorial/basics) — Learn core syntax
+- [Tutorial: Control Flow](./tutorial/control-flow) — Conditionals and loops
+- [Language Reference](../reference/overview) — Complete specification

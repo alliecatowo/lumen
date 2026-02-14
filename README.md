@@ -164,7 +164,7 @@ lumen build wasm --target web
 | [Fibonacci](examples/fibonacci.lm.md) | Recursive algorithms |
 | [Linked List](examples/linked_list.lm.md) | Generic data structures |
 
-See all [30 examples](examples/) in the examples directory.
+See all [30 examples](https://github.com/alliecatowo/lumen/tree/main/examples) in the examples directory.
 
 ## Language Tour
 
@@ -306,13 +306,13 @@ lumen/
 
 We welcome contributions! Please see:
 
-- [Contributing Guide](CONTRIBUTING.md)
-- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Contributing Guide](https://github.com/alliecatowo/lumen/blob/main/CONTRIBUTING.md)
+- [Code of Conduct](https://github.com/alliecatowo/lumen/blob/main/CODE_OF_CONDUCT.md)
 - [Good First Issues](https://github.com/alliecatowo/lumen/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License - see [LICENSE](https://github.com/alliecatowo/lumen/blob/main/LICENSE) for details.
 
 ---
 

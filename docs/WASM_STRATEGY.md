@@ -177,7 +177,7 @@ This document outlines Lumen's strategy for WebAssembly (WASM) compilation suppo
    - Invokes wasm-pack if available
    - Outputs pkg/ directory with .wasm + .js glue
 2. Add `lumen-wasm` to workspace (behind feature flag to avoid breaking CI)
-3. Document build process in CLAUDE.md
+3. Document build process in [CLAUDE.md](https://github.com/alliecatowo/lumen/blob/main/CLAUDE.md)
 
 **Blockers**: None.
 

@@ -459,8 +459,4 @@ sha256("hello")            # SHA-256 hex string
 | Encoding | `base64_encode`, `base64_decode`, `hex_encode`, `hex_decode` |
 | Hashing | `hash`, `sha256` |
 
-## Next Steps
 
-- [List API](/api/list) — List operations
-- [Map API](/api/map) — Map operations
-- [String API](/api/string) — String operations

@@ -6,12 +6,12 @@ This section provides complete documentation for Lumen's syntax, semantics, and 
 
 | Section | Description |
 |---------|-------------|
-| [Source Model](/reference/source-model) | `.lm.md` markdown-native and `.lm` raw source |
-| [Types](/reference/types) | Built-in and user-defined types |
-| [Expressions](/reference/expressions) | Literals, operators, function calls |
-| [Statements](/reference/statements) | Control flow, assignments |
-| [Pattern Matching](/reference/patterns) | Match expressions and patterns |
-| [Declarations](/reference/declarations) | Records, enums, cells, etc. |
+| [Source Model](./source-model) | `.lm.md` markdown-native and `.lm` raw source |
+| [Types](./types) | Built-in and user-defined types |
+| [Expressions](./expressions) | Literals, operators, function calls |
+| [Statements](./statements) | Control flow, assignments |
+| [Pattern Matching](./patterns) | Match expressions and patterns |
+| [Declarations](./declarations) | Records, enums, cells, etc. |
 
 ## Quick Reference
 
@@ -166,6 +166,6 @@ With `@deterministic true`:
 
 ## Next Steps
 
-- [Source Model](/reference/source-model) — How markdown files work
-- [Types](/reference/types) — Complete type system
-- [Expressions](/reference/expressions) — All expression forms
+- [Source Model](./source-model) — How markdown files work
+- [Types](./types) — Complete type system
+- [Expressions](./expressions) — All expression forms

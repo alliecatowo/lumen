@@ -291,5 +291,5 @@ end
 
 ## Next Steps
 
-- [Advanced Effects](/learn/advanced/effects) — Effect system deep dive
-- [Async & Futures](/learn/advanced/async) — Async programming
+- [Advanced Effects](../advanced/effects) — Effect system deep dive
+- [Async & Futures](../advanced/async) — Async programming

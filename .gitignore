@@ -1,5 +1,10 @@
 # Build artifacts
 /target/
+dist/
+cache/
+
+# Dependencies
+node_modules/
 
 # Runtime artifacts
 .lumen/
@@ -10,16 +15,20 @@
 *.swp
 *.swo
 *~
+*.DS_Store
 
 # OS
-.DS_Store
 Thumbs.db
 
 # Editor extensions
-editors/vscode/node_modules/
 editors/vscode/out/
-editors/vscode/package-lock.json
 
 # Environment
 .env
 .env.*
+
+# Documentation
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+docs/public/wasm/
+docs/node_modules/

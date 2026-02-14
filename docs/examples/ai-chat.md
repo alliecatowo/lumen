@@ -201,4 +201,4 @@ default_model = "gpt-4o"
 
 ## Next Example
 
-[Code Reviewer](/examples/code-reviewer) — AI-powered code analysis
+[Hello World](./hello-world) — Basic example

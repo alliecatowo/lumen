@@ -208,6 +208,6 @@ default_model = "llama3"
 
 ## Next Steps
 
-- [Agents](/learn/ai-native/agents) — Encapsulate AI behavior
-- [Tool Reference](/reference/tools) — Complete tool documentation
-- [Providers Guide](/guide/providers) — Configure tool providers
+- [Agents](./agents) — Encapsulate AI behavior
+- [Tool Reference](../../reference/tools) — Complete tool documentation
+- [Providers Guide](../../guide/providers) — Configure tool providers

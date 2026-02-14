@@ -253,5 +253,5 @@ The runtime now surfaces common failure modes as explicit errors instead of sile
 
 ## Next Steps
 
-- [AI-Native Features](/learn/ai-native/tools) — Tools and grants
-- [Advanced Effects](/learn/advanced/effects) — Effect system deep dive
+- [AI-Native Features](../ai-native/tools) — Tools and grants
+- [Advanced Effects](../advanced/effects) — Effect system deep dive

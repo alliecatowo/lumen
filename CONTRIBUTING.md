@@ -4,9 +4,9 @@ Thanks for your interest in contributing.
 
 ## Ground Rules
 
-- Review and follow our [Code of Conduct](CODE_OF_CONDUCT.md).
-- Use the issue templates for [bug reports](.github/ISSUE_TEMPLATE/bug_report.md) and [feature requests](.github/ISSUE_TEMPLATE/feature_request.md).
-- Contributions are licensed under the [MIT License](LICENSE).
+- Review and follow our [Code of Conduct](https://github.com/alliecatowo/lumen/blob/main/CODE_OF_CONDUCT.md).
+- Use the issue templates for [bug reports](https://github.com/alliecatowo/lumen/blob/main/.github/ISSUE_TEMPLATE/bug_report.md) and [feature requests](https://github.com/alliecatowo/lumen/blob/main/.github/ISSUE_TEMPLATE/feature_request.md).
+- Contributions are licensed under the [MIT License](https://github.com/alliecatowo/lumen/blob/main/LICENSE).
 
 ## Project Intent
 
@@ -45,7 +45,7 @@ Agentic contributions are still expected to meet normal engineering standards:
 
 ## Where to Start
 
-- `SPEC.md` for current language behavior.
-- `tasks.md` for concrete open work.
-- `ROADMAP.md` for long-horizon direction.
-- `docs/` for architecture and implementation notes.
+- [SPEC.md](https://github.com/alliecatowo/lumen/blob/main/SPEC.md) for current language behavior.
+- [tasks.md](https://github.com/alliecatowo/lumen/blob/main/tasks.md) for concrete open work.
+- [ROADMAP.md](https://github.com/alliecatowo/lumen/blob/main/ROADMAP.md) for long-horizon direction.
+- [docs/](https://github.com/alliecatowo/lumen/tree/main/docs) for architecture and implementation notes.

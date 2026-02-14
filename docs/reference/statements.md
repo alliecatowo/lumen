@@ -377,5 +377,5 @@ end
 
 ## Next Steps
 
-- [Pattern Matching](/reference/patterns) — Detailed pattern reference
-- [Declarations](/reference/declarations) — Top-level declarations
+- [Pattern Matching](./patterns) — Detailed pattern reference
+- [Declarations](./declarations) — Top-level declarations

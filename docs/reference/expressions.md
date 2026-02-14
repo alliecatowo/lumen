@@ -324,5 +324,5 @@ Use parentheses for clarity or to override precedence.
 
 ## Next Steps
 
-- [Statements](/reference/statements) — Control flow and assignments
-- [Pattern Matching](/reference/patterns) — Match expressions
+- [Statements](./statements) — Control flow and assignments
+- [Pattern Matching](./patterns) — Match expressions

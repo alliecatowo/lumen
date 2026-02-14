@@ -253,5 +253,5 @@ end
 
 ## Next Steps
 
-- [Tool Reference](/reference/tools) — Tool system
-- [Configuration](/guide/configuration) — Provider setup
+- [Tool Reference](./tools) — Tool system
+- [Configuration](../guide/configuration) — Provider setup

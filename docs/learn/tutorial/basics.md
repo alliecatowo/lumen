@@ -198,5 +198,5 @@ end
 
 ## Next Steps
 
-- [Control Flow](/learn/tutorial/control-flow) — Conditionals and loops
-- [Data Structures](/learn/tutorial/data-structures) — Records and enums
+- [Control Flow](./control-flow) — Conditionals and loops
+- [Data Structures](./data-structures) — Records and enums

@@ -114,6 +114,5 @@ lumen run hello.lm.md
 
 ## More Examples
 
-- [Hello World](/examples/hello-world) — Basic program
-- [AI Chat](/examples/ai-chat) — AI-powered chatbot
-- [Calculator](/examples/calculator) — Arithmetic operations
+- [Hello World](./examples/hello-world) — Basic program
+- [AI Chat](./examples/ai-chat) — AI-powered chatbot

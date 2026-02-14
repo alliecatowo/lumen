@@ -66,9 +66,9 @@ cd rust/lumen-wasm
 wasm-pack build --target web
 ```
 
-See the [WASM Guide](/learn/advanced/wasm) for details.
+See the [Wasm Guide](../guide/wasm-browser) for details.
 
 ## Next Steps
 
-- [Quick Start](/learn/getting-started)
-- [Your First Program](/learn/first-program)
+- [Quick Start](./getting-started)
+- [Your First Program](./first-program)

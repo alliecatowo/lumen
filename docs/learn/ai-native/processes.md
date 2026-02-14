@@ -340,6 +340,6 @@ end
 
 ## Next Steps
 
-- [Pipelines](/learn/ai-native/pipelines) — Detailed pipeline guide
-- [Orchestration](/learn/ai-native/orchestration) — Async coordination
-- [Process Reference](/reference/processes) — Complete process documentation
+- [Pipelines](./pipelines) — Detailed pipeline guide
+- [Agents](./agents) — Agent definition
+- [Pipelines](./pipelines) — Pipeline composition

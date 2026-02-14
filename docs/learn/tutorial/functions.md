@@ -313,5 +313,5 @@ end
 
 ## Next Steps
 
-- [Pattern Matching](/learn/tutorial/pattern-matching) — Powerful data destructuring
-- [Error Handling](/learn/tutorial/error-handling) — Working with results
+- [Pattern Matching](./pattern-matching) — Powerful data destructuring
+- [Error Handling](./error-handling) — Working with results

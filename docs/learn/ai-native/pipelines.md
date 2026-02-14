@@ -241,5 +241,5 @@ end
 
 ## Next Steps
 
-- [Orchestration](/learn/ai-native/orchestration) — Multi-agent coordination
-- [Process Reference](/reference/processes) — Complete pipeline documentation
+- [Orchestration](./orchestration) —- [Agents](./agents) — Agent definition
+- [Processes](./processes) — Process definitionline documentation

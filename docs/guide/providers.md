@@ -212,6 +212,5 @@ LLM_PROVIDER=anthropic lumen run app.lm.md
 
 ## Next Steps
 
-- [Configuration](/guide/configuration) — Full configuration reference
-- [Tools](/reference/tools) — Tool system
-- [MCP Integration](/guide/mcp) — MCP servers
+- [Configuration](./configuration) — Full configuration reference
+- [Tools](../reference/tools) — Tool system

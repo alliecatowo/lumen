@@ -303,5 +303,5 @@ end
 
 ## Next Steps
 
-- [Error Handling](/learn/tutorial/error-handling) — Using result types
-- [AI-Native Tutorial](/learn/ai-native/tools) — Tools and grants
+- [Error Handling](./error-handling) — Using result types
+- [AI-Native Tutorial](../ai-native/tools) — Tools and grants

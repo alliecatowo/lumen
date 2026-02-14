@@ -92,5 +92,3 @@ Hello, AI!
 ```
 
 ## Next Example
-
-[Calculator](/examples/calculator) — Simple arithmetic

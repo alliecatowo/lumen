@@ -185,6 +185,5 @@ format = "json"
 
 ## Next Steps
 
-- [CLI Reference](/guide/cli) — Command-line tools
-- [Providers](/guide/providers) — Provider details
-- [MCP Integration](/guide/mcp) — MCP setup
+- [CLI Reference](./cli) — Command-line tools
+- [Providers](./providers) — Provider details

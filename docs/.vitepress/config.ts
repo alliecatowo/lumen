@@ -13,6 +13,7 @@ export default defineConfig({
   cleanUrls: true,
   lastUpdated: true,
   ignoreDeadLinks: true,
+  srcExclude: ["**/CLAUDE.md", "README.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "LICENSE", "../../CLAUDE.md"],
   head: [
     ["meta", { name: "theme-color", content: "#FF4FA3" }],
     ["link", { rel: "icon", type: "image/svg+xml", href: iconHref }],
@@ -35,6 +36,7 @@ export default defineConfig({
     optimizeDeps: {
       exclude: ["/wasm/lumen_wasm.js"],
     },
+    assetsInclude: ["**/CLAUDE.md"],
     build: {
       target: "esnext",
     },

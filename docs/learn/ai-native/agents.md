@@ -239,6 +239,6 @@ end
 
 ## Next Steps
 
-- [Processes](/learn/ai-native/processes) — Stateful workflows
-- [Pipelines](/learn/ai-native/pipelines) — Data processing
-- [Agent Reference](/reference/agents) — Complete agent documentation
+- [Processes](./processes) — Process definition
+- [Pipelines](./pipelines) — Pipeline compositionnt documentation
+```

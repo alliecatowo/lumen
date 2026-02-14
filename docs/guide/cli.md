@@ -250,5 +250,5 @@ tools = ["github.create_issue", "github.search_repos"]
 
 ## Next Steps
 
-- [Configuration](/guide/configuration) — Detailed configuration
-- [Providers](/guide/providers) — Tool provider setup
+- [Configuration](./configuration) — Detailed configuration
+- [Providers](./providers) — Tool provider setup

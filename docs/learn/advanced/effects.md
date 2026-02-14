@@ -216,5 +216,5 @@ end
 
 ## Next Steps
 
-- [Determinism](/reference/directives/deterministic) — Controlling nondeterminism
-- [Tool Reference](/reference/tools) — Tool system details
+- [Determinism](../../reference/directives/deterministic) — Controlling nondeterminism
+- [Tool Reference](../../reference/tools) — Tool system details

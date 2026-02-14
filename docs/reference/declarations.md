@@ -425,5 +425,5 @@ end
 
 ## Next Steps
 
-- [Tools](/reference/tools) — Tool system details
-- [AI-Native Features](/language/ai-native) — Pipeline, machine, memory, and orchestration reference
+- [Tools](./tools) — Tool declarations
+- [Grants](./grants) — Grant declarations

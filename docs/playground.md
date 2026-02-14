@@ -11,7 +11,9 @@ Try Lumen directly in your browser. Edit the code and click **Run** to see the r
 
 ## Quick Examples
 
-### Hello World
+<ExampleBlock title="Hello World" :initialOpen="true" source='cell main() -> String
+  return "Hello, World!"
+end'>
 
 ```lumen
 cell main() -> String
@@ -19,7 +21,18 @@ cell main() -> String
 end
 ```
 
-### Fibonacci
+</ExampleBlock>
+
+<ExampleBlock title="Fibonacci" source='cell fibonacci(n: Int) -> Int
+  if n <= 1
+    return n
+  end
+  return fibonacci(n - 1) + fibonacci(n - 2)
+end
+
+cell main() -> Int
+  return fibonacci(10)
+end'>
 
 ```lumen
 cell fibonacci(n: Int) -> Int
@@ -34,7 +47,19 @@ cell main() -> Int
 end
 ```
 
-### Pattern Matching
+</ExampleBlock>
+
+<ExampleBlock title="Pattern Matching" source='cell classify(n: Int) -> String
+  match n
+    0 -> return "zero"
+    1 -> return "one"
+    _ -> return "many"
+  end
+end
+
+cell main() -> String
+  return classify(5)
+end'>
 
 ```lumen
 cell classify(n: Int) -> String
@@ -50,7 +75,28 @@ cell main() -> String
 end
 ```
 
-### Records with Constraints
+</ExampleBlock>
+
+<ExampleBlock title="Records with Constraints" source='record Product
+  name: String where length(name) > 0
+  price: Float where price >= 0.0
+end
+
+cell total(products: list[Product]) -> Float
+  let sum = 0.0
+  for p in products
+    sum += p.price
+  end
+  return sum
+end
+
+cell main() -> Float
+  let items = [
+    Product(name: "Apple", price: 1.50),
+    Product(name: "Banana", price: 0.75)
+  ]
+  return total(items)
+end'>
 
 ```lumen
 record Product
@@ -75,7 +121,21 @@ cell main() -> Float
 end
 ```
 
-### Error Handling
+</ExampleBlock>
+
+<ExampleBlock title="Error Handling" source='cell divide(a: Int, b: Int) -> result[Int, String]
+  if b == 0
+    return err("Division by zero")
+  end
+  return ok(a / b)
+end
+
+cell main() -> String
+  match divide(10, 2)
+    ok(value) -> return "Result: {value}"
+    err(msg) -> return "Error: {msg}"
+  end
+end'>
 
 ```lumen
 cell divide(a: Int, b: Int) -> result[Int, String]
@@ -92,6 +152,8 @@ cell main() -> String
   end
 end
 ```
+
+</ExampleBlock>
 
 ## Running Locally
 

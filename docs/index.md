@@ -43,8 +43,14 @@ features:
 ## Quick Start
 
 ```bash
-# Install
+# Install (One-liner)
+curl -fsSL https://raw.githubusercontent.com/alliecatowo/lumen/main/scripts/install.sh | sh
+
+# Or via Cargo
 cargo install lumen-lang
+```
+
+Join the [Editor Support](./guide/editors) section to set up VS Code.
 
 # Create your first program
 cat > hello.lm.md << 'EOF'

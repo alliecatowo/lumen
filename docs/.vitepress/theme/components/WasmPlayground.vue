@@ -1,6 +1,6 @@
-<script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch, nextTick } from "vue";
 import { withBase } from "vitepress";
+import { playgroundSource } from "../playground-state";
 
 // CodeMirror imports
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightSpecialChars } from "@codemirror/view";
@@ -131,6 +131,7 @@ const status = ref("Loading WebAssembly runtime...");
 const busy = ref(false);
 const output = ref("Click Run to execute the code.");
 const outputKind = ref<"neutral" | "ok" | "error">("neutral");
+const consoleVisible = ref(true);
 
 // CodeMirror refs
 const editorContainer = ref<HTMLDivElement | null>(null);
@@ -246,6 +247,17 @@ watch(selectedKey, (key) => {
   outputKind.value = "neutral";
 });
 
+watch(playgroundSource, (src) => {
+  if (src) {
+    sourceCode.value = src;
+    setEditorContent(src);
+    output.value = "Code loaded from example.";
+    outputKind.value = "neutral";
+    // Clear it so we don't reload it again if something else triggers watch
+    playgroundSource.value = null;
+  }
+});
+
 function parseResult(result: LumenResult): { ok?: string; error?: string } {
   try {
     return JSON.parse(result.to_json());
@@ -339,156 +351,258 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section class="wasm-playground">
-    <header class="playground-header">
-      <div class="status-row">
-        <span class="status">{{ status }}</span>
-        <div class="controls">
-          <label for="example">Example:</label>
-          <select id="example" v-model="selectedKey">
-            <option v-for="(example, key) in examples" :key="key" :value="key">
-              {{ example.label }}
-            </option>
-          </select>
+  <div class="playground-wrapper">
+    <section class="wasm-playground">
+      <!-- Sidebar: Files & Examples -->
+      <aside class="playground-sidebar">
+        <div class="sidebar-section">
+          <h3 class="sidebar-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+              <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
+              <polyline points="13 2 13 9 20 9"/>
+            </svg>
+            Explorer
+          </h3>
+          <div class="file-list">
+            <div class="file-item active">
+              <span class="file-icon">M</span>
+              main.lm.md
+            </div>
+          </div>
         </div>
-      </div>
-    </header>
 
-    <div class="playground-grid">
-      <div class="editor-pane">
-        <div class="editor-header">
-          <span class="filename">main.lm.md</span>
-          <div class="actions">
-            <button :disabled="busy || !api" @click="runCheck" class="btn-secondary">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                <path d="M9 12l2 2 4-4"/>
-                <circle cx="12" cy="12" r="10"/>
-              </svg>
-              Check
-            </button>
-            <button :disabled="busy || !api" @click="runProgram" class="btn-primary">
-              <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
-                <path d="M8 5v14l11-7z"/>
-              </svg>
-              Run
+        <div class="sidebar-section">
+          <h3 class="sidebar-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+            </svg>
+            Examples
+          </h3>
+          <div class="example-list">
+            <button
+              v-for="(example, key) in examples"
+              :key="key"
+              :class="['example-item', { active: selectedKey === key }]"
+              @click="selectedKey = key"
+            >
+              {{ example.label }}
             </button>
           </div>
         </div>
-        <div ref="editorContainer" class="code-editor" />
-      </div>
-      <div class="output-pane">
-        <div class="output-header">
-          <span>Output</span>
-          <span :class="['status-badge', outputKind]">{{ outputKind }}</span>
+      </aside>
+
+      <!-- Main Content: Editor and Toolbar -->
+      <main class="playground-main">
+        <header class="playground-toolbar">
+          <div class="toolbar-left">
+            <div class="tabs">
+              <div class="tab active">
+                main.lm.md
+                <span class="tab-close">×</span>
+              </div>
+            </div>
+          </div>
+          <div class="toolbar-right">
+            <div class="status-indicator" :class="outputKind">
+              <span class="pulse"></span>
+              {{ status }}
+            </div>
+            <div class="actions">
+              <button :disabled="busy || !api" @click="runCheck" class="btn btn-ghost" title="Type-check code">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                  <path d="M9 12l2 2 4-4"/>
+                  <circle cx="12" cy="12" r="10"/>
+                </svg>
+                Check
+              </button>
+              <button :disabled="busy || !api" @click="runProgram" class="btn btn-primary" title="Execute program">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+                  <path d="M8 5v14l11-7z"/>
+                </svg>
+                Run
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <div class="editor-container">
+          <div ref="editorContainer" class="code-editor" />
         </div>
-        <pre :class="['output', outputKind]">{{ output }}</pre>
-      </div>
-    </div>
-  </section>
+
+        <!-- Terminal Output -->
+        <footer class="playground-console" :class="{ collapsed: !consoleVisible }">
+          <div class="console-header" @click="consoleVisible = !consoleVisible">
+            <div class="console-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                <polyline points="4 17 10 11 4 5"/>
+                <line x1="12" y1="19" x2="20" y2="19"/>
+              </svg>
+              Terminal
+            </div>
+            <div class="console-controls">
+              <span :class="['status-badge', outputKind]">{{ outputKind }}</span>
+              <button class="btn-icon" @click.stop="output = ''">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                  <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="console-body">
+            <pre :class="['output', outputKind]">{{ output }}</pre>
+          </div>
+        </footer>
+      </main>
+    </section>
+  </div>
 </template>
 
 <style scoped>
+/* Full-screen experience layout */
+.playground-wrapper {
+  position: relative;
+  width: 100vw;
+  left: 50%;
+  right: 50%;
+  margin-left: -50vw;
+  margin-right: -50vw;
+  margin-top: 2rem;
+  margin-bottom: 2rem;
+  padding: 0 1.5rem;
+}
+
 .wasm-playground {
-  border: 1px solid rgba(255, 79, 163, 0.25);
-  border-radius: 12px;
-  overflow: hidden;
-  margin: 20px 0;
+  display: flex;
+  height: 75vh;
+  min-height: 600px;
   background: var(--vp-c-bg-soft);
+  border: 1px solid rgba(255, 79, 163, 0.2);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
 }
 
-.playground-header {
-  background: linear-gradient(135deg, rgba(255, 79, 163, 0.1), rgba(255, 141, 196, 0.05));
-  border-bottom: 1px solid rgba(255, 79, 163, 0.15);
-  padding: 12px 16px;
+/* Sidebar Styling */
+.playground-sidebar {
+  width: 240px;
+  background: var(--vp-c-bg-alt);
+  border-right: 1px solid var(--vp-c-divider);
+  display: flex;
+  flex-direction: column;
+  padding: 1rem 0;
+  flex-shrink: 0;
 }
 
-.status-row {
+.sidebar-section {
+  margin-bottom: 1.5rem;
+}
+
+.sidebar-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--vp-c-text-3);
+  padding: 0 1.25rem;
+  margin-bottom: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  letter-spacing: 0.05em;
+}
+
+.file-list, .example-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.file-item, .example-item {
+  padding: 0.5rem 1.25rem;
+  font-size: 13px;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--vp-c-text-2);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  transition: all 0.2s;
+}
+
+.file-item:hover, .example-item:hover {
+  background: rgba(255, 79, 163, 0.05);
+  color: var(--vp-c-text-1);
+}
+
+.file-item.active, .example-item.active {
+  background: rgba(255, 79, 163, 0.1);
+  color: var(--vp-c-brand-1);
+  border-left: 2px solid var(--vp-c-brand-1);
+}
+
+.file-icon {
+  width: 16px;
+  height: 16px;
+  background: #FF4FA3;
+  color: white;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+/* Main Area */
+.playground-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: var(--vp-c-bg);
+  min-width: 0;
+}
+
+.playground-toolbar {
+  height: 48px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
+  padding: 0 1rem;
+  background: var(--vp-c-bg-alt);
+  border-bottom: 1px solid var(--vp-c-divider);
 }
 
-.status {
-  font-size: 13px;
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.status-indicator {
+  font-size: 12px;
   color: var(--vp-c-text-2);
-}
-
-.controls {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.controls label {
-  font-size: 13px;
-  color: var(--vp-c-text-2);
+.status-indicator.ok { color: #10B981; }
+.status-indicator.error { color: #EF4444; }
+
+.pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 rgba(255, 79, 163, 0.4);
+  animation: pulse 2s infinite;
 }
 
-.controls select {
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 6px;
-  padding: 6px 10px;
-  min-width: 160px;
-  background: var(--vp-c-bg);
-  font-size: 13px;
-}
-
-.playground-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0;
-}
-
-.editor-pane,
-.output-pane {
-  display: flex;
-  flex-direction: column;
-}
-
-.editor-header,
-.output-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 12px;
-  background: var(--vp-c-bg-alt);
-  border-bottom: 1px solid var(--vp-c-divider);
-  font-size: 12px;
-  color: var(--vp-c-text-2);
-}
-
-.output-header {
-  border-left: 1px solid var(--vp-c-divider);
-}
-
-.filename {
-  font-weight: 600;
-  color: var(--vp-c-brand-1);
-}
-
-.status-badge {
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-}
-
-.status-badge.neutral {
-  background: var(--vp-c-divider);
-  color: var(--vp-c-text-2);
-}
-
-.status-badge.ok {
-  background: rgba(16, 185, 129, 0.2);
-  color: #10B981;
-}
-
-.status-badge.error {
-  background: rgba(239, 68, 68, 0.2);
-  color: #EF4444;
+@keyframes pulse {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(255, 79, 163, 0.4); }
+  70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(255, 79, 163, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(255, 79, 163, 0); }
 }
 
 .actions {
@@ -496,98 +610,122 @@ onUnmounted(() => {
   gap: 8px;
 }
 
-.btn-primary,
-.btn-secondary {
-  display: flex;
+.btn {
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  border-radius: 6px;
-  font-size: 12px;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .btn-primary {
   background: var(--vp-c-brand-1);
   color: white;
   border: none;
+  box-shadow: 0 4px 12px rgba(255, 79, 163, 0.3);
 }
 
-.btn-primary:hover:not(:disabled) {
+.btn-primary:hover {
   background: var(--vp-c-brand-2);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(255, 79, 163, 0.4);
 }
 
-.btn-secondary {
+.btn-ghost {
   background: transparent;
-  border: 1px solid var(--vp-c-brand-1);
+  color: var(--vp-c-text-2);
+  border: 1px solid var(--vp-c-divider);
+}
+
+.btn-ghost:hover {
+  background: rgba(255, 79, 163, 0.05);
+  border-color: var(--vp-c-brand-1);
   color: var(--vp-c-brand-1);
 }
 
-.btn-secondary:hover:not(:disabled) {
-  background: rgba(255, 79, 163, 0.1);
-}
-
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.editor-container {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
 }
 
 .code-editor {
-  min-height: 350px;
-  background: var(--vp-c-bg);
+  height: 100%;
 }
 
 .code-editor :deep(.cm-editor) {
   height: 100%;
-  min-height: 350px;
 }
 
-.output {
+/* Console Styling */
+.playground-console {
+  height: 200px;
+  background: var(--vp-c-bg-alt);
+  border-top: 1px solid var(--vp-c-divider);
+  display: flex;
+  flex-direction: column;
+  transition: all 0.3s ease;
+}
+
+.playground-console.collapsed {
+  height: 38px;
+}
+
+.console-header {
+  height: 38px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 1rem;
+  cursor: pointer;
+}
+
+.console-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--vp-c-text-3);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.console-body {
   flex: 1;
-  min-height: 350px;
-  margin: 0;
-  padding: 12px;
-  border: none;
-  border-left: 1px solid var(--vp-c-divider);
-  background: var(--vp-c-bg);
-  font-family: var(--vp-font-family-mono);
-  font-size: 13px;
-  line-height: 1.6;
-  white-space: pre-wrap;
+  background: #000;
+  margin: 0 12px 12px;
+  border-radius: 8px;
   overflow: auto;
 }
 
-.output.ok {
-  background: rgba(16, 185, 129, 0.04);
-  border-left-color: rgba(16, 185, 129, 0.3);
+.output {
+  margin: 0;
+  padding: 12px;
+  font-family: var(--vp-font-family-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  color: #e0e0e0;
+  white-space: pre-wrap;
 }
 
-.output.error {
-  background: rgba(239, 68, 68, 0.04);
-  border-left-color: rgba(239, 68, 68, 0.3);
-  color: #EF4444;
-}
+.output.error { color: #FF6B6B; }
+.output.ok { color: #10B981; }
 
-@media (max-width: 768px) {
-  .playground-grid {
-    grid-template-columns: 1fr;
+/* Responsive adjustments */
+@media (max-width: 900px) {
+  .playground-wrapper {
+    width: 100%;
+    left: 0;
+    margin: 1rem 0;
+    padding: 0;
   }
-
-  .output-header {
-    border-left: none;
-    border-top: 1px solid var(--vp-c-divider);
-  }
-
-  .output {
-    border-left: none;
-    min-height: 200px;
-  }
-
-  .status-row {
-    flex-direction: column;
-    align-items: flex-start;
+  
+  .playground-sidebar {
+    display: none;
   }
 }
 </style>

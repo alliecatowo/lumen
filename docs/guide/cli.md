@@ -2,7 +2,17 @@
 
 Complete command-line interface documentation.
 
-## Installation
+### One-liner (Recommended)
+
+Install the latest version of Lumen and the Language Server:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alliecatowo/lumen/main/scripts/install.sh | sh
+```
+
+### From Source
+
+Requires [Rust](https://rustup.rs/):
 
 ```bash
 cargo install lumen-lang

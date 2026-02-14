@@ -177,6 +177,7 @@ export default defineConfig({
           text: "Guides",
           items: [
             { text: "CLI Reference", link: "/guide/cli" },
+            { text: "Editor Support", link: "/guide/editors" },
             { text: "Configuration", link: "/guide/configuration" },
             { text: "Tool Providers", link: "/guide/providers" },
           ],

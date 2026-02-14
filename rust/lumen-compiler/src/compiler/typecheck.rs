@@ -234,65 +234,185 @@ impl std::fmt::Display for Type {
     }
 }
 
+/// Type substitution map: maps type parameter names to concrete types
+pub type TypeSubst = HashMap<String, Type>;
+
+/// Build substitution map from generic parameters and concrete type arguments
+fn build_subst(params: &[String], args: &[Type]) -> TypeSubst {
+    params
+        .iter()
+        .zip(args.iter())
+        .map(|(p, a)| (p.clone(), a.clone()))
+        .collect()
+}
+
+/// Infer generic type arguments from record field values
+fn infer_generic_args_from_fields(
+    generic_params: &[String],
+    field_defs: &[FieldDef],
+    field_values: &[(String, Expr)],
+    symbols: &SymbolTable,
+    checker: &mut TypeChecker,
+) -> Vec<Type> {
+    let mut inferred: HashMap<String, Type> = HashMap::new();
+
+    for (fname, fval) in field_values {
+        let val_type = checker.infer_expr(fval);
+        if let Some(field_def) = field_defs.iter().find(|f| f.name == *fname) {
+            // Try to unify field type with value type to infer generic params
+            unify_for_inference(&field_def.ty, &val_type, symbols, &mut inferred);
+        }
+    }
+
+    // Return inferred types in parameter order, or Type::Any for unresolved
+    generic_params
+        .iter()
+        .map(|p| inferred.get(p).cloned().unwrap_or(Type::Any))
+        .collect()
+}
+
+/// Attempt to unify a type expression with a concrete type to infer generic parameters
+fn unify_for_inference(
+    type_expr: &TypeExpr,
+    concrete: &Type,
+    symbols: &SymbolTable,
+    inferred: &mut HashMap<String, Type>,
+) {
+    match (type_expr, concrete) {
+        (TypeExpr::Named(name, _), ty) => {
+            // If this is a type parameter (single uppercase letter or explicitly generic),
+            // record the inference
+            if name.len() == 1 && name.chars().next().unwrap().is_uppercase() {
+                inferred.entry(name.clone()).or_insert_with(|| ty.clone());
+            }
+        }
+        (TypeExpr::List(inner, _), Type::List(inner_ty)) => {
+            unify_for_inference(inner, inner_ty, symbols, inferred);
+        }
+        (TypeExpr::Map(k, v, _), Type::Map(kt, vt)) => {
+            unify_for_inference(k, kt, symbols, inferred);
+            unify_for_inference(v, vt, symbols, inferred);
+        }
+        (TypeExpr::Set(inner, _), Type::Set(inner_ty)) => {
+            unify_for_inference(inner, inner_ty, symbols, inferred);
+        }
+        (TypeExpr::Result(ok, err, _), Type::Result(ok_ty, err_ty)) => {
+            unify_for_inference(ok, ok_ty, symbols, inferred);
+            unify_for_inference(err, err_ty, symbols, inferred);
+        }
+        (TypeExpr::Tuple(exprs, _), Type::Tuple(types)) => {
+            for (expr, ty) in exprs.iter().zip(types.iter()) {
+                unify_for_inference(expr, ty, symbols, inferred);
+            }
+        }
+        _ => {
+            // No unification possible
+        }
+    }
+}
+
+/// Resolve a type expression to a concrete type, applying substitutions for generic parameters
 pub fn resolve_type_expr(ty: &TypeExpr, symbols: &SymbolTable) -> Type {
+    resolve_type_expr_with_subst(ty, symbols, &HashMap::new())
+}
+
+/// Resolve a type expression with generic type parameter substitutions
+fn resolve_type_expr_with_subst(
+    ty: &TypeExpr,
+    symbols: &SymbolTable,
+    subst: &TypeSubst,
+) -> Type {
     match ty {
-        TypeExpr::Named(name, _) => match name.as_str() {
-            "String" => Type::String,
-            "Int" => Type::Int,
-            "Float" => Type::Float,
-            "Bool" => Type::Bool,
-            "Bytes" => Type::Bytes,
-            "Json" => Type::Json,
-            "ValidationError" => Type::Record("ValidationError".into()),
-            _ => {
-                if symbols.types.contains_key(name) {
-                    use crate::compiler::resolve::TypeInfoKind;
-                    match &symbols.types[name].kind {
-                        TypeInfoKind::Record(_) => Type::Record(name.clone()),
-                        TypeInfoKind::Enum(_) => Type::Enum(name.clone()),
-                        TypeInfoKind::Builtin => Type::Record(name.clone()),
+        TypeExpr::Named(name, _) => {
+            // Check if this is a generic type parameter
+            if let Some(concrete_type) = subst.get(name) {
+                return concrete_type.clone();
+            }
+            match name.as_str() {
+                "String" => Type::String,
+                "Int" => Type::Int,
+                "Float" => Type::Float,
+                "Bool" => Type::Bool,
+                "Bytes" => Type::Bytes,
+                "Json" => Type::Json,
+                "ValidationError" => Type::Record("ValidationError".into()),
+                _ => {
+                    if symbols.types.contains_key(name) {
+                        use crate::compiler::resolve::TypeInfoKind;
+                        match &symbols.types[name].kind {
+                            TypeInfoKind::Record(_) => Type::Record(name.clone()),
+                            TypeInfoKind::Enum(_) => Type::Enum(name.clone()),
+                            TypeInfoKind::Builtin => Type::Record(name.clone()),
+                        }
+                    } else if let Some(alias_target) = symbols.type_aliases.get(name) {
+                        resolve_type_expr_with_subst(alias_target, symbols, subst)
+                    } else {
+                        Type::Any
                     }
-                } else if let Some(alias_target) = symbols.type_aliases.get(name) {
-                    resolve_type_expr(alias_target, symbols)
-                } else {
-                    Type::Any
                 }
             }
-        },
-        TypeExpr::List(inner, _) => Type::List(Box::new(resolve_type_expr(inner, symbols))),
+        }
+        TypeExpr::List(inner, _) => {
+            Type::List(Box::new(resolve_type_expr_with_subst(inner, symbols, subst)))
+        }
         TypeExpr::Map(k, v, _) => Type::Map(
-            Box::new(resolve_type_expr(k, symbols)),
-            Box::new(resolve_type_expr(v, symbols)),
+            Box::new(resolve_type_expr_with_subst(k, symbols, subst)),
+            Box::new(resolve_type_expr_with_subst(v, symbols, subst)),
         ),
         TypeExpr::Result(ok, err, _) => Type::Result(
-            Box::new(resolve_type_expr(ok, symbols)),
-            Box::new(resolve_type_expr(err, symbols)),
+            Box::new(resolve_type_expr_with_subst(ok, symbols, subst)),
+            Box::new(resolve_type_expr_with_subst(err, symbols, subst)),
         ),
         TypeExpr::Union(types, _) => Type::Union(
             types
                 .iter()
-                .map(|t| resolve_type_expr(t, symbols))
+                .map(|t| resolve_type_expr_with_subst(t, symbols, subst))
                 .collect(),
         ),
         TypeExpr::Null(_) => Type::Null,
         TypeExpr::Tuple(types, _) => Type::Tuple(
             types
                 .iter()
-                .map(|t| resolve_type_expr(t, symbols))
+                .map(|t| resolve_type_expr_with_subst(t, symbols, subst))
                 .collect(),
         ),
-        TypeExpr::Set(inner, _) => Type::Set(Box::new(resolve_type_expr(inner, symbols))),
+        TypeExpr::Set(inner, _) => {
+            Type::Set(Box::new(resolve_type_expr_with_subst(inner, symbols, subst)))
+        }
         TypeExpr::Fn(params, ret, _, _) => {
             let param_types = params
                 .iter()
-                .map(|t| resolve_type_expr(t, symbols))
+                .map(|t| resolve_type_expr_with_subst(t, symbols, subst))
                 .collect();
-            let ret_type = resolve_type_expr(ret, symbols);
+            let ret_type = resolve_type_expr_with_subst(ret, symbols, subst);
             Type::Fn(param_types, Box::new(ret_type))
         }
         TypeExpr::Generic(name, args, _) => {
-            let arg_types: Vec<_> = args.iter().map(|t| resolve_type_expr(t, symbols)).collect();
-            Type::TypeRef(name.clone(), arg_types)
+            // Build substitution map for this generic instantiation
+            if let Some(type_info) = symbols.types.get(name) {
+                let generic_params = &type_info.generic_params;
+
+                // Resolve argument types with current substitution
+                let arg_types: Vec<_> = args
+                    .iter()
+                    .map(|t| resolve_type_expr_with_subst(t, symbols, subst))
+                    .collect();
+
+                // Create a new substitution map for the generic type's fields
+                if generic_params.len() == arg_types.len() {
+                    Type::TypeRef(name.clone(), arg_types)
+                } else {
+                    // Arity mismatch should have been caught in resolve phase
+                    Type::TypeRef(name.clone(), arg_types)
+                }
+            } else {
+                // Unknown type - should have been caught in resolve
+                let arg_types: Vec<_> = args
+                    .iter()
+                    .map(|t| resolve_type_expr_with_subst(t, symbols, subst))
+                    .collect();
+                Type::TypeRef(name.clone(), arg_types)
+            }
         }
     }
 }
@@ -831,11 +951,28 @@ impl<'a> TypeChecker<'a> {
             Expr::RecordLit(name, fields, span) => {
                 if let Some(ti) = self.symbols.types.get(name) {
                     if let crate::compiler::resolve::TypeInfoKind::Record(def) = &ti.kind {
+                        // Infer generic type arguments from field values
+                        let generic_args = if !ti.generic_params.is_empty() {
+                            infer_generic_args_from_fields(
+                                &ti.generic_params,
+                                &def.fields,
+                                fields,
+                                self.symbols,
+                                self,
+                            )
+                        } else {
+                            vec![]
+                        };
+
+                        // Build substitution map for generic parameters
+                        let subst = build_subst(&ti.generic_params, &generic_args);
+
                         // 1. Check provided fields (unknown & type mismatch)
                         for (fname, fval) in fields {
                             let val_type = self.infer_expr(fval);
                             if let Some(field_def) = def.fields.iter().find(|f| f.name == *fname) {
-                                let expected = resolve_type_expr(&field_def.ty, self.symbols);
+                                let expected =
+                                    resolve_type_expr_with_subst(&field_def.ty, self.symbols, &subst);
                                 self.check_compat(&expected, &val_type, span.line);
                             } else {
                                 let field_names: Vec<&str> =
@@ -861,14 +998,23 @@ impl<'a> TypeChecker<'a> {
                                 });
                             }
                         }
+
+                        // Return the instantiated generic type if applicable
+                        if !generic_args.is_empty() {
+                            Type::TypeRef(name.clone(), generic_args)
+                        } else {
+                            Type::Record(name.clone())
+                        }
+                    } else {
+                        Type::Record(name.clone())
                     }
                 } else {
                     self.errors.push(TypeError::UndefinedType {
                         name: name.clone(),
                         line: span.line,
                     });
+                    Type::Record(name.clone())
                 }
-                Type::Record(name.clone())
             }
             Expr::BinOp(lhs, op, rhs, _span) => {
                 let lt = self.infer_expr(lhs);
@@ -956,14 +1102,28 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::DotAccess(obj, field, _span) => {
                 let ot = self.infer_expr(obj);
-                if let Type::Record(ref name) = ot {
-                    if let Some(ti) = self.symbols.types.get(name) {
-                        if let crate::compiler::resolve::TypeInfoKind::Record(ref rd) = ti.kind {
-                            if let Some(f) = rd.fields.iter().find(|f| f.name == *field) {
-                                return resolve_type_expr(&f.ty, self.symbols);
+                match &ot {
+                    Type::Record(ref name) => {
+                        if let Some(ti) = self.symbols.types.get(name) {
+                            if let crate::compiler::resolve::TypeInfoKind::Record(ref rd) = ti.kind {
+                                if let Some(f) = rd.fields.iter().find(|f| f.name == *field) {
+                                    return resolve_type_expr(&f.ty, self.symbols);
+                                }
                             }
                         }
                     }
+                    Type::TypeRef(ref name, ref args) => {
+                        // Generic type instantiation - apply substitution
+                        if let Some(ti) = self.symbols.types.get(name) {
+                            let subst = build_subst(&ti.generic_params, args);
+                            if let crate::compiler::resolve::TypeInfoKind::Record(ref rd) = ti.kind {
+                                if let Some(f) = rd.fields.iter().find(|f| f.name == *field) {
+                                    return resolve_type_expr_with_subst(&f.ty, self.symbols, &subst);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
                 }
                 Type::Any
             }
@@ -1243,9 +1403,32 @@ impl<'a> TypeChecker<'a> {
                 return;
             }
         }
-        // Generic type refs are compatible if the base name matches
-        if let (Type::TypeRef(n1, _), Type::TypeRef(n2, _)) = (expected, actual) {
+        // Generic type refs are compatible if the base name matches and args are compatible
+        if let (Type::TypeRef(n1, args1), Type::TypeRef(n2, args2)) = (expected, actual) {
             if n1 == n2 {
+                // Check that all type arguments are compatible
+                if args1.len() == args2.len() {
+                    let all_compat = args1
+                        .iter()
+                        .zip(args2.iter())
+                        .all(|(a1, a2)| a1 == a2 || *a1 == Type::Any || *a2 == Type::Any);
+                    if all_compat {
+                        return;
+                    }
+                } else {
+                    return; // Arity mismatch, but already reported in resolve
+                }
+            }
+        }
+
+        // Allow TypeRef to be compatible with its base Record type
+        if let (Type::Record(name1), Type::TypeRef(name2, _)) = (expected, actual) {
+            if name1 == name2 {
+                return;
+            }
+        }
+        if let (Type::TypeRef(name1, _), Type::Record(name2)) = (expected, actual) {
+            if name1 == name2 {
                 return;
             }
         }

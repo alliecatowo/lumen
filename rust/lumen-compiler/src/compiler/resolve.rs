@@ -179,6 +179,7 @@ pub struct SymbolTable {
 #[derive(Debug, Clone)]
 pub struct TypeInfo {
     pub kind: TypeInfoKind,
+    pub generic_params: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -295,6 +296,7 @@ impl SymbolTable {
                 name.to_string(),
                 TypeInfo {
                     kind: TypeInfoKind::Builtin,
+                    generic_params: vec![],
                 },
             );
         }
@@ -360,6 +362,7 @@ pub fn resolve_with_base(
                 Entry::Vacant(entry) => {
                     entry.insert(TypeInfo {
                         kind: TypeInfoKind::Record(r.clone()),
+                        generic_params: r.generic_params.iter().map(|gp| gp.name.clone()).collect(),
                     });
                 }
             },
@@ -373,6 +376,7 @@ pub fn resolve_with_base(
                 Entry::Vacant(entry) => {
                     entry.insert(TypeInfo {
                         kind: TypeInfoKind::Enum(e.clone()),
+                        generic_params: e.generic_params.iter().map(|gp| gp.name.clone()).collect(),
                     });
                 }
             },
@@ -422,6 +426,7 @@ pub fn resolve_with_base(
                                 is_pub: true,
                                 span: a.span,
                             }),
+                            generic_params: vec![],
                         },
                     );
                 }
@@ -513,6 +518,7 @@ pub fn resolve_with_base(
                                 is_pub: true,
                                 span: p.span,
                             }),
+                            generic_params: vec![],
                         },
                     );
                 }
@@ -2858,11 +2864,7 @@ fn expected_type_arity(
     type_alias_arities: &HashMap<String, usize>,
 ) -> Option<usize> {
     if let Some(info) = table.types.get(name) {
-        return Some(match &info.kind {
-            TypeInfoKind::Record(def) => def.generic_params.len(),
-            TypeInfoKind::Enum(def) => def.generic_params.len(),
-            TypeInfoKind::Builtin => 0,
-        });
+        return Some(info.generic_params.len());
     }
 
     if let Some(arity) = type_alias_arities.get(name) {

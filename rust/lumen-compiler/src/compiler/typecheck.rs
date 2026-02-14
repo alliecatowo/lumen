@@ -305,6 +305,12 @@ struct TypeChecker<'a> {
     errors: Vec<TypeError>,
 }
 
+#[derive(Debug)]
+enum CheckedCallArg {
+    Positional(Type, usize),
+    Named(String, Type, usize),
+}
+
 impl<'a> TypeChecker<'a> {
     fn new(symbols: &'a SymbolTable, allow_placeholders: bool) -> Self {
         Self {
@@ -355,6 +361,46 @@ impl<'a> TypeChecker<'a> {
         };
         for stmt in &cell.body {
             self.check_stmt(stmt, return_type.as_ref());
+        }
+    }
+
+    fn check_call_against_signature(
+        &mut self,
+        params: &[(String, TypeExpr)],
+        args: &[CheckedCallArg],
+        line: usize,
+    ) {
+        if args.len() > params.len() {
+            self.errors.push(TypeError::ArgCount {
+                expected: params.len(),
+                actual: args.len(),
+                line,
+            });
+        }
+
+        let mut positional_idx = 0usize;
+        for arg in args {
+            match arg {
+                CheckedCallArg::Positional(actual_ty, arg_line) => {
+                    if let Some((_, expected_expr)) = params.get(positional_idx) {
+                        let expected_ty = resolve_type_expr(expected_expr, self.symbols);
+                        self.check_compat(&expected_ty, actual_ty, *arg_line);
+                    }
+                    positional_idx += 1;
+                }
+                CheckedCallArg::Named(name, actual_ty, arg_line) => {
+                    if let Some((_, expected_expr)) = params.iter().find(|(p, _)| p == name) {
+                        let expected_ty = resolve_type_expr(expected_expr, self.symbols);
+                        self.check_compat(&expected_ty, actual_ty, *arg_line);
+                    } else {
+                        self.errors.push(TypeError::Mismatch {
+                            expected: format!("parameter '{}'", name),
+                            actual: "unknown named argument".to_string(),
+                            line: *arg_line,
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -850,14 +896,21 @@ impl<'a> TypeChecker<'a> {
                     UnaryOp::BitNot => Type::Int,
                 }
             }
-            Expr::Call(callee, args, _span) => {
+            Expr::Call(callee, args, span) => {
+                let mut checked_args = Vec::new();
                 for arg in args {
                     match arg {
                         CallArg::Positional(e) => {
-                            self.infer_expr(e);
+                            let ty = self.infer_expr(e);
+                            checked_args.push(CheckedCallArg::Positional(ty, e.span().line));
                         }
-                        CallArg::Named(_, e, _) => {
-                            self.infer_expr(e);
+                        CallArg::Named(name, e, _) => {
+                            let ty = self.infer_expr(e);
+                            checked_args.push(CheckedCallArg::Named(
+                                name.clone(),
+                                ty,
+                                e.span().line,
+                            ));
                         }
                         CallArg::Role(_, _, _) => {}
                     }
@@ -865,6 +918,7 @@ impl<'a> TypeChecker<'a> {
                 // Try to resolve the return type
                 if let Expr::Ident(name, _) = callee.as_ref() {
                     if let Some(ci) = self.symbols.cells.get(name) {
+                        self.check_call_against_signature(&ci.params, &checked_args, span.line);
                         if let Some(ref rt) = ci.return_type {
                             return resolve_type_expr(rt, self.symbols);
                         }

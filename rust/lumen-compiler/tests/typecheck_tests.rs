@@ -576,6 +576,99 @@ end
     );
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Generics and trait conformance baseline
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn typecheck_generic_type_ref_requires_type_args() {
+    assert_type_error(
+        r#"
+record Box[T]
+  value: T
+end
+
+cell main() -> Box
+  return Box(value: 1)
+end
+"#,
+        "genericaritymismatch",
+    );
+}
+
+#[test]
+fn typecheck_generic_type_ref_rejects_wrong_arity() {
+    assert_type_error(
+        r#"
+type Box[T] = map[String, T]
+
+cell main() -> Box[Int, String]
+  return {"ok": 1}
+end
+"#,
+        "genericaritymismatch",
+    );
+}
+
+#[test]
+fn typecheck_trait_impl_missing_required_method() {
+    assert_type_error(
+        r#"
+trait Greeter
+  cell greet(name: String) -> String
+    return name
+  end
+  cell bye() -> String
+    return "bye"
+  end
+end
+
+impl Greeter for String
+  cell greet(name: String) -> String
+    return name
+  end
+end
+
+cell main() -> String
+  return "ok"
+end
+"#,
+        "traitmissingmethods",
+    );
+}
+
+#[test]
+fn typecheck_function_call_arg_count_mismatch() {
+    assert_type_error(
+        r#"
+cell add(a: Int, b: Int) -> Int
+  return a + b
+end
+
+cell main() -> Int
+  return add(1, 2, 3)
+end
+"#,
+        "argcount",
+    );
+}
+
+#[test]
+fn typecheck_function_call_param_type_mismatch() {
+    assert_type_error(
+        r#"
+cell greet(name: String, age: Int) -> String
+  return "ok"
+end
+
+cell main() -> String
+  return greet(42, 30)
+end
+"#,
+        "mismatch",
+    );
+}
+
 // NOTE: This test is commented out because the typechecker doesn't yet validate
 // nested record field types at construction sites.
 // #[test]

@@ -12,12 +12,23 @@ pub enum ResolveError {
         line: usize,
         suggestions: Vec<String>,
     },
+    #[error(
+        "generic type '{name}' has wrong number of type arguments at line {line}: expected {expected}, got {actual}"
+    )]
+    GenericArityMismatch {
+        name: String,
+        expected: usize,
+        actual: usize,
+        line: usize,
+    },
     #[error("undefined cell '{name}' at line {line}")]
     UndefinedCell {
         name: String,
         line: usize,
         suggestions: Vec<String>,
     },
+    #[error("undefined trait '{name}' at line {line}")]
+    UndefinedTrait { name: String, line: usize },
     #[error("undefined tool alias '{name}' at line {line}")]
     UndefinedTool { name: String, line: usize },
     #[error("duplicate definition '{name}' at line {line}")]
@@ -135,6 +146,15 @@ pub enum ResolveError {
         module: String,
         line: usize,
     },
+    #[error(
+        "impl for trait '{trait_name}' on '{target_type}' is missing required methods {missing:?} at line {line}"
+    )]
+    TraitMissingMethods {
+        trait_name: String,
+        target_type: String,
+        missing: Vec<String>,
+        line: usize,
+    },
 }
 
 /// Symbol table built during resolution
@@ -234,6 +254,7 @@ pub struct AddonInfo {
 #[derive(Debug, Clone)]
 pub struct TraitInfo {
     pub name: String,
+    pub parent_traits: Vec<String>,
     pub methods: Vec<String>,
 }
 
@@ -629,6 +650,7 @@ pub fn resolve_with_base(
                     Entry::Vacant(entry) => {
                         entry.insert(TraitInfo {
                             name: t.name.clone(),
+                            parent_traits: t.parent_traits.clone(),
                             methods,
                         });
                     }
@@ -657,6 +679,7 @@ pub fn resolve_with_base(
     }
 
     table.cell_policies = build_cell_policies(program);
+    let type_alias_arities = collect_type_alias_arities(program);
 
     // Second pass: verify all type references exist
     for item in &program.items {
@@ -665,7 +688,13 @@ pub fn resolve_with_base(
                 let generics: Vec<String> =
                     r.generic_params.iter().map(|g| g.name.clone()).collect();
                 for field in &r.fields {
-                    check_type_refs_with_generics(&field.ty, &table, &mut errors, &generics);
+                    check_type_refs_with_generics(
+                        &field.ty,
+                        &table,
+                        &type_alias_arities,
+                        &mut errors,
+                        &generics,
+                    );
                 }
             }
             Item::Cell(c) => {
@@ -675,10 +704,22 @@ pub fn resolve_with_base(
                 let generics: Vec<String> =
                     c.generic_params.iter().map(|g| g.name.clone()).collect();
                 for p in &c.params {
-                    check_type_refs_with_generics(&p.ty, &table, &mut errors, &generics);
+                    check_type_refs_with_generics(
+                        &p.ty,
+                        &table,
+                        &type_alias_arities,
+                        &mut errors,
+                        &generics,
+                    );
                 }
                 if let Some(ref rt) = c.return_type {
-                    check_type_refs_with_generics(rt, &table, &mut errors, &generics);
+                    check_type_refs_with_generics(
+                        rt,
+                        &table,
+                        &type_alias_arities,
+                        &mut errors,
+                        &generics,
+                    );
                 }
                 if !doc_mode {
                     check_effect_grants_for(&c.name, c.span.line, &c.effects, &table, &mut errors);
@@ -692,10 +733,22 @@ pub fn resolve_with_base(
                     let generics: Vec<String> =
                         c.generic_params.iter().map(|g| g.name.clone()).collect();
                     for p in &c.params {
-                        check_type_refs_with_generics(&p.ty, &table, &mut errors, &generics);
+                        check_type_refs_with_generics(
+                            &p.ty,
+                            &table,
+                            &type_alias_arities,
+                            &mut errors,
+                            &generics,
+                        );
                     }
                     if let Some(ref rt) = c.return_type {
-                        check_type_refs_with_generics(rt, &table, &mut errors, &generics);
+                        check_type_refs_with_generics(
+                            rt,
+                            &table,
+                            &type_alias_arities,
+                            &mut errors,
+                            &generics,
+                        );
                     }
                     if !doc_mode {
                         let fq = format!("{}.{}", a.name, c.name);
@@ -711,7 +764,13 @@ pub fn resolve_with_base(
                     validate_machine_graph(p, &mut errors);
                     for state in &p.machine_states {
                         for param in &state.params {
-                            check_type_refs_with_generics(&param.ty, &table, &mut errors, &[]);
+                            check_type_refs_with_generics(
+                                &param.ty,
+                                &table,
+                                &type_alias_arities,
+                                &mut errors,
+                                &[],
+                            );
                         }
                     }
                 }
@@ -722,10 +781,22 @@ pub fn resolve_with_base(
                     let generics: Vec<String> =
                         c.generic_params.iter().map(|g| g.name.clone()).collect();
                     for par in &c.params {
-                        check_type_refs_with_generics(&par.ty, &table, &mut errors, &generics);
+                        check_type_refs_with_generics(
+                            &par.ty,
+                            &table,
+                            &type_alias_arities,
+                            &mut errors,
+                            &generics,
+                        );
                     }
                     if let Some(ref rt) = c.return_type {
-                        check_type_refs_with_generics(rt, &table, &mut errors, &generics);
+                        check_type_refs_with_generics(
+                            rt,
+                            &table,
+                            &type_alias_arities,
+                            &mut errors,
+                            &generics,
+                        );
                     }
                     if !doc_mode {
                         let fq = format!("{}.{}", p.name, c.name);
@@ -744,10 +815,22 @@ pub fn resolve_with_base(
                     let generics: Vec<String> =
                         c.generic_params.iter().map(|g| g.name.clone()).collect();
                     for p in &c.params {
-                        check_type_refs_with_generics(&p.ty, &table, &mut errors, &generics);
+                        check_type_refs_with_generics(
+                            &p.ty,
+                            &table,
+                            &type_alias_arities,
+                            &mut errors,
+                            &generics,
+                        );
                     }
                     if let Some(ref rt) = c.return_type {
-                        check_type_refs_with_generics(rt, &table, &mut errors, &generics);
+                        check_type_refs_with_generics(
+                            rt,
+                            &table,
+                            &type_alias_arities,
+                            &mut errors,
+                            &generics,
+                        );
                     }
                 }
             }
@@ -762,15 +845,111 @@ pub fn resolve_with_base(
                     let generics: Vec<String> =
                         c.generic_params.iter().map(|g| g.name.clone()).collect();
                     for p in &c.params {
-                        check_type_refs_with_generics(&p.ty, &table, &mut errors, &generics);
+                        check_type_refs_with_generics(
+                            &p.ty,
+                            &table,
+                            &type_alias_arities,
+                            &mut errors,
+                            &generics,
+                        );
                     }
                     if let Some(ref rt) = c.return_type {
-                        check_type_refs_with_generics(rt, &table, &mut errors, &generics);
+                        check_type_refs_with_generics(
+                            rt,
+                            &table,
+                            &type_alias_arities,
+                            &mut errors,
+                            &generics,
+                        );
                     }
                     if !doc_mode && !c.body.is_empty() {
                         let fq = format!("{}.{}", h.name, c.name);
                         check_effect_grants_for(&fq, c.span.line, &c.effects, &table, &mut errors);
                     }
+                }
+            }
+            Item::Trait(t) => {
+                for parent in &t.parent_traits {
+                    if !table.traits.contains_key(parent) {
+                        errors.push(ResolveError::UndefinedTrait {
+                            name: parent.clone(),
+                            line: t.span.line,
+                        });
+                    }
+                }
+                for method in &t.methods {
+                    let generics: Vec<String> = method
+                        .generic_params
+                        .iter()
+                        .map(|g| g.name.clone())
+                        .collect();
+                    for p in &method.params {
+                        check_type_refs_with_generics(
+                            &p.ty,
+                            &table,
+                            &type_alias_arities,
+                            &mut errors,
+                            &generics,
+                        );
+                    }
+                    if let Some(ref rt) = method.return_type {
+                        check_type_refs_with_generics(
+                            rt,
+                            &table,
+                            &type_alias_arities,
+                            &mut errors,
+                            &generics,
+                        );
+                    }
+                }
+            }
+            Item::Impl(i) => {
+                let impl_generics: Vec<String> =
+                    i.generic_params.iter().map(|g| g.name.clone()).collect();
+                for method in &i.cells {
+                    let mut generics = impl_generics.clone();
+                    generics.extend(method.generic_params.iter().map(|g| g.name.clone()));
+                    for p in &method.params {
+                        check_type_refs_with_generics(
+                            &p.ty,
+                            &table,
+                            &type_alias_arities,
+                            &mut errors,
+                            &generics,
+                        );
+                    }
+                    if let Some(ref rt) = method.return_type {
+                        check_type_refs_with_generics(
+                            rt,
+                            &table,
+                            &type_alias_arities,
+                            &mut errors,
+                            &generics,
+                        );
+                    }
+                }
+
+                let Some(_) = table.traits.get(&i.trait_name) else {
+                    errors.push(ResolveError::UndefinedTrait {
+                        name: i.trait_name.clone(),
+                        line: i.span.line,
+                    });
+                    continue;
+                };
+
+                let required = collect_required_trait_methods(&i.trait_name, &table);
+                let implemented: HashSet<&str> = i.cells.iter().map(|m| m.name.as_str()).collect();
+                let missing: Vec<String> = required
+                    .into_iter()
+                    .filter(|name| !implemented.contains(name.as_str()))
+                    .collect();
+                if !missing.is_empty() {
+                    errors.push(ResolveError::TraitMissingMethods {
+                        trait_name: i.trait_name.clone(),
+                        target_type: i.target_type.clone(),
+                        missing,
+                        line: i.span.line,
+                    });
                 }
             }
             Item::Grant(g) => {
@@ -782,7 +961,13 @@ pub fn resolve_with_base(
             Item::TypeAlias(ta) => {
                 let generics: Vec<String> =
                     ta.generic_params.iter().map(|g| g.name.clone()).collect();
-                check_type_refs_with_generics(&ta.type_expr, &table, &mut errors, &generics);
+                check_type_refs_with_generics(
+                    &ta.type_expr,
+                    &table,
+                    &type_alias_arities,
+                    &mut errors,
+                    &generics,
+                );
             }
             Item::Addon(_) => {}
             _ => {}
@@ -2653,9 +2838,72 @@ fn suggest_similar(name: &str, candidates: &[&str], max_distance: usize) -> Vec<
     matches.into_iter().map(|(_, s)| s).take(3).collect()
 }
 
+fn collect_type_alias_arities(program: &Program) -> HashMap<String, usize> {
+    program
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let Item::TypeAlias(alias) = item {
+                Some((alias.name.clone(), alias.generic_params.len()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn expected_type_arity(
+    name: &str,
+    table: &SymbolTable,
+    type_alias_arities: &HashMap<String, usize>,
+) -> Option<usize> {
+    if let Some(info) = table.types.get(name) {
+        return Some(match &info.kind {
+            TypeInfoKind::Record(def) => def.generic_params.len(),
+            TypeInfoKind::Enum(def) => def.generic_params.len(),
+            TypeInfoKind::Builtin => 0,
+        });
+    }
+
+    if let Some(arity) = type_alias_arities.get(name) {
+        return Some(*arity);
+    }
+
+    if table.type_aliases.contains_key(name) {
+        return Some(0);
+    }
+
+    None
+}
+
+fn collect_required_trait_methods(trait_name: &str, table: &SymbolTable) -> Vec<String> {
+    fn walk(name: &str, table: &SymbolTable, visited: &mut HashSet<String>, out: &mut Vec<String>) {
+        if !visited.insert(name.to_string()) {
+            return;
+        }
+        let Some(info) = table.traits.get(name) else {
+            return;
+        };
+        for parent in &info.parent_traits {
+            walk(parent, table, visited, out);
+        }
+        for method in &info.methods {
+            if !out.contains(method) {
+                out.push(method.clone());
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut visited = HashSet::new();
+    walk(trait_name, table, &mut visited, &mut out);
+    out
+}
+
 fn check_type_refs_with_generics(
     ty: &TypeExpr,
     table: &SymbolTable,
+    type_alias_arities: &HashMap<String, usize>,
     errors: &mut Vec<ResolveError>,
     generics: &[String],
 ) {
@@ -2673,37 +2921,58 @@ fn check_type_refs_with_generics(
                     line: span.line,
                     suggestions,
                 });
+            } else if expected_type_arity(name, table, type_alias_arities).is_some_and(|n| n > 0) {
+                let expected = expected_type_arity(name, table, type_alias_arities).unwrap_or(0);
+                errors.push(ResolveError::GenericArityMismatch {
+                    name: name.clone(),
+                    expected,
+                    actual: 0,
+                    line: span.line,
+                });
             }
         }
-        TypeExpr::List(inner, _) => check_type_refs_with_generics(inner, table, errors, generics),
+        TypeExpr::List(inner, _) => {
+            check_type_refs_with_generics(inner, table, type_alias_arities, errors, generics)
+        }
         TypeExpr::Map(k, v, _) => {
-            check_type_refs_with_generics(k, table, errors, generics);
-            check_type_refs_with_generics(v, table, errors, generics);
+            check_type_refs_with_generics(k, table, type_alias_arities, errors, generics);
+            check_type_refs_with_generics(v, table, type_alias_arities, errors, generics);
         }
         TypeExpr::Result(ok, err, _) => {
-            check_type_refs_with_generics(ok, table, errors, generics);
-            check_type_refs_with_generics(err, table, errors, generics);
+            check_type_refs_with_generics(ok, table, type_alias_arities, errors, generics);
+            check_type_refs_with_generics(err, table, type_alias_arities, errors, generics);
         }
         TypeExpr::Union(types, _) => {
             for t in types {
-                check_type_refs_with_generics(t, table, errors, generics);
+                check_type_refs_with_generics(t, table, type_alias_arities, errors, generics);
             }
         }
         TypeExpr::Null(_) => {}
         TypeExpr::Tuple(types, _) => {
             for t in types {
-                check_type_refs_with_generics(t, table, errors, generics);
+                check_type_refs_with_generics(t, table, type_alias_arities, errors, generics);
             }
         }
-        TypeExpr::Set(inner, _) => check_type_refs_with_generics(inner, table, errors, generics),
+        TypeExpr::Set(inner, _) => {
+            check_type_refs_with_generics(inner, table, type_alias_arities, errors, generics)
+        }
         TypeExpr::Fn(params, ret, _, _) => {
             for t in params {
-                check_type_refs_with_generics(t, table, errors, generics);
+                check_type_refs_with_generics(t, table, type_alias_arities, errors, generics);
             }
-            check_type_refs_with_generics(ret, table, errors, generics);
+            check_type_refs_with_generics(ret, table, type_alias_arities, errors, generics);
         }
         TypeExpr::Generic(name, args, span) => {
-            if !table.types.contains_key(name) && !table.type_aliases.contains_key(name) {
+            if generics.iter().any(|g| g == name) {
+                if !args.is_empty() {
+                    errors.push(ResolveError::GenericArityMismatch {
+                        name: name.clone(),
+                        expected: 0,
+                        actual: args.len(),
+                        line: span.line,
+                    });
+                }
+            } else if !table.types.contains_key(name) && !table.type_aliases.contains_key(name) {
                 let mut candidates: Vec<&str> = table.types.keys().map(|s| s.as_str()).collect();
                 candidates.extend(table.type_aliases.keys().map(|s| s.as_str()));
                 let suggestions = suggest_similar(name, &candidates, 2);
@@ -2712,9 +2981,18 @@ fn check_type_refs_with_generics(
                     line: span.line,
                     suggestions,
                 });
+            } else if let Some(expected) = expected_type_arity(name, table, type_alias_arities) {
+                if expected != args.len() {
+                    errors.push(ResolveError::GenericArityMismatch {
+                        name: name.clone(),
+                        expected,
+                        actual: args.len(),
+                        line: span.line,
+                    });
+                }
             }
             for t in args {
-                check_type_refs_with_generics(t, table, errors, generics);
+                check_type_refs_with_generics(t, table, type_alias_arities, errors, generics);
             }
         }
     }

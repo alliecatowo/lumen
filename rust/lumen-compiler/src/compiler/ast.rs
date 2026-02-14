@@ -235,6 +235,7 @@ pub struct Param {
     pub name: String,
     pub ty: TypeExpr,
     pub default_value: Option<Expr>,
+    pub variadic: bool,
     pub span: Span,
 }
 
@@ -312,6 +313,12 @@ pub enum CompoundOp {
     SubAssign,
     MulAssign,
     DivAssign,
+    FloorDivAssign,
+    ModAssign,
+    PowAssign,
+    BitAndAssign,
+    BitOrAssign,
+    BitXorAssign,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -373,9 +380,11 @@ pub struct IfStmt {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForStmt {
+    pub label: Option<String>,
     pub var: String,
     pub pattern: Option<Pattern>,
     pub iter: Expr,
+    pub filter: Option<Expr>,
     pub body: Vec<Stmt>,
     pub span: Span,
 }
@@ -462,6 +471,7 @@ pub struct AssignStmt {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WhileStmt {
+    pub label: Option<String>,
     pub condition: Expr,
     pub body: Vec<Stmt>,
     pub span: Span,
@@ -469,18 +479,21 @@ pub struct WhileStmt {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoopStmt {
+    pub label: Option<String>,
     pub body: Vec<Stmt>,
     pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BreakStmt {
+    pub label: Option<String>,
     pub value: Option<Expr>,
     pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContinueStmt {
+    pub label: Option<String>,
     pub span: Span,
 }
 
@@ -582,6 +595,8 @@ pub enum Expr {
     NullCoalesce(Box<Expr>, Box<Expr>, Span),
     /// Null-safe access: expr?.field
     NullSafeAccess(Box<Expr>, String, Span),
+    /// Null-safe index: expr?[index]
+    NullSafeIndex(Box<Expr>, Box<Expr>, Span),
     /// Null assert: expr!
     NullAssert(Box<Expr>, Span),
     /// Spread: ...expr
@@ -624,6 +639,18 @@ pub enum Expr {
         transform: Box<Expr>,
         span: Span,
     },
+    /// Type test: expr is TypeName -> Bool
+    IsType {
+        expr: Box<Expr>,
+        type_name: String,
+        span: Span,
+    },
+    /// Type cast: expr as Type -> converted value
+    TypeCast {
+        expr: Box<Expr>,
+        target_type: String,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -654,6 +681,7 @@ impl Expr {
             | Expr::TryExpr(_, s)
             | Expr::NullCoalesce(_, _, s)
             | Expr::NullSafeAccess(_, _, s)
+            | Expr::NullSafeIndex(_, _, s)
             | Expr::NullAssert(_, s)
             | Expr::SpreadExpr(_, s)
             | Expr::AwaitExpr(_, s)
@@ -665,6 +693,8 @@ impl Expr {
             Expr::MatchExpr { span, .. } => *span,
             Expr::Pipe { span, .. } => *span,
             Expr::Illuminate { span, .. } => *span,
+            Expr::IsType { span, .. } => *span,
+            Expr::TypeCast { span, .. } => *span,
         }
     }
 }
@@ -688,6 +718,7 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
+    FloorDiv,
     Mod,
     Eq,
     NotEq,
@@ -713,6 +744,7 @@ impl fmt::Display for BinOp {
             BinOp::Sub => write!(f, "-"),
             BinOp::Mul => write!(f, "*"),
             BinOp::Div => write!(f, "/"),
+            BinOp::FloorDiv => write!(f, "//"),
             BinOp::Mod => write!(f, "%"),
             BinOp::Eq => write!(f, "=="),
             BinOp::NotEq => write!(f, "!="),

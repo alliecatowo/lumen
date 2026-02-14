@@ -858,7 +858,7 @@ impl Parser {
                 self.expect(&TokenKind::Comma)?;
                 self.skip_whitespace_tokens();
             }
-            let _variadic = if matches!(self.peek_kind(), TokenKind::DotDot | TokenKind::DotDotDot)
+            let variadic = if matches!(self.peek_kind(), TokenKind::DotDot | TokenKind::DotDotDot)
             {
                 self.advance();
                 true
@@ -883,6 +883,7 @@ impl Parser {
                 name: pname,
                 ty: pty,
                 default_value,
+                variadic,
                 span: ps,
             });
             self.skip_whitespace_tokens();
@@ -1513,6 +1514,12 @@ impl Parser {
 
     fn parse_for(&mut self) -> Result<Stmt, ParseError> {
         let start = self.expect(&TokenKind::For)?.span;
+        let label = if matches!(self.peek_kind(), TokenKind::At) {
+            self.advance();
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
         let (var, pattern) = if matches!(self.peek_kind(), TokenKind::LParen) {
             // Tuple destructuring: for (k, v) in ...
             let pat = self.parse_pattern()?;
@@ -1533,17 +1540,21 @@ impl Parser {
         };
         self.expect(&TokenKind::In)?;
         let iter = self.parse_expr(0)?;
-        if matches!(self.peek_kind(), TokenKind::If) {
+        let filter = if matches!(self.peek_kind(), TokenKind::If) {
             self.advance();
-            let _ = self.parse_expr(0)?;
-        }
+            Some(self.parse_expr(0)?)
+        } else {
+            None
+        };
         self.skip_newlines();
         let body = self.parse_block()?;
         let end_span = self.expect(&TokenKind::End)?.span;
         Ok(Stmt::For(ForStmt {
+            label,
             var,
             pattern,
             iter,
+            filter,
             body,
             span: start.merge(end_span),
         }))
@@ -1850,6 +1861,12 @@ impl Parser {
 
     fn parse_while(&mut self) -> Result<Stmt, ParseError> {
         let start = self.expect(&TokenKind::While)?.span;
+        let label = if matches!(self.peek_kind(), TokenKind::At) {
+            self.advance();
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
 
         // Detect `while let <pattern> = <expr>` and desugar to loop + match
         if matches!(self.peek_kind(), TokenKind::Let) {
@@ -1883,6 +1900,7 @@ impl Parser {
                     MatchArm {
                         pattern: Pattern::Wildcard(start),
                         body: vec![Stmt::Break(BreakStmt {
+                            label: None,
                             value: None,
                             span: start,
                         })],
@@ -1893,6 +1911,7 @@ impl Parser {
             });
 
             return Ok(Stmt::Loop(LoopStmt {
+                label,
                 body: vec![match_stmt],
                 span: start.merge(end_span),
             }));
@@ -1903,6 +1922,7 @@ impl Parser {
         let body = self.parse_block()?;
         let end_span = self.expect(&TokenKind::End)?.span;
         Ok(Stmt::While(WhileStmt {
+            label,
             condition: cond,
             body,
             span: start.merge(end_span),
@@ -1911,10 +1931,17 @@ impl Parser {
 
     fn parse_loop(&mut self) -> Result<Stmt, ParseError> {
         let start = self.expect(&TokenKind::Loop)?.span;
+        let label = if matches!(self.peek_kind(), TokenKind::At) {
+            self.advance();
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
         self.skip_newlines();
         let body = self.parse_block()?;
         let end_span = self.expect(&TokenKind::End)?.span;
         Ok(Stmt::Loop(LoopStmt {
+            label,
             body,
             span: start.merge(end_span),
         }))
@@ -1922,18 +1949,18 @@ impl Parser {
 
     fn parse_break(&mut self) -> Result<Stmt, ParseError> {
         let start = self.expect(&TokenKind::Break)?.span;
-        if matches!(self.peek_kind(), TokenKind::At) {
+        let label = if matches!(self.peek_kind(), TokenKind::At) {
             self.advance();
-            let _ = self.expect_ident();
-            return Ok(Stmt::Break(BreakStmt {
-                value: None,
-                span: start,
-            }));
-        }
-        let value = if !matches!(
-            self.peek_kind(),
-            TokenKind::Newline | TokenKind::Eof | TokenKind::End | TokenKind::Dedent
-        ) {
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
+        let value = if label.is_none()
+            && !matches!(
+                self.peek_kind(),
+                TokenKind::Newline | TokenKind::Eof | TokenKind::End | TokenKind::Dedent
+            )
+        {
             Some(self.parse_expr(0)?)
         } else {
             None
@@ -1942,12 +1969,18 @@ impl Parser {
             .as_ref()
             .map(|v| start.merge(v.span()))
             .unwrap_or(start);
-        Ok(Stmt::Break(BreakStmt { value, span }))
+        Ok(Stmt::Break(BreakStmt { label, value, span }))
     }
 
     fn parse_continue(&mut self) -> Result<Stmt, ParseError> {
         let start = self.expect(&TokenKind::Continue)?.span;
-        Ok(Stmt::Continue(ContinueStmt { span: start }))
+        let label = if matches!(self.peek_kind(), TokenKind::At) {
+            self.advance();
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
+        Ok(Stmt::Continue(ContinueStmt { label, span: start }))
     }
 
     fn parse_emit(&mut self) -> Result<Stmt, ParseError> {
@@ -1978,6 +2011,12 @@ impl Parser {
                     | TokenKind::MinusAssign
                     | TokenKind::StarAssign
                     | TokenKind::SlashAssign
+                    | TokenKind::FloorDivAssign
+                    | TokenKind::PercentAssign
+                    | TokenKind::StarStarAssign
+                    | TokenKind::AmpAssign
+                    | TokenKind::PipeAssign
+                    | TokenKind::CaretAssign
             )
         )
     }
@@ -2001,6 +2040,30 @@ impl Parser {
             TokenKind::SlashAssign => {
                 self.advance();
                 CompoundOp::DivAssign
+            }
+            TokenKind::FloorDivAssign => {
+                self.advance();
+                CompoundOp::FloorDivAssign
+            }
+            TokenKind::PercentAssign => {
+                self.advance();
+                CompoundOp::ModAssign
+            }
+            TokenKind::StarStarAssign => {
+                self.advance();
+                CompoundOp::PowAssign
+            }
+            TokenKind::AmpAssign => {
+                self.advance();
+                CompoundOp::BitAndAssign
+            }
+            TokenKind::PipeAssign => {
+                self.advance();
+                CompoundOp::BitOrAssign
+            }
+            TokenKind::CaretAssign => {
+                self.advance();
+                CompoundOp::BitXorAssign
             }
             _ => unreachable!(),
         };
@@ -2472,6 +2535,7 @@ impl Parser {
                                 name: "self".into(),
                                 ty: TypeExpr::Named("Json".into(), self_span),
                                 default_value: None,
+                                variadic: false,
                                 span: self_span,
                             },
                         );
@@ -2630,6 +2694,7 @@ impl Parser {
                                 name: "self".into(),
                                 ty: TypeExpr::Named("Json".into(), self_span),
                                 default_value: None,
+                                variadic: false,
                                 span: self_span,
                             },
                         );
@@ -2940,6 +3005,7 @@ impl Parser {
                 name: pname,
                 ty: pty,
                 default_value: None,
+                variadic: false,
                 span: ps,
             });
             self.skip_whitespace_tokens();
@@ -3097,7 +3163,7 @@ impl Parser {
                 self.expect(&TokenKind::Comma)?;
                 self.skip_whitespace_tokens();
             }
-            let _variadic = if matches!(self.peek_kind(), TokenKind::DotDot | TokenKind::DotDotDot)
+            let variadic = if matches!(self.peek_kind(), TokenKind::DotDot | TokenKind::DotDotDot)
             {
                 self.advance();
                 true
@@ -3122,6 +3188,7 @@ impl Parser {
                 name: pname,
                 ty: pty,
                 default_value,
+                variadic,
                 span: ps,
             });
             self.skip_whitespace_tokens();
@@ -3733,7 +3800,7 @@ impl Parser {
     }
 
     fn parse_base_type(&mut self) -> Result<TypeExpr, ParseError> {
-        match self.peek_kind().clone() {
+        let base = match self.peek_kind().clone() {
             TokenKind::Null => {
                 let s = self.advance().span;
                 Ok(TypeExpr::Null(s))
@@ -3882,6 +3949,15 @@ impl Parser {
                     col: tok.span.col,
                 })
             }
+        }?;
+
+        // T? sugar: desugars to T | Null
+        if matches!(self.peek_kind(), TokenKind::Question) {
+            let q_span = self.advance().span;
+            let span = base.span().merge(q_span);
+            Ok(TypeExpr::Union(vec![base, TypeExpr::Null(q_span)], span))
+        } else {
+            Ok(base)
         }
     }
 
@@ -3923,6 +3999,7 @@ impl Parser {
                             | TokenKind::Minus
                             | TokenKind::Star
                             | TokenKind::Slash
+                            | TokenKind::FloorDiv
                             | TokenKind::Percent
                             | TokenKind::Eq
                             | TokenKind::NotEq
@@ -3956,6 +4033,7 @@ impl Parser {
                 TokenKind::Minus => (BinOp::Sub, (22, 23)),
                 TokenKind::Star => (BinOp::Mul, (24, 25)),
                 TokenKind::Slash => (BinOp::Div, (24, 25)),
+                TokenKind::FloorDiv => (BinOp::FloorDiv, (24, 25)),
                 TokenKind::Percent => (BinOp::Mod, (24, 25)),
                 TokenKind::StarStar => (BinOp::Pow, (27, 26)), // right-assoc
                 TokenKind::Eq => (BinOp::Eq, (14, 15)),
@@ -3972,6 +4050,36 @@ impl Parser {
                         break;
                     }
                     (BinOp::In, (14, 15))
+                }
+                // Type test: expr is TypeName
+                TokenKind::Is => {
+                    if min_bp > 14 {
+                        break;
+                    }
+                    self.advance();
+                    let type_name = self.expect_type_name_for_is()?;
+                    let span = lhs.span().merge(self.current().span);
+                    lhs = Expr::IsType {
+                        expr: Box::new(lhs),
+                        type_name,
+                        span,
+                    };
+                    continue;
+                }
+                // Type cast: expr as Type
+                TokenKind::As => {
+                    if min_bp > 14 {
+                        break;
+                    }
+                    self.advance();
+                    let target_type = self.expect_type_name_for_is()?;
+                    let span = lhs.span().merge(self.current().span);
+                    lhs = Expr::TypeCast {
+                        expr: Box::new(lhs),
+                        target_type,
+                        span,
+                    };
+                    continue;
                 }
                 TokenKind::And => (BinOp::And, (12, 13)),
                 TokenKind::Or => (BinOp::Or, (10, 11)),
@@ -4012,6 +4120,12 @@ impl Parser {
                 TokenKind::MinusAssign => (BinOp::Sub, (2, 3)),
                 TokenKind::StarAssign => (BinOp::Mul, (2, 3)),
                 TokenKind::SlashAssign => (BinOp::Div, (2, 3)),
+                TokenKind::FloorDivAssign => (BinOp::FloorDiv, (2, 3)),
+                TokenKind::PercentAssign => (BinOp::Mod, (2, 3)),
+                TokenKind::StarStarAssign => (BinOp::Pow, (2, 3)),
+                TokenKind::AmpAssign => (BinOp::BitAnd, (2, 3)),
+                TokenKind::PipeAssign => (BinOp::BitOr, (2, 3)),
+                TokenKind::CaretAssign => (BinOp::BitXor, (2, 3)),
                 // Null coalescing
                 TokenKind::QuestionQuestion => {
                     if min_bp > 8 {
@@ -4094,6 +4208,17 @@ impl Parser {
                     let field = self.expect_ident()?;
                     let span = lhs.span().merge(self.current().span);
                     lhs = Expr::NullSafeAccess(Box::new(lhs), field, span);
+                    continue;
+                }
+                TokenKind::QuestionBracket => {
+                    if min_bp > 32 {
+                        break;
+                    }
+                    self.advance(); // consume ?[
+                    let idx = self.parse_expr(0)?;
+                    self.expect(&TokenKind::RBracket)?;
+                    let span = lhs.span().merge(self.current().span);
+                    lhs = Expr::NullSafeIndex(Box::new(lhs), Box::new(idx), span);
                     continue;
                 }
                 TokenKind::LBracket => {
@@ -4632,6 +4757,7 @@ impl Parser {
                 name: pname,
                 ty: pty,
                 default_value: None,
+                variadic: false,
                 span: ps,
             });
         }
@@ -5320,6 +5446,37 @@ impl Parser {
         }
     }
 
+    /// Parse a type name after `is` or `as` keyword.
+    /// Accepts identifiers and type keywords (Int, String, Bool, Float, List, Map, Null, etc.)
+    fn expect_type_name_for_is(&mut self) -> Result<String, ParseError> {
+        let tok = self.current().clone();
+        match &tok.kind {
+            TokenKind::Ident(name) => {
+                let n = name.clone();
+                self.advance();
+                Ok(n)
+            }
+            TokenKind::Int_ => { self.advance(); Ok("Int".into()) }
+            TokenKind::Float_ => { self.advance(); Ok("Float".into()) }
+            TokenKind::String_ => { self.advance(); Ok("String".into()) }
+            TokenKind::Bool => { self.advance(); Ok("Bool".into()) }
+            TokenKind::Null => { self.advance(); Ok("Null".into()) }
+            TokenKind::List => { self.advance(); Ok("List".into()) }
+            TokenKind::Map => { self.advance(); Ok("Map".into()) }
+            TokenKind::Set => { self.advance(); Ok("Set".into()) }
+            TokenKind::Tuple => { self.advance(); Ok("Tuple".into()) }
+            TokenKind::Bytes => { self.advance(); Ok("Bytes".into()) }
+            TokenKind::Json => { self.advance(); Ok("Json".into()) }
+            TokenKind::Result => { self.advance(); Ok("Result".into()) }
+            _ => Err(ParseError::Unexpected {
+                found: format!("{}", tok.kind),
+                expected: "type name".into(),
+                line: tok.span.line,
+                col: tok.span.col,
+            }),
+        }
+    }
+
     fn expect_string(&mut self) -> Result<String, ParseError> {
         let tok = self.current().clone();
         match &tok.kind {
@@ -5377,6 +5534,7 @@ impl Parser {
                 name: var.clone(),
                 ty: TypeExpr::Named("Any".into(), body_span),
                 default_value: None,
+                variadic: false,
                 span: body_span,
             }],
             return_type: None,

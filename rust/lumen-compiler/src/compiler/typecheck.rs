@@ -588,6 +588,9 @@ impl<'a> TypeChecker<'a> {
                     }
                 };
                 self.locals.insert(fs.var.clone(), elem_type);
+                if let Some(filter) = &fs.filter {
+                    self.infer_expr(filter);
+                }
                 for s in &fs.body {
                     self.check_stmt(s, expected_return);
                 }
@@ -791,7 +794,18 @@ impl<'a> TypeChecker<'a> {
             Pattern::Guard {
                 inner, condition, ..
             } => {
-                self.bind_match_pattern(inner, subject_type, covered_variants, has_catchall, line);
+                // Guarded arms are treated conservatively: the inner pattern
+                // binds variables but does NOT count toward exhaustiveness
+                // coverage (the guard may fail at runtime).
+                let mut _guarded_variants = Vec::new();
+                let mut _guarded_catchall = false;
+                self.bind_match_pattern(
+                    inner,
+                    subject_type,
+                    &mut _guarded_variants,
+                    &mut _guarded_catchall,
+                    line,
+                );
                 let guard_ty = self.infer_expr(condition);
                 self.check_compat(&Type::Bool, &guard_ty, line);
             }
@@ -1066,7 +1080,7 @@ impl<'a> TypeChecker<'a> {
                 let lt = self.infer_expr(lhs);
                 let rt = self.infer_expr(rhs);
                 match op {
-                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::FloorDiv | BinOp::Mod => {
                         if lt == Type::Any || rt == Type::Any {
                             Type::Any
                         } else if (lt == Type::String || rt == Type::String) && *op == BinOp::Add {
@@ -1400,6 +1414,15 @@ impl<'a> TypeChecker<'a> {
                 };
                 Type::Union(vec![field_type, Type::Null])
             }
+            Expr::NullSafeIndex(obj, idx, _) => {
+                let ot = self.infer_expr(obj);
+                self.infer_expr(idx);
+                let elem_type = match ot {
+                    Type::List(inner) => *inner,
+                    _ => Type::Any,
+                };
+                Type::Union(vec![elem_type, Type::Null])
+            }
             Expr::NullAssert(inner, _) => {
                 let t = self.infer_expr(inner);
                 // Strip Null from union types
@@ -1422,6 +1445,20 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Expr::SpreadExpr(inner, _) => self.infer_expr(inner),
+            Expr::IsType { expr: inner, .. } => {
+                self.infer_expr(inner);
+                Type::Bool
+            }
+            Expr::TypeCast { expr: inner, target_type, .. } => {
+                self.infer_expr(inner);
+                match target_type.as_str() {
+                    "Int" => Type::Int,
+                    "Float" => Type::Float,
+                    "String" => Type::String,
+                    "Bool" => Type::Bool,
+                    _ => Type::Any,
+                }
+            }
             Expr::IfExpr {
                 cond,
                 then_val,
@@ -1461,10 +1498,20 @@ impl<'a> TypeChecker<'a> {
                     ComprehensionKind::Map => Type::Any, // map comprehension needs key+value
                 }
             }
-            Expr::MatchExpr { subject, arms, .. } => {
-                let _subject_type = self.infer_expr(subject);
+            Expr::MatchExpr { subject, arms, span } => {
+                let subject_type = self.infer_expr(subject);
+                let mut covered_variants = Vec::new();
+                let mut has_catchall = false;
                 let mut result_type = Type::Any;
+
                 for arm in arms {
+                    self.bind_match_pattern(
+                        &arm.pattern,
+                        &subject_type,
+                        &mut covered_variants,
+                        &mut has_catchall,
+                        arm.span.line,
+                    );
                     for s in &arm.body {
                         self.check_stmt(s, None);
                     }
@@ -1475,6 +1522,30 @@ impl<'a> TypeChecker<'a> {
                         result_type = self.infer_expr(&rs.value);
                     }
                 }
+
+                // Exhaustiveness check for enums
+                if let Type::Enum(ref name) = subject_type {
+                    if !has_catchall {
+                        if let Some(ti) = self.symbols.types.get(name) {
+                            if let crate::compiler::resolve::TypeInfoKind::Enum(def) = &ti.kind {
+                                let missing: Vec<_> = def
+                                    .variants
+                                    .iter()
+                                    .filter(|v| !covered_variants.contains(&v.name))
+                                    .map(|v| v.name.clone())
+                                    .collect();
+                                if !missing.is_empty() {
+                                    self.errors.push(TypeError::IncompleteMatch {
+                                        enum_name: name.clone(),
+                                        missing,
+                                        line: span.line,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
                 result_type
             }
             Expr::BlockExpr(stmts, _) => {

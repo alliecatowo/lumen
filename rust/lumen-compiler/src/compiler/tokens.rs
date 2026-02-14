@@ -129,6 +129,7 @@ pub enum TokenKind {
     Extern,
     Then,
     When,
+    Is,
     // Existing type keywords used in SPEC
     Bool,
     Int_,
@@ -159,10 +160,15 @@ pub enum TokenKind {
     At,        // @
     Hash,      // #
     // Compound assignments
-    PlusAssign,  // +=
-    MinusAssign, // -=
-    StarAssign,  // *=
-    SlashAssign, // /=
+    PlusAssign,    // +=
+    MinusAssign,   // -=
+    StarAssign,    // *=
+    SlashAssign,   // /=
+    PercentAssign, // %=
+    StarStarAssign, // **=
+    AmpAssign,     // &=
+    PipeAssign,    // |=
+    CaretAssign,   // ^=
     // New operators
     StarStar,         // ** exponentiation
     DotDot,           // .. exclusive range
@@ -180,6 +186,9 @@ pub enum TokenKind {
     Tilde,            // ~ bitwise not
     TildeArrow,       // ~> illuminate operator
     Caret,            // ^ bitwise xor
+    FloorDiv,         // // floor division
+    FloorDivAssign,   // //= floor division assignment
+    QuestionBracket,  // ?[ null-safe index
 
     // Delimiters
     Symbol(char),
@@ -275,6 +284,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Extern => write!(f, "extern"),
             TokenKind::Then => write!(f, "then"),
             TokenKind::When => write!(f, "when"),
+            TokenKind::Is => write!(f, "is"),
             TokenKind::Bool => write!(f, "bool"),
             TokenKind::Int_ => write!(f, "int"),
             TokenKind::Float_ => write!(f, "float"),
@@ -307,6 +317,11 @@ impl fmt::Display for TokenKind {
             TokenKind::MinusAssign => write!(f, "-="),
             TokenKind::StarAssign => write!(f, "*="),
             TokenKind::SlashAssign => write!(f, "/="),
+            TokenKind::PercentAssign => write!(f, "%="),
+            TokenKind::StarStarAssign => write!(f, "**="),
+            TokenKind::AmpAssign => write!(f, "&="),
+            TokenKind::PipeAssign => write!(f, "|="),
+            TokenKind::CaretAssign => write!(f, "^="),
             // New operators
             TokenKind::StarStar => write!(f, "**"),
             TokenKind::DotDot => write!(f, ".."),
@@ -324,6 +339,9 @@ impl fmt::Display for TokenKind {
             TokenKind::Tilde => write!(f, "~"),
             TokenKind::TildeArrow => write!(f, "~>"),
             TokenKind::Caret => write!(f, "^"),
+            TokenKind::FloorDiv => write!(f, "//"),
+            TokenKind::FloorDivAssign => write!(f, "//="),
+            TokenKind::QuestionBracket => write!(f, "?["),
             // Delimiters
             TokenKind::LParen => write!(f, "("),
             TokenKind::RParen => write!(f, ")"),

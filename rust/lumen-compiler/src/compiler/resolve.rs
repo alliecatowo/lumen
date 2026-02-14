@@ -1671,7 +1671,7 @@ fn infer_machine_expr_type(expr: &Expr, scope: &HashMap<String, TypeExpr>) -> Op
             let lt = infer_machine_expr_type(lhs, scope).unwrap_or_else(|| "Any".into());
             let rt = infer_machine_expr_type(rhs, scope).unwrap_or_else(|| "Any".into());
             match op {
-                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow => {
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow => {
                     if lt == "Float" || rt == "Float" {
                         Some("Float".to_string())
                     } else if lt == "Int" && rt == "Int" {
@@ -1970,6 +1970,9 @@ fn collect_stmt_call_requirements(
         }
         Stmt::For(s) => {
             collect_expr_call_requirements(&s.iter, table, out);
+            if let Some(filter) = &s.filter {
+                collect_expr_call_requirements(filter, table, out);
+            }
             for st in &s.body {
                 collect_stmt_call_requirements(st, table, out);
             }
@@ -2031,7 +2034,9 @@ fn collect_expr_call_requirements(
         | Expr::TryExpr(inner, _)
         | Expr::AwaitExpr(inner, _)
         | Expr::NullAssert(inner, _)
-        | Expr::SpreadExpr(inner, _) => collect_expr_call_requirements(inner, table, out),
+        | Expr::SpreadExpr(inner, _)
+        | Expr::IsType { expr: inner, .. }
+        | Expr::TypeCast { expr: inner, .. } => collect_expr_call_requirements(inner, table, out),
         Expr::Call(callee, args, span) => {
             collect_expr_call_requirements(callee, table, out);
             for a in args {
@@ -2087,7 +2092,7 @@ fn collect_expr_call_requirements(
         Expr::DotAccess(obj, _, _) | Expr::NullSafeAccess(obj, _, _) => {
             collect_expr_call_requirements(obj, table, out);
         }
-        Expr::IndexAccess(obj, idx, _) => {
+        Expr::IndexAccess(obj, idx, _) | Expr::NullSafeIndex(obj, idx, _) => {
             collect_expr_call_requirements(obj, table, out);
             collect_expr_call_requirements(idx, table, out);
         }
@@ -2218,6 +2223,9 @@ fn collect_stmt_effect_evidence(
         }
         Stmt::For(s) => {
             collect_expr_effect_evidence(&s.iter, table, current, out);
+            if let Some(filter) = &s.filter {
+                collect_expr_effect_evidence(filter, table, current, out);
+            }
             for st in &s.body {
                 collect_stmt_effect_evidence(st, table, current, out);
             }
@@ -2282,7 +2290,9 @@ fn collect_expr_effect_evidence(
         | Expr::ExpectSchema(inner, _, _)
         | Expr::TryExpr(inner, _)
         | Expr::NullAssert(inner, _)
-        | Expr::SpreadExpr(inner, _) => {
+        | Expr::SpreadExpr(inner, _)
+        | Expr::IsType { expr: inner, .. }
+        | Expr::TypeCast { expr: inner, .. } => {
             collect_expr_effect_evidence(inner, table, current, out);
         }
         Expr::AwaitExpr(inner, span) => {
@@ -2448,7 +2458,7 @@ fn collect_expr_effect_evidence(
         Expr::DotAccess(obj, _, _) | Expr::NullSafeAccess(obj, _, _) => {
             collect_expr_effect_evidence(obj, table, current, out);
         }
-        Expr::IndexAccess(obj, idx, _) => {
+        Expr::IndexAccess(obj, idx, _) | Expr::NullSafeIndex(obj, idx, _) => {
             collect_expr_effect_evidence(obj, table, current, out);
             collect_expr_effect_evidence(idx, table, current, out);
         }
@@ -2564,6 +2574,9 @@ fn infer_stmt_effects(
         }
         Stmt::For(s) => {
             infer_expr_effects(&s.iter, table, current, out);
+            if let Some(filter) = &s.filter {
+                infer_expr_effects(filter, table, current, out);
+            }
             for st in &s.body {
                 infer_stmt_effects(st, table, current, out);
             }
@@ -2629,7 +2642,9 @@ fn infer_expr_effects(
         | Expr::TryExpr(inner, _)
         | Expr::AwaitExpr(inner, _)
         | Expr::NullAssert(inner, _)
-        | Expr::SpreadExpr(inner, _) => {
+        | Expr::SpreadExpr(inner, _)
+        | Expr::IsType { expr: inner, .. }
+        | Expr::TypeCast { expr: inner, .. } => {
             infer_expr_effects(inner, table, current, out);
             if matches!(expr, Expr::AwaitExpr(_, _)) {
                 out.insert("async".into());
@@ -2753,7 +2768,7 @@ fn infer_expr_effects(
         Expr::DotAccess(obj, _, _) | Expr::NullSafeAccess(obj, _, _) => {
             infer_expr_effects(obj, table, current, out);
         }
-        Expr::IndexAccess(obj, idx, _) => {
+        Expr::IndexAccess(obj, idx, _) | Expr::NullSafeIndex(obj, idx, _) => {
             infer_expr_effects(obj, table, current, out);
             infer_expr_effects(idx, table, current, out);
         }

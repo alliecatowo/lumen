@@ -674,6 +674,11 @@ impl Formatter {
             }
             Stmt::For(s) => {
                 let mut header = String::from("for ");
+                if let Some(label) = &s.label {
+                    header.push('@');
+                    header.push_str(label);
+                    header.push(' ');
+                }
                 if let Some(pattern) = &s.pattern {
                     header.push_str(&self.fmt_pattern(pattern));
                 } else {
@@ -681,6 +686,10 @@ impl Formatter {
                 }
                 header.push_str(" in ");
                 header.push_str(&self.fmt_expr(&s.iter));
+                if let Some(filter) = &s.filter {
+                    header.push_str(" if ");
+                    header.push_str(&self.fmt_expr(filter));
+                }
                 self.writeln(&header);
                 self.push_indent();
                 for stmt in &s.body {
@@ -771,6 +780,12 @@ impl Formatter {
                     CompoundOp::SubAssign => "-=",
                     CompoundOp::MulAssign => "*=",
                     CompoundOp::DivAssign => "/=",
+                    CompoundOp::FloorDivAssign => "//=",
+                    CompoundOp::ModAssign => "%=",
+                    CompoundOp::PowAssign => "**=",
+                    CompoundOp::BitAndAssign => "&=",
+                    CompoundOp::BitOrAssign => "|=",
+                    CompoundOp::BitXorAssign => "^=",
                 };
                 self.writeln(&format!("{} {} {}", s.target, op, self.fmt_expr(&s.value)));
             }
@@ -1005,6 +1020,9 @@ impl Formatter {
             Expr::NullSafeAccess(expr, field, _) => {
                 format!("{}?.{}", self.fmt_expr(expr), field)
             }
+            Expr::NullSafeIndex(expr, idx, _) => {
+                format!("{}?[{}]", self.fmt_expr(expr), self.fmt_expr(idx))
+            }
             Expr::NullAssert(expr, _) => {
                 format!("{}!", self.fmt_expr(expr))
             }
@@ -1059,6 +1077,15 @@ impl Formatter {
                 format!("match {} ... end", self.fmt_expr(subject))
             }
             Expr::BlockExpr(_, _) => "block ... end".to_string(),
+            Expr::IsType { expr, type_name, .. } => {
+                format!("{} is {}", self.fmt_expr(expr), type_name)
+            }
+            Expr::TypeCast { expr, target_type, .. } => {
+                format!("{} as {}", self.fmt_expr(expr), target_type)
+            }
+            Expr::NullSafeIndex(obj, idx, _) => {
+                format!("{}?[{}]", self.fmt_expr(obj), self.fmt_expr(idx))
+            }
         }
     }
 

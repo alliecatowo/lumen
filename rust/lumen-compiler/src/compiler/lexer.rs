@@ -862,6 +862,7 @@ impl Lexer {
             "extern" => TokenKind::Extern,
             "then" => TokenKind::Then,
             "when" => TokenKind::When,
+            "is" => TokenKind::Is,
             // Type keywords
             "bool" => TokenKind::Bool,
             "int" => TokenKind::Int_,
@@ -976,8 +977,15 @@ impl Lexer {
                     match self.current() {
                         Some('*') => {
                             self.advance();
-                            tokens
-                                .push(Token::new(TokenKind::StarStar, self.span_from(so, sl, sc)));
+                            if self.current() == Some('=') {
+                                self.advance();
+                                tokens.push(Token::new(
+                                    TokenKind::StarStarAssign,
+                                    self.span_from(so, sl, sc),
+                                ));
+                            } else {
+                                tokens.push(Token::new(TokenKind::StarStar, self.span_from(so, sl, sc)));
+                            }
                         }
                         Some('=') => {
                             self.advance();
@@ -995,6 +1003,21 @@ impl Lexer {
                     let (so, sl, sc) = (self.byte_offset, self.line, self.col);
                     self.advance();
                     match self.current() {
+                        Some('/') => {
+                            self.advance();
+                            if self.current() == Some('=') {
+                                self.advance();
+                                tokens.push(Token::new(
+                                    TokenKind::FloorDivAssign,
+                                    self.span_from(so, sl, sc),
+                                ));
+                            } else {
+                                tokens.push(Token::new(
+                                    TokenKind::FloorDiv,
+                                    self.span_from(so, sl, sc),
+                                ));
+                            }
+                        }
                         Some('=') => {
                             self.advance();
                             tokens.push(Token::new(
@@ -1007,7 +1030,19 @@ impl Lexer {
                         }
                     }
                 }
-                '%' => tokens.push(self.single(TokenKind::Percent)),
+                '%' => {
+                    let (so, sl, sc) = (self.byte_offset, self.line, self.col);
+                    self.advance();
+                    if self.current() == Some('=') {
+                        self.advance();
+                        tokens.push(Token::new(
+                            TokenKind::PercentAssign,
+                            self.span_from(so, sl, sc),
+                        ));
+                    } else {
+                        tokens.push(Token::new(TokenKind::Percent, self.span_from(so, sl, sc)));
+                    }
+                }
                 '=' => {
                     let (so, sl, sc) = (self.byte_offset, self.line, self.col);
                     self.advance();
@@ -1054,6 +1089,13 @@ impl Lexer {
                             self.advance();
                             tokens.push(Token::new(
                                 TokenKind::QuestionDot,
+                                self.span_from(so, sl, sc),
+                            ));
+                        }
+                        Some('[') => {
+                            self.advance();
+                            tokens.push(Token::new(
+                                TokenKind::QuestionBracket,
                                 self.span_from(so, sl, sc),
                             ));
                         }
@@ -1115,13 +1157,32 @@ impl Lexer {
                                 self.span_from(so, sl, sc),
                             ));
                         }
+                        Some('=') => {
+                            self.advance();
+                            tokens.push(Token::new(
+                                TokenKind::PipeAssign,
+                                self.span_from(so, sl, sc),
+                            ));
+                        }
                         _ => {
                             tokens.push(Token::new(TokenKind::Pipe, self.span_from(so, sl, sc)));
                         }
                     }
                 }
                 '@' => tokens.push(self.single(TokenKind::At)),
-                '&' => tokens.push(self.single(TokenKind::Ampersand)),
+                '&' => {
+                    let (so, sl, sc) = (self.byte_offset, self.line, self.col);
+                    self.advance();
+                    if self.current() == Some('=') {
+                        self.advance();
+                        tokens.push(Token::new(
+                            TokenKind::AmpAssign,
+                            self.span_from(so, sl, sc),
+                        ));
+                    } else {
+                        tokens.push(Token::new(TokenKind::Ampersand, self.span_from(so, sl, sc)));
+                    }
+                }
                 '~' => {
                     let so = self.byte_offset;
                     let sl = self.line;
@@ -1140,7 +1201,19 @@ impl Lexer {
                         }
                     }
                 }
-                '^' => tokens.push(self.single(TokenKind::Caret)),
+                '^' => {
+                    let (so, sl, sc) = (self.byte_offset, self.line, self.col);
+                    self.advance();
+                    if self.current() == Some('=') {
+                        self.advance();
+                        tokens.push(Token::new(
+                            TokenKind::CaretAssign,
+                            self.span_from(so, sl, sc),
+                        ));
+                    } else {
+                        tokens.push(Token::new(TokenKind::Caret, self.span_from(so, sl, sc)));
+                    }
+                }
                 '(' => tokens.push(self.single(TokenKind::LParen)),
                 ')' => tokens.push(self.single(TokenKind::RParen)),
                 '[' => tokens.push(self.single(TokenKind::LBracket)),

@@ -1717,14 +1717,6 @@ impl<'a> Lowerer<'a> {
                 let call_expr = desugar_pipe_application(left, right, *span);
                 self.lower_expr(&call_expr, ra, consts, instrs)
             }
-            Expr::Illuminate {
-                input,
-                transform,
-                span,
-            } => {
-                let call_expr = desugar_pipe_application(input, transform, *span);
-                self.lower_expr(&call_expr, ra, consts, instrs)
-            }
             Expr::BinOp(lhs, op, rhs, _) => {
                 // Special case: pipe forward desugars to function call
                 // a |> f(b, c) becomes f(a, b, c)
@@ -2945,12 +2937,6 @@ fn collect_free_idents_expr(expr: &Expr, out: &mut Vec<String>) {
         Expr::Pipe { left, right, .. } => {
             collect_free_idents_expr(left, out);
             collect_free_idents_expr(right, out);
-        }
-        Expr::Illuminate {
-            input, transform, ..
-        } => {
-            collect_free_idents_expr(input, out);
-            collect_free_idents_expr(transform, out);
         }
         Expr::UnaryOp(_, inner, _) => collect_free_idents_expr(inner, out),
         Expr::Call(callee, args, _) | Expr::ToolCall(callee, args, _) => {

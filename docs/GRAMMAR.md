@@ -471,7 +471,7 @@ or_pattern = pattern "|" pattern { "|" pattern } ;
 ```ebnf
 expression = pipe_forward_expr ;
 
-pipe_forward_expr = null_coalesce_expr { ( "|>" | "~>" ) null_coalesce_expr } ;
+pipe_forward_expr = null_coalesce_expr { "|>" null_coalesce_expr } ;
 
 null_coalesce_expr = or_expr { "??" or_expr } ;
 
@@ -581,7 +581,7 @@ expect_schema = "expect" "schema" identifier ;
 
 | Precedence | Operators | Associativity | Description |
 |------------|-----------|---------------|-------------|
-| 1 (lowest) | `\|>` `~>` | Left | Pipe forward, illuminate |
+| 1 (lowest) | `\|>` | Left | Pipe forward |
 | 2 | `??` | Left | Null coalescing |
 | 3 | `or` | Left | Logical OR |
 | 4 | `and` | Left | Logical AND |

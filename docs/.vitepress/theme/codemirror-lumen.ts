@@ -111,7 +111,7 @@ function tokenNormal(stream: StringStream, state: LumenState): string | null {
   }
 
   // Multi-char operators (check before single char)
-  if (stream.match("->") || stream.match("|>") || stream.match("~>") ||
+  if (stream.match("->") || stream.match("|>") ||
       stream.match("=>") || stream.match("..=") || stream.match("..") ||
       stream.match("?.") || stream.match("??") ||
       stream.match("==") || stream.match("!=") ||

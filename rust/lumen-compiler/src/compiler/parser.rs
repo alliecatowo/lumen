@@ -4000,7 +4000,6 @@ impl Parser {
                     self.tokens.get(i).map(|t| &t.kind),
                     Some(
                         TokenKind::PipeForward
-                            | TokenKind::TildeArrow
                             | TokenKind::Compose
                             | TokenKind::RightShift
                             | TokenKind::LeftShift
@@ -4108,21 +4107,6 @@ impl Parser {
                     lhs = Expr::Pipe {
                         left: Box::new(lhs),
                         right: Box::new(rhs),
-                        span,
-                    };
-                    continue;
-                }
-                // Illuminate ~>: produce Expr::Illuminate
-                TokenKind::TildeArrow => {
-                    if min_bp > 16 {
-                        break;
-                    }
-                    self.advance();
-                    let rhs = self.parse_expr(17)?;
-                    let span = lhs.span().merge(rhs.span());
-                    lhs = Expr::Illuminate {
-                        input: Box::new(lhs),
-                        transform: Box::new(rhs),
                         span,
                     };
                     continue;

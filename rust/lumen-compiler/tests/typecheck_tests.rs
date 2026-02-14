@@ -638,6 +638,53 @@ end
 }
 
 #[test]
+fn typecheck_trait_impl_signature_mismatch() {
+    assert_type_error(
+        r#"
+trait Greeter
+  cell greet(name: String) -> String
+    return name
+  end
+end
+
+impl Greeter for String
+  cell greet(name: Int) -> String
+    return "x"
+  end
+end
+
+cell main() -> String
+  return "ok"
+end
+"#,
+        "traitmethodsignaturemismatch",
+    );
+}
+
+#[test]
+fn typecheck_trait_impl_signature_match_compiles() {
+    assert_compiles(
+        r#"
+trait Greeter
+  cell greet(name: String) -> String
+    return name
+  end
+end
+
+impl Greeter for String
+  cell greet(name: String) -> String
+    return name
+  end
+end
+
+cell main() -> String
+  return "ok"
+end
+"#,
+    );
+}
+
+#[test]
 fn typecheck_function_call_arg_count_mismatch() {
     assert_type_error(
         r#"

@@ -256,6 +256,12 @@ Providers implement `capabilities()` method to advertise supported features. The
 - **Grants** provide capability-scoped tool access with policy constraints
 - Source format is always markdown with fenced `lumen` code blocks
 
+**Syntactic Sugar**:
+- **Pipe operator** `|>`: `data |> transform() |> format()` — value becomes first argument
+- **String interpolation**: `"Hello, {name}!"` — embed expressions in strings
+- **Range expressions**: `1..5` (exclusive), `1..=5` (inclusive) — concise iteration
+- See `examples/syntax_sugar.lm.md` for comprehensive examples
+
 
 ## WebAssembly Support
 

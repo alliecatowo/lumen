@@ -155,6 +155,18 @@ pub enum ResolveError {
         missing: Vec<String>,
         line: usize,
     },
+    #[error(
+        "impl method '{method}' for trait '{trait_name}' on '{target_type}' has incompatible signature at line {line}: {reason}. expected `{expected}`, found `{actual}`"
+    )]
+    TraitMethodSignatureMismatch {
+        trait_name: String,
+        target_type: String,
+        method: String,
+        reason: String,
+        expected: String,
+        actual: String,
+        line: usize,
+    },
 }
 
 /// Symbol table built during resolution
@@ -686,6 +698,7 @@ pub fn resolve_with_base(
 
     table.cell_policies = build_cell_policies(program);
     let type_alias_arities = collect_type_alias_arities(program);
+    let trait_defs = collect_trait_defs(program);
 
     // Second pass: verify all type references exist
     for item in &program.items {
@@ -956,6 +969,32 @@ pub fn resolve_with_base(
                         missing,
                         line: i.span.line,
                     });
+                }
+
+                let mut implemented_methods: HashMap<&str, &CellDef> = HashMap::new();
+                for method in &i.cells {
+                    implemented_methods
+                        .entry(method.name.as_str())
+                        .or_insert(method);
+                }
+
+                for required_method in collect_required_trait_method_defs(&i.trait_name, &trait_defs) {
+                    let Some(actual_method) = implemented_methods.get(required_method.name.as_str()) else {
+                        continue;
+                    };
+                    if let Some(reason) =
+                        trait_method_signature_mismatch_reason(required_method, actual_method)
+                    {
+                        errors.push(ResolveError::TraitMethodSignatureMismatch {
+                            trait_name: i.trait_name.clone(),
+                            target_type: i.target_type.clone(),
+                            method: required_method.name.clone(),
+                            reason,
+                            expected: format_method_signature(required_method),
+                            actual: format_method_signature(actual_method),
+                            line: actual_method.span.line,
+                        });
+                    }
                 }
             }
             Item::Grant(g) => {
@@ -1655,6 +1694,9 @@ fn infer_pattern_effects(
     out: &mut BTreeSet<String>,
 ) {
     match pat {
+        Pattern::Variant(_, Some(inner), _) => {
+            infer_pattern_effects(inner, table, current, out);
+        }
         Pattern::Guard {
             inner, condition, ..
         } => {
@@ -1751,12 +1793,41 @@ fn resolve_tool_call_effect(callee: &Expr, table: &SymbolTable) -> (String, Stri
     }
 }
 
+fn desugar_pipe_application(
+    input: &Expr,
+    stage: &Expr,
+    span: crate::compiler::tokens::Span,
+) -> Expr {
+    match stage {
+        Expr::Call(callee, args, call_span) => {
+            let mut call_args = Vec::with_capacity(args.len() + 1);
+            call_args.push(CallArg::Positional(input.clone()));
+            call_args.extend(args.clone());
+            Expr::Call(callee.clone(), call_args, *call_span)
+        }
+        Expr::ToolCall(callee, args, call_span) => {
+            let mut call_args = Vec::with_capacity(args.len() + 1);
+            call_args.push(CallArg::Positional(input.clone()));
+            call_args.extend(args.clone());
+            Expr::ToolCall(callee.clone(), call_args, *call_span)
+        }
+        _ => Expr::Call(
+            Box::new(stage.clone()),
+            vec![CallArg::Positional(input.clone())],
+            span,
+        ),
+    }
+}
+
 fn collect_pattern_call_requirements(
     pat: &Pattern,
     table: &SymbolTable,
     out: &mut Vec<CallRequirement>,
 ) {
     match pat {
+        Pattern::Variant(_, Some(inner), _) => {
+            collect_pattern_call_requirements(inner, table, out);
+        }
         Pattern::Guard {
             inner, condition, ..
         } => {
@@ -1847,6 +1918,18 @@ fn collect_expr_call_requirements(
         Expr::BinOp(lhs, _, rhs, _) | Expr::NullCoalesce(lhs, rhs, _) => {
             collect_expr_call_requirements(lhs, table, out);
             collect_expr_call_requirements(rhs, table, out);
+        }
+        Expr::Pipe { left, right, span } => {
+            let call_expr = desugar_pipe_application(left, right, *span);
+            collect_expr_call_requirements(&call_expr, table, out);
+        }
+        Expr::Illuminate {
+            input,
+            transform,
+            span,
+        } => {
+            let call_expr = desugar_pipe_application(input, transform, *span);
+            collect_expr_call_requirements(&call_expr, table, out);
         }
         Expr::UnaryOp(_, inner, _)
         | Expr::ExpectSchema(inner, _, _)
@@ -1989,6 +2072,9 @@ fn collect_pattern_effect_evidence(
     out: &mut Vec<EffectEvidence>,
 ) {
     match pat {
+        Pattern::Variant(_, Some(inner), _) => {
+            collect_pattern_effect_evidence(inner, table, current, out);
+        }
         Pattern::Guard {
             inner, condition, ..
         } => {
@@ -2084,6 +2170,18 @@ fn collect_expr_effect_evidence(
         Expr::BinOp(lhs, _, rhs, _) | Expr::NullCoalesce(lhs, rhs, _) => {
             collect_expr_effect_evidence(lhs, table, current, out);
             collect_expr_effect_evidence(rhs, table, current, out);
+        }
+        Expr::Pipe { left, right, span } => {
+            let call_expr = desugar_pipe_application(left, right, *span);
+            collect_expr_effect_evidence(&call_expr, table, current, out);
+        }
+        Expr::Illuminate {
+            input,
+            transform,
+            span,
+        } => {
+            let call_expr = desugar_pipe_application(input, transform, *span);
+            collect_expr_effect_evidence(&call_expr, table, current, out);
         }
         Expr::UnaryOp(_, inner, _)
         | Expr::ExpectSchema(inner, _, _)
@@ -2418,6 +2516,18 @@ fn infer_expr_effects(
         Expr::BinOp(lhs, _, rhs, _) | Expr::NullCoalesce(lhs, rhs, _) => {
             infer_expr_effects(lhs, table, current, out);
             infer_expr_effects(rhs, table, current, out);
+        }
+        Expr::Pipe { left, right, span } => {
+            let call_expr = desugar_pipe_application(left, right, *span);
+            infer_expr_effects(&call_expr, table, current, out);
+        }
+        Expr::Illuminate {
+            input,
+            transform,
+            span,
+        } => {
+            let call_expr = desugar_pipe_application(input, transform, *span);
+            infer_expr_effects(&call_expr, table, current, out);
         }
         Expr::UnaryOp(_, inner, _)
         | Expr::ExpectSchema(inner, _, _)
@@ -2900,6 +3010,302 @@ fn collect_required_trait_methods(trait_name: &str, table: &SymbolTable) -> Vec<
     let mut visited = HashSet::new();
     walk(trait_name, table, &mut visited, &mut out);
     out
+}
+
+fn collect_trait_defs(program: &Program) -> HashMap<String, &TraitDef> {
+    let mut defs = HashMap::new();
+    for item in &program.items {
+        if let Item::Trait(t) = item {
+            defs.entry(t.name.clone()).or_insert(t);
+        }
+    }
+    defs
+}
+
+fn collect_required_trait_method_defs<'a>(
+    trait_name: &str,
+    trait_defs: &HashMap<String, &'a TraitDef>,
+) -> Vec<&'a CellDef> {
+    fn walk<'a>(
+        name: &str,
+        trait_defs: &HashMap<String, &'a TraitDef>,
+        visited: &mut HashSet<String>,
+        seen_methods: &mut HashSet<String>,
+        out: &mut Vec<&'a CellDef>,
+    ) {
+        if !visited.insert(name.to_string()) {
+            return;
+        }
+        let Some(trait_def) = trait_defs.get(name).copied() else {
+            return;
+        };
+        for parent in &trait_def.parent_traits {
+            walk(parent, trait_defs, visited, seen_methods, out);
+        }
+        for method in &trait_def.methods {
+            if seen_methods.insert(method.name.clone()) {
+                out.push(method);
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut visited = HashSet::new();
+    let mut seen_methods = HashSet::new();
+    walk(
+        trait_name,
+        trait_defs,
+        &mut visited,
+        &mut seen_methods,
+        &mut out,
+    );
+    out
+}
+
+fn trait_method_signature_mismatch_reason(expected: &CellDef, actual: &CellDef) -> Option<String> {
+    if expected.generic_params.len() != actual.generic_params.len() {
+        return Some(format!(
+            "generic parameter count mismatch: expected {}, found {}",
+            expected.generic_params.len(),
+            actual.generic_params.len()
+        ));
+    }
+
+    let expected_generics: Vec<&str> = expected
+        .generic_params
+        .iter()
+        .map(|g| g.name.as_str())
+        .collect();
+    let actual_generics: Vec<&str> = actual
+        .generic_params
+        .iter()
+        .map(|g| g.name.as_str())
+        .collect();
+
+    if expected.params.len() != actual.params.len() {
+        return Some(format!(
+            "parameter count mismatch: expected {}, found {}",
+            expected.params.len(),
+            actual.params.len()
+        ));
+    }
+
+    for (idx, (expected_param, actual_param)) in expected.params.iter().zip(&actual.params).enumerate() {
+        if !type_expr_compatible(
+            &expected_param.ty,
+            &actual_param.ty,
+            &expected_generics,
+            &actual_generics,
+        ) {
+            return Some(format!(
+                "parameter {} type mismatch: expected '{}', found '{}'",
+                idx + 1,
+                format_type_expr(&expected_param.ty),
+                format_type_expr(&actual_param.ty)
+            ));
+        }
+    }
+
+    if !return_type_compatible(
+        expected.return_type.as_ref(),
+        actual.return_type.as_ref(),
+        &expected_generics,
+        &actual_generics,
+    ) {
+        return Some(format!(
+            "return type mismatch: expected '{}', found '{}'",
+            format_optional_type_expr(expected.return_type.as_ref()),
+            format_optional_type_expr(actual.return_type.as_ref())
+        ));
+    }
+
+    None
+}
+
+fn return_type_compatible(
+    expected: Option<&TypeExpr>,
+    actual: Option<&TypeExpr>,
+    expected_generics: &[&str],
+    actual_generics: &[&str],
+) -> bool {
+    match (expected, actual) {
+        (None, None) => true,
+        (Some(expected_ty), Some(actual_ty)) => {
+            type_expr_compatible(expected_ty, actual_ty, expected_generics, actual_generics)
+        }
+        _ => false,
+    }
+}
+
+fn type_expr_compatible(
+    expected: &TypeExpr,
+    actual: &TypeExpr,
+    expected_generics: &[&str],
+    actual_generics: &[&str],
+) -> bool {
+    match (expected, actual) {
+        (TypeExpr::Named(expected_name, _), TypeExpr::Named(actual_name, _)) => {
+            names_compatible(expected_name, actual_name, expected_generics, actual_generics)
+        }
+        (TypeExpr::List(expected_inner, _), TypeExpr::List(actual_inner, _))
+        | (TypeExpr::Set(expected_inner, _), TypeExpr::Set(actual_inner, _)) => type_expr_compatible(
+            expected_inner,
+            actual_inner,
+            expected_generics,
+            actual_generics,
+        ),
+        (TypeExpr::Map(expected_k, expected_v, _), TypeExpr::Map(actual_k, actual_v, _))
+        | (
+            TypeExpr::Result(expected_k, expected_v, _),
+            TypeExpr::Result(actual_k, actual_v, _),
+        ) => {
+            type_expr_compatible(expected_k, actual_k, expected_generics, actual_generics)
+                && type_expr_compatible(expected_v, actual_v, expected_generics, actual_generics)
+        }
+        (TypeExpr::Union(expected_types, _), TypeExpr::Union(actual_types, _))
+        | (TypeExpr::Tuple(expected_types, _), TypeExpr::Tuple(actual_types, _)) => {
+            expected_types.len() == actual_types.len()
+                && expected_types.iter().zip(actual_types).all(|(expected_ty, actual_ty)| {
+                    type_expr_compatible(
+                        expected_ty,
+                        actual_ty,
+                        expected_generics,
+                        actual_generics,
+                    )
+                })
+        }
+        (TypeExpr::Null(_), TypeExpr::Null(_)) => true,
+        (
+            TypeExpr::Fn(expected_params, expected_ret, expected_effects, _),
+            TypeExpr::Fn(actual_params, actual_ret, actual_effects, _),
+        ) => {
+            if expected_params.len() != actual_params.len() {
+                return false;
+            }
+            let mut expected_effects_sorted = expected_effects.clone();
+            expected_effects_sorted.sort();
+            let mut actual_effects_sorted = actual_effects.clone();
+            actual_effects_sorted.sort();
+            expected_effects_sorted == actual_effects_sorted
+                && expected_params
+                    .iter()
+                    .zip(actual_params)
+                    .all(|(expected_ty, actual_ty)| {
+                        type_expr_compatible(
+                            expected_ty,
+                            actual_ty,
+                            expected_generics,
+                            actual_generics,
+                        )
+                    })
+                && type_expr_compatible(expected_ret, actual_ret, expected_generics, actual_generics)
+        }
+        (TypeExpr::Generic(expected_name, expected_args, _), TypeExpr::Generic(actual_name, actual_args, _)) => {
+            names_compatible(expected_name, actual_name, expected_generics, actual_generics)
+                && expected_args.len() == actual_args.len()
+                && expected_args.iter().zip(actual_args).all(|(expected_arg, actual_arg)| {
+                    type_expr_compatible(
+                        expected_arg,
+                        actual_arg,
+                        expected_generics,
+                        actual_generics,
+                    )
+                })
+        }
+        _ => false,
+    }
+}
+
+fn names_compatible(
+    expected: &str,
+    actual: &str,
+    expected_generics: &[&str],
+    actual_generics: &[&str],
+) -> bool {
+    let expected_generic_idx = expected_generics.iter().position(|name| *name == expected);
+    let actual_generic_idx = actual_generics.iter().position(|name| *name == actual);
+    match (expected_generic_idx, actual_generic_idx) {
+        (Some(expected_idx), Some(actual_idx)) => expected_idx == actual_idx,
+        (None, None) => expected == actual,
+        _ => false,
+    }
+}
+
+fn format_method_signature(method: &CellDef) -> String {
+    let mut signature = String::new();
+    signature.push_str("cell ");
+    signature.push_str(&method.name);
+    if !method.generic_params.is_empty() {
+        let generic_names: Vec<&str> = method
+            .generic_params
+            .iter()
+            .map(|generic_param| generic_param.name.as_str())
+            .collect();
+        signature.push('[');
+        signature.push_str(&generic_names.join(", "));
+        signature.push(']');
+    }
+    signature.push('(');
+    let params = method
+        .params
+        .iter()
+        .map(|param| format!("{}: {}", param.name, format_type_expr(&param.ty)))
+        .collect::<Vec<_>>();
+    signature.push_str(&params.join(", "));
+    signature.push(')');
+    if let Some(return_type) = &method.return_type {
+        signature.push_str(" -> ");
+        signature.push_str(&format_type_expr(return_type));
+    }
+    signature
+}
+
+fn format_optional_type_expr(ty: Option<&TypeExpr>) -> String {
+    match ty {
+        Some(ty) => format_type_expr(ty),
+        None => "no return type".to_string(),
+    }
+}
+
+fn format_type_expr(ty: &TypeExpr) -> String {
+    match ty {
+        TypeExpr::Named(name, _) => name.clone(),
+        TypeExpr::List(inner, _) => format!("list[{}]", format_type_expr(inner)),
+        TypeExpr::Map(key, value, _) => {
+            format!("map[{}, {}]", format_type_expr(key), format_type_expr(value))
+        }
+        TypeExpr::Result(ok, err, _) => {
+            format!("result[{}, {}]", format_type_expr(ok), format_type_expr(err))
+        }
+        TypeExpr::Union(types, _) => types
+            .iter()
+            .map(format_type_expr)
+            .collect::<Vec<_>>()
+            .join(" | "),
+        TypeExpr::Null(_) => "Null".to_string(),
+        TypeExpr::Tuple(types, _) => {
+            let rendered = types.iter().map(format_type_expr).collect::<Vec<_>>();
+            format!("({})", rendered.join(", "))
+        }
+        TypeExpr::Set(inner, _) => format!("set[{}]", format_type_expr(inner)),
+        TypeExpr::Fn(params, ret, effects, _) => {
+            let rendered_params = params.iter().map(format_type_expr).collect::<Vec<_>>();
+            if effects.is_empty() {
+                format!("fn({}) -> {}", rendered_params.join(", "), format_type_expr(ret))
+            } else {
+                format!(
+                    "fn({}) -> {} / {{{}}}",
+                    rendered_params.join(", "),
+                    format_type_expr(ret),
+                    effects.join(", ")
+                )
+            }
+        }
+        TypeExpr::Generic(name, args, _) => {
+            let rendered_args = args.iter().map(format_type_expr).collect::<Vec<_>>();
+            format!("{}[{}]", name, rendered_args.join(", "))
+        }
+    }
 }
 
 fn check_type_refs_with_generics(
@@ -3443,5 +3849,53 @@ mod tests {
         )
         .unwrap();
         assert!(table.type_aliases.contains_key("Box"));
+    }
+
+    #[test]
+    fn test_trait_impl_signature_reports_parameter_count_mismatch() {
+        let err = resolve_src(
+            "trait Greeter\n  cell greet(name: String) -> String\n    return name\n  end\nend\n\nimpl Greeter for String\n  cell greet(name: String, suffix: String) -> String\n    return name\n  end\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::TraitMethodSignatureMismatch { method, reason, .. }
+            if method == "greet" && reason.contains("parameter count mismatch")
+        )));
+    }
+
+    #[test]
+    fn test_trait_impl_signature_reports_parameter_type_mismatch() {
+        let err = resolve_src(
+            "trait Greeter\n  cell greet(name: String) -> String\n    return name\n  end\nend\n\nimpl Greeter for String\n  cell greet(name: Int) -> String\n    return \"x\"\n  end\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::TraitMethodSignatureMismatch { method, reason, .. }
+            if method == "greet" && reason.contains("parameter 1 type mismatch")
+        )));
+    }
+
+    #[test]
+    fn test_trait_impl_signature_reports_return_type_mismatch() {
+        let err = resolve_src(
+            "trait Greeter\n  cell greet(name: String) -> String\n    return name\n  end\nend\n\nimpl Greeter for String\n  cell greet(name: String) -> Int\n    return 1\n  end\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::TraitMethodSignatureMismatch { method, reason, .. }
+            if method == "greet" && reason.contains("return type mismatch")
+        )));
+    }
+
+    #[test]
+    fn test_trait_impl_signature_accepts_compatible_method() {
+        let table = resolve_src(
+            "trait Greeter\n  cell greet(name: String) -> String\n    return name\n  end\nend\n\nimpl Greeter for String\n  cell greet(name: String) -> String\n    return name\n  end\nend",
+        )
+        .unwrap();
+        assert_eq!(table.impls.len(), 1);
     }
 }

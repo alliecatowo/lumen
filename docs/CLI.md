@@ -2,44 +2,44 @@
 
 Binary: `lumen`
 
-## Commands
+## Top-level commands (current)
 
-## `check`
+`lumen` currently exposes:
+`check`, `run`, `emit`, `trace`, `cache`, `init`, `repl`, `pkg`, `fmt`, `doc`, `lint`, `test`, `ci`, `build`.
 
-Type-check/compile source.
+## Package commands
 
-```bash
-lumen check <file>
-```
+`lumen pkg` currently exposes:
+`init`, `build`, `check`, `add`, `remove`, `list`, `install`, `update`, `search`, `pack`, `publish`.
 
-## `run`
+### `lumen pkg search <query>`
 
-Compile and execute a cell (default `main`).
+Current behavior:
 
-```bash
-lumen run <file> [--cell main] [--trace-dir .lumen/trace]
-```
+- Queries a local fixture registry index and prints matching packages.
+- Search key matches package `name` and `name@version` (case-insensitive).
+- Reads registry path from `LUMEN_REGISTRY_DIR`, defaulting to `.lumen/registry`.
 
-## `emit`
+Local fixture-registry note:
 
-Compile and emit LIR JSON.
+- This is filesystem-backed fixture behavior, not remote registry networking.
+- Index file is JSON at `<registry-dir>/index.json`.
 
-```bash
-lumen emit <file> [--output out.json]
-```
+### `lumen pkg publish [--dry-run]`
 
-## `trace show`
+Current behavior:
 
-Show pretty-printed trace events for a run.
+- `lumen pkg publish` (without `--dry-run`) publishes to the local fixture registry:
+  writes archive under `<registry-dir>/packages/<name>/<version>/<name>-<version>.tar`
+  and updates `<registry-dir>/index.json`.
+- `lumen pkg publish --dry-run` validates metadata/content, creates a deterministic archive, and prints content/archive SHA-256 checksums.
+- Dry-run archive path is generated under OS temp dir:
+  `$(temp-dir)/lumen-publish-dry-run-<pid>-<timestamp>.tar`
+  (on Linux fixture runs this is typically under `/tmp/`).
 
-```bash
-lumen trace show <run_id> [--trace-dir .lumen/trace]
-```
+Local fixture-registry note:
 
-## `cache clear`
+- Publish/search use `LUMEN_REGISTRY_DIR` when set; otherwise `.lumen/registry`.
+- Non-dry-run publish is local-fixture only (no remote upload/auth flow yet).
 
-Clear tool result cache.
-
-```bash
-lumen cache clear [--cache-dir .lumen/cache]
-```
+Note: `lpm` is the package-manager alias binary for the same flow.

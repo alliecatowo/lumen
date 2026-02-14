@@ -187,11 +187,14 @@ Implemented expression families include:
 - literals (`Int`, `Float`, `Bool`, `String`, raw strings, bytes, null)
 - records, maps, lists, tuples, sets
 - unary and binary operators
+- **pipe operator** (`|>`) for function chaining
 - calls and named args
 - tool calls
 - field/index access
 - lambdas
 - comprehensions
+- **range expressions** (`..`, `..=`)
+- **string interpolation** (`{expr}`)
 - null operators (`?.`, `??`, `!`)
 - `await`
 - orchestration await block forms:
@@ -202,6 +205,50 @@ Implemented expression families include:
   - `await select ... end`
 - `spawn` builtin for async closure/cell scheduling
 - `try` operator for `result`
+
+### Syntactic Sugar
+
+**Pipe operator** `|>` — The value on the left becomes the first argument to the function call on the right:
+```lumen
+cell double(x: Int) -> Int
+  return x * 2
+end
+
+cell add(a: Int, b: Int) -> Int
+  return a + b
+end
+
+cell main() -> Int
+  # a |> f(b) desugars to f(a, b)
+  let result = 5 |> double() |> add(3)  # add(double(5), 3) = 13
+  return result
+end
+```
+
+**String interpolation** — Embed expressions in strings with `{expr}`:
+```lumen
+cell main() -> String
+  let name = "Alice"
+  let age = 30
+  return "Hello, {name}! You are {age} years old."
+end
+```
+
+**Range expressions** — Concise numeric ranges for loops:
+```lumen
+cell main() -> Int
+  let sum = 0
+  for i in 1..5      # exclusive: [1, 2, 3, 4]
+    sum = sum + i
+  end
+  for i in 1..=5     # inclusive: [1, 2, 3, 4, 5]
+    sum = sum + i
+  end
+  return sum
+end
+```
+
+### Null Safety
 
 ```lumen
 record Box
@@ -623,3 +670,42 @@ The Lumen code is identical. Only the configuration changes.
 This spec covers implemented behavior only.
 
 Not-yet-complete language areas are intentionally excluded and tracked in `tasks.md` / `ROADMAP.md`.
+
+### Nested Pattern Matching
+
+Patterns can be nested arbitrarily deep, allowing complex destructuring in a single match arm:
+
+```lumen
+enum Result
+  Ok(val: Int)
+  Err(msg: String)
+end
+
+enum Option
+  Some(result: Result)
+  None
+end
+
+cell unwrap_or_zero(opt: Option) -> Int
+  match opt
+    Some(Ok(val)) -> val              # 2-level nesting
+    Some(Err(msg)) -> 0
+    None -> 0
+  end
+end
+
+# Deeper nesting also works
+match deeply_nested
+  Wrapper(Some(Ok(value))) -> value   # 3-level nesting
+  _ -> default
+end
+
+# Nested patterns work with guards and OR patterns
+match result
+  Some(Ok(n)) | Some(Err(_)) if n > 0 -> "positive success"
+  _ -> "other"
+end
+```
+
+Nested patterns are compiled to efficient sequential checks with early exit on mismatch.
+

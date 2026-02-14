@@ -10,7 +10,7 @@ use lumen_compiler::compiler::lower::lower;
 use lumen_compiler::compiler::lir::OpCode;
 use lumen_compiler::compiler::parser::Parser;
 use lumen_compiler::compiler::resolve::resolve;
-use lumen_compiler::compiler::typecheck::{typecheck, Type};
+use lumen_compiler::compiler::typecheck::typecheck;
 
 fn compile_and_typecheck(src: &str) -> Result<lumen_compiler::compiler::lir::LirModule, String> {
     let mut lexer = Lexer::new(src, 1, 0);
@@ -154,7 +154,6 @@ end
 // ============================================================================
 
 #[test]
-#[ignore] // TODO: Nested variant patterns not yet fully supported in typecheck
 fn test_nested_pattern_some_ok() {
     let src = r#"
 enum Option[T]
@@ -165,6 +164,26 @@ end
 cell test(x: result[Option[Int], String]) -> Int
   match x
     ok(some(v)) -> return v
+    ok(none) -> return 0
+    err(_) -> return -1
+  end
+end
+"#;
+    compile_and_typecheck(src).unwrap();
+}
+
+#[test]
+fn test_nested_pattern_deeper_some_ok() {
+    let src = r#"
+enum Option[T]
+  some(T)
+  none
+end
+
+cell test(x: result[Option[Option[Int]], String]) -> Int
+  match x
+    ok(some(some(v))) -> return v
+    ok(some(none)) -> return 1
     ok(none) -> return 0
     err(_) -> return -1
   end
@@ -357,7 +376,7 @@ end
         "Set comprehension should build list first"
     );
     assert!(
-        ops.iter().any(|&op| op == OpCode::Intrinsic),
+        ops.contains(&OpCode::Intrinsic),
         "Set comprehension should use Intrinsic for ToSet conversion"
     );
 }

@@ -34,17 +34,28 @@ Implemented in `lumen pkg` today:
 - Source discovery for both `.lm` and `.lm.md`
 - Dependency graph resolution for local path dependencies (including circular dependency detection)
 - `lumen pkg install` / `lumen pkg update` writing `lumen.lock` entries with `path+...` sources
-- `lumen pkg search` stub output (registry not yet available)
+- `lumen pkg search` against a local fixture registry index (`index.json`)
 - `lumen pkg pack` deterministic tarball generation (`dist/<name>-<version>.tar`)
 - `lpm info [path-or-archive]` metadata + file listing + deterministic checksums
 - `lumen pkg publish --dry-run` checklist output with artifact path and SHA-256 checksums
+- `lumen pkg publish` local fixture upload path (writes tarball + updates local index)
 
 Not implemented yet:
 - Installing registry dependencies from version constraints
 - Registry index cloning, semver-based registry resolution, tarball download, checksum verification
-- Registry upload/authentication flows (`lumen pkg publish` upload step, registry API backend)
+- Remote registry upload/authentication flows (networked backend)
+- Registry install round-trip (`search` -> `add/install` from registry source)
 
 > The remaining sections describe target registry architecture. Treat them as planned design, not current behavior.
+
+### Phase 2 local fixture-registry behavior (current)
+
+- `lumen pkg search <query>` searches the local fixture index and prints matching package entries.
+- `lumen pkg publish` without `--dry-run` writes package archive + metadata into the local fixture registry.
+- `lumen pkg publish --dry-run` runs package validation/checksums and writes a temporary archive to:
+  `$(temp-dir)/lumen-publish-dry-run-<pid>-<timestamp>.tar`
+  (typically `/tmp/...` on Linux fixture runs).
+- Fixture routing is controlled by `LUMEN_REGISTRY_DIR` (default `.lumen/registry`).
 
 ## Package Format
 
@@ -552,27 +563,28 @@ Packages are cached in `~/.lumen/packages/` to avoid re-downloading.
 
 ## Implementation Roadmap
 
-### Implemented
+### Phase 1 (completed)
 
 1. `lumen.toml` package metadata parsing (`name`, `version`, `description`, `authors`, `license`, `repository`, `keywords`, `readme`)
 2. Dependency spec parsing for `path`, version string, and version+registry forms
-3. `lumen pkg` subcommands: `init`, `build`, `check`, `add`, `remove`, `list`, `install`, `update`, `search`
+3. `lumen pkg` subcommands: `init`, `build`, `check`, `add`, `remove`, `list`, `install`, `update`, `search`, `pack`, `publish`
 4. Path dependency resolution with circular dependency detection
-5. `lumen.lock` generation for resolved path dependencies
+5. Lockfile v2 read/write compatibility for path-focused flows (`lumen.lock`)
+6. Deterministic archive/checksum primitives (`pkg pack`, `pkg publish --dry-run`)
 
-### Next: Registry Index Client
+### Phase 2 (in progress): Registry MVP on local fixture infrastructure
 
-1. Clone/fetch registry index
-2. Parse package index metadata
-3. Resolve semver constraints against available registry versions
-4. Download and verify package tarballs
-5. Populate local package cache for offline/repeatable installs
+Completed pieces:
 
-### Next: Registry Server
+1. Search/publish command surfaces are present in CLI.
+2. Publish packaging/validation pipeline produces deterministic artifacts and checksums usable by upload flow.
 
-1. Build API service for package metadata, search, download, publish
-2. Add auth/token management and ownership checks
-3. Implement publish pipeline (validate package, store tarball, update index)
+Remaining pieces:
+
+1. Registry-backed `pkg search` implementation.
+2. Non-dry-run publish upload path.
+3. Local fixture-registry endpoint/path env/config wiring.
+4. Integration test for publish/search/install round-trip on fixture registry.
 
 ### Later Enhancements
 

@@ -230,13 +230,7 @@ impl Formatter {
         };
 
         // Check if the entire signature fits on one line (target 100 chars)
-        let one_line = format!(
-            "{}({}){}{}",
-            header,
-            params_str,
-            return_str,
-            effects_str
-        );
+        let one_line = format!("{}({}){}{}", header, params_str, return_str, effects_str);
 
         if one_line.len() <= 100 {
             self.writeln(&one_line);
@@ -700,11 +694,12 @@ impl Formatter {
                 self.push_indent();
                 for arm in &s.arms {
                     // Check if arm body is a single short statement (return/expr)
-                    let is_short_arm = arm.body.len() == 1 && match &arm.body[0] {
-                        Stmt::Return(r) => self.fmt_expr(&r.value).len() < 40,
-                        Stmt::Expr(e) => self.fmt_expr(&e.expr).len() < 40,
-                        _ => false,
-                    };
+                    let is_short_arm = arm.body.len() == 1
+                        && match &arm.body[0] {
+                            Stmt::Return(r) => self.fmt_expr(&r.value).len() < 40,
+                            Stmt::Expr(e) => self.fmt_expr(&e.expr).len() < 40,
+                            _ => false,
+                        };
 
                     if is_short_arm {
                         // Format short arms on one line: pattern -> value
@@ -847,6 +842,14 @@ impl Formatter {
             }
             Expr::BinOp(left, op, right, _) => {
                 format!("{} {} {}", self.fmt_expr(left), op, self.fmt_expr(right))
+            }
+            Expr::Pipe { left, right, .. } => {
+                format!("{} |> {}", self.fmt_expr(left), self.fmt_expr(right))
+            }
+            Expr::Illuminate {
+                input, transform, ..
+            } => {
+                format!("{} ~> {}", self.fmt_expr(input), self.fmt_expr(transform))
             }
             Expr::UnaryOp(op, expr, _) => {
                 let op_str = match op {
@@ -1122,7 +1125,7 @@ impl Formatter {
             Pattern::Literal(expr) => self.fmt_expr(expr),
             Pattern::Variant(name, binding, _) => {
                 if let Some(b) = binding {
-                    format!("{}({})", name, b)
+                    format!("{}({})", name, self.fmt_pattern(b))
                 } else {
                     name.clone()
                 }

@@ -732,7 +732,7 @@ mod tests {
 
     #[test]
     fn capability_in_vector() {
-        let caps = vec![Capability::Chat, Capability::TextGeneration, Capability::Vision];
+        let caps = [Capability::Chat, Capability::TextGeneration, Capability::Vision];
         assert!(caps.contains(&Capability::Chat));
         assert!(caps.contains(&Capability::Vision));
         assert!(!caps.contains(&Capability::Streaming));

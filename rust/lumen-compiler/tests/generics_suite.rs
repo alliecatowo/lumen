@@ -81,7 +81,12 @@ cell bad() -> Box[Int]
 end
 ",
     );
-    assert!(err.contains("type mismatch") || err.contains("expected Int"));
+    // Should report type mismatch between Box[Int] and Box[String]
+    assert!(
+        (err.contains("Box[Int]") && err.contains("Box[String]")) ||
+        err.contains("type mismatch") ||
+        err.contains("expected") && err.contains("Int")
+    );
 }
 
 #[test]

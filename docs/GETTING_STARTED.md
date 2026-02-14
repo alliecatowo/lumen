@@ -32,6 +32,23 @@ Welcome to Lumen, a statically typed programming language for AI-native systems.
    lumen --version
    ```
 
+## Try lumen-orbit (Flagship Example)
+
+The flagship multi-file example runs from `examples/lumen-orbit/`.
+
+Run it from repo root:
+
+```bash
+cargo run --bin lumen -- run examples/lumen-orbit/src/main.lm.md
+```
+
+Run the same checks used for CI-style validation:
+
+```bash
+cargo run --release --bin lumen -- check examples/lumen-orbit/src/main.lm.md
+cargo run --release --bin lumen -- ci examples/lumen-orbit
+```
+
 ## Your First Program
 
 ### Hello World

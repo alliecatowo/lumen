@@ -54,13 +54,13 @@ pub fn run_tests(
 ) -> Result<TestRunSummary, String> {
     let target_path = path.unwrap_or_else(|| PathBuf::from("."));
 
-    // Collect all .lm.md files
+    // Collect all .lm and .lm.md files.
     let mut test_files = Vec::new();
     collect_test_files(&target_path, &mut test_files);
 
     if test_files.is_empty() {
         return Err(format!(
-            "no .lm.md files found in {}",
+            "no .lm/.lm.md files found in {}",
             target_path.display()
         ));
     }
@@ -85,7 +85,7 @@ pub fn run_tests(
         };
 
         let filename = file_path.display().to_string();
-        let module = match lumen_compiler::compile(&source) {
+        let module = match crate::compile_source_file(file_path, &source) {
             Ok(m) => m,
             Err(e) => {
                 let mut error_message = "compilation failed".to_string();
@@ -189,7 +189,12 @@ pub fn run_tests(
             red("✗ FAILED")
         };
 
-        println!("  {} {} ... {}", gray("test"), bold(&result.test_name), status);
+        println!(
+            "  {} {} ... {}",
+            gray("test"),
+            bold(&result.test_name),
+            status
+        );
     }
 
     // Print failure details
@@ -250,12 +255,7 @@ pub fn cmd_test(path: Option<PathBuf>, filter: Option<String>, verbose: bool) {
 
 fn collect_test_files(path: &Path, files: &mut Vec<PathBuf>) {
     if path.is_file() {
-        if path.extension().and_then(|s| s.to_str()) == Some("md")
-            && path
-                .to_str()
-                .map(|s| s.ends_with(".lm.md"))
-                .unwrap_or(false)
-        {
+        if is_lumen_source(path) {
             files.push(path.to_path_buf());
         }
     } else if path.is_dir() {
@@ -264,5 +264,102 @@ fn collect_test_files(path: &Path, files: &mut Vec<PathBuf>) {
                 collect_test_files(&entry.path(), files);
             }
         }
+    }
+}
+
+fn is_lumen_source(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.ends_with(".lm.md"))
+        .unwrap_or(false)
+        || path.extension().and_then(|s| s.to_str()) == Some("lm")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new(prefix: &str) -> Self {
+            let stamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let path =
+                std::env::temp_dir().join(format!("{}_{}_{}", prefix, std::process::id(), stamp));
+            fs::create_dir_all(&path).expect("should create temp test directory");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn run_tests_resolves_imports_from_project_src_context() {
+        let temp = TempDir::new("lumen_test_pkg_context");
+        let root = temp.path();
+        let src_dir = root.join("src");
+        let tests_dir = root.join("tests");
+
+        fs::create_dir_all(&src_dir).expect("should create src dir");
+        fs::create_dir_all(&tests_dir).expect("should create tests dir");
+        fs::write(
+            root.join("lumen.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("should write lumen.toml");
+        fs::write(
+            src_dir.join("math.lm"),
+            "cell add(a: Int, b: Int) -> Int\n  return a + b\nend\n",
+        )
+        .expect("should write module");
+        fs::write(
+            tests_dir.join("math_test.lm.md"),
+            "```lumen\nimport math: add\n```\n\n```lumen\ncell test_add() -> Bool\n  return add(2, 3) == 5\nend\n```\n",
+        )
+        .expect("should write test file");
+
+        let summary = run_tests(Some(root.to_path_buf()), None, false)
+            .expect("tests should run with package-context imports");
+
+        assert_eq!(summary.total, 1);
+        assert_eq!(summary.passed, 1);
+        assert_eq!(summary.failed, 0);
+    }
+
+    #[test]
+    fn run_tests_discovers_lm_and_markdown_sources() {
+        let temp = TempDir::new("lumen_test_source_discovery");
+        let root = temp.path();
+
+        fs::write(
+            root.join("raw_test.lm"),
+            "cell test_raw() -> Bool\n  return true\nend\n",
+        )
+        .expect("should write raw test file");
+        fs::write(
+            root.join("markdown_test.lm.md"),
+            "```lumen\ncell test_markdown() -> Bool\n  return true\nend\n```\n",
+        )
+        .expect("should write markdown test file");
+
+        let summary = run_tests(Some(root.to_path_buf()), None, false).expect("tests should run");
+
+        assert_eq!(summary.total, 2);
+        assert_eq!(summary.passed, 2);
+        assert_eq!(summary.failed, 0);
     }
 }

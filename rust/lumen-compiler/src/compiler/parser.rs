@@ -1343,7 +1343,8 @@ impl Parser {
                 self.pos -= 1;
                 let pat = self.parse_pattern()?;
                 let pat_name = match &pat {
-                    Pattern::Variant(_, Some(binding), _) => binding.clone(),
+                    Pattern::Variant(_, Some(binding), _) => Self::pattern_binding_name(binding)
+                        .unwrap_or_else(|| "__pattern".to_string()),
                     Pattern::RecordDestructure { fields, .. } => fields
                         .first()
                         .map(|(n, _)| n.clone())
@@ -1724,9 +1725,13 @@ impl Parser {
                 let s = self.advance().span;
                 if matches!(self.peek_kind(), TokenKind::LParen) {
                     self.advance();
-                    let binding = self.parse_variant_binding_candidate()?;
+                    let inner = if matches!(self.peek_kind(), TokenKind::RParen) {
+                        None
+                    } else {
+                        Some(Box::new(self.parse_pattern()?))
+                    };
                     self.expect(&TokenKind::RParen)?;
-                    Ok(Pattern::Variant(vname, binding, s))
+                    Ok(Pattern::Variant(vname, inner, s))
                 } else {
                     Ok(Pattern::Variant(vname, None, s))
                 }
@@ -3394,13 +3399,35 @@ impl Parser {
         }
     }
 
-    fn parse_variant_binding_candidate(&mut self) -> Result<Option<String>, ParseError> {
+    fn pattern_binding_name(pattern: &Pattern) -> Option<String> {
+        match pattern {
+            Pattern::Ident(name, _) => Some(name.clone()),
+            Pattern::TypeCheck { name, .. } => Some(name.clone()),
+            Pattern::Variant(_, Some(inner), _) => Self::pattern_binding_name(inner),
+            Pattern::TupleDestructure { elements, .. } | Pattern::ListDestructure { elements, .. } => {
+                elements.iter().find_map(Self::pattern_binding_name)
+            }
+            Pattern::RecordDestructure { fields, .. } => fields.iter().find_map(|(name, pat)| {
+                pat.as_ref()
+                    .and_then(Self::pattern_binding_name)
+                    .or_else(|| Some(name.clone()))
+            }),
+            Pattern::Guard { inner, .. } => Self::pattern_binding_name(inner),
+            Pattern::Or { patterns, .. } => patterns.iter().find_map(Self::pattern_binding_name),
+            _ => None,
+        }
+    }
+
+    fn parse_variant_binding_candidate(&mut self) -> Result<Option<Box<Pattern>>, ParseError> {
         let mut binding = None;
         if !matches!(self.peek_kind(), TokenKind::RParen) {
-            if matches!(self.peek_kind(), TokenKind::Ident(_)) {
-                binding = Some(self.expect_ident()?);
-            } else {
-                self.consume_variant_arg_tokens();
+            let save = self.pos;
+            match self.parse_pattern() {
+                Ok(pattern) => binding = Some(Box::new(pattern)),
+                Err(_) => {
+                    self.pos = save;
+                    self.consume_variant_arg_tokens();
+                }
             }
             while !matches!(self.peek_kind(), TokenKind::RParen | TokenKind::Eof) {
                 if matches!(self.peek_kind(), TokenKind::Comma) {
@@ -3877,6 +3904,7 @@ impl Parser {
                     self.tokens.get(i).map(|t| &t.kind),
                     Some(
                         TokenKind::PipeForward
+                            | TokenKind::TildeArrow
                             | TokenKind::Compose
                             | TokenKind::Dot
                             | TokenKind::QuestionQuestion
@@ -3937,9 +3965,36 @@ impl Parser {
                 TokenKind::And => (BinOp::And, (12, 13)),
                 TokenKind::Or => (BinOp::Or, (10, 11)),
                 TokenKind::PlusPlus => (BinOp::Concat, (18, 19)),
-                TokenKind::PipeForward => (BinOp::PipeForward, (16, 17)),
-                TokenKind::Compose => (BinOp::PipeForward, (16, 17)),
-                TokenKind::Step => (BinOp::PipeForward, (16, 17)),
+                // Pipe |> and compose >> / step: produce Expr::Pipe
+                TokenKind::PipeForward | TokenKind::Compose | TokenKind::Step => {
+                    if min_bp > 16 {
+                        break;
+                    }
+                    self.advance();
+                    let rhs = self.parse_expr(17)?;
+                    let span = lhs.span().merge(rhs.span());
+                    lhs = Expr::Pipe {
+                        left: Box::new(lhs),
+                        right: Box::new(rhs),
+                        span,
+                    };
+                    continue;
+                }
+                // Illuminate ~>: produce Expr::Illuminate
+                TokenKind::TildeArrow => {
+                    if min_bp > 16 {
+                        break;
+                    }
+                    self.advance();
+                    let rhs = self.parse_expr(17)?;
+                    let span = lhs.span().merge(rhs.span());
+                    lhs = Expr::Illuminate {
+                        input: Box::new(lhs),
+                        transform: Box::new(rhs),
+                        span,
+                    };
+                    continue;
+                }
                 TokenKind::Ampersand => (BinOp::BitAnd, (14, 15)),
                 TokenKind::Caret => (BinOp::BitXor, (14, 15)),
                 TokenKind::PlusAssign => (BinOp::Add, (2, 3)),
@@ -5749,7 +5804,7 @@ end"#;
         // First arm should be the pattern (ok(val))
         assert!(
             matches!(&ms.arms[0].pattern, Pattern::Variant(name, Some(binding), _)
-            if name == "ok" && binding == "val")
+            if name == "ok" && matches!(binding.as_ref(), Pattern::Ident(bind_name, _) if bind_name == "val"))
         );
         // Second arm should be the wildcard (else branch)
         assert!(matches!(&ms.arms[1].pattern, Pattern::Wildcard(_)));
@@ -5921,7 +5976,10 @@ end"#;
             panic!("expected variant pattern, got {:?}", ls.pattern);
         };
         assert_eq!(name, "ok");
-        assert_eq!(binding.as_deref(), Some("val"));
+        assert!(matches!(
+            binding.as_deref(),
+            Some(Pattern::Ident(bind_name, _)) if bind_name == "val"
+        ));
     }
 
     #[test]

@@ -63,6 +63,28 @@ fn is_doc_placeholder_var(name: &str) -> bool {
     !name.is_empty() && !name.starts_with("__")
 }
 
+fn desugar_pipe_application(input: &Expr, stage: &Expr, span: crate::compiler::tokens::Span) -> Expr {
+    match stage {
+        Expr::Call(callee, args, call_span) => {
+            let mut call_args = Vec::with_capacity(args.len() + 1);
+            call_args.push(CallArg::Positional(input.clone()));
+            call_args.extend(args.clone());
+            Expr::Call(callee.clone(), call_args, *call_span)
+        }
+        Expr::ToolCall(callee, args, call_span) => {
+            let mut call_args = Vec::with_capacity(args.len() + 1);
+            call_args.push(CallArg::Positional(input.clone()));
+            call_args.extend(args.clone());
+            Expr::ToolCall(callee.clone(), call_args, *call_span)
+        }
+        _ => Expr::Call(
+            Box::new(stage.clone()),
+            vec![CallArg::Positional(input.clone())],
+            span,
+        ),
+    }
+}
+
 fn type_contains_any(ty: &Type) -> bool {
     match ty {
         Type::Any => true,
@@ -275,7 +297,7 @@ fn infer_generic_args_from_fields(
 fn unify_for_inference(
     type_expr: &TypeExpr,
     concrete: &Type,
-    symbols: &SymbolTable,
+    _symbols: &SymbolTable,
     inferred: &mut HashMap<String, Type>,
 ) {
     match (type_expr, concrete) {
@@ -287,22 +309,22 @@ fn unify_for_inference(
             }
         }
         (TypeExpr::List(inner, _), Type::List(inner_ty)) => {
-            unify_for_inference(inner, inner_ty, symbols, inferred);
+            unify_for_inference(inner, inner_ty, _symbols, inferred);
         }
         (TypeExpr::Map(k, v, _), Type::Map(kt, vt)) => {
-            unify_for_inference(k, kt, symbols, inferred);
-            unify_for_inference(v, vt, symbols, inferred);
+            unify_for_inference(k, kt, _symbols, inferred);
+            unify_for_inference(v, vt, _symbols, inferred);
         }
         (TypeExpr::Set(inner, _), Type::Set(inner_ty)) => {
-            unify_for_inference(inner, inner_ty, symbols, inferred);
+            unify_for_inference(inner, inner_ty, _symbols, inferred);
         }
         (TypeExpr::Result(ok, err, _), Type::Result(ok_ty, err_ty)) => {
-            unify_for_inference(ok, ok_ty, symbols, inferred);
-            unify_for_inference(err, err_ty, symbols, inferred);
+            unify_for_inference(ok, ok_ty, _symbols, inferred);
+            unify_for_inference(err, err_ty, _symbols, inferred);
         }
         (TypeExpr::Tuple(exprs, _), Type::Tuple(types)) => {
             for (expr, ty) in exprs.iter().zip(types.iter()) {
-                unify_for_inference(expr, ty, symbols, inferred);
+                unify_for_inference(expr, ty, _symbols, inferred);
             }
         }
         _ => {
@@ -681,15 +703,21 @@ impl<'a> TypeChecker<'a> {
         match pattern {
             Pattern::Variant(tag, binding, _) => {
                 let mut valid_variant = false;
-                let mut bind_type = Type::Any;
+                let mut payload_type = Type::Any;
+                let mut expects_payload = false;
 
                 if let Type::Enum(ref name) = subject_type {
                     if let Some(ti) = self.symbols.types.get(name) {
                         if let crate::compiler::resolve::TypeInfoKind::Enum(def) = &ti.kind {
-                            if def.variants.iter().any(|v| v.name == *tag) {
+                            if let Some(variant) = def.variants.iter().find(|v| v.name == *tag) {
                                 valid_variant = true;
                                 covered_variants.push(tag.clone());
-                                bind_type = subject_type.clone();
+                                if let Some(payload) = &variant.payload {
+                                    expects_payload = true;
+                                    payload_type = resolve_type_expr(payload, self.symbols);
+                                } else {
+                                    payload_type = Type::Null;
+                                }
                             }
                         }
                     }
@@ -703,10 +731,12 @@ impl<'a> TypeChecker<'a> {
                 } else if let Type::Result(ref ok, ref err) = subject_type {
                     if tag == "ok" {
                         valid_variant = true;
-                        bind_type = *ok.clone();
+                        expects_payload = true;
+                        payload_type = *ok.clone();
                     } else if tag == "err" {
                         valid_variant = true;
-                        bind_type = *err.clone();
+                        expects_payload = true;
+                        payload_type = *err.clone();
                     }
                     if !valid_variant {
                         self.errors.push(TypeError::Mismatch {
@@ -717,8 +747,21 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
-                if let Some(b) = binding {
-                    self.locals.insert(b.clone(), bind_type);
+                if let Some(inner_pattern) = binding {
+                    if valid_variant && !expects_payload {
+                        self.errors.push(TypeError::Mismatch {
+                            expected: format!("{} without payload", tag),
+                            actual: format!("{}(...)", tag),
+                            line,
+                        });
+                    }
+                    self.bind_match_pattern(
+                        inner_pattern,
+                        &payload_type,
+                        covered_variants,
+                        has_catchall,
+                        line,
+                    );
                 }
             }
             Pattern::Ident(name, _) => {
@@ -1051,6 +1094,18 @@ impl<'a> TypeChecker<'a> {
                     BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => Type::Int,
                 }
             }
+            Expr::Pipe { left, right, span } => {
+                let call_expr = desugar_pipe_application(left, right, *span);
+                self.infer_expr(&call_expr)
+            }
+            Expr::Illuminate {
+                input,
+                transform,
+                span,
+            } => {
+                let call_expr = desugar_pipe_application(input, transform, *span);
+                self.infer_expr(&call_expr)
+            }
             Expr::UnaryOp(op, inner, _) => {
                 let t = self.infer_expr(inner);
                 match op {
@@ -1080,10 +1135,64 @@ impl<'a> TypeChecker<'a> {
                 }
                 // Try to resolve the return type
                 if let Expr::Ident(name, _) = callee.as_ref() {
+                    // Check if it's a cell/function call
                     if let Some(ci) = self.symbols.cells.get(name) {
                         self.check_call_against_signature(&ci.params, &checked_args, span.line);
                         if let Some(ref rt) = ci.return_type {
                             return resolve_type_expr(rt, self.symbols);
+                        }
+                    }
+                    // Check if it's a record construction
+                    else if let Some(ti) = self.symbols.types.get(name) {
+                        if let crate::compiler::resolve::TypeInfoKind::Record(def) = &ti.kind {
+                            // Infer generic type arguments from constructor arguments
+                            let generic_args = if !ti.generic_params.is_empty() {
+                                // Build inference map from named arguments
+                                let mut inferred: HashMap<String, Type> = HashMap::new();
+                                for checked_arg in &checked_args {
+                                    if let CheckedCallArg::Named(fname, arg_ty, _) = checked_arg {
+                                        if let Some(field_def) = def.fields.iter().find(|f| f.name == *fname) {
+                                            unify_for_inference(&field_def.ty, arg_ty, self.symbols, &mut inferred);
+                                        }
+                                    }
+                                }
+
+                                ti.generic_params
+                                    .iter()
+                                    .map(|p| inferred.get(p).cloned().unwrap_or(Type::Any))
+                                    .collect()
+                            } else {
+                                vec![]
+                            };
+
+                            // Build substitution map for generic parameters
+                            let subst = build_subst(&ti.generic_params, &generic_args);
+
+                            // Check constructor arguments match record fields
+                            for checked_arg in &checked_args {
+                                if let CheckedCallArg::Named(fname, arg_ty, line) = checked_arg {
+                                    if let Some(field_def) = def.fields.iter().find(|f| f.name == *fname) {
+                                        let expected = resolve_type_expr_with_subst(&field_def.ty, self.symbols, &subst);
+                                        self.check_compat(&expected, arg_ty, *line);
+                                    } else {
+                                        let field_names: Vec<&str> = def.fields.iter().map(|f| f.name.as_str()).collect();
+                                        let suggestions = suggest_similar(fname, &field_names, 2);
+                                        self.errors.push(TypeError::UnknownField {
+                                            field: fname.clone(),
+                                            ty: name.clone(),
+                                            line: *line,
+                                            suggestions,
+                                        });
+                                    }
+                                }
+                            }
+
+                            // Return the instantiated generic type if applicable
+                            return if !generic_args.is_empty() {
+                                Type::TypeRef(name.clone(), generic_args)
+                            } else {
+                                Type::Record(name.clone())
+                            };
                         }
                     }
                 }

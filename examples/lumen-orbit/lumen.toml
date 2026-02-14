@@ -1,13 +1,13 @@
 [package]
-name = "lumen-control-center"
+name = "lumen-orbit"
 version = "0.1.0"
-description = "Flagship multi-module control center example for LLM + MCP style orchestration"
+description = "Bold multi-module workspace showing realistic LLM + MCP orchestration"
 authors = ["Lumen Team <team@lumen.local>"]
 license = "MIT"
 readme = "README.md"
 
 [dependencies]
-# Demonstration-only workspace; no external package dependencies required.
+# Standalone example workspace.
 
 [providers]
 "llm.chat" = "openai-compatible"
@@ -21,7 +21,7 @@ api_key_env = "OPENAI_API_KEY"
 default_model = "gpt-4o-mini"
 
 [providers.config.builtin-http]
-timeout_ms = 5000
+timeout_ms = 4000
 
 [providers.mcp.github]
 uri = "npx -y @modelcontextprotocol/server-github"

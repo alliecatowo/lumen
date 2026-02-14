@@ -1,6 +1,6 @@
 # Lumen Language Leapfrog Plan
 
-Date: February 13, 2026  
+Date: February 14, 2026  
 Owner: Research Agent C
 
 ## Scope and constraints
@@ -22,12 +22,67 @@ Out of scope for this plan window: borrow checking, full dependent types, whole-
 
 ## Baseline snapshot (from repo state)
 
-- Effects are parsed and typechecked at a basic level, but handler semantics are not fully realized.
-- Generics/traits are parsed but not fully verified.
-- Async exists (`Future`, `await`, spawn forms), but structured lifecycle and cancellation guarantees are limited.
-- Determinism/replay has foundational pieces but trace wiring and replay guarantees are incomplete.
-- Diagnostics and parser recovery are behind modern language-server expectations.
-- Package tooling exists, but deterministic/package-semantic guarantees are still shallow.
+- Effects are parsed and typechecked at a basic level, but handler/runtime semantics are not fully realized.
+- Generics/traits remain incomplete in verification and dispatch.
+- Async exists (`Future`, `await`, spawn forms), but provider dispatch remains synchronous and lifecycle guarantees are limited.
+- VM safety floor improved (checked arithmetic/UTF-8/fuel/register bounds), but replay wiring is still incomplete (`TraceRef` path).
+- Parser recovery primitives exist, but compile/LSP hot paths still need full multi-error integration and incremental execution.
+- Tooling surface expanded (`test`, `ci`, `pkg --frozen/--locked`), while docs parity and registry-backed package workflows remain behind.
+
+## Immediate maturity-loop addendum (next 2 loops)
+
+This addendum is the execution bridge from research to delivery for the next four weeks.  
+Detailed task tracking lives in `docs/research/EXECUTION_TRACKER.md`.
+
+### Parity targets by domain
+
+| Domain | Current state | Loop A (by 2026-03-01) | Loop B (by 2026-03-15) |
+|---|---|---|---|
+| Language | Core parsing/lowering fixes landed; generic/trait/runtime-constraint gaps remain. | Generic argument + bound validation baseline. | Trait conformance/dispatch MVP. |
+| Compiler | Recovery APIs present but not consistently surfaced in normal compile path. | CLI/LSP emit multiple parse errors per malformed file. | Add first fix-it diagnostics for frequent syntax failures. |
+| Runtime | Deterministic guardrails improved; trace linkage + async dispatch still missing. | Trace-store wiring + explicit value ordering semantics (NaN/interned strings). | Async tool dispatch with timeout/cancel propagation. |
+| Tooling | `test` and `ci` commands exist; LSP still recompiles whole file per edit. | Benchmark harness and baseline latency thresholds. | Incremental LSP diagnostics with `<100ms` median target. |
+| Docs | CLI/SPEC command docs drift from implementation. | Sync command docs to current CLI surface. | CI drift gate for command/documentation parity. |
+| Ecosystem | Lockfile/frozen works for path-based flows; registry search/upload still stubbed. | Lockfile v2 schema + migration tests. | Local-registry publish/search/install MVP path. |
+
+### Loop A (2026-02-16 -> 2026-03-01)
+
+1. Determinism closure: wire VM trace references/events into runtime trace store and replay hash path.
+2. Diagnostics closure: route compiler/LSP through recovery path for multi-error reporting.
+3. Runtime semantics closure: fix/define NaN and interned-string ordering behavior.
+4. Docs closure: synchronize CLI/SPEC command references and add automated parity check.
+
+Loop A measurable exit:
+
+1. Replay fixture hash/output matches across 10 reruns.
+2. Malformed fixture reports `>=3` independent diagnostics through `lumen check`.
+3. Regression suites pass in `lumen-vm`, `lumen-compiler`, and `lumen-cli`.
+
+### Loop B (2026-03-02 -> 2026-03-15)
+
+1. Tooling parity: LSP incremental invalidation and semantic cache path.
+2. Runtime parity: async tool dispatch contract with non-blocking concurrency behavior.
+3. Ecosystem parity: registry-backed `pkg search` and publish upload path (non-dry-run) on local fixture infra.
+4. Packaging parity: lockfile v2 read/write compatibility + deterministic serialization guarantees.
+
+Loop B measurable exit:
+
+1. LSP benchmark median diagnostics latency `<100ms` for single-line edits.
+2. Concurrency test proves slow tool call does not block unrelated runnable work.
+3. Publish/search/install round-trip passes against local registry fixture.
+
+### Prioritized delegable backlog (parallel lanes)
+
+| Priority | Lane | Deliverable |
+|---|---|---|
+| P0 | Runtime-A | Trace-store integration + replay determinism checks |
+| P0 | Compiler-A | Recovery parser integration into CLI/LSP paths |
+| P0 | Runtime-B | NaN/interned-string comparison semantics + tests |
+| P1 | Tooling-A | Incremental LSP diagnostics pipeline |
+| P1 | Docs-A | CLI/SPEC parity sync + CI drift gate |
+| P1 | Ecosystem-A | Registry MVP (`search`, publish upload) + lockfile v2 migration |
+| P1 | Runtime-C | Async tool dispatch contract + timeout/cancel tests |
+| P2 | Language-A | Generic constraints + trait conformance MVP |
 
 ## Theme-by-theme leapfrog plan
 

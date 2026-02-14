@@ -124,7 +124,9 @@ impl GeminiProvider {
     }
 
     fn execute_generate(&self, input: Value) -> Result<Value, ToolError> {
-        let prompt = input.get("prompt").and_then(|p| p.as_str())
+        let prompt = input
+            .get("prompt")
+            .and_then(|p| p.as_str())
             .ok_or_else(|| ToolError::InvocationFailed("missing 'prompt' field".to_string()))?;
         let system = input.get("system").and_then(|s| s.as_str());
         let temperature = input.get("temperature").and_then(|t| t.as_f64());
@@ -155,17 +157,22 @@ impl GeminiProvider {
         }
 
         let client = reqwest::blocking::Client::new();
-        let response = client.post(&url)
+        let response = client
+            .post(&url)
             .json(&body)
             .send()
             .map_err(|e| ToolError::InvocationFailed(format!("HTTP error: {}", e)))?;
 
         let status = response.status();
-        let response_body: Value = response.json()
+        let response_body: Value = response
+            .json()
             .map_err(|e| ToolError::InvocationFailed(format!("JSON parse error: {}", e)))?;
 
         if !status.is_success() {
-            return Err(ToolError::InvocationFailed(format!("API error {}: {}", status, response_body)));
+            return Err(ToolError::InvocationFailed(format!(
+                "API error {}: {}",
+                status, response_body
+            )));
         }
 
         // Extract text from Gemini response
@@ -184,17 +191,22 @@ impl GeminiProvider {
     }
 
     fn execute_chat(&self, input: Value) -> Result<Value, ToolError> {
-        let messages = input.get("messages").and_then(|m| m.as_array())
+        let messages = input
+            .get("messages")
+            .and_then(|m| m.as_array())
             .ok_or_else(|| ToolError::InvocationFailed("missing 'messages' array".to_string()))?;
 
-        let contents: Vec<Value> = messages.iter().map(|m| {
-            let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("user");
-            let content = m.get("content").and_then(|c| c.as_str()).unwrap_or("");
-            json!({
-                "role": role,
-                "parts": [{"text": content}]
+        let contents: Vec<Value> = messages
+            .iter()
+            .map(|m| {
+                let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("user");
+                let content = m.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                json!({
+                    "role": role,
+                    "parts": [{"text": content}]
+                })
             })
-        }).collect();
+            .collect();
 
         let url = format!(
             "{}/models/{}:generateContent?key={}",
@@ -204,12 +216,14 @@ impl GeminiProvider {
         let body = json!({ "contents": contents });
 
         let client = reqwest::blocking::Client::new();
-        let response = client.post(&url)
+        let response = client
+            .post(&url)
             .json(&body)
             .send()
             .map_err(|e| ToolError::InvocationFailed(format!("HTTP error: {}", e)))?;
 
-        let response_body: Value = response.json()
+        let response_body: Value = response
+            .json()
             .map_err(|e| ToolError::InvocationFailed(format!("JSON parse error: {}", e)))?;
 
         let text = response_body
@@ -227,7 +241,9 @@ impl GeminiProvider {
     }
 
     fn execute_embed(&self, input: Value) -> Result<Value, ToolError> {
-        let text = input.get("text").and_then(|t| t.as_str())
+        let text = input
+            .get("text")
+            .and_then(|t| t.as_str())
             .ok_or_else(|| ToolError::InvocationFailed("missing 'text' field".to_string()))?;
 
         let url = format!(
@@ -243,12 +259,14 @@ impl GeminiProvider {
         });
 
         let client = reqwest::blocking::Client::new();
-        let response = client.post(&url)
+        let response = client
+            .post(&url)
             .json(&body)
             .send()
             .map_err(|e| ToolError::InvocationFailed(format!("HTTP error: {}", e)))?;
 
-        let response_body: Value = response.json()
+        let response_body: Value = response
+            .json()
             .map_err(|e| ToolError::InvocationFailed(format!("JSON parse error: {}", e)))?;
 
         let embedding = response_body

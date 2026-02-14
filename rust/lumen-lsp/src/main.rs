@@ -4,7 +4,7 @@ use lsp_types::request::Request as _;
 use lsp_types::*;
 use lumen_compiler::compiler::ast::{Item, Program, Stmt};
 use lumen_compiler::compiler::constraints::ConstraintError;
-use lumen_compiler::compiler::lexer::{Lexer, LexError};
+use lumen_compiler::compiler::lexer::{LexError, Lexer};
 use lumen_compiler::compiler::parser::{ParseError, Parser};
 use lumen_compiler::compiler::resolve::ResolveError;
 use lumen_compiler::compiler::typecheck::TypeError;
@@ -70,9 +70,7 @@ fn main() {
     let (connection, io_threads) = Connection::stdio();
 
     let capabilities = ServerCapabilities {
-        text_document_sync: Some(TextDocumentSyncCapability::Kind(
-            TextDocumentSyncKind::FULL,
-        )),
+        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         definition_provider: Some(OneOf::Left(true)),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         completion_provider: Some(CompletionOptions {
@@ -82,8 +80,8 @@ fn main() {
         // 1. Document Symbols
         document_symbol_provider: Some(OneOf::Left(true)),
         // 2. Semantic Tokens
-        semantic_tokens_provider: Some(
-            SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
+        semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+            SemanticTokensOptions {
                 legend: SemanticTokensLegend {
                     token_types: vec![
                         SemanticTokenType::KEYWORD,
@@ -110,8 +108,8 @@ fn main() {
                 full: Some(SemanticTokensFullOptions::Bool(true)),
                 range: Some(false),
                 ..Default::default()
-            }),
-        ),
+            },
+        )),
         // 3. Signature Help
         signature_help_provider: Some(SignatureHelpOptions {
             trigger_characters: Some(vec!["(".into(), ",".into()]),
@@ -156,11 +154,7 @@ fn main() {
     io_threads.join().unwrap();
 }
 
-fn handle_notification(
-    not: &Notification,
-    connection: &Connection,
-    store: &mut DocumentStore,
-) {
+fn handle_notification(not: &Notification, connection: &Connection, store: &mut DocumentStore) {
     if not.method == notification::DidOpenTextDocument::METHOD {
         if let Ok(params) = serde_json::from_value::<DidOpenTextDocumentParams>(not.params.clone())
         {
@@ -365,12 +359,11 @@ fn handle_completion(_params: CompletionParams, store: &DocumentStore) -> Comple
 
     // Add keywords
     let keywords = vec![
-        "cell", "record", "enum", "if", "else", "match", "for", "while", "loop",
-        "return", "let", "mut", "end", "process", "memory", "machine", "pipeline",
-        "grant", "effect", "bind", "handler", "addon", "use", "import", "as",
-        "true", "false", "null", "async", "await", "break", "continue", "in",
-        "and", "or", "not", "is", "state", "terminal", "to", "where", "when",
-        "agent", "trait", "impl", "const", "type", "pub", "macro",
+        "cell", "record", "enum", "if", "else", "match", "for", "while", "loop", "return", "let",
+        "mut", "end", "process", "memory", "machine", "pipeline", "grant", "effect", "bind",
+        "handler", "addon", "use", "import", "as", "true", "false", "null", "async", "await",
+        "break", "continue", "in", "and", "or", "not", "is", "state", "terminal", "to", "where",
+        "when", "agent", "trait", "impl", "const", "type", "pub", "macro",
     ];
 
     for keyword in keywords {
@@ -394,7 +387,10 @@ fn handle_completion(_params: CompletionParams, store: &DocumentStore) -> Comple
         ("split", "split(string, separator) -> list[String]"),
         ("trim", "trim(string) -> String"),
         ("parse_int", "parse_int(string) -> result[Int, String]"),
-        ("parse_float", "parse_float(string) -> result[Float, String]"),
+        (
+            "parse_float",
+            "parse_float(string) -> result[Float, String]",
+        ),
         ("to_string", "to_string(value) -> String"),
         ("contains", "contains(collection, item) -> Bool"),
         ("keys", "keys(map) -> list"),
@@ -545,7 +541,10 @@ fn extract_symbols_from_program(program: &Program, uri: &Uri, symbols: &mut Vec<
                     String::new()
                 };
 
-                let signature = format!("cell {}({}){}{}", cell.name, params_str, return_str, effects_str);
+                let signature = format!(
+                    "cell {}({}){}{}",
+                    cell.name, params_str, return_str, effects_str
+                );
 
                 symbols.push(Symbol {
                     name: cell.name.clone(),
@@ -595,7 +594,11 @@ fn extract_symbols_from_program(program: &Program, uri: &Uri, symbols: &mut Vec<
                 });
             }
             Item::TypeAlias(alias) => {
-                let signature = format!("type {} = {}", alias.name, type_expr_to_string(&alias.type_expr));
+                let signature = format!(
+                    "type {} = {}",
+                    alias.name,
+                    type_expr_to_string(&alias.type_expr)
+                );
 
                 symbols.push(Symbol {
                     name: alias.name.clone(),
@@ -635,8 +638,16 @@ fn type_expr_to_string(ty: &lumen_compiler::compiler::ast::TypeExpr) -> String {
     match ty {
         TypeExpr::Named(name, _) => name.clone(),
         TypeExpr::List(inner, _) => format!("list[{}]", type_expr_to_string(inner)),
-        TypeExpr::Map(k, v, _) => format!("map[{}, {}]", type_expr_to_string(k), type_expr_to_string(v)),
-        TypeExpr::Result(ok, err, _) => format!("result[{}, {}]", type_expr_to_string(ok), type_expr_to_string(err)),
+        TypeExpr::Map(k, v, _) => format!(
+            "map[{}, {}]",
+            type_expr_to_string(k),
+            type_expr_to_string(v)
+        ),
+        TypeExpr::Result(ok, err, _) => format!(
+            "result[{}, {}]",
+            type_expr_to_string(ok),
+            type_expr_to_string(err)
+        ),
         TypeExpr::Union(types, _) => types
             .iter()
             .map(type_expr_to_string)
@@ -682,11 +693,19 @@ fn span_to_location(span: lumen_compiler::compiler::tokens::Span, uri: &Uri) -> 
         uri: uri.clone(),
         range: Range {
             start: Position {
-                line: if span.line > 0 { (span.line - 1) as u32 } else { 0 },
+                line: if span.line > 0 {
+                    (span.line - 1) as u32
+                } else {
+                    0
+                },
                 character: 0,
             },
             end: Position {
-                line: if span.line > 0 { (span.line - 1) as u32 } else { 0 },
+                line: if span.line > 0 {
+                    (span.line - 1) as u32
+                } else {
+                    0
+                },
                 character: u32::MAX,
             },
         },
@@ -809,10 +828,7 @@ fn publish(connection: &Connection, uri: Uri, diagnostics: Vec<Diagnostic>) {
         diagnostics,
         version: None,
     };
-    let not = Notification::new(
-        notification::PublishDiagnostics::METHOD.to_string(),
-        params,
-    );
+    let not = Notification::new(notification::PublishDiagnostics::METHOD.to_string(), params);
     connection.sender.send(Message::Notification(not)).unwrap();
 }
 
@@ -940,13 +956,21 @@ fn handle_semantic_tokens(
             | lumen_compiler::compiler::tokens::TokenKind::LtEq
             | lumen_compiler::compiler::tokens::TokenKind::GtEq
             | lumen_compiler::compiler::tokens::TokenKind::Bang => 5, // OPERATOR
-            _ => continue, // Skip other tokens
+            _ => continue,                                              // Skip other tokens
         };
 
-        let line = if token.span.line > 0 { token.span.line - 1 } else { 0 };
+        let line = if token.span.line > 0 {
+            token.span.line - 1
+        } else {
+            0
+        };
         let char = token.span.start as u32;
 
-        let delta_line = if line >= prev_line { (line - prev_line) as u32 } else { 0 };
+        let delta_line = if line >= prev_line {
+            (line - prev_line) as u32
+        } else {
+            0
+        };
         let delta_char = if delta_line == 0 && char >= prev_char {
             char - prev_char
         } else {
@@ -986,9 +1010,9 @@ fn handle_signature_help(
 
     // Look up the function in symbols
     let symbols = store.get_symbols(uri)?;
-    let func_symbol = symbols.iter().find(|s| {
-        matches!(s.kind, SymbolKind::Cell) && s.name == func_name
-    })?;
+    let func_symbol = symbols
+        .iter()
+        .find(|s| matches!(s.kind, SymbolKind::Cell) && s.name == func_name)?;
 
     // Parse the signature to extract parameters
     let signature_info = SignatureInformation {
@@ -1021,7 +1045,8 @@ fn find_function_call_at_position(text: &str, position: Position) -> Option<(Str
     let before_paren = &before_cursor[..open_paren].trim_end();
 
     // Extract the function name (alphanumeric + underscore)
-    let func_name_start = before_paren.rfind(|c: char| !c.is_alphanumeric() && c != '_')
+    let func_name_start = before_paren
+        .rfind(|c: char| !c.is_alphanumeric() && c != '_')
         .map(|i| i + 1)
         .unwrap_or(0);
 
@@ -1087,7 +1112,10 @@ fn handle_inlay_hints(params: InlayHintParams, store: &DocumentStore) -> Vec<Inl
     hints
 }
 
-fn extract_inlay_hints_from_cell(cell: &lumen_compiler::compiler::ast::CellDef, hints: &mut Vec<InlayHint>) {
+fn extract_inlay_hints_from_cell(
+    cell: &lumen_compiler::compiler::ast::CellDef,
+    hints: &mut Vec<InlayHint>,
+) {
     // Add inlay hints for let bindings without explicit types
     for stmt in &cell.body {
         extract_hints_from_stmt(stmt, hints);
@@ -1101,7 +1129,11 @@ fn extract_hints_from_stmt(stmt: &Stmt, hints: &mut Vec<InlayHint>) {
             if let_stmt.ty.is_none() {
                 // Use the name from the let statement
                 let name = &let_stmt.name;
-                let line = if let_stmt.span.line > 0 { let_stmt.span.line - 1 } else { 0 };
+                let line = if let_stmt.span.line > 0 {
+                    let_stmt.span.line - 1
+                } else {
+                    0
+                };
                 hints.push(InlayHint {
                     position: Position {
                         line: line as u32,
@@ -1155,10 +1187,7 @@ fn extract_hints_from_stmt(stmt: &Stmt, hints: &mut Vec<InlayHint>) {
 
 // ── 5. Code Actions ──
 
-fn handle_code_actions(
-    params: CodeActionParams,
-    store: &DocumentStore,
-) -> CodeActionResponse {
+fn handle_code_actions(params: CodeActionParams, store: &DocumentStore) -> CodeActionResponse {
     let uri = &params.text_document.uri;
     let _text = store.get_text(uri);
 
@@ -1167,7 +1196,9 @@ fn handle_code_actions(
     // Check diagnostics for quick fixes
     for diagnostic in &params.context.diagnostics {
         // Quick fix: Add missing return type
-        if diagnostic.message.contains("missing return") || diagnostic.message.contains("return type") {
+        if diagnostic.message.contains("missing return")
+            || diagnostic.message.contains("return type")
+        {
             let action = CodeActionOrCommand::CodeAction(CodeAction {
                 title: "Add return type annotation".to_string(),
                 kind: Some(CodeActionKind::QUICKFIX),
@@ -1202,10 +1233,7 @@ fn handle_code_actions(
 
 // ── 6. Folding Ranges ──
 
-fn handle_folding_ranges(
-    params: FoldingRangeParams,
-    store: &DocumentStore,
-) -> Vec<FoldingRange> {
+fn handle_folding_ranges(params: FoldingRangeParams, store: &DocumentStore) -> Vec<FoldingRange> {
     let uri = &params.text_document.uri;
     let text = match store.get_text(uri) {
         Some(t) => t,
@@ -1250,19 +1278,35 @@ fn handle_folding_ranges(
     for item in &program.items {
         let (start_line, kind) = match item {
             Item::Cell(cell) => {
-                let line = if cell.span.line > 0 { cell.span.line - 1 } else { 0 };
+                let line = if cell.span.line > 0 {
+                    cell.span.line - 1
+                } else {
+                    0
+                };
                 (line, Some(FoldingRangeKind::Region))
             }
             Item::Record(record) => {
-                let line = if record.span.line > 0 { record.span.line - 1 } else { 0 };
+                let line = if record.span.line > 0 {
+                    record.span.line - 1
+                } else {
+                    0
+                };
                 (line, Some(FoldingRangeKind::Region))
             }
             Item::Enum(enum_def) => {
-                let line = if enum_def.span.line > 0 { enum_def.span.line - 1 } else { 0 };
+                let line = if enum_def.span.line > 0 {
+                    enum_def.span.line - 1
+                } else {
+                    0
+                };
                 (line, Some(FoldingRangeKind::Region))
             }
             Item::Process(process) => {
-                let line = if process.span.line > 0 { process.span.line - 1 } else { 0 };
+                let line = if process.span.line > 0 {
+                    process.span.line - 1
+                } else {
+                    0
+                };
                 (line, Some(FoldingRangeKind::Region))
             }
             _ => continue,
@@ -1288,7 +1332,6 @@ fn handle_formatting(
     _params: DocumentFormattingParams,
     _store: &DocumentStore,
 ) -> Option<Vec<TextEdit>> {
-
     // Format using lumen fmt command
     // For now, we'll just return None since formatting would require
     // either shelling out to `lumen fmt` or duplicating formatting logic.
@@ -1303,10 +1346,7 @@ fn handle_formatting(
 
 // ── 8. Find References ──
 
-fn handle_references(
-    params: ReferenceParams,
-    store: &DocumentStore,
-) -> Vec<Location> {
+fn handle_references(params: ReferenceParams, store: &DocumentStore) -> Vec<Location> {
     let uri = &params.text_document_position.text_document.uri;
     let position = params.text_document_position.position;
     let text = match store.get_text(uri) {
@@ -1327,11 +1367,11 @@ fn handle_references(
         while let Some(pos) = line[start..].find(&word) {
             let actual_pos = start + pos;
             // Check if it's a whole word match
-            let is_start_boundary = actual_pos == 0
-                || !line.chars().nth(actual_pos - 1).unwrap().is_alphanumeric();
+            let is_start_boundary =
+                actual_pos == 0 || !line.chars().nth(actual_pos - 1).unwrap().is_alphanumeric();
             let end_pos = actual_pos + word.len();
-            let is_end_boundary = end_pos >= line.len()
-                || !line.chars().nth(end_pos).unwrap().is_alphanumeric();
+            let is_end_boundary =
+                end_pos >= line.len() || !line.chars().nth(end_pos).unwrap().is_alphanumeric();
 
             if is_start_boundary && is_end_boundary {
                 locations.push(Location {

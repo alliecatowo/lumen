@@ -366,7 +366,7 @@ impl Ord for Value {
                 // Interned sorts before Owned for deterministic ordering
                 (StringRef::Interned(_), StringRef::Owned(_)) => Ordering::Less,
                 (StringRef::Owned(_), StringRef::Interned(_)) => Ordering::Greater,
-            }
+            },
             (Value::Bytes(a), Value::Bytes(b)) => a.cmp(b),
             (Value::List(a), Value::List(b)) => a.cmp(b),
             (Value::Tuple(a), Value::Tuple(b)) => a.cmp(b),
@@ -411,10 +411,10 @@ impl Ord for Value {
             (Value::TraceRef(a), Value::TraceRef(b)) => {
                 a.trace_id.cmp(&b.trace_id).then_with(|| a.seq.cmp(&b.seq))
             }
-            (Value::Future(a), Value::Future(b)) => a
-                .id
-                .cmp(&b.id)
-                .then_with(|| future_status_ord(a.state).cmp(&future_status_ord(b.state))),
+            (Value::Future(a), Value::Future(b)) => {
+                a.id.cmp(&b.id)
+                    .then_with(|| future_status_ord(a.state).cmp(&future_status_ord(b.state)))
+            }
             _ => Ordering::Equal,
         }
     }

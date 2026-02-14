@@ -291,11 +291,13 @@ impl FsProvider {
 
                 let path = Path::new(&req.path);
                 if path.is_dir() {
-                    std::fs::remove_dir(&req.path)
-                        .map_err(|e| ToolError::InvocationFailed(format!("remove dir failed: {}", e)))?;
+                    std::fs::remove_dir(&req.path).map_err(|e| {
+                        ToolError::InvocationFailed(format!("remove dir failed: {}", e))
+                    })?;
                 } else {
-                    std::fs::remove_file(&req.path)
-                        .map_err(|e| ToolError::InvocationFailed(format!("remove file failed: {}", e)))?;
+                    std::fs::remove_file(&req.path).map_err(|e| {
+                        ToolError::InvocationFailed(format!("remove file failed: {}", e))
+                    })?;
                 }
 
                 Ok(json!(true))
@@ -373,15 +375,19 @@ mod tests {
         let provider = FsProvider::exists();
 
         // Existing file
-        let result = provider.call(json!({
-            "path": existing_file.to_str().unwrap()
-        })).unwrap();
+        let result = provider
+            .call(json!({
+                "path": existing_file.to_str().unwrap()
+            }))
+            .unwrap();
         assert_eq!(result, json!(true));
 
         // Non-existing file
-        let result = provider.call(json!({
-            "path": tmp.join("nonexistent.txt").to_str().unwrap()
-        })).unwrap();
+        let result = provider
+            .call(json!({
+                "path": tmp.join("nonexistent.txt").to_str().unwrap()
+            }))
+            .unwrap();
         assert_eq!(result, json!(false));
 
         fs::remove_dir_all(&tmp).unwrap();
@@ -396,9 +402,11 @@ mod tests {
         fs::create_dir_all(tmp.join("subdir")).unwrap();
 
         let provider = FsProvider::list();
-        let result = provider.call(json!({
-            "path": tmp.to_str().unwrap()
-        })).unwrap();
+        let result = provider
+            .call(json!({
+                "path": tmp.to_str().unwrap()
+            }))
+            .unwrap();
 
         let entries: Vec<String> = serde_json::from_value(result).unwrap();
         assert_eq!(entries.len(), 3);
@@ -415,9 +423,11 @@ mod tests {
         let new_dir = tmp.join("nested/deep/dir");
 
         let provider = FsProvider::mkdir();
-        let result = provider.call(json!({
-            "path": new_dir.to_str().unwrap()
-        })).unwrap();
+        let result = provider
+            .call(json!({
+                "path": new_dir.to_str().unwrap()
+            }))
+            .unwrap();
         assert_eq!(result, json!(true));
         assert!(new_dir.exists());
         assert!(new_dir.is_dir());
@@ -435,9 +445,11 @@ mod tests {
         assert!(file_path.exists());
 
         let provider = FsProvider::remove();
-        let result = provider.call(json!({
-            "path": file_path.to_str().unwrap()
-        })).unwrap();
+        let result = provider
+            .call(json!({
+                "path": file_path.to_str().unwrap()
+            }))
+            .unwrap();
         assert_eq!(result, json!(true));
         assert!(!file_path.exists());
 
@@ -453,9 +465,11 @@ mod tests {
         assert!(dir_path.exists());
 
         let provider = FsProvider::remove();
-        let result = provider.call(json!({
-            "path": dir_path.to_str().unwrap()
-        })).unwrap();
+        let result = provider
+            .call(json!({
+                "path": dir_path.to_str().unwrap()
+            }))
+            .unwrap();
         assert_eq!(result, json!(true));
         assert!(!dir_path.exists());
 

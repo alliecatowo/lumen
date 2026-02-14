@@ -191,9 +191,9 @@ impl HttpProvider {
         }
 
         // Execute request
-        let response = req.send().map_err(|e| {
-            ToolError::InvocationFailed(format!("HTTP request failed: {}", e))
-        })?;
+        let response = req
+            .send()
+            .map_err(|e| ToolError::InvocationFailed(format!("HTTP request failed: {}", e)))?;
 
         // Extract status
         let status = response.status().as_u16();
@@ -234,9 +234,8 @@ impl ToolProvider for HttpProvider {
 
     fn call(&self, input: Value) -> Result<Value, ToolError> {
         // Parse input
-        let request: HttpRequest = serde_json::from_value(input).map_err(|e| {
-            ToolError::InvocationFailed(format!("Invalid request format: {}", e))
-        })?;
+        let request: HttpRequest = serde_json::from_value(input)
+            .map_err(|e| ToolError::InvocationFailed(format!("Invalid request format: {}", e)))?;
 
         // Execute request
         let response = self.execute(request)?;
@@ -287,14 +286,8 @@ mod tests {
         let schema = provider.schema();
         let input_schema = &schema.input_schema;
 
-        assert_eq!(
-            input_schema["type"],
-            "object"
-        );
-        assert_eq!(
-            input_schema["required"],
-            json!(["url"])
-        );
+        assert_eq!(input_schema["type"], "object");
+        assert_eq!(input_schema["required"], json!(["url"]));
         assert!(input_schema["properties"]["url"].is_object());
     }
 
@@ -386,7 +379,10 @@ mod tests {
 
         let request: HttpRequest = serde_json::from_value(json).unwrap();
         assert_eq!(request.url, "https://example.com");
-        assert_eq!(request.headers.get("Authorization").unwrap(), "Bearer token");
+        assert_eq!(
+            request.headers.get("Authorization").unwrap(),
+            "Bearer token"
+        );
         assert_eq!(request.body.as_ref().unwrap(), "test body");
     }
 

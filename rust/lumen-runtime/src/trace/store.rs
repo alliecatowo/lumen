@@ -3,6 +3,7 @@
 use crate::trace::events::{TraceEvent, TraceEventKind};
 use crate::trace::hasher::sha256_hash;
 use chrono::Utc;
+use serde_json::json;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -38,7 +39,12 @@ impl TraceStore {
         self.prev_hash = "sha256:genesis".to_string();
 
         let path = self.trace_dir.join(format!("{}.jsonl", &run_id));
-        self.current_file = OpenOptions::new().create(true).truncate(true).write(true).open(path).ok();
+        self.current_file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(path)
+            .ok();
 
         self.emit_event(TraceEventKind::RunStart, None, None);
         run_id
@@ -57,12 +63,49 @@ impl TraceStore {
         self.emit_event(TraceEventKind::CellEnd, Some(cell_name.to_string()), None);
     }
 
-    pub fn tool_call(&mut self, cell: &str, tool_id: &str, latency_ms: u64, cached: bool) {
+    pub fn call_enter(&mut self, cell_name: &str) {
+        self.emit_event(TraceEventKind::CallEnter, Some(cell_name.to_string()), None);
+    }
+
+    pub fn call_exit(&mut self, cell_name: &str, result_type: &str) {
+        let mut event = self.make_event(TraceEventKind::CallExit);
+        event.cell = Some(cell_name.to_string());
+        event.details = Some(json!({ "result_type": result_type }));
+        self.write_event(&event);
+    }
+
+    pub fn vm_step(&mut self, cell: &str, ip: usize, opcode: &str) {
+        let mut event = self.make_event(TraceEventKind::VmStep);
+        event.cell = Some(cell.to_string());
+        event.details = Some(json!({ "ip": ip, "opcode": opcode }));
+        self.write_event(&event);
+    }
+
+    pub fn tool_call(
+        &mut self,
+        cell: &str,
+        tool_id: &str,
+        tool_version: &str,
+        latency_ms: u64,
+        cached: bool,
+        success: bool,
+        message: Option<&str>,
+    ) {
         let mut event = self.make_event(TraceEventKind::ToolCall);
         event.cell = Some(cell.to_string());
         event.tool_id = Some(tool_id.to_string());
+        event.tool_version = Some(tool_version.to_string());
         event.latency_ms = Some(latency_ms);
         event.cached = Some(cached);
+        event.details = Some(json!({ "success": success }));
+        event.message = message.map(ToString::to_string);
+        self.write_event(&event);
+    }
+
+    pub fn schema_validate(&mut self, cell: &str, schema: &str, valid: bool) {
+        let mut event = self.make_event(TraceEventKind::SchemaValidate);
+        event.cell = Some(cell.to_string());
+        event.details = Some(json!({ "schema": schema, "valid": valid }));
         self.write_event(&event);
     }
 
@@ -104,6 +147,7 @@ impl TraceStore {
             policy_hash: None,
             latency_ms: None,
             cached: None,
+            details: None,
             message: None,
         };
         self.prev_hash = hash;
@@ -124,9 +168,117 @@ fn kind_str(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::RunStart => "run_start",
         TraceEventKind::CellStart => "cell_start",
         TraceEventKind::CellEnd => "cell_end",
+        TraceEventKind::CallEnter => "call_enter",
+        TraceEventKind::CallExit => "call_exit",
+        TraceEventKind::VmStep => "vm_step",
         TraceEventKind::ToolCall => "tool_call",
         TraceEventKind::SchemaValidate => "schema_validate",
         TraceEventKind::Error => "error",
         TraceEventKind::RunEnd => "run_end",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trace_store_emits_structured_vm_events() {
+        let base_dir =
+            std::env::temp_dir().join(format!("lumen-trace-store-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&base_dir).expect("test temp dir should be created");
+
+        let mut store = TraceStore::new(&base_dir);
+        let run_id = store.start_run("doc-123");
+        store.cell_start("main");
+        store.call_enter("main");
+        store.vm_step("main", 7, "ToolCall");
+        store.tool_call("main", "http.get", "1.0.0", 12, false, true, None);
+        store.schema_validate("main", "String", true);
+        store.call_exit("main", "String");
+        store.cell_end("main");
+        store.end_run();
+
+        let path = base_dir.join("trace").join(format!("{}.jsonl", run_id));
+        let content = fs::read_to_string(&path).expect("trace file should be readable");
+        let events: Vec<TraceEvent> = content
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("trace event should deserialize"))
+            .collect();
+
+        let kinds: Vec<TraceEventKind> = events.iter().map(|event| event.kind.clone()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                TraceEventKind::RunStart,
+                TraceEventKind::CellStart,
+                TraceEventKind::CallEnter,
+                TraceEventKind::VmStep,
+                TraceEventKind::ToolCall,
+                TraceEventKind::SchemaValidate,
+                TraceEventKind::CallExit,
+                TraceEventKind::CellEnd,
+                TraceEventKind::RunEnd,
+            ]
+        );
+
+        let step = events
+            .iter()
+            .find(|event| event.kind == TraceEventKind::VmStep)
+            .expect("vm_step event should exist");
+        assert_eq!(step.cell.as_deref(), Some("main"));
+        assert_eq!(
+            step.details
+                .as_ref()
+                .and_then(|d| d.get("ip"))
+                .and_then(|v| v.as_u64()),
+            Some(7)
+        );
+        assert_eq!(
+            step.details
+                .as_ref()
+                .and_then(|d| d.get("opcode"))
+                .and_then(|v| v.as_str()),
+            Some("ToolCall")
+        );
+
+        let tool = events
+            .iter()
+            .find(|event| event.kind == TraceEventKind::ToolCall)
+            .expect("tool_call event should exist");
+        assert_eq!(tool.tool_id.as_deref(), Some("http.get"));
+        assert_eq!(tool.tool_version.as_deref(), Some("1.0.0"));
+        assert_eq!(tool.latency_ms, Some(12));
+        assert_eq!(tool.cached, Some(false));
+        assert_eq!(
+            tool.details
+                .as_ref()
+                .and_then(|d| d.get("success"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+
+        let schema = events
+            .iter()
+            .find(|event| event.kind == TraceEventKind::SchemaValidate)
+            .expect("schema_validate event should exist");
+        assert_eq!(
+            schema
+                .details
+                .as_ref()
+                .and_then(|d| d.get("schema"))
+                .and_then(|v| v.as_str()),
+            Some("String")
+        );
+        assert_eq!(
+            schema
+                .details
+                .as_ref()
+                .and_then(|d| d.get("valid"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+
+        fs::remove_dir_all(&base_dir).expect("test temp dir should be removed");
     }
 }

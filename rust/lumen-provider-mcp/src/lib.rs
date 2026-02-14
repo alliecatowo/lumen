@@ -90,18 +90,10 @@ impl StdioTransport {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .spawn()
-                .map_err(|e| {
-                    format!("Failed to spawn MCP server '{}': {}", self.command, e)
-                })?;
+                .map_err(|e| format!("Failed to spawn MCP server '{}': {}", self.command, e))?;
 
-            let stdin = child
-                .stdin
-                .take()
-                .ok_or("Failed to capture stdin")?;
-            let stdout = child
-                .stdout
-                .take()
-                .ok_or("Failed to capture stdout")?;
+            let stdin = child.stdin.take().ok_or("Failed to capture stdin")?;
+            let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
 
             *guard = Some(ChildProcess {
                 child,
@@ -136,8 +128,7 @@ impl McpTransport for StdioTransport {
         });
 
         // Send request (newline-delimited)
-        let request_str =
-            serde_json::to_string(&request).map_err(|e| e.to_string())?;
+        let request_str = serde_json::to_string(&request).map_err(|e| e.to_string())?;
         writeln!(child.stdin, "{}", request_str)
             .map_err(|e| format!("Failed to write to MCP server: {}", e))?;
         child
@@ -152,9 +143,8 @@ impl McpTransport for StdioTransport {
             .read_line(&mut response_line)
             .map_err(|e| format!("Failed to read from MCP server: {}", e))?;
 
-        let response: serde_json::Value =
-            serde_json::from_str(&response_line)
-                .map_err(|e| format!("Invalid JSON from MCP server: {}", e))?;
+        let response: serde_json::Value = serde_json::from_str(&response_line)
+            .map_err(|e| format!("Invalid JSON from MCP server: {}", e))?;
 
         // Check for JSON-RPC error
         if let Some(error) = response.get("error") {
@@ -256,11 +246,7 @@ impl McpToolProvider {
     fn to_lumen_schema(&self) -> ToolSchema {
         ToolSchema {
             name: self.qualified_name(),
-            description: self
-                .tool_schema
-                .description
-                .clone()
-                .unwrap_or_default(),
+            description: self.tool_schema.description.clone().unwrap_or_default(),
             input_schema: self.tool_schema.input_schema.clone(),
             output_schema: serde_json::Value::Null,
             effects: vec!["mcp".to_string()],
@@ -452,8 +438,7 @@ mod tests {
         let mut transport = MockTransport::new();
         transport.set_response("tools/call", json!({"result": "success"}));
 
-        let provider =
-            McpToolProvider::new("srv", schema, std::sync::Arc::new(transport));
+        let provider = McpToolProvider::new("srv", schema, std::sync::Arc::new(transport));
         let result = provider.call(json!({"input": "data"})).unwrap();
 
         assert_eq!(result, json!({"result": "success"}));
@@ -490,9 +475,7 @@ mod tests {
     #[test]
     fn stdio_transport_fails_on_nonexistent_command() {
         let transport = StdioTransport::new("nonexistent_command_12345", &[]);
-        let err = transport
-            .send_request("test", json!({}))
-            .unwrap_err();
+        let err = transport.send_request("test", json!({})).unwrap_err();
         assert!(err.contains("Failed to spawn MCP server"));
         assert!(err.contains("nonexistent_command_12345"));
     }
@@ -531,7 +514,8 @@ mod tests {
     #[test]
     fn stdio_transport_error_response_parsing() {
         // Verify we can detect JSON-RPC error responses.
-        let error_response_str = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
+        let error_response_str =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
         let response: serde_json::Value = serde_json::from_str(error_response_str).unwrap();
 
         assert!(response.get("error").is_some());

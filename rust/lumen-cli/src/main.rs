@@ -10,9 +10,10 @@ mod pkg;
 mod repl;
 mod test_cmd;
 
-use clap::{Parser as ClapParser, Subcommand};
+use clap::{Parser as ClapParser, Subcommand, ValueEnum};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 // ANSI color helpers
 fn green(s: &str) -> String {
@@ -168,7 +169,19 @@ enum TraceCommands {
         /// Trace directory
         #[arg(long, default_value = ".lumen/trace")]
         trace_dir: PathBuf,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = TraceShowFormat::Pretty)]
+        format: TraceShowFormat,
+        /// Verify sequence and hash chain before rendering
+        #[arg(long)]
+        verify_chain: bool,
     },
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+enum TraceShowFormat {
+    Pretty,
+    Replay,
 }
 
 #[derive(Subcommand)]
@@ -383,7 +396,12 @@ fn main() {
         } => cmd_run(&file, &cell, trace_dir),
         Commands::Emit { file, output } => cmd_emit(&file, output),
         Commands::Trace { sub } => match sub {
-            TraceCommands::Show { run_id, trace_dir } => cmd_trace_show(&run_id, &trace_dir),
+            TraceCommands::Show {
+                run_id,
+                trace_dir,
+                format,
+                verify_chain,
+            } => cmd_trace_show(&run_id, &trace_dir, format, verify_chain),
         },
         Commands::Cache { sub } => match sub {
             CacheCommands::Clear { cache_dir } => cmd_cache_clear(&cache_dir),
@@ -788,30 +806,81 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
     register_providers(&mut registry, &config);
 
     // Optionally set up tracing
-    let mut trace_store = trace_dir.map(|dir| lumen_runtime::trace::store::TraceStore::new(&dir));
+    let trace_store = trace_dir.map(|dir| {
+        Arc::new(Mutex::new(
+            lumen_runtime::trace::store::TraceStore::new(&dir),
+        ))
+    });
 
-    if let Some(ref mut ts) = trace_store {
-        ts.start_run(&module.doc_hash);
-        ts.cell_start(cell);
+    if let Some(trace_store) = trace_store.as_ref() {
+        if let Ok(mut ts) = trace_store.lock() {
+            ts.start_run(&module.doc_hash);
+            ts.cell_start(cell);
+        }
     }
 
     println!("{} {}", status_label("Running"), cell);
     let mut vm = lumen_vm::vm::VM::new();
     vm.set_provider_registry(registry);
+    if let Some(trace_store) = trace_store.as_ref() {
+        let trace_store = Arc::clone(trace_store);
+        vm.debug_callback = Some(Box::new(move |event| {
+            let Ok(mut ts) = trace_store.lock() else {
+                return;
+            };
+            match event {
+                lumen_vm::vm::DebugEvent::Step {
+                    cell_name,
+                    ip,
+                    opcode,
+                } => ts.vm_step(cell_name, *ip, opcode),
+                lumen_vm::vm::DebugEvent::CallEnter { cell_name } => ts.call_enter(cell_name),
+                lumen_vm::vm::DebugEvent::CallExit { cell_name, result } => {
+                    ts.call_exit(cell_name, result.type_name())
+                }
+                lumen_vm::vm::DebugEvent::ToolCall {
+                    cell_name,
+                    tool_id,
+                    tool_version,
+                    latency_ms,
+                    success,
+                    message,
+                } => ts.tool_call(
+                    cell_name,
+                    tool_id,
+                    tool_version,
+                    *latency_ms,
+                    false,
+                    *success,
+                    message.as_deref(),
+                ),
+                lumen_vm::vm::DebugEvent::SchemaValidate {
+                    cell_name,
+                    schema,
+                    valid,
+                } => ts.schema_validate(cell_name, schema, *valid),
+            }
+        }));
+    }
     vm.load(module);
     match vm.execute(cell, vec![]) {
         Ok(result) => {
-            if let Some(ref mut ts) = trace_store {
-                ts.cell_end(cell);
-                ts.end_run();
-                println!("{} {}", gray("trace:"), ts.run_id());
+            if let Some(trace_store) = trace_store.as_ref() {
+                if let Ok(mut ts) = trace_store.lock() {
+                    ts.cell_end(cell);
+                    ts.end_run();
+                    let run_id = ts.run_id().to_string();
+                    println!("{} {}", gray("trace:"), run_id);
+                }
             }
             println!("{}", result);
         }
         Err(e) => {
-            if let Some(ref mut ts) = trace_store {
-                ts.error(Some(cell), &format!("{}", e));
-                ts.end_run();
+            if let Some(trace_store) = trace_store.as_ref() {
+                if let Ok(mut ts) = trace_store.lock() {
+                    ts.error(Some(cell), &format!("{}", e));
+                    ts.end_run();
+                }
             }
             eprintln!("{} {}", red("runtime error:"), e);
             std::process::exit(1);
@@ -853,15 +922,33 @@ fn cmd_emit(file: &PathBuf, output: Option<PathBuf>) {
     }
 }
 
-fn cmd_trace_show(run_id: &str, trace_dir: &Path) {
+fn cmd_trace_show(run_id: &str, trace_dir: &Path, format: TraceShowFormat, verify_chain: bool) {
     let path = trace_dir.join(format!("{}.jsonl", run_id));
-    match std::fs::read_to_string(&path) {
-        Ok(content) => {
+    match read_trace_events(&path) {
+        Ok(events) => {
             println!("{} trace for run {}", status_label("Showing"), cyan(run_id));
-            for line in content.lines() {
-                if let Ok(event) = serde_json::from_str::<serde_json::Value>(line) {
-                    if let Ok(pretty) = serde_json::to_string_pretty(&event) {
-                        println!("{}", pretty);
+
+            if verify_chain {
+                match verify_trace_chain(&events) {
+                    Ok(()) => println!("{} trace chain verified", green("✓")),
+                    Err(msg) => {
+                        eprintln!("{} {}", red("error:"), msg);
+                        std::process::exit(1);
+                    }
+                }
+            }
+
+            match format {
+                TraceShowFormat::Pretty => {
+                    for event in &events {
+                        if let Ok(pretty) = serde_json::to_string_pretty(event) {
+                            println!("{}", pretty);
+                        }
+                    }
+                }
+                TraceShowFormat::Replay => {
+                    for event in &events {
+                        println!("{}", replay_line(event));
                     }
                 }
             }
@@ -876,6 +963,120 @@ fn cmd_trace_show(run_id: &str, trace_dir: &Path) {
             std::process::exit(1);
         }
     }
+}
+
+fn read_trace_events(path: &Path) -> Result<Vec<lumen_runtime::trace::events::TraceEvent>, String> {
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("cannot read trace '{}': {}", path.display(), e))?;
+
+    content
+        .lines()
+        .enumerate()
+        .map(|(idx, line)| {
+            serde_json::from_str::<lumen_runtime::trace::events::TraceEvent>(line)
+                .map_err(|e| format!("invalid JSON in trace at line {}: {}", idx + 1, e))
+        })
+        .collect()
+}
+
+fn verify_trace_chain(events: &[lumen_runtime::trace::events::TraceEvent]) -> Result<(), String> {
+    let mut expected_seq = 1_u64;
+    let mut expected_prev = "sha256:genesis".to_string();
+
+    for event in events {
+        if event.seq != expected_seq {
+            return Err(format!(
+                "trace sequence mismatch at seq {} (expected {})",
+                event.seq, expected_seq
+            ));
+        }
+        if event.prev_hash != expected_prev {
+            return Err(format!(
+                "trace hash chain mismatch at seq {} (expected prev '{}', got '{}')",
+                event.seq, expected_prev, event.prev_hash
+            ));
+        }
+        expected_seq += 1;
+        expected_prev = event.hash.clone();
+    }
+    Ok(())
+}
+
+fn replay_line(event: &lumen_runtime::trace::events::TraceEvent) -> String {
+    let kind = match event.kind {
+        lumen_runtime::trace::events::TraceEventKind::RunStart => "run_start",
+        lumen_runtime::trace::events::TraceEventKind::CellStart => "cell_start",
+        lumen_runtime::trace::events::TraceEventKind::CellEnd => "cell_end",
+        lumen_runtime::trace::events::TraceEventKind::CallEnter => "call_enter",
+        lumen_runtime::trace::events::TraceEventKind::CallExit => "call_exit",
+        lumen_runtime::trace::events::TraceEventKind::VmStep => "vm_step",
+        lumen_runtime::trace::events::TraceEventKind::ToolCall => "tool_call",
+        lumen_runtime::trace::events::TraceEventKind::SchemaValidate => "schema_validate",
+        lumen_runtime::trace::events::TraceEventKind::Error => "error",
+        lumen_runtime::trace::events::TraceEventKind::RunEnd => "run_end",
+    };
+
+    let mut parts = vec![format!("{:06}", event.seq), kind.to_string()];
+
+    if let Some(cell) = event.cell.as_deref() {
+        parts.push(format!("cell={}", cell));
+    }
+    if let Some(tool_id) = event.tool_id.as_deref() {
+        parts.push(format!("tool={}", tool_id));
+    }
+    if let Some(tool_version) = event.tool_version.as_deref() {
+        parts.push(format!("version={}", tool_version));
+    }
+    if let Some(latency_ms) = event.latency_ms {
+        parts.push(format!("latency_ms={}", latency_ms));
+    }
+    if let Some(cached) = event.cached {
+        parts.push(format!("cached={}", cached));
+    }
+    if let Some(message) = event.message.as_ref() {
+        parts.push(format!(
+            "message={}",
+            serde_json::to_string(message).unwrap_or_else(|_| "\"<invalid>\"".to_string())
+        ));
+    }
+
+    if let Some(details) = event.details.as_ref() {
+        match event.kind {
+            lumen_runtime::trace::events::TraceEventKind::VmStep => {
+                if let Some(ip) = details.get("ip").and_then(|value| value.as_u64()) {
+                    parts.push(format!("ip={}", ip));
+                }
+                if let Some(opcode) = details.get("opcode").and_then(|value| value.as_str()) {
+                    parts.push(format!("opcode={}", opcode));
+                }
+            }
+            lumen_runtime::trace::events::TraceEventKind::SchemaValidate => {
+                if let Some(schema) = details.get("schema").and_then(|value| value.as_str()) {
+                    parts.push(format!("schema={}", schema));
+                }
+                if let Some(valid) = details.get("valid").and_then(|value| value.as_bool()) {
+                    parts.push(format!("valid={}", valid));
+                }
+            }
+            lumen_runtime::trace::events::TraceEventKind::CallExit => {
+                if let Some(result_type) = details
+                    .get("result_type")
+                    .and_then(|value| value.as_str())
+                {
+                    parts.push(format!("result_type={}", result_type));
+                }
+            }
+            lumen_runtime::trace::events::TraceEventKind::ToolCall => {
+                if let Some(success) = details.get("success").and_then(|value| value.as_bool()) {
+                    parts.push(format!("success={}", success));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    parts.push(format!("hash={}", event.hash));
+    parts.join(" ")
 }
 
 fn cmd_cache_clear(cache_dir: &PathBuf) {

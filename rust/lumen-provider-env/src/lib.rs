@@ -50,7 +50,9 @@ impl EnvTool {
 
     fn description(&self) -> &'static str {
         match self {
-            EnvTool::Get => "Get the value of an environment variable (returns empty string if not set)",
+            EnvTool::Get => {
+                "Get the value of an environment variable (returns empty string if not set)"
+            }
             EnvTool::Set => "Set an environment variable for the current process",
             EnvTool::List => "List all environment variables as key-value pairs",
             EnvTool::Has => "Check if an environment variable exists",

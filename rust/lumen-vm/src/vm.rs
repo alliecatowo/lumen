@@ -27,9 +27,21 @@ pub enum DebugEvent {
     /// Call enter: cell name being called
     CallEnter { cell_name: String },
     /// Call exit: cell name returning, result value
-    CallExit {
+    CallExit { cell_name: String, result: Value },
+    /// Runtime tool call: cell, tool metadata, latency, and success status
+    ToolCall {
         cell_name: String,
-        result: Value,
+        tool_id: String,
+        tool_version: String,
+        latency_ms: u64,
+        success: bool,
+        message: Option<String>,
+    },
+    /// Runtime schema validation: cell, schema name, and verdict
+    SchemaValidate {
+        cell_name: String,
+        schema: String,
+        valid: bool,
     },
 }
 
@@ -84,11 +96,7 @@ impl VmError {
     }
 
     /// Create a runtime error with context about current location
-    pub fn runtime_with_context(
-        message: String,
-        cell_name: &str,
-        ip: usize,
-    ) -> Self {
+    pub fn runtime_with_context(message: String, cell_name: &str, ip: usize) -> Self {
         VmError::Runtime(format!(
             "{} (in cell '{}' at instruction {})",
             message, cell_name, ip
@@ -96,11 +104,7 @@ impl VmError {
     }
 
     /// Create a type error with context about the values involved
-    pub fn type_error_with_values(
-        operation: &str,
-        expected: &str,
-        actual: &Value,
-    ) -> Self {
+    pub fn type_error_with_values(operation: &str, expected: &str, actual: &Value) -> Self {
         VmError::TypeError(format!(
             "cannot {} with {} (expected {}, got {})",
             operation,
@@ -282,6 +286,12 @@ impl VM {
         self.tool_dispatcher = Some(Box::new(registry));
     }
 
+    fn emit_debug_event(&mut self, event: DebugEvent) {
+        if let Some(ref mut cb) = self.debug_callback {
+            cb(&event);
+        }
+    }
+
     /// Load a LIR module into the VM.
     pub fn load(&mut self, module: LirModule) {
         // Intern all strings
@@ -355,9 +365,7 @@ impl VM {
                                     .collect::<Vec<_>>()
                             })
                             .unwrap_or_default();
-                        let guard = v
-                            .get("guard")
-                            .and_then(parse_machine_expr_json);
+                        let guard = v.get("guard").and_then(parse_machine_expr_json);
                         let transition_args = v
                             .get("transition_args")
                             .and_then(|v| v.as_array())
@@ -484,11 +492,7 @@ impl VM {
     }
 
     #[inline]
-    fn check_register(
-        &self,
-        reg: usize,
-        cell_registers: u8,
-    ) -> Result<(), VmError> {
+    fn check_register(&self, reg: usize, cell_registers: u8) -> Result<(), VmError> {
         if reg < cell_registers as usize {
             Ok(())
         } else {
@@ -939,12 +943,14 @@ impl VM {
     #[allow(dead_code)]
     fn get_constant(&self, cell_idx: usize, idx: usize) -> Result<Constant, VmError> {
         let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-        let cell = module.cells.get(cell_idx).ok_or_else(|| {
-            VmError::Runtime(format!("cell index {} out of bounds", cell_idx))
-        })?;
-        cell.constants.get(idx).cloned().ok_or_else(|| {
-            VmError::Runtime(format!("constant index {} out of bounds", idx))
-        })
+        let cell = module
+            .cells
+            .get(cell_idx)
+            .ok_or_else(|| VmError::Runtime(format!("cell index {} out of bounds", cell_idx)))?;
+        cell.constants
+            .get(idx)
+            .cloned()
+            .ok_or_else(|| VmError::Runtime(format!("constant index {} out of bounds", idx)))
     }
 
     /// Helper to get a string from the module string table.
@@ -991,16 +997,13 @@ impl VM {
                 return Err(VmError::InstructionLimitExceeded(self.max_instructions));
             }
 
-            // Emit debug Step event
-            if let Some(ref mut cb) = self.debug_callback {
-                let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                let cell = &module.cells[cell_idx];
-                cb(&DebugEvent::Step {
-                    cell_name: cell.name.clone(),
-                    ip: self.frames.last().map(|f| f.ip).unwrap_or(0),
-                    opcode: format!("{:?}", instr.op),
-                });
-            }
+            let module = self.module.as_ref().ok_or(VmError::NoModule)?;
+            let cell_name = module.cells[cell_idx].name.clone();
+            self.emit_debug_event(DebugEvent::Step {
+                cell_name,
+                ip: self.frames.last().map(|f| f.ip).unwrap_or(0),
+                opcode: format!("{:?}", instr.op),
+            });
 
             // Advance IP in the frame
             if let Some(f) = self.frames.last_mut() {
@@ -1176,9 +1179,11 @@ impl VM {
                         (Value::Map(m), _) => {
                             m.get(&idx.as_string()).cloned().unwrap_or(Value::Null)
                         }
-                        (Value::Record(r), _) => {
-                            r.fields.get(&idx.as_string()).cloned().unwrap_or(Value::Null)
-                        }
+                        (Value::Record(r), _) => r
+                            .fields
+                            .get(&idx.as_string())
+                            .cloned()
+                            .unwrap_or(Value::Null),
                         _ => Value::Null,
                     };
                     self.registers[base + a] = val;
@@ -1236,7 +1241,7 @@ impl VM {
                                 lhs_clone.type_name(),
                                 rhs_clone.display_pretty(),
                                 rhs_clone.type_name()
-                            )))
+                            )));
                         }
                     };
                     self.registers[base + a] = result;
@@ -1255,14 +1260,7 @@ impl VM {
                     ) {
                         return Err(VmError::DivisionByZero);
                     }
-                    self.arith_op(
-                        base,
-                        a,
-                        b,
-                        c,
-                        |x, y| x.checked_div(y),
-                        |x, y| x / y,
-                    )?;
+                    self.arith_op(base, a, b, c, |x, y| x.checked_div(y), |x, y| x / y)?;
                 }
                 OpCode::Mod => {
                     // Pre-check for integer modulo by zero
@@ -1272,45 +1270,36 @@ impl VM {
                     ) {
                         return Err(VmError::DivisionByZero);
                     }
-                    self.arith_op(
-                        base,
-                        a,
-                        b,
-                        c,
-                        |x, y| x.checked_rem(y),
-                        |x, y| x % y,
-                    )?;
+                    self.arith_op(base, a, b, c, |x, y| x.checked_rem(y), |x, y| x % y)?;
                 }
                 OpCode::Pow => {
                     let lhs = &self.registers[base + b];
                     let rhs = &self.registers[base + c];
-                    self.registers[base + a] = match (lhs, rhs) {
-                        (Value::Int(x), Value::Int(y)) => {
-                            if *y < 0 {
-                                Value::Float((*x as f64).powf(*y as f64))
-                            } else if *y >= 64 {
-                                return Err(VmError::Runtime(
-                                    "exponent out of range (must be 0..63 for integers)".into(),
-                                ));
-                            } else {
-                                Value::Int(
-                                    x.checked_pow(*y as u32)
-                                        .ok_or_else(|| {
-                                            VmError::Runtime("integer overflow".into())
-                                        })?,
-                                )
+                    self.registers[base + a] =
+                        match (lhs, rhs) {
+                            (Value::Int(x), Value::Int(y)) => {
+                                if *y < 0 {
+                                    Value::Float((*x as f64).powf(*y as f64))
+                                } else if *y >= 64 {
+                                    return Err(VmError::Runtime(
+                                        "exponent out of range (must be 0..63 for integers)".into(),
+                                    ));
+                                } else {
+                                    Value::Int(x.checked_pow(*y as u32).ok_or_else(|| {
+                                        VmError::Runtime("integer overflow".into())
+                                    })?)
+                                }
                             }
-                        }
-                        (Value::Float(x), Value::Float(y)) => Value::Float(x.powf(*y)),
-                        (Value::Int(x), Value::Float(y)) => Value::Float((*x as f64).powf(*y)),
-                        (Value::Float(x), Value::Int(y)) => Value::Float(x.powf(*y as f64)),
-                        _ => {
-                            return Err(VmError::TypeError(format!(
-                                "cannot pow {} and {}",
-                                lhs, rhs
-                            )))
-                        }
-                    };
+                            (Value::Float(x), Value::Float(y)) => Value::Float(x.powf(*y)),
+                            (Value::Int(x), Value::Float(y)) => Value::Float((*x as f64).powf(*y)),
+                            (Value::Float(x), Value::Int(y)) => Value::Float(x.powf(*y as f64)),
+                            _ => {
+                                return Err(VmError::TypeError(format!(
+                                    "cannot pow {} and {}",
+                                    lhs, rhs
+                                )))
+                            }
+                        };
                 }
                 OpCode::Neg => {
                     let val = &self.registers[base + b];
@@ -1416,15 +1405,11 @@ impl VM {
                         (Value::String(a), Value::String(b)) => {
                             let sa = match a {
                                 StringRef::Owned(s) => s.as_str(),
-                                StringRef::Interned(id) => {
-                                    self.strings.resolve(*id).unwrap_or("")
-                                }
+                                StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
                             };
                             let sb = match b {
                                 StringRef::Owned(s) => s.as_str(),
-                                StringRef::Interned(id) => {
-                                    self.strings.resolve(*id).unwrap_or("")
-                                }
+                                StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
                             };
                             sa == sb
                         }
@@ -1546,15 +1531,12 @@ impl VM {
                         .pop()
                         .ok_or_else(|| VmError::Runtime("call stack underflow".into()))?;
 
-                    // Emit debug CallExit event
-                    if let Some(ref mut cb) = self.debug_callback {
-                        let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                        let cell = &module.cells[frame.cell_idx];
-                        cb(&DebugEvent::CallExit {
-                            cell_name: cell.name.clone(),
-                            result: return_val.clone(),
-                        });
-                    }
+                    let module = self.module.as_ref().ok_or(VmError::NoModule)?;
+                    let cell_name = module.cells[frame.cell_idx].name.clone();
+                    self.emit_debug_event(DebugEvent::CallExit {
+                        cell_name,
+                        result: return_val.clone(),
+                    });
 
                     if let Some(fid) = frame.future_id {
                         self.future_states
@@ -1712,53 +1694,87 @@ impl VM {
 
                 // Effects
                 OpCode::ToolCall => {
-                    if let Some(ref dispatcher) = self.tool_dispatcher {
-                        let bx = instr.bx() as usize;
-                        let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                        let tool = if bx < module.tools.len() {
-                            &module.tools[bx]
-                        } else {
-                            self.registers[base + a] = Value::Null;
+                    let bx = instr.bx() as usize;
+                    let tool = if let Some(tool) = module.tools.get(bx) {
+                        tool
+                    } else {
+                        self.registers[base + a] = Value::Null;
+                        self.emit_debug_event(DebugEvent::ToolCall {
+                            cell_name: cell.name.clone(),
+                            tool_id: String::new(),
+                            tool_version: String::new(),
+                            latency_ms: 0,
+                            success: false,
+                            message: Some(format!("tool index {} out of bounds", bx)),
+                        });
+                        continue;
+                    };
+
+                    let mut args_map = serde_json::Map::new();
+                    let primary = base + a;
+                    let arg_map_reg = match self.registers.get(primary) {
+                        Some(Value::Map(_)) => Some(primary),
+                        Some(_) => primary.checked_add(1),
+                        None => None,
+                    };
+                    if let Some(arg_map_reg) = arg_map_reg {
+                        if let Some(Value::Map(m)) = self.registers.get(arg_map_reg) {
+                            for (k, v) in m {
+                                args_map.insert(k.clone(), value_to_json(v));
+                            }
+                        }
+                    }
+
+                    let tool_id = tool.tool_id.clone();
+                    let tool_version = tool.version.clone();
+                    let tool_alias = tool.alias.clone();
+                    let args_json = serde_json::Value::Object(args_map);
+                    let policy = merged_policy_for_tool(module, &tool_alias);
+                    if let Err(msg) = validate_tool_policy(&policy, &args_json) {
+                        let err_msg = format!("policy violation for '{}': {}", tool_alias, msg);
+                        self.emit_debug_event(DebugEvent::ToolCall {
+                            cell_name: cell.name.clone(),
+                            tool_id: tool_id.clone(),
+                            tool_version: tool_version.clone(),
+                            latency_ms: 0,
+                            success: false,
+                            message: Some(err_msg.clone()),
+                        });
+                        if self.fail_current_future(err_msg.clone()) {
                             continue;
-                        };
-                        let mut args_map = serde_json::Map::new();
-                        let primary = base + a;
-                        let arg_map_reg = match self.registers.get(primary) {
-                            Some(Value::Map(_)) => Some(primary),
-                            Some(_) => primary.checked_add(1),
-                            None => None,
-                        };
-                        if let Some(arg_map_reg) = arg_map_reg {
-                            if let Some(Value::Map(m)) = self.registers.get(arg_map_reg) {
-                                for (k, v) in m {
-                                    args_map.insert(k.clone(), value_to_json(v));
-                                }
-                            }
                         }
+                        return Err(VmError::ToolError(err_msg));
+                    }
 
-                        let args_json = serde_json::Value::Object(args_map);
-                        let policy = merged_policy_for_tool(module, &tool.alias);
-                        if let Err(msg) = validate_tool_policy(&policy, &args_json) {
-                            let err_msg =
-                                format!("policy violation for '{}': {}", tool.alias, msg);
-                            if self.fail_current_future(err_msg.clone()) {
-                                continue;
-                            }
-                            return Err(VmError::ToolError(err_msg));
-                        }
-
-                        let request = ToolRequest {
-                            tool_id: tool.tool_id.clone(),
-                            version: tool.version.clone(),
-                            args: args_json,
-                            policy,
-                        };
+                    let request = ToolRequest {
+                        tool_id: tool_id.clone(),
+                        version: tool_version.clone(),
+                        args: args_json,
+                        policy,
+                    };
+                    if let Some(dispatcher) = self.tool_dispatcher.as_ref() {
                         match dispatcher.dispatch(&request) {
                             Ok(response) => {
                                 self.registers[base + a] = json_to_value(&response.outputs);
+                                self.emit_debug_event(DebugEvent::ToolCall {
+                                    cell_name: cell.name.clone(),
+                                    tool_id,
+                                    tool_version,
+                                    latency_ms: response.latency_ms,
+                                    success: true,
+                                    message: None,
+                                });
                             }
                             Err(e) => {
                                 let err_msg = e.to_string();
+                                self.emit_debug_event(DebugEvent::ToolCall {
+                                    cell_name: cell.name.clone(),
+                                    tool_id,
+                                    tool_version,
+                                    latency_ms: 0,
+                                    success: false,
+                                    message: Some(err_msg.clone()),
+                                });
                                 if self.fail_current_future(err_msg.clone()) {
                                     continue;
                                 }
@@ -1766,8 +1782,17 @@ impl VM {
                             }
                         }
                     } else {
+                        let message = "<<tool call pending>>";
                         self.registers[base + a] =
-                            Value::String(StringRef::Owned("<<tool call pending>>".into()));
+                            Value::String(StringRef::Owned(message.to_string()));
+                        self.emit_debug_event(DebugEvent::ToolCall {
+                            cell_name: cell.name.clone(),
+                            tool_id,
+                            tool_version,
+                            latency_ms: 0,
+                            success: false,
+                            message: Some("tool dispatcher not configured".to_string()),
+                        });
                     }
                 }
                 OpCode::Schema => {
@@ -1793,6 +1818,12 @@ impl VM {
                             _ => false,
                         },
                     };
+
+                    self.emit_debug_event(DebugEvent::SchemaValidate {
+                        cell_name: cell.name.clone(),
+                        schema: type_name.to_string(),
+                        valid,
+                    });
 
                     if !valid {
                         return Err(VmError::Runtime(format!(
@@ -1921,12 +1952,9 @@ impl VM {
                         return_register: base + a,
                         future_id: None,
                     });
-                    // Emit debug CallEnter event
-                    if let Some(ref mut cb) = self.debug_callback {
-                        cb(&DebugEvent::CallEnter {
-                            cell_name: name.clone(),
-                        });
-                    }
+                    self.emit_debug_event(DebugEvent::CallEnter {
+                        cell_name: name.clone(),
+                    });
                 } else {
                     let _ = module;
                     let result = self.call_builtin(&name, base, a, nargs)?;
@@ -1940,10 +1968,7 @@ impl VM {
                 let cv = cv.clone();
                 let module = self.module.as_ref().ok_or(VmError::NoModule)?;
                 let callee_cell = module.cells.get(cv.cell_idx).ok_or_else(|| {
-                    VmError::Runtime(format!(
-                        "closure cell index {} out of bounds",
-                        cv.cell_idx
-                    ))
+                    VmError::Runtime(format!("closure cell index {} out of bounds", cv.cell_idx))
                 })?;
                 let num_regs = callee_cell.registers as usize;
                 let params: Vec<LirParam> = callee_cell.params.clone();
@@ -1960,8 +1985,7 @@ impl VM {
                     if cap_count + i < params.len() {
                         let dst = params[cap_count + i].register as usize;
                         self.check_register(dst, callee_cell.registers)?;
-                        self.registers[new_base + dst] =
-                            self.registers[base + a + 1 + i].clone();
+                        self.registers[new_base + dst] = self.registers[base + a + 1 + i].clone();
                     }
                 }
                 self.frames.push(CallFrame {
@@ -1971,19 +1995,19 @@ impl VM {
                     return_register: base + a,
                     future_id: None,
                 });
-                // Emit debug CallEnter event for closure call
-                if let Some(ref mut cb) = self.debug_callback {
-                    let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                    let cell = module.cells.get(cv.cell_idx).ok_or_else(|| {
+                let module = self.module.as_ref().ok_or(VmError::NoModule)?;
+                let cell_name = module
+                    .cells
+                    .get(cv.cell_idx)
+                    .ok_or_else(|| {
                         VmError::Runtime(format!(
                             "closure cell index {} out of bounds",
                             cv.cell_idx
                         ))
-                    })?;
-                    cb(&DebugEvent::CallEnter {
-                        cell_name: cell.name.clone(),
-                    });
-                }
+                    })?
+                    .name
+                    .clone();
+                self.emit_debug_event(DebugEvent::CallEnter { cell_name });
             }
             _ => {
                 return Err(VmError::TypeError(format!("cannot call {}", callee)));
@@ -2039,10 +2063,7 @@ impl VM {
                 let cv = cv.clone();
                 let module = self.module.as_ref().ok_or(VmError::NoModule)?;
                 let callee_cell = module.cells.get(cv.cell_idx).ok_or_else(|| {
-                    VmError::Runtime(format!(
-                        "closure cell index {} out of bounds",
-                        cv.cell_idx
-                    ))
+                    VmError::Runtime(format!("closure cell index {} out of bounds", cv.cell_idx))
                 })?;
                 let params: Vec<LirParam> = callee_cell.params.clone();
                 let _ = module;
@@ -2083,9 +2104,7 @@ impl VM {
         match kind.as_str() {
             "memory" => Some(self.call_memory_method(owner, method, base, a, nargs)),
             "machine" => Some(self.call_machine_method(owner, method, base, a, nargs)),
-            "pipeline" | "orchestration" | "eval" | "guardrail" | "pattern"
-                if method == "run" =>
-            {
+            "pipeline" | "orchestration" | "eval" | "guardrail" | "pattern" if method == "run" => {
                 let args: Vec<Value> = (0..nargs)
                     .map(|i| self.registers[base + a + 1 + i].clone())
                     .collect();
@@ -2121,11 +2140,7 @@ impl VM {
                 Ok(Value::Null)
             }
             "recent" => {
-                let n = args
-                    .get(1)
-                    .and_then(|v| v.as_int())
-                    .unwrap_or(10)
-                    .max(0) as usize;
+                let n = args.get(1).and_then(|v| v.as_int()).unwrap_or(10).max(0) as usize;
                 let len = store.entries.len();
                 let start = len.saturating_sub(n);
                 Ok(Value::List(store.entries[start..].to_vec()))
@@ -2148,10 +2163,7 @@ impl VM {
                 Ok(Value::Null)
             }
             "get" => {
-                let key = args
-                    .get(1)
-                    .map(|v| v.as_string())
-                    .unwrap_or_default();
+                let key = args.get(1).map(|v| v.as_string()).unwrap_or_default();
                 Ok(store.kv.get(&key).cloned().unwrap_or(Value::Null))
             }
             "query" => {
@@ -2194,14 +2206,8 @@ impl VM {
         for (idx, param) in params.iter().enumerate() {
             let value = values.get(idx).cloned().unwrap_or(Value::Null);
             let value = match param.ty.as_str() {
-                "Int" => value
-                    .as_int()
-                    .map(Value::Int)
-                    .unwrap_or(Value::Null),
-                "Float" => value
-                    .as_float()
-                    .map(Value::Float)
-                    .unwrap_or(Value::Null),
+                "Int" => value.as_int().map(Value::Int).unwrap_or(Value::Null),
+                "Float" => value.as_float().map(Value::Float).unwrap_or(Value::Null),
                 "Bool" => match value {
                     Value::Bool(b) => Value::Bool(b),
                     _ => Value::Null,
@@ -2365,7 +2371,8 @@ impl VM {
                             graph.initial.clone()
                         };
                         if let Some(state_def) = graph.states.get(&state.current_state) {
-                            state.payload = Self::bind_machine_payload(&state_def.params, &args[1..]);
+                            state.payload =
+                                Self::bind_machine_payload(&state_def.params, &args[1..]);
                         }
                     }
                 }
@@ -2391,8 +2398,10 @@ impl VM {
                                         .iter()
                                         .map(|expr| Self::eval_machine_expr(expr, &state.payload))
                                         .collect::<Result<Vec<_>, _>>()?;
-                                    next_payload =
-                                        Some(Self::bind_machine_payload(&next_def.params, &evaluated));
+                                    next_payload = Some(Self::bind_machine_payload(
+                                        &next_def.params,
+                                        &evaluated,
+                                    ));
                                 }
                                 state.current_state = next.clone();
                             }
@@ -2427,7 +2436,8 @@ impl VM {
                     }
                     if state.payload.is_empty() {
                         if let Some(state_def) = graph.states.get(&state.current_state) {
-                            state.payload = Self::bind_machine_payload(&state_def.params, &args[1..]);
+                            state.payload =
+                                Self::bind_machine_payload(&state_def.params, &args[1..]);
                         }
                     }
                     let mut guard = 0usize;
@@ -2461,7 +2471,8 @@ impl VM {
                                     .iter()
                                     .map(|expr| Self::eval_machine_expr(expr, &state.payload))
                                     .collect::<Result<Vec<_>, _>>()?;
-                                state.payload = Self::bind_machine_payload(&next_def.params, &evaluated);
+                                state.payload =
+                                    Self::bind_machine_payload(&next_def.params, &evaluated);
                             }
                             state.current_state = next;
                         } else {
@@ -2829,7 +2840,11 @@ impl VM {
             "vote" => {
                 let mut counts: BTreeMap<Value, (usize, usize)> = BTreeMap::new();
                 let mut first_pending: Option<Value> = None;
-                for (i, arg) in self.orchestration_args(base, a, nargs).into_iter().enumerate() {
+                for (i, arg) in self
+                    .orchestration_args(base, a, nargs)
+                    .into_iter()
+                    .enumerate()
+                {
                     let value = match arg {
                         Value::Future(ref f) => match self.future_states.get(&f.id) {
                             Some(FutureState::Completed(v)) => Some(v.clone()),
@@ -2859,7 +2874,8 @@ impl VM {
                     match &best {
                         None => best = Some((value, count, first_idx)),
                         Some((_, best_count, best_idx)) => {
-                            if count > *best_count || (count == *best_count && first_idx < *best_idx)
+                            if count > *best_count
+                                || (count == *best_count && first_idx < *best_idx)
                             {
                                 best = Some((value, count, first_idx));
                             }
@@ -3021,8 +3037,7 @@ impl VM {
                 };
                 let pad_char = pad.chars().next().unwrap_or(' ');
                 if s.len() < width {
-                    let padding: String =
-                        std::iter::repeat_n(pad_char, width - s.len()).collect();
+                    let padding: String = std::iter::repeat_n(pad_char, width - s.len()).collect();
                     Ok(Value::String(StringRef::Owned(format!("{}{}", padding, s))))
                 } else {
                     Ok(Value::String(StringRef::Owned(s)))
@@ -3038,8 +3053,7 @@ impl VM {
                 };
                 let pad_char = pad.chars().next().unwrap_or(' ');
                 if s.len() < width {
-                    let padding: String =
-                        std::iter::repeat_n(pad_char, width - s.len()).collect();
+                    let padding: String = std::iter::repeat_n(pad_char, width - s.len()).collect();
                     Ok(Value::String(StringRef::Owned(format!("{}{}", s, padding))))
                 } else {
                     Ok(Value::String(StringRef::Owned(s)))
@@ -3622,10 +3636,7 @@ impl VM {
             )));
         }
         let callee_cell = module.cells.get(cv.cell_idx).ok_or_else(|| {
-            VmError::Runtime(format!(
-                "closure cell index {} out of bounds",
-                cv.cell_idx
-            ))
+            VmError::Runtime(format!("closure cell index {} out of bounds", cv.cell_idx))
         })?;
         let num_regs = callee_cell.registers as usize;
         let params: Vec<LirParam> = callee_cell.params.clone();
@@ -4134,9 +4145,7 @@ impl VM {
             }
             42 => {
                 // CHUNK: split list into chunks of size N
-                let n = self.registers[base + arg_reg + 1]
-                    .as_int()
-                    .unwrap_or(1) as usize;
+                let n = self.registers[base + arg_reg + 1].as_int().unwrap_or(1) as usize;
                 if let Value::List(l) = arg {
                     let result: Vec<Value> = l
                         .chunks(n.max(1))
@@ -4149,17 +4158,13 @@ impl VM {
             }
             43 => {
                 // WINDOW: sliding window of size N
-                let n = self.registers[base + arg_reg + 1]
-                    .as_int()
-                    .unwrap_or(1) as usize;
+                let n = self.registers[base + arg_reg + 1].as_int().unwrap_or(1) as usize;
                 if let Value::List(l) = arg {
                     if n == 0 || n > l.len() {
                         Ok(Value::List(vec![]))
                     } else {
-                        let result: Vec<Value> = l
-                            .windows(n)
-                            .map(|w| Value::List(w.to_vec()))
-                            .collect();
+                        let result: Vec<Value> =
+                            l.windows(n).map(|w| Value::List(w.to_vec())).collect();
                         Ok(Value::List(result))
                     }
                 } else {
@@ -4365,7 +4370,7 @@ impl VM {
                         Value::Set(set_elems)
                     }
                     Value::Set(_) => arg.clone(), // already a set
-                    _ => Value::Set(vec![]), // empty set for other types
+                    _ => Value::Set(vec![]),      // empty set for other types
                 })
             }
             70 => {
@@ -4424,10 +4429,8 @@ impl VM {
                 let item = self.registers[base + arg_reg + 1].clone();
                 Ok(match arg {
                     Value::Set(s) => {
-                        let new_set: Vec<Value> = s.iter()
-                            .filter(|v| *v != &item)
-                            .cloned()
-                            .collect();
+                        let new_set: Vec<Value> =
+                            s.iter().filter(|v| *v != &item).cloned().collect();
                         Value::Set(new_set)
                     }
                     Value::Map(m) => {
@@ -4443,20 +4446,27 @@ impl VM {
                 // ENTRIES - list of [key, value] tuples for maps
                 Ok(match arg {
                     Value::Map(m) => {
-                        let entries: Vec<Value> = m.iter()
-                            .map(|(k, v)| Value::Tuple(vec![
-                                Value::String(StringRef::Owned(k.clone())),
-                                v.clone()
-                            ]))
+                        let entries: Vec<Value> = m
+                            .iter()
+                            .map(|(k, v)| {
+                                Value::Tuple(vec![
+                                    Value::String(StringRef::Owned(k.clone())),
+                                    v.clone(),
+                                ])
+                            })
                             .collect();
                         Value::List(entries)
                     }
                     Value::Record(r) => {
-                        let entries: Vec<Value> = r.fields.iter()
-                            .map(|(k, v)| Value::Tuple(vec![
-                                Value::String(StringRef::Owned(k.clone())),
-                                v.clone()
-                            ]))
+                        let entries: Vec<Value> = r
+                            .fields
+                            .iter()
+                            .map(|(k, v)| {
+                                Value::Tuple(vec![
+                                    Value::String(StringRef::Owned(k.clone())),
+                                    v.clone(),
+                                ])
+                            })
                             .collect();
                         Value::List(entries)
                     }
@@ -4694,7 +4704,10 @@ fn merged_policy_for_tool(module: &LirModule, alias: &str) -> serde_json::Value 
     serde_json::Value::Object(merged)
 }
 
-fn validate_tool_policy(policy: &serde_json::Value, args: &serde_json::Value) -> Result<(), String> {
+fn validate_tool_policy(
+    policy: &serde_json::Value,
+    args: &serde_json::Value,
+) -> Result<(), String> {
     let serde_json::Value::Object(policy_obj) = policy else {
         return Ok(());
     };
@@ -4737,10 +4750,7 @@ fn validate_tool_policy(policy: &serde_json::Value, args: &serde_json::Value) ->
                     .ok_or_else(|| format!("{} constraint must be an integer", key))?;
                 if let Some(actual) = args_obj.get(key).and_then(|v| v.as_i64()) {
                     if actual > limit {
-                        return Err(format!(
-                            "{} {} exceeds allowed {}",
-                            key, actual, limit
-                        ));
+                        return Err(format!("{} {} exceeds allowed {}", key, actual, limit));
                     }
                 }
             }
@@ -4795,10 +4805,14 @@ fn parse_machine_expr_json(value: &serde_json::Value) -> Option<MachineExpr> {
     match kind {
         "int" => Some(MachineExpr::Int(value.get("value")?.as_i64()?)),
         "float" => Some(MachineExpr::Float(value.get("value")?.as_f64()?)),
-        "string" => Some(MachineExpr::String(value.get("value")?.as_str()?.to_string())),
+        "string" => Some(MachineExpr::String(
+            value.get("value")?.as_str()?.to_string(),
+        )),
         "bool" => Some(MachineExpr::Bool(value.get("value")?.as_bool()?)),
         "null" => Some(MachineExpr::Null),
-        "ident" => Some(MachineExpr::Ident(value.get("value")?.as_str()?.to_string())),
+        "ident" => Some(MachineExpr::Ident(
+            value.get("value")?.as_str()?.to_string(),
+        )),
         "unary" => Some(MachineExpr::Unary {
             op: value.get("op")?.as_str()?.to_string(),
             expr: Box::new(parse_machine_expr_json(value.get("expr")?)?),
@@ -5006,7 +5020,9 @@ impl Default for VM {
 mod tests {
     use super::*;
     use lumen_compiler::compile as compile_lumen;
-    use lumen_runtime::tools::{StubDispatcher, ToolProvider, ToolSchema, ToolError as RtToolError};
+    use lumen_runtime::tools::{
+        StubDispatcher, ToolError as RtToolError, ToolProvider, ToolSchema,
+    };
 
     fn run_main(source: &str) -> Value {
         let md = format!("# test\n\n```lumen\n{}\n```\n", source.trim());
@@ -5016,7 +5032,10 @@ mod tests {
         vm.execute("main", vec![]).expect("main should execute")
     }
 
-    fn run_main_with_dispatcher(source: &str, dispatcher: StubDispatcher) -> Result<Value, VmError> {
+    fn run_main_with_dispatcher(
+        source: &str,
+        dispatcher: StubDispatcher,
+    ) -> Result<Value, VmError> {
         let md = format!("# test\n\n```lumen\n{}\n```\n", source.trim());
         let module = compile_lumen(&md).expect("source should compile");
         let mut vm = VM::new();
@@ -5355,16 +5374,21 @@ mod tests {
                 params: vec![],
                 returns: None,
                 registers: 8,
-                constants: vec![Constant::Int(1), Constant::Int(2), Constant::Int(1), Constant::Int(3)],
+                constants: vec![
+                    Constant::Int(1),
+                    Constant::Int(2),
+                    Constant::Int(1),
+                    Constant::Int(3),
+                ],
                 instructions: vec![
                     Instruction::abc(OpCode::NewList, 0, 0, 0),
-                    Instruction::abx(OpCode::LoadK, 1, 0),  // 1
+                    Instruction::abx(OpCode::LoadK, 1, 0), // 1
                     Instruction::abc(OpCode::Append, 0, 1, 0),
-                    Instruction::abx(OpCode::LoadK, 1, 1),  // 2
+                    Instruction::abx(OpCode::LoadK, 1, 1), // 2
                     Instruction::abc(OpCode::Append, 0, 1, 0),
-                    Instruction::abx(OpCode::LoadK, 1, 2),  // 1 (duplicate)
+                    Instruction::abx(OpCode::LoadK, 1, 2), // 1 (duplicate)
                     Instruction::abc(OpCode::Append, 0, 1, 0),
-                    Instruction::abx(OpCode::LoadK, 1, 3),  // 3
+                    Instruction::abx(OpCode::LoadK, 1, 3), // 3
                     Instruction::abc(OpCode::Append, 0, 1, 0),
                     // Convert list to set using ToSet intrinsic (ID 69)
                     Instruction::abc(OpCode::Intrinsic, 2, 69, 0),
@@ -5440,7 +5464,11 @@ mod tests {
             .iter()
             .filter(|e| matches!(e, DebugEvent::Step { .. }))
             .count();
-        assert!(step_count >= 4, "should capture at least 4 step events, got {}", step_count);
+        assert!(
+            step_count >= 4,
+            "should capture at least 4 step events, got {}",
+            step_count
+        );
     }
 
     #[test]
@@ -5461,7 +5489,7 @@ mod tests {
                 registers: 2,
                 constants: vec![Constant::Int(42)],
                 instructions: vec![
-                    Instruction::abx(OpCode::LoadK, 0, 0),  // r0 = 42
+                    Instruction::abx(OpCode::LoadK, 0, 0), // r0 = 42
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
             }],
@@ -5487,6 +5515,94 @@ mod tests {
             .iter()
             .any(|e| matches!(e, DebugEvent::CallExit { .. }));
         assert!(has_call_exit, "should capture CallExit event");
+    }
+
+    #[test]
+    fn test_debug_hooks_capture_tool_and_schema_events() {
+        use std::sync::{Arc, Mutex};
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = Arc::clone(&events);
+
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec!["String".into()],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("String".into()),
+                registers: 4,
+                constants: vec![],
+                instructions: vec![
+                    Instruction::abx(OpCode::ToolCall, 0, 0),
+                    Instruction::abx(OpCode::Schema, 0, 0),
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                ],
+            }],
+            tools: vec![LirTool {
+                alias: "HttpGet".into(),
+                tool_id: "http.get".into(),
+                version: "1.0.0".into(),
+                mcp_url: None,
+            }],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut dispatcher = StubDispatcher::new();
+        dispatcher.set_response("http.get", serde_json::json!("ok"));
+
+        let mut vm = VM::new();
+        vm.debug_callback = Some(Box::new(move |event| {
+            events_clone
+                .lock()
+                .expect("events lock should succeed")
+                .push(event.clone());
+        }));
+        vm.tool_dispatcher = Some(Box::new(dispatcher));
+        vm.load(module);
+
+        let result = vm.execute("main", vec![]).expect("main should execute");
+        assert_eq!(result, Value::String(StringRef::Owned("ok".to_string())));
+
+        let captured_events = events.lock().expect("events lock should succeed");
+        let has_tool_call = captured_events.iter().any(|event| {
+            matches!(
+                event,
+                DebugEvent::ToolCall {
+                    cell_name,
+                    tool_id,
+                    tool_version,
+                    success,
+                    ..
+                } if cell_name == "main"
+                    && tool_id == "http.get"
+                    && tool_version == "1.0.0"
+                    && *success
+            )
+        });
+        assert!(has_tool_call, "should capture successful tool call event");
+
+        let has_schema_validate = captured_events.iter().any(|event| {
+            matches!(
+                event,
+                DebugEvent::SchemaValidate {
+                    cell_name,
+                    schema,
+                    valid
+                } if cell_name == "main" && schema == "String" && *valid
+            )
+        });
+        assert!(
+            has_schema_validate,
+            "should capture successful schema validation event"
+        );
     }
 
     #[test]
@@ -5929,7 +6045,10 @@ end
         assert!(matches!(err, VmError::DivisionByZero));
     }
 
-    fn make_spawn_await_module(worker_instrs: Vec<Instruction>, worker_consts: Vec<Constant>) -> LirModule {
+    fn make_spawn_await_module(
+        worker_instrs: Vec<Instruction>,
+        worker_consts: Vec<Constant>,
+    ) -> LirModule {
         LirModule {
             version: "1.0.0".into(),
             doc_hash: "test".into(),
@@ -5979,7 +6098,9 @@ end
         let mut vm = VM::new();
         vm.set_future_schedule(FutureSchedule::Eager);
         vm.load(module);
-        let out = vm.execute("main", vec![]).expect("spawn/await should resolve");
+        let out = vm
+            .execute("main", vec![])
+            .expect("spawn/await should resolve");
         assert_eq!(out, Value::Int(42));
     }
 
@@ -6243,8 +6364,7 @@ end
         vm.load(module);
         let err = vm.execute("main", vec![]).unwrap_err();
         assert!(
-            matches!(err, VmError::ArithmeticOverflow) ||
-            err.to_string().contains("overflow"),
+            matches!(err, VmError::ArithmeticOverflow) || err.to_string().contains("overflow"),
             "expected arithmetic overflow, got: {}",
             err
         );
@@ -6282,8 +6402,7 @@ end
         vm.load(module);
         let err = vm.execute("main", vec![]).unwrap_err();
         assert!(
-            matches!(err, VmError::ArithmeticOverflow) ||
-            err.to_string().contains("overflow"),
+            matches!(err, VmError::ArithmeticOverflow) || err.to_string().contains("overflow"),
             "expected arithmetic overflow, got: {}",
             err
         );
@@ -6321,8 +6440,7 @@ end
         vm.load(module);
         let err = vm.execute("main", vec![]).unwrap_err();
         assert!(
-            matches!(err, VmError::ArithmeticOverflow) ||
-            err.to_string().contains("overflow"),
+            matches!(err, VmError::ArithmeticOverflow) || err.to_string().contains("overflow"),
             "expected arithmetic overflow, got: {}",
             err
         );
@@ -6557,11 +6675,11 @@ end
                     registers: 8,
                     constants: vec![],
                     instructions: vec![
-                        Instruction::abx(OpCode::LoadInt, 0, 42_u16),     // r0 = 42
-                        Instruction::abx(OpCode::Closure, 1, 1),          // r1 = Closure(cell 1)
-                        Instruction::abc(OpCode::SetUpval, 0, 0, 1),      // capture r0 -> closure[0] in r1
-                        Instruction::abc(OpCode::Call, 1, 0, 0),          // call r1 with 0 args
-                        Instruction::abc(OpCode::Return, 1, 1, 0),        // return result
+                        Instruction::abx(OpCode::LoadInt, 0, 42_u16), // r0 = 42
+                        Instruction::abx(OpCode::Closure, 1, 1),      // r1 = Closure(cell 1)
+                        Instruction::abc(OpCode::SetUpval, 0, 0, 1), // capture r0 -> closure[0] in r1
+                        Instruction::abc(OpCode::Call, 1, 0, 0),     // call r1 with 0 args
+                        Instruction::abc(OpCode::Return, 1, 1, 0),   // return result
                     ],
                 },
                 LirCell {
@@ -6571,8 +6689,8 @@ end
                     registers: 4,
                     constants: vec![],
                     instructions: vec![
-                        Instruction::abc(OpCode::GetUpval, 0, 0, 0),      // r0 = capture[0]
-                        Instruction::abc(OpCode::Return, 0, 1, 0),        // return r0
+                        Instruction::abc(OpCode::GetUpval, 0, 0, 0), // r0 = capture[0]
+                        Instruction::abc(OpCode::Return, 0, 1, 0),   // return r0
                     ],
                 },
             ],
@@ -6608,13 +6726,13 @@ end
                     registers: 8,
                     constants: vec![],
                     instructions: vec![
-                        Instruction::abx(OpCode::LoadInt, 0, 10_u16),     // r0 = 10
-                        Instruction::abx(OpCode::LoadInt, 1, 20_u16),     // r1 = 20
-                        Instruction::abx(OpCode::Closure, 2, 1),          // r2 = Closure(cell 1)
-                        Instruction::abc(OpCode::SetUpval, 0, 0, 2),      // capture r0 -> closure[0]
-                        Instruction::abc(OpCode::SetUpval, 1, 1, 2),      // capture r1 -> closure[1]
-                        Instruction::abc(OpCode::Call, 2, 0, 0),          // call closure
-                        Instruction::abc(OpCode::Return, 2, 1, 0),        // return result
+                        Instruction::abx(OpCode::LoadInt, 0, 10_u16), // r0 = 10
+                        Instruction::abx(OpCode::LoadInt, 1, 20_u16), // r1 = 20
+                        Instruction::abx(OpCode::Closure, 2, 1),      // r2 = Closure(cell 1)
+                        Instruction::abc(OpCode::SetUpval, 0, 0, 2),  // capture r0 -> closure[0]
+                        Instruction::abc(OpCode::SetUpval, 1, 1, 2),  // capture r1 -> closure[1]
+                        Instruction::abc(OpCode::Call, 2, 0, 0),      // call closure
+                        Instruction::abc(OpCode::Return, 2, 1, 0),    // return result
                     ],
                 },
                 LirCell {
@@ -6624,10 +6742,10 @@ end
                     registers: 4,
                     constants: vec![],
                     instructions: vec![
-                        Instruction::abc(OpCode::GetUpval, 0, 0, 0),      // r0 = capture[0] (10)
-                        Instruction::abc(OpCode::GetUpval, 1, 1, 0),      // r1 = capture[1] (20)
-                        Instruction::abc(OpCode::Add, 2, 0, 1),           // r2 = r0 + r1
-                        Instruction::abc(OpCode::Return, 2, 1, 0),        // return 30
+                        Instruction::abc(OpCode::GetUpval, 0, 0, 0), // r0 = capture[0] (10)
+                        Instruction::abc(OpCode::GetUpval, 1, 1, 0), // r1 = capture[1] (20)
+                        Instruction::abc(OpCode::Add, 2, 0, 1),      // r2 = r0 + r1
+                        Instruction::abc(OpCode::Return, 2, 1, 0),   // return 30
                     ],
                 },
             ],
@@ -6747,7 +6865,11 @@ end
         });
 
         let result = vm.run().unwrap();
-        assert_eq!(result, Value::Bool(true), "interned 'hello' should equal owned 'hello'");
+        assert_eq!(
+            result,
+            Value::Bool(true),
+            "interned 'hello' should equal owned 'hello'"
+        );
     }
 
     // ===== ProviderRegistry integration tests =====
@@ -6776,9 +6898,15 @@ end
     }
 
     impl ToolProvider for FixedProvider {
-        fn name(&self) -> &str { &self.name }
-        fn version(&self) -> &str { "1.0.0" }
-        fn schema(&self) -> &ToolSchema { &self.schema }
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn version(&self) -> &str {
+            "1.0.0"
+        }
+        fn schema(&self) -> &ToolSchema {
+            &self.schema
+        }
         fn call(&self, _input: serde_json::Value) -> Result<serde_json::Value, RtToolError> {
             Ok(self.response.clone())
         }
@@ -6798,7 +6926,10 @@ end
         let mut registry = ProviderRegistry::new();
         registry.register(
             "http.get",
-            Box::new(FixedProvider::new("http.get", serde_json::json!({"body": "registry_ok"}))),
+            Box::new(FixedProvider::new(
+                "http.get",
+                serde_json::json!({"body": "registry_ok"}),
+            )),
         );
 
         let result = run_main_with_registry(
@@ -6816,7 +6947,10 @@ end
         )
         .expect("tool call via registry should succeed");
 
-        assert_eq!(result, Value::String(StringRef::Owned("registry_ok".to_string())));
+        assert_eq!(
+            result,
+            Value::String(StringRef::Owned("registry_ok".to_string()))
+        );
     }
 
     #[test]
@@ -6859,8 +6993,16 @@ end
         let policy = serde_json::json!({"max_tokens": 100});
         let args = serde_json::json!({"max_tokens": 200});
         let err = validate_tool_policy(&policy, &args).unwrap_err();
-        assert!(err.contains("max_tokens"), "error should mention the key: {}", err);
-        assert!(err.contains("200"), "error should mention the actual value: {}", err);
+        assert!(
+            err.contains("max_tokens"),
+            "error should mention the key: {}",
+            err
+        );
+        assert!(
+            err.contains("200"),
+            "error should mention the actual value: {}",
+            err
+        );
     }
 
     #[test]
@@ -6868,7 +7010,11 @@ end
         let policy = serde_json::json!({"max_retries": 3});
         let args = serde_json::json!({"max_retries": 5});
         let err = validate_tool_policy(&policy, &args).unwrap_err();
-        assert!(err.contains("max_retries"), "error should mention the key: {}", err);
+        assert!(
+            err.contains("max_retries"),
+            "error should mention the key: {}",
+            err
+        );
 
         let policy = serde_json::json!({"max_cost": 1000});
         let args = serde_json::json!({"max_cost": 500});
@@ -6905,7 +7051,11 @@ end
 
         let args_over = serde_json::json!({"timeout_ms": 10000});
         let err = validate_tool_policy(&policy, &args_over).unwrap_err();
-        assert!(err.contains("timeout_ms"), "error should mention timeout_ms: {}", err);
+        assert!(
+            err.contains("timeout_ms"),
+            "error should mention timeout_ms: {}",
+            err
+        );
     }
 
     // ---- Collection intrinsic tests ----
@@ -6923,8 +7073,13 @@ end
         assert_eq!(
             result,
             Value::List(vec![
-                Value::Int(1), Value::Int(1), Value::Int(2), Value::Int(3),
-                Value::Int(4), Value::Int(5), Value::Int(9),
+                Value::Int(1),
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(4),
+                Value::Int(5),
+                Value::Int(9),
             ])
         );
     }
@@ -6958,8 +7113,11 @@ end
         assert_eq!(
             result,
             Value::List(vec![
-                Value::Int(1), Value::Int(2), Value::Int(3),
-                Value::Int(4), Value::Int(5),
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(4),
+                Value::Int(5),
             ])
         );
     }
@@ -6977,7 +7135,10 @@ end
         assert_eq!(
             result,
             Value::List(vec![
-                Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4),
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(4),
             ])
         );
     }
@@ -7134,10 +7295,7 @@ cell main() -> String
 end
 "#,
         );
-        assert_eq!(
-            result,
-            Value::String(StringRef::Owned("   hi".into()))
-        );
+        assert_eq!(result, Value::String(StringRef::Owned("   hi".into())));
     }
 
     #[test]
@@ -7149,10 +7307,7 @@ cell main() -> String
 end
 "#,
         );
-        assert_eq!(
-            result,
-            Value::String(StringRef::Owned("hi   ".into()))
-        );
+        assert_eq!(result, Value::String(StringRef::Owned("hi   ".into())));
     }
 
     // ---- Math intrinsic tests ----
@@ -7607,7 +7762,9 @@ end
 
         let mut vm = VM::new();
         vm.load(module);
-        let result = vm.execute("main", vec![]).expect("execution should succeed");
+        let result = vm
+            .execute("main", vec![])
+            .expect("execution should succeed");
         assert_eq!(result, Value::Null);
     }
 
@@ -7645,7 +7802,9 @@ end
 
         let mut vm = VM::new();
         vm.load(module);
-        let result = vm.execute("main", vec![]).expect("execution should succeed");
+        let result = vm
+            .execute("main", vec![])
+            .expect("execution should succeed");
         assert_eq!(result, Value::Null);
     }
 
@@ -7676,7 +7835,9 @@ end
         let mut vm = VM::new();
         vm.set_instruction_limit(64);
         vm.load(module);
-        let err = vm.execute("main", vec![]).expect_err("loop should hit instruction limit");
+        let err = vm
+            .execute("main", vec![])
+            .expect_err("loop should hit instruction limit");
         assert!(matches!(err, VmError::InstructionLimitExceeded(64)));
     }
 

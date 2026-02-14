@@ -12,13 +12,13 @@
 //!
 //! All hash operations return hexadecimal strings.
 
+use hmac::{Hmac, Mac};
 use lumen_runtime::tools::{ToolError, ToolProvider, ToolSchema};
+use md5::Md5;
+use rand::Rng;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256, Sha512};
-use md5::Md5;
-use hmac::{Hmac, Mac};
-use rand::Rng;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -281,7 +281,8 @@ impl CryptoProvider {
                     ToolError::InvocationFailed(format!("Invalid input format: {}", e))
                 })?;
                 use base64::Engine;
-                let encoded = base64::engine::general_purpose::STANDARD.encode(input.input.as_bytes());
+                let encoded =
+                    base64::engine::general_purpose::STANDARD.encode(input.input.as_bytes());
                 Ok(json!(encoded))
             }
             CryptoTool::Base64Decode => {
@@ -335,9 +336,8 @@ impl CryptoProvider {
                     ToolError::InvocationFailed(format!("Invalid input format: {}", e))
                 })?;
                 type HmacSha256 = Hmac<Sha256>;
-                let mut mac = HmacSha256::new_from_slice(input.key.as_bytes()).map_err(|e| {
-                    ToolError::InvocationFailed(format!("Invalid HMAC key: {}", e))
-                })?;
+                let mut mac = HmacSha256::new_from_slice(input.key.as_bytes())
+                    .map_err(|e| ToolError::InvocationFailed(format!("Invalid HMAC key: {}", e)))?;
                 mac.update(input.message.as_bytes());
                 let result = mac.finalize();
                 Ok(json!(hex::encode(result.into_bytes())))
@@ -420,7 +420,10 @@ mod tests {
         let input = json!({"input": "hello"});
         let result = provider.call(input).unwrap();
         // SHA-512 of "hello" (first 64 chars)
-        assert!(result.as_str().unwrap().starts_with("9b71d224bd62f3785d96d46ad3ea3d73"));
+        assert!(result
+            .as_str()
+            .unwrap()
+            .starts_with("9b71d224bd62f3785d96d46ad3ea3d73"));
     }
 
     #[test]
@@ -429,10 +432,7 @@ mod tests {
         let input = json!({"input": "hello"});
         let result = provider.call(input).unwrap();
         // MD5 of "hello"
-        assert_eq!(
-            result.as_str().unwrap(),
-            "5d41402abc4b2a76b9719d911017c592"
-        );
+        assert_eq!(result.as_str().unwrap(), "5d41402abc4b2a76b9719d911017c592");
     }
 
     #[test]
@@ -491,16 +491,22 @@ mod tests {
         let result = provider.call(input).unwrap();
         let hmac = result.as_str().unwrap();
         assert_eq!(hmac.len(), 64); // SHA-256 produces 32 bytes = 64 hex chars
-        // Verify deterministic output
-        let result2 = provider.call(json!({"message": "hello", "key": "secret"})).unwrap();
+                                    // Verify deterministic output
+        let result2 = provider
+            .call(json!({"message": "hello", "key": "secret"}))
+            .unwrap();
         assert_eq!(result, result2);
     }
 
     #[test]
     fn hmac_different_key_different_output() {
         let provider = CryptoProvider::hmac_sha256();
-        let result1 = provider.call(json!({"message": "hello", "key": "secret1"})).unwrap();
-        let result2 = provider.call(json!({"message": "hello", "key": "secret2"})).unwrap();
+        let result1 = provider
+            .call(json!({"message": "hello", "key": "secret1"}))
+            .unwrap();
+        let result2 = provider
+            .call(json!({"message": "hello", "key": "secret2"}))
+            .unwrap();
         assert_ne!(result1, result2);
     }
 }

@@ -503,7 +503,8 @@ fn run_example(filename: &str) {
     let path = manifest_dir.join("../../examples").join(filename);
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e));
-    let module = compile(&source).unwrap_or_else(|e| panic!("{} failed to compile: {}", filename, e));
+    let module =
+        compile(&source).unwrap_or_else(|e| panic!("{} failed to compile: {}", filename, e));
     let mut vm = VM::new();
     vm.load(module);
     vm.execute("main", vec![])
@@ -577,7 +578,9 @@ fn e2e_example_todo_manager() {
 #[test]
 fn vm_error_stack_overflow() {
     // Deep recursion should trigger stack overflow, not crash.
-    let md = format!("# e2e-test\n\n```lumen\n{}\n```\n", r#"
+    let md = format!(
+        "# e2e-test\n\n```lumen\n{}\n```\n",
+        r#"
 cell recurse(n: Int) -> Int
   return recurse(n + 1)
 end
@@ -585,7 +588,9 @@ end
 cell main() -> Int
   return recurse(0)
 end
-"#.trim());
+"#
+        .trim()
+    );
     let module = compile(&md).expect("should compile");
     let mut vm = VM::new();
     vm.load(module);
@@ -602,11 +607,15 @@ end
 #[test]
 fn vm_error_undefined_cell() {
     // Calling a cell that doesn't exist in the module should error.
-    let md = format!("# e2e-test\n\n```lumen\n{}\n```\n", r#"
+    let md = format!(
+        "# e2e-test\n\n```lumen\n{}\n```\n",
+        r#"
 cell main() -> Int
   return 1
 end
-"#.trim());
+"#
+        .trim()
+    );
     let module = compile(&md).expect("should compile");
     let mut vm = VM::new();
     vm.load(module);
@@ -623,12 +632,16 @@ end
 #[test]
 fn vm_error_halt_statement() {
     // The halt statement should produce a Halt error.
-    let md = format!("# e2e-test\n\n```lumen\n{}\n```\n", r#"
+    let md = format!(
+        "# e2e-test\n\n```lumen\n{}\n```\n",
+        r#"
 cell main() -> Int
   halt("something went wrong")
   return 0
 end
-"#.trim());
+"#
+        .trim()
+    );
     let module = compile(&md).expect("should compile");
     let mut vm = VM::new();
     vm.load(module);
@@ -1756,7 +1769,10 @@ cell main() -> String
 end
 "#,
     );
-    assert_eq!(result, Value::String(StringRef::Owned("  café".to_string())));
+    assert_eq!(
+        result,
+        Value::String(StringRef::Owned("  café".to_string()))
+    );
 }
 
 #[test]
@@ -1768,7 +1784,10 @@ cell main() -> String
 end
 "#,
     );
-    assert_eq!(result, Value::String(StringRef::Owned("café  ".to_string())));
+    assert_eq!(
+        result,
+        Value::String(StringRef::Owned("café  ".to_string()))
+    );
 }
 
 #[test]

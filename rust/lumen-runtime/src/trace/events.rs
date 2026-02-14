@@ -28,6 +28,8 @@ pub struct TraceEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cached: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }
 
@@ -37,6 +39,9 @@ pub enum TraceEventKind {
     RunStart,
     CellStart,
     CellEnd,
+    CallEnter,
+    CallExit,
+    VmStep,
     ToolCall,
     SchemaValidate,
     Error,

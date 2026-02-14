@@ -483,6 +483,146 @@ impl VM {
             .ok_or(VmError::RegisterOutOfBounds(index))
     }
 
+    #[inline]
+    fn check_register(
+        &self,
+        reg: usize,
+        cell_registers: u8,
+    ) -> Result<(), VmError> {
+        if reg < cell_registers as usize {
+            Ok(())
+        } else {
+            let offending = reg.min(u8::MAX as usize) as u8;
+            Err(VmError::RegisterOOB(offending, cell_registers))
+        }
+    }
+
+    #[inline]
+    fn check_register_span(
+        &self,
+        start: usize,
+        len: usize,
+        cell_registers: u8,
+    ) -> Result<(), VmError> {
+        if len == 0 {
+            return Ok(());
+        }
+        let end = start.saturating_add(len - 1);
+        self.check_register(end, cell_registers)
+    }
+
+    fn validate_instruction_registers(
+        &self,
+        instr: Instruction,
+        cell_registers: u8,
+    ) -> Result<(), VmError> {
+        let a = instr.a as usize;
+        let b = instr.b as usize;
+        let c = instr.c as usize;
+
+        match instr.op {
+            OpCode::Nop | OpCode::Jmp | OpCode::Break | OpCode::Continue => Ok(()),
+
+            OpCode::LoadK
+            | OpCode::LoadBool
+            | OpCode::LoadInt
+            | OpCode::NewRecord
+            | OpCode::Test
+            | OpCode::Return
+            | OpCode::Halt
+            | OpCode::Loop
+            | OpCode::Closure
+            | OpCode::Schema
+            | OpCode::Emit
+            | OpCode::TraceRef
+            | OpCode::Spawn
+            | OpCode::IsVariant => self.check_register(a, cell_registers),
+
+            OpCode::LoadNil => self.check_register_span(a, b + 1, cell_registers),
+
+            OpCode::Move
+            | OpCode::Neg
+            | OpCode::BitNot
+            | OpCode::Not
+            | OpCode::Append
+            | OpCode::Unbox => {
+                self.check_register(a, cell_registers)?;
+                self.check_register(b, cell_registers)
+            }
+
+            OpCode::NewList | OpCode::NewTuple | OpCode::NewSet => {
+                self.check_register(a, cell_registers)?;
+                self.check_register_span(a + 1, b, cell_registers)
+            }
+
+            OpCode::NewMap => {
+                self.check_register(a, cell_registers)?;
+                self.check_register_span(a + 1, b.saturating_mul(2), cell_registers)
+            }
+
+            OpCode::GetField
+            | OpCode::GetIndex
+            | OpCode::GetTuple
+            | OpCode::Add
+            | OpCode::Sub
+            | OpCode::Mul
+            | OpCode::Div
+            | OpCode::Mod
+            | OpCode::Pow
+            | OpCode::Concat
+            | OpCode::BitOr
+            | OpCode::BitAnd
+            | OpCode::BitXor
+            | OpCode::Shl
+            | OpCode::Shr
+            | OpCode::Eq
+            | OpCode::Lt
+            | OpCode::Le
+            | OpCode::And
+            | OpCode::Or
+            | OpCode::In
+            | OpCode::Is
+            | OpCode::NullCo
+            | OpCode::SetIndex
+            | OpCode::NewUnion
+            | OpCode::Await => {
+                self.check_register(a, cell_registers)?;
+                self.check_register(b, cell_registers)?;
+                self.check_register(c, cell_registers)
+            }
+
+            OpCode::SetField | OpCode::SetUpval => {
+                self.check_register(a, cell_registers)?;
+                self.check_register(c, cell_registers)
+            }
+
+            OpCode::ForPrep => self.check_register_span(a, 3, cell_registers),
+
+            OpCode::ForLoop => self.check_register_span(a, 4, cell_registers),
+
+            OpCode::ForIn => {
+                self.check_register(a, cell_registers)?;
+                self.check_register(a + 1, cell_registers)?;
+                self.check_register(b, cell_registers)?;
+                self.check_register(c, cell_registers)
+            }
+
+            OpCode::Call | OpCode::TailCall => {
+                self.check_register(a, cell_registers)?;
+                self.check_register_span(a + 1, b, cell_registers)
+            }
+
+            OpCode::Intrinsic => {
+                self.check_register(a, cell_registers)?;
+                self.check_register(c, cell_registers)
+            }
+
+            OpCode::GetUpval => self.check_register(a, cell_registers),
+
+            OpCode::ToolCall => self.check_register(a, cell_registers),
+        }
+    }
+
     fn ensure_process_instance(&mut self, value: &mut Value) {
         let Value::Record(ref mut r) = value else {
             return;
@@ -553,7 +693,9 @@ impl VM {
                 self.registers.resize(new_base + num_regs, Value::Null);
                 for (i, arg) in task.args.into_iter().enumerate() {
                     if i < params.len() {
-                        self.registers[new_base + params[i].register as usize] = arg;
+                        let dst = params[i].register as usize;
+                        self.check_register(dst, callee_cell.registers)?;
+                        self.registers[new_base + dst] = arg;
                     }
                 }
                 self.frames.push(CallFrame {
@@ -581,12 +723,15 @@ impl VM {
                 let new_base = self.registers.len();
                 self.registers.resize(new_base + num_regs, Value::Null);
                 for (i, cap) in cv.captures.iter().enumerate() {
+                    self.check_register(i, callee_cell.registers)?;
                     self.registers[new_base + i] = cap.clone();
                 }
                 let cap_count = cv.captures.len();
                 for (i, arg) in task.args.into_iter().enumerate() {
                     if cap_count + i < params.len() {
-                        self.registers[new_base + params[cap_count + i].register as usize] = arg;
+                        let dst = params[cap_count + i].register as usize;
+                        self.check_register(dst, callee_cell.registers)?;
+                        self.registers[new_base + dst] = arg;
                     }
                 }
                 self.frames.push(CallFrame {
@@ -770,7 +915,9 @@ impl VM {
         // Load arguments into parameter registers
         for (i, arg) in args.into_iter().enumerate() {
             if i < cell.params.len() {
-                self.registers[base + cell.params[i].register as usize] = arg;
+                let dst = cell.params[i].register as usize;
+                self.check_register(dst, cell.registers)?;
+                self.registers[base + dst] = arg;
             }
         }
 
@@ -813,7 +960,7 @@ impl VM {
 
     fn run(&mut self) -> Result<Value, VmError> {
         loop {
-            let (cell_idx, base, instr) = {
+            let (cell_idx, base, instr, cell_registers) = {
                 let frame = match self.frames.last() {
                     Some(f) => f,
                     None => return Ok(Value::Null),
@@ -823,7 +970,9 @@ impl VM {
                 let ip = frame.ip;
 
                 let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                let cell = &module.cells[cell_idx];
+                let cell = module.cells.get(cell_idx).ok_or_else(|| {
+                    VmError::Runtime(format!("cell index {} out of bounds", cell_idx))
+                })?;
 
                 if ip >= cell.instructions.len() {
                     self.frames.pop();
@@ -834,7 +983,7 @@ impl VM {
                 }
 
                 let instr = cell.instructions[ip];
-                (cell_idx, base, instr)
+                (cell_idx, base, instr, cell.registers)
             };
 
             self.instruction_count = self.instruction_count.saturating_add(1);
@@ -861,6 +1010,7 @@ impl VM {
             let a = instr.a as usize;
             let b = instr.b as usize;
             let c = instr.c as usize;
+            self.validate_instruction_registers(instr, cell_registers)?;
 
             // Handle opcodes that need mutable self first (before borrowing module)
             match instr.op {
@@ -1572,13 +1722,17 @@ impl VM {
                             continue;
                         };
                         let mut args_map = serde_json::Map::new();
-                        let arg_map_reg = match &self.registers[base + a] {
-                            Value::Map(_) => base + a,
-                            _ => base + a + 1, // backward compatibility
+                        let primary = base + a;
+                        let arg_map_reg = match self.registers.get(primary) {
+                            Some(Value::Map(_)) => Some(primary),
+                            Some(_) => primary.checked_add(1),
+                            None => None,
                         };
-                        if let Value::Map(m) = &self.registers[arg_map_reg] {
-                            for (k, v) in m {
-                                args_map.insert(k.clone(), value_to_json(v));
+                        if let Some(arg_map_reg) = arg_map_reg {
+                            if let Some(Value::Map(m)) = self.registers.get(arg_map_reg) {
+                                for (k, v) in m {
+                                    args_map.insert(k.clone(), value_to_json(v));
+                                }
                             }
                         }
 
@@ -1727,14 +1881,25 @@ impl VM {
             Value::String(ref sr) => {
                 let name = match sr {
                     StringRef::Owned(s) => s.clone(),
-                    StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or("").to_string(),
+                    StringRef::Interned(id) => self
+                        .strings
+                        .resolve(*id)
+                        .ok_or_else(|| {
+                            VmError::Runtime(format!(
+                                "unknown interned string id {} for call target",
+                                id
+                            ))
+                        })?
+                        .to_string(),
                 };
                 let module = self.module.as_ref().ok_or(VmError::NoModule)?;
                 if let Some(idx) = module.cells.iter().position(|c| c.name == name) {
                     if self.frames.len() >= MAX_CALL_DEPTH {
                         return Err(VmError::StackOverflow(MAX_CALL_DEPTH));
                     }
-                    let callee_cell = &module.cells[idx];
+                    let callee_cell = module.cells.get(idx).ok_or_else(|| {
+                        VmError::Runtime(format!("cell index {} out of bounds", idx))
+                    })?;
                     let num_regs = callee_cell.registers as usize;
                     let params: Vec<LirParam> = callee_cell.params.clone();
                     let _ = module;
@@ -1743,7 +1908,9 @@ impl VM {
                         .resize(new_base + num_regs.max(256), Value::Null);
                     for i in 0..nargs {
                         if i < params.len() {
-                            self.registers[new_base + params[i].register as usize] =
+                            let dst = params[i].register as usize;
+                            self.check_register(dst, callee_cell.registers)?;
+                            self.registers[new_base + dst] =
                                 self.registers[base + a + 1 + i].clone();
                         }
                     }
@@ -1772,7 +1939,12 @@ impl VM {
                 }
                 let cv = cv.clone();
                 let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                let callee_cell = &module.cells[cv.cell_idx];
+                let callee_cell = module.cells.get(cv.cell_idx).ok_or_else(|| {
+                    VmError::Runtime(format!(
+                        "closure cell index {} out of bounds",
+                        cv.cell_idx
+                    ))
+                })?;
                 let num_regs = callee_cell.registers as usize;
                 let params: Vec<LirParam> = callee_cell.params.clone();
                 let _ = module;
@@ -1780,12 +1952,15 @@ impl VM {
                 self.registers
                     .resize(new_base + num_regs.max(256), Value::Null);
                 for (i, cap) in cv.captures.iter().enumerate() {
+                    self.check_register(i, callee_cell.registers)?;
                     self.registers[new_base + i] = cap.clone();
                 }
                 let cap_count = cv.captures.len();
                 for i in 0..nargs {
                     if cap_count + i < params.len() {
-                        self.registers[new_base + params[cap_count + i].register as usize] =
+                        let dst = params[cap_count + i].register as usize;
+                        self.check_register(dst, callee_cell.registers)?;
+                        self.registers[new_base + dst] =
                             self.registers[base + a + 1 + i].clone();
                     }
                 }
@@ -1799,7 +1974,12 @@ impl VM {
                 // Emit debug CallEnter event for closure call
                 if let Some(ref mut cb) = self.debug_callback {
                     let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                    let cell = &module.cells[cv.cell_idx];
+                    let cell = module.cells.get(cv.cell_idx).ok_or_else(|| {
+                        VmError::Runtime(format!(
+                            "closure cell index {} out of bounds",
+                            cv.cell_idx
+                        ))
+                    })?;
                     cb(&DebugEvent::CallEnter {
                         cell_name: cell.name.clone(),
                     });
@@ -1819,16 +1999,30 @@ impl VM {
             Value::String(ref sr) => {
                 let name = match sr {
                     StringRef::Owned(s) => s.clone(),
-                    StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or("").to_string(),
+                    StringRef::Interned(id) => self
+                        .strings
+                        .resolve(*id)
+                        .ok_or_else(|| {
+                            VmError::Runtime(format!(
+                                "unknown interned string id {} for tailcall target",
+                                id
+                            ))
+                        })?
+                        .to_string(),
                 };
                 let module = self.module.as_ref().ok_or(VmError::NoModule)?;
                 if let Some(idx) = module.cells.iter().position(|c| c.name == name) {
-                    let params: Vec<LirParam> = module.cells[idx].params.clone();
+                    let callee_cell = module.cells.get(idx).ok_or_else(|| {
+                        VmError::Runtime(format!("cell index {} out of bounds", idx))
+                    })?;
+                    let params: Vec<LirParam> = callee_cell.params.clone();
                     let _ = module;
                     for i in 0..nargs {
                         if i < params.len() {
                             let src = self.registers[base + a + 1 + i].clone();
-                            self.registers[base + params[i].register as usize] = src;
+                            let dst = params[i].register as usize;
+                            self.check_register(dst, callee_cell.registers)?;
+                            self.registers[base + dst] = src;
                         }
                     }
                     if let Some(f) = self.frames.last_mut() {
@@ -1844,16 +2038,25 @@ impl VM {
             Value::Closure(ref cv) => {
                 let cv = cv.clone();
                 let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                let params: Vec<LirParam> = module.cells[cv.cell_idx].params.clone();
+                let callee_cell = module.cells.get(cv.cell_idx).ok_or_else(|| {
+                    VmError::Runtime(format!(
+                        "closure cell index {} out of bounds",
+                        cv.cell_idx
+                    ))
+                })?;
+                let params: Vec<LirParam> = callee_cell.params.clone();
                 let _ = module;
                 for (i, cap) in cv.captures.iter().enumerate() {
+                    self.check_register(i, callee_cell.registers)?;
                     self.registers[base + i] = cap.clone();
                 }
                 let cap_count = cv.captures.len();
                 for i in 0..nargs {
                     if cap_count + i < params.len() {
                         let src = self.registers[base + a + 1 + i].clone();
-                        self.registers[base + params[cap_count + i].register as usize] = src;
+                        let dst = params[cap_count + i].register as usize;
+                        self.check_register(dst, callee_cell.registers)?;
+                        self.registers[base + dst] = src;
                     }
                 }
                 if let Some(f) = self.frames.last_mut() {
@@ -2528,9 +2731,16 @@ impl VM {
                     Value::String(sr) => {
                         let name = match sr {
                             StringRef::Owned(s) => s,
-                            StringRef::Interned(id) => {
-                                self.strings.resolve(id).unwrap_or("").to_string()
-                            }
+                            StringRef::Interned(id) => self
+                                .strings
+                                .resolve(id)
+                                .ok_or_else(|| {
+                                    VmError::Runtime(format!(
+                                        "unknown interned string id {} for spawn target",
+                                        id
+                                    ))
+                                })?
+                                .to_string(),
                         };
                         let module = self.module.as_ref().ok_or(VmError::NoModule)?;
                         let cell_idx = module
@@ -3057,9 +3267,9 @@ impl VM {
             "json_pretty" => {
                 let val = &self.registers[base + a + 1];
                 let j = value_to_json(val);
-                Ok(Value::String(StringRef::Owned(
-                    serde_json::to_string_pretty(&j).unwrap_or_default(),
-                )))
+                let pretty = serde_json::to_string_pretty(&j)
+                    .map_err(|e| VmError::Runtime(format!("json_pretty failed: {}", e)))?;
+                Ok(Value::String(StringRef::Owned(pretty)))
             }
             // String case transforms (std.string)
             "capitalize" => {
@@ -3411,7 +3621,12 @@ impl VM {
                 cv.cell_idx
             )));
         }
-        let callee_cell = &module.cells[cv.cell_idx];
+        let callee_cell = module.cells.get(cv.cell_idx).ok_or_else(|| {
+            VmError::Runtime(format!(
+                "closure cell index {} out of bounds",
+                cv.cell_idx
+            ))
+        })?;
         let num_regs = callee_cell.registers as usize;
         let params: Vec<LirParam> = callee_cell.params.clone();
         let new_base = self.registers.len();
@@ -3419,13 +3634,16 @@ impl VM {
             .resize(new_base + num_regs.max(256), Value::Null);
         // Copy captures into frame registers
         for (i, cap) in cv.captures.iter().enumerate() {
+            self.check_register(i, callee_cell.registers)?;
             self.registers[new_base + i] = cap.clone();
         }
         // Copy arguments into parameter registers (after captures)
         let cap_count = cv.captures.len();
         for (i, arg) in args.iter().enumerate() {
             if cap_count + i < params.len() {
-                self.registers[new_base + params[cap_count + i].register as usize] = arg.clone();
+                let dst = params[cap_count + i].register as usize;
+                self.check_register(dst, callee_cell.registers)?;
+                self.registers[new_base + dst] = arg.clone();
             }
         }
         // Push a call frame with a sentinel return_register
@@ -4511,10 +4729,12 @@ fn validate_tool_policy(policy: &serde_json::Value, args: &serde_json::Value) ->
                     }
                 }
             }
-            _ if key.starts_with("max_") && constraint.is_i64() => {
+            _ if key.starts_with("max_") => {
                 // Generic upper-bound constraint: any "max_<field>" policy key
                 // enforces that the corresponding argument does not exceed the limit.
-                let limit = constraint.as_i64().unwrap();
+                let limit = constraint
+                    .as_i64()
+                    .ok_or_else(|| format!("{} constraint must be an integer", key))?;
                 if let Some(actual) = args_obj.get(key).and_then(|v| v.as_i64()) {
                     if actual > limit {
                         return Err(format!(
@@ -6656,6 +6876,18 @@ end
     }
 
     #[test]
+    fn test_policy_generic_max_constraint_requires_integer_constraint() {
+        let policy = serde_json::json!({"max_tokens": "100"});
+        let args = serde_json::json!({"max_tokens": 50});
+        let err = validate_tool_policy(&policy, &args).unwrap_err();
+        assert!(
+            err.contains("max_tokens constraint must be an integer"),
+            "error should explain max_* type requirement: {}",
+            err
+        );
+    }
+
+    #[test]
     fn test_policy_domain_constraint() {
         let policy = serde_json::json!({"domain": "*.example.com"});
         let args = serde_json::json!({"url": "https://api.example.com/data"});
@@ -7028,6 +7260,120 @@ end
                 Value::List(vec![Value::Int(2), Value::Int(3), Value::Int(4)]),
                 Value::List(vec![Value::Int(3), Value::Int(4), Value::Int(5)]),
             ])
+        );
+    }
+
+    #[test]
+    fn test_register_oob_reports_invalid_operand_in_hot_path() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("Int".into()),
+                registers: 1,
+                constants: vec![],
+                instructions: vec![
+                    Instruction::abc(OpCode::LoadInt, 1, 0, 0),
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        vm.load(module);
+        let err = vm
+            .execute("main", vec![])
+            .expect_err("invalid register operand should fail");
+        assert!(matches!(err, VmError::RegisterOOB(1, 1)));
+    }
+
+    #[test]
+    fn test_register_oob_reports_invalid_call_argument_span() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("Int".into()),
+                registers: 2,
+                constants: vec![Constant::String("len".into())],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),
+                    Instruction::abc(OpCode::Call, 0, 2, 0),
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        vm.load(module);
+        let err = vm
+            .execute("main", vec![])
+            .expect_err("invalid call argument span should fail");
+        assert!(matches!(err, VmError::RegisterOOB(2, 2)));
+    }
+
+    #[test]
+    fn test_call_with_unknown_interned_target_returns_runtime_error() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![LirParam {
+                    name: "f".into(),
+                    ty: "String".into(),
+                    register: 0,
+                }],
+                returns: Some("Int".into()),
+                registers: 2,
+                constants: vec![],
+                instructions: vec![
+                    Instruction::abc(OpCode::Call, 0, 0, 0),
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        vm.load(module);
+        let err = vm
+            .execute("main", vec![Value::String(StringRef::Interned(999_999))])
+            .expect_err("invalid interned function target should fail");
+        assert!(
+            err.to_string().contains("unknown interned string id"),
+            "expected interned-id runtime error, got: {}",
+            err
         );
     }
 

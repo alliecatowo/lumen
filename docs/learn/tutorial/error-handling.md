@@ -136,12 +136,12 @@ end
 
 ### unwrap
 
-Get the value or panic (use carefully):
+Get the value or panic. This is best reserved for tests and one-off scripts, not production paths:
 
 ```lumen
 cell dangerous() -> Int
   let result = divide(10, 2)
-  return result.unwrap()  # Panics if err
+  return result.unwrap()  # Panics on err
 end
 ```
 
@@ -243,6 +243,13 @@ end
 2. **Propagate with try** — Don't match and re-return errors
 3. **Handle at the right level** — Let errors bubble up to where they can be handled
 4. **Don't over-use unwrap** — Handle errors explicitly in production code
+
+## Runtime Diagnostics
+
+The runtime now surfaces common failure modes as explicit errors instead of silently ignoring them:
+
+- Invalid indexed writes like assigning with `[]` to a non-container value return a runtime type error.
+- Tool output/contract mismatches return `OutputValidationFailed` with both expected schema and actual output details.
 
 ## Next Steps
 

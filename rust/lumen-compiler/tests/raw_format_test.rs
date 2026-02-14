@@ -61,8 +61,15 @@ end
     );
 
     let module = result.unwrap();
-    assert_eq!(module.cells.len(), 1, "Should have 1 cell (main)");
-    assert_eq!(module.cells[0].name, "main");
+    // Imported cells are merged into the output for linking
+    assert!(
+        module.cells.iter().any(|c| c.name == "main"),
+        "Should contain 'main' cell"
+    );
+    assert!(
+        module.cells.iter().any(|c| c.name == "square"),
+        "Should contain imported 'square' cell"
+    );
 }
 
 #[test]

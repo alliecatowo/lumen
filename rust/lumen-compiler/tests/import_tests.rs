@@ -31,8 +31,15 @@ end
         result.err()
     );
     let module = result.unwrap();
-    assert_eq!(module.cells.len(), 1);
-    assert_eq!(module.cells[0].name, "main");
+    // Imported cells are merged into the output module for linking
+    assert!(
+        module.cells.iter().any(|c| c.name == "main"),
+        "Expected 'main' cell in output"
+    );
+    assert!(
+        module.cells.iter().any(|c| c.name == "square"),
+        "Expected imported 'square' cell in output"
+    );
 }
 
 #[test]
@@ -67,9 +74,10 @@ end
         result.err()
     );
     let module = result.unwrap();
-    // Note: imported types are not necessarily included in the output module
-    // They're available for type checking but not re-exported
-    assert_eq!(module.cells.len(), 1);
+    assert!(
+        module.cells.iter().any(|c| c.name == "origin"),
+        "Expected 'origin' cell in output"
+    );
 }
 
 #[test]
@@ -162,7 +170,15 @@ end
         result.err()
     );
     let module = result.unwrap();
-    assert_eq!(module.cells.len(), 1);
+    // Imported cells are merged into output for linking
+    assert!(
+        module.cells.iter().any(|c| c.name == "main"),
+        "Expected 'main' cell in output"
+    );
+    assert!(
+        module.cells.iter().any(|c| c.name == "compute"),
+        "Expected imported 'compute' cell in output"
+    );
 }
 
 #[test]

@@ -275,7 +275,7 @@ fn infer_generic_args_from_fields(
 fn unify_for_inference(
     type_expr: &TypeExpr,
     concrete: &Type,
-    symbols: &SymbolTable,
+    _symbols: &SymbolTable,
     inferred: &mut HashMap<String, Type>,
 ) {
     match (type_expr, concrete) {
@@ -287,22 +287,22 @@ fn unify_for_inference(
             }
         }
         (TypeExpr::List(inner, _), Type::List(inner_ty)) => {
-            unify_for_inference(inner, inner_ty, symbols, inferred);
+            unify_for_inference(inner, inner_ty, _symbols, inferred);
         }
         (TypeExpr::Map(k, v, _), Type::Map(kt, vt)) => {
-            unify_for_inference(k, kt, symbols, inferred);
-            unify_for_inference(v, vt, symbols, inferred);
+            unify_for_inference(k, kt, _symbols, inferred);
+            unify_for_inference(v, vt, _symbols, inferred);
         }
         (TypeExpr::Set(inner, _), Type::Set(inner_ty)) => {
-            unify_for_inference(inner, inner_ty, symbols, inferred);
+            unify_for_inference(inner, inner_ty, _symbols, inferred);
         }
         (TypeExpr::Result(ok, err, _), Type::Result(ok_ty, err_ty)) => {
-            unify_for_inference(ok, ok_ty, symbols, inferred);
-            unify_for_inference(err, err_ty, symbols, inferred);
+            unify_for_inference(ok, ok_ty, _symbols, inferred);
+            unify_for_inference(err, err_ty, _symbols, inferred);
         }
         (TypeExpr::Tuple(exprs, _), Type::Tuple(types)) => {
             for (expr, ty) in exprs.iter().zip(types.iter()) {
-                unify_for_inference(expr, ty, symbols, inferred);
+                unify_for_inference(expr, ty, _symbols, inferred);
             }
         }
         _ => {

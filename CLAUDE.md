@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build --release                    # Build all crates
-cargo test --workspace                   # Run all tests (~454 passing, 13 ignored)
+cargo test --workspace                   # Run all tests (~335 passing, 2 ignored, 5 known failures)
 cargo test -p lumen-compiler             # Tests for compiler only
 cargo test -p lumen-vm                   # Tests for VM only
 cargo test -p lumen-runtime              # Tests for runtime only

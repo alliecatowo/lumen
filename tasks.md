@@ -104,6 +104,12 @@ Execution tracker for next three rounds: `docs/research/EXECUTION_TRACKER.md`.
   - **File**: `rust/lumen-compiler/src/compiler/typecheck.rs:190-191`
   - **Status**: COMPLETED — type aliases resolve correctly.
 
+- [x] **Implement multi-file module system with imports**: File-based module resolution with LIR linking.
+  - **Files**: `rust/lumen-cli/src/module_resolver.rs`, `rust/lumen-compiler/src/lib.rs`, `rust/lumen-compiler/src/compiler/lir.rs`
+  - **Status**: COMPLETED — import syntax (`import module.path: *` or `import module.path: Name1, Name2`), module resolution, circular import detection, LIR module merging all functional.
+  - **Tests**: `examples/import_test/` with 4 test files demonstrating working imports, error handling.
+  - **Documentation**: See CLAUDE.md "Module System and Imports" section.
+
 ### Lowering Bugs
 
 - [ ] **Fix closure/lambda upvalue capture**: Lambda bodies get fresh `RegAlloc` with no enclosing scope.

@@ -103,6 +103,7 @@ fn compile_with_imports_internal(
     // 6. Process imports before resolution
     let mut base_symbols = SymbolTable::new();
     let mut import_errors = Vec::new();
+    let mut imported_modules: Vec<LirModule> = Vec::new();
 
     // Collect all imports
     let imports: Vec<&ImportDecl> = program
@@ -147,8 +148,8 @@ fn compile_with_imports_internal(
         // Track this module in the compilation stack
         compilation_stack.insert(module_path.clone());
 
-        // Recursively compile the imported module (we only need it for validation)
-        let _imported_module = if imported_source.contains("```lumen") {
+        // Recursively compile the imported module
+        let imported_module = if imported_source.contains("```lumen") {
             compile_with_imports_internal(
                 &imported_source,
                 resolve_import,
@@ -166,6 +167,9 @@ fn compile_with_imports_internal(
 
         // Remove from stack after compilation
         compilation_stack.remove(&module_path);
+
+        // Keep the compiled module for later merging
+        imported_modules.push(imported_module);
 
         // Extract symbols from the imported module by parsing it as markdown if it has
         // fenced lumen blocks, otherwise as raw source.
@@ -278,7 +282,12 @@ fn compile_with_imports_internal(
     compiler::constraints::validate_constraints(&program).map_err(CompileError::Constraint)?;
 
     // 10. Lower to LIR
-    let module = compiler::lower::lower(&program, &symbols, source);
+    let mut module = compiler::lower::lower(&program, &symbols, source);
+
+    // 11. Merge imported modules
+    for imported_module in imported_modules {
+        module.merge(&imported_module);
+    }
 
     Ok(module)
 }
@@ -320,6 +329,7 @@ fn compile_raw_with_imports_internal(
     // 3. Process imports before resolution
     let mut base_symbols = SymbolTable::new();
     let mut import_errors = Vec::new();
+    let mut imported_modules: Vec<LirModule> = Vec::new();
 
     // Collect all imports
     let imports: Vec<&ImportDecl> = program
@@ -366,7 +376,7 @@ fn compile_raw_with_imports_internal(
 
         // Recursively compile the imported module
         // Determine if it's markdown or raw based on what we got back
-        let _imported_module = if imported_source.contains("```lumen") {
+        let imported_module = if imported_source.contains("```lumen") {
             compile_with_imports_internal(
                 &imported_source,
                 resolve_import,
@@ -384,6 +394,9 @@ fn compile_raw_with_imports_internal(
 
         // Remove from stack after compilation
         compilation_stack.remove(&module_path);
+
+        // Keep the compiled module for later merging
+        imported_modules.push(imported_module);
 
         // Extract symbols from the imported module by parsing it as markdown if it has
         // fenced lumen blocks, otherwise as raw source.
@@ -495,7 +508,12 @@ fn compile_raw_with_imports_internal(
     compiler::constraints::validate_constraints(&program).map_err(CompileError::Constraint)?;
 
     // 7. Lower to LIR
-    let module = compiler::lower::lower(&program, &symbols, source);
+    let mut module = compiler::lower::lower(&program, &symbols, source);
+
+    // 8. Merge imported modules
+    for imported_module in imported_modules {
+        module.merge(&imported_module);
+    }
 
     Ok(module)
 }

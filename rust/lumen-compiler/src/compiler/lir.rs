@@ -389,4 +389,83 @@ impl LirModule {
             handlers: Vec::new(),
         }
     }
+
+    /// Merge another module's definitions into this module.
+    ///
+    /// This is used during import resolution to link imported modules into the main module.
+    /// String table entries are deduplicated. Other items (cells, types, etc.) are appended,
+    /// assuming no name conflicts (the resolver should have already checked this).
+    pub fn merge(&mut self, other: &LirModule) {
+        use std::collections::HashMap;
+
+        // Build a map from old string indices in `other` to new indices in `self`
+        let mut string_remap: HashMap<usize, usize> = HashMap::new();
+        for (old_idx, s) in other.strings.iter().enumerate() {
+            if let Some(existing_idx) = self.strings.iter().position(|x| x == s) {
+                string_remap.insert(old_idx, existing_idx);
+            } else {
+                string_remap.insert(old_idx, self.strings.len());
+                self.strings.push(s.clone());
+            }
+        }
+
+        // Merge types (no string remapping needed for simple names)
+        for ty in &other.types {
+            if !self.types.iter().any(|t| t.name == ty.name) {
+                self.types.push(ty.clone());
+            }
+        }
+
+        // Merge cells (no string remapping needed for simple names)
+        for cell in &other.cells {
+            if !self.cells.iter().any(|c| c.name == cell.name) {
+                self.cells.push(cell.clone());
+            }
+        }
+
+        // Merge tools
+        for tool in &other.tools {
+            if !self.tools.iter().any(|t| t.alias == tool.alias) {
+                self.tools.push(tool.clone());
+            }
+        }
+
+        // Merge policies
+        for policy in &other.policies {
+            if !self.policies.iter().any(|p| p.tool_alias == policy.tool_alias) {
+                self.policies.push(policy.clone());
+            }
+        }
+
+        // Merge agents
+        for agent in &other.agents {
+            if !self.agents.iter().any(|a| a.name == agent.name) {
+                self.agents.push(agent.clone());
+            }
+        }
+
+        // Merge addons
+        self.addons.extend_from_slice(&other.addons);
+
+        // Merge effects
+        for effect in &other.effects {
+            if !self.effects.iter().any(|e| e.name == effect.name) {
+                self.effects.push(effect.clone());
+            }
+        }
+
+        // Merge effect bindings
+        for bind in &other.effect_binds {
+            if !self.effect_binds.iter().any(|b| b.effect_path == bind.effect_path && b.tool_alias == bind.tool_alias) {
+                self.effect_binds.push(bind.clone());
+            }
+        }
+
+        // Merge handlers
+        for handler in &other.handlers {
+            if !self.handlers.iter().any(|h| h.name == handler.name) {
+                self.handlers.push(handler.clone());
+            }
+        }
+    }
 }

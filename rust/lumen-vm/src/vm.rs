@@ -1110,40 +1110,45 @@ impl VM {
             let c = instr.c as usize;
             self.validate_instruction_registers(instr, cell_registers)?;
 
-            // Handle opcodes that need mutable self first (before borrowing module)
-            match instr.op {
-                OpCode::Call => {
-                    if let Err(err) = self.dispatch_call(base, a, b) {
-                        if self.fail_current_future(err.to_string()) {
-                            continue;
-                        }
-                        return Err(err);
-                    }
-                    continue;
-                }
-                OpCode::TailCall => {
-                    if let Err(err) = self.dispatch_tailcall(base, a, b) {
-                        if self.fail_current_future(err.to_string()) {
-                            continue;
-                        }
-                        return Err(err);
-                    }
-                    continue;
-                }
-                OpCode::Intrinsic => {
-                    let result = match self.exec_intrinsic(base, a, b, c) {
-                        Ok(v) => v,
-                        Err(err) => {
+            // Handle opcodes that need mutable self first (before borrowing module).
+            if matches!(
+                instr.op,
+                OpCode::Call | OpCode::TailCall | OpCode::Intrinsic
+            ) {
+                match instr.op {
+                    OpCode::Call => {
+                        if let Err(err) = self.dispatch_call(base, a, b) {
                             if self.fail_current_future(err.to_string()) {
                                 continue;
                             }
                             return Err(err);
                         }
-                    };
-                    self.registers[base + a] = result;
-                    continue;
+                        continue;
+                    }
+                    OpCode::TailCall => {
+                        if let Err(err) = self.dispatch_tailcall(base, a, b) {
+                            if self.fail_current_future(err.to_string()) {
+                                continue;
+                            }
+                            return Err(err);
+                        }
+                        continue;
+                    }
+                    OpCode::Intrinsic => {
+                        let result = match self.exec_intrinsic(base, a, b, c) {
+                            Ok(v) => v,
+                            Err(err) => {
+                                if self.fail_current_future(err.to_string()) {
+                                    continue;
+                                }
+                                return Err(err);
+                            }
+                        };
+                        self.registers[base + a] = result;
+                        continue;
+                    }
+                    _ => unreachable!("guarded by matches! above"),
                 }
-                _ => {}
             }
 
             let module = self.module.as_ref().ok_or(VmError::NoModule)?;
@@ -1300,7 +1305,12 @@ impl VM {
                         Value::Record(r) => {
                             r.fields.insert(key.as_string(), val);
                         }
-                        _ => {}
+                        target => {
+                            return Err(VmError::TypeError(format!(
+                                "cannot assign by index on {} (expected list, map, or record)",
+                                target.type_name()
+                            )));
+                        }
                     }
                 }
                 OpCode::GetTuple => {
@@ -4642,7 +4652,7 @@ impl VM {
                             change.insert("removed".to_string(), va.clone());
                             diffs.push(Value::Map(change));
                         }
-                        _ => {}
+                        Some(_) => {}
                     }
                 }
                 for (key, vb) in &rb.fields {
@@ -4681,7 +4691,7 @@ impl VM {
                             change.insert("removed".to_string(), va.clone());
                             diffs.push(Value::Map(change));
                         }
-                        _ => {}
+                        Some(_) => {}
                     }
                 }
                 for (key, vb) in mb {
@@ -5252,6 +5262,36 @@ mod tests {
         }
     }
 
+    fn make_set_index_on_non_indexable() -> LirModule {
+        LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("Int".into()),
+                registers: 3,
+                constants: vec![Constant::Int(7), Constant::Int(0), Constant::Int(42)],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),
+                    Instruction::abx(OpCode::LoadK, 1, 1),
+                    Instruction::abx(OpCode::LoadK, 2, 2),
+                    Instruction::abc(OpCode::SetIndex, 0, 1, 2),
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        }
+    }
+
     #[test]
     fn test_vm_add() {
         let mut vm = VM::new();
@@ -5260,6 +5300,22 @@ mod tests {
             .execute("add", vec![Value::Int(10), Value::Int(32)])
             .unwrap();
         assert_eq!(result, Value::Int(42));
+    }
+
+    #[test]
+    fn test_set_index_on_non_indexable_type_errors() {
+        let mut vm = VM::new();
+        vm.load(make_set_index_on_non_indexable());
+        let err = vm
+            .execute("main", vec![])
+            .expect_err("set index on integer should fail");
+        match err {
+            VmError::TypeError(msg) => {
+                assert!(msg.contains("cannot assign by index"));
+                assert!(msg.contains("expected list, map, or record"));
+            }
+            other => panic!("expected TypeError, got {other:?}"),
+        }
     }
 
     #[test]

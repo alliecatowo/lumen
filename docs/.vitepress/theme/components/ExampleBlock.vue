@@ -46,7 +46,8 @@ function tryItOut() {
 .example-block {
   border: 1px solid var(--vp-c-divider);
   border-radius: 12px;
-  margin: 16px 0;
+  margin: 1.5rem auto;
+  max-width: 1400px;
   overflow: hidden;
   background: var(--vp-c-bg-soft);
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);

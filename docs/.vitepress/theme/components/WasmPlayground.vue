@@ -461,15 +461,9 @@ onUnmounted(() => {
 <style scoped>
 /* Full-screen experience layout */
 .playground-wrapper {
-  position: relative;
-  width: 100vw;
-  left: 50%;
-  right: 50%;
-  margin-left: -50vw;
-  margin-right: -50vw;
-  margin-top: 2rem;
-  margin-bottom: 2rem;
-  padding: 0 1.5rem;
+  max-width: 1400px;
+  margin: 3rem auto;
+  padding: 0 2rem;
 }
 
 .wasm-playground {
@@ -719,10 +713,8 @@ onUnmounted(() => {
 /* Responsive adjustments */
 @media (max-width: 900px) {
   .playground-wrapper {
-    width: 100%;
-    left: 0;
-    margin: 1rem 0;
-    padding: 0;
+    margin: 1.5rem 0;
+    padding: 0 1rem;
   }
   
   .playground-sidebar {

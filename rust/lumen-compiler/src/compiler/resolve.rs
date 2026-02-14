@@ -2006,6 +2006,11 @@ fn collect_stmt_call_requirements(
         Stmt::Emit(s) => collect_expr_call_requirements(&s.value, table, out),
         Stmt::CompoundAssign(s) => collect_expr_call_requirements(&s.value, table, out),
         Stmt::Break(_) | Stmt::Continue(_) => {}
+        Stmt::Defer(s) => {
+            for stmt in &s.body {
+                collect_stmt_call_requirements(stmt, table, out);
+            }
+        }
     }
 }
 
@@ -2262,6 +2267,11 @@ fn collect_stmt_effect_evidence(
         }
         Stmt::CompoundAssign(s) => collect_expr_effect_evidence(&s.value, table, current, out),
         Stmt::Break(_) | Stmt::Continue(_) => {}
+        Stmt::Defer(s) => {
+            for stmt in &s.body {
+                collect_stmt_effect_evidence(stmt, table, current, out);
+            }
+        }
     }
 }
 
@@ -2613,6 +2623,11 @@ fn infer_stmt_effects(
         }
         Stmt::CompoundAssign(s) => infer_expr_effects(&s.value, table, current, out),
         Stmt::Break(_) | Stmt::Continue(_) => {}
+        Stmt::Defer(s) => {
+            for stmt in &s.body {
+                infer_stmt_effects(stmt, table, current, out);
+            }
+        }
     }
 }
 

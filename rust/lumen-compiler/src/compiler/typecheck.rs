@@ -673,6 +673,11 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Stmt::Break(_) | Stmt::Continue(_) => {}
+            Stmt::Defer(ds) => {
+                for s in &ds.body {
+                    self.check_stmt(s, expected_return);
+                }
+            }
             Stmt::Emit(es) => {
                 self.infer_expr(&es.value);
             }

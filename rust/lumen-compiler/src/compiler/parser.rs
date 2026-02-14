@@ -1135,6 +1135,7 @@ impl Parser {
             TokenKind::Break => self.parse_break(),
             TokenKind::Continue => self.parse_continue(),
             TokenKind::Emit => self.parse_emit(),
+            TokenKind::Defer => self.parse_defer(),
             TokenKind::Where => {
                 let s = self.current().span;
                 self.advance();
@@ -1942,6 +1943,17 @@ impl Parser {
         let end_span = self.expect(&TokenKind::End)?.span;
         Ok(Stmt::Loop(LoopStmt {
             label,
+            body,
+            span: start.merge(end_span),
+        }))
+    }
+
+    fn parse_defer(&mut self) -> Result<Stmt, ParseError> {
+        let start = self.expect(&TokenKind::Defer)?.span;
+        self.skip_newlines();
+        let body = self.parse_block()?;
+        let end_span = self.expect(&TokenKind::End)?.span;
+        Ok(Stmt::Defer(DeferStmt {
             body,
             span: start.merge(end_span),
         }))
@@ -4946,9 +4958,27 @@ impl Parser {
                     let span = val.span();
                     args.push(CallArg::Named(name_clone, val, span));
                 } else {
-                    self.pos = save;
-                    let expr = self.parse_expr(0)?;
-                    args.push(CallArg::Positional(expr));
+                    // Property shorthand: Point(x, y) => Point(x: x, y: y)
+                    // Only when callee is an uppercase ident (record constructor)
+                    // and the argument is a bare identifier (followed by , or ))
+                    let is_record_ctor = matches!(&callee, Expr::Ident(n, _) if n.starts_with(char::is_uppercase));
+                    if is_record_ctor
+                        && matches!(
+                            self.peek_kind(),
+                            TokenKind::Comma | TokenKind::RParen | TokenKind::Newline
+                        )
+                    {
+                        let span = self.tokens[save].span;
+                        args.push(CallArg::Named(
+                            name_clone.clone(),
+                            Expr::Ident(name_clone, span),
+                            span,
+                        ));
+                    } else {
+                        self.pos = save;
+                        let expr = self.parse_expr(0)?;
+                        args.push(CallArg::Positional(expr));
+                    }
                 }
             } else {
                 let expr = self.parse_expr(0)?;

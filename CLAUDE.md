@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build --release                    # Build all crates
-cargo test --workspace                   # Run all tests (~335 passing, 2 ignored, 5 known failures)
+cargo test --workspace                   # Run all tests (~1090 passing, 20 ignored)
 cargo test -p lumen-compiler             # Tests for compiler only
 cargo test -p lumen-vm                   # Tests for VM only
 cargo test -p lumen-runtime              # Tests for runtime only
@@ -58,7 +58,7 @@ The Cargo workspace root is `/Cargo.toml` with members under `rust/`:
 Other key paths:
 - `SPEC.md` — Implementation-accurate language specification (source of truth)
 - `docs/GRAMMAR.md` — Formal EBNF grammar specification
-- `examples/*.lm.md` — Example programs (22 total)
+- `examples/*.lm.md` — Example programs (30 total)
 - `tasks.md` — Outstanding implementation work
 - `docs/GETTING_STARTED.md` — Installation and tutorial guide
 - `docs/ARCHITECTURE.md` — Component overview
@@ -207,6 +207,14 @@ Providers implement `capabilities()` method to advertise supported features. The
 
 **Pipeline stage arity**: Strict — exactly one data argument per stage interface. Compiler validates type flow between stages and auto-generates `run` cell if missing.
 
+**Floor division operator**: `//` performs integer division (truncating toward negative infinity). `//=` is the compound assignment form. Not to be confused with comments (which use `#`).
+
+**Shift operators**: `<<` (left shift) and `>>` (right shift) are bitwise shift operators. Both operands must be `Int`. The lexer produces distinct `LeftShift` and `RightShift` tokens.
+
+**Match exhaustiveness**: The typechecker validates that match statements on enum subjects cover all variants. Missing variants produce `IncompleteMatch` errors. Wildcard `_` or catch-all identifier patterns make any match exhaustive. Guard patterns do not contribute to exhaustiveness coverage.
+
+**Optional type sugar**: `T?` in type position desugars to `T | Null` in the parser. This applies to parameter types, return types, let bindings, and record fields.
+
 ## Tooling and Editor Support
 
 **Tree-sitter grammar**: Located at `tree-sitter-lumen/grammar.js`. Comprehensive coverage of all language constructs for building LSPs, formatters, and analysis tools.
@@ -243,8 +251,8 @@ Providers implement `capabilities()` method to advertise supported features. The
 - `rust/lumen-compiler/tests/spec_markdown_sweep.rs` — Compiles every code block in `SPEC.md` (auto-stubs undefined types)
 - `rust/lumen-compiler/tests/spec_suite.rs` — Semantic compiler tests (compile-ok and compile-err cases)
 - Unit tests inline in source files across all crates
-- **Test counts**: ~454 tests passing, 1 ignored (breakdown: 18 + 31 + 131 + 14 + 8 + 1 + 81 + 8 + 11 + 11 + 10 + 22 + 111 across crates)
-- All 22 examples type-check successfully; most run end-to-end
+- **Test counts**: ~1090 tests passing, 20 ignored (ignored tests are integration tests requiring external services: Gemini API, MCP servers, provider registry)
+- All 30 examples type-check successfully; most run end-to-end
 
 ## Language Essentials
 
@@ -260,6 +268,17 @@ Providers implement `capabilities()` method to advertise supported features. The
 - **Pipe operator** `|>`: `data |> transform() |> format()` — value becomes first argument
 - **String interpolation**: `"Hello, {name}!"` — embed expressions in strings
 - **Range expressions**: `1..5` (exclusive), `1..=5` (inclusive) — concise iteration
+- **Optional type sugar**: `T?` is shorthand for `T | Null`
+- **Floor division**: `//` for integer division, `//=` for compound assignment
+- **Shift operators**: `<<` and `>>` for bitwise shifts (both operands must be `Int`)
+- **Bitwise operators**: `&`, `|`, `^`, `~` for AND, OR, XOR, NOT
+- **Compound assignments**: `+=`, `-=`, `*=`, `/=`, `//=`, `%=`, `**=`, `&=`, `|=`, `^=`
+- **Labeled loops**: `for @label ...`, `while @label ...`, `loop @label ...` with `break @label` / `continue @label`
+- **For-loop filters**: `for x in items if condition` — skip iterations where condition is false
+- **Type expressions**: `expr is Type` (returns `Bool`), `expr as Type` (casts value)
+- **Null-safe index**: `collection?[index]` — returns `null` if collection is null
+- **Variadic parameters**: `...param` syntax is parsed in cell signatures (type system wiring pending)
+- **Match exhaustiveness**: compiler checks all enum variants are covered in match statements
 - See `examples/syntax_sugar.lm.md` for comprehensive examples
 
 

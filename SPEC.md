@@ -172,7 +172,38 @@ Composite and functional forms:
 - `tuple[T1, T2, ...]`
 - `result[Ok, Err]`
 - unions: `A | B`
+- optional sugar: `T?` (shorthand for `T | Null`)
 - function types: `fn(A, B) -> C`
+
+### Optional Type Sugar (`T?`)
+
+`T?` is syntactic sugar for `T | Null`. It can be used anywhere a type expression is expected:
+
+```lumen
+cell find(name: String) -> Int?
+  if name == "alice"
+    return 42
+  end
+  return null
+end
+
+cell main() -> Int
+  let x: Int? = find("alice")
+  return x ?? 0
+end
+```
+
+### Type Test and Cast Expressions
+
+- `expr is Type` — returns `Bool`, testing whether the value is of the given type
+- `expr as Type` — casts the value to the target type
+
+```lumen
+cell main() -> Bool
+  let v: Int | String = 42
+  return v is Int
+end
+```
 
 ```lumen
 cell main() -> tuple[list[Int], map[String, Int], set[Int], Null]
@@ -195,7 +226,11 @@ Implemented expression families include:
 - comprehensions
 - **range expressions** (`..`, `..=`)
 - **string interpolation** (`{expr}`)
-- null operators (`?.`, `??`, `!`)
+- null operators (`?.`, `??`, `!`, `?[]`)
+- **floor division** (`//`) — integer division truncating toward negative infinity
+- **shift operators** (`<<`, `>>`) — bitwise left and right shift (both operands must be `Int`)
+- **bitwise operators** (`&`, `|`, `^`, `~`) — AND, OR, XOR, NOT
+- **is/as expressions** — `expr is Type` (type test), `expr as Type` (type cast)
 - `await`
 - orchestration await block forms:
   - `await parallel for ... end`
@@ -250,6 +285,13 @@ end
 
 ### Null Safety
 
+Null-safe operators propagate `null` without crashing:
+
+- `?.` — null-safe field access: `x?.field` returns `null` if `x` is null
+- `?[]` — null-safe index access: `x?[i]` returns `null` if `x` is null
+- `??` — null coalescing: `x ?? default` returns `default` if `x` is null
+- `!` — null assert: `x!` unwraps or errors if `x` is null
+
 ```lumen
 record Box
   value: Int
@@ -267,10 +309,10 @@ Implemented statement families include:
 
 - `let` / assignment / compound assignment
 - `if` / `else`
-- `for` loops
+- `for` loops (with optional filter)
 - `while` loops
 - `loop`
-- `break` / `continue`
+- `break` / `continue` (with optional label)
 - `match`
 - `return`
 - `halt`
@@ -285,6 +327,71 @@ cell main() -> Int
   return sum
 end
 ```
+
+### Compound Assignment Operators
+
+All compound assignment forms:
+
+- `+=`, `-=`, `*=`, `/=` — arithmetic
+- `//=` — floor division assign
+- `%=` — modulo assign
+- `**=` — power assign
+- `&=`, `|=`, `^=` — bitwise assign
+
+```lumen
+cell main() -> Int
+  let mut x = 10
+  x += 5
+  x -= 2
+  x *= 3
+  x //= 4
+  x %= 7
+  return x
+end
+```
+
+### Labeled Loops
+
+Loops (`for`, `while`, `loop`) can be labeled with `@name`. `break` and `continue` can target a label to control nested loops:
+
+```lumen
+cell main() -> Int
+  let mut count = 0
+  for @outer i in 0..3
+    for j in 0..3
+      if j == 1
+        continue @outer
+      end
+      count += 1
+    end
+  end
+  return count
+end
+```
+
+### For-Loop Filters
+
+`for` loops support an optional `if` filter clause that skips iterations where the condition is false:
+
+```lumen
+cell main() -> Int
+  let mut sum = 0
+  for x in 1..=10 if x % 2 == 0
+    sum += x
+  end
+  return sum
+end
+```
+
+### Variadic Parameters (Syntax)
+
+Cell parameters support the `...` prefix syntax for variadic parameters. The parser accepts this syntax and records it in the AST:
+
+```
+cell sum(...nums: list[Int]) -> Int
+```
+
+Note: Variadic parameter expansion is parsed but not yet fully wired through the type system. The parameter is stored with a `variadic: true` flag in the AST.
 
 ## 6. Pattern Matching
 
@@ -316,6 +423,28 @@ cell main() -> Int
   end
 end
 ```
+
+### Match Exhaustiveness Checking
+
+The compiler checks that `match` statements on enum types cover all variants. If a match is non-exhaustive, the compiler reports an `IncompleteMatch` error listing the missing variants:
+
+```lumen
+enum Color
+  Red
+  Green
+  Blue
+end
+
+cell describe(c: Color) -> String
+  match c
+    Red -> return "red"
+    Green -> return "green"
+    Blue -> return "blue"
+  end
+end
+```
+
+A wildcard (`_`) or catch-all identifier pattern makes any match exhaustive. Guard patterns are treated conservatively and do not contribute to exhaustiveness coverage (since the guard may fail at runtime).
 
 ## 7. Effect Rows, Strictness, and Determinism
 

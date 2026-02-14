@@ -863,6 +863,7 @@ impl Lexer {
             "then" => TokenKind::Then,
             "when" => TokenKind::When,
             "is" => TokenKind::Is,
+            "defer" => TokenKind::Defer,
             // Type keywords
             "bool" => TokenKind::Bool,
             "int" => TokenKind::Int_,

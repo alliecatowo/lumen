@@ -337,6 +337,7 @@ pub enum Stmt {
     Continue(ContinueStmt),
     Emit(EmitStmt),
     CompoundAssign(CompoundAssignStmt),
+    Defer(DeferStmt),
 }
 
 impl Stmt {
@@ -356,6 +357,7 @@ impl Stmt {
             Stmt::Continue(s) => s.span,
             Stmt::Emit(s) => s.span,
             Stmt::CompoundAssign(s) => s.span,
+            Stmt::Defer(s) => s.span,
         }
     }
 }
@@ -508,6 +510,12 @@ pub struct CompoundAssignStmt {
     pub target: String,
     pub op: CompoundOp,
     pub value: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeferStmt {
+    pub body: Vec<Stmt>,
     pub span: Span,
 }
 

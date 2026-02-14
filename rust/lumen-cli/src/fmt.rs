@@ -798,6 +798,15 @@ impl Formatter {
                 };
                 self.writeln(&format!("{} {} {}", s.target, op, self.fmt_expr(&s.value)));
             }
+            Stmt::Defer(s) => {
+                self.writeln("defer");
+                self.indent += 1;
+                for stmt in &s.body {
+                    self.fmt_stmt(stmt);
+                }
+                self.indent -= 1;
+                self.writeln("end");
+            }
         }
     }
 

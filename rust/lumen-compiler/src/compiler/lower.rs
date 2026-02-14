@@ -362,6 +362,8 @@ struct Lowerer<'a> {
     strings: Vec<String>,
     loop_stack: Vec<LoopContext>,
     lambda_cells: Vec<LirCell>,
+    /// Accumulated defer blocks for the current function scope (emitted in LIFO order before returns)
+    defer_stack: Vec<Vec<Stmt>>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -385,6 +387,7 @@ impl<'a> Lowerer<'a> {
             strings: Vec::new(),
             loop_stack: Vec::new(),
             lambda_cells: Vec::new(),
+            defer_stack: Vec::new(),
         }
     }
 
@@ -738,6 +741,9 @@ impl<'a> Lowerer<'a> {
         let mut constants: Vec<Constant> = Vec::new();
         let mut instructions: Vec<Instruction> = Vec::new();
 
+        // Save and reset defer stack for this cell scope
+        let saved_defers = std::mem::take(&mut self.defer_stack);
+
         // Allocate param registers
         let params: Vec<LirParam> = cell
             .params
@@ -762,6 +768,8 @@ impl<'a> Lowerer<'a> {
             if is_last && has_return_type {
                 if let Stmt::Expr(es) = stmt {
                     let val_reg = self.lower_expr(&es.expr, &mut ra, &mut constants, &mut instructions);
+                    // Emit accumulated defer blocks in LIFO order before return
+                    self.emit_defers(&mut ra, &mut constants, &mut instructions);
                     instructions.push(Instruction::abc(OpCode::Return, val_reg, 1, 0));
                     continue;
                 }
@@ -776,10 +784,15 @@ impl<'a> Lowerer<'a> {
                 Some(OpCode::Return) | Some(OpCode::Halt)
             )
         {
+            // Emit accumulated defer blocks in LIFO order before implicit return
+            self.emit_defers(&mut ra, &mut constants, &mut instructions);
             let r = ra.alloc_temp();
             instructions.push(Instruction::abc(OpCode::LoadNil, r, 0, 0));
             instructions.push(Instruction::abc(OpCode::Return, r, 1, 0));
         }
+
+        // Restore defer stack
+        self.defer_stack = saved_defers;
 
         LirCell {
             name: cell.name.clone(),
@@ -801,9 +814,41 @@ impl<'a> Lowerer<'a> {
         match stmt {
             Stmt::Let(ls) => {
                 let val_reg = self.lower_expr(&ls.value, ra, consts, instrs);
-                let dest = ra.alloc_named(&ls.name);
-                if dest != val_reg {
-                    instrs.push(Instruction::abc(OpCode::Move, dest, val_reg, 0));
+                if let Some(Pattern::TupleDestructure { elements, .. }) = &ls.pattern {
+                    // Destructuring let: let (a, b, c) = expr
+                    // Evaluate RHS into val_reg, then extract each element
+                    for (i, pat) in elements.iter().enumerate() {
+                        match pat {
+                            Pattern::Ident(name, _) => {
+                                let dest = ra.alloc_named(name);
+                                instrs.push(Instruction::abc(
+                                    OpCode::GetTuple,
+                                    dest,
+                                    val_reg,
+                                    i as u8,
+                                ));
+                            }
+                            Pattern::Wildcard(_) => {
+                                // Skip extraction for wildcard patterns
+                            }
+                            _ => {
+                                // For other patterns (nested destructuring etc.),
+                                // extract to a temp and ignore for now
+                                let temp = ra.alloc_temp();
+                                instrs.push(Instruction::abc(
+                                    OpCode::GetTuple,
+                                    temp,
+                                    val_reg,
+                                    i as u8,
+                                ));
+                            }
+                        }
+                    }
+                } else {
+                    let dest = ra.alloc_named(&ls.name);
+                    if dest != val_reg {
+                        instrs.push(Instruction::abc(OpCode::Move, dest, val_reg, 0));
+                    }
                 }
             }
             Stmt::If(ifs) => {
@@ -981,6 +1026,8 @@ impl<'a> Lowerer<'a> {
             }
             Stmt::Return(rs) => {
                 let val_reg = self.lower_expr(&rs.value, ra, consts, instrs);
+                // Emit accumulated defer blocks in LIFO order before return
+                self.emit_defers(ra, consts, instrs);
                 instrs.push(Instruction::abc(OpCode::Return, val_reg, 1, 0));
             }
             Stmt::Halt(hs) => {
@@ -1111,6 +1158,27 @@ impl<'a> Lowerer<'a> {
                     CompoundOp::BitXorAssign => OpCode::BitXor,
                 };
                 instrs.push(Instruction::abc(opcode, target_reg, target_reg, val_reg));
+            }
+            Stmt::Defer(ds) => {
+                // Collect defer block body for emission before returns (LIFO order)
+                self.defer_stack.push(ds.body.clone());
+            }
+        }
+    }
+
+    /// Emit all accumulated defer blocks in LIFO order (last defer first).
+    /// This is called before every return point in a function.
+    fn emit_defers(
+        &mut self,
+        ra: &mut RegAlloc,
+        consts: &mut Vec<Constant>,
+        instrs: &mut Vec<Instruction>,
+    ) {
+        // Clone the defer stack so we can iterate in reverse without borrowing issues
+        let defers: Vec<Vec<Stmt>> = self.defer_stack.clone();
+        for defer_body in defers.iter().rev() {
+            for s in defer_body {
+                self.lower_stmt(s, ra, consts, instrs);
             }
         }
     }
@@ -2212,6 +2280,9 @@ impl<'a> Lowerer<'a> {
                     });
                 }
 
+                // Save and reset defer stack for lambda scope
+                let saved_defers = std::mem::take(&mut self.defer_stack);
+
                 match body {
                     LambdaBody::Expr(e) => {
                         let val = self.lower_expr(e, &mut lra, &mut lconsts, &mut linstrs);
@@ -2227,12 +2298,17 @@ impl<'a> Lowerer<'a> {
                                 Some(OpCode::Return) | Some(OpCode::Halt)
                             )
                         {
+                            // Emit defers before implicit return in lambda
+                            self.emit_defers(&mut lra, &mut lconsts, &mut linstrs);
                             let r = lra.alloc_temp();
                             linstrs.push(Instruction::abc(OpCode::LoadNil, r, 0, 0));
                             linstrs.push(Instruction::abc(OpCode::Return, r, 1, 0));
                         }
                     }
                 }
+
+                // Restore defer stack
+                self.defer_stack = saved_defers;
 
                 let proto_idx = self.lambda_cells.len() as u16;
                 self.lambda_cells.push(LirCell {
@@ -3019,6 +3095,11 @@ fn collect_free_idents_stmt(stmt: &Stmt, out: &mut Vec<String>) {
             }
         }
         Stmt::CompoundAssign(ca) => collect_free_idents_expr(&ca.value, out),
+        Stmt::Defer(ds) => {
+            for s in &ds.body {
+                collect_free_idents_stmt(s, out);
+            }
+        }
         _ => {}
     }
 }

@@ -130,6 +130,7 @@ pub enum TokenKind {
     Then,
     When,
     Is,
+    Defer,
     // Existing type keywords used in SPEC
     Bool,
     Int_,
@@ -287,6 +288,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Then => write!(f, "then"),
             TokenKind::When => write!(f, "when"),
             TokenKind::Is => write!(f, "is"),
+            TokenKind::Defer => write!(f, "defer"),
             TokenKind::Bool => write!(f, "bool"),
             TokenKind::Int_ => write!(f, "int"),
             TokenKind::Float_ => write!(f, "float"),

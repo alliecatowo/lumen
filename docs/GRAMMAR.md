@@ -37,7 +37,7 @@ keyword = "record" | "enum" | "cell" | "let" | "if" | "else" | "for" | "in"
         | "trait" | "impl" | "type" | "set" | "tuple" | "emit" | "yield"
         | "mod" | "self" | "with" | "try" | "union" | "step" | "comptime"
         | "macro" | "extern" | "then" | "when" | "bool" | "int" | "float"
-        | "string" | "bytes" | "json" ;
+        | "string" | "bytes" | "json" | "is" ;
 ```
 
 ### 1.3 Identifiers
@@ -84,13 +84,16 @@ HEX_DIGIT = DIGIT | "a".."f" | "A".."F" ;
 ### 1.5 Operators and Delimiters
 
 ```ebnf
-operator = "+" | "-" | "*" | "/" | "%" | "**"
+operator = "+" | "-" | "*" | "/" | "//" | "%" | "**"
          | "==" | "!=" | "<" | "<=" | ">" | ">="
          | "=" | "->" | "=>" | "."
-         | "+=" | "-=" | "*=" | "/="
-         | "|>" | ">>" | "??" | "?." | "!" | "?"
+         | "+=" | "-=" | "*=" | "/=" | "//="
+         | "%=" | "**=" | "&=" | "|=" | "^="
+         | "<<" | ">>"
+         | "|>" | "??" | "?." | "?[" | "!" | "?"
          | ".." | "..=" | "..."
-         | "++" | "&" | "~" | "^" | "|" ;
+         | "++" | "&" | "~" | "^" | "|"
+         | "is" | "as" ;
 
 delimiter = "(" | ")" | "[" | "]" | "{" | "}"
           | "," | ":" | ";" | "@" | "#" ;
@@ -144,11 +147,14 @@ type_expr = named_type
           | tuple_type
           | result_type
           | union_type
+          | optional_type
           | null_type
           | function_type
           | generic_type ;
 
 named_type = identifier ;
+
+optional_type = type_expr "?" ;   (* T? desugars to T | Null *)
 
 list_type = "list" "[" type_expr "]" ;
 
@@ -212,6 +218,7 @@ cell_body = NEWLINE [ INDENT ] { statement } [ DEDENT ] "end" ;
 parameter_list = parameter { "," parameter } ;
 
 parameter = [ "..." ] identifier [ ":" type_expr ] [ "=" expression ] ;
+            (* "..." prefix marks a variadic parameter that collects remaining args *)
 
 effect_row = "/" ( "{" effect_name { "," effect_name } "}" | effect_name ) ;
 
@@ -377,18 +384,21 @@ if_statement = "if" [ "let" pattern "=" ] expression
                  [ "else" ( if_statement | NEWLINE statement_block ) ]
                  "end" ) ;
 
-for_statement = "for" ( identifier | tuple_destructure ) "in" expression
+for_statement = "for" [ "@" identifier ] ( identifier | tuple_destructure ) "in" expression
                 [ "if" expression ]
                 NEWLINE statement_block "end" ;
+                (* "@label" enables labeled loop; "if expr" filters iterations *)
 
-while_statement = "while" [ "let" pattern "=" ] expression
+while_statement = "while" [ "@" identifier ]
+                  ( [ "let" pattern "=" ] expression )
                   NEWLINE statement_block "end" ;
 
-loop_statement = "loop" NEWLINE statement_block "end" ;
+loop_statement = "loop" [ "@" identifier ] NEWLINE statement_block "end" ;
 
 match_statement = "match" expression NEWLINE
                   [ INDENT ] { match_arm } [ DEDENT ]
                   "end" ;
+                  (* enum matches are checked for exhaustiveness *)
 
 match_arm = pattern { "|" pattern } [ "if" expression ] "->"
             ( statement | NEWLINE [ INDENT ] { statement } [ DEDENT ] ) ;
@@ -399,7 +409,7 @@ halt_statement = "halt" "(" expression ")" NEWLINE ;
 
 break_statement = "break" [ "@" identifier | expression ] NEWLINE ;
 
-continue_statement = "continue" NEWLINE ;
+continue_statement = "continue" [ "@" identifier ] NEWLINE ;
 
 emit_statement = "emit" expression NEWLINE ;
 
@@ -409,7 +419,8 @@ assignment_target = identifier { "." identifier } ;
 
 compound_assignment_statement = assignment_target compound_op expression NEWLINE ;
 
-compound_op = "+=" | "-=" | "*=" | "/=" ;
+compound_op = "+=" | "-=" | "*=" | "/=" | "//=" | "%=" | "**="
+            | "&=" | "|=" | "^=" ;
 
 expression_statement = expression NEWLINE ;
 
@@ -460,7 +471,7 @@ or_pattern = pattern "|" pattern { "|" pattern } ;
 ```ebnf
 expression = pipe_forward_expr ;
 
-pipe_forward_expr = null_coalesce_expr { "|>" null_coalesce_expr } ;
+pipe_forward_expr = null_coalesce_expr { ( "|>" | "~>" ) null_coalesce_expr } ;
 
 null_coalesce_expr = or_expr { "??" or_expr } ;
 
@@ -468,17 +479,11 @@ or_expr = and_expr { "or" and_expr } ;
 
 and_expr = comparison_expr { "and" comparison_expr } ;
 
-comparison_expr = in_expr { comparison_op in_expr } ;
+comparison_expr = concat_expr { comparison_op concat_expr } ;
 
-comparison_op = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
-
-in_expr = bitor_expr [ "in" bitor_expr ] ;
-
-bitor_expr = bitxor_expr { "|" bitxor_expr } ;
-
-bitxor_expr = bitand_expr { "^" bitand_expr } ;
-
-bitand_expr = concat_expr { "&" concat_expr } ;
+comparison_op = "==" | "!=" | "<" | "<=" | ">" | ">="
+              | "in" | "is" | "as"
+              | "&" | "^" | "<<" | ">>" ;
 
 concat_expr = range_expr { "++" range_expr } ;
 
@@ -486,7 +491,7 @@ range_expr = additive_expr [ ( ".." | "..=" ) [ additive_expr ] [ "step" additiv
 
 additive_expr = multiplicative_expr { ( "+" | "-" ) multiplicative_expr } ;
 
-multiplicative_expr = power_expr { ( "*" | "/" | "%" ) power_expr } ;
+multiplicative_expr = power_expr { ( "*" | "/" | "//" | "%" ) power_expr } ;
 
 power_expr = unary_expr [ "**" power_expr ] ;
 
@@ -498,6 +503,7 @@ postfix_expr = primary_expr { postfix_op } ;
 postfix_op = "." identifier
            | "?." identifier
            | "[" expression "]"
+           | "?[" expression "]"
            | "(" [ call_args ] ")"
            | "?"
            | "!" ;
@@ -575,22 +581,18 @@ expect_schema = "expect" "schema" identifier ;
 
 | Precedence | Operators | Associativity | Description |
 |------------|-----------|---------------|-------------|
-| 1 (lowest) | `\|>` | Left | Pipe forward |
+| 1 (lowest) | `\|>` `~>` | Left | Pipe forward, illuminate |
 | 2 | `??` | Left | Null coalescing |
 | 3 | `or` | Left | Logical OR |
 | 4 | `and` | Left | Logical AND |
-| 5 | `==` `!=` `<` `<=` `>` `>=` | Left | Comparison |
-| 6 | `in` | Left | Membership test |
-| 7 | `\|` | Left | Bitwise OR / Union |
-| 8 | `^` | Left | Bitwise XOR |
-| 9 | `&` | Left | Bitwise AND / Intersection |
-| 10 | `++` | Left | String/list concatenation |
-| 11 | `..` `..=` | Left | Range operators |
-| 12 | `+` `-` | Left | Addition, subtraction |
-| 13 | `*` `/` `%` | Left | Multiplication, division, modulo |
-| 14 | `**` | Right | Exponentiation |
-| 15 | `-` `not` `~` `!` `...` | Right (prefix) | Unary operators |
-| 16 (highest) | `.` `?.` `[]` `()` `?` `!` | Left (postfix) | Member access, calls, postfix |
+| 5 | `==` `!=` `<` `<=` `>` `>=` `in` `is` `as` `&` `^` `<<` `>>` | Left | Comparison, membership, type test/cast, bitwise |
+| 6 | `++` | Left | String/list concatenation |
+| 7 | `..` `..=` | Left | Range operators |
+| 8 | `+` `-` | Left | Addition, subtraction |
+| 9 | `*` `/` `//` `%` | Left | Multiplication, division, floor division, modulo |
+| 10 | `**` | Right | Exponentiation |
+| 11 | `-` `not` `~` `!` `...` | Right (prefix) | Unary operators |
+| 12 (highest) | `.` `?.` `[]` `?[]` `()` `?` `!` | Left (postfix) | Member access, calls, postfix |
 
 ## 9. Implementation Notes
 
@@ -689,11 +691,17 @@ For implementation details, see:
 
 This grammar covers:
 - All declaration types (records, enums, cells, agents, processes, effects, handlers, etc.)
-- All statement types (let, if, for, while, loop, match, return, halt, break, continue, emit, assignment)
-- All expression types (literals, operators, calls, lambdas, comprehensions, etc.)
+- All statement types (let, if, for, while, loop, match, return, halt, break, continue, emit, assignment, compound assignment)
+- All expression types (literals, operators, calls, lambdas, comprehensions, is/as, etc.)
 - All pattern types (literals, variants, destructuring, guards, or-patterns)
-- Type expressions (named, list, map, set, tuple, result, union, function, generic)
-- Operator precedence and associativity
+- Type expressions (named, list, map, set, tuple, result, union, optional `T?`, function, generic)
+- Operator precedence and associativity (including `//`, `<<`, `>>`, `is`, `as`)
+- Compound assignment operators (`+=`, `-=`, `*=`, `/=`, `//=`, `%=`, `**=`, `&=`, `|=`, `^=`)
+- Labeled loops (`@label`) with targeted `break`/`continue`
+- For-loop filters (`for x in items if cond`)
+- Null-safe indexing (`?[]`)
+- Variadic parameters (`...param`)
+- Match exhaustiveness checking for enum types
 - Indentation-based scoping
 - String interpolation
 - Effect rows

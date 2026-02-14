@@ -475,7 +475,7 @@
     "named-argument": {
       "patterns": [
         {
-          "match": "\\b([a-z_][a-zA-Z0-9_]*)\\s*(:)\\s*(?!:)",
+          "match": "\\b([a-z_][a-zA-Z0-9_]*)\\s*(:)\\s*(?!\\s*[A-Z])(?!\\s*(?:list|map|set|tuple|result)\\b)(?!:)",
           "captures": {
             "1": {
               "name": "variable.parameter.label.lumen"

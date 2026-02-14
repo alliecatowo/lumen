@@ -80,6 +80,48 @@ Seven sequential stages:
 6. **Constraint validation** (`compiler/constraints.rs`) — Checks field `where` clauses
 7. **Lowering** (`compiler/lower.rs`) — Converts AST to `LirModule` with bytecode, constants, metadata
 
+## Module System and Imports
+
+Lumen supports multi-file programs through a file-based module system with automatic dependency resolution.
+
+**Import syntax:**
+```lumen
+import module_name: *                    # Wildcard import (all public symbols)
+import module.path: Name1, Name2         # Named imports
+import module.path: Name1 as Alias      # Named import with alias
+```
+
+**Module resolution** (`rust/lumen-cli/src/module_resolver.rs`):
+- `import models` → searches for `models.lm.md`, then `models.lm` in the same directory
+- `import utils.math` → searches for `utils/math.lm.md`, then `utils/math.lm`
+- `import std.foo` → searches stdlib/ directory (if configured)
+- Also checks `mod.lm.md`, `mod.lm`, `main.lm.md`, `main.lm` for directory-based modules
+
+**Compilation pipeline with imports** (`rust/lumen-compiler/src/lib.rs`):
+1. Scan source for `import` declarations
+2. For each import, recursively resolve and compile the imported module to LIR
+3. Extract symbols (cells, types, type aliases) from imported modules into the main symbol table
+4. Typecheck the main module with imported symbols available
+5. Lower the main module to LIR
+6. **Merge** all imported LirModules into the main module using `LirModule::merge()`
+   - Deduplicates string table entries
+   - Appends cells, types, tools, policies, handlers from imported modules
+   - Prevents duplicate definitions by name
+
+**Circular import detection**: Tracks compilation stack and produces clear error messages showing the import chain.
+
+**Error handling**:
+- `ModuleNotFound` — shows module path and line number
+- `CircularImport` — shows full import chain (e.g., "a → b → c → a")
+- `ImportedSymbolNotFound` — specific symbol not found in target module
+
+**CLI integration**: `lumen check` and `lumen run` automatically resolve imports via `ModuleResolver`, searching:
+- Source file's directory
+- Project `src/` directory (if in a Lumen project)
+- Project root directory
+
+**Examples**: See `examples/import_test/` for working multi-file examples.
+
 ## LIR and VM Architecture
 
 LIR uses 32-bit fixed-width instructions (Lua-style encoding) defined in `compiler/lir.rs`:
@@ -104,6 +146,39 @@ Process declarations compile to constructor-backed record objects with typed met
 ### Tool Policy Enforcement
 
 Tool calls go through `validate_tool_policy()` at runtime dispatch. Merged grant policies per tool alias support constraint keys: `domain` (pattern matching), `timeout_ms`, `max_tokens`, and exact-match keys. Violations fail with tool-policy errors.
+
+### Tool Error Types and Capability Detection
+
+The runtime provides structured error types for robust error handling across different AI providers:
+
+**ToolError variants** (`rust/lumen-runtime/src/tools.rs`):
+- `NotFound(String)` — Tool not registered
+- `InvalidArgs(String)` — Missing or malformed input arguments
+- `ExecutionFailed(String)` — Generic execution error
+- `RateLimit { retry_after_ms: Option<u64>, message: String }` — Provider rate limit exceeded (may include retry delay)
+- `AuthError { message: String }` — Authentication or authorization failure
+- `ModelNotFound { model: String, provider: String }` — Requested model not available
+- `Timeout { elapsed_ms: u64, limit_ms: u64 }` — Request exceeded time limit
+- `ProviderUnavailable { provider: String, reason: String }` — Provider service is down
+- `OutputValidationFailed { expected_schema: String, actual: String }` — Output doesn't match declared schema
+- `NotRegistered(String)` — Provider not found in registry
+- `InvocationFailed(String)` — Legacy fallback error (deprecated, use ExecutionFailed)
+
+**Provider Capabilities** (`Capability` enum):
+- `TextGeneration` — Basic text generation
+- `Chat` — Multi-turn conversation
+- `Embedding` — Text embeddings/vectors
+- `Vision` — Image input processing
+- `ToolUse` — Function/tool calling
+- `StructuredOutput` — JSON schema-constrained output
+- `Streaming` — Streaming response support
+
+Providers implement `capabilities()` method to advertise supported features. The registry can check capabilities before dispatching calls.
+
+**Retry Policy** (`RetryPolicy` struct):
+- `max_retries: u32` — Maximum retry attempts (default: 3)
+- `base_delay_ms: u64` — Initial retry delay (default: 100ms)
+- `max_delay_ms: u64` — Maximum retry delay (default: 10s)
 
 ## Critical Implementation Details
 

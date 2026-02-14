@@ -389,6 +389,29 @@ The VM implements 69 intrinsics but only ~18 are callable from source code. The 
 - [x] **Create `LumenConfig` struct**.
 - [x] **Wire config loading into CLI startup**.
 - [x] **Add `lumen init` command** to generate default `lumen.toml`.
+- [x] **Error normalization** — Expand `ToolError` enum with structured variants:
+  - `RateLimit { retry_after_ms, message }` — Provider rate limits with retry info
+  - `AuthError { message }` — Authentication failures
+  - `ModelNotFound { model, provider }` — Model availability errors
+  - `Timeout { elapsed_ms, limit_ms }` — Request timeouts
+  - `ProviderUnavailable { provider, reason }` — Service outages
+  - `OutputValidationFailed { expected_schema, actual }` — Schema violations
+  - `InvalidArgs(String)` — Malformed input arguments
+  - `ExecutionFailed(String)` — Generic execution errors
+  - Updated GeminiProvider to normalize API errors to appropriate variants
+- [x] **Capability detection** — Add `Capability` enum and `capabilities()` method:
+  - `TextGeneration`, `Chat`, `Embedding`, `Vision`, `ToolUse`, `StructuredOutput`, `Streaming`
+  - GeminiProvider implements capability advertisement
+  - Registry checks capabilities during dispatch (foundation for validation)
+- [x] **Retry policy foundation** — Add `RetryPolicy` struct with configurable limits:
+  - `max_retries`, `base_delay_ms`, `max_delay_ms`
+  - Default: 3 retries, 100ms base delay, 10s max delay
+
+- [ ] **Output validation** — Validate provider responses against declared schemas:
+  - Add `jsonschema` crate dependency
+  - Implement `validate_json_schema()` helper
+  - Wire validation into `ProviderRegistry::dispatch()`
+  - Emit `OutputValidationFailed` errors on schema mismatches
 
 - [ ] **Remove heuristic `effect_from_tool()` substring matching**.
   - Replace with provider-declared effect mappings.

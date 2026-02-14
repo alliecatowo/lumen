@@ -1,4 +1,5 @@
 use lumen_runtime::tools::*;
+use lumen_runtime::tools::Capability;
 use serde_json::{json, Value};
 
 /// Gemini tool type — each gets its own provider instance.
@@ -123,11 +124,45 @@ impl GeminiProvider {
         self
     }
 
+    /// Normalize Gemini API errors into structured ToolError variants.
+    fn normalize_error(status: u16, body: &Value) -> ToolError {
+        let message = body
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("Unknown error")
+            .to_string();
+
+        match status {
+            429 => ToolError::RateLimit {
+                retry_after_ms: None, // TODO: Extract from Retry-After header
+                message,
+            },
+            401 | 403 => ToolError::AuthError { message },
+            404 => {
+                if message.contains("model") || message.contains("Model") {
+                    ToolError::ModelNotFound {
+                        model: "unknown".to_string(),
+                        provider: "gemini".to_string(),
+                    }
+                } else {
+                    ToolError::NotFound(message)
+                }
+            }
+            400 => ToolError::InvalidArgs(message),
+            503 => ToolError::ProviderUnavailable {
+                provider: "gemini".to_string(),
+                reason: message,
+            },
+            _ => ToolError::ExecutionFailed(format!("API error {}: {}", status, message)),
+        }
+    }
+
     fn execute_generate(&self, input: Value) -> Result<Value, ToolError> {
         let prompt = input
             .get("prompt")
             .and_then(|p| p.as_str())
-            .ok_or_else(|| ToolError::InvocationFailed("missing 'prompt' field".to_string()))?;
+            .ok_or_else(|| ToolError::InvalidArgs("missing 'prompt' field".to_string()))?;
         let system = input.get("system").and_then(|s| s.as_str());
         let temperature = input.get("temperature").and_then(|t| t.as_f64());
 
@@ -161,18 +196,15 @@ impl GeminiProvider {
             .post(&url)
             .json(&body)
             .send()
-            .map_err(|e| ToolError::InvocationFailed(format!("HTTP error: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("HTTP error: {}", e)))?;
 
         let status = response.status();
         let response_body: Value = response
             .json()
-            .map_err(|e| ToolError::InvocationFailed(format!("JSON parse error: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("JSON parse error: {}", e)))?;
 
         if !status.is_success() {
-            return Err(ToolError::InvocationFailed(format!(
-                "API error {}: {}",
-                status, response_body
-            )));
+            return Err(Self::normalize_error(status.as_u16(), &response_body));
         }
 
         // Extract text from Gemini response
@@ -194,7 +226,7 @@ impl GeminiProvider {
         let messages = input
             .get("messages")
             .and_then(|m| m.as_array())
-            .ok_or_else(|| ToolError::InvocationFailed("missing 'messages' array".to_string()))?;
+            .ok_or_else(|| ToolError::InvalidArgs("missing 'messages' array".to_string()))?;
 
         let contents: Vec<Value> = messages
             .iter()
@@ -220,11 +252,16 @@ impl GeminiProvider {
             .post(&url)
             .json(&body)
             .send()
-            .map_err(|e| ToolError::InvocationFailed(format!("HTTP error: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("HTTP error: {}", e)))?;
 
+        let status = response.status();
         let response_body: Value = response
             .json()
-            .map_err(|e| ToolError::InvocationFailed(format!("JSON parse error: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("JSON parse error: {}", e)))?;
+
+        if !status.is_success() {
+            return Err(Self::normalize_error(status.as_u16(), &response_body));
+        }
 
         let text = response_body
             .get("candidates")
@@ -244,7 +281,7 @@ impl GeminiProvider {
         let text = input
             .get("text")
             .and_then(|t| t.as_str())
-            .ok_or_else(|| ToolError::InvocationFailed("missing 'text' field".to_string()))?;
+            .ok_or_else(|| ToolError::InvalidArgs("missing 'text' field".to_string()))?;
 
         let url = format!(
             "{}/models/text-embedding-004:embedContent?key={}",
@@ -263,11 +300,16 @@ impl GeminiProvider {
             .post(&url)
             .json(&body)
             .send()
-            .map_err(|e| ToolError::InvocationFailed(format!("HTTP error: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("HTTP error: {}", e)))?;
 
+        let status = response.status();
         let response_body: Value = response
             .json()
-            .map_err(|e| ToolError::InvocationFailed(format!("JSON parse error: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("JSON parse error: {}", e)))?;
+
+        if !status.is_success() {
+            return Err(Self::normalize_error(status.as_u16(), &response_body));
+        }
 
         let embedding = response_body
             .get("embedding")
@@ -297,6 +339,15 @@ impl ToolProvider for GeminiProvider {
             GeminiTool::Generate => self.execute_generate(input),
             GeminiTool::Chat => self.execute_chat(input),
             GeminiTool::Embed => self.execute_embed(input),
+        }
+    }
+
+    fn capabilities(&self) -> Vec<Capability> {
+        use Capability::*;
+        match self.tool {
+            GeminiTool::Generate => vec![TextGeneration, StructuredOutput, Vision],
+            GeminiTool::Chat => vec![Chat, TextGeneration, StructuredOutput, Vision],
+            GeminiTool::Embed => vec![Embedding],
         }
     }
 }
@@ -338,11 +389,38 @@ mod tests {
     }
 
     #[test]
+    fn test_generate_capabilities() {
+        let provider = GeminiProvider::generate("test_key".to_string());
+        let caps = provider.capabilities();
+        assert!(caps.contains(&Capability::TextGeneration));
+        assert!(caps.contains(&Capability::StructuredOutput));
+        assert!(caps.contains(&Capability::Vision));
+    }
+
+    #[test]
+    fn test_chat_capabilities() {
+        let provider = GeminiProvider::chat("test_key".to_string());
+        let caps = provider.capabilities();
+        assert!(caps.contains(&Capability::Chat));
+        assert!(caps.contains(&Capability::TextGeneration));
+        assert!(caps.contains(&Capability::StructuredOutput));
+        assert!(caps.contains(&Capability::Vision));
+    }
+
+    #[test]
+    fn test_embed_capabilities() {
+        let provider = GeminiProvider::embed("test_key".to_string());
+        let caps = provider.capabilities();
+        assert!(caps.contains(&Capability::Embedding));
+        assert_eq!(caps.len(), 1);
+    }
+
+    #[test]
     fn test_generate_missing_prompt() {
         let provider = GeminiProvider::generate("test_key".to_string());
         let result = provider.call(json!({}));
-        assert!(matches!(result, Err(ToolError::InvocationFailed(_))));
-        if let Err(ToolError::InvocationFailed(msg)) = result {
+        assert!(matches!(result, Err(ToolError::InvalidArgs(_))));
+        if let Err(ToolError::InvalidArgs(msg)) = result {
             assert!(msg.contains("missing 'prompt' field"));
         }
     }
@@ -351,8 +429,8 @@ mod tests {
     fn test_chat_missing_messages() {
         let provider = GeminiProvider::chat("test_key".to_string());
         let result = provider.call(json!({}));
-        assert!(matches!(result, Err(ToolError::InvocationFailed(_))));
-        if let Err(ToolError::InvocationFailed(msg)) = result {
+        assert!(matches!(result, Err(ToolError::InvalidArgs(_))));
+        if let Err(ToolError::InvalidArgs(msg)) = result {
             assert!(msg.contains("missing 'messages' array"));
         }
     }
@@ -361,8 +439,8 @@ mod tests {
     fn test_embed_missing_text() {
         let provider = GeminiProvider::embed("test_key".to_string());
         let result = provider.call(json!({}));
-        assert!(matches!(result, Err(ToolError::InvocationFailed(_))));
-        if let Err(ToolError::InvocationFailed(msg)) = result {
+        assert!(matches!(result, Err(ToolError::InvalidArgs(_))));
+        if let Err(ToolError::InvalidArgs(msg)) = result {
             assert!(msg.contains("missing 'text' field"));
         }
     }

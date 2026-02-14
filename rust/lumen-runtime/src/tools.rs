@@ -19,14 +19,35 @@ use thiserror::Error;
 pub enum ToolError {
     #[error("tool not found: {0}")]
     NotFound(String),
-    #[error("tool invocation failed: {0}")]
-    InvocationFailed(String),
+    #[error("invalid arguments: {0}")]
+    InvalidArgs(String),
+    #[error("tool execution failed: {0}")]
+    ExecutionFailed(String),
     #[error("policy violation: {0}")]
     PolicyViolation(String),
-    #[error("rate limit exceeded for tool: {0}")]
-    RateLimit(String),
+    #[error("rate limit exceeded: {message}")]
+    RateLimit {
+        retry_after_ms: Option<u64>,
+        message: String,
+    },
+    #[error("authentication failed: {message}")]
+    AuthError { message: String },
+    #[error("model not found: {model} (provider: {provider})")]
+    ModelNotFound { model: String, provider: String },
+    #[error("timeout: elapsed {elapsed_ms}ms, limit {limit_ms}ms")]
+    Timeout { elapsed_ms: u64, limit_ms: u64 },
+    #[error("provider unavailable: {provider} ({reason})")]
+    ProviderUnavailable { provider: String, reason: String },
+    #[error("output validation failed: expected {expected_schema}, got {actual}")]
+    OutputValidationFailed {
+        expected_schema: String,
+        actual: String,
+    },
     #[error("provider not registered: {0}")]
     NotRegistered(String),
+    // Legacy variant for backward compatibility
+    #[error("tool invocation failed: {0}")]
+    InvocationFailed(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -85,6 +106,24 @@ impl ToolDispatcher for StubDispatcher {
 // High-level pluggable provider trait
 // ---------------------------------------------------------------------------
 
+/// Retry policy for tool calls.
+#[derive(Debug, Clone)]
+pub struct RetryPolicy {
+    pub max_retries: u32,
+    pub base_delay_ms: u64,
+    pub max_delay_ms: u64,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_retries: 3,
+            base_delay_ms: 100,
+            max_delay_ms: 10_000,
+        }
+    }
+}
+
 /// Schema describing a tool's input/output types and declared effects.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSchema {
@@ -96,6 +135,18 @@ pub struct ToolSchema {
     pub output_schema: serde_json::Value,
     /// Declared effect kinds (e.g. `["http", "trace"]`).
     pub effects: Vec<String>,
+}
+
+/// Capability supported by a provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Capability {
+    TextGeneration,
+    Chat,
+    Embedding,
+    Vision,
+    ToolUse,
+    StructuredOutput,
+    Streaming,
 }
 
 /// A pluggable tool provider. Implementations live in separate crates
@@ -116,6 +167,11 @@ pub trait ToolProvider: Send + Sync {
     /// Declared effect kinds this provider may trigger.
     fn effects(&self) -> Vec<String> {
         self.schema().effects.clone()
+    }
+
+    /// Capabilities supported by this provider (default: empty).
+    fn capabilities(&self) -> Vec<Capability> {
+        vec![]
     }
 }
 
@@ -234,9 +290,15 @@ impl ToolDispatcher for ProviderRegistry {
             .get(&request.tool_id)
             .ok_or_else(|| ToolError::NotRegistered(request.tool_id.clone()))?;
 
+        // Check capabilities (future: validate against request requirements)
+        let _capabilities = provider.capabilities();
+
         let start = std::time::Instant::now();
         let output = provider.call(request.args.clone())?;
         let latency_ms = start.elapsed().as_millis() as u64;
+
+        // TODO: Validate output against schema (output_schema)
+        // For now, we skip validation to maintain backward compatibility
 
         Ok(ToolResponse {
             outputs: output,
@@ -565,5 +627,136 @@ mod tests {
             ToolError::NotFound(name) => assert_eq!(name, "unknown"),
             other => panic!("expected NotFound, got: {}", other),
         }
+    }
+
+    // -- Error type tests --------------------------------------------------
+
+    #[test]
+    fn error_rate_limit_with_retry_after() {
+        let err = ToolError::RateLimit {
+            retry_after_ms: Some(5000),
+            message: "Too many requests".to_string(),
+        };
+        let err_str = err.to_string();
+        assert!(err_str.contains("rate limit exceeded"));
+        assert!(err_str.contains("Too many requests"));
+    }
+
+    #[test]
+    fn error_rate_limit_without_retry_after() {
+        let err = ToolError::RateLimit {
+            retry_after_ms: None,
+            message: "Rate limited".to_string(),
+        };
+        assert!(err.to_string().contains("Rate limited"));
+    }
+
+    #[test]
+    fn error_auth_error() {
+        let err = ToolError::AuthError {
+            message: "Invalid API key".to_string(),
+        };
+        assert!(err.to_string().contains("authentication failed"));
+        assert!(err.to_string().contains("Invalid API key"));
+    }
+
+    #[test]
+    fn error_model_not_found() {
+        let err = ToolError::ModelNotFound {
+            model: "gpt-5".to_string(),
+            provider: "openai".to_string(),
+        };
+        let err_str = err.to_string();
+        assert!(err_str.contains("model not found"));
+        assert!(err_str.contains("gpt-5"));
+        assert!(err_str.contains("openai"));
+    }
+
+    #[test]
+    fn error_timeout() {
+        let err = ToolError::Timeout {
+            elapsed_ms: 35000,
+            limit_ms: 30000,
+        };
+        let err_str = err.to_string();
+        assert!(err_str.contains("timeout"));
+        assert!(err_str.contains("35000"));
+        assert!(err_str.contains("30000"));
+    }
+
+    #[test]
+    fn error_provider_unavailable() {
+        let err = ToolError::ProviderUnavailable {
+            provider: "gemini".to_string(),
+            reason: "Service under maintenance".to_string(),
+        };
+        let err_str = err.to_string();
+        assert!(err_str.contains("provider unavailable"));
+        assert!(err_str.contains("gemini"));
+        assert!(err_str.contains("Service under maintenance"));
+    }
+
+    #[test]
+    fn error_output_validation_failed() {
+        let err = ToolError::OutputValidationFailed {
+            expected_schema: r#"{"type": "string"}"#.to_string(),
+            actual: r#"{"value": 123}"#.to_string(),
+        };
+        let err_str = err.to_string();
+        assert!(err_str.contains("output validation failed"));
+        assert!(err_str.contains("expected"));
+        assert!(err_str.contains("got"));
+    }
+
+    #[test]
+    fn error_invalid_args() {
+        let err = ToolError::InvalidArgs("Missing required field 'prompt'".to_string());
+        assert!(err.to_string().contains("invalid arguments"));
+        assert!(err.to_string().contains("Missing required field"));
+    }
+
+    #[test]
+    fn error_execution_failed() {
+        let err = ToolError::ExecutionFailed("Network timeout".to_string());
+        assert!(err.to_string().contains("execution failed"));
+        assert!(err.to_string().contains("Network timeout"));
+    }
+
+    // -- Capability tests --------------------------------------------------
+
+    #[test]
+    fn capability_equality() {
+        assert_eq!(Capability::TextGeneration, Capability::TextGeneration);
+        assert_ne!(Capability::Chat, Capability::Embedding);
+    }
+
+    #[test]
+    fn capability_in_vector() {
+        let caps = vec![Capability::Chat, Capability::TextGeneration, Capability::Vision];
+        assert!(caps.contains(&Capability::Chat));
+        assert!(caps.contains(&Capability::Vision));
+        assert!(!caps.contains(&Capability::Streaming));
+    }
+
+    // -- RetryPolicy tests -------------------------------------------------
+
+    #[test]
+    fn retry_policy_default() {
+        let policy = RetryPolicy::default();
+        assert_eq!(policy.max_retries, 3);
+        assert_eq!(policy.base_delay_ms, 100);
+        assert_eq!(policy.max_delay_ms, 10_000);
+    }
+
+    #[test]
+    fn retry_policy_custom() {
+        let policy = RetryPolicy {
+            max_retries: 5,
+            base_delay_ms: 200,
+            max_delay_ms: 30_000,
+        };
+        assert_eq!(policy.max_retries, 5);
+        assert_eq!(policy.base_delay_ms, 200);
+        assert_eq!(policy.max_delay_ms, 30_000);
     }
 }

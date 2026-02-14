@@ -5,6 +5,7 @@
 //! and forwarding tool calls via JSON-RPC.
 
 use lumen_runtime::tools::*;
+use lumen_runtime::tools::Capability;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -284,6 +285,11 @@ impl ToolProvider for McpToolProvider {
 
     fn effects(&self) -> Vec<String> {
         vec!["mcp".to_string()]
+    }
+
+    fn capabilities(&self) -> Vec<Capability> {
+        // MCP tools don't typically have AI-specific capabilities
+        vec![]
     }
 }
 

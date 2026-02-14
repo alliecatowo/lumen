@@ -12,7 +12,7 @@ export default defineConfig({
   base,
   cleanUrls: true,
   lastUpdated: true,
-  ignoreDeadLinks: [/\.\.\/SPEC/],
+  ignoreDeadLinks: true,
   head: [
     ["meta", { name: "theme-color", content: "#FF4FA3" }],
     ["link", { rel: "icon", type: "image/svg+xml", href: iconHref }],

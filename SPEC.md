@@ -696,12 +696,704 @@ cell file_bug(title: String, body: String) -> Json / {mcp}
 end
 ```
 
-## 11. Configuration
+## 11. Standard Library (Intrinsic Functions)
+
+Lumen provides a set of built-in intrinsic functions that are always available without imports. These functions are compiled directly to VM opcodes and execute within the runtime. They can be called as free functions or via method-call syntax on values (e.g., `list.len()` or `len(list)`).
+
+### 11.1 String Functions
+
+#### `len(s: String) -> Int`
+
+Returns the number of Unicode characters in the string.
+
+```lumen
+let n = len("hello")       # 5
+let n = "café".len()       # 4 (Unicode-aware)
+```
+
+Aliases: `length`, `size`, `count`
+
+#### `upper(s: String) -> String`
+
+Returns the string converted to uppercase.
+
+```lumen
+let s = upper("hello")  # "HELLO"
+```
+
+#### `lower(s: String) -> String`
+
+Returns the string converted to lowercase.
+
+```lumen
+let s = lower("HELLO")  # "hello"
+```
+
+#### `trim(s: String) -> String`
+
+Returns the string with leading and trailing whitespace removed.
+
+```lumen
+let s = trim("  hello  ")  # "hello"
+```
+
+#### `split(s: String, sep: String) -> list[String]`
+
+Splits the string by the separator and returns a list of substrings.
+
+```lumen
+let parts = split("a,b,c", ",")  # ["a", "b", "c"]
+```
+
+#### `join(items: list[String], sep: String) -> String`
+
+Joins a list of strings with the given separator.
+
+```lumen
+let s = join(["a", "b", "c"], ", ")  # "a, b, c"
+```
+
+#### `replace(s: String, pattern: String, replacement: String) -> String`
+
+Replaces all occurrences of `pattern` with `replacement`.
+
+```lumen
+let s = replace("hello world", "world", "lumen")  # "hello lumen"
+```
+
+#### `contains(s: String, sub: String) -> Bool`
+
+Returns `true` if the string contains the substring.
+
+```lumen
+let b = contains("hello", "ell")  # true
+```
+
+Alias: `has`
+
+#### `starts_with(s: String, prefix: String) -> Bool`
+
+Returns `true` if the string starts with the given prefix.
+
+```lumen
+let b = starts_with("hello", "hel")  # true
+```
+
+#### `ends_with(s: String, suffix: String) -> Bool`
+
+Returns `true` if the string ends with the given suffix.
+
+```lumen
+let b = ends_with("hello", "llo")  # true
+```
+
+#### `chars(s: String) -> list[String]`
+
+Returns a list of single-character strings from the input.
+
+```lumen
+let cs = chars("abc")  # ["a", "b", "c"]
+```
+
+#### `index_of(s: String, needle: String) -> Int`
+
+Returns the character index of the first occurrence of `needle`, or `-1` if not found. Unicode-aware (returns character index, not byte index).
+
+```lumen
+let i = index_of("hello", "ll")  # 2
+let j = index_of("hello", "xyz") # -1
+```
+
+#### `slice(s: String, start: Int, end: Int) -> String`
+
+Returns a substring from `start` (inclusive) to `end` (exclusive) by character index. If `end` is 0 or negative, slices to the end of the string.
+
+```lumen
+let s = slice("hello", 1, 4)  # "ell"
+```
+
+#### `pad_left(s: String, width: Int) -> String`
+
+Pads the string with spaces on the left to reach the given width. Unicode-aware.
+
+```lumen
+let s = pad_left("42", 5)  # "   42"
+```
+
+#### `pad_right(s: String, width: Int) -> String`
+
+Pads the string with spaces on the right to reach the given width. Unicode-aware.
+
+```lumen
+let s = pad_right("42", 5)  # "42   "
+```
+
+### 11.2 Math Functions
+
+#### `abs(x: Int | Float) -> Int | Float`
+
+Returns the absolute value.
+
+```lumen
+let n = abs(-5)    # 5
+let f = abs(-3.14) # 3.14
+```
+
+#### `min(a: Int | Float, b: Int | Float) -> Int | Float`
+
+Returns the smaller of two values. Both arguments must be the same numeric type.
+
+```lumen
+let n = min(3, 7)      # 3
+let f = min(1.5, 2.5)  # 1.5
+```
+
+#### `max(a: Int | Float, b: Int | Float) -> Int | Float`
+
+Returns the larger of two values. Both arguments must be the same numeric type.
+
+```lumen
+let n = max(3, 7)      # 7
+let f = max(1.5, 2.5)  # 2.5
+```
+
+#### `floor(x: Float) -> Float`
+
+Returns the largest integer less than or equal to `x` (as a Float).
+
+```lumen
+let f = floor(3.7)  # 3.0
+```
+
+#### `ceil(x: Float) -> Float`
+
+Returns the smallest integer greater than or equal to `x` (as a Float).
+
+```lumen
+let f = ceil(3.2)  # 4.0
+```
+
+#### `round(x: Float) -> Float`
+
+Rounds to the nearest integer (as a Float). Ties round to even.
+
+```lumen
+let f = round(3.5)  # 4.0
+let g = round(2.5)  # 2.0
+```
+
+#### `sqrt(x: Int | Float) -> Float`
+
+Returns the square root.
+
+```lumen
+let f = sqrt(16)    # 4.0
+let g = sqrt(2.0)   # 1.4142135623730951
+```
+
+#### `pow(base: Int | Float, exp: Int | Float) -> Int | Float`
+
+Returns `base` raised to the power `exp`. Integer base with non-negative integer exponent returns `Int`; otherwise returns `Float`.
+
+```lumen
+let n = pow(2, 10)     # 1024
+let f = pow(2.0, 0.5)  # 1.4142135623730951
+```
+
+#### `log(x: Int | Float) -> Float`
+
+Returns the natural logarithm (base *e*).
+
+```lumen
+let f = log(1.0)    # 0.0
+let g = log(2.718)  # ~1.0
+```
+
+#### `sin(x: Int | Float) -> Float`
+
+Returns the sine of `x` (in radians).
+
+```lumen
+let f = sin(0.0)  # 0.0
+```
+
+#### `cos(x: Int | Float) -> Float`
+
+Returns the cosine of `x` (in radians).
+
+```lumen
+let f = cos(0.0)  # 1.0
+```
+
+#### `clamp(x: Int | Float, lo: Int | Float, hi: Int | Float) -> Int | Float`
+
+Clamps `x` to the range `[lo, hi]`. All arguments must be the same numeric type.
+
+```lumen
+let n = clamp(15, 0, 10)  # 10
+let m = clamp(-5, 0, 10)  # 0
+```
+
+### 11.3 Collection Functions (Lists)
+
+#### `len(collection) -> Int`
+
+Returns the number of elements. Works on lists, maps, sets, tuples, bytes, and strings.
+
+```lumen
+let n = len([1, 2, 3])  # 3
+```
+
+Aliases: `length`, `size`, `count`
+
+#### `append(list: list[T], item: T) -> list[T]`
+
+Returns a new list with `item` added at the end.
+
+```lumen
+let xs = append([1, 2], 3)  # [1, 2, 3]
+```
+
+#### `sort(list: list[T]) -> list[T]`
+
+Returns a new list with elements in sorted order.
+
+```lumen
+let xs = sort([3, 1, 2])  # [1, 2, 3]
+```
+
+#### `reverse(list: list[T]) -> list[T]`
+
+Returns a new list with elements in reverse order.
+
+```lumen
+let xs = reverse([1, 2, 3])  # [3, 2, 1]
+```
+
+#### `flatten(list: list[list[T]]) -> list[T]`
+
+Flattens one level of nesting. Non-list elements are kept as-is.
+
+```lumen
+let xs = flatten([[1, 2], [3, 4]])  # [1, 2, 3, 4]
+```
+
+#### `unique(list: list[T]) -> list[T]`
+
+Returns a new list with duplicate elements removed, preserving first-occurrence order.
+
+```lumen
+let xs = unique([1, 2, 2, 3, 1])  # [1, 2, 3]
+```
+
+#### `zip(a: list[T], b: list[U]) -> list[(T, U)]`
+
+Pairs elements from two lists into a list of tuples. Stops at the shorter list.
+
+```lumen
+let pairs = zip([1, 2, 3], ["a", "b", "c"])  # [(1, "a"), (2, "b"), (3, "c")]
+```
+
+#### `enumerate(list: list[T]) -> list[(Int, T)]`
+
+Returns a list of `(index, element)` tuples.
+
+```lumen
+let indexed = enumerate(["a", "b", "c"])  # [(0, "a"), (1, "b"), (2, "c")]
+```
+
+#### `take(list: list[T], n: Int) -> list[T]`
+
+Returns the first `n` elements of the list.
+
+```lumen
+let xs = take([1, 2, 3, 4, 5], 3)  # [1, 2, 3]
+```
+
+#### `drop(list: list[T], n: Int) -> list[T]`
+
+Returns the list with the first `n` elements removed.
+
+```lumen
+let xs = drop([1, 2, 3, 4, 5], 2)  # [3, 4, 5]
+```
+
+#### `first(list: list[T]) -> T?`
+
+Returns the first element, or `null` if the list is empty.
+
+```lumen
+let x = first([10, 20, 30])  # 10
+let y = first([])             # null
+```
+
+#### `last(list: list[T]) -> T?`
+
+Returns the last element, or `null` if the list is empty.
+
+```lumen
+let x = last([10, 20, 30])  # 30
+```
+
+#### `is_empty(collection) -> Bool`
+
+Returns `true` if the collection has no elements. Works on lists, maps, and strings.
+
+```lumen
+let b = is_empty([])      # true
+let c = is_empty([1, 2])  # false
+```
+
+#### `contains(collection, item) -> Bool`
+
+Returns `true` if the collection contains the item. Works on lists (element membership), sets (element membership), maps (key lookup), and strings (substring search).
+
+```lumen
+let b = contains([1, 2, 3], 2)  # true
+```
+
+Alias: `has`
+
+#### `slice(list: list[T], start: Int, end: Int) -> list[T]`
+
+Returns a sub-list from `start` (inclusive) to `end` (exclusive). If `end` is 0 or negative, slices to the end.
+
+```lumen
+let xs = slice([10, 20, 30, 40, 50], 1, 4)  # [20, 30, 40]
+```
+
+#### `chunk(list: list[T], n: Int) -> list[list[T]]`
+
+Splits the list into chunks of size `n`. The last chunk may be smaller.
+
+```lumen
+let chunks = chunk([1, 2, 3, 4, 5], 2)  # [[1, 2], [3, 4], [5]]
+```
+
+#### `window(list: list[T], n: Int) -> list[list[T]]`
+
+Returns sliding windows of size `n` over the list.
+
+```lumen
+let wins = window([1, 2, 3, 4], 3)  # [[1, 2, 3], [2, 3, 4]]
+```
+
+#### `range(start: Int, end: Int) -> list[Int]`
+
+Generates a list of integers from `start` (inclusive) to `end` (exclusive).
+
+```lumen
+let xs = range(0, 5)  # [0, 1, 2, 3, 4]
+```
+
+### 11.4 Higher-Order Collection Functions
+
+These functions take a closure argument and operate on lists.
+
+#### `map(list: list[T], f: fn(T) -> U) -> list[U]`
+
+Applies `f` to each element and returns the list of results.
+
+```lumen
+let doubled = map([1, 2, 3], fn(x: Int) -> Int => x * 2)  # [2, 4, 6]
+```
+
+#### `filter(list: list[T], f: fn(T) -> Bool) -> list[T]`
+
+Returns a new list containing only elements for which `f` returns `true`.
+
+```lumen
+let evens = filter([1, 2, 3, 4], fn(x: Int) -> Bool => x % 2 == 0)  # [2, 4]
+```
+
+#### `reduce(list: list[T], f: fn(T, T) -> T, init: T) -> T`
+
+Folds the list from the left using `f` with initial accumulator `init`.
+
+```lumen
+let sum = reduce([1, 2, 3], fn(acc: Int, x: Int) -> Int => acc + x, 0)  # 6
+```
+
+#### `flat_map(list: list[T], f: fn(T) -> list[U]) -> list[U]`
+
+Applies `f` to each element and flattens the resulting lists by one level.
+
+```lumen
+let xs = flat_map([1, 2, 3], fn(x: Int) -> list[Int] => [x, x * 10])  # [1, 10, 2, 20, 3, 30]
+```
+
+#### `any(list: list[T], f: fn(T) -> Bool) -> Bool`
+
+Returns `true` if `f` returns `true` for any element.
+
+```lumen
+let b = any([1, 2, 3], fn(x: Int) -> Bool => x > 2)  # true
+```
+
+#### `all(list: list[T], f: fn(T) -> Bool) -> Bool`
+
+Returns `true` if `f` returns `true` for every element.
+
+```lumen
+let b = all([2, 4, 6], fn(x: Int) -> Bool => x % 2 == 0)  # true
+```
+
+#### `find(list: list[T], f: fn(T) -> Bool) -> T?`
+
+Returns the first element for which `f` returns `true`, or `null` if none found.
+
+```lumen
+let x = find([1, 2, 3, 4], fn(x: Int) -> Bool => x > 2)  # 3
+```
+
+#### `position(list: list[T], f: fn(T) -> Bool) -> Int`
+
+Returns the index of the first element for which `f` returns `true`, or `-1` if none found.
+
+```lumen
+let i = position([10, 20, 30], fn(x: Int) -> Bool => x == 20)  # 1
+```
+
+#### `group_by(list: list[T], f: fn(T) -> String) -> map[String, list[T]]`
+
+Groups elements by the string key returned by `f`.
+
+```lumen
+let classifier = fn(x: Int) -> String
+  if x % 2 == 0
+    return "even"
+  end
+  return "odd"
+end
+let groups = group_by([1, 2, 3, 4], classifier)
+# {"even": [2, 4], "odd": [1, 3]}
+```
+
+### 11.5 Map and Record Functions
+
+#### `keys(m: map[K, V]) -> list[K]`
+
+Returns a list of all keys in the map. Also works on records (returns field names).
+
+```lumen
+let ks = keys({"a": 1, "b": 2})  # ["a", "b"]
+```
+
+#### `values(m: map[K, V]) -> list[V]`
+
+Returns a list of all values in the map. Also works on records.
+
+```lumen
+let vs = values({"a": 1, "b": 2})  # [1, 2]
+```
+
+#### `entries(m: map[K, V]) -> list[(K, V)]`
+
+Returns a list of `(key, value)` tuples. Also works on records.
+
+```lumen
+let es = entries({"x": 1, "y": 2})  # [("x", 1), ("y", 2)]
+```
+
+#### `has_key(m: map[K, V], key: K) -> Bool`
+
+Returns `true` if the map contains the given key. Also works on records.
+
+```lumen
+let b = has_key({"name": "Alice"}, "name")  # true
+```
+
+#### `merge(a: map[K, V], b: map[K, V]) -> map[K, V]`
+
+Returns a new map with all entries from both maps. Keys in `b` overwrite keys in `a`.
+
+```lumen
+let m = merge({"a": 1}, {"b": 2, "a": 10})  # {"a": 10, "b": 2}
+```
+
+#### `remove(m: map[K, V], key: K) -> map[K, V]`
+
+Returns a new map with the given key removed.
+
+```lumen
+let m = remove({"a": 1, "b": 2}, "a")  # {"b": 2}
+```
+
+### 11.6 Set Functions
+
+#### `to_set(list: list[T]) -> set[T]`
+
+Converts a list to a set, removing duplicates.
+
+```lumen
+let s = to_set([1, 2, 2, 3])  # {1, 2, 3}
+```
+
+#### `add(s: set[T], item: T) -> set[T]`
+
+Returns a new set with `item` added. If the item already exists, the set is unchanged.
+
+```lumen
+let s = add({1, 2}, 3)  # {1, 2, 3}
+```
+
+#### `remove(s: set[T], item: T) -> set[T]`
+
+Returns a new set with `item` removed.
+
+```lumen
+let s = remove({1, 2, 3}, 2)  # {1, 3}
+```
+
+### 11.7 Type Conversion Functions
+
+#### `string(x: Any) -> String`
+
+Converts any value to its string representation.
+
+```lumen
+let s = string(42)     # "42"
+let t = string(true)   # "true"
+```
+
+Also available via `Int("42")` / `Float("3.14")` / `String(42)` cast syntax.
+
+#### `int(x: Any) -> Int?`
+
+Converts to integer. Supports `Int`, `Float` (truncates), `String` (parses), and `Bool` (0/1). Returns `null` on failure.
+
+```lumen
+let n = int("42")    # 42
+let m = int(3.14)    # 3
+let b = int(true)    # 1
+```
+
+#### `float(x: Any) -> Float?`
+
+Converts to float. Supports `Float`, `Int`, and `String` (parses). Returns `null` on failure.
+
+```lumen
+let f = float("3.14")  # 3.14
+let g = float(42)      # 42.0
+```
+
+#### `type_of(x: Any) -> String`
+
+Returns a string describing the runtime type of the value.
+
+```lumen
+let t = type_of(42)       # "Int"
+let u = type_of("hello")  # "String"
+let v = type_of([1, 2])   # "List"
+```
+
+Alias: `type`
+
+### 11.8 I/O and Debugging Functions
+
+#### `print(x: Any) -> Null`
+
+Prints the value to standard output with a newline. Returns `null`.
+
+```lumen
+print("Hello, world!")
+print(42)
+```
+
+#### `debug(x: Any) -> Null`
+
+Prints a debug representation to standard error (including internal type information). Returns `null`.
+
+```lumen
+debug([1, 2, 3])  # [debug] List([Int(1), Int(2), Int(3)])
+```
+
+#### `sizeof(x: Any) -> Int`
+
+Returns the in-memory size (in bytes) of the value's Rust representation.
+
+```lumen
+let n = sizeof(42)
+```
+
+#### `clone(x: Any) -> Any`
+
+Returns a deep copy of the value.
+
+```lumen
+let copy = clone(original)
+```
+
+### 11.9 Data Integrity Functions
+
+#### `hash(s: String) -> String`
+
+Computes a SHA-256 hash of the string and returns it prefixed with `"sha256:"`.
+
+```lumen
+let h = hash("hello")  # "sha256:2cf24dba5fb0a30e..."
+```
+
+#### `diff(a: Any, b: Any) -> Any`
+
+Computes a structural diff between two values. Returns a representation of the differences.
+
+```lumen
+let d = diff(old_data, new_data)
+```
+
+#### `patch(value: Any, patches: Any) -> Any`
+
+Applies patches (as produced by `diff`) to a value.
+
+```lumen
+let updated = patch(original, changes)
+```
+
+#### `redact(value: Any, fields: Any) -> Any`
+
+Redacts specified fields from a value, replacing their contents.
+
+```lumen
+let safe = redact(user_data, ["password", "ssn"])
+```
+
+#### `validate(value: Any) -> Bool`
+
+Returns `true` if the value passes schema validation. (Full validation is deferred to the schema opcode; this intrinsic currently always returns `true`.)
+
+```lumen
+let ok = validate(data)
+```
+
+#### `matches(value: Any) -> Bool`
+
+Returns `true` if the value is truthy (booleans pass through, non-empty strings are truthy).
+
+```lumen
+let b = matches(true)     # true
+let c = matches("hello")  # true
+let d = matches("")        # false
+```
+
+Alias: `confirm`
+
+### 11.10 Trace Functions
+
+#### `trace_ref() -> TraceRef`
+
+Generates a unique trace reference for use with the trace/span system.
+
+```lumen
+let ref = trace_ref()
+```
+
+## 12. Configuration
 
 Runtime configuration is specified in `lumen.toml`.
 This file maps tool names to provider implementations and supplies provider-specific settings.
 
-### 11.1 Config File Resolution
+### 12.1 Config File Resolution
 
 The runtime searches for `lumen.toml` in the following order:
 
@@ -711,7 +1403,7 @@ The runtime searches for `lumen.toml` in the following order:
 
 The first file found is used. Files are not merged across locations.
 
-### 11.2 Provider Mapping
+### 12.2 Provider Mapping
 
 The `[providers]` table maps tool names to provider types:
 
@@ -724,7 +1416,7 @@ http.get = "builtin-http"
 Each key is a tool name as used in `use tool` declarations.
 Each value is a provider type identifier that the runtime resolves to a `ToolProvider` implementation.
 
-### 11.3 Provider Configuration
+### 12.3 Provider Configuration
 
 Provider-specific settings go under `[providers.config.<provider_type>]`:
 
@@ -740,7 +1432,7 @@ max_redirects = 5
 
 The `api_key_env` field names an environment variable — secrets are never stored directly in config files.
 
-### 11.4 MCP Server Configuration
+### 12.4 MCP Server Configuration
 
 MCP servers are registered under `[providers.mcp.<server_name>]`:
 
@@ -757,7 +1449,7 @@ tools = ["filesystem.read_file", "filesystem.write_file"]
 - `uri` — command or URL to launch/connect to the MCP server
 - `tools` — list of tool names this server exposes (following `server.tool_name` convention)
 
-### 11.5 Example: Same Code, Different Providers
+### 12.5 Example: Same Code, Different Providers
 
 The same Lumen source works with different providers by changing only `lumen.toml`:
 
@@ -794,7 +1486,7 @@ default_model = "llama3"
 
 The Lumen code is identical. Only the configuration changes.
 
-## 12. Boundaries of This Spec
+## 13. Boundaries of This Spec
 
 This spec covers implemented behavior only.
 

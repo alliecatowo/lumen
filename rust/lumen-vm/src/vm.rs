@@ -77,22 +77,126 @@ pub enum VmError {
     InstructionLimitExceeded(u64),
     #[error("register out of bounds: {0}")]
     RegisterOutOfBounds(usize),
+    #[error("{message}\nStack trace (most recent call last):{stack_trace}")]
+    WithStackTrace {
+        message: String,
+        stack_trace: String,
+        frames: Vec<StackFrame>,
+    },
 }
 
 impl VmError {
-    /// Attach stack trace to error message
-    pub fn with_stack_trace(&self, frames: &[StackFrame]) -> String {
-        let mut msg = format!("{}", self);
-        if !frames.is_empty() {
-            msg.push_str("\nStack trace:");
-            for (i, frame) in frames.iter().enumerate() {
-                msg.push_str(&format!(
-                    "\n  #{} at {} (instruction {})",
-                    i, frame.cell_name, frame.ip
-                ));
-            }
+    /// Attach stack trace to error, returning a new WithStackTrace variant.
+    /// If frames is empty, returns self unchanged.
+    pub fn with_stack_trace(self, frames: Vec<StackFrame>) -> Self {
+        if frames.is_empty() {
+            return self;
+        }
+        // Don't double-wrap
+        if matches!(self, VmError::WithStackTrace { .. }) {
+            return self;
+        }
+        let message = format!("{}", self);
+        let mut trace = String::new();
+        for (i, frame) in frames.iter().rev().enumerate() {
+            trace.push_str(&format!(
+                "\n  #{}: {} (instruction {})",
+                i, frame.cell_name, frame.ip
+            ));
+        }
+        VmError::WithStackTrace {
+            message,
+            stack_trace: trace,
+            frames,
+        }
+    }
+
+    /// Format stack trace as a string (for external use without wrapping).
+    pub fn format_stack_trace(frames: &[StackFrame]) -> String {
+        let mut msg = String::from("\nStack trace (most recent call last):");
+        for (i, frame) in frames.iter().rev().enumerate() {
+            msg.push_str(&format!(
+                "\n  #{}: {} (instruction {})",
+                i, frame.cell_name, frame.ip
+            ));
         }
         msg
+    }
+
+    /// Check if the error message contains a specific string (works through WithStackTrace wrapper).
+    pub fn message_contains(&self, needle: &str) -> bool {
+        match self {
+            VmError::WithStackTrace { message, .. } => message.contains(needle),
+            other => format!("{}", other).contains(needle),
+        }
+    }
+
+    /// Check if the underlying error is a DivisionByZero (works through WithStackTrace wrapper).
+    pub fn is_division_by_zero(&self) -> bool {
+        match self {
+            VmError::DivisionByZero => true,
+            VmError::WithStackTrace { message, .. } => message == "division by zero",
+            _ => false,
+        }
+    }
+
+    /// Check if the underlying error is an ArithmeticOverflow (works through WithStackTrace wrapper).
+    pub fn is_arithmetic_overflow(&self) -> bool {
+        match self {
+            VmError::ArithmeticOverflow => true,
+            VmError::WithStackTrace { message, .. } => message == "arithmetic overflow",
+            _ => false,
+        }
+    }
+
+    /// Check if the underlying error is an InstructionLimitExceeded (works through WithStackTrace wrapper).
+    pub fn is_instruction_limit_exceeded(&self) -> bool {
+        match self {
+            VmError::InstructionLimitExceeded(_) => true,
+            VmError::WithStackTrace { message, .. } => {
+                message.starts_with("instruction limit exceeded")
+            }
+            _ => false,
+        }
+    }
+
+    /// Check if the underlying error is a RegisterOOB (works through WithStackTrace wrapper).
+    pub fn is_register_oob(&self) -> bool {
+        match self {
+            VmError::RegisterOOB(_, _) => true,
+            VmError::WithStackTrace { message, .. } => {
+                message.starts_with("register out of bounds: r")
+            }
+            _ => false,
+        }
+    }
+
+    /// Check if the underlying error is a TypeError (works through WithStackTrace wrapper).
+    pub fn is_type_error(&self) -> bool {
+        match self {
+            VmError::TypeError(_) => true,
+            VmError::WithStackTrace { message, .. } => {
+                message.starts_with("type error at runtime")
+            }
+            _ => false,
+        }
+    }
+
+    /// Check if the underlying error is a ToolError (works through WithStackTrace wrapper).
+    pub fn is_tool_error(&self) -> bool {
+        match self {
+            VmError::ToolError(_) => true,
+            VmError::WithStackTrace { message, .. } => message.starts_with("tool call error"),
+            _ => false,
+        }
+    }
+
+    /// Get the stack frames from a WithStackTrace error, or empty vec for other variants.
+    pub fn stack_frames(&self) -> &[StackFrame] {
+        match self {
+            VmError::WithStackTrace { frames, .. } => frames,
+            _ => &[],
+        }
     }
 
     /// Create a runtime error with context about current location
@@ -1024,7 +1128,10 @@ impl VM {
         });
 
         // Execute
-        self.run()
+        self.run().map_err(|err| {
+            let frames = self.capture_stack_trace();
+            err.with_stack_trace(frames)
+        })
     }
 
     /// Helper to get a constant from the current cell.
@@ -5288,13 +5395,10 @@ mod tests {
         let err = vm
             .execute("main", vec![])
             .expect_err("set index on integer should fail");
-        match err {
-            VmError::TypeError(msg) => {
-                assert!(msg.contains("cannot assign by index"));
-                assert!(msg.contains("expected list, map, or record"));
-            }
-            other => panic!("expected TypeError, got {other:?}"),
-        }
+        assert!(err.is_type_error(), "expected TypeError, got {err:?}");
+        let msg = format!("{}", err);
+        assert!(msg.contains("cannot assign by index"));
+        assert!(msg.contains("expected list, map, or record"));
     }
 
     #[test]
@@ -6292,7 +6396,7 @@ end
         let mut vm = VM::new();
         vm.load(module);
         let err = vm.execute("main", vec![]).unwrap_err();
-        assert!(matches!(err, VmError::DivisionByZero));
+        assert!(err.is_division_by_zero(), "expected DivisionByZero, got: {:?}", err);
     }
 
     #[test]
@@ -6324,7 +6428,7 @@ end
         let mut vm = VM::new();
         vm.load(module);
         let err = vm.execute("main", vec![]).unwrap_err();
-        assert!(matches!(err, VmError::DivisionByZero));
+        assert!(err.is_division_by_zero(), "expected DivisionByZero, got: {:?}", err);
     }
 
     fn make_spawn_await_module(
@@ -6646,7 +6750,7 @@ end
         vm.load(module);
         let err = vm.execute("main", vec![]).unwrap_err();
         assert!(
-            matches!(err, VmError::ArithmeticOverflow) || err.to_string().contains("overflow"),
+            err.is_arithmetic_overflow() || err.to_string().contains("overflow"),
             "expected arithmetic overflow, got: {}",
             err
         );
@@ -6684,7 +6788,7 @@ end
         vm.load(module);
         let err = vm.execute("main", vec![]).unwrap_err();
         assert!(
-            matches!(err, VmError::ArithmeticOverflow) || err.to_string().contains("overflow"),
+            err.is_arithmetic_overflow() || err.to_string().contains("overflow"),
             "expected arithmetic overflow, got: {}",
             err
         );
@@ -6722,7 +6826,7 @@ end
         vm.load(module);
         let err = vm.execute("main", vec![]).unwrap_err();
         assert!(
-            matches!(err, VmError::ArithmeticOverflow) || err.to_string().contains("overflow"),
+            err.is_arithmetic_overflow() || err.to_string().contains("overflow"),
             "expected arithmetic overflow, got: {}",
             err
         );
@@ -6759,7 +6863,7 @@ end
         let mut vm = VM::new();
         vm.load(module);
         let err = vm.execute("main", vec![]).unwrap_err();
-        assert!(matches!(err, VmError::DivisionByZero));
+        assert!(err.is_division_by_zero(), "expected DivisionByZero, got: {:?}", err);
     }
 
     #[test]
@@ -6793,7 +6897,7 @@ end
         let mut vm = VM::new();
         vm.load(module);
         let err = vm.execute("main", vec![]).unwrap_err();
-        assert!(matches!(err, VmError::DivisionByZero));
+        assert!(err.is_division_by_zero(), "expected DivisionByZero, got: {:?}", err);
     }
 
     #[test]
@@ -7732,7 +7836,7 @@ end
         let err = vm
             .execute("main", vec![])
             .expect_err("invalid register operand should fail");
-        assert!(matches!(err, VmError::RegisterOOB(1, 1)));
+        assert!(err.is_register_oob(), "expected RegisterOOB, got: {:?}", err);
     }
 
     #[test]
@@ -7768,7 +7872,7 @@ end
         let err = vm
             .execute("main", vec![])
             .expect_err("invalid call argument span should fail");
-        assert!(matches!(err, VmError::RegisterOOB(2, 2)));
+        assert!(err.is_register_oob(), "expected RegisterOOB, got: {:?}", err);
     }
 
     #[test]
@@ -7850,7 +7954,7 @@ end
         vm.load(module);
         let result = vm.execute("main", vec![]);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), VmError::ArithmeticOverflow));
+        assert!(result.unwrap_err().is_arithmetic_overflow());
     }
 
     #[test]
@@ -7886,7 +7990,7 @@ end
         vm.load(module);
         let result = vm.execute("main", vec![]);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), VmError::ArithmeticOverflow));
+        assert!(result.unwrap_err().is_arithmetic_overflow());
     }
 
     #[test]
@@ -7922,7 +8026,7 @@ end
         vm.load(module);
         let result = vm.execute("main", vec![]);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), VmError::ArithmeticOverflow));
+        assert!(result.unwrap_err().is_arithmetic_overflow());
     }
 
     #[test]
@@ -7958,7 +8062,7 @@ end
         vm.load(module);
         let result = vm.execute("main", vec![]);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), VmError::DivisionByZero));
+        assert!(result.unwrap_err().is_division_by_zero());
     }
 
     #[test]
@@ -7994,7 +8098,7 @@ end
         vm.load(module);
         let result = vm.execute("main", vec![]);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), VmError::DivisionByZero));
+        assert!(result.unwrap_err().is_division_by_zero());
     }
 
     #[test]
@@ -8121,7 +8225,7 @@ end
         let err = vm
             .execute("main", vec![])
             .expect_err("loop should hit instruction limit");
-        assert!(matches!(err, VmError::InstructionLimitExceeded(64)));
+        assert!(err.is_instruction_limit_exceeded(), "expected InstructionLimitExceeded, got: {:?}", err);
     }
 
     #[test]
@@ -8150,10 +8254,13 @@ end
 
         assert!(result.is_err());
         if let Err(e) = result {
-            assert!(matches!(e, VmError::DivisionByZero));
-            let trace = vm.capture_stack_trace();
-            // Should have frames for divide, helper, and main
-            assert!(!trace.is_empty());
+            assert!(e.is_division_by_zero(), "expected DivisionByZero, got: {:?}", e);
+            // WithStackTrace should include the stack frames
+            let frames = e.stack_frames();
+            assert!(!frames.is_empty(), "stack trace should have frames");
+            // The error message should include the stack trace
+            let msg = format!("{}", e);
+            assert!(msg.contains("Stack trace"), "error should include stack trace: {}", msg);
         }
     }
 
@@ -8188,10 +8295,7 @@ end
         let err = vm
             .execute("main", vec![])
             .expect_err("should run out of fuel");
-        match &err {
-            VmError::Runtime(msg) => assert_eq!(msg, "fuel exhausted"),
-            other => panic!("expected fuel exhausted, got: {:?}", other),
-        }
+        assert!(err.message_contains("fuel exhausted"), "expected fuel exhausted, got: {:?}", err);
     }
 
     #[test]

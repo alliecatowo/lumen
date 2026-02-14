@@ -1107,10 +1107,10 @@ impl<'a> Lowerer<'a> {
                 let fail_jmp = instrs.len();
                 instrs.push(Instruction::sax(OpCode::Jmp, 0));
                 fail_jumps.push(fail_jmp);
-                if let Some(ref b) = binding {
-                    let breg = ra.alloc_temp();
+                if let Some(ref bind_name) = binding {
+                    // Unbox variant payload into named register
+                    let breg = ra.alloc_named(bind_name);
                     instrs.push(Instruction::abc(OpCode::Unbox, breg, value_reg, 0));
-                    self.lower_match_pattern(b, breg, ra, consts, instrs, fail_jumps);
                 }
             }
             Pattern::Wildcard(_) => {}
@@ -1542,21 +1542,31 @@ impl<'a> Lowerer<'a> {
             }
             Expr::BinOp(lhs, op, rhs, _) => {
                 // Special case: pipe forward desugars to function call
+                // a |> f(b, c) becomes f(a, b, c)
                 if *op == BinOp::PipeForward {
-                    let arg_reg = self.lower_expr(lhs, ra, consts, instrs);
+                    let piped_val = self.lower_expr(lhs, ra, consts, instrs);
+
+                    // If RHS is a Call, inject piped value as first argument
+                    if let Expr::Call(func_expr, args, _) = rhs.as_ref() {
+                        let func_reg = self.lower_expr(func_expr, ra, consts, instrs);
+
+                        // Build arg_regs with piped value first, then existing args
+                        let mut arg_regs = vec![piped_val];
+                        for arg in args {
+                            let arg_val = match arg {
+                                CallArg::Positional(e) | CallArg::Named(_, e, _) | CallArg::Role(_, e, _) => {
+                                    self.lower_expr(e, ra, consts, instrs)
+                                }
+                            };
+                            arg_regs.push(arg_val);
+                        }
+
+                        return self.emit_call_with_regs(func_reg, &arg_regs, ra, instrs);
+                    }
+
+                    // RHS is not a Call - treat as function value, call with piped value
                     let fn_reg = self.lower_expr(rhs, ra, consts, instrs);
-                    let base = ra.alloc_temp();
-                    if fn_reg != base {
-                        instrs.push(Instruction::abc(OpCode::Move, base, fn_reg, 0));
-                    }
-                    let arg_dest = ra.alloc_temp();
-                    if arg_reg != arg_dest {
-                        instrs.push(Instruction::abc(OpCode::Move, arg_dest, arg_reg, 0));
-                    }
-                    let result = ra.alloc_temp();
-                    instrs.push(Instruction::abc(OpCode::Call, base, 1, 1));
-                    instrs.push(Instruction::abc(OpCode::Move, result, base, 0));
-                    return result;
+                    return self.emit_call_with_regs(fn_reg, &[piped_val], ra, instrs);
                 }
 
                 let lr = self.lower_expr(lhs, ra, consts, instrs);

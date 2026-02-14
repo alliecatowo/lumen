@@ -1080,10 +1080,64 @@ impl<'a> TypeChecker<'a> {
                 }
                 // Try to resolve the return type
                 if let Expr::Ident(name, _) = callee.as_ref() {
+                    // Check if it's a cell/function call
                     if let Some(ci) = self.symbols.cells.get(name) {
                         self.check_call_against_signature(&ci.params, &checked_args, span.line);
                         if let Some(ref rt) = ci.return_type {
                             return resolve_type_expr(rt, self.symbols);
+                        }
+                    }
+                    // Check if it's a record construction
+                    else if let Some(ti) = self.symbols.types.get(name) {
+                        if let crate::compiler::resolve::TypeInfoKind::Record(def) = &ti.kind {
+                            // Infer generic type arguments from constructor arguments
+                            let generic_args = if !ti.generic_params.is_empty() {
+                                // Build inference map from named arguments
+                                let mut inferred: HashMap<String, Type> = HashMap::new();
+                                for checked_arg in &checked_args {
+                                    if let CheckedCallArg::Named(fname, arg_ty, _) = checked_arg {
+                                        if let Some(field_def) = def.fields.iter().find(|f| f.name == *fname) {
+                                            unify_for_inference(&field_def.ty, arg_ty, self.symbols, &mut inferred);
+                                        }
+                                    }
+                                }
+
+                                ti.generic_params
+                                    .iter()
+                                    .map(|p| inferred.get(p).cloned().unwrap_or(Type::Any))
+                                    .collect()
+                            } else {
+                                vec![]
+                            };
+
+                            // Build substitution map for generic parameters
+                            let subst = build_subst(&ti.generic_params, &generic_args);
+
+                            // Check constructor arguments match record fields
+                            for checked_arg in &checked_args {
+                                if let CheckedCallArg::Named(fname, arg_ty, line) = checked_arg {
+                                    if let Some(field_def) = def.fields.iter().find(|f| f.name == *fname) {
+                                        let expected = resolve_type_expr_with_subst(&field_def.ty, self.symbols, &subst);
+                                        self.check_compat(&expected, arg_ty, *line);
+                                    } else {
+                                        let field_names: Vec<&str> = def.fields.iter().map(|f| f.name.as_str()).collect();
+                                        let suggestions = suggest_similar(fname, &field_names, 2);
+                                        self.errors.push(TypeError::UnknownField {
+                                            field: fname.clone(),
+                                            ty: name.clone(),
+                                            line: *line,
+                                            suggestions,
+                                        });
+                                    }
+                                }
+                            }
+
+                            // Return the instantiated generic type if applicable
+                            return if !generic_args.is_empty() {
+                                Type::TypeRef(name.clone(), generic_args)
+                            } else {
+                                Type::Record(name.clone())
+                            };
                         }
                     }
                 }

@@ -39,7 +39,28 @@ fn status_label(label: &str) -> String {
 }
 
 #[derive(ClapParser)]
-#[command(name = "lumen", version, about = "The Lumen programming language")]
+#[command(
+    name = "lumen",
+    version,
+    about = "The Lumen programming language — statically typed, AI-native systems",
+    long_about = "Lumen is a statically typed programming language for AI-native systems.\n\n\
+                  Learn more at: https://github.com/lumen-lang/lumen",
+    help_template = "\
+{before-help}{name} {version}
+{about-with-newline}
+{usage-heading} {usage}
+
+{all-args}{after-help}
+
+Examples:
+  lumen check hello.lm.md              Type-check a file
+  lumen run hello.lm.md                Compile and run (default: main cell)
+  lumen run hello.lm.md --cell test    Run a specific cell
+  lumen fmt *.lm.md                    Format source files
+  lumen test                           Run all test_* cells
+  lumen lint --strict src/             Lint with warnings as errors
+",
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -441,10 +462,53 @@ fn main() {
 }
 
 fn cmd_lint(files: Vec<PathBuf>, strict: bool) {
+    let mode = if strict { "strict mode" } else { "standard" };
+    println!(
+        "{} {} {} ({})",
+        status_label("Linting"),
+        files.len(),
+        if files.len() == 1 { "file" } else { "files" },
+        mode
+    );
+
+    let start = std::time::Instant::now();
     match lint::cmd_lint(&files, strict) {
-        Ok(()) => {}
+        Ok(summary) => {
+            let elapsed = start.elapsed();
+            if summary.total_warnings == 0 {
+                println!(
+                    "{} Finished in {:.2}s — no issues found",
+                    green("✓"),
+                    elapsed.as_secs_f64()
+                );
+            } else if summary.total_errors > 0 {
+                println!(
+                    "{} Finished in {:.2}s — {} warning(s), {} error(s)",
+                    red("✗"),
+                    elapsed.as_secs_f64(),
+                    summary.total_warnings,
+                    summary.total_errors
+                );
+                std::process::exit(1);
+            } else if strict {
+                println!(
+                    "{} Finished in {:.2}s — {} warning(s) (strict mode)",
+                    yellow("⚠"),
+                    elapsed.as_secs_f64(),
+                    summary.total_warnings
+                );
+                std::process::exit(1);
+            } else {
+                println!(
+                    "{} Finished in {:.2}s — {} warning(s)",
+                    yellow("⚠"),
+                    elapsed.as_secs_f64(),
+                    summary.total_warnings
+                );
+            }
+        }
         Err(e) => {
-            eprintln!("{} {}", red("error:"), e);
+            eprintln!("{} {}", red("✗ Error:"), e);
             std::process::exit(1);
         }
     }
@@ -612,7 +676,7 @@ fn gate_check_sources(files: &[PathBuf]) -> bool {
 
 fn gate_lint_sources(files: &[PathBuf]) -> bool {
     match lint::cmd_lint(files, true) {
-        Ok(()) => {
+        Ok(_summary) => {
             println!("{} lint passed", green("✓"));
             true
         }
@@ -768,13 +832,17 @@ fn compile_source_file(
 fn cmd_check(file: &PathBuf) {
     let source = read_source(file);
     let filename = file.display().to_string();
+
+    println!("{} {}", status_label("Checking"), bold(&filename));
+    let start = std::time::Instant::now();
+
     match compile_source_file(file, &source) {
         Ok(_module) => {
+            let elapsed = start.elapsed();
             println!(
-                "{} {} {}",
+                "{} Finished in {:.2}s — no errors",
                 green("✓"),
-                bold(&filename),
-                gray("— no errors found")
+                elapsed.as_secs_f64()
             );
         }
         Err(e) => {
@@ -789,11 +857,12 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
     let source = read_source(file);
     let filename = file.display().to_string();
 
-    println!("{} {}", status_label("Compiling"), filename);
+    println!("{} {}", status_label("Compiling"), bold(&filename));
+    let start = std::time::Instant::now();
     let module = match compile_source_file(file, &source) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("{} compilation failed", red("error:"));
+            eprintln!("{} compilation failed", red("✗ Error:"));
             let formatted = lumen_compiler::format_error(&e, &source, &filename);
             eprint!("{}", formatted);
             std::process::exit(1);
@@ -819,7 +888,7 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
         }
     }
 
-    println!("{} {}", status_label("Running"), cell);
+    println!("{} {}", status_label("Running"), cyan(cell));
     let mut vm = lumen_vm::vm::VM::new();
     vm.set_provider_registry(registry);
     if let Some(trace_store) = trace_store.as_ref() {
@@ -865,6 +934,7 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
     vm.load(module);
     match vm.execute(cell, vec![]) {
         Ok(result) => {
+            let elapsed = start.elapsed();
             if let Some(trace_store) = trace_store.as_ref() {
                 if let Ok(mut ts) = trace_store.lock() {
                     ts.cell_end(cell);
@@ -873,7 +943,12 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
                     println!("{} {}", gray("trace:"), run_id);
                 }
             }
-            println!("{}", result);
+            println!("\n{}", result);
+            println!(
+                "{} Finished in {:.2}s",
+                green("✓"),
+                elapsed.as_secs_f64()
+            );
         }
         Err(e) => {
             if let Some(trace_store) = trace_store.as_ref() {
@@ -882,7 +957,7 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
                     ts.end_run();
                 }
             }
-            eprintln!("{} {}", red("runtime error:"), e);
+            eprintln!("{} {}", red("✗ Error:"), e);
             std::process::exit(1);
         }
     }
@@ -1113,18 +1188,44 @@ fn cmd_init() {
 
 fn cmd_fmt(files: Vec<PathBuf>, check: bool) {
     if files.is_empty() {
-        eprintln!("{} no files specified", red("error:"));
+        eprintln!("{} no files specified", red("✗ Error:"));
         std::process::exit(1);
     }
 
+    let action = if check { "Checking" } else { "Formatting" };
+    println!(
+        "{} {} {}",
+        status_label(action),
+        files.len(),
+        if files.len() == 1 { "file" } else { "files" }
+    );
+
+    let start = std::time::Instant::now();
     match fmt::format_files(&files, check) {
-        Ok(needs_formatting) => {
-            if check && needs_formatting {
-                std::process::exit(1);
+        Ok((needs_formatting, reformatted_count)) => {
+            let elapsed = start.elapsed();
+            if check {
+                if needs_formatting {
+                    println!(
+                        "{} {} file(s) need formatting",
+                        yellow("⚠"),
+                        reformatted_count
+                    );
+                    std::process::exit(1);
+                } else {
+                    println!("{} Finished in {:.2}s — all files formatted", green("✓"), elapsed.as_secs_f64());
+                }
+            } else {
+                println!(
+                    "{} Finished in {:.2}s — {} file(s) reformatted",
+                    green("✓"),
+                    elapsed.as_secs_f64(),
+                    reformatted_count
+                );
             }
         }
         Err(e) => {
-            eprintln!("{} {}", red("error:"), e);
+            eprintln!("{} {}", red("✗ Error:"), e);
             std::process::exit(1);
         }
     }

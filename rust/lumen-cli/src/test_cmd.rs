@@ -21,6 +21,10 @@ fn bold(s: &str) -> String {
     format!("\x1b[1m{}\x1b[0m", s)
 }
 
+fn status_label(label: &str) -> String {
+    format!("\x1b[1;32m{:>12}\x1b[0m", label)
+}
+
 #[derive(Debug)]
 struct TestResult {
     file: String,
@@ -161,12 +165,15 @@ pub fn run_tests(
         }
     }
 
-    // Print running summary
+    // Print running summary with status label
     println!(
-        "running {} test{}",
+        "{} {} test{}",
+        status_label("Running"),
         total_tests,
         if total_tests == 1 { "" } else { "s" }
     );
+
+    let start = std::time::Instant::now();
 
     // Print results as they come
     let mut passed = 0;
@@ -175,13 +182,13 @@ pub fn run_tests(
     for result in &results {
         let status = if result.passed {
             passed += 1;
-            green("ok")
+            green("✓ ok")
         } else {
             failed += 1;
-            red("FAILED")
+            red("✗ FAILED")
         };
 
-        println!("test {}::{} ... {}", result.file, result.test_name, status);
+        println!("  {} {} ... {}", gray("test"), bold(&result.test_name), status);
     }
 
     // Print failure details
@@ -189,35 +196,35 @@ pub fn run_tests(
         println!("\n{}", bold("--- FAILURES ---"));
         for result in &results {
             if !result.passed {
-                println!("test {}::{}:", result.file, result.test_name);
+                println!("  {} {}:", gray("test"), bold(&result.test_name));
                 if let Some(ref msg) = result.error_message {
-                    println!("  {}", msg);
+                    println!("    {}", msg);
                 }
                 println!();
             }
         }
     }
 
-    // Print summary
-    let summary = if failed == 0 {
-        format!(
-            "{} {}. {} passed; {} failed; 0 ignored",
-            green("test result:"),
-            green("ok"),
-            passed,
-            failed
-        )
-    } else {
-        format!(
-            "{} {}. {} passed; {} failed; 0 ignored",
-            red("test result:"),
-            red("FAILED"),
-            passed,
-            failed
-        )
-    };
+    let elapsed = start.elapsed();
 
-    println!("{}", summary);
+    // Print summary
+    if failed == 0 {
+        println!(
+            "{} Finished in {:.2}s — {} passed, {} failed",
+            green("✓"),
+            elapsed.as_secs_f64(),
+            passed,
+            failed
+        );
+    } else {
+        println!(
+            "{} Finished in {:.2}s — {} passed, {} failed",
+            red("✗"),
+            elapsed.as_secs_f64(),
+            passed,
+            failed
+        );
+    }
 
     Ok(TestRunSummary {
         total: total_tests,

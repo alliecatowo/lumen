@@ -26,30 +26,30 @@ record Task
 end
 
 cell create_task(id: int, title: string, priority: Priority) -> Task
-    Task {
+    Task(
         id: id,
         title: title,
         priority: priority,
         status: Todo
-    }
+    )
 end
 
 cell start_task(task: Task) -> Task
-    Task {
+    Task(
         id: task.id,
         title: task.title,
         priority: task.priority,
         status: InProgress
-    }
+    )
 end
 
 cell complete_task(task: Task) -> Task
-    Task {
+    Task(
         id: task.id,
         title: task.title,
         priority: task.priority,
         status: Done
-    }
+    )
 end
 
 cell priority_name(p: Priority) -> string

@@ -30,60 +30,135 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
-    /// Render with ANSI colors for terminal
+    /// Render with ANSI colors for terminal (Elm-style)
     pub fn render_ansi(&self) -> String {
         let mut out = String::new();
 
-        // Header: error[E001]: message
-        let severity_label = match self.severity {
-            Severity::Error => red("error"),
-            Severity::Warning => yellow("warning"),
-            Severity::Note => cyan("note"),
+        // Build the error category title
+        let error_category = match self.severity {
+            Severity::Error => match self.code.as_deref() {
+                Some("E010") | Some("E011") | Some("E012") | Some("E013")
+                | Some("E014") | Some("E015") | Some("E016") => "PARSE ERROR",
+                Some("E040") => "TYPE MISMATCH",
+                Some("E041") => "UNDEFINED VARIABLE",
+                Some("E042") => "UNKNOWN FIELD",
+                Some("E043") => "INCOMPLETE MATCH",
+                Some("E020") => "UNDEFINED TYPE",
+                Some("E021") => "UNDEFINED CELL",
+                Some("E022") => "UNDEFINED TOOL",
+                Some("E023") => "DUPLICATE DEFINITION",
+                Some("E030") => "UNDECLARED EFFECT",
+                Some("E001") | Some("E002") | Some("E003")
+                | Some("E004") | Some("E005") | Some("E006") => "LEX ERROR",
+                Some("E050") => "CONSTRAINT ERROR",
+                _ => "ERROR",
+            },
+            Severity::Warning => "WARNING",
+            Severity::Note => "NOTE",
         };
 
-        if let Some(ref code) = self.code {
-            out.push_str(&format!("{}[{}]: ", severity_label, bold(code)));
+        // Elm-style header with dashes and location
+        let location_str = if let (Some(ref file), Some(line), Some(col)) = (&self.file, self.line, self.col) {
+            format!(" {}:{}:{} ", file, line, col)
+        } else if let (Some(ref file), Some(line)) = (&self.file, self.line) {
+            format!(" {}:{} ", file, line)
         } else {
-            out.push_str(&format!("{}: ", severity_label));
-        }
-        out.push_str(&bold(&self.message));
+            String::from(" ")
+        };
+
+        let title_width: usize = 80;
+        let category_width = error_category.len();
+        let location_width = location_str.len();
+        let dashes_width = title_width.saturating_sub(category_width + location_width + 6);
+
+        out.push_str(&cyan(&format!("── {} {}", error_category, "─".repeat(dashes_width))));
+        out.push_str(&cyan(&location_str));
+        out.push_str(&cyan("──\n"));
         out.push('\n');
 
-        // Location: --> file:line:col
-        if let (Some(ref file), Some(line), Some(col)) = (&self.file, self.line, self.col) {
-            out.push_str(&format!("  {} {}:{}:{}\n", cyan("-->"), file, line, col));
-        } else if let (Some(ref file), Some(line)) = (&self.file, self.line) {
-            out.push_str(&format!("  {} {}:{}\n", cyan("-->"), file, line));
-        }
+        // Friendly explanation message
+        let explanation = self.generate_explanation();
+        out.push_str(&explanation);
+        out.push('\n');
 
-        // Source line with underline
+        // Source snippet with context (show 1-3 lines)
         if let (Some(line_num), Some(ref line_text), Some(ref underline)) =
             (self.line, &self.source_line, &self.underline)
         {
-            out.push_str(&format!("   {}\n", cyan("|")));
-            out.push_str(&format!(
-                "{:>3} {} {}\n",
-                cyan(&line_num.to_string()),
-                cyan("|"),
-                line_text
-            ));
-            out.push_str(&format!("   {} {}\n", cyan("|"), red(underline)));
+            // Show line number slightly dimmed
+            let line_str = format!("{}", line_num);
+            out.push_str(&format!("  {} │ {}\n", gray(&line_str), line_text));
+
+            // Point to the error with red carets
+            let spaces = " ".repeat(line_str.len());
+            out.push_str(&format!("  {} │ {}\n", spaces, red(underline)));
         }
 
-        // Suggestions
+        out.push('\n');
+
+        // Suggestions with friendly prefix
         if !self.suggestions.is_empty() {
-            out.push_str(&format!("   {}\n", cyan("|")));
             for suggestion in &self.suggestions {
-                out.push_str(&format!(
-                    "   {} {}: {}\n",
-                    cyan("="),
-                    cyan("help"),
-                    suggestion
-                ));
+                // Check if it starts with a known prefix
+                if suggestion.starts_with("did you mean") {
+                    out.push_str(&format!("  {}\n", cyan(suggestion)));
+                } else if suggestion.starts_with("add") || suggestion.starts_with("ensure")
+                    || suggestion.starts_with("check") {
+                    out.push_str(&format!("  {}: {}\n", bold("Hint"), suggestion));
+                } else if suggestion.contains("Try:") || suggestion.contains("use") {
+                    out.push_str(&format!("  {}: {}\n", bold("Try"), suggestion));
+                } else {
+                    out.push_str(&format!("  {}: {}\n", bold("Hint"), suggestion));
+                }
             }
+            out.push('\n');
         }
 
         out
+    }
+
+    /// Generate a friendly, plain-language explanation of the error
+    fn generate_explanation(&self) -> String {
+        match self.code.as_deref() {
+            Some("E041") => {
+                // Extract variable name from message
+                let var_name = self.message.trim_start_matches("undefined variable '")
+                    .trim_end_matches('\'');
+                format!("I cannot find a variable named `{}`:", var_name)
+            }
+            Some("E040") => {
+                // Type mismatch
+                format!("I found a type mismatch:\n\n  {}", self.message.trim_start_matches("type mismatch: "))
+            }
+            Some("E042") => {
+                // Unknown field
+                format!("I cannot find this field:\n\n  {}", self.message)
+            }
+            Some("E043") => {
+                // Incomplete match
+                format!("This match expression is not complete:\n\n  {}", self.message)
+            }
+            Some("E020") => {
+                let type_name = self.message.trim_start_matches("undefined type '")
+                    .trim_end_matches('\'');
+                format!("I cannot find a type named `{}`:", type_name)
+            }
+            Some("E021") => {
+                let cell_name = self.message.trim_start_matches("undefined cell '")
+                    .trim_end_matches('\'');
+                format!("I cannot find a cell named `{}`:", cell_name)
+            }
+            Some("E010") | Some("E011") | Some("E012") | Some("E013")
+            | Some("E014") | Some("E015") | Some("E016") => {
+                format!("I found something unexpected while parsing:\n\n  {}", self.message)
+            }
+            Some("E030") => {
+                format!("This cell is performing an effect that it hasn't declared:\n\n  {}", self.message)
+            }
+            _ => {
+                format!("I found an issue:\n\n  {}", self.message)
+            }
+        }
     }
 
     /// Render without colors (for LSP, tests)
@@ -148,6 +223,10 @@ fn cyan(s: &str) -> String {
 
 fn bold(s: &str) -> String {
     format!("\x1b[1m{}\x1b[0m", s)
+}
+
+fn gray(s: &str) -> String {
+    format!("\x1b[90m{}\x1b[0m", s)
 }
 
 // Source line extraction
@@ -419,18 +498,34 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
             col,
         } => {
             let source_line = get_source_line(source, *line);
-            let underline = source_line.as_ref().map(|_| make_underline(*col, 1));
+            let underline = source_line.as_ref().map(|s| {
+                // Try to underline the whole token
+                let col_idx = col.saturating_sub(1);
+                if let Some(token_end) = s[col_idx..].chars().position(|c| c.is_whitespace() || c == '(' || c == ')' || c == '{' || c == '}') {
+                    make_underline(*col, token_end.max(1))
+                } else {
+                    make_underline(*col, s[col_idx..].len().max(1))
+                }
+            });
+
+            let mut suggestions = vec![];
+            // Add helpful suggestion based on what was expected
+            if expected.contains("':'") && found != ":" {
+                suggestions.push(format!("Try adding a colon: `{}: Type`", found));
+            } else if expected.contains("'end'") {
+                suggestions.push("Add 'end' to close this block".to_string());
+            }
 
             Diagnostic {
                 severity: Severity::Error,
                 code: Some("E010".to_string()),
-                message: format!("unexpected token '{}', expected {}", found, expected),
+                message: format!("I was expecting {}, but found `{}`", expected, found),
                 file: Some(filename.to_string()),
                 line: Some(*line),
                 col: Some(*col),
                 source_line,
                 underline,
-                suggestions: vec![],
+                suggestions,
             }
         }
         ParseError::UnexpectedEof => Diagnostic {
@@ -544,10 +639,7 @@ fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> D
             });
 
             let help = if !error_suggestions.is_empty() {
-                error_suggestions
-                    .iter()
-                    .map(|s| format!("did you mean '{}'?", s))
-                    .collect()
+                vec![format!("Did you mean `{}`?", error_suggestions[0])]
             } else {
                 vec![]
             };
@@ -579,10 +671,7 @@ fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> D
             });
 
             let help = if !error_suggestions.is_empty() {
-                error_suggestions
-                    .iter()
-                    .map(|s| format!("did you mean '{}'?", s))
-                    .collect()
+                vec![format!("Did you mean `{}`?", error_suggestions[0])]
             } else {
                 vec![]
             };
@@ -728,10 +817,7 @@ fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnos
             candidates.extend(BUILTINS.iter().copied());
             let suggestions = suggest_similar(name, &candidates, 2);
             let help = if !suggestions.is_empty() {
-                suggestions
-                    .into_iter()
-                    .map(|s| format!("did you mean '{}'?", s))
-                    .collect()
+                vec![format!("Did you mean `{}`?", suggestions[0])]
             } else {
                 vec![]
             };
@@ -764,10 +850,7 @@ fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnos
             });
 
             let help = if !error_suggestions.is_empty() {
-                error_suggestions
-                    .iter()
-                    .map(|s| format!("did you mean '{}'?", s))
-                    .collect()
+                vec![format!("Did you mean `{}`?", error_suggestions[0])]
             } else {
                 vec![]
             };
@@ -922,7 +1005,7 @@ mod tests {
 
         assert_eq!(diag.severity, Severity::Error);
         assert_eq!(diag.code, Some("E010".to_string()));
-        assert!(diag.message.contains("unexpected token"));
+        assert!(diag.message.contains("expecting") || diag.message.contains("found"));
         assert_eq!(diag.line, Some(5));
     }
 
@@ -986,7 +1069,7 @@ mod tests {
         let output = diag.render_ansi();
         // Check that ANSI codes are present
         assert!(output.contains("\x1b["));
-        assert!(output.contains("E041"));
-        assert!(output.contains("undefined variable"));
+        // The Elm-style format uses ERROR category headers but the code isn't in the main output
+        assert!(output.contains("UNDEFINED VARIABLE") || output.contains("undefined variable"));
     }
 }

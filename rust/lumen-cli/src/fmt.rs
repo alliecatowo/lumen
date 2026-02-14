@@ -1226,8 +1226,10 @@ fn escape_string(s: &str) -> String {
 }
 
 /// Format files in place or check if they need formatting
-pub fn format_files(files: &[PathBuf], check_mode: bool) -> Result<bool, String> {
+/// Returns (needs_formatting, reformatted_count)
+pub fn format_files(files: &[PathBuf], check_mode: bool) -> Result<(bool, usize), String> {
     let mut needs_formatting = false;
+    let mut reformatted_count = 0;
 
     for file in files {
         let content = std::fs::read_to_string(file)
@@ -1237,9 +1239,10 @@ pub fn format_files(files: &[PathBuf], check_mode: bool) -> Result<bool, String>
 
         if content != formatted {
             needs_formatting = true;
+            reformatted_count += 1;
             if check_mode {
                 println!(
-                    "{}✗{} {}{}{} — would reformat",
+                    "  {}✗{} {}{}{} (would reformat)",
                     YELLOW,
                     RESET,
                     BOLD,
@@ -1250,8 +1253,8 @@ pub fn format_files(files: &[PathBuf], check_mode: bool) -> Result<bool, String>
                 std::fs::write(file, &formatted)
                     .map_err(|e| format!("error writing '{}': {}", file.display(), e))?;
                 println!(
-                    "{}✓{} {}{}{} — reformatted",
-                    YELLOW,
+                    "  {}✓{} {}{}{} (reformatted)",
+                    GREEN,
                     RESET,
                     BOLD,
                     file.display(),
@@ -1260,7 +1263,7 @@ pub fn format_files(files: &[PathBuf], check_mode: bool) -> Result<bool, String>
             }
         } else if !check_mode {
             println!(
-                "{}✓{} {}{}{} — already formatted",
+                "  {}✓{} {}{}{} (unchanged)",
                 GREEN,
                 RESET,
                 BOLD,
@@ -1270,7 +1273,7 @@ pub fn format_files(files: &[PathBuf], check_mode: bool) -> Result<bool, String>
         }
     }
 
-    Ok(needs_formatting)
+    Ok((needs_formatting, reformatted_count))
 }
 
 #[cfg(test)]

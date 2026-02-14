@@ -663,8 +663,14 @@ fn to_pascal_case(s: &str) -> String {
     result
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct LintSummary {
+    pub total_warnings: usize,
+    pub total_errors: usize,
+}
+
 /// CLI command entry point
-pub fn cmd_lint(files: &[PathBuf], strict: bool) -> Result<(), String> {
+pub fn cmd_lint(files: &[PathBuf], strict: bool) -> Result<LintSummary, String> {
     if files.is_empty() {
         return Err("no files specified".to_string());
     }
@@ -690,29 +696,12 @@ pub fn cmd_lint(files: &[PathBuf], strict: bool) -> Result<(), String> {
 
     if total_warnings > 0 {
         println!();
-        if strict {
-            println!(
-                "{}found {} warnings ({} errors) in {} file(s){}",
-                RED,
-                total_warnings,
-                total_errors,
-                files.len(),
-                RESET
-            );
-            return Err("lint warnings found (strict mode)".to_string());
-        } else {
-            println!(
-                "{}found {} warnings ({} errors) in {} file(s){}",
-                YELLOW,
-                total_warnings,
-                total_errors,
-                files.len(),
-                RESET
-            );
-        }
     }
 
-    Ok(())
+    Ok(LintSummary {
+        total_warnings,
+        total_errors,
+    })
 }
 
 fn print_warning(w: &LintWarning, strict: bool) {

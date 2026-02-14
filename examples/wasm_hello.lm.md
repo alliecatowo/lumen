@@ -49,7 +49,7 @@ cell distance(p: Point) -> Int
 end
 
 cell test_point() -> Int
-    let p = Point { x: 3, y: 4 }
+    let p = Point(x: 3, y: 4)
     distance(p)
 end
 ```

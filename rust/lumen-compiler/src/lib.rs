@@ -1,6 +1,6 @@
 //! Lumen Compiler
 //!
-//! Transforms `.lm.md` source files into LIR modules.
+//! Transforms Lumen source files (`.lm`, `.lumen`, `.lm.md`, `.lumen.md`) into LIR modules.
 
 pub mod compiler;
 pub mod diagnostics;
@@ -84,7 +84,7 @@ fn compile_with_imports_internal(
         current_line += lines_in_block;
     }
 
-    if full_code.is_empty() {
+    if full_code.trim().is_empty() {
         return Ok(LirModule::new("sha256:empty".to_string()));
     }
 
@@ -148,22 +148,14 @@ fn compile_with_imports_internal(
         // Track this module in the compilation stack
         compilation_stack.insert(module_path.clone());
 
-        // Recursively compile the imported module
-        let imported_module = if imported_source.contains("```lumen") {
-            compile_with_imports_internal(
-                &imported_source,
-                resolve_import,
-                compilation_stack,
-                Some(&module_path),
-            )?
-        } else {
-            compile_raw_with_imports_internal(
-                &imported_source,
-                resolve_import,
-                compilation_stack,
-                Some(&module_path),
-            )?
-        };
+        // Recursively compile the imported module. The markdown pipeline now
+        // supports fenced and unfenced source forms.
+        let imported_module = compile_with_imports_internal(
+            &imported_source,
+            resolve_import,
+            compilation_stack,
+            Some(&module_path),
+        )?;
 
         // Remove from stack after compilation
         compilation_stack.remove(&module_path);
@@ -311,7 +303,7 @@ fn compile_raw_with_imports_internal(
     compilation_stack: &mut HashSet<String>,
     _current_module: Option<&str>,
 ) -> Result<LirModule, CompileError> {
-    if source.is_empty() {
+    if source.trim().is_empty() {
         return Ok(LirModule::new("sha256:empty".to_string()));
     }
 
@@ -374,23 +366,14 @@ fn compile_raw_with_imports_internal(
         // Track this module in the compilation stack
         compilation_stack.insert(module_path.clone());
 
-        // Recursively compile the imported module
-        // Determine if it's markdown or raw based on what we got back
-        let imported_module = if imported_source.contains("```lumen") {
-            compile_with_imports_internal(
-                &imported_source,
-                resolve_import,
-                compilation_stack,
-                Some(&module_path),
-            )?
-        } else {
-            compile_raw_with_imports_internal(
-                &imported_source,
-                resolve_import,
-                compilation_stack,
-                Some(&module_path),
-            )?
-        };
+        // Recursively compile the imported module through the markdown pipeline,
+        // which also handles unfenced source.
+        let imported_module = compile_with_imports_internal(
+            &imported_source,
+            resolve_import,
+            compilation_stack,
+            Some(&module_path),
+        )?;
 
         // Remove from stack after compilation
         compilation_stack.remove(&module_path);
@@ -521,7 +504,7 @@ fn compile_raw_with_imports_internal(
 /// Compile a `.lm` raw Lumen source file to a LIR module.
 /// This skips markdown extraction and processes the source directly.
 pub fn compile_raw(source: &str) -> Result<LirModule, CompileError> {
-    if source.is_empty() {
+    if source.trim().is_empty() {
         return Ok(LirModule::new("sha256:empty".to_string()));
     }
 
@@ -566,28 +549,26 @@ pub fn compile(source: &str) -> Result<LirModule, CompileError> {
         })
         .collect();
 
-    // 3. Concatenate all code blocks
+    // 3. Concatenate all code blocks preserving line numbers
     let mut full_code = String::new();
-    let mut first_block_line = 1;
-    let mut first_block_offset = 0;
+    let mut current_line = 1;
 
-    for (i, block) in extracted.code_blocks.iter().enumerate() {
-        if i == 0 {
-            first_block_line = block.code_start_line;
-            first_block_offset = block.code_offset;
-        }
-        if !full_code.is_empty() {
+    for block in extracted.code_blocks.iter() {
+        while current_line < block.code_start_line {
             full_code.push('\n');
+            current_line += 1;
         }
         full_code.push_str(&block.code);
+        let lines_in_block = block.code.chars().filter(|&c| c == '\n').count();
+        current_line += lines_in_block;
     }
 
-    if full_code.is_empty() {
+    if full_code.trim().is_empty() {
         return Ok(LirModule::new("sha256:empty".to_string()));
     }
 
     // 4. Lex
-    let mut lexer = compiler::lexer::Lexer::new(&full_code, first_block_line, first_block_offset);
+    let mut lexer = compiler::lexer::Lexer::new(&full_code, 1, 0);
     let tokens = lexer.tokenize()?;
 
     // 5. Parse

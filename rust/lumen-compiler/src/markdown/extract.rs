@@ -30,6 +30,8 @@ pub struct DirectiveLine {
 pub struct ExtractResult {
     pub code_blocks: Vec<CodeBlock>,
     pub directives: Vec<DirectiveLine>,
+    /// True when at least one fenced lumen/lm block was found.
+    pub has_fenced_blocks: bool,
 }
 
 /// Extract Lumen code blocks and directives from a Markdown file.
@@ -39,6 +41,7 @@ pub struct ExtractResult {
 pub fn extract_blocks(source: &str) -> ExtractResult {
     let mut code_blocks = Vec::new();
     let mut directives = Vec::new();
+    let mut has_fenced_blocks = false;
 
     let mut in_fence = false;
     let mut fence_lang = String::new();
@@ -117,6 +120,7 @@ pub fn extract_blocks(source: &str) -> ExtractResult {
                         code_offset: code_start_offset,
                         code_start_line,
                     });
+                    has_fenced_blocks = true;
                     fence_code.clear();
                     continue;
                 }
@@ -131,10 +135,80 @@ pub fn extract_blocks(source: &str) -> ExtractResult {
         byte_offset += line.len() + 1; // +1 for newline
     }
 
+    if code_blocks.is_empty() && looks_like_lumen_source(&normalized) {
+        // Treat unfenced code as markdown-native source while preserving directive handling.
+        let mut fallback_lines = Vec::new();
+        for line in normalized.split('\n') {
+            if line.trim().starts_with('@') {
+                fallback_lines.push(String::new());
+            } else {
+                fallback_lines.push(line.to_string());
+            }
+        }
+        code_blocks.push(CodeBlock {
+            code: fallback_lines.join("\n"),
+            language: "lumen".to_string(),
+            span: Span::new(0, normalized.len(), 1, 1),
+            code_offset: 0,
+            code_start_line: 1,
+        });
+    }
+
     ExtractResult {
         code_blocks,
         directives,
+        has_fenced_blocks,
     }
+}
+
+fn looks_like_lumen_source(source: &str) -> bool {
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with('@') {
+            return true;
+        }
+        if let Some(first) = trimmed.split_whitespace().next() {
+            if is_lumen_code_starter(first) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_lumen_code_starter(first: &str) -> bool {
+    matches!(
+        first,
+        "record"
+            | "enum"
+            | "cell"
+            | "agent"
+            | "effect"
+            | "handler"
+            | "import"
+            | "use"
+            | "grant"
+            | "type"
+            | "const"
+            | "pub"
+            | "async"
+            | "trait"
+            | "impl"
+            | "let"
+            | "if"
+            | "for"
+            | "while"
+            | "loop"
+            | "match"
+            | "return"
+            | "halt"
+            | "break"
+            | "continue"
+            | "emit"
+    )
 }
 
 /// Count leading backticks in a trimmed line, returning None if doesn't start with backticks
@@ -182,6 +256,7 @@ end
         assert_eq!(result.code_blocks.len(), 2);
         assert!(result.code_blocks[0].code.contains("record Foo"));
         assert!(result.code_blocks[1].code.contains("cell main"));
+        assert!(result.has_fenced_blocks);
     }
 
     #[test]
@@ -200,6 +275,7 @@ end
         let result = extract_blocks(src);
         assert_eq!(result.code_blocks.len(), 1);
         assert!(result.code_blocks[0].code.contains("cell greet"));
+        assert!(result.has_fenced_blocks);
     }
 
     #[test]
@@ -220,6 +296,7 @@ end
         assert_eq!(result.code_blocks.len(), 1);
         assert!(result.code_blocks[0].code.contains("```lumen"));
         assert!(result.code_blocks[0].code.contains("cell foo"));
+        assert!(result.has_fenced_blocks);
     }
 
     #[test]
@@ -235,6 +312,7 @@ end
         assert_eq!(result.code_blocks.len(), 1);
         assert_eq!(result.code_blocks[0].language, "lm");
         assert!(result.code_blocks[0].code.contains("cell test"));
+        assert!(result.has_fenced_blocks);
     }
 
     #[test]
@@ -256,6 +334,7 @@ end
         assert_eq!(result.code_blocks.len(), 2);
         assert!(result.code_blocks[0].code.contains("cell test"));
         assert!(result.code_blocks[1].code.contains("cell test2"));
+        assert!(result.has_fenced_blocks);
     }
 
     #[test]
@@ -267,6 +346,7 @@ end
         let result = extract_blocks(src);
         assert_eq!(result.code_blocks.len(), 1);
         assert_eq!(result.code_blocks[0].code, "");
+        assert!(result.has_fenced_blocks);
     }
 
     #[test]
@@ -281,6 +361,7 @@ end
         let result = extract_blocks(src);
         assert_eq!(result.code_blocks.len(), 1);
         assert!(result.code_blocks[0].code.contains("cell test"));
+        assert!(result.has_fenced_blocks);
     }
 
     #[test]
@@ -290,6 +371,7 @@ end
         assert_eq!(result.code_blocks.len(), 1);
         assert!(result.code_blocks[0].code.contains("cell test"));
         assert!(result.code_blocks[0].code.contains("42"));
+        assert!(result.has_fenced_blocks);
     }
 
     #[test]
@@ -298,6 +380,7 @@ end
         let result = extract_blocks(src);
         assert_eq!(result.code_blocks.len(), 1);
         assert!(result.code_blocks[0].code.contains("cell test"));
+        assert!(result.has_fenced_blocks);
     }
 
     #[test]
@@ -324,6 +407,7 @@ end
         assert_eq!(result.code_blocks[0].code_start_line, 4);
         // Second block starts after first block + prose
         assert!(result.code_blocks[1].code_start_line > result.code_blocks[0].code_start_line);
+        assert!(result.has_fenced_blocks);
     }
 
     #[test]
@@ -345,6 +429,7 @@ end
         assert_eq!(result.code_blocks.len(), 1);
         assert!(result.code_blocks[0].code.contains("cell test"));
         assert!(!result.code_blocks[0].code.contains("indented code block"));
+        assert!(result.has_fenced_blocks);
     }
 
     #[test]
@@ -362,5 +447,33 @@ end
         assert!(result.code_blocks[0]
             .code
             .contains("Use ``` for code fences"));
+        assert!(result.has_fenced_blocks);
+    }
+
+    #[test]
+    fn test_unfenced_source_fallback_extracts_code() {
+        let src = r#"
+@doc_mode true
+
+cell main() -> Int
+  return 42
+end
+"#;
+        let result = extract_blocks(src);
+        assert_eq!(result.directives.len(), 1);
+        assert_eq!(result.code_blocks.len(), 1);
+        assert!(result.code_blocks[0].code.contains("cell main"));
+        assert!(!result.has_fenced_blocks);
+    }
+
+    #[test]
+    fn test_prose_only_markdown_does_not_fallback_to_code() {
+        let src = r#"# Heading
+
+This is documentation only.
+"#;
+        let result = extract_blocks(src);
+        assert!(result.code_blocks.is_empty());
+        assert!(!result.has_fenced_blocks);
     }
 }

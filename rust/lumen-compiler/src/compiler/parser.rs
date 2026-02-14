@@ -5202,7 +5202,7 @@ impl Parser {
         let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
         let content_expr = self.parse_role_content(terminators, has_indent)?;
 
-        let end_span = if has_indent {
+        let end_span = if has_indent || matches!(self.peek_kind(), TokenKind::End) {
             self.expect(&TokenKind::End)?.span
         } else {
             // Inline role ends at newline (which is peeked but not consumed by parse_role_content?)

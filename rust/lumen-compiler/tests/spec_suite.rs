@@ -232,7 +232,7 @@ end
 cell main() -> tuple[list[Int], map[String, Int], set[Int], tuple[Int, String]]
   let xs = [1, 2, 3]
   let m = {"a": 1, "b": 2}
-  let s = set[1, 2, 2, 3]
+  let s = {1, 2, 2, 3}
   let t = (1, "x")
   return (xs, m, s, t)
 end
@@ -2456,7 +2456,7 @@ record Box[T]
 end
 
 cell make_box() -> Box[Int]
-  return Box[Int] { value: 42 }
+  return Box[Int](value: 42)
 end
 
 cell main() -> Int
@@ -2478,7 +2478,7 @@ record Pair[A, B]
 end
 
 cell make_pair() -> Pair[String, Int]
-  return Pair[String, Int] { first: "count", second: 10 }
+  return Pair[String, Int](first: "count", second: 10)
 end
 
 cell main() -> Int
@@ -2563,7 +2563,7 @@ record User
 end
 
 cell main() -> Int
-  let u = User { id: 1, email: "a@example.com", created: 1234567890 }
+  let u = User(id: 1, email: "a@example.com", created: 1234567890)
   return 0
 end
 "#,

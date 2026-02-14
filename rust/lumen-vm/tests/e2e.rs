@@ -1824,7 +1824,7 @@ fn e2e_set_add() {
     let result = run_main(
         r#"
 cell main() -> Int
-  let s = set[1, 2, 3]
+  let s = {1, 2, 3}
   let s2 = add(s, 4)
   return size(s2)
 end
@@ -1838,7 +1838,7 @@ fn e2e_set_add_duplicate() {
     let result = run_main(
         r#"
 cell main() -> Int
-  let s = set[1, 2, 3]
+  let s = {1, 2, 3}
   let s2 = add(s, 2)
   return size(s2)
 end
@@ -1852,7 +1852,7 @@ fn e2e_set_remove() {
     let result = run_main(
         r#"
 cell main() -> Int
-  let s = set[1, 2, 3]
+  let s = {1, 2, 3}
   let s2 = remove(s, 2)
   return size(s2)
 end

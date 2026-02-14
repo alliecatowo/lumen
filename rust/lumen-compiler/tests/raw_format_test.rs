@@ -38,7 +38,7 @@ end
 "#;
 
     let main_source = r#"
-import math.{square}
+import math: square
 
 cell main() -> Int
   return square(5)
@@ -76,7 +76,7 @@ end
     let main_source = r#"# App
 
 ```lumen
-import math.{square}
+import math: square
 
 cell main() -> Int
   return square(9)
@@ -112,7 +112,7 @@ end
 "#;
 
     let main_source = r#"
-import math.{square}
+import math: square
 
 cell main() -> Int
   return square(6)

@@ -176,7 +176,7 @@ Composite and functional forms:
 
 ```lumen
 cell main() -> tuple[list[Int], map[String, Int], set[Int], Null]
-  return ([1, 2], {"x": 1}, set[1, 2], null)
+  return ([1, 2], {"x": 1}, {1, 2}, null)
 end
 ```
 
@@ -496,12 +496,7 @@ When a tool is called at runtime:
 4. A trace event is recorded with: tool name, input, output, duration, provider identity, and status.
 5. The result is returned to the calling cell.
 
-Tool results can be validated against expected schemas:
-
-```lumen
-let response = Chat(prompt: "hello")
-expect schema response { message: String }
-```
+Tool results can be validated against expected schemas (feature planned).
 
 ### 10.6 MCP Server Bridge
 

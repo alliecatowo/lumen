@@ -316,7 +316,9 @@ impl PartialEq for Value {
             (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
             (Value::String(StringRef::Owned(a)), Value::String(StringRef::Owned(b))) => a == b,
             // At Value-layer (without StringTable), interned equality is by id only.
-            (Value::String(StringRef::Interned(a)), Value::String(StringRef::Interned(b))) => a == b,
+            (Value::String(StringRef::Interned(a)), Value::String(StringRef::Interned(b))) => {
+                a == b
+            }
             // Cross representation string equality requires StringTable resolution (handled in VM).
             (Value::String(StringRef::Owned(_)), Value::String(StringRef::Interned(_))) => false,
             (Value::String(StringRef::Interned(_)), Value::String(StringRef::Owned(_))) => false,

@@ -134,7 +134,12 @@ fn infer_type_from_expr(expr: &Expr) -> String {
         Expr::BinOp(left, op, right, _) => {
             use lumen_compiler::compiler::ast::BinOp;
             match op {
-                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::FloorDiv | BinOp::Mod => {
+                BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::Div
+                | BinOp::FloorDiv
+                | BinOp::Mod => {
                     // Numeric operations
                     let left_type = infer_type_from_expr(left);
                     if left_type == "Float" || infer_type_from_expr(right) == "Float" {

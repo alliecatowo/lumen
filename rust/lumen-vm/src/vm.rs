@@ -2061,14 +2061,7 @@ impl VM {
                     let new_base = self.registers.len();
                     self.registers
                         .resize(new_base + num_regs.max(256), Value::Null);
-                    self.copy_args_to_params(
-                        &params,
-                        new_base,
-                        base + a + 1,
-                        nargs,
-                        0,
-                        cell_regs,
-                    )?;
+                    self.copy_args_to_params(&params, new_base, base + a + 1, nargs, 0, cell_regs)?;
                     self.frames.push(CallFrame {
                         cell_idx: idx,
                         base_register: new_base,
@@ -2168,14 +2161,7 @@ impl VM {
                     let params: Vec<LirParam> = callee_cell.params.clone();
                     let cell_regs = callee_cell.registers;
                     let _ = module;
-                    self.copy_args_to_params(
-                        &params,
-                        base,
-                        base + a + 1,
-                        nargs,
-                        0,
-                        cell_regs,
-                    )?;
+                    self.copy_args_to_params(&params, base, base + a + 1, nargs, 0, cell_regs)?;
                     if let Some(f) = self.frames.last_mut() {
                         f.cell_idx = idx;
                         f.ip = 0;
@@ -2200,14 +2186,7 @@ impl VM {
                     self.registers[base + i] = cap.clone();
                 }
                 let cap_count = cv.captures.len();
-                self.copy_args_to_params(
-                    &params,
-                    base,
-                    base + a + 1,
-                    nargs,
-                    cap_count,
-                    cell_regs,
-                )?;
+                self.copy_args_to_params(&params, base, base + a + 1, nargs, cap_count, cell_regs)?;
                 if let Some(f) = self.frames.last_mut() {
                     f.cell_idx = cv.cell_idx;
                     f.ip = 0;

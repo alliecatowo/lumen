@@ -749,7 +749,11 @@ impl Formatter {
                 } else {
                     String::new()
                 };
-                self.writeln(&format!("while {}{}", label_str, self.fmt_expr(&s.condition)));
+                self.writeln(&format!(
+                    "while {}{}",
+                    label_str,
+                    self.fmt_expr(&s.condition)
+                ));
                 self.push_indent();
                 for stmt in &s.body {
                     self.fmt_stmt(stmt);
@@ -1095,10 +1099,14 @@ impl Formatter {
                 format!("match {} ... end", self.fmt_expr(subject))
             }
             Expr::BlockExpr(_, _) => "block ... end".to_string(),
-            Expr::IsType { expr, type_name, .. } => {
+            Expr::IsType {
+                expr, type_name, ..
+            } => {
                 format!("{} is {}", self.fmt_expr(expr), type_name)
             }
-            Expr::TypeCast { expr, target_type, .. } => {
+            Expr::TypeCast {
+                expr, target_type, ..
+            } => {
                 format!("{} as {}", self.fmt_expr(expr), target_type)
             }
         }

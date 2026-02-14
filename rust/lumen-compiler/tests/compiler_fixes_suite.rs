@@ -28,8 +28,15 @@ fn noteq_emits_eq_then_not() {
     let module = compile_to_lir(src);
     let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
 
-    let eq_idx = ops.iter().position(|o| *o == OpCode::Eq).expect("should emit Eq");
-    assert_eq!(ops[eq_idx + 1], OpCode::Not, "Not should follow Eq for != operator");
+    let eq_idx = ops
+        .iter()
+        .position(|o| *o == OpCode::Eq)
+        .expect("should emit Eq");
+    assert_eq!(
+        ops[eq_idx + 1],
+        OpCode::Not,
+        "Not should follow Eq for != operator"
+    );
 }
 
 #[test]
@@ -38,11 +45,20 @@ fn noteq_with_variables() {
     let module = compile_to_lir(src);
     let instrs = &module.cells[0].instructions;
 
-    let eq_instr = instrs.iter().find(|i| i.op == OpCode::Eq).expect("should emit Eq");
-    let not_instr = instrs.iter().find(|i| i.op == OpCode::Not).expect("should emit Not");
+    let eq_instr = instrs
+        .iter()
+        .find(|i| i.op == OpCode::Eq)
+        .expect("should emit Eq");
+    let not_instr = instrs
+        .iter()
+        .find(|i| i.op == OpCode::Not)
+        .expect("should emit Not");
 
     // Not should write to the same register as Eq
-    assert_eq!(eq_instr.a, not_instr.a, "Eq and Not should target the same register");
+    assert_eq!(
+        eq_instr.a, not_instr.a,
+        "Eq and Not should target the same register"
+    );
     // Not should read from the same register
     assert_eq!(not_instr.a, not_instr.b, "Not should invert in place");
 }
@@ -124,7 +140,8 @@ fn intrinsic_reverse() {
 
 #[test]
 fn intrinsic_filter() {
-    let src = "cell main(xs: list[Int], f: fn(Int) -> Bool) -> list[Int]\n  return filter(xs, f)\nend";
+    let src =
+        "cell main(xs: list[Int], f: fn(Int) -> Bool) -> list[Int]\n  return filter(xs, f)\nend";
     let module = compile_to_lir(src);
     let intr = module.cells[0]
         .instructions
@@ -136,7 +153,8 @@ fn intrinsic_filter() {
 
 #[test]
 fn intrinsic_map() {
-    let src = "cell main(xs: list[Int], f: fn(Int) -> String) -> list[String]\n  return map(xs, f)\nend";
+    let src =
+        "cell main(xs: list[Int], f: fn(Int) -> String) -> list[String]\n  return map(xs, f)\nend";
     let module = compile_to_lir(src);
     let intr = module.cells[0]
         .instructions
@@ -168,9 +186,24 @@ fn intrinsic_first_last_is_empty() {
     let m2 = compile_to_lir(src_last);
     let m3 = compile_to_lir(src_empty);
 
-    let id1 = m1.cells[0].instructions.iter().find(|i| i.op == OpCode::Intrinsic).unwrap().b;
-    let id2 = m2.cells[0].instructions.iter().find(|i| i.op == OpCode::Intrinsic).unwrap().b;
-    let id3 = m3.cells[0].instructions.iter().find(|i| i.op == OpCode::Intrinsic).unwrap().b;
+    let id1 = m1.cells[0]
+        .instructions
+        .iter()
+        .find(|i| i.op == OpCode::Intrinsic)
+        .unwrap()
+        .b;
+    let id2 = m2.cells[0]
+        .instructions
+        .iter()
+        .find(|i| i.op == OpCode::Intrinsic)
+        .unwrap()
+        .b;
+    let id3 = m3.cells[0]
+        .instructions
+        .iter()
+        .find(|i| i.op == OpCode::Intrinsic)
+        .unwrap()
+        .b;
 
     assert_eq!(id1, IntrinsicId::First as u8);
     assert_eq!(id2, IntrinsicId::Last as u8);
@@ -185,8 +218,18 @@ fn intrinsic_starts_with_ends_with() {
     let m1 = compile_to_lir(src_sw);
     let m2 = compile_to_lir(src_ew);
 
-    let id1 = m1.cells[0].instructions.iter().find(|i| i.op == OpCode::Intrinsic).unwrap().b;
-    let id2 = m2.cells[0].instructions.iter().find(|i| i.op == OpCode::Intrinsic).unwrap().b;
+    let id1 = m1.cells[0]
+        .instructions
+        .iter()
+        .find(|i| i.op == OpCode::Intrinsic)
+        .unwrap()
+        .b;
+    let id2 = m2.cells[0]
+        .instructions
+        .iter()
+        .find(|i| i.op == OpCode::Intrinsic)
+        .unwrap()
+        .b;
 
     assert_eq!(id1, IntrinsicId::StartsWith as u8);
     assert_eq!(id2, IntrinsicId::EndsWith as u8);
@@ -249,8 +292,18 @@ fn intrinsic_take_drop() {
     let m1 = compile_to_lir(src_take);
     let m2 = compile_to_lir(src_drop);
 
-    let id1 = m1.cells[0].instructions.iter().find(|i| i.op == OpCode::Intrinsic).unwrap().b;
-    let id2 = m2.cells[0].instructions.iter().find(|i| i.op == OpCode::Intrinsic).unwrap().b;
+    let id1 = m1.cells[0]
+        .instructions
+        .iter()
+        .find(|i| i.op == OpCode::Intrinsic)
+        .unwrap()
+        .b;
+    let id2 = m2.cells[0]
+        .instructions
+        .iter()
+        .find(|i| i.op == OpCode::Intrinsic)
+        .unwrap()
+        .b;
 
     assert_eq!(id1, IntrinsicId::Take as u8);
     assert_eq!(id2, IntrinsicId::Drop as u8);
@@ -266,7 +319,10 @@ fn set_comprehension_uses_append_and_toset() {
     let module = compile_to_lir(src);
     let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
 
-    assert!(ops.contains(&OpCode::Append), "set comprehension should use Append during iteration");
+    assert!(
+        ops.contains(&OpCode::Append),
+        "set comprehension should use Append during iteration"
+    );
 
     let intrinsics: Vec<u8> = module.cells[0]
         .instructions
@@ -286,8 +342,14 @@ fn set_comprehension_with_condition() {
     let module = compile_to_lir(src);
     let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
 
-    assert!(ops.contains(&OpCode::Append), "set comprehension with condition should use Append");
-    assert!(ops.contains(&OpCode::Lt), "condition x > 2 should use Lt (swapped)");
+    assert!(
+        ops.contains(&OpCode::Append),
+        "set comprehension with condition should use Append"
+    );
+    assert!(
+        ops.contains(&OpCode::Lt),
+        "condition x > 2 should use Lt (swapped)"
+    );
 
     let intrinsics: Vec<u8> = module.cells[0]
         .instructions
@@ -312,8 +374,14 @@ fn map_comprehension_uses_newmap_and_setindex() {
     let module = compile_to_lir(src);
     let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
 
-    assert!(ops.contains(&OpCode::NewMap), "map comprehension should create NewMap");
-    assert!(ops.contains(&OpCode::SetIndex), "map comprehension should use SetIndex for key-value pairs");
+    assert!(
+        ops.contains(&OpCode::NewMap),
+        "map comprehension should create NewMap"
+    );
+    assert!(
+        ops.contains(&OpCode::SetIndex),
+        "map comprehension should use SetIndex for key-value pairs"
+    );
 }
 
 // ============================================================================
@@ -326,6 +394,12 @@ fn list_comprehension_uses_newlist_and_append() {
     let module = compile_to_lir(src);
     let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
 
-    assert!(ops.contains(&OpCode::NewList), "list comprehension should create NewList");
-    assert!(ops.contains(&OpCode::Append), "list comprehension should use Append");
+    assert!(
+        ops.contains(&OpCode::NewList),
+        "list comprehension should create NewList"
+    );
+    assert!(
+        ops.contains(&OpCode::Append),
+        "list comprehension should use Append"
+    );
 }

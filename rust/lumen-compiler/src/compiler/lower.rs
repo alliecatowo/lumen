@@ -767,7 +767,8 @@ impl<'a> Lowerer<'a> {
             // Implicit return: if last statement is an expression and cell has a return type
             if is_last && has_return_type {
                 if let Stmt::Expr(es) = stmt {
-                    let val_reg = self.lower_expr(&es.expr, &mut ra, &mut constants, &mut instructions);
+                    let val_reg =
+                        self.lower_expr(&es.expr, &mut ra, &mut constants, &mut instructions);
                     // Emit accumulated defer blocks in LIFO order before return
                     self.emit_defers(&mut ra, &mut constants, &mut instructions);
                     instructions.push(Instruction::abc(OpCode::Return, val_reg, 1, 0));
@@ -1904,7 +1905,7 @@ impl<'a> Lowerer<'a> {
 
                                         // If cmp_reg is True (Constraint Failed), we want to Halt.
                                         // If cmp_reg is False (Constraint OK), we want to Jmp over Halt.
-                                        
+
                                         // Test(cmp_reg, 0, 0) skips next instruction if cmp_reg is Truthy.
                                         // So if Failed (True), Skip Next (Jmp) -> Execute Halt.
                                         // If OK (False), Don't Skip -> Execute Next (Jmp) -> Skip Halt.
@@ -2780,7 +2781,11 @@ impl<'a> Lowerer<'a> {
                 }
                 dest
             }
-            Expr::IsType { expr: inner, type_name, .. } => {
+            Expr::IsType {
+                expr: inner,
+                type_name,
+                ..
+            } => {
                 let val_reg = self.lower_expr(inner, ra, consts, instrs);
                 let type_str_reg = ra.alloc_temp();
                 let kidx = consts.len() as u16;
@@ -2790,7 +2795,11 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::abc(OpCode::Is, dest, val_reg, type_str_reg));
                 dest
             }
-            Expr::TypeCast { expr: inner, target_type, .. } => {
+            Expr::TypeCast {
+                expr: inner,
+                target_type,
+                ..
+            } => {
                 let val_reg = self.lower_expr(inner, ra, consts, instrs);
                 let dest = ra.alloc_temp();
                 let intrinsic = match target_type.as_str() {
@@ -2814,7 +2823,12 @@ impl<'a> Lowerer<'a> {
                 if val_reg != arg_start {
                     instrs.push(Instruction::abc(OpCode::Move, arg_start, val_reg, 0));
                 }
-                instrs.push(Instruction::abc(OpCode::Intrinsic, dest, intrinsic as u8, arg_start));
+                instrs.push(Instruction::abc(
+                    OpCode::Intrinsic,
+                    dest,
+                    intrinsic as u8,
+                    arg_start,
+                ));
                 dest
             }
             Expr::BlockExpr(stmts, _) => {

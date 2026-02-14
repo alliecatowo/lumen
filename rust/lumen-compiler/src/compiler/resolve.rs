@@ -1671,7 +1671,13 @@ fn infer_machine_expr_type(expr: &Expr, scope: &HashMap<String, TypeExpr>) -> Op
             let lt = infer_machine_expr_type(lhs, scope).unwrap_or_else(|| "Any".into());
             let rt = infer_machine_expr_type(rhs, scope).unwrap_or_else(|| "Any".into());
             match op {
-                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow => {
+                BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::Div
+                | BinOp::FloorDiv
+                | BinOp::Mod
+                | BinOp::Pow => {
                     if lt == "Float" || rt == "Float" {
                         Some("Float".to_string())
                     } else if lt == "Int" && rt == "Int" {
@@ -1689,13 +1695,10 @@ fn infer_machine_expr_type(expr: &Expr, scope: &HashMap<String, TypeExpr>) -> Op
                 | BinOp::And
                 | BinOp::Or
                 | BinOp::In => Some("Bool".to_string()),
-                BinOp::PipeForward
-                | BinOp::Concat => Some("Any".to_string()),
-                BinOp::BitAnd
-                | BinOp::BitOr
-                | BinOp::BitXor
-                | BinOp::Shl
-                | BinOp::Shr => Some("Int".to_string()),
+                BinOp::PipeForward | BinOp::Concat => Some("Any".to_string()),
+                BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                    Some("Int".to_string())
+                }
             }
         }
         _ => None,

@@ -35,7 +35,10 @@ fn is_type_compiles_and_returns_bool() {
     let src = "cell check(x: Int) -> Bool\n  return x is Int\nend";
     let module = compile_to_lir(src);
     let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
-    assert!(ops.contains(&OpCode::Is), "should emit Is opcode for 'is' expression");
+    assert!(
+        ops.contains(&OpCode::Is),
+        "should emit Is opcode for 'is' expression"
+    );
 }
 
 #[test]
@@ -53,10 +56,14 @@ fn is_type_loads_type_string_constant() {
     let src = "cell check(x: Int) -> Bool\n  return x is Int\nend";
     let module = compile_to_lir(src);
     // Should have "Int" in constants
-    let has_int_str = module.cells[0].constants.iter().any(|c| {
-        matches!(c, lumen_compiler::compiler::lir::Constant::String(s) if s == "Int")
-    });
-    assert!(has_int_str, "should have 'Int' string constant for is type check");
+    let has_int_str = module.cells[0]
+        .constants
+        .iter()
+        .any(|c| matches!(c, lumen_compiler::compiler::lir::Constant::String(s) if s == "Int"));
+    assert!(
+        has_int_str,
+        "should have 'Int' string constant for is type check"
+    );
 }
 
 #[test]
@@ -84,7 +91,11 @@ fn as_int_compiles() {
         .iter()
         .find(|i| i.op == OpCode::Intrinsic)
         .expect("should have Intrinsic");
-    assert_eq!(intr.b, IntrinsicId::ToInt as u8, "should use ToInt intrinsic");
+    assert_eq!(
+        intr.b,
+        IntrinsicId::ToInt as u8,
+        "should use ToInt intrinsic"
+    );
 }
 
 #[test]
@@ -96,7 +107,11 @@ fn as_float_compiles() {
         .iter()
         .find(|i| i.op == OpCode::Intrinsic)
         .expect("should have Intrinsic for as Float");
-    assert_eq!(intr.b, IntrinsicId::ToFloat as u8, "should use ToFloat intrinsic");
+    assert_eq!(
+        intr.b,
+        IntrinsicId::ToFloat as u8,
+        "should use ToFloat intrinsic"
+    );
 }
 
 #[test]
@@ -108,7 +123,11 @@ fn as_string_compiles() {
         .iter()
         .find(|i| i.op == OpCode::Intrinsic)
         .expect("should have Intrinsic for as String");
-    assert_eq!(intr.b, IntrinsicId::ToString as u8, "should use ToString intrinsic");
+    assert_eq!(
+        intr.b,
+        IntrinsicId::ToString as u8,
+        "should use ToString intrinsic"
+    );
 }
 
 #[test]
@@ -121,7 +140,10 @@ fn as_bool_compiles() {
         .iter()
         .filter(|i| i.op == OpCode::Not)
         .count();
-    assert!(not_count >= 2, "should emit double Not for Bool truthiness cast");
+    assert!(
+        not_count >= 2,
+        "should emit double Not for Bool truthiness cast"
+    );
 }
 
 #[test]
@@ -142,10 +164,7 @@ fn implicit_return_simple() {
         ops.contains(&OpCode::Return),
         "should emit Return for implicit return"
     );
-    assert!(
-        ops.contains(&OpCode::Add),
-        "should emit Add for a + b"
-    );
+    assert!(ops.contains(&OpCode::Add), "should emit Add for a + b");
 }
 
 #[test]
@@ -162,7 +181,10 @@ fn implicit_return_with_let_then_expr() {
     let src = "cell calc(x: Int) -> Int\n  let y = x * 2\n  y + 1\nend";
     let module = compile_to_lir(src);
     let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
-    assert!(ops.contains(&OpCode::Return), "should emit Return for implicit return");
+    assert!(
+        ops.contains(&OpCode::Return),
+        "should emit Return for implicit return"
+    );
 }
 
 #[test]

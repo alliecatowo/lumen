@@ -34,14 +34,14 @@ pub enum OpCode {
     GetTuple = 0x14, // A, B, C: A = R[B].elements[C]
 
     // Arithmetic
-    Add = 0x20,    // A, B, C: A = B + C
-    Sub = 0x21,    // A, B, C: A = B - C
-    Mul = 0x22,    // A, B, C: A = B * C
-    Div = 0x23,    // A, B, C: A = B / C
-    Mod = 0x24,    // A, B, C: A = B % C
-    Pow = 0x25,    // A, B, C: A = B ** C
-    Neg = 0x26,    // A, B:    A = -B
-    Concat = 0x27, // A, B, C: A = B ++ C
+    Add = 0x20,      // A, B, C: A = B + C
+    Sub = 0x21,      // A, B, C: A = B - C
+    Mul = 0x22,      // A, B, C: A = B * C
+    Div = 0x23,      // A, B, C: A = B / C
+    Mod = 0x24,      // A, B, C: A = B % C
+    Pow = 0x25,      // A, B, C: A = B ** C
+    Neg = 0x26,      // A, B:    A = -B
+    Concat = 0x27,   // A, B, C: A = B ++ C
     FloorDiv = 0x2E, // A, B, C: A = B // C (floor division)
 
     // Bitwise

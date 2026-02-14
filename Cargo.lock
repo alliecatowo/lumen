@@ -856,7 +856,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "lumen-compiler",
@@ -877,7 +877,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-compiler"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "lumen-vm",
  "serde",
@@ -899,7 +899,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-provider-crypto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "hex",
@@ -916,7 +916,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-provider-env"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "lumen-runtime",
  "serde",
@@ -926,7 +926,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-provider-fs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "lumen-runtime",
  "serde",
@@ -946,7 +946,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-provider-http"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "lumen-runtime",
  "reqwest",
@@ -975,7 +975,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-runtime"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "lumen-provider-crypto",
@@ -990,7 +990,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-vm"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "lumen-compiler",

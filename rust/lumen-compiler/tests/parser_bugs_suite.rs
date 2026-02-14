@@ -41,17 +41,28 @@ fn for_filter_parsed_into_ast() {
         _ => panic!("expected cell"),
     };
     // Find the for statement
-    let for_stmt = cell.body.iter().find_map(|s| match s {
-        Stmt::For(fs) => Some(fs),
-        _ => None,
-    }).expect("should have a for statement");
+    let for_stmt = cell
+        .body
+        .iter()
+        .find_map(|s| match s {
+            Stmt::For(fs) => Some(fs),
+            _ => None,
+        })
+        .expect("should have a for statement");
 
-    assert!(for_stmt.filter.is_some(), "for-loop filter should be stored in the AST");
+    assert!(
+        for_stmt.filter.is_some(),
+        "for-loop filter should be stored in the AST"
+    );
 
     // Check the filter is a BinOp (x > 2)
     match for_stmt.filter.as_ref().unwrap() {
         Expr::BinOp(_, op, _, _) => {
-            assert_eq!(*op, lumen_compiler::compiler::ast::BinOp::Gt, "filter should be a > comparison");
+            assert_eq!(
+                *op,
+                lumen_compiler::compiler::ast::BinOp::Gt,
+                "filter should be a > comparison"
+            );
         }
         other => panic!("expected BinOp for filter, got {:?}", other),
     }
@@ -67,12 +78,23 @@ fn for_filter_compiles_to_lir() {
     // Without the filter fix, the filter would be discarded and no comparison would appear
     // for the filter condition
     // Gt is lowered as Lt with swapped operands, so look for Lt
-    let gt_count = ops.iter().filter(|o| **o == OpCode::Lt || **o == OpCode::Le).count();
-    assert!(gt_count >= 1, "for-loop filter should emit a comparison instruction, got opcodes: {:?}", ops);
+    let gt_count = ops
+        .iter()
+        .filter(|o| **o == OpCode::Lt || **o == OpCode::Le)
+        .count();
+    assert!(
+        gt_count >= 1,
+        "for-loop filter should emit a comparison instruction, got opcodes: {:?}",
+        ops
+    );
 
     // Should have Test instructions (one for loop bounds, one for filter)
     let test_count = ops.iter().filter(|o| **o == OpCode::Test).count();
-    assert!(test_count >= 2, "for-loop with filter should emit at least 2 Test instructions (bounds + filter), got {}", test_count);
+    assert!(
+        test_count >= 2,
+        "for-loop with filter should emit at least 2 Test instructions (bounds + filter), got {}",
+        test_count
+    );
 }
 
 #[test]
@@ -83,12 +105,19 @@ fn for_without_filter_still_works() {
         lumen_compiler::compiler::ast::Item::Cell(c) => c,
         _ => panic!("expected cell"),
     };
-    let for_stmt = cell.body.iter().find_map(|s| match s {
-        Stmt::For(fs) => Some(fs),
-        _ => None,
-    }).expect("should have a for statement");
+    let for_stmt = cell
+        .body
+        .iter()
+        .find_map(|s| match s {
+            Stmt::For(fs) => Some(fs),
+            _ => None,
+        })
+        .expect("should have a for statement");
 
-    assert!(for_stmt.filter.is_none(), "for-loop without filter should have None filter");
+    assert!(
+        for_stmt.filter.is_none(),
+        "for-loop without filter should have None filter"
+    );
 }
 
 #[test]
@@ -99,13 +128,23 @@ fn for_filter_with_pattern_destructure() {
         lumen_compiler::compiler::ast::Item::Cell(c) => c,
         _ => panic!("expected cell"),
     };
-    let for_stmt = cell.body.iter().find_map(|s| match s {
-        Stmt::For(fs) => Some(fs),
-        _ => None,
-    }).expect("should have a for statement");
+    let for_stmt = cell
+        .body
+        .iter()
+        .find_map(|s| match s {
+            Stmt::For(fs) => Some(fs),
+            _ => None,
+        })
+        .expect("should have a for statement");
 
-    assert!(for_stmt.filter.is_some(), "for-loop with pattern and filter should store the filter");
-    assert!(for_stmt.pattern.is_some(), "for-loop should also preserve the pattern");
+    assert!(
+        for_stmt.filter.is_some(),
+        "for-loop with pattern and filter should store the filter"
+    );
+    assert!(
+        for_stmt.pattern.is_some(),
+        "for-loop should also preserve the pattern"
+    );
 }
 
 // ============================================================================
@@ -114,7 +153,8 @@ fn for_filter_with_pattern_destructure() {
 
 #[test]
 fn labeled_break_parsed_into_ast() {
-    let src = "cell main() -> Int\n  loop\n    loop\n      break @outer\n    end\n  end\n  return 0\nend";
+    let src =
+        "cell main() -> Int\n  loop\n    loop\n      break @outer\n    end\n  end\n  return 0\nend";
     let program = parse(src);
     let cell = match &program.items[0] {
         lumen_compiler::compiler::ast::Item::Cell(c) => c,
@@ -134,7 +174,11 @@ fn labeled_break_parsed_into_ast() {
         _ => panic!("expected break statement"),
     };
 
-    assert_eq!(break_stmt.label.as_deref(), Some("outer"), "break should have label 'outer'");
+    assert_eq!(
+        break_stmt.label.as_deref(),
+        Some("outer"),
+        "break should have label 'outer'"
+    );
 }
 
 #[test]
@@ -158,7 +202,11 @@ fn labeled_continue_parsed_into_ast() {
         _ => panic!("expected continue statement"),
     };
 
-    assert_eq!(continue_stmt.label.as_deref(), Some("outer"), "continue should have label 'outer'");
+    assert_eq!(
+        continue_stmt.label.as_deref(),
+        Some("outer"),
+        "continue should have label 'outer'"
+    );
 }
 
 #[test]
@@ -178,7 +226,10 @@ fn unlabeled_break_has_none_label() {
         _ => panic!("expected break"),
     };
 
-    assert!(break_stmt.label.is_none(), "unlabeled break should have None label");
+    assert!(
+        break_stmt.label.is_none(),
+        "unlabeled break should have None label"
+    );
 }
 
 #[test]
@@ -194,21 +245,31 @@ fn unlabeled_continue_has_none_label() {
         for s in stmts {
             match s {
                 Stmt::Continue(cs) => {
-                    assert!(cs.label.is_none(), "unlabeled continue should have None label");
+                    assert!(
+                        cs.label.is_none(),
+                        "unlabeled continue should have None label"
+                    );
                     return true;
                 }
                 Stmt::Loop(ls) => {
-                    if find_continue(&ls.body) { return true; }
+                    if find_continue(&ls.body) {
+                        return true;
+                    }
                 }
                 Stmt::If(ifs) => {
-                    if find_continue(&ifs.then_body) { return true; }
+                    if find_continue(&ifs.then_body) {
+                        return true;
+                    }
                 }
                 _ => {}
             }
         }
         false
     }
-    assert!(find_continue(&cell.body), "should find a continue statement");
+    assert!(
+        find_continue(&cell.body),
+        "should find a continue statement"
+    );
 }
 
 // ============================================================================
@@ -239,8 +300,14 @@ fn non_variadic_param_flag_is_false() {
     };
 
     assert_eq!(cell.params.len(), 2, "should have two params");
-    assert!(!cell.params[0].variadic, "first param should not be variadic");
-    assert!(!cell.params[1].variadic, "second param should not be variadic");
+    assert!(
+        !cell.params[0].variadic,
+        "first param should not be variadic"
+    );
+    assert!(
+        !cell.params[1].variadic,
+        "second param should not be variadic"
+    );
 }
 
 #[test]
@@ -268,5 +335,8 @@ fn variadic_param_with_dotdot() {
         _ => panic!("expected cell"),
     };
 
-    assert!(cell.params[0].variadic, "param with .. should also be marked variadic");
+    assert!(
+        cell.params[0].variadic,
+        "param with .. should also be marked variadic"
+    );
 }

@@ -1107,7 +1107,12 @@ impl<'a> TypeChecker<'a> {
                 let lt = self.infer_expr(lhs);
                 let rt = self.infer_expr(rhs);
                 match op {
-                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::FloorDiv | BinOp::Mod => {
+                    BinOp::Add
+                    | BinOp::Sub
+                    | BinOp::Mul
+                    | BinOp::Div
+                    | BinOp::FloorDiv
+                    | BinOp::Mod => {
                         if lt == Type::Any || rt == Type::Any {
                             Type::Any
                         } else if (lt == Type::String || rt == Type::String) && *op == BinOp::Add {
@@ -1489,13 +1494,18 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Expr::SpreadExpr(inner, _) => self.infer_expr(inner),
-            Expr::IsType { expr: inner, type_name, span } => {
+            Expr::IsType {
+                expr: inner,
+                type_name,
+                span,
+            } => {
                 self.infer_expr(inner);
                 // Validate that the target type exists
-                let is_known_type = matches!(type_name.as_str(),
+                let is_known_type = matches!(
+                    type_name.as_str(),
                     "Int" | "Float" | "String" | "Bool" | "Bytes" | "Json" | "Null"
                 ) || self.symbols.types.contains_key(type_name)
-                  || self.symbols.type_aliases.contains_key(type_name);
+                    || self.symbols.type_aliases.contains_key(type_name);
                 if !is_known_type && !self.allow_placeholders {
                     self.errors.push(TypeError::UndefinedType {
                         name: type_name.clone(),
@@ -1504,7 +1514,11 @@ impl<'a> TypeChecker<'a> {
                 }
                 Type::Bool
             }
-            Expr::TypeCast { expr: inner, target_type, span } => {
+            Expr::TypeCast {
+                expr: inner,
+                target_type,
+                span,
+            } => {
                 self.infer_expr(inner);
                 match target_type.as_str() {
                     "Int" => Type::Int,
@@ -1572,7 +1586,11 @@ impl<'a> TypeChecker<'a> {
                     ComprehensionKind::Map => Type::Any, // map comprehension needs key+value
                 }
             }
-            Expr::MatchExpr { subject, arms, span } => {
+            Expr::MatchExpr {
+                subject,
+                arms,
+                span,
+            } => {
                 let subject_type = self.infer_expr(subject);
                 let mut covered_variants = Vec::new();
                 let mut has_catchall = false;
@@ -1892,66 +1910,54 @@ mod tests {
     #[test]
     fn test_is_type_returns_bool() {
         // IsType expression should return Bool
-        typecheck_src(
-            "cell check(x: Int) -> Bool\n  return x is Int\nend",
-        )
-        .unwrap();
+        typecheck_src("cell check(x: Int) -> Bool\n  return x is Int\nend").unwrap();
     }
 
     #[test]
     fn test_type_cast_returns_target_type() {
         // TypeCast expression should return the target type
-        typecheck_src(
-            "cell convert(x: Float) -> Int\n  return x as Int\nend",
-        )
-        .unwrap();
+        typecheck_src("cell convert(x: Float) -> Int\n  return x as Int\nend").unwrap();
     }
 
     #[test]
     fn test_compound_assign_bitwise_requires_int() {
         // Bitwise compound assignment on non-Int should error
-        let err = typecheck_src(
-            "cell bad() -> String\n  let x = \"hello\"\n  x &= 1\n  return x\nend",
-        )
-        .unwrap_err();
-        assert!(err.iter().any(|e| matches!(e, TypeError::Mismatch { expected, .. } if expected == "Int")));
+        let err =
+            typecheck_src("cell bad() -> String\n  let x = \"hello\"\n  x &= 1\n  return x\nend")
+                .unwrap_err();
+        assert!(err
+            .iter()
+            .any(|e| matches!(e, TypeError::Mismatch { expected, .. } if expected == "Int")));
     }
 
     #[test]
     fn test_compound_assign_add_is_valid() {
         // Basic compound assignment should work
-        typecheck_src(
-            "cell inc() -> Int\n  let x = 1\n  x += 2\n  return x\nend",
-        )
-        .unwrap();
+        typecheck_src("cell inc() -> Int\n  let x = 1\n  x += 2\n  return x\nend").unwrap();
     }
 
     #[test]
     fn test_shift_operators_return_int() {
         // Shift operators should return Int
-        typecheck_src(
-            "cell shift(a: Int, b: Int) -> Int\n  return a << b\nend",
-        )
-        .unwrap();
+        typecheck_src("cell shift(a: Int, b: Int) -> Int\n  return a << b\nend").unwrap();
     }
 
     #[test]
     fn test_shift_operators_require_int_operands() {
         // Shift with non-Int operand should error
-        let err = typecheck_src(
-            "cell bad(a: String, b: Int) -> Int\n  return a << b\nend",
-        )
-        .unwrap_err();
-        assert!(err.iter().any(|e| matches!(e, TypeError::Mismatch { expected, .. } if expected == "Int")));
+        let err =
+            typecheck_src("cell bad(a: String, b: Int) -> Int\n  return a << b\nend").unwrap_err();
+        assert!(err
+            .iter()
+            .any(|e| matches!(e, TypeError::Mismatch { expected, .. } if expected == "Int")));
     }
 
     #[test]
     fn test_validation_error_not_hardcoded() {
         // ValidationError is no longer hardcoded as a builtin type;
         // it resolves via the normal symbol table lookup
-        let err = typecheck_src(
-            "cell test() -> Int\n  let x: ValidationError = null\n  return 1\nend",
-        );
+        let err =
+            typecheck_src("cell test() -> Int\n  let x: ValidationError = null\n  return 1\nend");
         // Should either succeed (if resolved as Any) or fail gracefully
         // The key assertion: it doesn't crash and doesn't produce a Record("ValidationError") type
         // without a definition in the symbol table

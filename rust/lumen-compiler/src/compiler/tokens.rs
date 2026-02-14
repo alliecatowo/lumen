@@ -161,15 +161,15 @@ pub enum TokenKind {
     At,        // @
     Hash,      // #
     // Compound assignments
-    PlusAssign,    // +=
-    MinusAssign,   // -=
-    StarAssign,    // *=
-    SlashAssign,   // /=
-    PercentAssign, // %=
+    PlusAssign,     // +=
+    MinusAssign,    // -=
+    StarAssign,     // *=
+    SlashAssign,    // /=
+    PercentAssign,  // %=
     StarStarAssign, // **=
-    AmpAssign,     // &=
-    PipeAssign,    // |=
-    CaretAssign,   // ^=
+    AmpAssign,      // &=
+    PipeAssign,     // |=
+    CaretAssign,    // ^=
     // New operators
     StarStar,         // ** exponentiation
     DotDot,           // .. exclusive range

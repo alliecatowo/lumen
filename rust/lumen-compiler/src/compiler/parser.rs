@@ -778,7 +778,7 @@ impl Parser {
                         let is_named_field = self
                             .tokens
                             .get(self.pos + 1)
-                            .map_or(false, |tok| matches!(tok.kind, TokenKind::Colon));
+                            .is_some_and(|tok| matches!(tok.kind, TokenKind::Colon));
 
                         if is_named_field {
                             // Named param: skip name and colon, parse type
@@ -858,8 +858,7 @@ impl Parser {
                 self.expect(&TokenKind::Comma)?;
                 self.skip_whitespace_tokens();
             }
-            let variadic = if matches!(self.peek_kind(), TokenKind::DotDot | TokenKind::DotDotDot)
-            {
+            let variadic = if matches!(self.peek_kind(), TokenKind::DotDot | TokenKind::DotDotDot) {
                 self.advance();
                 true
             } else {
@@ -1971,8 +1970,7 @@ impl Parser {
             && !matches!(
                 self.peek_kind(),
                 TokenKind::Newline | TokenKind::Eof | TokenKind::End | TokenKind::Dedent
-            )
-        {
+            ) {
             Some(self.parse_expr(0)?)
         } else {
             None
@@ -3175,8 +3173,7 @@ impl Parser {
                 self.expect(&TokenKind::Comma)?;
                 self.skip_whitespace_tokens();
             }
-            let variadic = if matches!(self.peek_kind(), TokenKind::DotDot | TokenKind::DotDotDot)
-            {
+            let variadic = if matches!(self.peek_kind(), TokenKind::DotDot | TokenKind::DotDotDot) {
                 self.advance();
                 true
             } else {
@@ -4961,7 +4958,8 @@ impl Parser {
                     // Property shorthand: Point(x, y) => Point(x: x, y: y)
                     // Only when callee is an uppercase ident (record constructor)
                     // and the argument is a bare identifier (followed by , or ))
-                    let is_record_ctor = matches!(&callee, Expr::Ident(n, _) if n.starts_with(char::is_uppercase));
+                    let is_record_ctor =
+                        matches!(&callee, Expr::Ident(n, _) if n.starts_with(char::is_uppercase));
                     if is_record_ctor
                         && matches!(
                             self.peek_kind(),
@@ -5492,18 +5490,54 @@ impl Parser {
                 self.advance();
                 Ok(n)
             }
-            TokenKind::Int_ => { self.advance(); Ok("Int".into()) }
-            TokenKind::Float_ => { self.advance(); Ok("Float".into()) }
-            TokenKind::String_ => { self.advance(); Ok("String".into()) }
-            TokenKind::Bool => { self.advance(); Ok("Bool".into()) }
-            TokenKind::Null => { self.advance(); Ok("Null".into()) }
-            TokenKind::List => { self.advance(); Ok("List".into()) }
-            TokenKind::Map => { self.advance(); Ok("Map".into()) }
-            TokenKind::Set => { self.advance(); Ok("Set".into()) }
-            TokenKind::Tuple => { self.advance(); Ok("Tuple".into()) }
-            TokenKind::Bytes => { self.advance(); Ok("Bytes".into()) }
-            TokenKind::Json => { self.advance(); Ok("Json".into()) }
-            TokenKind::Result => { self.advance(); Ok("Result".into()) }
+            TokenKind::Int_ => {
+                self.advance();
+                Ok("Int".into())
+            }
+            TokenKind::Float_ => {
+                self.advance();
+                Ok("Float".into())
+            }
+            TokenKind::String_ => {
+                self.advance();
+                Ok("String".into())
+            }
+            TokenKind::Bool => {
+                self.advance();
+                Ok("Bool".into())
+            }
+            TokenKind::Null => {
+                self.advance();
+                Ok("Null".into())
+            }
+            TokenKind::List => {
+                self.advance();
+                Ok("List".into())
+            }
+            TokenKind::Map => {
+                self.advance();
+                Ok("Map".into())
+            }
+            TokenKind::Set => {
+                self.advance();
+                Ok("Set".into())
+            }
+            TokenKind::Tuple => {
+                self.advance();
+                Ok("Tuple".into())
+            }
+            TokenKind::Bytes => {
+                self.advance();
+                Ok("Bytes".into())
+            }
+            TokenKind::Json => {
+                self.advance();
+                Ok("Json".into())
+            }
+            TokenKind::Result => {
+                self.advance();
+                Ok("Result".into())
+            }
             _ => Err(ParseError::Unexpected {
                 found: format!("{}", tok.kind),
                 expected: "type name".into(),

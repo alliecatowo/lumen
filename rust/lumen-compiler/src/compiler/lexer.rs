@@ -876,17 +876,6 @@ impl Lexer {
         Token::new(kind, span)
     }
 
-    fn two_char(&mut self, second: char, matched: TokenKind, single: TokenKind) -> Token {
-        let (so, sl, sc) = (self.byte_offset, self.line, self.col);
-        self.advance();
-        if self.current() == Some(second) {
-            self.advance();
-            Token::new(matched, self.span_from(so, sl, sc))
-        } else {
-            Token::new(single, self.span_from(so, sl, sc))
-        }
-    }
-
     fn single(&mut self, kind: TokenKind) -> Token {
         let span = self.span_here();
         self.advance();
@@ -985,7 +974,10 @@ impl Lexer {
                                     self.span_from(so, sl, sc),
                                 ));
                             } else {
-                                tokens.push(Token::new(TokenKind::StarStar, self.span_from(so, sl, sc)));
+                                tokens.push(Token::new(
+                                    TokenKind::StarStar,
+                                    self.span_from(so, sl, sc),
+                                ));
                             }
                         }
                         Some('=') => {
@@ -1116,7 +1108,8 @@ impl Lexer {
                         }
                         Some('<') => {
                             self.advance();
-                            tokens.push(Token::new(TokenKind::LeftShift, self.span_from(so, sl, sc)));
+                            tokens
+                                .push(Token::new(TokenKind::LeftShift, self.span_from(so, sl, sc)));
                         }
                         _ => {
                             tokens.push(Token::new(TokenKind::Lt, self.span_from(so, sl, sc)));
@@ -1133,7 +1126,10 @@ impl Lexer {
                         }
                         Some('>') => {
                             self.advance();
-                            tokens.push(Token::new(TokenKind::RightShift, self.span_from(so, sl, sc)));
+                            tokens.push(Token::new(
+                                TokenKind::RightShift,
+                                self.span_from(so, sl, sc),
+                            ));
                         }
                         _ => {
                             tokens.push(Token::new(TokenKind::Gt, self.span_from(so, sl, sc)));
@@ -1192,10 +1188,7 @@ impl Lexer {
                     self.advance();
                     if self.current() == Some('=') {
                         self.advance();
-                        tokens.push(Token::new(
-                            TokenKind::AmpAssign,
-                            self.span_from(so, sl, sc),
-                        ));
+                        tokens.push(Token::new(TokenKind::AmpAssign, self.span_from(so, sl, sc)));
                     } else {
                         tokens.push(Token::new(TokenKind::Ampersand, self.span_from(so, sl, sc)));
                     }

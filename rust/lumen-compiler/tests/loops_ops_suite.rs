@@ -155,7 +155,8 @@ fn lex_question_bracket() {
 
 #[test]
 fn parse_null_safe_index() {
-    let program = parse_program("cell main() -> Int\n  let x = [1, 2, 3]\n  let y = x?[0]\n  return 0\nend");
+    let program =
+        parse_program("cell main() -> Int\n  let x = [1, 2, 3]\n  let y = x?[0]\n  return 0\nend");
     let cell = match &program.items[0] {
         lumen_compiler::compiler::ast::Item::Cell(c) => c,
         _ => panic!("expected cell"),
@@ -287,8 +288,7 @@ fn parse_continue_with_label() {
 
 #[test]
 fn labeled_loop_compiles_to_lir() {
-    let src =
-        "cell main() -> Int\n  loop @outer\n    break @outer\n  end\n  return 0\nend";
+    let src = "cell main() -> Int\n  loop @outer\n    break @outer\n  end\n  return 0\nend";
     let module = compile_to_lir(src);
     let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
     // Should have jump instructions

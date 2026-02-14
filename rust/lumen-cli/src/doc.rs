@@ -111,7 +111,10 @@ fn is_lumen_source(path: &Path) -> bool {
 }
 
 fn module_name_for_path(path: &Path) -> &str {
-    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown");
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
     if let Some(stripped) = name.strip_suffix(".lm.md") {
         stripped
     } else if let Some(stripped) = name.strip_suffix(".lumen.md") {

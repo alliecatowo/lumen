@@ -22,8 +22,10 @@ fn resolve_std_testing(module: &str, testing_source: &str) -> Option<String> {
 
 fn run_markdown_main_with_std_imports(source: &str) -> Value {
     let testing_source = std_testing_module_source();
-    let module = compile_with_imports(source, &|module| resolve_std_testing(module, &testing_source))
-        .expect("markdown source should compile with std.testing");
+    let module = compile_with_imports(source, &|module| {
+        resolve_std_testing(module, &testing_source)
+    })
+    .expect("markdown source should compile with std.testing");
     let mut vm = VM::new();
     vm.load(module);
     vm.execute("main", vec![]).expect("main should execute")
@@ -31,9 +33,10 @@ fn run_markdown_main_with_std_imports(source: &str) -> Value {
 
 fn run_raw_main_with_std_imports(source: &str) -> Value {
     let testing_source = std_testing_module_source();
-    let module =
-        compile_raw_with_imports(source, &|module| resolve_std_testing(module, &testing_source))
-            .expect("raw source should compile with std.testing");
+    let module = compile_raw_with_imports(source, &|module| {
+        resolve_std_testing(module, &testing_source)
+    })
+    .expect("raw source should compile with std.testing");
     let mut vm = VM::new();
     vm.load(module);
     vm.execute("main", vec![]).expect("main should execute")

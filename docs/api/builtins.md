@@ -259,41 +259,6 @@ sin(0)        # 0.0
 cos(0)        # 1.0
 ```
 
-## Testing
-
-### assert
-
-Fail-fast assertion for boolean conditions:
-
-```lumen
-assert(2 + 2 == 4)
-assert(user_id != null, "user_id must be set")
-```
-
-### assert_eq / assert_ne
-
-Fail-fast equality assertions:
-
-```lumen
-assert_eq(length([1, 2, 3]), 3)
-assert_ne(status, "error")
-```
-
-### assert_contains
-
-Fail-fast containment check for strings and lists:
-
-```lumen
-assert_contains([1, 2, 3], 2)
-assert_contains("lumen", "lum")
-```
-
-### Migration Notes
-
-- As of February 14, 2026, built-in assertions (`assert`, `assert_eq`, `assert_ne`, `assert_contains`) are the simplest fail-fast option for both `.lm` and `.lm.md` programs.
-- For aggregated suite reporting (non-fail-fast), use `stdlib/std/testing.lm.md` helpers like `assert_true`, `assert_false`, `assert_length`, `assert_not_contains`, `summarize_tests`, and `run_tests`.
-- `std.testing.run_tests` now returns a `TestSummary` record (`total`, `passed`, `failed`, `all_passed`) so callers can assert on suite outcomes without parsing output.
-
 ### random
 
 Generate random number:

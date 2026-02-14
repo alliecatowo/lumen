@@ -113,6 +113,7 @@ impl LockFile {
                 pkg.source = format!("path+{}", normalize_path_source(&path));
             }
         }
+        pkg.dependencies.sort();
 
         // Remove existing entry with same name
         if self.get_package(&pkg.name).is_some() {
@@ -131,6 +132,9 @@ impl LockFile {
         let mut out = self.clone();
         out.version = default_lockfile_version();
         out.metadata = LockMetadata::default();
+        for pkg in &mut out.package {
+            pkg.dependencies.sort();
+        }
         out.package.sort_by(|a, b| a.name.cmp(&b.name));
         out
     }
@@ -320,6 +324,23 @@ source = "path+../mathlib"
         ));
         assert_eq!(lock.package[0].name, "alpha");
         assert_eq!(lock.package[1].name, "zeta");
+    }
+
+    #[test]
+    fn add_package_sorts_dependencies() {
+        let mut lock = LockFile::default();
+        lock.add_package(LockedPackage {
+            name: "pkg".to_string(),
+            version: "1.0.0".to_string(),
+            source: "registry+https://registry.lumen-lang.org".to_string(),
+            checksum: Some("sha256:abc123".to_string()),
+            dependencies: vec!["zeta 1.0.0".to_string(), "alpha 1.0.0".to_string()],
+        });
+
+        assert_eq!(
+            lock.get_package("pkg").unwrap().dependencies,
+            vec!["alpha 1.0.0".to_string(), "zeta 1.0.0".to_string()]
+        );
     }
 
     #[test]

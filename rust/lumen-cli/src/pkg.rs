@@ -5,6 +5,7 @@
 
 use crate::config::{DependencySpec, LumenConfig};
 use crate::lockfile::{LockFile, LockedPackage};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -69,14 +70,32 @@ struct PackReport {
     version: String,
     file_count: usize,
     archive_size_bytes: u64,
+    content_checksum: String,
+    archive_checksum: String,
 }
 
 #[derive(Debug, Clone)]
 struct PublishDryRunReport {
+    archive_path: PathBuf,
     package_name: String,
     version: String,
     file_count: usize,
     archive_size_bytes: u64,
+    content_checksum: String,
+    archive_checksum: String,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct PackageInspectReport {
+    package_name: String,
+    version: String,
+    file_count: usize,
+    content_size_bytes: u64,
+    content_checksum: String,
+    archive_checksum: Option<String>,
+    archive_size_bytes: Option<u64>,
+    entries: Vec<String>,
 }
 
 /// Scaffold a new Lumen package in the current directory (or a named subdirectory).
@@ -867,6 +886,93 @@ pub fn cmd_pkg_search(_query: &str) {
     );
 }
 
+/// Show package metadata and deterministic checksums for a local package or archive.
+#[allow(dead_code)]
+pub fn cmd_pkg_info(target: Option<&str>) {
+    let report = match target {
+        Some(path_str) => {
+            let path = Path::new(path_str);
+            if path.is_dir() {
+                match read_local_package_inspect(path) {
+                    Ok(report) => report,
+                    Err(e) => {
+                        eprintln!("{} {}", red("error:"), e);
+                        std::process::exit(1);
+                    }
+                }
+            } else if path.is_file() {
+                match read_archive_package_inspect(path) {
+                    Ok(report) => report,
+                    Err(e) => {
+                        eprintln!("{} {}", red("error:"), e);
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                eprintln!(
+                    "{} target '{}' is neither a directory nor a file",
+                    red("error:"),
+                    path.display()
+                );
+                std::process::exit(1);
+            }
+        }
+        None => {
+            let (config_path, config) = match LumenConfig::load_with_path() {
+                Some(pair) => pair,
+                None => {
+                    eprintln!(
+                        "{} no lumen.toml found (run `lumen pkg init` first or pass an archive path)",
+                        red("error:")
+                    );
+                    std::process::exit(1);
+                }
+            };
+            let project_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+            match inspect_from_bundle(project_dir, build_package_bundle(project_dir, &config)) {
+                Ok(report) => report,
+                Err(e) => {
+                    eprintln!("{} {}", red("error:"), e);
+                    std::process::exit(1);
+                }
+            }
+        }
+    };
+
+    println!(
+        "{} {}@{}",
+        status_label("Package"),
+        bold(&report.package_name),
+        gray(&report.version)
+    );
+    println!(
+        "{} {} file{} ({})",
+        green("✓"),
+        report.file_count,
+        if report.file_count == 1 { "" } else { "s" },
+        format_byte_size(report.content_size_bytes)
+    );
+    println!(
+        "{} {}",
+        status_label("Content"),
+        gray(&report.content_checksum)
+    );
+    if let Some(archive_checksum) = report.archive_checksum.as_ref() {
+        println!("{} {}", status_label("Archive"), gray(archive_checksum));
+    }
+    if let Some(archive_size_bytes) = report.archive_size_bytes {
+        println!(
+            "{} {}",
+            status_label("Archive size"),
+            gray(&format_byte_size(archive_size_bytes))
+        );
+    }
+    println!("{}:", status_label("Entries"));
+    for entry in &report.entries {
+        println!("  {}", gray(entry));
+    }
+}
+
 /// Create a deterministic package tarball for the current package.
 pub fn cmd_pkg_pack() {
     let (config_path, config) = match LumenConfig::load_with_path() {
@@ -906,6 +1012,16 @@ pub fn cmd_pkg_pack() {
                 report.file_count,
                 if report.file_count == 1 { "" } else { "s" },
                 format_byte_size(report.archive_size_bytes)
+            );
+            println!(
+                "{} {}",
+                status_label("Content"),
+                gray(&report.content_checksum)
+            );
+            println!(
+                "{} {}",
+                status_label("Archive"),
+                gray(&report.archive_checksum)
             );
             let archive_display = report.archive_path.display().to_string();
             println!("{} {}", status_label("Created"), gray(&archive_display));
@@ -956,6 +1072,27 @@ pub fn cmd_pkg_publish(dry_run: bool) {
                 if report.file_count == 1 { "" } else { "s" },
                 format_byte_size(report.archive_size_bytes)
             );
+            println!("{}:", status_label("Checklist"));
+            println!("  {} package metadata", green("✓"));
+            println!("  {} source discovery", green("✓"));
+            println!("  {} deterministic entry order", green("✓"));
+            println!("  {} content checksum", green("✓"));
+            println!("  {} archive checksum", green("✓"));
+            println!(
+                "{} {}",
+                status_label("Artifact"),
+                gray(&report.archive_path.display().to_string())
+            );
+            println!(
+                "{} {}",
+                status_label("Content"),
+                gray(&report.content_checksum)
+            );
+            println!(
+                "{} {}",
+                status_label("Archive"),
+                gray(&report.archive_checksum)
+            );
             println!(
                 "{} dry-run only (registry upload TODO)",
                 status_label("Skipped")
@@ -981,17 +1118,22 @@ fn pack_current_package(
     output_path: &Path,
 ) -> Result<PackReport, String> {
     let bundle = build_package_bundle(project_dir, config)?;
+    validate_stable_entry_order(&bundle.entries)?;
+    let content_checksum = package_content_checksum(&bundle.entries)?;
     if let Some(parent) = output_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("cannot create '{}': {}", parent.display(), e))?;
     }
     let archive_size_bytes = write_deterministic_tar(&bundle.entries, output_path)?;
+    let archive_checksum = file_sha256_checksum(output_path)?;
     Ok(PackReport {
         archive_path: output_path.to_path_buf(),
         package_name: bundle.name,
         version: bundle.version,
         file_count: bundle.entries.len(),
         archive_size_bytes,
+        content_checksum,
+        archive_checksum,
     })
 }
 
@@ -1001,12 +1143,14 @@ fn run_publish_dry_run(
 ) -> Result<PublishDryRunReport, String> {
     let temp_path = publish_dry_run_archive_path();
     let packed = pack_current_package(project_dir, config, &temp_path)?;
-    let _ = std::fs::remove_file(&temp_path);
     Ok(PublishDryRunReport {
+        archive_path: packed.archive_path,
         package_name: packed.package_name,
         version: packed.version,
         file_count: packed.file_count,
         archive_size_bytes: packed.archive_size_bytes,
+        content_checksum: packed.content_checksum,
+        archive_checksum: packed.archive_checksum,
     })
 }
 
@@ -1074,6 +1218,85 @@ fn build_package_bundle(project_dir: &Path, config: &LumenConfig) -> Result<Pack
         name,
         version,
         entries,
+    })
+}
+
+#[allow(dead_code)]
+fn inspect_from_bundle(
+    project_dir: &Path,
+    bundle: Result<PackageBundle, String>,
+) -> Result<PackageInspectReport, String> {
+    let bundle = bundle?;
+    validate_stable_entry_order(&bundle.entries)?;
+    let content_checksum = package_content_checksum(&bundle.entries)?;
+    let archive_path = project_dir.join("dist").join(format!(
+        "{}-{}.tar",
+        bundle.name.as_str(),
+        bundle.version.as_str()
+    ));
+
+    let archive_size_bytes = std::fs::metadata(&archive_path).ok().map(|m| m.len());
+    let archive_checksum = if archive_path.is_file() {
+        Some(file_sha256_checksum(&archive_path)?)
+    } else {
+        None
+    };
+
+    Ok(PackageInspectReport {
+        package_name: bundle.name,
+        version: bundle.version,
+        file_count: bundle.entries.len(),
+        content_size_bytes: bundle.entries.iter().map(|e| e.bytes.len() as u64).sum(),
+        content_checksum,
+        archive_checksum,
+        archive_size_bytes,
+        entries: bundle.entries.into_iter().map(|e| e.archive_path).collect(),
+    })
+}
+
+#[allow(dead_code)]
+fn read_local_package_inspect(project_dir: &Path) -> Result<PackageInspectReport, String> {
+    let config_path = project_dir.join("lumen.toml");
+    if !config_path.is_file() {
+        return Err(format!("missing file '{}'", config_path.display()));
+    }
+    let config = LumenConfig::load_from(&config_path)?;
+    inspect_from_bundle(project_dir, build_package_bundle(project_dir, &config))
+}
+
+#[allow(dead_code)]
+fn read_archive_package_inspect(path: &Path) -> Result<PackageInspectReport, String> {
+    let entries = read_tar_entries(path)?;
+    validate_stable_entry_order(&entries)?;
+    let content_checksum = package_content_checksum(&entries)?;
+    let content_size_bytes = entries.iter().map(|e| e.bytes.len() as u64).sum();
+
+    let manifest_entry = entries
+        .iter()
+        .find(|entry| entry.archive_path == "lumen.toml")
+        .ok_or_else(|| "archive is missing lumen.toml".to_string())?;
+    let manifest_str = std::str::from_utf8(&manifest_entry.bytes)
+        .map_err(|_| "archive lumen.toml is not valid UTF-8".to_string())?;
+    let config: LumenConfig = toml::from_str(manifest_str)
+        .map_err(|e| format!("invalid lumen.toml in archive: {}", e))?;
+    let (package_name, version) = validate_package_metadata(&config)?;
+
+    Ok(PackageInspectReport {
+        package_name,
+        version,
+        file_count: entries.len(),
+        content_size_bytes,
+        content_checksum,
+        archive_checksum: Some(file_sha256_checksum(path)?),
+        archive_size_bytes: Some(
+            std::fs::metadata(path)
+                .map_err(|e| format!("cannot read '{}': {}", path.display(), e))?
+                .len(),
+        ),
+        entries: entries
+            .into_iter()
+            .map(|entry| entry.archive_path)
+            .collect(),
     })
 }
 
@@ -1305,8 +1528,146 @@ fn path_to_archive_path(path: &Path) -> Result<String, String> {
     Ok(clean.to_string_lossy().replace('\\', "/"))
 }
 
+fn validate_stable_entry_order(entries: &[PackageEntry]) -> Result<(), String> {
+    let mut prev: Option<&str> = None;
+    for entry in entries {
+        let curr = entry.archive_path.as_str();
+        if let Some(last) = prev {
+            if curr <= last {
+                return Err(format!(
+                    "non-deterministic package entry order detected: '{}' appears after '{}'",
+                    curr, last
+                ));
+            }
+        }
+        prev = Some(curr);
+    }
+    Ok(())
+}
+
+fn package_content_checksum(entries: &[PackageEntry]) -> Result<String, String> {
+    validate_stable_entry_order(entries)?;
+
+    let mut hasher = Sha256::new();
+    for entry in entries {
+        let path = entry.archive_path.as_bytes();
+        hasher.update((path.len() as u64).to_le_bytes());
+        hasher.update(path);
+        hasher.update((entry.bytes.len() as u64).to_le_bytes());
+        hasher.update(&entry.bytes);
+    }
+
+    Ok(format!("sha256:{}", hex_encode(&hasher.finalize())))
+}
+
+fn file_sha256_checksum(path: &Path) -> Result<String, String> {
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("cannot read '{}': {}", path.display(), e))?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(format!("sha256:{}", hex_encode(&hasher.finalize())))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(nibble_to_hex(byte >> 4));
+        out.push(nibble_to_hex(byte & 0x0f));
+    }
+    out
+}
+
+fn nibble_to_hex(nibble: u8) -> char {
+    match nibble {
+        0..=9 => (b'0' + nibble) as char,
+        10..=15 => (b'a' + (nibble - 10)) as char,
+        _ => '0',
+    }
+}
+
+#[allow(dead_code)]
+fn read_tar_entries(path: &Path) -> Result<Vec<PackageEntry>, String> {
+    let data =
+        std::fs::read(path).map_err(|e| format!("cannot read '{}': {}", path.display(), e))?;
+    let mut entries = Vec::new();
+    let mut offset = 0usize;
+
+    while offset + 512 <= data.len() {
+        let header = &data[offset..offset + 512];
+        if header.iter().all(|b| *b == 0) {
+            break;
+        }
+
+        let name = read_tar_text_field(&header[0..100])?;
+        let prefix = read_tar_text_field(&header[345..500])?;
+        let archive_path = if prefix.is_empty() {
+            name
+        } else if name.is_empty() {
+            prefix
+        } else {
+            format!("{}/{}", prefix, name)
+        };
+
+        if archive_path.is_empty() {
+            return Err(format!("invalid empty tar path in '{}'", path.display()));
+        }
+
+        let size = parse_tar_octal_field(&header[124..136], "size")? as usize;
+        let body_start = offset + 512;
+        let body_end = body_start
+            .checked_add(size)
+            .ok_or_else(|| format!("tar entry size overflow in '{}'", path.display()))?;
+        if body_end > data.len() {
+            return Err(format!(
+                "corrupt tar archive '{}': entry '{}' exceeds archive length",
+                path.display(),
+                archive_path
+            ));
+        }
+
+        entries.push(PackageEntry {
+            archive_path,
+            bytes: data[body_start..body_end].to_vec(),
+        });
+
+        offset = body_end;
+        let rem = offset % 512;
+        if rem != 0 {
+            offset += 512 - rem;
+        }
+    }
+
+    if entries.is_empty() {
+        return Err(format!("archive '{}' has no file entries", path.display()));
+    }
+    Ok(entries)
+}
+
+#[allow(dead_code)]
+fn read_tar_text_field(field: &[u8]) -> Result<String, String> {
+    let end = field.iter().position(|b| *b == 0).unwrap_or(field.len());
+    let text = std::str::from_utf8(&field[..end])
+        .map_err(|_| "tar header contains invalid UTF-8".to_string())?
+        .trim();
+    Ok(text.to_string())
+}
+
+#[allow(dead_code)]
+fn parse_tar_octal_field(field: &[u8], label: &str) -> Result<u64, String> {
+    let end = field.iter().position(|b| *b == 0).unwrap_or(field.len());
+    let txt = std::str::from_utf8(&field[..end])
+        .map_err(|_| format!("invalid tar {} field encoding", label))?
+        .trim()
+        .trim_end_matches(' ');
+    if txt.is_empty() {
+        return Ok(0);
+    }
+    u64::from_str_radix(txt, 8).map_err(|_| format!("invalid tar {} field value", label))
+}
+
 fn write_deterministic_tar(entries: &[PackageEntry], output_path: &Path) -> Result<u64, String> {
     const BLOCK: usize = 512;
+    validate_stable_entry_order(entries)?;
     let mut file = std::fs::File::create(output_path)
         .map_err(|e| format!("cannot create '{}': {}", output_path.display(), e))?;
     let mut total_written = 0u64;
@@ -1851,6 +2212,16 @@ foo = { path = "./foo" }
         assert_eq!(first_bytes, second_bytes);
         assert_eq!(first_report.file_count, 5);
         assert_eq!(second_report.file_count, 5);
+        assert_eq!(
+            first_report.content_checksum,
+            second_report.content_checksum
+        );
+        assert_eq!(
+            first_report.archive_checksum,
+            second_report.archive_checksum
+        );
+        assert!(first_report.content_checksum.starts_with("sha256:"));
+        assert!(first_report.archive_checksum.starts_with("sha256:"));
 
         let entry_names = parse_tar_entry_names(&first_tar);
         assert_eq!(
@@ -1878,7 +2249,11 @@ foo = { path = "./foo" }
         assert_eq!(report.version, "0.1.0");
         assert_eq!(report.file_count, 5);
         assert!(report.archive_size_bytes > 0);
+        assert!(report.archive_path.is_file());
+        assert!(report.content_checksum.starts_with("sha256:"));
+        assert!(report.archive_checksum.starts_with("sha256:"));
 
+        let _ = std::fs::remove_file(&report.archive_path);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -1891,6 +2266,42 @@ foo = { path = "./foo" }
 
         let err = run_publish_dry_run(&pkg_dir, &cfg).unwrap_err();
         assert!(err.contains("package.version"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn package_content_checksum_requires_sorted_entries() {
+        let entries = vec![
+            PackageEntry {
+                archive_path: "z.lm".to_string(),
+                bytes: vec![1, 2, 3],
+            },
+            PackageEntry {
+                archive_path: "a.lm".to_string(),
+                bytes: vec![4, 5, 6],
+            },
+        ];
+        let err = package_content_checksum(&entries).unwrap_err();
+        assert!(err.contains("non-deterministic package entry order"));
+    }
+
+    #[test]
+    fn inspect_archive_reports_metadata_and_checksums() {
+        let tmp = unique_tmp_dir("lumen_info_archive");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let (pkg_dir, cfg) = write_packable_fixture(&tmp);
+
+        let archive_path = pkg_dir.join("dist/info.tar");
+        pack_current_package(&pkg_dir, &cfg, &archive_path).unwrap();
+        let report = read_archive_package_inspect(&archive_path).unwrap();
+
+        assert_eq!(report.package_name, "demo-pkg");
+        assert_eq!(report.version, "0.1.0");
+        assert_eq!(report.file_count, 5);
+        assert_eq!(report.entries[0], "LICENSE");
+        assert!(report.archive_checksum.unwrap().starts_with("sha256:"));
+        assert!(report.content_checksum.starts_with("sha256:"));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

@@ -36,7 +36,8 @@ Implemented in `lumen pkg` today:
 - `lumen pkg install` / `lumen pkg update` writing `lumen.lock` entries with `path+...` sources
 - `lumen pkg search` stub output (registry not yet available)
 - `lumen pkg pack` deterministic tarball generation (`dist/<name>-<version>.tar`)
-- `lumen pkg publish --dry-run` manifest/content validation using the same pack pipeline
+- `lpm info [path-or-archive]` metadata + file listing + deterministic checksums
+- `lumen pkg publish --dry-run` checklist output with artifact path and SHA-256 checksums
 
 Not implemented yet:
 - Installing registry dependencies from version constraints

@@ -57,6 +57,11 @@ enum Commands {
         /// Search query
         query: String,
     },
+    /// Inspect package metadata for a local package directory or .tar archive
+    Info {
+        /// Optional path to package directory or archive (.tar)
+        target: Option<String>,
+    },
     /// Create a deterministic package archive in dist/
     Pack,
     /// Validate package metadata/contents and (eventually) publish
@@ -80,6 +85,7 @@ fn main() {
         Commands::Install { frozen } => pkg::cmd_pkg_install_with_lock(frozen),
         Commands::Update { frozen } => pkg::cmd_pkg_update_with_lock(frozen),
         Commands::Search { query } => pkg::cmd_pkg_search(&query),
+        Commands::Info { target } => pkg::cmd_pkg_info(target.as_deref()),
         Commands::Pack => pkg::cmd_pkg_pack(),
         Commands::Publish { dry_run } => pkg::cmd_pkg_publish(dry_run),
     }

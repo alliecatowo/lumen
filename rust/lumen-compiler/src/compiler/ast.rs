@@ -444,6 +444,13 @@ pub enum Pattern {
         type_expr: Box<TypeExpr>,
         span: Span,
     },
+    /// Range pattern: 1..10 (exclusive) or 1..=10 (inclusive)
+    Range {
+        start: Box<Expr>,
+        end: Box<Expr>,
+        inclusive: bool,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

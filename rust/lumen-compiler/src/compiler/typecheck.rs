@@ -932,6 +932,23 @@ impl<'a> TypeChecker<'a> {
                 self.locals.insert(name.clone(), expected);
             }
             Pattern::Literal(_) => {}
+            Pattern::Range {
+                start, end, ..
+            } => {
+                let start_ty = self.infer_expr(start);
+                let end_ty = self.infer_expr(end);
+                // Validate start and end are same comparable type (Int or Float)
+                match (&start_ty, &end_ty) {
+                    (Type::Int, Type::Int) | (Type::Float, Type::Float) | (Type::Any, _) | (_, Type::Any) => {}
+                    _ => {
+                        self.errors.push(TypeError::Mismatch {
+                            expected: format!("{}", start_ty),
+                            actual: format!("{}", end_ty),
+                            line,
+                        });
+                    }
+                }
+            }
         }
     }
 

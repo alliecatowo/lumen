@@ -587,7 +587,10 @@ impl<'a> Lowerer<'a> {
             "pipeline" | "orchestration" => {
                 methods.push("run");
             }
-            _ => {}
+            _ => {
+                // Unknown/custom process kinds: no built-in methods added.
+                // User-defined cells are already collected above.
+            }
         }
         methods.sort_unstable();
         methods.dedup();
@@ -1463,6 +1466,28 @@ impl<'a> Lowerer<'a> {
                     fail_jumps.push(self.emit_jump_if_false(is_ty, instrs));
                 }
             }
+            Pattern::Range {
+                start,
+                end,
+                inclusive,
+                ..
+            } => {
+                // Emit: val >= start (using Le with swapped operands: start <= val)
+                let start_reg = self.lower_expr(start, ra, consts, instrs);
+                let ge_reg = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::Le, ge_reg, start_reg, value_reg));
+                fail_jumps.push(self.emit_jump_if_false(ge_reg, instrs));
+
+                // Emit: val < end (exclusive) or val <= end (inclusive)
+                let end_reg = self.lower_expr(end, ra, consts, instrs);
+                let cmp_reg = ra.alloc_temp();
+                if *inclusive {
+                    instrs.push(Instruction::abc(OpCode::Le, cmp_reg, value_reg, end_reg));
+                } else {
+                    instrs.push(Instruction::abc(OpCode::Lt, cmp_reg, value_reg, end_reg));
+                }
+                fail_jumps.push(self.emit_jump_if_false(cmp_reg, instrs));
+            }
         }
     }
 
@@ -1935,7 +1960,11 @@ impl<'a> Lowerer<'a> {
                                     let _ = self.lower_expr(expr, ra, consts, instrs);
                                     // consume
                                 }
-                                _ => {}
+                                CallArg::Role(_, expr, _) => {
+                                    // Role args not meaningful for record construction;
+                                    // lower the expression for side effects but don't assign to a field.
+                                    let _ = self.lower_expr(expr, ra, consts, instrs);
+                                }
                             }
                         }
                         return dest;
@@ -2061,6 +2090,7 @@ impl<'a> Lowerer<'a> {
                             "add" => Some(IntrinsicId::Add),
                             "remove" => Some(IntrinsicId::Remove),
                             "entries" => Some(IntrinsicId::Entries),
+                            "to_set" => Some(IntrinsicId::ToSet),
                             _ => None,
                         }
                     } else {
@@ -2075,7 +2105,11 @@ impl<'a> Lowerer<'a> {
                                 CallArg::Positional(e) | CallArg::Named(_, e, _) => {
                                     arg_regs.push(self.lower_expr(e, ra, consts, instrs));
                                 }
-                                _ => {} // Role not supported in intrinsics yet?
+                                CallArg::Role(_, e, _) => {
+                                    // Role args in intrinsics: lower the expression as a positional arg
+                                    // rather than silently dropping it (which would cause wrong arg counts)
+                                    arg_regs.push(self.lower_expr(e, ra, consts, instrs));
+                                }
                             }
                         }
 
@@ -3051,7 +3085,9 @@ fn collect_free_idents_expr(expr: &Expr, out: &mut Vec<String>) {
                 collect_free_idents_stmt(s, out);
             }
         }
-        _ => {} // literals, etc.
+        _ => {
+            // Leaf expressions (literals, range bounds, etc.) contain no free identifiers.
+        }
     }
 }
 
@@ -3108,7 +3144,9 @@ fn collect_free_idents_stmt(stmt: &Stmt, out: &mut Vec<String>) {
                 collect_free_idents_stmt(s, out);
             }
         }
-        _ => {}
+        Stmt::Break(_) | Stmt::Continue(_) => {
+            // Control flow statements with no sub-expressions to scan.
+        }
     }
 }
 

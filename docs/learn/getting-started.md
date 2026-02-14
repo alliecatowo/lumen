@@ -101,6 +101,7 @@ REPL commands:
 
 Now that you can run Lumen programs, continue with:
 
+- [Language Tour](./tour) — Quick overview of all language features
 - [Tutorial: Basics](./tutorial/basics) — Learn core syntax
 - [Tutorial: Control Flow](./tutorial/control-flow) — Conditionals and loops
 - [Language Reference](../reference/overview) — Complete specification

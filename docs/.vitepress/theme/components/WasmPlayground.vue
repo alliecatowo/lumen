@@ -1,6 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch, nextTick } from "vue";
 import { withBase } from "vitepress";
+
+// CodeMirror imports
+import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightSpecialChars } from "@codemirror/view";
+import { EditorState, Compartment } from "@codemirror/state";
+import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import { syntaxHighlighting, indentOnInput, bracketMatching } from "@codemirror/language";
+import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
+import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
+import { lumenLanguage, lumenHighlightStyle } from "../codemirror-lumen";
 
 type LumenResult = {
   to_json: () => string;
@@ -123,10 +132,116 @@ const busy = ref(false);
 const output = ref("Click Run to execute the code.");
 const outputKind = ref<"neutral" | "ok" | "error">("neutral");
 
+// CodeMirror refs
+const editorContainer = ref<HTMLDivElement | null>(null);
+let editorView: EditorView | null = null;
+const languageCompartment = new Compartment();
+
 const selected = computed(() => examples[selectedKey.value]);
 
+// Dark theme matching the pink/dark design
+const lumenEditorTheme = EditorView.theme({
+  "&": {
+    backgroundColor: "var(--vp-c-bg)",
+    color: "#e0e0e0",
+    fontSize: "13px",
+    height: "100%",
+  },
+  ".cm-content": {
+    fontFamily: "var(--vp-font-family-mono)",
+    lineHeight: "1.6",
+    padding: "12px 0",
+    caretColor: "#FF4FA3",
+  },
+  "&.cm-focused .cm-cursor": {
+    borderLeftColor: "#FF4FA3",
+  },
+  "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
+    backgroundColor: "rgba(255, 79, 163, 0.2) !important",
+  },
+  ".cm-activeLine": {
+    backgroundColor: "rgba(255, 79, 163, 0.05)",
+  },
+  ".cm-gutters": {
+    backgroundColor: "var(--vp-c-bg-alt)",
+    color: "var(--vp-c-text-3)",
+    border: "none",
+    borderRight: "1px solid var(--vp-c-divider)",
+  },
+  ".cm-activeLineGutter": {
+    backgroundColor: "rgba(255, 79, 163, 0.08)",
+    color: "#FF4FA3",
+  },
+  ".cm-lineNumbers .cm-gutterElement": {
+    padding: "0 8px 0 12px",
+    minWidth: "32px",
+    fontSize: "12px",
+  },
+  ".cm-matchingBracket": {
+    backgroundColor: "rgba(255, 79, 163, 0.25)",
+    outline: "1px solid rgba(255, 79, 163, 0.4)",
+  },
+  ".cm-searchMatch": {
+    backgroundColor: "rgba(255, 79, 163, 0.2)",
+    outline: "1px solid rgba(255, 79, 163, 0.4)",
+  },
+  ".cm-searchMatch.cm-searchMatch-selected": {
+    backgroundColor: "rgba(255, 79, 163, 0.35)",
+  },
+  "&.cm-focused": {
+    outline: "none",
+  },
+  ".cm-scroller": {
+    overflow: "auto",
+  },
+});
+
+function createEditorState(doc: string): EditorState {
+  return EditorState.create({
+    doc,
+    extensions: [
+      lineNumbers(),
+      highlightActiveLine(),
+      highlightSpecialChars(),
+      history(),
+      indentOnInput(),
+      bracketMatching(),
+      closeBrackets(),
+      highlightSelectionMatches(),
+      languageCompartment.of(lumenLanguage),
+      syntaxHighlighting(lumenHighlightStyle),
+      lumenEditorTheme,
+      keymap.of([
+        ...closeBracketsKeymap,
+        ...defaultKeymap,
+        ...searchKeymap,
+        ...historyKeymap,
+        indentWithTab,
+      ]),
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged) {
+          sourceCode.value = update.state.doc.toString();
+        }
+      }),
+    ],
+  });
+}
+
+function setEditorContent(content: string) {
+  if (!editorView) return;
+  editorView.dispatch({
+    changes: {
+      from: 0,
+      to: editorView.state.doc.length,
+      insert: content,
+    },
+  });
+}
+
 watch(selectedKey, (key) => {
-  sourceCode.value = examples[key].source;
+  const src = examples[key].source;
+  sourceCode.value = src;
+  setEditorContent(src);
   output.value = `Ready to run "${examples[key].label}"`;
   outputKind.value = "neutral";
 });
@@ -203,8 +318,23 @@ async function runProgram() {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   void initWasm();
+
+  await nextTick();
+  if (editorContainer.value) {
+    editorView = new EditorView({
+      state: createEditorState(sourceCode.value),
+      parent: editorContainer.value,
+    });
+  }
+});
+
+onUnmounted(() => {
+  if (editorView) {
+    editorView.destroy();
+    editorView = null;
+  }
 });
 </script>
 
@@ -244,7 +374,7 @@ onMounted(() => {
             </button>
           </div>
         </div>
-        <textarea v-model="sourceCode" spellcheck="false" class="code-editor" />
+        <div ref="editorContainer" class="code-editor" />
       </div>
       <div class="output-pane">
         <div class="output-header">
@@ -405,19 +535,13 @@ button:disabled {
 }
 
 .code-editor {
-  flex: 1;
   min-height: 350px;
-  padding: 12px;
-  border: none;
   background: var(--vp-c-bg);
-  font-family: var(--vp-font-family-mono);
-  font-size: 13px;
-  line-height: 1.6;
-  resize: vertical;
 }
 
-.code-editor:focus {
-  outline: none;
+.code-editor :deep(.cm-editor) {
+  height: 100%;
+  min-height: 350px;
 }
 
 .output {

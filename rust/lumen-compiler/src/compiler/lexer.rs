@@ -1105,7 +1105,23 @@ impl Lexer {
                         }
                     }
                 }
-                '<' => tokens.push(self.two_char('=', TokenKind::LtEq, TokenKind::Lt)),
+                '<' => {
+                    let (so, sl, sc) = (self.byte_offset, self.line, self.col);
+                    self.advance();
+                    match self.current() {
+                        Some('=') => {
+                            self.advance();
+                            tokens.push(Token::new(TokenKind::LtEq, self.span_from(so, sl, sc)));
+                        }
+                        Some('<') => {
+                            self.advance();
+                            tokens.push(Token::new(TokenKind::LeftShift, self.span_from(so, sl, sc)));
+                        }
+                        _ => {
+                            tokens.push(Token::new(TokenKind::Lt, self.span_from(so, sl, sc)));
+                        }
+                    }
+                }
                 '>' => {
                     let (so, sl, sc) = (self.byte_offset, self.line, self.col);
                     self.advance();
@@ -1116,7 +1132,7 @@ impl Lexer {
                         }
                         Some('>') => {
                             self.advance();
-                            tokens.push(Token::new(TokenKind::Compose, self.span_from(so, sl, sc)));
+                            tokens.push(Token::new(TokenKind::RightShift, self.span_from(so, sl, sc)));
                         }
                         _ => {
                             tokens.push(Token::new(TokenKind::Gt, self.span_from(so, sl, sc)));
@@ -1327,7 +1343,7 @@ mod tests {
         assert!(matches!(&tokens[1].kind, TokenKind::DotDot));
         assert!(matches!(&tokens[2].kind, TokenKind::DotDotEq));
         assert!(matches!(&tokens[3].kind, TokenKind::PipeForward));
-        assert!(matches!(&tokens[4].kind, TokenKind::Compose));
+        assert!(matches!(&tokens[4].kind, TokenKind::RightShift));
         assert!(matches!(&tokens[5].kind, TokenKind::QuestionQuestion));
         assert!(matches!(&tokens[6].kind, TokenKind::QuestionDot));
         assert!(matches!(&tokens[7].kind, TokenKind::Bang));

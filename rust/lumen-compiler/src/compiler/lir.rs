@@ -294,6 +294,8 @@ pub struct LirParam {
     #[serde(rename = "type")]
     pub ty: String,
     pub register: u8,
+    #[serde(default)]
+    pub variadic: bool,
 }
 
 /// Tool declaration in LIR

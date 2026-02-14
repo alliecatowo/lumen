@@ -879,6 +879,7 @@ dependencies = [
 name = "lumen-compiler"
 version = "0.1.0"
 dependencies = [
+ "lumen-vm",
  "serde",
  "serde_json",
  "sha2",

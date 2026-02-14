@@ -3993,6 +3993,8 @@ impl Parser {
                         TokenKind::PipeForward
                             | TokenKind::TildeArrow
                             | TokenKind::Compose
+                            | TokenKind::RightShift
+                            | TokenKind::LeftShift
                             | TokenKind::Dot
                             | TokenKind::QuestionQuestion
                             | TokenKind::Plus
@@ -4086,6 +4088,8 @@ impl Parser {
                 TokenKind::PlusPlus => (BinOp::Concat, (18, 19)),
                 // Pipe |> and compose >> / step: produce Expr::Pipe
                 TokenKind::PipeForward | TokenKind::Compose | TokenKind::Step => {
+                    // Note: Compose (>>) is legacy; new code should use |> for pipes
+                    // and >> now lexes as RightShift for bitwise shift
                     if min_bp > 16 {
                         break;
                     }
@@ -4116,6 +4120,8 @@ impl Parser {
                 }
                 TokenKind::Ampersand => (BinOp::BitAnd, (14, 15)),
                 TokenKind::Caret => (BinOp::BitXor, (14, 15)),
+                TokenKind::LeftShift => (BinOp::Shl, (14, 15)),
+                TokenKind::RightShift => (BinOp::Shr, (14, 15)),
                 TokenKind::PlusAssign => (BinOp::Add, (2, 3)),
                 TokenKind::MinusAssign => (BinOp::Sub, (2, 3)),
                 TokenKind::StarAssign => (BinOp::Mul, (2, 3)),

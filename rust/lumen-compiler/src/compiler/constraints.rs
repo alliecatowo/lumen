@@ -51,13 +51,16 @@ fn validate_constraint_expr(expr: &Expr, field: &str, errors: &mut Vec<Constrain
             | BinOp::Sub
             | BinOp::Mul
             | BinOp::Div
+            | BinOp::FloorDiv
             | BinOp::Mod
             | BinOp::Pow
             | BinOp::Concat
             | BinOp::In
             | BinOp::BitAnd
             | BinOp::BitOr
-            | BinOp::BitXor => {
+            | BinOp::BitXor
+            | BinOp::Shl
+            | BinOp::Shr => {
                 validate_constraint_expr(lhs, field, errors);
                 validate_constraint_expr(rhs, field, errors);
             }

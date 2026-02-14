@@ -174,7 +174,9 @@ pub enum TokenKind {
     DotDot,           // .. exclusive range
     DotDotEq,         // ..= inclusive range
     PipeForward,      // |>
-    Compose,          // >> function composition
+    Compose,          // >> function composition (legacy, kept for compat)
+    LeftShift,        // << bitwise left shift
+    RightShift,       // >> bitwise right shift
     QuestionQuestion, // ?? null-coalescing
     QuestionDot,      // ?. null-safe member access
     Bang,             // ! standalone
@@ -328,6 +330,8 @@ impl fmt::Display for TokenKind {
             TokenKind::DotDotEq => write!(f, "..="),
             TokenKind::PipeForward => write!(f, "|>"),
             TokenKind::Compose => write!(f, ">>"),
+            TokenKind::LeftShift => write!(f, "<<"),
+            TokenKind::RightShift => write!(f, ">>"),
             TokenKind::QuestionQuestion => write!(f, "??"),
             TokenKind::QuestionDot => write!(f, "?."),
             TokenKind::Bang => write!(f, "!"),

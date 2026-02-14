@@ -38,6 +38,23 @@ export default defineConfig({
     build: {
       target: "esnext",
     },
+    ssr: {
+      noExternal: [
+        "@codemirror/view",
+        "@codemirror/state",
+        "@codemirror/language",
+        "@codemirror/commands",
+        "@codemirror/autocomplete",
+        "@codemirror/search",
+        "@lezer/highlight",
+        "@lezer/lr",
+        "@lezer/common",
+        "codemirror",
+        "crelt",
+        "style-mod",
+        "w3c-keyname",
+      ],
+    },
   },
   themeConfig: {
     siteTitle: "Lumen",

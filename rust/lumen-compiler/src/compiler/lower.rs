@@ -628,6 +628,7 @@ impl<'a> Lowerer<'a> {
                             name: p.name.clone(),
                             ty: format_type_expr(&p.ty),
                             register: 0,
+                            variadic: false,
                         })
                         .collect(),
                     returns: op.return_type.as_ref().map(format_type_expr),
@@ -747,6 +748,7 @@ impl<'a> Lowerer<'a> {
                     name: p.name.clone(),
                     ty: format_type_expr(&p.ty),
                     register: reg,
+                    variadic: p.variadic,
                 }
             })
             .collect();
@@ -2190,6 +2192,7 @@ impl<'a> Lowerer<'a> {
                         name: format!("__capture_{}", name),
                         ty: "Any".to_string(),
                         register: reg,
+                        variadic: false,
                     });
                     // GetUpval loads the capture from the closure's capture list.
                     // The VM already copies captures to regs 0..cap_count on call,
@@ -2205,6 +2208,7 @@ impl<'a> Lowerer<'a> {
                         name: p.name.clone(),
                         ty: format_type_expr(&p.ty),
                         register: reg,
+                        variadic: p.variadic,
                     });
                 }
 

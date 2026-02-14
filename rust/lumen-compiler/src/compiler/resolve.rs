@@ -1690,10 +1690,12 @@ fn infer_machine_expr_type(expr: &Expr, scope: &HashMap<String, TypeExpr>) -> Op
                 | BinOp::Or
                 | BinOp::In => Some("Bool".to_string()),
                 BinOp::PipeForward
-                | BinOp::Concat
-                | BinOp::BitAnd
+                | BinOp::Concat => Some("Any".to_string()),
+                BinOp::BitAnd
                 | BinOp::BitOr
-                | BinOp::BitXor => Some("Any".to_string()),
+                | BinOp::BitXor
+                | BinOp::Shl
+                | BinOp::Shr => Some("Int".to_string()),
             }
         }
         _ => None,

@@ -534,6 +534,55 @@ impl VM {
         self.check_register(end, cell_registers)
     }
 
+    /// Copy call arguments into parameter registers, packing trailing args
+    /// into a list for the variadic parameter (if any).
+    fn copy_args_to_params(
+        &mut self,
+        params: &[LirParam],
+        new_base: usize,
+        arg_base: usize,
+        nargs: usize,
+        param_offset: usize,
+        cell_registers: u8,
+    ) -> Result<(), VmError> {
+        // If param_offset exceeds params length, there are no params to fill
+        if param_offset >= params.len() {
+            return Ok(());
+        }
+        // Find the variadic parameter index (if any)
+        let variadic_idx = params[param_offset..]
+            .iter()
+            .position(|p| p.variadic)
+            .map(|i| i + param_offset);
+
+        if let Some(vi) = variadic_idx {
+            // Copy fixed params before the variadic one
+            let fixed_count = vi - param_offset;
+            for i in 0..fixed_count.min(nargs) {
+                let dst = params[param_offset + i].register as usize;
+                self.check_register(dst, cell_registers)?;
+                self.registers[new_base + dst] = self.registers[arg_base + i].clone();
+            }
+            // Pack remaining args into a list for the variadic param
+            let variadic_args: Vec<Value> = (fixed_count..nargs)
+                .map(|i| self.registers[arg_base + i].clone())
+                .collect();
+            let dst = params[vi].register as usize;
+            self.check_register(dst, cell_registers)?;
+            self.registers[new_base + dst] = Value::List(variadic_args);
+        } else {
+            // No variadic param — copy args 1:1 as before
+            for i in 0..nargs {
+                if param_offset + i < params.len() {
+                    let dst = params[param_offset + i].register as usize;
+                    self.check_register(dst, cell_registers)?;
+                    self.registers[new_base + dst] = self.registers[arg_base + i].clone();
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn validate_instruction_registers(
         &self,
         instr: Instruction,
@@ -1997,18 +2046,19 @@ impl VM {
                     })?;
                     let num_regs = callee_cell.registers as usize;
                     let params: Vec<LirParam> = callee_cell.params.clone();
+                    let cell_regs = callee_cell.registers;
                     let _ = module;
                     let new_base = self.registers.len();
                     self.registers
                         .resize(new_base + num_regs.max(256), Value::Null);
-                    for i in 0..nargs {
-                        if i < params.len() {
-                            let dst = params[i].register as usize;
-                            self.check_register(dst, callee_cell.registers)?;
-                            self.registers[new_base + dst] =
-                                self.registers[base + a + 1 + i].clone();
-                        }
-                    }
+                    self.copy_args_to_params(
+                        &params,
+                        new_base,
+                        base + a + 1,
+                        nargs,
+                        0,
+                        cell_regs,
+                    )?;
                     self.frames.push(CallFrame {
                         cell_idx: idx,
                         base_register: new_base,
@@ -2036,22 +2086,24 @@ impl VM {
                 })?;
                 let num_regs = callee_cell.registers as usize;
                 let params: Vec<LirParam> = callee_cell.params.clone();
+                let cell_regs = callee_cell.registers;
                 let _ = module;
                 let new_base = self.registers.len();
                 self.registers
                     .resize(new_base + num_regs.max(256), Value::Null);
                 for (i, cap) in cv.captures.iter().enumerate() {
-                    self.check_register(i, callee_cell.registers)?;
+                    self.check_register(i, cell_regs)?;
                     self.registers[new_base + i] = cap.clone();
                 }
                 let cap_count = cv.captures.len();
-                for i in 0..nargs {
-                    if cap_count + i < params.len() {
-                        let dst = params[cap_count + i].register as usize;
-                        self.check_register(dst, callee_cell.registers)?;
-                        self.registers[new_base + dst] = self.registers[base + a + 1 + i].clone();
-                    }
-                }
+                self.copy_args_to_params(
+                    &params,
+                    new_base,
+                    base + a + 1,
+                    nargs,
+                    cap_count,
+                    cell_regs,
+                )?;
                 self.frames.push(CallFrame {
                     cell_idx: cv.cell_idx,
                     base_register: new_base,
@@ -2104,15 +2156,16 @@ impl VM {
                         VmError::Runtime(format!("cell index {} out of bounds", idx))
                     })?;
                     let params: Vec<LirParam> = callee_cell.params.clone();
+                    let cell_regs = callee_cell.registers;
                     let _ = module;
-                    for i in 0..nargs {
-                        if i < params.len() {
-                            let src = self.registers[base + a + 1 + i].clone();
-                            let dst = params[i].register as usize;
-                            self.check_register(dst, callee_cell.registers)?;
-                            self.registers[base + dst] = src;
-                        }
-                    }
+                    self.copy_args_to_params(
+                        &params,
+                        base,
+                        base + a + 1,
+                        nargs,
+                        0,
+                        cell_regs,
+                    )?;
                     if let Some(f) = self.frames.last_mut() {
                         f.cell_idx = idx;
                         f.ip = 0;
@@ -2130,20 +2183,21 @@ impl VM {
                     VmError::Runtime(format!("closure cell index {} out of bounds", cv.cell_idx))
                 })?;
                 let params: Vec<LirParam> = callee_cell.params.clone();
+                let cell_regs = callee_cell.registers;
                 let _ = module;
                 for (i, cap) in cv.captures.iter().enumerate() {
-                    self.check_register(i, callee_cell.registers)?;
+                    self.check_register(i, cell_regs)?;
                     self.registers[base + i] = cap.clone();
                 }
                 let cap_count = cv.captures.len();
-                for i in 0..nargs {
-                    if cap_count + i < params.len() {
-                        let src = self.registers[base + a + 1 + i].clone();
-                        let dst = params[cap_count + i].register as usize;
-                        self.check_register(dst, callee_cell.registers)?;
-                        self.registers[base + dst] = src;
-                    }
-                }
+                self.copy_args_to_params(
+                    &params,
+                    base,
+                    base + a + 1,
+                    nargs,
+                    cap_count,
+                    cell_regs,
+                )?;
                 if let Some(f) = self.frames.last_mut() {
                     f.cell_idx = cv.cell_idx;
                     f.ip = 0;
@@ -3704,21 +3758,39 @@ impl VM {
         })?;
         let num_regs = callee_cell.registers as usize;
         let params: Vec<LirParam> = callee_cell.params.clone();
+        let cell_regs = callee_cell.registers;
         let new_base = self.registers.len();
         self.registers
             .resize(new_base + num_regs.max(256), Value::Null);
         // Copy captures into frame registers
         for (i, cap) in cv.captures.iter().enumerate() {
-            self.check_register(i, callee_cell.registers)?;
+            self.check_register(i, cell_regs)?;
             self.registers[new_base + i] = cap.clone();
         }
         // Copy arguments into parameter registers (after captures)
         let cap_count = cv.captures.len();
-        for (i, arg) in args.iter().enumerate() {
-            if cap_count + i < params.len() {
+        let variadic_idx = params[cap_count..]
+            .iter()
+            .position(|p| p.variadic)
+            .map(|i| i + cap_count);
+        if let Some(vi) = variadic_idx {
+            let fixed_count = vi - cap_count;
+            for (i, arg) in args.iter().enumerate().take(fixed_count) {
                 let dst = params[cap_count + i].register as usize;
-                self.check_register(dst, callee_cell.registers)?;
+                self.check_register(dst, cell_regs)?;
                 self.registers[new_base + dst] = arg.clone();
+            }
+            let variadic_args: Vec<Value> = args[fixed_count..].to_vec();
+            let dst = params[vi].register as usize;
+            self.check_register(dst, cell_regs)?;
+            self.registers[new_base + dst] = Value::List(variadic_args);
+        } else {
+            for (i, arg) in args.iter().enumerate() {
+                if cap_count + i < params.len() {
+                    let dst = params[cap_count + i].register as usize;
+                    self.check_register(dst, cell_regs)?;
+                    self.registers[new_base + dst] = arg.clone();
+                }
             }
         }
         // Push a call frame with a sentinel return_register
@@ -5153,11 +5225,13 @@ mod tests {
                         name: "a".into(),
                         ty: "Int".into(),
                         register: 0,
+                        variadic: false,
                     },
                     LirParam {
                         name: "b".into(),
                         ty: "Int".into(),
                         register: 1,
+                        variadic: false,
                     },
                 ],
                 returns: Some("Int".into()),
@@ -7675,6 +7749,7 @@ end
                     name: "f".into(),
                     ty: "String".into(),
                     register: 0,
+                    variadic: false,
                 }],
                 returns: Some("Int".into()),
                 registers: 2,

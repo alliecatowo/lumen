@@ -27,6 +27,7 @@ fn status_label(label: &str) -> String {
 
 #[derive(Debug)]
 struct TestResult {
+    #[allow(dead_code)]
     file: String,
     test_name: String,
     passed: bool,

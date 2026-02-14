@@ -246,7 +246,7 @@ impl Formatter {
         } else {
             // Multi-line param list
             header.push('(');
-            self.writeln(&header.trim_end());
+            self.writeln(header.trim_end());
             self.push_indent();
             for (i, param) in cell.params.iter().enumerate() {
                 let mut line = param.name.clone();

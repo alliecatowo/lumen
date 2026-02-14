@@ -9,7 +9,7 @@ use lumen_compiler::compiler::typecheck::TypeError;
 use lumen_compiler::CompileError;
 
 /// Convert a compile error into LSP diagnostics
-pub fn compile_error_to_diagnostics(error: &CompileError, source: &str) -> Vec<Diagnostic> {
+pub fn compile_error_to_diagnostics(error: &CompileError, _source: &str) -> Vec<Diagnostic> {
     match error {
         CompileError::Lex(e) => vec![lex_error_to_diagnostic(e)],
         CompileError::Parse(errors) => errors.iter().map(parse_error_to_diagnostic).collect(),

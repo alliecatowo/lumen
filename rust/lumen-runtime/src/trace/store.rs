@@ -81,6 +81,7 @@ impl TraceStore {
         self.write_event(&event);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn tool_call(
         &mut self,
         cell: &str,

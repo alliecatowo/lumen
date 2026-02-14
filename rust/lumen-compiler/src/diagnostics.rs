@@ -213,10 +213,6 @@ fn red(s: &str) -> String {
     format!("\x1b[31m{}\x1b[0m", s)
 }
 
-fn yellow(s: &str) -> String {
-    format!("\x1b[33m{}\x1b[0m", s)
-}
-
 fn cyan(s: &str) -> String {
     format!("\x1b[36m{}\x1b[0m", s)
 }
@@ -509,14 +505,23 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
             });
 
             let mut suggestions = vec![];
+            // Detect if this looks like a parameter parsing issue
+            // In cell parameter lists, if we see an identifier where we expected comma/close,
+            // it likely means a missing colon.
+            let looks_like_type_annotation = expected.contains("','") &&
+                (found.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) ||
+                 matches!(found.as_str(), "Int" | "String" | "Float" | "Bool" | "Any"));
+
             let friendly_message = if expected.contains("':'") && found != ":" {
-                suggestions.push(format!("Try: `{}: Type`", found));
+                suggestions.push(format!("Try: name: {}", found));
                 format!("I was expecting a `:` after the parameter name, but found `{}`", found)
+            } else if looks_like_type_annotation {
+                suggestions.push("Add a `:` before the type annotation".to_string());
+                format!("I was expecting `,` or `)` after the parameter name, but found a type `{}`.\n\n  Did you forget the `:` between the parameter name and type?", found)
             } else if expected.contains("'end'") {
                 suggestions.push("Add 'end' to close this block".to_string());
                 format!("I was expecting 'end', but found `{}`", found)
             } else if expected.contains("','") {
-                suggestions.push("Check if you're missing a `:` for type annotations".to_string());
                 format!("I was expecting `,` or `)`, but found `{}`", found)
             } else {
                 format!("I was expecting {}, but found `{}`", expected, found)

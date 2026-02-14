@@ -8,15 +8,21 @@ use lumen_compiler::markdown::extract::extract_blocks;
 /// Token type indices (must match the legend in main.rs)
 const TOKEN_TYPE_KEYWORD: u32 = 0;
 const TOKEN_TYPE_TYPE: u32 = 1;
+#[allow(dead_code)]
 const TOKEN_TYPE_FUNCTION: u32 = 2;
 const TOKEN_TYPE_VARIABLE: u32 = 3;
+#[allow(dead_code)]
 const TOKEN_TYPE_PARAMETER: u32 = 4;
 const TOKEN_TYPE_OPERATOR: u32 = 5;
 const TOKEN_TYPE_STRING: u32 = 6;
 const TOKEN_TYPE_NUMBER: u32 = 7;
+#[allow(dead_code)]
 const TOKEN_TYPE_COMMENT: u32 = 8;
+#[allow(dead_code)]
 const TOKEN_TYPE_ENUM_MEMBER: u32 = 9;
+#[allow(dead_code)]
 const TOKEN_TYPE_STRUCT: u32 = 10;
+#[allow(dead_code)]
 const TOKEN_TYPE_ENUM: u32 = 11;
 const TOKEN_TYPE_DECORATOR: u32 = 12;
 
@@ -163,11 +169,7 @@ pub fn build_semantic_tokens(text: &str, is_markdown: bool) -> Option<SemanticTo
         let char = token.span.start as u32;
         let length = (token.span.end - token.span.start).max(1) as u32;
 
-        let delta_line = if line >= prev_line {
-            line - prev_line
-        } else {
-            0
-        };
+        let delta_line = line.saturating_sub(prev_line);
         let delta_char = if delta_line == 0 && char >= prev_char {
             char - prev_char
         } else {

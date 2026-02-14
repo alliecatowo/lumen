@@ -194,7 +194,7 @@ fn parse_for_features(
         }
 
         // Extract directives
-        let directives: Vec<lumen_compiler::compiler::ast::Directive> = extracted
+        let _directives: Vec<lumen_compiler::compiler::ast::Directive> = extracted
             .directives
             .iter()
             .map(|d| lumen_compiler::compiler::ast::Directive {

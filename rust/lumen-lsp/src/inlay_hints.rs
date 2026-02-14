@@ -5,7 +5,7 @@ use lumen_compiler::compiler::ast::{Expr, Item, Stmt};
 use lumen_compiler::compiler::resolve::SymbolTable;
 
 pub fn build_inlay_hints(
-    params: InlayHintParams,
+    _params: InlayHintParams,
     program: Option<&lumen_compiler::compiler::ast::Program>,
     symbols: Option<&SymbolTable>,
 ) -> Vec<InlayHint> {
@@ -24,6 +24,7 @@ pub fn build_inlay_hints(
     hints
 }
 
+#[allow(clippy::only_used_in_recursion)]
 fn extract_hints_from_stmt(
     stmt: &Stmt,
     hints: &mut Vec<InlayHint>,

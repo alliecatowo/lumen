@@ -56,10 +56,6 @@ pub struct Parser {
     pos: usize,
     bracket_depth: usize,
     errors: Vec<ParseError>,
-    /// Stack of opening brackets with their positions for better error messages
-    bracket_stack: Vec<(char, usize, usize)>, // (bracket_char, line, col)
-    /// Tracks constructs (cell, if, for, etc.) that need 'end' with their positions
-    construct_stack: Vec<(String, usize, usize)>, // (construct_name, line, col)
 }
 
 impl Parser {
@@ -69,8 +65,6 @@ impl Parser {
             pos: 0,
             bracket_depth: 0,
             errors: Vec::new(),
-            bracket_stack: Vec::new(),
-            construct_stack: Vec::new(),
         }
     }
 
@@ -89,7 +83,7 @@ impl Parser {
         // Skip tokens until we reach a synchronization point:
         // - A new declaration keyword (cell, record, enum, type, grant, import, etc.)
         // - End of file
-        let start_pos = self.pos;
+        let _start_pos = self.pos;
         let mut last_pos = self.pos;
         let mut iterations = 0;
         const MAX_ITERATIONS: usize = 10000; // Safety limit
@@ -288,69 +282,6 @@ impl Parser {
     }
 
     /// Push an opening bracket onto the stack for error tracking
-    fn push_bracket(&mut self, bracket: char, span: Span) {
-        self.bracket_stack.push((bracket, span.line, span.col));
-    }
-
-    /// Pop and verify closing bracket, reporting mismatch if necessary
-    fn pop_bracket(&mut self, closing: char, span: Span) -> Result<(), ParseError> {
-        if let Some((opening, open_line, open_col)) = self.bracket_stack.pop() {
-            let expected_closing = match opening {
-                '(' => ')',
-                '[' => ']',
-                '{' => '}',
-                _ => closing,
-            };
-            if closing != expected_closing {
-                return Err(ParseError::UnclosedBracket {
-                    bracket: opening,
-                    open_line,
-                    open_col,
-                    current_line: span.line,
-                    current_col: span.col,
-                });
-            }
-        }
-        Ok(())
-    }
-
-    /// Track a construct (cell, if, for, etc.) that needs an 'end'
-    fn push_construct(&mut self, name: String, span: Span) {
-        self.construct_stack.push((name, span.line, span.col));
-    }
-
-    /// Pop a construct when we encounter its 'end'
-    fn pop_construct(&mut self, span: Span) -> Result<(), ParseError> {
-        if let Some((_construct, _open_line, _open_col)) = self.construct_stack.pop() {
-            // Successfully closed
-            Ok(())
-        } else {
-            // Extra 'end' with no matching construct
-            Err(ParseError::Unexpected {
-                found: "end".to_string(),
-                expected: "statement or expression".to_string(),
-                line: span.line,
-                col: span.col,
-            })
-        }
-    }
-
-    /// Check for missing 'end' at current position
-    fn check_missing_end(&self) -> Option<ParseError> {
-        if let Some((construct, open_line, open_col)) = self.construct_stack.last() {
-            let current = self.current();
-            Some(ParseError::MissingEnd {
-                construct: construct.clone(),
-                open_line: *open_line,
-                open_col: *open_col,
-                current_line: current.span.line,
-                current_col: current.span.col,
-            })
-        } else {
-            None
-        }
-    }
-
     fn looks_like_named_field(&self) -> bool {
         matches!(self.peek_kind(), TokenKind::Ident(_))
             && matches!(self.peek_n_kind(1), Some(TokenKind::Colon))
@@ -4926,14 +4857,14 @@ impl Parser {
                     ComprehensionKind::Set
                 };
 
-                return Ok(Expr::Comprehension {
+                Ok(Expr::Comprehension {
                     body: Box::new(first),
                     var,
                     iter: Box::new(iter),
                     condition,
                     kind,
                     span: start.merge(end),
-                });
+                })
             }
             TokenKind::Colon | TokenKind::Assign => {
                 // Map literal: {key: value, ...}

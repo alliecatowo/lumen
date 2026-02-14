@@ -977,6 +977,9 @@ name = "lumen-runtime"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "lumen-provider-crypto",
+ "lumen-provider-env",
+ "lumen-provider-fs",
  "serde",
  "serde_json",
  "sha2",

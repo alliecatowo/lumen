@@ -4,8 +4,8 @@ use lsp_types::{CompletionItem, CompletionItemKind, CompletionList, CompletionPa
 use lumen_compiler::compiler::ast::{Item, Program};
 
 pub fn build_completion(
-    params: CompletionParams,
-    text: &str,
+    _params: CompletionParams,
+    _text: &str,
     program: Option<&Program>,
 ) -> CompletionList {
     let mut items = Vec::new();

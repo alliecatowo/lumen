@@ -1108,8 +1108,9 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::sax(OpCode::Jmp, 0));
                 fail_jumps.push(fail_jmp);
                 if let Some(ref b) = binding {
-                    let breg = ra.alloc_named(b);
+                    let breg = ra.alloc_temp();
                     instrs.push(Instruction::abc(OpCode::Unbox, breg, value_reg, 0));
+                    self.lower_match_pattern(b, breg, ra, consts, instrs, fail_jumps);
                 }
             }
             Pattern::Wildcard(_) => {}

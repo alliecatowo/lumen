@@ -1,3 +1,4 @@
+<script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch, nextTick } from "vue";
 import { withBase } from "vitepress";
 import { playgroundSource } from "../playground-state";

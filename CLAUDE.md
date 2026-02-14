@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build --release                    # Build all crates
-cargo test --workspace                   # Run all tests (~454 passing, 1 ignored)
+cargo test --workspace                   # Run all tests (~454 passing, 13 ignored)
 cargo test -p lumen-compiler             # Tests for compiler only
 cargo test -p lumen-vm                   # Tests for VM only
 cargo test -p lumen-runtime              # Tests for runtime only
@@ -114,6 +114,12 @@ Tool calls go through `validate_tool_policy()` at runtime dispatch. Merged grant
 **Type::Any propagation**: Builtin functions return `Type::Any`. In BinOp type inference, check for `Type::Any` before falling through to type-specific branches.
 
 **Reserved words**: `result` is a keyword (for `result[T, E]`). Type names (`string`, `int`, `float`, `bool`, etc.) are handled in `parse_prefix` as identifier expressions.
+
+**Record construction syntax**: Records use parentheses `RecordName(field: value, ...)` not curly braces. For example: `Point(x: 1, y: 2)`.
+
+**Set literal syntax**: Set literals use curly braces `{1, 2, 3}` not square brackets. The syntax `set[...]` is only valid in type position (e.g., `set[Int]`).
+
+**Import syntax**: Imports use colon separator: `import module: symbol` not curly braces `import module.{symbol}`.
 
 **Effect provenance**: `UndeclaredEffect` errors include a `cause` field tracing the source (e.g., "call to 'fetch'", "tool call 'HttpGet'"). Effect bindings (`bind effect <name> to <tool>`) prefer custom-mapped effects over heuristic tool-name matching.
 

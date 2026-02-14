@@ -13,6 +13,7 @@ Recently completed (verified in code and commit history):
 - [x] Core VM arithmetic safety landed (`f73bc03`, `c709de2`, `rust/lumen-vm/src/vm.rs`): checked overflow, div/mod by zero errors, and shift-range guards.
 - [x] VM UTF-8/encoding safety fixes landed (`f73bc03`, `rust/lumen-vm/src/vm.rs`): UTF-8-safe string slicing, odd-length `hex_decode` guard, byte-wise `url_encode`.
 - [x] LSP feature surface expanded (`d7a19db`, `rust/lumen-lsp/src/main.rs`): document/workspace symbols, semantic tokens, signature help, inlay hints, code actions, folding, references.
+- [x] All example files and test suite updated for correct syntax (Feb 2026): Fixed record construction to use parentheses, set literals to use curly braces, import syntax to use colon separator. Removed unused parser error recovery infrastructure.
 
 Execution tracker for next three rounds: `docs/research/EXECUTION_TRACKER.md`.
 
@@ -655,11 +656,12 @@ From test runs and manual inspection:
 
 ## Notes
 
-- **Current test count**: ~442 tests passing, 1 ignored
-  - 203 compiler tests (107 lib + 81 spec_suite + 14 examples + 1 sweep)
+- **Current test count**: ~454 tests passing, 13 ignored
+  - 206 compiler tests (107 lib + 83 spec_suite + 14 examples + 1 sweep + 1 raw_format)
   - 22 runtime tests
-  - 153 VM tests (81 lib + 72 e2e)
+  - 156 VM tests (81 lib + 75 e2e)
   - 7 CLI config tests
+  - Plus provider and CLI tests
 
 - **Critical memory from MEMORY.md**:
   - Use `sax`/`sax_val` for jumps, never `ax`/`ax_val`
@@ -668,6 +670,9 @@ From test runs and manual inspection:
   - Captures allocated first (r0, r1...), then params after
   - Lambda syntax: `fn(params) -> ReturnType => expr` (NOT `|x| ...` syntax)
   - `result` is a keyword (for `result[T, E]` type)
+  - Record construction uses parentheses: `RecordName(field: value)` NOT curly braces
+  - Set literals use curly braces: `{1, 2, 3}` NOT `set[1, 2, 3]`
+  - Import syntax uses colon: `import module: symbol` NOT `import module.{symbol}`
 
 - **Effect system is complete and working** (Lumen's killer feature).
 - **Process runtimes (memory, machine, pipeline) operational**.

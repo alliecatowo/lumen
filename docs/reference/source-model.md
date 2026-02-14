@@ -1,10 +1,13 @@
 # Source Model
 
-Lumen source is authored in markdown files with the `.lm.md` extension.
+Lumen accepts two first-class source formats:
 
-## Markdown Files
+- `.lm.md` (markdown-native, recommended)
+- `.lm` (raw source)
 
-Lumen extracts code from fenced code blocks:
+## Markdown-Native Files (`.lm.md`)
+
+For markdown source, Lumen extracts code from fenced `lumen` blocks:
 
 ````markdown
 # My Program
@@ -31,6 +34,18 @@ The compiler:
 2. Extracts all ` ```lumen ` code blocks
 3. Concatenates them into a single source
 4. Compiles and executes
+
+## Raw Source Files (`.lm`)
+
+Raw `.lm` files are compiled directly with no markdown extraction:
+
+```lumen
+cell main() -> String
+  return "Hello from raw source"
+end
+```
+
+Use `.lm` when you want source-only modules; use `.lm.md` when you want code and narrative in one file.
 
 ## Top-Level Directives
 
@@ -155,13 +170,15 @@ When importing `import foo: bar`:
 1. Look for `foo.lm.md` in the same directory
 2. Look for `foo.lm` in the same directory
 3. Look for `foo/mod.lm.md` in subdirectory
-4. Look for `foo/main.lm.md` in subdirectory
+4. Look for `foo/mod.lm` in subdirectory
+5. Look for `foo/main.lm.md` in subdirectory
+6. Look for `foo/main.lm` in subdirectory
 
 ## Best Practices
 
-### Documentation
+### Documentation-First Modules
 
-Write documentation alongside code:
+Prefer `.lm.md` for user-facing modules so design notes, examples, and implementation stay together:
 
 ````markdown
 # User Service
@@ -186,6 +203,10 @@ cell authenticate(email: String, password: String) -> result[User, String]
 end
 ```
 ````
+
+### Source-Only Modules
+
+Use `.lm` for modules that do not need embedded prose, such as generated code or low-noise internals.
 
 ### Organization
 

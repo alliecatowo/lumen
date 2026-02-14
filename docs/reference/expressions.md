@@ -79,6 +79,7 @@ set[]()                      # Empty set
 ```lumen
 Point(x: 1, y: 2)            # Record construction
 User(name: "Alice", age: 30)
+Point(x, y)                  # Property shorthand (x: x, y: y)
 ```
 
 ## Operators
@@ -91,6 +92,7 @@ User(name: "Alice", age: 30)
 | `-` | Subtraction | `a - b` |
 | `*` | Multiplication | `a * b` |
 | `/` | Division | `a / b` |
+| `//` | Floor division | `a // b` |
 | `%` | Modulo | `a % b` |
 | `**` | Exponentiation | `a ** b` |
 
@@ -121,6 +123,10 @@ User(name: "Alice", age: 30)
 | `\|` | Bitwise OR | `a \| b` |
 | `^` | Bitwise XOR | `a ^ b` |
 | `~` | Bitwise NOT | `~a` |
+| `<<` | Left shift | `a << 2` |
+| `>>` | Right shift | `a >> 2` |
+
+Shift operators require `Int` operands.
 
 ### String/Collection
 
@@ -134,6 +140,13 @@ User(name: "Alice", age: 30)
 |----------|-------------|---------|
 | `..` | Exclusive range | `1..5` → [1,2,3,4] |
 | `..=` | Inclusive range | `1..=5` → [1,2,3,4,5] |
+
+### Type Operators
+
+| Operator | Description | Example |
+|----------|-------------|---------|
+| `is` | Runtime type test | `value is Int` |
+| `as` | Type cast | `value as Int` |
 
 ## Null-Safe Operators
 
@@ -297,18 +310,15 @@ From lowest to highest:
 | 2 | `??` |
 | 3 | `or` |
 | 4 | `and` |
-| 5 | `==` `!=` `<` `<=` `>` `>=` |
-| 6 | `in` |
-| 7 | `\|` |
-| 8 | `^` |
-| 9 | `&` |
-| 10 | `++` |
-| 11 | `..` `..=` |
-| 12 | `+` `-` |
-| 13 | `*` `/` `%` |
-| 14 | `**` |
-| 15 | `-` `not` `~` `!` `...` (unary) |
-| 16 | `.` `?.` `[]` `()` `?` `!` (postfix) |
+| 5 | `==` `!=` `<` `<=` `>` `>=` `in` `is` `as` `&` `^` `<<` `>>` |
+| 6 | `\|` |
+| 7 | `++` |
+| 8 | `..` `..=` |
+| 9 | `+` `-` |
+| 10 | `*` `/` `//` `%` |
+| 11 | `**` |
+| 12 | `-` `not` `~` `!` `...` (unary) |
+| 13 | `.` `?.` `[]` `?[]` `()` `?` `!` (postfix) |
 
 Use parentheses for clarity or to override precedence.
 

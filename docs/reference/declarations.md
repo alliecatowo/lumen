@@ -114,6 +114,17 @@ cell add(a: Int, b: Int) -> Int
 end
 ```
 
+Variadic syntax is supported with `...`:
+
+```lumen
+cell log(...parts: list[String]) -> Null
+  print(parts)
+  return null
+end
+```
+
+The parser records variadic parameters in the AST. Full variadic expansion behavior is still being completed in type/lowering paths.
+
 ### Default Parameters
 
 ```lumen
@@ -293,7 +304,9 @@ For `import foo: bar`:
 1. `foo.lm.md`
 2. `foo.lm`
 3. `foo/mod.lm.md`
-4. `foo/main.lm.md`
+4. `foo/mod.lm`
+5. `foo/main.lm.md`
+6. `foo/main.lm`
 
 ## Use Tool
 
@@ -413,4 +426,4 @@ end
 ## Next Steps
 
 - [Tools](/reference/tools) — Tool system details
-- [Processes](/reference/processes) — Pipeline and machine reference
+- [AI-Native Features](/language/ai-native) — Pipeline, machine, memory, and orchestration reference

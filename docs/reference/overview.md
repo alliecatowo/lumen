@@ -6,7 +6,7 @@ This section provides complete documentation for Lumen's syntax, semantics, and 
 
 | Section | Description |
 |---------|-------------|
-| [Source Model](/reference/source-model) | Markdown-native source files |
+| [Source Model](/reference/source-model) | `.lm.md` markdown-native and `.lm` raw source |
 | [Types](/reference/types) | Built-in and user-defined types |
 | [Expressions](/reference/expressions) | Literals, operators, function calls |
 | [Statements](/reference/statements) | Control flow, assignments |
@@ -59,6 +59,8 @@ a |> f(b)                 # Pipe
 a ?? b                    # Null coalescing
 a?.field                  # Safe access
 1..5, 1..=5              # Ranges
+a << b, a >> b            # Shift operators
+value is Int, value as Int # Type test/cast
 
 # Function call
 func(arg1, arg2)
@@ -90,14 +92,18 @@ if condition ... end
 if condition ... else ... end
 
 for x in items ... end
+for @outer x in items if cond ... end
+while @loop cond ... end
+loop @spin ... end
 while condition ... end
 loop ... end
 
 match value ... end
 
 return value
-break
-continue
+break @outer
+continue @outer
+defer ... end
 halt(message)
 emit(event)
 ```
@@ -150,7 +156,7 @@ With `@deterministic true`:
 
 ## Compilation Model
 
-1. **Markdown Extraction** — Pull code blocks from `.lm.md` files
+1. **Input Loading** — Parse `.lm` directly, or extract fenced `lumen` blocks from `.lm.md`
 2. **Lexing** — Tokenize source
 3. **Parsing** — Build AST
 4. **Resolution** — Build symbol table, infer effects

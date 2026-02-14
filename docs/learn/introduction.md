@@ -6,7 +6,7 @@ Lumen is a statically typed programming language designed for building AI-native
 
 ### Markdown-Native Source
 
-Lumen programs live in markdown files (`.lm.md`). Your documentation and code stay together:
+Lumen is markdown-native (`.lm.md`) so documentation and code stay together. Raw `.lm` files are also supported as first-class source when you prefer source-only modules.
 
 ````markdown
 # User Service

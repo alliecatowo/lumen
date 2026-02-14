@@ -22,7 +22,7 @@ hero:
 features:
   - icon: "📝"
     title: Markdown-Native
-    details: Write code and documentation together in .lm.md files. Lumen extracts and runs fenced code blocks while preserving your notes.
+    details: Write code and documentation together in .lm.md files, or use raw .lm files when you want source-only modules. Both are first-class inputs.
   - icon: "🔒"
     title: Statically Typed
     details: Catch errors at compile time with a powerful type system including generics, union types, and constraint validation.

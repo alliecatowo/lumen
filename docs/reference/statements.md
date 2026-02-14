@@ -55,6 +55,12 @@ x += 1      # x = x + 1
 x -= 1      # x = x - 1
 x *= 2      # x = x * 2
 x /= 2      # x = x / 2
+x //= 2     # x = floor(x / 2)
+x %= 2
+x **= 2
+x &= 0xFF
+x |= 0x01
+x ^= 0x10
 ```
 
 ## Conditionals
@@ -109,6 +115,16 @@ for item in items
 end
 ```
 
+Labeled for-loop:
+
+```lumen
+for @outer item in items
+  if item == "skip-all"
+    continue @outer
+  end
+end
+```
+
 With index:
 
 ```lumen
@@ -134,6 +150,16 @@ while count < 10
 end
 ```
 
+Labeled while-loop:
+
+```lumen
+while @retry should_continue()
+  if done()
+    break @retry
+  end
+end
+```
+
 ### while let
 
 ```lumen
@@ -154,6 +180,16 @@ loop
 end
 ```
 
+Labeled loop:
+
+```lumen
+loop @main
+  if should_stop()
+    break @main
+  end
+end
+```
+
 ### break
 
 Exit a loop:
@@ -164,6 +200,12 @@ for x in items
     break
   end
 end
+```
+
+Target a label in nested loops:
+
+```lumen
+break @outer
 ```
 
 With value (for loop expressions):
@@ -186,6 +228,27 @@ for x in items
     continue
   end
   print(x)
+end
+```
+
+Target a label:
+
+```lumen
+continue @outer
+```
+
+## defer
+
+`defer` schedules statements to run when the current scope exits.
+
+```lumen
+cell run() -> Int
+  defer
+    print("cleanup")
+  end
+
+  print("work")
+  return 1
 end
 ```
 
@@ -309,6 +372,7 @@ end
 | `return` | Exit function with value |
 | `break` | Exit loop |
 | `continue` | Skip to next iteration |
+| `defer` | Run cleanup code on scope exit |
 | `halt` | Stop program |
 
 ## Next Steps

@@ -1,8 +1,13 @@
-# Quickstart
+# Quickstart (CLI)
 
-This is the shortest path from clone to running your first Lumen program.
+This is the shortest path from clone to running a Lumen program locally.
 
-## 1) Build Lumen
+## Prerequisites
+
+- Rust toolchain (`cargo`, stable)
+- Git
+
+## 1) Clone and Build
 
 ```bash
 git clone https://github.com/alliecatowo/lumen.git
@@ -10,11 +15,11 @@ cd lumen
 cargo build --release
 ```
 
-Binary location:
+Binary path:
 
 - `target/release/lumen`
 
-## 2) Write a Program
+## 2) Create a Program
 
 Create `hello.lm.md`:
 
@@ -30,31 +35,28 @@ end
 ```
 ````
 
-Lumen supports both source formats:
+Lumen supports:
 
-- `.lm` for raw source
-- `.lm.md` for markdown + fenced `lumen` code
+- `.lm` for source-only files
+- `.lm.md` for markdown + fenced `lumen` blocks
 
-## 3) Type-check and Run
-
-```bash
-lumen check hello.lm.md
-lumen run hello.lm.md
-```
-
-## 4) Useful Next Commands
+## 3) Check, Compile, Run
 
 ```bash
-lumen emit hello.lm.md --output out.json
-lumen trace show <run_id>
-lumen cache clear
+target/release/lumen check hello.lm.md
+target/release/lumen emit hello.lm.md --output out.json
+target/release/lumen run hello.lm.md
 ```
 
-## 5) Explore Examples
-
-Start with:
+## 4) Explore Working Examples
 
 - `examples/hello.lm.md`
 - `examples/language_features.lm.md`
 - `examples/invoice_agent.lm.md`
 - `examples/data_pipeline.lm.md`
+
+## 5) Next Steps
+
+- Browser execution: [Browser WASM Guide](/guide/wasm-browser)
+- Language syntax: [Language Tour](/language/tour)
+- CLI deep reference: [CLI](/CLI)

@@ -1,36 +1,38 @@
 # Documentation Map
 
-Use this page as the top-level map for the repository docs.
+Use this page as the top-level index for Lumen docs.
 
-## Core Language + Runtime
+## Fast Paths
 
-- `SPEC.md`: implementation-accurate language spec.
-- `docs/ARCHITECTURE.md`: compiler and runtime component map.
-- `docs/RUNTIME.md`: VM model, runtime values, futures, and deterministic profile.
-- `docs/CLI.md`: command reference for `lumen`.
+- First-time setup: [Quickstart](/guide/quickstart)
+- Browser integration: [Browser WASM Guide](/guide/wasm-browser)
+- Language overview: [Language Tour](/language/tour)
 
-## Project Direction
+## Language and Runtime
 
-- `tasks.md`: concrete implementation tasks.
-- `ROADMAP.md`: long-horizon planning.
-- `VISION.md`: product and ecosystem thesis.
+- `SPEC.md`: implementation-accurate language specification
+- [Runtime](/RUNTIME): VM model, values, deterministic mode
+- [Architecture](/ARCHITECTURE): compiler/runtime component map
+- [AI-Native Features](/language/ai-native): tools, roles, grants, orchestration
 
-## Developer Docs
+## Tooling and Commands
 
-- `docs/GETTING_STARTED.md`: extended setup guide.
-- `docs/PACKAGE_REGISTRY.md`: package registry direction and conventions.
-- `CONTRIBUTING.md`: contribution workflow.
+- [CLI Reference](/CLI)
+- `docs/GETTING_STARTED.md` (legacy extended setup)
+- `docs/PACKAGE_REGISTRY.md`
 
-## Research and Strategy Notes
+## Project Planning and Research
 
+- `tasks.md`
+- `ROADMAP.md`
+- `VISION.md`
 - `docs/WASM_STRATEGY.md`
 - `docs/TOOLING_GAPS.md`
 - `docs/COMPETITIVE_ANALYSIS.md`
-- `docs/COMPETITIVE_GAPS.md`
 - `docs/research/*`
 
 ## External Links
 
 - GitHub repo: <https://github.com/alliecatowo/lumen>
-- Full spec file: <https://github.com/alliecatowo/lumen/blob/main/SPEC.md>
+- Spec file: <https://github.com/alliecatowo/lumen/blob/main/SPEC.md>
 - Open tasks: <https://github.com/alliecatowo/lumen/blob/main/tasks.md>

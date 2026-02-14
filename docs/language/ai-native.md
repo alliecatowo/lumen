@@ -1,6 +1,6 @@
 # AI-Native Features
 
-Lumen includes agent and tool primitives in the language and runtime rather than relying on framework-specific wrappers.
+Lumen includes agent and tool primitives in the language and runtime instead of framework-specific wrappers.
 
 ## Tools and grants
 
@@ -37,13 +37,13 @@ Lumen runtime supports futures and orchestration constructs with deterministic s
 - `Await` resolves futures and propagates errors.
 - Scheduling can run in eager or deterministic deferred modes.
 
-See `docs/RUNTIME.md` for runtime details.
+See [Runtime Model](/RUNTIME) for runtime details.
 
 ## Determinism profile
 
 `@deterministic` enables strict checks that reject nondeterministic operations/effects where required.
 
-This makes runs more reproducible for audit-heavy or safety-critical agent workflows.
+This improves reproducibility for audit-heavy or safety-critical workflows.
 
 ## Process runtime objects
 
@@ -53,4 +53,8 @@ Lumen lowers process-family declarations into runtime-backed records with callab
 - `memory`
 - `machine`
 
-These behaviors are described in `docs/RUNTIME.md`.
+## Continue
+
+- Browser execution: [Browser WASM Guide](/guide/wasm-browser)
+- Language syntax: [Language Tour](/language/tour)
+- Commands and tooling: [CLI Reference](/CLI)

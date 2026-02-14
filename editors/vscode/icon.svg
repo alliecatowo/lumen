@@ -1,21 +1,32 @@
-<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
-  <!-- Background circle -->
-  <circle cx="64" cy="64" r="60" fill="#FDB813" stroke="#F39C12" stroke-width="2"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000" flood-opacity="0.45"/>
+    </filter>
 
-  <!-- Sun rays (representing "Lumen" - light) -->
-  <g stroke="#F39C12" stroke-width="3" stroke-linecap="round">
-    <line x1="64" y1="12" x2="64" y2="24"/>
-    <line x1="64" y1="104" x2="64" y2="116"/>
-    <line x1="12" y1="64" x2="24" y2="64"/>
-    <line x1="104" y1="64" x2="116" y2="64"/>
-    <line x1="26" y1="26" x2="35" y2="35"/>
-    <line x1="93" y1="93" x2="102" y2="102"/>
-    <line x1="26" y1="102" x2="35" y2="93"/>
-    <line x1="93" y1="35" x2="102" y2="26"/>
-  </g>
+    <clipPath id="paperClip">
+      <path d="M64 28h92l44 44v148a18 18 0 0 1-18 18H64a18 18 0 0 1-18-18V46a18 18 0 0 1 18-18z"/>
+    </clipPath>
+  </defs>
 
-  <!-- Letter "L" -->
-  <g fill="#2C3E50" font-family="Arial, sans-serif" font-weight="bold" font-size="72">
-    <text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" dy="5">L</text>
+  <rect width="256" height="256" fill="#111111"/>
+
+  <g filter="url(#shadow)">
+    <path d="M64 28h92l44 44v148a18 18 0 0 1-18 18H64a18 18 0 0 1-18-18V46a18 18 0 0 1 18-18z"
+          fill="#FFFFFF" stroke="#0A0A0A" stroke-width="12" stroke-linejoin="round"/>
+
+    <path d="M156 28v44a16 16 0 0 0 16 16h44"
+          fill="#F2F2F2" stroke="#0A0A0A" stroke-width="12" stroke-linejoin="round"/>
+
+    <g stroke="#CFCFCF" stroke-width="10" stroke-linecap="round" opacity="0.85" clip-path="url(#paperClip)">
+      <line x1="86" y1="108" x2="168" y2="108"/>
+      <line x1="86" y1="134" x2="156" y2="134"/>
+      <line x1="86" y1="160" x2="164" y2="160"/>
+    </g>
+
+    <g fill="#FF4FA3" transform="translate(-26,-14)">
+      <path d="M70 146h28v64h44v22H70z"/>
+      <path d="M152 232v-86h21l19 34 19-34h21v86h-26v-48l-11 20h-8l-11-20v48z"/>
+    </g>
   </g>
 </svg>

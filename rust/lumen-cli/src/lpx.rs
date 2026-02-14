@@ -47,7 +47,10 @@ fn compile_source_file(
     path: &Path,
     source: &str,
 ) -> Result<lumen_compiler::compiler::lir::LirModule, lumen_compiler::CompileError> {
-    let source_dir = path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+    let source_dir = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
     let mut resolver = module_resolver::ModuleResolver::new(source_dir.clone());
 
     if let Some(project_root) = find_project_root(&source_dir) {
@@ -75,7 +78,11 @@ fn main() {
 
     // Read and compile the source file
     let source = std::fs::read_to_string(&args.file).unwrap_or_else(|e| {
-        eprintln!("\x1b[31merror:\x1b[0m cannot read file '{}': {}", args.file.display(), e);
+        eprintln!(
+            "\x1b[31merror:\x1b[0m cannot read file '{}': {}",
+            args.file.display(),
+            e
+        );
         std::process::exit(1);
     });
 
@@ -96,9 +103,9 @@ fn main() {
     let registry = lumen_runtime::tools::ProviderRegistry::new();
 
     // Set up tracing if requested
-    let mut trace_store = args.trace_dir.map(|dir| {
-        lumen_runtime::trace::store::TraceStore::new(&dir)
-    });
+    let mut trace_store = args
+        .trace_dir
+        .map(|dir| lumen_runtime::trace::store::TraceStore::new(&dir));
 
     if let Some(ref mut ts) = trace_store {
         ts.start_run(&module.doc_hash);

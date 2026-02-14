@@ -1252,6 +1252,15 @@ impl Formatter {
             } => {
                 format!("{}: {}", name, self.fmt_type(type_expr))
             }
+            Pattern::Range {
+                start,
+                end,
+                inclusive,
+                ..
+            } => {
+                let op = if *inclusive { "..=" } else { ".." };
+                format!("{}{}{}", self.fmt_expr(start), op, self.fmt_expr(end))
+            }
         }
     }
 }

@@ -126,6 +126,18 @@ loop
 end
 ```
 
+### For-Loop Filters
+
+Skip iterations where a condition is false using `if` after the iterable:
+
+```lumen
+let numbers = [1, -2, 3, -4, 5]
+
+for n in numbers if n > 0
+  print(n)  # 1, 3, 5
+end
+```
+
 ### Break and Continue
 
 ```lumen
@@ -143,6 +155,33 @@ for i in 1..100
     break
   end
   print(i)  # 1, 2, 3, 4, 5
+end
+```
+
+### Labeled Loops
+
+Use `@label` to target specific loops with `break` and `continue` in nested contexts:
+
+```lumen
+for @outer i in 1..5
+  for j in 1..5
+    if i * j > 10
+      break @outer    # Exit the outer loop
+    end
+  end
+end
+
+while @retry attempts < max_attempts
+  if success
+    break @retry
+  end
+  attempts += 1
+end
+
+loop @main
+  if should_stop()
+    break @main
+  end
 end
 ```
 

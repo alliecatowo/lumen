@@ -1820,6 +1820,7 @@ fn infer_pattern_effects(
                 }
             }
         }
+        Pattern::Range { .. } => {}
         _ => {}
     }
 }
@@ -1951,6 +1952,7 @@ fn collect_pattern_call_requirements(
                 }
             }
         }
+        Pattern::Range { .. } => {}
         _ => {}
     }
 }
@@ -2200,6 +2202,7 @@ fn collect_pattern_effect_evidence(
                 }
             }
         }
+        Pattern::Range { .. } => {}
         _ => {}
     }
 }

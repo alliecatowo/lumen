@@ -91,6 +91,19 @@ match value
 end
 ```
 
+### Optional Type Sugar
+
+`T?` is shorthand for `T | Null`. It desugars in the parser and works everywhere a type is expected:
+
+```lumen
+cell find(id: Int) -> User?           # Return type
+cell process(input: String?) -> Int   # Parameter type
+let name: String? = null              # Let binding
+record Config
+  debug: Bool? = null                 # Record field
+end
+```
+
 ## Function Types
 
 ```lumen

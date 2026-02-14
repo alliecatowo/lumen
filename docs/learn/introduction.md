@@ -49,9 +49,12 @@ Lumen makes AI systems auditable:
 
 - **Static typing** with type inference
 - **Union types** (`Int | String`)
+- **Optional sugar** (`T?` is shorthand for `T | Null`)
 - **Generic types** (`list[T]`, `map[K, V]`)
 - **Result type** for error handling (`result[Ok, Err]`)
 - **Constraint validation** (`where` clauses on record fields)
+- **Exhaustive match checking** (compiler verifies all enum variants are covered)
+- **Type operators** (`is` for type tests, `as` for casts)
 
 ## Comparison with Other Languages
 
@@ -64,6 +67,7 @@ Lumen makes AI systems auditable:
 | Markdown Source | ✅ | ❌ | ❌ | ❌ |
 | WASM Target | ✅ | ❌ | ✅ | ✅ |
 | Pattern Matching | ✅ | ❌ | ❌ | ✅ |
+| Multi-file Imports | ✅ | ✅ | ✅ | ✅ |
 
 ## When to Use Lumen
 
@@ -90,5 +94,6 @@ Lumen makes AI systems auditable:
 ## Next Steps
 
 - [Install Lumen](./installation)
+- [Language Tour](./tour) — Quick overview of all features
 - [Write your first program](./first-program)
 - [Learn the basics](./tutorial/basics)

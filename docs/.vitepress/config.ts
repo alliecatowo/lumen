@@ -63,6 +63,7 @@ export default defineConfig({
     logo: "/logo.svg",
     nav: [
       { text: "Learn", link: "/learn/getting-started" },
+      { text: "Tour", link: "/learn/tour" },
       { text: "Language", link: "/reference/overview" },
       { text: "API", link: "/api/builtins" },
       { text: "Examples", link: "/examples/hello-world" },
@@ -83,6 +84,7 @@ export default defineConfig({
             { text: "Introduction", link: "/learn/introduction" },
             { text: "Installation", link: "/learn/installation" },
             { text: "Quick Start", link: "/learn/getting-started" },
+            { text: "Language Tour", link: "/learn/tour" },
             { text: "First Program", link: "/learn/first-program" },
           ],
         },

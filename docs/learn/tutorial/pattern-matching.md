@@ -294,9 +294,32 @@ cell main() -> String
 end
 ```
 
+## Match Exhaustiveness
+
+The compiler checks that match statements on enum subjects cover all variants. Missing variants produce compile errors:
+
+```lumen
+enum Direction
+  North
+  South
+  East
+  West
+end
+
+cell label(d: Direction) -> String
+  match d
+    North -> return "up"
+    South -> return "down"
+    # Compile error: IncompleteMatch — missing East, West
+  end
+end
+```
+
+A wildcard `_` or catch-all identifier pattern makes any match exhaustive. Guard patterns do not contribute to exhaustiveness coverage.
+
 ## Best Practices
 
-1. **Be exhaustive** — Cover all cases or use `_` as fallback
+1. **Be exhaustive** — Cover all cases or use `_` as fallback; the compiler checks enum coverage
 2. **Order matters** — First matching pattern wins
 3. **Use guards for complex conditions** — Keep patterns simple
 4. **Destructure in the pattern** — Don't extract then check

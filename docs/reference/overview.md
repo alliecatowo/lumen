@@ -38,6 +38,7 @@ Int, Float, Bool, String, Null, Bytes, Json     # Primitives
 list[T], map[K, V], set[T], tuple[A, B]         # Collections
 result[Ok, Err]                                  # Error handling
 A | B                                           # Union types
+T?                                              # Optional (T | Null)
 fn(A, B) -> C                                   # Function types
 ```
 

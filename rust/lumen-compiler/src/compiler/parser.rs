@@ -48,6 +48,10 @@ pub enum ParseError {
     },
 }
 
+/// Maximum number of parse errors to collect before giving up.
+/// Prevents cascading error spam from a single root cause.
+const MAX_PARSE_ERRORS: usize = 10;
+
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
@@ -65,9 +69,16 @@ impl Parser {
         }
     }
 
-    /// Record a parse error and continue parsing
-    fn record_error(&mut self, error: ParseError) {
+    /// Record a parse error and continue parsing.
+    /// Returns true if the error limit has been reached.
+    fn record_error(&mut self, error: ParseError) -> bool {
         self.errors.push(error);
+        self.errors.len() >= MAX_PARSE_ERRORS
+    }
+
+    /// Whether we've hit the maximum number of errors and should stop recovery.
+    fn at_error_limit(&self) -> bool {
+        self.errors.len() >= MAX_PARSE_ERRORS
     }
 
     pub fn errors(&self) -> &[ParseError] {
@@ -398,7 +409,7 @@ impl Parser {
         let mut items = Vec::new();
         let mut top_level_stmts = Vec::new();
         self.skip_newlines();
-        while !self.at_end() {
+        while !self.at_end() && !self.at_error_limit() {
             self.skip_newlines();
             if self.at_end() {
                 break;
@@ -415,7 +426,9 @@ impl Parser {
                 match self.parse_stmt() {
                     Ok(stmt) => top_level_stmts.push(stmt),
                     Err(err) => {
-                        self.record_error(err);
+                        if self.record_error(err) {
+                            break; // hit max error limit
+                        }
                         self.synchronize();
                     }
                 }
@@ -423,7 +436,9 @@ impl Parser {
                 match self.parse_item() {
                     Ok(item) => items.push(item),
                     Err(err) => {
-                        self.record_error(err);
+                        if self.record_error(err) {
+                            break; // hit max error limit
+                        }
                         self.synchronize();
                     }
                 }
@@ -1052,7 +1067,9 @@ impl Parser {
             match self.parse_stmt() {
                 Ok(stmt) => stmts.push(stmt),
                 Err(err) => {
-                    self.record_error(err);
+                    if self.record_error(err) {
+                        break; // hit max error limit
+                    }
                     self.synchronize_stmt();
                 }
             }
@@ -1110,7 +1127,15 @@ impl Parser {
             if matches!(self.peek_kind(), TokenKind::Dedent | TokenKind::Eof) {
                 break;
             }
-            stmts.push(self.parse_stmt()?);
+            match self.parse_stmt() {
+                Ok(stmt) => stmts.push(stmt),
+                Err(err) => {
+                    if self.record_error(err) {
+                        break; // hit max error limit
+                    }
+                    self.synchronize_stmt();
+                }
+            }
             self.skip_newlines();
         }
         if matches!(self.peek_kind(), TokenKind::Dedent) {
@@ -1722,11 +1747,73 @@ impl Parser {
         match self.peek_kind().clone() {
             TokenKind::IntLit(n) => {
                 let s = self.advance().span;
-                Ok(Pattern::Literal(Expr::IntLit(n, s)))
+                let start_expr = Expr::IntLit(n, s);
+                if matches!(self.peek_kind(), TokenKind::DotDot | TokenKind::DotDotEq) {
+                    let inclusive = matches!(self.peek_kind(), TokenKind::DotDotEq);
+                    self.advance();
+                    let end_expr = match self.peek_kind().clone() {
+                        TokenKind::IntLit(en) => {
+                            let es = self.advance().span;
+                            Expr::IntLit(en, es)
+                        }
+                        TokenKind::FloatLit(en) => {
+                            let es = self.advance().span;
+                            Expr::FloatLit(en, es)
+                        }
+                        _ => {
+                            let tok = self.current().clone();
+                            return Err(ParseError::Unexpected {
+                                found: format!("{}", tok.kind),
+                                expected: "numeric literal for range end".into(),
+                                line: tok.span.line,
+                                col: tok.span.col,
+                            });
+                        }
+                    };
+                    let span = s.merge(end_expr.span());
+                    return Ok(Pattern::Range {
+                        start: Box::new(start_expr),
+                        end: Box::new(end_expr),
+                        inclusive,
+                        span,
+                    });
+                }
+                Ok(Pattern::Literal(start_expr))
             }
             TokenKind::FloatLit(n) => {
                 let s = self.advance().span;
-                Ok(Pattern::Literal(Expr::FloatLit(n, s)))
+                let start_expr = Expr::FloatLit(n, s);
+                if matches!(self.peek_kind(), TokenKind::DotDot | TokenKind::DotDotEq) {
+                    let inclusive = matches!(self.peek_kind(), TokenKind::DotDotEq);
+                    self.advance();
+                    let end_expr = match self.peek_kind().clone() {
+                        TokenKind::IntLit(en) => {
+                            let es = self.advance().span;
+                            Expr::IntLit(en, es)
+                        }
+                        TokenKind::FloatLit(en) => {
+                            let es = self.advance().span;
+                            Expr::FloatLit(en, es)
+                        }
+                        _ => {
+                            let tok = self.current().clone();
+                            return Err(ParseError::Unexpected {
+                                found: format!("{}", tok.kind),
+                                expected: "numeric literal for range end".into(),
+                                line: tok.span.line,
+                                col: tok.span.col,
+                            });
+                        }
+                    };
+                    let span = s.merge(end_expr.span());
+                    return Ok(Pattern::Range {
+                        start: Box::new(start_expr),
+                        end: Box::new(end_expr),
+                        inclusive,
+                        span,
+                    });
+                }
+                Ok(Pattern::Literal(start_expr))
             }
             TokenKind::StringLit(ref sv) => {
                 let sv = sv.clone();
@@ -5723,7 +5810,7 @@ impl Parser {
             Ok(program) => program,
             Err(err) => {
                 // Preserve fatal parser failure so callers still emit diagnostics.
-                self.record_error(err);
+                let _ = self.record_error(err);
                 Program {
                     directives: vec![],
                     items: vec![],

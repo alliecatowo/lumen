@@ -32,6 +32,34 @@ counter = counter + 1   # OK
 counter += 1            # Also OK (compound assignment)
 ```
 
+### Compound Assignments
+
+All arithmetic, bitwise, and shift operators have compound forms:
+
+```lumen
+let mut x = 10
+x += 5       # x = x + 5
+x -= 3       # x = x - 3
+x *= 2       # x = x * 2
+x /= 4       # x = x / 4
+x //= 2      # Floor division assignment
+x %= 3       # x = x % 3
+x **= 2      # x = x ** 2
+x &= 0xFF   # Bitwise AND assignment
+x |= 0x01   # Bitwise OR assignment
+x ^= 0x10   # Bitwise XOR assignment
+```
+
+### Destructuring Let
+
+Unpack values directly in let bindings:
+
+```lumen
+let (a, b) = (1, 2)              # Tuple
+let [first, second] = [10, 20]   # List
+let Point(x, y) = my_point       # Record
+```
+
 ### Type Annotations
 
 Explicit types are optional but can be added:
@@ -103,7 +131,31 @@ let d = 10 / 4     # 2  (integer division)
 let e = 10.0 / 4.0 # 2.5 (float division)
 let f = 10 % 3     # 1  (modulo)
 let g = 2 ** 10    # 1024 (exponentiation)
+let h = 7 // 2     # 3  (floor division)
 ```
+
+### Floor Division
+
+`//` performs integer floor division (truncating toward negative infinity). Not to be confused with comments (which use `#`):
+
+```lumen
+let pages = 100 // 30    # 3
+let mut n = 100
+n //= 3                  # 33
+```
+
+### Bitwise and Shift Operators
+
+```lumen
+let a = 0xFF & 0x0F      # Bitwise AND
+let b = 0xF0 | 0x0F      # Bitwise OR
+let c = 0xFF ^ 0x0F      # Bitwise XOR
+let d = ~0xFF            # Bitwise NOT
+let e = 1 << 8           # Left shift (256)
+let f = 256 >> 1         # Right shift (128)
+```
+
+Shift operators require `Int` operands on both sides.
 
 ## Comparison
 
@@ -126,6 +178,17 @@ let c = not true         # false
 
 ## Null Safety
 
+### Optional Type Sugar
+
+`T?` is shorthand for `T | Null`:
+
+```lumen
+let maybe: Int? = 42            # Same as Int | Null
+cell find(id: Int) -> User?     # Returns User or null
+```
+
+### Null-Safe Operators
+
 ```lumen
 let maybe: Int | Null = 42
 
@@ -134,6 +197,10 @@ let value = maybe?.abs()  # 42 if maybe is Int, null otherwise
 
 # Default with ??
 let or_default = maybe ?? 0  # 42 (use maybe, or 0 if null)
+
+# Null-safe index with ?[]
+let items: list[Int]? = null
+let first = items?[0]    # null (no panic)
 ```
 
 ## Collections

@@ -48,6 +48,28 @@ fn effect_operation_name(expr: &Expr) -> Option<String> {
     }
 }
 
+fn desugar_pipe_application(input: &Expr, stage: &Expr, span: Span) -> Expr {
+    match stage {
+        Expr::Call(callee, args, call_span) => {
+            let mut call_args = Vec::with_capacity(args.len() + 1);
+            call_args.push(CallArg::Positional(input.clone()));
+            call_args.extend(args.clone());
+            Expr::Call(callee.clone(), call_args, *call_span)
+        }
+        Expr::ToolCall(callee, args, call_span) => {
+            let mut call_args = Vec::with_capacity(args.len() + 1);
+            call_args.push(CallArg::Positional(input.clone()));
+            call_args.extend(args.clone());
+            Expr::ToolCall(callee.clone(), call_args, *call_span)
+        }
+        _ => Expr::Call(
+            Box::new(stage.clone()),
+            vec![CallArg::Positional(input.clone())],
+            span,
+        ),
+    }
+}
+
 /// Lower an entire program to a LIR module.
 pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModule {
     let doc_hash = format!("sha256:{:x}", Sha256::digest(source.as_bytes()));
@@ -1107,10 +1129,18 @@ impl<'a> Lowerer<'a> {
                 let fail_jmp = instrs.len();
                 instrs.push(Instruction::sax(OpCode::Jmp, 0));
                 fail_jumps.push(fail_jmp);
-                if let Some(ref bind_name) = binding {
-                    // Unbox variant payload into named register
-                    let breg = ra.alloc_named(bind_name);
-                    instrs.push(Instruction::abc(OpCode::Unbox, breg, value_reg, 0));
+                if let Some(inner_pattern) = binding {
+                    // Unbox variant payload and recursively match/bind it.
+                    let payload_reg = ra.alloc_temp();
+                    instrs.push(Instruction::abc(OpCode::Unbox, payload_reg, value_reg, 0));
+                    self.lower_match_pattern(
+                        inner_pattern,
+                        payload_reg,
+                        ra,
+                        consts,
+                        instrs,
+                        fail_jumps,
+                    );
                 }
             }
             Pattern::Wildcard(_) => {}
@@ -1539,6 +1569,18 @@ impl<'a> Lowerer<'a> {
                     self.emit_set_field(dest, field_name, val_reg, ra, consts, instrs);
                 }
                 dest
+            }
+            Expr::Pipe { left, right, span } => {
+                let call_expr = desugar_pipe_application(left, right, *span);
+                self.lower_expr(&call_expr, ra, consts, instrs)
+            }
+            Expr::Illuminate {
+                input,
+                transform,
+                span,
+            } => {
+                let call_expr = desugar_pipe_application(input, transform, *span);
+                self.lower_expr(&call_expr, ra, consts, instrs)
             }
             Expr::BinOp(lhs, op, rhs, _) => {
                 // Special case: pipe forward desugars to function call
@@ -2660,6 +2702,16 @@ fn collect_free_idents_expr(expr: &Expr, out: &mut Vec<String>) {
         Expr::BinOp(lhs, _, rhs, _) => {
             collect_free_idents_expr(lhs, out);
             collect_free_idents_expr(rhs, out);
+        }
+        Expr::Pipe { left, right, .. } => {
+            collect_free_idents_expr(left, out);
+            collect_free_idents_expr(right, out);
+        }
+        Expr::Illuminate {
+            input, transform, ..
+        } => {
+            collect_free_idents_expr(input, out);
+            collect_free_idents_expr(transform, out);
         }
         Expr::UnaryOp(_, inner, _) => collect_free_idents_expr(inner, out),
         Expr::Call(callee, args, _) | Expr::ToolCall(callee, args, _) => {

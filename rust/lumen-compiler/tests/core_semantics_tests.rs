@@ -10,7 +10,7 @@ use lumen_compiler::compiler::lower::lower;
 use lumen_compiler::compiler::lir::OpCode;
 use lumen_compiler::compiler::parser::Parser;
 use lumen_compiler::compiler::resolve::resolve;
-use lumen_compiler::compiler::typecheck::{typecheck, Type};
+use lumen_compiler::compiler::typecheck::typecheck;
 
 fn compile_and_typecheck(src: &str) -> Result<lumen_compiler::compiler::lir::LirModule, String> {
     let mut lexer = Lexer::new(src, 1, 0);
@@ -357,7 +357,7 @@ end
         "Set comprehension should build list first"
     );
     assert!(
-        ops.iter().any(|&op| op == OpCode::Intrinsic),
+        ops.contains(&OpCode::Intrinsic),
         "Set comprehension should use Intrinsic for ToSet conversion"
     );
 }

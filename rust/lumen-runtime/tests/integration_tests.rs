@@ -186,7 +186,9 @@ fn test_mixed_provider_dispatch() {
             policy: json!({}),
         };
 
-        let response = registry.dispatch(&request).expect(&format!("{} should work", tool_id));
+        let response = registry
+            .dispatch(&request)
+            .unwrap_or_else(|_| panic!("{tool_id} should work"));
         assert!(response.latency_ms < 1000, "Latency should be reasonable");
         println!("✓ {} dispatched successfully ({}ms)", tool_id, response.latency_ms);
     }

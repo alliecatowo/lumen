@@ -398,8 +398,8 @@ pub struct MatchArm {
 pub enum Pattern {
     /// Literal pattern: 200, "hello", true
     Literal(Expr),
-    /// Variant with optional binding: ok(value), err(e)
-    Variant(String, Option<String>, Span),
+    /// Variant with optional sub-pattern: ok(value), err(e), Some(Value(n))
+    Variant(String, Option<Box<Pattern>>, Span),
     /// Wildcard: _
     Wildcard(Span),
     /// Ident binding
@@ -612,6 +612,18 @@ pub enum Expr {
     },
     /// Block expression: evaluates a sequence of statements, value is last expression
     BlockExpr(Vec<Stmt>, Span),
+    /// Pipe operator: x |> f desugars to f(x), x |> f(y) desugars to f(x, y)
+    Pipe {
+        left: Box<Expr>,
+        right: Box<Expr>,
+        span: Span,
+    },
+    /// Illuminate operator: data ~> transform calls an AI-capable cell with data as input
+    Illuminate {
+        input: Box<Expr>,
+        transform: Box<Expr>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -651,6 +663,8 @@ impl Expr {
             Expr::IfExpr { span, .. } => *span,
             Expr::Comprehension { span, .. } => *span,
             Expr::MatchExpr { span, .. } => *span,
+            Expr::Pipe { span, .. } => *span,
+            Expr::Illuminate { span, .. } => *span,
         }
     }
 }

@@ -1,34 +1,54 @@
 # Lumen Control Center Example
 
-Realistic multi-file workspace showing how to structure domain models, workflow stages, and provider/tool contracts for LLM + MCP style orchestration.
+Multi-module showcase for a realistic release-ops control loop:
+planning, execution, and recovery with explicit tool contracts.
 
-## Structure
+## Architecture
 
-- `lumen.toml`: package metadata plus provider and MCP bridge configuration
-- `src/main.lm.md`: runnable entrypoint
-- `src/domain/models.lm.md`: shared workspace/task records
-- `src/domain/events.lm.md`: stage event and run summary records
-- `src/providers/contracts.lm.md`: tool declarations, grants, and invocation contracts
-- `src/workflows/planner.lm.md`: planner stage snapshot model
-- `src/workflows/executor.lm.md`: executor stage snapshot model
+- `lumen.toml`
+  - Maps parser-supported tool IDs to providers.
+  - Uses MCP bridge sections for GitHub and Slack tools.
+  - MCP tool IDs follow `github.*` / `slack.*` naming (not `mcp.*`).
+- `src/main.lm.md`
+  - Orchestrates the end-to-end flow:
+    - plan selection
+    - execution command assembly
+    - recovery/escalation decision
+  - Builds the final run summary and event log.
+- `src/domain/models.lm.md`
+  - Shared workspace and work-queue records.
+- `src/domain/events.lm.md`
+  - Stage event + run summary records.
+- `src/providers/contracts.lm.md`
+  - `use tool` declarations and grants.
+  - Explicit `bind effect` declarations for `llm`, `http`, and `mcp`.
+  - Route and provider lookup helpers used by `main`.
+- `src/workflows/planner.lm.md`
+  - Generates plan steps and planner snapshot.
+- `src/workflows/executor.lm.md`
+  - Builds execution command and execution snapshot.
+  - Simulates retry/fallback behavior in `dry-run` mode.
+- `src/workflows/recovery.lm.md`
+  - Produces recovery status and escalation level from execution outcomes.
 
-## What This Demonstrates
+## Example Flow
 
-- Multi-module imports across a package-style `src/` tree
-- Provider mappings in `lumen.toml` (`llm.chat`, HTTP, MCP tool aliases)
-- LLM/MCP tool usage patterns with grants and stubbed preview cells
-- Deterministic local run path in `main` that does not require external API keys
+1. Planner chooses tools and builds staged steps.
+2. Executor builds the dispatch command and simulates a research-stage timeout in `dry-run`.
+3. Recovery module converts fallback usage into a degraded status plus notification recommendation.
+4. Main emits structured stage events and human-readable run output.
 
-## Run And Check
+## Commands
 
 From repo root:
 
 ```bash
 ./target/debug/lumen check examples/lumen-control-center/src/main.lm.md
 ./target/debug/lumen run examples/lumen-control-center/src/main.lm.md
+./target/debug/lumen ci examples/lumen-control-center
 ```
 
-Optional package-wide validation (from the example directory):
+From the example directory:
 
 ```bash
 cd examples/lumen-control-center

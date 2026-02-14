@@ -6,8 +6,14 @@ Provider and tool contracts for realistic LLM + MCP workflows.
 use tool llm.chat as PlannerChat
 use tool llm.chat as ReviewerChat
 use tool http.get as HttpFetch
-use tool mcp.github.search_issues as GitHubIssues
-use tool mcp.slack.post_message as SlackPost
+use tool github.search_issues as GitHubIssues
+use tool slack.post_message as SlackPost
+
+bind effect llm to PlannerChat
+bind effect llm to ReviewerChat
+bind effect http to HttpFetch
+bind effect mcp to GitHubIssues
+bind effect mcp to SlackPost
 
 grant PlannerChat
   model "gpt-4o-mini"
@@ -53,13 +59,21 @@ record ToolInvocationSpec
   fallback: String
 end
 
-cell mock_llm_preview(packet: PromptPacket) -> String
-  role system: You are a planning assistant for safe deployments.
-  role user: {packet.user_prompt}
-  return "stubbed-plan: prioritize deterministic checks before live tool calls"
+cell route_for_phase(routes: list[ToolRoute], phase: String) -> String
+  for route in routes
+    if route.phase == phase
+      return route.tool_alias
+    end
+  end
+  "unassigned"
 end
 
-cell mock_mcp_preview(spec: ToolInvocationSpec) -> String
-  return "stubbed-mcp-call: " + spec.tool_alias + " with payload " + spec.payload_json
+cell provider_for_alias(bindings: list[ProviderBinding], alias: String) -> String
+  for binding in bindings
+    if binding.tool_alias == alias
+      return binding.provider
+    end
+  end
+  "unbound"
 end
 ```

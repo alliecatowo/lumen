@@ -63,6 +63,28 @@ fn is_doc_placeholder_var(name: &str) -> bool {
     !name.is_empty() && !name.starts_with("__")
 }
 
+fn desugar_pipe_application(input: &Expr, stage: &Expr, span: crate::compiler::tokens::Span) -> Expr {
+    match stage {
+        Expr::Call(callee, args, call_span) => {
+            let mut call_args = Vec::with_capacity(args.len() + 1);
+            call_args.push(CallArg::Positional(input.clone()));
+            call_args.extend(args.clone());
+            Expr::Call(callee.clone(), call_args, *call_span)
+        }
+        Expr::ToolCall(callee, args, call_span) => {
+            let mut call_args = Vec::with_capacity(args.len() + 1);
+            call_args.push(CallArg::Positional(input.clone()));
+            call_args.extend(args.clone());
+            Expr::ToolCall(callee.clone(), call_args, *call_span)
+        }
+        _ => Expr::Call(
+            Box::new(stage.clone()),
+            vec![CallArg::Positional(input.clone())],
+            span,
+        ),
+    }
+}
+
 fn type_contains_any(ty: &Type) -> bool {
     match ty {
         Type::Any => true,
@@ -681,15 +703,21 @@ impl<'a> TypeChecker<'a> {
         match pattern {
             Pattern::Variant(tag, binding, _) => {
                 let mut valid_variant = false;
-                let mut bind_type = Type::Any;
+                let mut payload_type = Type::Any;
+                let mut expects_payload = false;
 
                 if let Type::Enum(ref name) = subject_type {
                     if let Some(ti) = self.symbols.types.get(name) {
                         if let crate::compiler::resolve::TypeInfoKind::Enum(def) = &ti.kind {
-                            if def.variants.iter().any(|v| v.name == *tag) {
+                            if let Some(variant) = def.variants.iter().find(|v| v.name == *tag) {
                                 valid_variant = true;
                                 covered_variants.push(tag.clone());
-                                bind_type = subject_type.clone();
+                                if let Some(payload) = &variant.payload {
+                                    expects_payload = true;
+                                    payload_type = resolve_type_expr(payload, self.symbols);
+                                } else {
+                                    payload_type = Type::Null;
+                                }
                             }
                         }
                     }
@@ -703,10 +731,12 @@ impl<'a> TypeChecker<'a> {
                 } else if let Type::Result(ref ok, ref err) = subject_type {
                     if tag == "ok" {
                         valid_variant = true;
-                        bind_type = *ok.clone();
+                        expects_payload = true;
+                        payload_type = *ok.clone();
                     } else if tag == "err" {
                         valid_variant = true;
-                        bind_type = *err.clone();
+                        expects_payload = true;
+                        payload_type = *err.clone();
                     }
                     if !valid_variant {
                         self.errors.push(TypeError::Mismatch {
@@ -717,8 +747,21 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
-                if let Some(b) = binding {
-                    self.locals.insert(b.clone(), bind_type);
+                if let Some(inner_pattern) = binding {
+                    if valid_variant && !expects_payload {
+                        self.errors.push(TypeError::Mismatch {
+                            expected: format!("{} without payload", tag),
+                            actual: format!("{}(...)", tag),
+                            line,
+                        });
+                    }
+                    self.bind_match_pattern(
+                        inner_pattern,
+                        &payload_type,
+                        covered_variants,
+                        has_catchall,
+                        line,
+                    );
                 }
             }
             Pattern::Ident(name, _) => {
@@ -1050,6 +1093,18 @@ impl<'a> TypeChecker<'a> {
                     BinOp::In => Type::Bool,
                     BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => Type::Int,
                 }
+            }
+            Expr::Pipe { left, right, span } => {
+                let call_expr = desugar_pipe_application(left, right, *span);
+                self.infer_expr(&call_expr)
+            }
+            Expr::Illuminate {
+                input,
+                transform,
+                span,
+            } => {
+                let call_expr = desugar_pipe_application(input, transform, *span);
+                self.infer_expr(&call_expr)
             }
             Expr::UnaryOp(op, inner, _) => {
                 let t = self.infer_expr(inner);

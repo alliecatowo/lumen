@@ -12,8 +12,8 @@ readme = "README.md"
 [providers]
 "llm.chat" = "openai-compatible"
 "http.get" = "builtin-http"
-"mcp.github.search_issues" = "mcp-bridge"
-"mcp.slack.post_message" = "mcp-bridge"
+"github.search_issues" = "mcp-bridge"
+"slack.post_message" = "mcp-bridge"
 
 [providers.config.openai-compatible]
 base_url = "https://api.openai.com/v1"
@@ -25,8 +25,8 @@ timeout_ms = 5000
 
 [providers.mcp.github]
 uri = "npx -y @modelcontextprotocol/server-github"
-tools = ["mcp.github.search_issues"]
+tools = ["github.search_issues"]
 
 [providers.mcp.slack]
 uri = "npx -y @modelcontextprotocol/server-slack"
-tools = ["mcp.slack.post_message"]
+tools = ["slack.post_message"]

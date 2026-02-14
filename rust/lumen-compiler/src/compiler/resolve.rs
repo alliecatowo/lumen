@@ -1655,6 +1655,9 @@ fn infer_pattern_effects(
     out: &mut BTreeSet<String>,
 ) {
     match pat {
+        Pattern::Variant(_, Some(inner), _) => {
+            infer_pattern_effects(inner, table, current, out);
+        }
         Pattern::Guard {
             inner, condition, ..
         } => {
@@ -1751,12 +1754,41 @@ fn resolve_tool_call_effect(callee: &Expr, table: &SymbolTable) -> (String, Stri
     }
 }
 
+fn desugar_pipe_application(
+    input: &Expr,
+    stage: &Expr,
+    span: crate::compiler::tokens::Span,
+) -> Expr {
+    match stage {
+        Expr::Call(callee, args, call_span) => {
+            let mut call_args = Vec::with_capacity(args.len() + 1);
+            call_args.push(CallArg::Positional(input.clone()));
+            call_args.extend(args.clone());
+            Expr::Call(callee.clone(), call_args, *call_span)
+        }
+        Expr::ToolCall(callee, args, call_span) => {
+            let mut call_args = Vec::with_capacity(args.len() + 1);
+            call_args.push(CallArg::Positional(input.clone()));
+            call_args.extend(args.clone());
+            Expr::ToolCall(callee.clone(), call_args, *call_span)
+        }
+        _ => Expr::Call(
+            Box::new(stage.clone()),
+            vec![CallArg::Positional(input.clone())],
+            span,
+        ),
+    }
+}
+
 fn collect_pattern_call_requirements(
     pat: &Pattern,
     table: &SymbolTable,
     out: &mut Vec<CallRequirement>,
 ) {
     match pat {
+        Pattern::Variant(_, Some(inner), _) => {
+            collect_pattern_call_requirements(inner, table, out);
+        }
         Pattern::Guard {
             inner, condition, ..
         } => {
@@ -1847,6 +1879,18 @@ fn collect_expr_call_requirements(
         Expr::BinOp(lhs, _, rhs, _) | Expr::NullCoalesce(lhs, rhs, _) => {
             collect_expr_call_requirements(lhs, table, out);
             collect_expr_call_requirements(rhs, table, out);
+        }
+        Expr::Pipe { left, right, span } => {
+            let call_expr = desugar_pipe_application(left, right, *span);
+            collect_expr_call_requirements(&call_expr, table, out);
+        }
+        Expr::Illuminate {
+            input,
+            transform,
+            span,
+        } => {
+            let call_expr = desugar_pipe_application(input, transform, *span);
+            collect_expr_call_requirements(&call_expr, table, out);
         }
         Expr::UnaryOp(_, inner, _)
         | Expr::ExpectSchema(inner, _, _)
@@ -1989,6 +2033,9 @@ fn collect_pattern_effect_evidence(
     out: &mut Vec<EffectEvidence>,
 ) {
     match pat {
+        Pattern::Variant(_, Some(inner), _) => {
+            collect_pattern_effect_evidence(inner, table, current, out);
+        }
         Pattern::Guard {
             inner, condition, ..
         } => {
@@ -2084,6 +2131,18 @@ fn collect_expr_effect_evidence(
         Expr::BinOp(lhs, _, rhs, _) | Expr::NullCoalesce(lhs, rhs, _) => {
             collect_expr_effect_evidence(lhs, table, current, out);
             collect_expr_effect_evidence(rhs, table, current, out);
+        }
+        Expr::Pipe { left, right, span } => {
+            let call_expr = desugar_pipe_application(left, right, *span);
+            collect_expr_effect_evidence(&call_expr, table, current, out);
+        }
+        Expr::Illuminate {
+            input,
+            transform,
+            span,
+        } => {
+            let call_expr = desugar_pipe_application(input, transform, *span);
+            collect_expr_effect_evidence(&call_expr, table, current, out);
         }
         Expr::UnaryOp(_, inner, _)
         | Expr::ExpectSchema(inner, _, _)
@@ -2418,6 +2477,18 @@ fn infer_expr_effects(
         Expr::BinOp(lhs, _, rhs, _) | Expr::NullCoalesce(lhs, rhs, _) => {
             infer_expr_effects(lhs, table, current, out);
             infer_expr_effects(rhs, table, current, out);
+        }
+        Expr::Pipe { left, right, span } => {
+            let call_expr = desugar_pipe_application(left, right, *span);
+            infer_expr_effects(&call_expr, table, current, out);
+        }
+        Expr::Illuminate {
+            input,
+            transform,
+            span,
+        } => {
+            let call_expr = desugar_pipe_application(input, transform, *span);
+            infer_expr_effects(&call_expr, table, current, out);
         }
         Expr::UnaryOp(_, inner, _)
         | Expr::ExpectSchema(inner, _, _)

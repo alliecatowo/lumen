@@ -602,8 +602,25 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Pattern::Ident(name, _) => {
-                self.locals.insert(name.clone(), subject_type.clone());
-                *has_catchall = true;
+                // Check if this identifier is actually an enum variant without payload
+                let mut is_variant = false;
+                if let Type::Enum(ref enum_name) = subject_type {
+                    if let Some(ti) = self.symbols.types.get(enum_name) {
+                        if let crate::compiler::resolve::TypeInfoKind::Enum(def) = &ti.kind {
+                            if def.variants.iter().any(|v| v.name == *name) {
+                                // This is a variant pattern, not a binding
+                                covered_variants.push(name.clone());
+                                is_variant = true;
+                            }
+                        }
+                    }
+                }
+
+                if !is_variant {
+                    // Regular identifier pattern - binds the value
+                    self.locals.insert(name.clone(), subject_type.clone());
+                    *has_catchall = true;
+                }
             }
             Pattern::Wildcard(_) => {
                 *has_catchall = true;

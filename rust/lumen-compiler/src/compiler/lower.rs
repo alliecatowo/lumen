@@ -3056,7 +3056,7 @@ mod tests {
     #[test]
     fn test_set_comprehension_emits_newset() {
         let src =
-            "cell make_set() -> set[Int]\n  let xs = [1, 2, 3]\n  return set[x for x in xs]\nend";
+            "cell make_set() -> set[Int]\n  let xs = [1, 2, 3]\n  return {x for x in xs}\nend";
         let module = lower_src(src);
         let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
         // Set comprehension now builds as list then converts using ToSet intrinsic
@@ -3425,7 +3425,7 @@ mod tests {
     #[test]
     fn test_set_comprehension_uses_toset_intrinsic() {
         let src =
-            "cell make_set() -> set[Int]\n  let xs = [1, 2, 3]\n  return set[x for x in xs]\nend";
+            "cell make_set() -> set[Int]\n  let xs = [1, 2, 3]\n  return {x for x in xs}\nend";
         let module = lower_src(src);
         let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
         // Set comprehension should build as list then convert using ToSet intrinsic

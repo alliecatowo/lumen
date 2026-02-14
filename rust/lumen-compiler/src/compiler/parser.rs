@@ -4836,60 +4836,176 @@ impl Parser {
     fn parse_map_lit(&mut self) -> Result<Expr, ParseError> {
         let start = self.expect(&TokenKind::LBrace)?.span;
         self.bracket_depth += 1;
-        let mut pairs = Vec::new();
         self.skip_whitespace_tokens();
-        while !matches!(self.peek_kind(), TokenKind::RBrace) {
-            if !pairs.is_empty() {
-                self.expect(&TokenKind::Comma)?;
-                self.skip_whitespace_tokens();
-            }
-            if matches!(self.peek_kind(), TokenKind::DotDot | TokenKind::DotDotDot) {
-                let spread_span = self.advance().span;
-                let spread_expr = self.parse_expr(0)?;
-                pairs.push((Expr::StringLit("__spread".into(), spread_span), spread_expr));
-                self.skip_whitespace_tokens();
-                continue;
-            }
-            let key = if let TokenKind::Ident(name) = self.peek_kind().clone() {
-                if matches!(
-                    self.tokens.get(self.pos + 1).map(|t| &t.kind),
-                    Some(TokenKind::Colon)
-                ) {
-                    let span = self.current().span;
-                    self.advance();
-                    Expr::StringLit(name, span)
-                } else {
-                    self.parse_expr(0)?
-                }
-            } else {
-                self.parse_expr(0)?
-            };
-            if matches!(self.peek_kind(), TokenKind::Colon | TokenKind::Assign) {
+
+        // Empty braces -> empty map
+        if matches!(self.peek_kind(), TokenKind::RBrace) {
+            self.bracket_depth -= 1;
+            let end = self.expect(&TokenKind::RBrace)?.span;
+            return Ok(Expr::MapLit(vec![], start.merge(end)));
+        }
+
+        // Check for spread at the start
+        if matches!(self.peek_kind(), TokenKind::DotDot | TokenKind::DotDotDot) {
+            let spread_span = self.advance().span;
+            let spread_expr = self.parse_expr(0)?;
+            let mut pairs = vec![(Expr::StringLit("__spread".into(), spread_span), spread_expr)];
+            self.skip_whitespace_tokens();
+
+            while matches!(self.peek_kind(), TokenKind::Comma) {
                 self.advance();
-            } else {
-                let tok = self.current().clone();
-                return Err(ParseError::Unexpected {
-                    found: format!("{}", tok.kind),
-                    expected: ":".into(),
-                    line: tok.span.line,
-                    col: tok.span.col,
+                self.skip_whitespace_tokens();
+                if matches!(self.peek_kind(), TokenKind::RBrace) {
+                    break;
+                }
+                if matches!(self.peek_kind(), TokenKind::DotDot | TokenKind::DotDotDot) {
+                    let spread_span = self.advance().span;
+                    let spread_expr = self.parse_expr(0)?;
+                    pairs.push((Expr::StringLit("__spread".into(), spread_span), spread_expr));
+                } else {
+                    let key = if let TokenKind::Ident(name) = self.peek_kind().clone() {
+                        if matches!(
+                            self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                            Some(TokenKind::Colon)
+                        ) {
+                            let span = self.current().span;
+                            self.advance();
+                            Expr::StringLit(name, span)
+                        } else {
+                            self.parse_expr(0)?
+                        }
+                    } else {
+                        self.parse_expr(0)?
+                    };
+                    self.expect(&TokenKind::Colon)?;
+                    self.skip_whitespace_tokens();
+                    let val = self.parse_expr(0)?;
+                    pairs.push((key, val));
+                }
+                self.skip_whitespace_tokens();
+            }
+
+            self.bracket_depth -= 1;
+            let end = self.expect(&TokenKind::RBrace)?.span;
+            return Ok(Expr::MapLit(pairs, start.merge(end)));
+        }
+
+        // Parse first expression to determine if this is a set or map
+        let first = self.parse_expr(0)?;
+        self.skip_whitespace_tokens();
+
+        // Check what follows the first expression
+        match self.peek_kind() {
+            TokenKind::For => {
+                // Set comprehension: {expr for var in iter}
+                self.advance();
+                let var = self.expect_ident()?;
+                self.expect(&TokenKind::In)?;
+                let iter = self.parse_expr(0)?;
+                while matches!(self.peek_kind(), TokenKind::For) {
+                    self.advance();
+                    let _ = self.expect_ident()?;
+                    self.expect(&TokenKind::In)?;
+                    let _ = self.parse_expr(0)?;
+                }
+                let condition = if matches!(self.peek_kind(), TokenKind::If) {
+                    self.advance();
+                    Some(Box::new(self.parse_expr(0)?))
+                } else {
+                    None
+                };
+                self.skip_whitespace_tokens();
+                self.bracket_depth -= 1;
+                let end = self.expect(&TokenKind::RBrace)?.span;
+
+                // Determine comprehension kind based on body type
+                // If body is a tuple, it's a map comprehension
+                let kind = if matches!(first, Expr::TupleLit(..)) {
+                    ComprehensionKind::Map
+                } else {
+                    ComprehensionKind::Set
+                };
+
+                return Ok(Expr::Comprehension {
+                    body: Box::new(first),
+                    var,
+                    iter: Box::new(iter),
+                    condition,
+                    kind,
+                    span: start.merge(end),
                 });
             }
-            self.skip_whitespace_tokens();
-            let val = self.parse_expr(0)?;
-            if matches!(self.peek_kind(), TokenKind::For) {
-                while !matches!(self.peek_kind(), TokenKind::RBrace | TokenKind::Eof) {
+            TokenKind::Colon | TokenKind::Assign => {
+                // Map literal: {key: value, ...}
+                self.advance();
+                self.skip_whitespace_tokens();
+                let val = self.parse_expr(0)?;
+                self.skip_whitespace_tokens();
+
+                let mut pairs = vec![(first, val)];
+                while matches!(self.peek_kind(), TokenKind::Comma) {
                     self.advance();
+                    self.skip_whitespace_tokens();
+                    if matches!(self.peek_kind(), TokenKind::RBrace) {
+                        break;
+                    }
+                    if matches!(self.peek_kind(), TokenKind::DotDot | TokenKind::DotDotDot) {
+                        let spread_span = self.advance().span;
+                        let spread_expr = self.parse_expr(0)?;
+                        pairs.push((Expr::StringLit("__spread".into(), spread_span), spread_expr));
+                        self.skip_whitespace_tokens();
+                        continue;
+                    }
+                    let key = if let TokenKind::Ident(name) = self.peek_kind().clone() {
+                        if matches!(
+                            self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                            Some(TokenKind::Colon)
+                        ) {
+                            let span = self.current().span;
+                            self.advance();
+                            Expr::StringLit(name, span)
+                        } else {
+                            self.parse_expr(0)?
+                        }
+                    } else {
+                        self.parse_expr(0)?
+                    };
+                    self.expect(&TokenKind::Colon)?;
+                    self.skip_whitespace_tokens();
+                    let val = self.parse_expr(0)?;
+                    pairs.push((key, val));
+                    self.skip_whitespace_tokens();
                 }
-                pairs.push((key, val));
-                break;
+                self.bracket_depth -= 1;
+                let end = self.expect(&TokenKind::RBrace)?.span;
+                Ok(Expr::MapLit(pairs, start.merge(end)))
             }
-            self.skip_whitespace_tokens();
-            pairs.push((key, val));
+            TokenKind::Comma | TokenKind::RBrace => {
+                // Set literal: {val1, val2, ...}
+                let mut elems = vec![first];
+                while matches!(self.peek_kind(), TokenKind::Comma) {
+                    self.advance();
+                    self.skip_whitespace_tokens();
+                    if matches!(self.peek_kind(), TokenKind::RBrace) {
+                        break;
+                    }
+                    elems.push(self.parse_expr(0)?);
+                    self.skip_whitespace_tokens();
+                }
+                self.bracket_depth -= 1;
+                let end = self.expect(&TokenKind::RBrace)?.span;
+                Ok(Expr::SetLit(elems, start.merge(end)))
+            }
+            _ => {
+                let tok = self.current().clone();
+                Err(ParseError::Unexpected {
+                    found: format!("{}", tok.kind),
+                    expected: "',', ':', or 'for'".into(),
+                    line: tok.span.line,
+                    col: tok.span.col,
+                })
+            }
         }
-        self.bracket_depth -= 1;
-        let end = self.expect(&TokenKind::RBrace)?.span;
-        Ok(Expr::MapLit(pairs, start.merge(end)))
     }
 
     fn parse_role_block_expr(&mut self) -> Result<Expr, ParseError> {

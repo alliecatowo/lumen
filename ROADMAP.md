@@ -131,6 +131,8 @@ The V1 release focuses on **core correctness and essential tooling**, not featur
 - Cost-aware types with budgets
 - Session-typed protocols
 - WASM compilation target
+- Inline AI prompt operator: `data ~> "summarize this"` — ad-hoc AI calls where the RHS is a prompt string, not a function. Would need: default provider binding, prompt template semantics, return type inference, streaming support. Unique to Lumen — no other language has this.
+- Consolidate provider crates into `lumen-std` with feature flags (fs, http, json, crypto, env, gemini, mcp)
 - All novel AI-first features (JSON schema compilation, prompt templates, etc.)
 
 ## Strategic Pillars

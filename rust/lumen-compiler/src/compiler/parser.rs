@@ -768,39 +768,54 @@ impl Parser {
                     self.advance();
                     None
                 } else {
-                    let save = self.pos;
-                    let parsed = self.parse_type();
-                    if let Ok(ty) = parsed {
-                        if matches!(self.peek_kind(), TokenKind::RParen) {
+                    let start_span = self.current().span;
+                    let mut types = Vec::new();
+
+                    loop {
+                        // Check for named param pattern: name: Type
+                        // The name can be an Ident or a keyword (e.g. `result`, `ok`, `err`)
+                        // so we check if the next token is a colon regardless of current token kind.
+                        let is_named_field = self
+                            .tokens
+                            .get(self.pos + 1)
+                            .map_or(false, |tok| matches!(tok.kind, TokenKind::Colon));
+
+                        if is_named_field {
+                            // Named param: skip name and colon, parse type
                             self.advance();
-                            Some(ty)
-                        } else {
-                            self.pos = save;
-                            self.consume_variant_arg_tokens();
-                            while !matches!(self.peek_kind(), TokenKind::RParen | TokenKind::Eof) {
-                                if matches!(self.peek_kind(), TokenKind::Comma) {
-                                    self.advance();
+                            self.advance();
+                            match self.parse_type() {
+                                Ok(ty) => types.push(ty),
+                                Err(_) => {
+                                    self.consume_variant_arg_tokens();
                                 }
-                                self.consume_variant_arg_tokens();
                             }
-                            if matches!(self.peek_kind(), TokenKind::RParen) {
-                                self.advance();
+                        } else {
+                            match self.parse_type() {
+                                Ok(ty) => types.push(ty),
+                                Err(_) => {
+                                    types.push(TypeExpr::Named("Any".into(), start_span));
+                                }
                             }
-                            Some(TypeExpr::Named("Any".into(), vs))
                         }
-                    } else {
-                        self.pos = save;
-                        self.consume_variant_arg_tokens();
-                        while !matches!(self.peek_kind(), TokenKind::RParen | TokenKind::Eof) {
-                            if matches!(self.peek_kind(), TokenKind::Comma) {
-                                self.advance();
-                            }
-                            self.consume_variant_arg_tokens();
-                        }
-                        if matches!(self.peek_kind(), TokenKind::RParen) {
+
+                        if matches!(self.peek_kind(), TokenKind::Comma) {
                             self.advance();
+                        } else {
+                            break;
                         }
-                        Some(TypeExpr::Named("Any".into(), vs))
+                    }
+
+                    if matches!(self.peek_kind(), TokenKind::RParen) {
+                        self.advance();
+                    }
+
+                    if types.is_empty() {
+                        None
+                    } else if types.len() == 1 {
+                        Some(types.remove(0))
+                    } else {
+                        Some(TypeExpr::Tuple(types, start_span))
                     }
                 }
             } else {

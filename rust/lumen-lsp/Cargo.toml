@@ -1,6 +1,6 @@
 [package]
 name = "lumen-lsp"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 [[bin]]
@@ -8,7 +8,7 @@ name = "lumen-lsp"
 path = "src/main.rs"
 
 [dependencies]
-lumen-compiler = { path = "../lumen-compiler" }
+lumen-compiler = { path = "../lumen-compiler", version = "0.1.1" }
 lsp-server = "0.7"
 lsp-types = "0.97"
 serde = { workspace = true }

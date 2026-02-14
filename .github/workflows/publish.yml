@@ -1,0 +1,82 @@
+name: Publish Ecosystem
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish-rust:
+    name: Publish Rust Crates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Publish lumen-vm
+        run: cargo publish -p lumen-vm --token ${CARGO_REGISTRY_TOKEN}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish lumen-runtime
+        run: |
+          sleep 10 # Wait for Crates.io to index
+          cargo publish -p lumen-runtime --token ${CARGO_REGISTRY_TOKEN}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish lumen-compiler
+        run: |
+          sleep 10
+          cargo publish -p lumen-compiler --token ${CARGO_REGISTRY_TOKEN}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish Providers
+        run: |
+          sleep 5
+          for provider in rust/lumen-provider-*; do
+            cargo publish --manifest-path "$provider/Cargo.toml" --token ${CARGO_REGISTRY_TOKEN}
+            sleep 5
+          done
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish CLI and LSP
+        run: |
+          sleep 10
+          cargo publish -p lumen-cli --token ${CARGO_REGISTRY_TOKEN}
+          cargo publish -p lumen-lsp --token ${CARGO_REGISTRY_TOKEN}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  publish-npm:
+    name: Publish NPM Packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Publish tree-sitter-lumen
+        run: |
+          cd tree-sitter-lumen
+          npm publish --provenance --access public
+        # NODE_AUTH_TOKEN not required if "Trusted Publishing" is configured on npmjs.com
+
+      - name: Build and Publish lumen-wasm
+        run: |
+          cd rust/lumen-wasm
+          wasm-pack build --target bundler
+          cd pkg
+          npm publish --provenance --access public

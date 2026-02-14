@@ -19,6 +19,10 @@ exclude = ["rust/lumen-wasm"]
 version = "0.1.1"
 edition = "2021"
 license = "MIT"
+description = "The AI-Native Programming Language"
+authors = ["Lumen Contributors"]
+repository = "https://github.com/alliecatowo/lumen"
+homepage = "https://alliecatowo.github.io/lumen/"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

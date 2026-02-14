@@ -21,11 +21,7 @@ fn test_stdio_transport_with_real_subprocess() {
 
     // Test tools/list
     let result = transport.send_request("tools/list", json!({}));
-    assert!(
-        result.is_ok(),
-        "tools/list failed: {:?}",
-        result.err()
-    );
+    assert!(result.is_ok(), "tools/list failed: {:?}", result.err());
 
     let tools_response = result.unwrap();
     let tools = tools_response
@@ -79,7 +75,11 @@ fn test_stdio_transport_tool_call() {
     });
 
     let result = transport.send_request("tools/call", params);
-    assert!(result.is_ok(), "tools/call greet failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "tools/call greet failed: {:?}",
+        result.err()
+    );
 
     let response = result.unwrap();
     let greeting = response
@@ -87,7 +87,10 @@ fn test_stdio_transport_tool_call() {
         .and_then(|g| g.as_str())
         .expect("Response should have 'greeting' string");
 
-    assert!(greeting.contains("Lumen"), "Greeting should mention 'Lumen'");
+    assert!(
+        greeting.contains("Lumen"),
+        "Greeting should mention 'Lumen'"
+    );
     println!("✓ tools/call greet succeeded: {}", greeting);
 }
 
@@ -158,10 +161,7 @@ fn test_mcp_tool_discovery() {
     assert_eq!(provider.name(), "test_server");
     assert_eq!(provider.version(), "0.1.0");
 
-    let qualified_names: Vec<String> = providers
-        .iter()
-        .map(|p| p.qualified_name())
-        .collect();
+    let qualified_names: Vec<String> = providers.iter().map(|p| p.qualified_name()).collect();
 
     assert!(
         qualified_names.contains(&"test_server.echo".to_string()),
@@ -229,9 +229,17 @@ fn test_mcp_provider_effects() {
 
     for provider in &providers {
         let effects = provider.effects();
-        assert_eq!(effects, vec!["mcp"], "All MCP providers should have 'mcp' effect");
+        assert_eq!(
+            effects,
+            vec!["mcp"],
+            "All MCP providers should have 'mcp' effect"
+        );
         let schema = provider.schema();
-        assert_eq!(schema.effects, vec!["mcp"], "Schema should match provider effects");
+        assert_eq!(
+            schema.effects,
+            vec!["mcp"],
+            "Schema should match provider effects"
+        );
     }
 
     println!("✓ All {} providers have correct effects", providers.len());

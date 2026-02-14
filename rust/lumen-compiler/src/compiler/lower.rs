@@ -1596,9 +1596,9 @@ impl<'a> Lowerer<'a> {
                         let mut arg_regs = vec![piped_val];
                         for arg in args {
                             let arg_val = match arg {
-                                CallArg::Positional(e) | CallArg::Named(_, e, _) | CallArg::Role(_, e, _) => {
-                                    self.lower_expr(e, ra, consts, instrs)
-                                }
+                                CallArg::Positional(e)
+                                | CallArg::Named(_, e, _)
+                                | CallArg::Role(_, e, _) => self.lower_expr(e, ra, consts, instrs),
                             };
                             arg_regs.push(arg_val);
                         }

@@ -311,8 +311,15 @@ impl PartialEq for Value {
             (Value::Null, Value::Null) => true,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a), Value::Int(b)) => a == b,
+            // Compare floats by bit pattern so Eq stays reflexive for NaN and
+            // preserves sign/payload distinctions (e.g. -0.0 vs +0.0, NaN payloads).
             (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
             (Value::String(StringRef::Owned(a)), Value::String(StringRef::Owned(b))) => a == b,
+            // At Value-layer (without StringTable), interned equality is by id only.
+            (Value::String(StringRef::Interned(a)), Value::String(StringRef::Interned(b))) => a == b,
+            // Cross representation string equality requires StringTable resolution (handled in VM).
+            (Value::String(StringRef::Owned(_)), Value::String(StringRef::Interned(_))) => false,
+            (Value::String(StringRef::Interned(_)), Value::String(StringRef::Owned(_))) => false,
             (Value::Int(a), Value::Float(b)) => (*a as f64) == *b,
             (Value::Float(a), Value::Int(b)) => *a == (*b as f64),
             (Value::List(a), Value::List(b)) => a == b,
@@ -359,11 +366,12 @@ impl Ord for Value {
             (Value::Null, Value::Null) => Ordering::Equal,
             (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
             (Value::Int(a), Value::Int(b)) => a.cmp(b),
-            (Value::Float(a), Value::Float(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
+            // total_cmp gives a total order for all f64 values, including NaN.
+            (Value::Float(a), Value::Float(b)) => a.total_cmp(b),
             (Value::String(a), Value::String(b)) => match (a, b) {
                 (StringRef::Owned(sa), StringRef::Owned(sb)) => sa.cmp(sb),
                 (StringRef::Interned(ida), StringRef::Interned(idb)) => ida.cmp(idb),
-                // Interned sorts before Owned for deterministic ordering
+                // Keep interned-vs-owned ordering deterministic without StringTable access.
                 (StringRef::Interned(_), StringRef::Owned(_)) => Ordering::Less,
                 (StringRef::Owned(_), StringRef::Interned(_)) => Ordering::Greater,
             },
@@ -531,20 +539,19 @@ mod tests {
     fn test_nan_equality() {
         let nan1 = Value::Float(f64::NAN);
         let nan2 = Value::Float(f64::NAN);
-        // With bitwise equality, NaN == NaN should be true
+        // Bitwise equality makes NaN reflexive at the Value layer.
         assert_eq!(nan1, nan2);
+        assert_eq!(nan1.cmp(&nan2), Ordering::Equal);
     }
 
     #[test]
-    fn test_nan_not_equal_to_different_nan() {
-        // Positive and negative NaN have different bit patterns
-        let nan_pos = Value::Float(f64::NAN);
-        let nan_neg = Value::Float(-f64::NAN);
-        // They have different bit patterns, so they should not be equal
-        // (unless the platform normalizes NaN)
-        if f64::NAN.to_bits() != (-f64::NAN).to_bits() {
-            assert_ne!(nan_pos, nan_neg);
-        }
+    fn test_nan_ordering_is_total_and_stable() {
+        // Construct distinct quiet-NaNs explicitly by payload bit pattern.
+        let nan_a = Value::Float(f64::from_bits(0x7ff8_0000_0000_0001));
+        let nan_b = Value::Float(f64::from_bits(0x7ff8_0000_0000_0002));
+        assert_ne!(nan_a, nan_b);
+        assert_eq!(nan_a.cmp(&nan_b), Ordering::Less);
+        assert_eq!(nan_b.cmp(&nan_a), Ordering::Greater);
     }
 
     #[test]
@@ -597,13 +604,21 @@ mod tests {
         let b = Value::String(StringRef::Interned(2));
         assert!(a < b);
 
-        // Same interned ID should be equal ordering
+        // Same interned ID should be equal for both Eq and Ord.
         let c = Value::String(StringRef::Interned(1));
+        assert_eq!(a, c);
         assert_eq!(a.cmp(&c), Ordering::Equal);
 
-        // Interned sorts before Owned
+        // Interned and owned are distinct representations at Value layer.
         let owned = Value::String(StringRef::Owned("test".into()));
         let interned = Value::String(StringRef::Interned(0));
+        assert_ne!(interned, owned);
         assert!(interned < owned);
+
+        // Interned-vs-owned ordering is stable regardless of owned string contents.
+        let owned_aaa = Value::String(StringRef::Owned("aaa".into()));
+        let owned_zzz = Value::String(StringRef::Owned("zzz".into()));
+        assert!(interned < owned_aaa);
+        assert!(interned < owned_zzz);
     }
 }

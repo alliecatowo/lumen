@@ -32,10 +32,7 @@ pub enum ParseError {
         current_col: usize,
     },
     #[error("expected type after ':' at line {line}, col {col}")]
-    MissingType {
-        line: usize,
-        col: usize,
-    },
+    MissingType { line: usize, col: usize },
     #[error("incomplete expression at line {line}, col {col}")]
     IncompleteExpression {
         line: usize,
@@ -164,10 +161,7 @@ impl Parser {
                         break;
                     }
                 }
-                TokenKind::End
-                | TokenKind::Else
-                | TokenKind::Dedent
-                | TokenKind::Eof => break,
+                TokenKind::End | TokenKind::Else | TokenKind::Dedent | TokenKind::Eof => break,
                 // Statement keywords - new statement starts here
                 TokenKind::Let
                 | TokenKind::If
@@ -218,7 +212,6 @@ impl Parser {
                 | TokenKind::Emit
         )
     }
-
 
     fn current(&self) -> &Token {
         self.tokens
@@ -909,10 +902,12 @@ impl Parser {
 
         // Prototype/signature form (used in effect declarations and trait-like stubs):
         // cell f(x: Int) -> Int / {http}
-        if !require_body && matches!(
-            self.peek_kind(),
-            TokenKind::Newline | TokenKind::Eof | TokenKind::Dedent
-        ) {
+        if !require_body
+            && matches!(
+                self.peek_kind(),
+                TokenKind::Newline | TokenKind::Eof | TokenKind::Dedent
+            )
+        {
             let mut look = self.pos;
             while matches!(
                 self.tokens.get(look).map(|t| &t.kind),
@@ -3404,7 +3399,8 @@ impl Parser {
             Pattern::Ident(name, _) => Some(name.clone()),
             Pattern::TypeCheck { name, .. } => Some(name.clone()),
             Pattern::Variant(_, Some(inner), _) => Self::pattern_binding_name(inner),
-            Pattern::TupleDestructure { elements, .. } | Pattern::ListDestructure { elements, .. } => {
+            Pattern::TupleDestructure { elements, .. }
+            | Pattern::ListDestructure { elements, .. } => {
                 elements.iter().find_map(Self::pattern_binding_name)
             }
             Pattern::RecordDestructure { fields, .. } => fields.iter().find_map(|(name, pat)| {
@@ -6238,10 +6234,7 @@ end
             .iter()
             .any(|item| matches!(item, Item::Record(r) if r.name == "GoodRecord"));
 
-        assert!(
-            has_record,
-            "Should parse record after error in cell"
-        );
+        assert!(has_record, "Should parse record after error in cell");
     }
 
     // ===== BULLETPROOF ERROR RECOVERY TESTS =====
@@ -6304,7 +6297,10 @@ end
         let (program, errors) = parse_with_recovery(tokens, vec![]);
 
         // Should report multiple errors
-        assert!(errors.len() >= 2, "Should report multiple independent errors");
+        assert!(
+            errors.len() >= 2,
+            "Should report multiple independent errors"
+        );
 
         // Should parse valid declarations
         let has_good_cell = program
@@ -6339,7 +6335,11 @@ end
         assert!(!errors.is_empty(), "Should report unclosed paren error");
 
         // Should still attempt to parse following cells
-        let cell_count = program.items.iter().filter(|item| matches!(item, Item::Cell(_))).count();
+        let cell_count = program
+            .items
+            .iter()
+            .filter(|item| matches!(item, Item::Cell(_)))
+            .count();
         assert!(cell_count >= 1, "Should parse at least one cell");
     }
 
@@ -6406,13 +6406,37 @@ end
                     assert!(*line > 0, "Error should have valid line number");
                     assert!(*col > 0, "Error should have valid column number");
                 }
-                ParseError::UnclosedBracket { open_line, open_col, current_line, current_col, .. } => {
-                    assert!(*open_line > 0 && *current_line > 0, "Should have valid line numbers");
-                    assert!(*open_col > 0 && *current_col > 0, "Should have valid column numbers");
+                ParseError::UnclosedBracket {
+                    open_line,
+                    open_col,
+                    current_line,
+                    current_col,
+                    ..
+                } => {
+                    assert!(
+                        *open_line > 0 && *current_line > 0,
+                        "Should have valid line numbers"
+                    );
+                    assert!(
+                        *open_col > 0 && *current_col > 0,
+                        "Should have valid column numbers"
+                    );
                 }
-                ParseError::MissingEnd { open_line, open_col, current_line, current_col, .. } => {
-                    assert!(*open_line > 0 && *current_line > 0, "Should have valid line numbers");
-                    assert!(*open_col > 0 && *current_col > 0, "Should have valid column numbers");
+                ParseError::MissingEnd {
+                    open_line,
+                    open_col,
+                    current_line,
+                    current_col,
+                    ..
+                } => {
+                    assert!(
+                        *open_line > 0 && *current_line > 0,
+                        "Should have valid line numbers"
+                    );
+                    assert!(
+                        *open_col > 0 && *current_col > 0,
+                        "Should have valid column numbers"
+                    );
                 }
                 _ => {}
             }
@@ -6440,7 +6464,11 @@ end
         let (program, errors) = parse_with_recovery(tokens, vec![]);
 
         // Should collect multiple errors in one pass
-        assert!(errors.len() >= 2, "Should collect multiple errors: got {}", errors.len());
+        assert!(
+            errors.len() >= 2,
+            "Should collect multiple errors: got {}",
+            errors.len()
+        );
 
         // Should still parse the valid cell
         let has_cell = program
@@ -6541,8 +6569,11 @@ end
         for err in &errors {
             let msg = format!("{}", err);
             // Error messages should contain line/col info
-            assert!(msg.contains("line") || msg.contains("col"),
-                "Error message should mention line/col: {}", msg);
+            assert!(
+                msg.contains("line") || msg.contains("col"),
+                "Error message should mention line/col: {}",
+                msg
+            );
         }
     }
 }

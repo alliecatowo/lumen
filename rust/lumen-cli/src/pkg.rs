@@ -37,11 +37,18 @@ fn status_label(label: &str) -> String {
 
 /// A resolved dependency ready for compilation.
 #[derive(Debug, Clone)]
+enum ResolvedDepSource {
+    Path,
+    Registry { source: String, checksum: String },
+}
+
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct ResolvedDep {
     pub name: String,
     pub path: PathBuf,
     pub config: LumenConfig,
+    source: ResolvedDepSource,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -361,6 +368,14 @@ pub fn resolve_dependencies(
     config: &LumenConfig,
     project_dir: &Path,
 ) -> Result<Vec<ResolvedDep>, String> {
+    resolve_dependencies_with_registry(config, project_dir, None)
+}
+
+fn resolve_dependencies_with_registry(
+    config: &LumenConfig,
+    project_dir: &Path,
+    registry_dir_override: Option<&Path>,
+) -> Result<Vec<ResolvedDep>, String> {
     let mut resolved = Vec::new();
     let mut visited = HashSet::new();
     let mut stack = HashSet::new();
@@ -380,6 +395,7 @@ pub fn resolve_dependencies(
             name,
             spec,
             project_dir,
+            registry_dir_override,
             &mut resolved,
             &mut visited,
             &mut stack,
@@ -393,6 +409,7 @@ fn resolve_dep(
     name: &str,
     spec: &DependencySpec,
     parent_dir: &Path,
+    registry_dir_override: Option<&Path>,
     resolved: &mut Vec<ResolvedDep>,
     visited: &mut HashSet<String>,
     stack: &mut HashSet<String>,
@@ -405,26 +422,16 @@ fn resolve_dep(
     }
     stack.insert(name.to_string());
 
-    let dep_path = match spec {
+    let (dep_path, source) = match spec {
         DependencySpec::Path { path } => {
             let p = parent_dir.join(path);
-            canonicalize_or_clean(&p)
+            (canonicalize_or_clean(&p), ResolvedDepSource::Path)
         }
         DependencySpec::Version(version) => {
-            return Err(format!(
-                "dependency '{}': registry dependency '{}' is not available yet; use a path dependency",
-                name, version
-            ));
+            resolve_registry_dependency(name, version, None, registry_dir_override)?
         }
         DependencySpec::VersionDetailed { version, registry } => {
-            let registry_hint = registry
-                .as_deref()
-                .map(|r| format!(" from '{}'", r))
-                .unwrap_or_default();
-            return Err(format!(
-                "dependency '{}': registry dependency '{}'{} is not available yet; use a path dependency",
-                name, version, registry_hint
-            ));
+            resolve_registry_dependency(name, version, registry.as_deref(), registry_dir_override)?
         }
     };
 
@@ -458,7 +465,15 @@ fn resolve_dep(
     entries.sort_by(|a, b| a.0.cmp(b.0));
 
     for (sub_name, sub_spec) in entries {
-        resolve_dep(sub_name, sub_spec, &dep_path, resolved, visited, stack)?;
+        resolve_dep(
+            sub_name,
+            sub_spec,
+            &dep_path,
+            registry_dir_override,
+            resolved,
+            visited,
+            stack,
+        )?;
     }
 
     visited.insert(name.to_string());
@@ -467,6 +482,7 @@ fn resolve_dep(
         name: name.to_string(),
         path: dep_path,
         config: dep_config,
+        source,
     });
 
     Ok(())
@@ -654,7 +670,15 @@ fn lock_source_path(project_dir: &Path, dep_path: &Path) -> String {
 }
 
 fn build_lockfile(config: &LumenConfig, project_dir: &Path) -> Result<(LockFile, usize), String> {
-    let deps = resolve_dependencies(config, project_dir)?;
+    build_lockfile_with_registry(config, project_dir, None)
+}
+
+fn build_lockfile_with_registry(
+    config: &LumenConfig,
+    project_dir: &Path,
+    registry_dir_override: Option<&Path>,
+) -> Result<(LockFile, usize), String> {
+    let deps = resolve_dependencies_with_registry(config, project_dir, registry_dir_override)?;
     let mut lock = LockFile::default();
 
     for dep in &deps {
@@ -664,9 +688,22 @@ fn build_lockfile(config: &LumenConfig, project_dir: &Path) -> Result<(LockFile,
             .as_ref()
             .and_then(|p| p.version.clone())
             .unwrap_or_else(|| "0.1.0".to_string());
-        let mut locked_pkg =
-            LockedPackage::from_path(dep.name.clone(), lock_source_path(project_dir, &dep.path));
-        locked_pkg.version = version;
+        let locked_pkg = match &dep.source {
+            ResolvedDepSource::Path => {
+                let mut locked_pkg = LockedPackage::from_path(
+                    dep.name.clone(),
+                    lock_source_path(project_dir, &dep.path),
+                );
+                locked_pkg.version = version;
+                locked_pkg
+            }
+            ResolvedDepSource::Registry { source, checksum } => LockedPackage::from_registry(
+                dep.name.clone(),
+                version,
+                source.clone(),
+                checksum.clone(),
+            ),
+        };
         lock.add_package(locked_pkg);
     }
 
@@ -1373,6 +1410,150 @@ fn search_local_registry(
 
     matches.sort_by(|a, b| a.name.cmp(&b.name).then(a.version.cmp(&b.version)));
     Ok(matches)
+}
+
+const LOCAL_FIXTURE_REGISTRY_SOURCE: &str = "local-fixture";
+
+fn normalized_registry_source(registry_hint: Option<&str>) -> String {
+    registry_hint
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| LOCAL_FIXTURE_REGISTRY_SOURCE.to_string())
+}
+
+fn registry_install_dir(registry_dir: &Path, name: &str, version: &str) -> PathBuf {
+    registry_dir.join("installed").join(name).join(version)
+}
+
+fn resolve_registry_dependency(
+    name: &str,
+    version: &str,
+    registry_hint: Option<&str>,
+    registry_dir_override: Option<&Path>,
+) -> Result<(PathBuf, ResolvedDepSource), String> {
+    let wanted_version = version.trim();
+    if wanted_version.is_empty() {
+        return Err(format!(
+            "dependency '{}': version requirement cannot be empty",
+            name
+        ));
+    }
+
+    let registry_dir = registry_dir_override
+        .map(Path::to_path_buf)
+        .unwrap_or_else(local_registry_dir);
+    let source = normalized_registry_source(registry_hint);
+    let record = load_registry_record(&registry_dir, name, wanted_version)?;
+    let install_dir = install_registry_record(&registry_dir, &record)?;
+    Ok((
+        install_dir,
+        ResolvedDepSource::Registry {
+            source,
+            checksum: record.archive_checksum,
+        },
+    ))
+}
+
+fn load_registry_record(
+    registry_dir: &Path,
+    name: &str,
+    version: &str,
+) -> Result<LocalRegistryRecord, String> {
+    let index = load_local_registry_index(registry_dir)?;
+    if let Some(record) = index
+        .packages
+        .iter()
+        .find(|record| record.name == name && record.version == version)
+    {
+        return Ok(record.clone());
+    }
+
+    let mut available_versions: Vec<_> = index
+        .packages
+        .iter()
+        .filter(|record| record.name == name)
+        .map(|record| record.version.clone())
+        .collect();
+    available_versions.sort();
+
+    if available_versions.is_empty() {
+        return Err(format!(
+            "dependency '{}': package not found in local registry '{}'",
+            name,
+            path_display(registry_dir)
+        ));
+    }
+
+    Err(format!(
+        "dependency '{}': version '{}' not found in local registry '{}'; available versions: {}",
+        name,
+        version,
+        path_display(registry_dir),
+        available_versions.join(", ")
+    ))
+}
+
+fn install_registry_record(
+    registry_dir: &Path,
+    record: &LocalRegistryRecord,
+) -> Result<PathBuf, String> {
+    let archive_path = registry_dir.join(&record.archive_path);
+    if !archive_path.is_file() {
+        return Err(format!(
+            "dependency '{}@{}': archive '{}' is missing from local registry",
+            record.name,
+            record.version,
+            path_display(&archive_path)
+        ));
+    }
+
+    let install_dir = registry_install_dir(registry_dir, &record.name, &record.version);
+    let marker_path = install_dir.join(".archive-checksum");
+    let needs_extract = !install_dir.join("lumen.toml").is_file()
+        || std::fs::read_to_string(&marker_path)
+            .map(|marker| marker.trim() != record.archive_checksum)
+            .unwrap_or(true);
+
+    if needs_extract {
+        if install_dir.exists() {
+            std::fs::remove_dir_all(&install_dir).map_err(|e| {
+                format!(
+                    "cannot clear registry install directory '{}': {}",
+                    install_dir.display(),
+                    e
+                )
+            })?;
+        }
+        std::fs::create_dir_all(&install_dir)
+            .map_err(|e| format!("cannot create '{}': {}", install_dir.display(), e))?;
+        unpack_registry_archive(&archive_path, &install_dir)?;
+        std::fs::write(&marker_path, format!("{}\n", record.archive_checksum))
+            .map_err(|e| format!("cannot write '{}': {}", marker_path.display(), e))?;
+    }
+
+    Ok(install_dir)
+}
+
+fn unpack_registry_archive(archive_path: &Path, install_dir: &Path) -> Result<(), String> {
+    let entries = read_tar_entries(archive_path)?;
+    for entry in entries {
+        let rel = normalize_manifest_relative_path(&entry.archive_path).map_err(|_| {
+            format!(
+                "invalid archive entry path '{}' in '{}'",
+                entry.archive_path,
+                archive_path.display()
+            )
+        })?;
+        let target = install_dir.join(rel);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("cannot create '{}': {}", parent.display(), e))?;
+        }
+        std::fs::write(&target, &entry.bytes)
+            .map_err(|e| format!("cannot write '{}': {}", target.display(), e))?;
+    }
+    Ok(())
 }
 
 fn publish_dry_run_archive_path() -> PathBuf {
@@ -2257,6 +2438,98 @@ foo = { path = "./foo" }
         let mylib = lock.get_package("mylib").unwrap();
         assert_eq!(mylib.version, "0.3.0");
         assert_eq!(mylib.get_path(), Some("../mylib"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn install_round_trip_resolves_registry_version_dependency() {
+        let tmp = unique_tmp_dir("lumen_registry_install_round_trip");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let registry_dir = tmp.join("registry");
+        let (pkg_dir, cfg) = write_packable_fixture(&tmp);
+        let record = publish_to_local_registry(&pkg_dir, &cfg, &registry_dir).unwrap();
+
+        let app_dir = tmp.join("app");
+        std::fs::create_dir_all(app_dir.join("src")).unwrap();
+        std::fs::write(
+            app_dir.join("lumen.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\ndemo-pkg = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            app_dir.join("src/main.lm.md"),
+            "# app\n```lumen\ncell main() -> Int\n  return 1\nend\n```\n",
+        )
+        .unwrap();
+
+        let app_cfg = LumenConfig::load_from(&app_dir.join("lumen.toml")).unwrap();
+        let deps =
+            resolve_dependencies_with_registry(&app_cfg, &app_dir, Some(&registry_dir)).unwrap();
+        assert_eq!(deps.len(), 1);
+        let dep = &deps[0];
+        assert_eq!(dep.name, "demo-pkg");
+        assert_eq!(
+            dep.path,
+            registry_install_dir(&registry_dir, "demo-pkg", "0.1.0")
+        );
+        assert!(dep.path.join("lumen.toml").is_file());
+        match &dep.source {
+            ResolvedDepSource::Registry { source, checksum } => {
+                assert_eq!(source, LOCAL_FIXTURE_REGISTRY_SOURCE);
+                assert_eq!(checksum, &record.archive_checksum);
+            }
+            ResolvedDepSource::Path => panic!("expected registry dependency"),
+        }
+
+        let (lock, dep_count) =
+            build_lockfile_with_registry(&app_cfg, &app_dir, Some(&registry_dir)).unwrap();
+        assert_eq!(dep_count, 1);
+        let locked = lock.get_package("demo-pkg").unwrap();
+        assert_eq!(locked.version, "0.1.0");
+        assert_eq!(locked.source, "registry+local-fixture");
+        assert_eq!(
+            locked.checksum.as_deref(),
+            Some(record.archive_checksum.as_str())
+        );
+
+        let lock_path = app_dir.join("lumen.lock");
+        let created = sync_lockfile(&lock_path, &lock, false).unwrap();
+        assert_eq!(created, LockSyncOutcome::Created);
+        let unchanged = sync_lockfile(&lock_path, &lock, false).unwrap();
+        assert_eq!(unchanged, LockSyncOutcome::Unchanged);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn install_supports_version_detailed_registry_source() {
+        let tmp = unique_tmp_dir("lumen_registry_version_detailed");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let registry_dir = tmp.join("registry");
+        let (pkg_dir, cfg) = write_packable_fixture(&tmp);
+        let record = publish_to_local_registry(&pkg_dir, &cfg, &registry_dir).unwrap();
+
+        let app_dir = tmp.join("app");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("lumen.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\ndemo-pkg = { version = \"0.1.0\", registry = \"https://fixtures.lumen.local\" }\n",
+        )
+        .unwrap();
+
+        let app_cfg = LumenConfig::load_from(&app_dir.join("lumen.toml")).unwrap();
+        let (lock, dep_count) =
+            build_lockfile_with_registry(&app_cfg, &app_dir, Some(&registry_dir)).unwrap();
+        assert_eq!(dep_count, 1);
+
+        let locked = lock.get_package("demo-pkg").unwrap();
+        assert_eq!(locked.version, "0.1.0");
+        assert_eq!(locked.source, "registry+https://fixtures.lumen.local");
+        assert_eq!(
+            locked.checksum.as_deref(),
+            Some(record.archive_checksum.as_str())
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

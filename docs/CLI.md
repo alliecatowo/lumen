@@ -1,16 +1,62 @@
 # CLI Reference
 
-Binary: `lumen`
+Primary binary: `lumen`
+Companion binaries: `lpm`, `lpx`
 
-## Top-level commands (current)
+Clap-generated `help` commands are omitted from the lists below.
 
-`lumen` currently exposes:
-`check`, `run`, `emit`, `trace`, `cache`, `init`, `repl`, `pkg`, `fmt`, `doc`, `lint`, `test`, `ci`, `build`.
+## `lumen` top-level commands (current)
+
+<!-- BEGIN LUMEN_TOP_LEVEL_COMMANDS -->
+- `check`
+- `run`
+- `emit`
+- `trace`
+- `cache`
+- `init`
+- `repl`
+- `pkg`
+- `fmt`
+- `doc`
+- `lint`
+- `test`
+- `ci`
+- `build`
+<!-- END LUMEN_TOP_LEVEL_COMMANDS -->
 
 ## Package commands
 
-`lumen pkg` currently exposes:
-`init`, `build`, `check`, `add`, `remove`, `list`, `install`, `update`, `search`, `pack`, `publish`.
+<!-- BEGIN LUMEN_PKG_COMMANDS -->
+- `init`
+- `build`
+- `check`
+- `add`
+- `remove`
+- `list`
+- `install`
+- `update`
+- `search`
+- `pack`
+- `publish`
+<!-- END LUMEN_PKG_COMMANDS -->
+
+## `lumen trace` commands (current)
+
+<!-- BEGIN LUMEN_TRACE_COMMANDS -->
+- `show`
+<!-- END LUMEN_TRACE_COMMANDS -->
+
+## `lumen cache` commands (current)
+
+<!-- BEGIN LUMEN_CACHE_COMMANDS -->
+- `clear`
+<!-- END LUMEN_CACHE_COMMANDS -->
+
+## `lumen build` commands (current)
+
+<!-- BEGIN LUMEN_BUILD_COMMANDS -->
+- `wasm`
+<!-- END LUMEN_BUILD_COMMANDS -->
 
 ### `lumen pkg search <query>`
 
@@ -42,4 +88,7 @@ Local fixture-registry note:
 - Publish/search use `LUMEN_REGISTRY_DIR` when set; otherwise `.lumen/registry`.
 - Non-dry-run publish is local-fixture only (no remote upload/auth flow yet).
 
-Note: `lpm` is the package-manager alias binary for the same flow.
+Companion-binary note:
+
+- `lpm` mostly mirrors `lumen pkg` and additionally exposes `lpm info [target]`.
+- `lpx` executes a source file/package entrypoint: `lpx <file> [--cell <name>] [--trace-dir <dir>]`.

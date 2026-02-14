@@ -37,8 +37,8 @@ impl Diagnostic {
         // Build the error category title
         let error_category = match self.severity {
             Severity::Error => match self.code.as_deref() {
-                Some("E010") | Some("E011") | Some("E012") | Some("E013")
-                | Some("E014") | Some("E015") | Some("E016") => "PARSE ERROR",
+                Some("E010") | Some("E011") | Some("E012") | Some("E013") | Some("E014")
+                | Some("E015") | Some("E016") => "PARSE ERROR",
                 Some("E040") => "TYPE MISMATCH",
                 Some("E041") => "UNDEFINED VARIABLE",
                 Some("E042") => "UNKNOWN FIELD",
@@ -48,8 +48,8 @@ impl Diagnostic {
                 Some("E022") => "UNDEFINED TOOL",
                 Some("E023") => "DUPLICATE DEFINITION",
                 Some("E030") => "UNDECLARED EFFECT",
-                Some("E001") | Some("E002") | Some("E003")
-                | Some("E004") | Some("E005") | Some("E006") => "LEX ERROR",
+                Some("E001") | Some("E002") | Some("E003") | Some("E004") | Some("E005")
+                | Some("E006") => "LEX ERROR",
                 Some("E050") => "CONSTRAINT ERROR",
                 _ => "ERROR",
             },
@@ -58,20 +58,25 @@ impl Diagnostic {
         };
 
         // Elm-style header with dashes and location
-        let location_str = if let (Some(ref file), Some(line), Some(col)) = (&self.file, self.line, self.col) {
-            format!(" {}:{}:{} ", file, line, col)
-        } else if let (Some(ref file), Some(line)) = (&self.file, self.line) {
-            format!(" {}:{} ", file, line)
-        } else {
-            String::from(" ")
-        };
+        let location_str =
+            if let (Some(ref file), Some(line), Some(col)) = (&self.file, self.line, self.col) {
+                format!(" {}:{}:{} ", file, line, col)
+            } else if let (Some(ref file), Some(line)) = (&self.file, self.line) {
+                format!(" {}:{} ", file, line)
+            } else {
+                String::from(" ")
+            };
 
         let title_width: usize = 80;
         let category_width = error_category.len();
         let location_width = location_str.len();
         let dashes_width = title_width.saturating_sub(category_width + location_width + 6);
 
-        out.push_str(&cyan(&format!("── {} {}", error_category, "─".repeat(dashes_width))));
+        out.push_str(&cyan(&format!(
+            "── {} {}",
+            error_category,
+            "─".repeat(dashes_width)
+        )));
         out.push_str(&cyan(&location_str));
         out.push_str(&cyan("──\n"));
         out.push('\n');
@@ -102,8 +107,10 @@ impl Diagnostic {
                 // Check if it starts with a known prefix
                 if suggestion.starts_with("did you mean") {
                     out.push_str(&format!("  {}\n", cyan(suggestion)));
-                } else if suggestion.starts_with("add") || suggestion.starts_with("ensure")
-                    || suggestion.starts_with("check") {
+                } else if suggestion.starts_with("add")
+                    || suggestion.starts_with("ensure")
+                    || suggestion.starts_with("check")
+                {
                     out.push_str(&format!("  {}: {}\n", bold("Hint"), suggestion));
                 } else if suggestion.contains("Try:") || suggestion.contains("use") {
                     out.push_str(&format!("  {}: {}\n", bold("Try"), suggestion));
@@ -122,13 +129,18 @@ impl Diagnostic {
         match self.code.as_deref() {
             Some("E041") => {
                 // Extract variable name from message
-                let var_name = self.message.trim_start_matches("undefined variable '")
+                let var_name = self
+                    .message
+                    .trim_start_matches("undefined variable '")
                     .trim_end_matches('\'');
                 format!("I cannot find a variable named `{}`:", var_name)
             }
             Some("E040") => {
                 // Type mismatch
-                format!("I found a type mismatch:\n\n  {}", self.message.trim_start_matches("type mismatch: "))
+                format!(
+                    "I found a type mismatch:\n\n  {}",
+                    self.message.trim_start_matches("type mismatch: ")
+                )
             }
             Some("E042") => {
                 // Unknown field
@@ -136,24 +148,37 @@ impl Diagnostic {
             }
             Some("E043") => {
                 // Incomplete match
-                format!("This match expression is not complete:\n\n  {}", self.message)
+                format!(
+                    "This match expression is not complete:\n\n  {}",
+                    self.message
+                )
             }
             Some("E020") => {
-                let type_name = self.message.trim_start_matches("undefined type '")
+                let type_name = self
+                    .message
+                    .trim_start_matches("undefined type '")
                     .trim_end_matches('\'');
                 format!("I cannot find a type named `{}`:", type_name)
             }
             Some("E021") => {
-                let cell_name = self.message.trim_start_matches("undefined cell '")
+                let cell_name = self
+                    .message
+                    .trim_start_matches("undefined cell '")
                     .trim_end_matches('\'');
                 format!("I cannot find a cell named `{}`:", cell_name)
             }
-            Some("E010") | Some("E011") | Some("E012") | Some("E013")
-            | Some("E014") | Some("E015") | Some("E016") => {
-                format!("I found something unexpected while parsing:\n\n  {}", self.message)
+            Some("E010") | Some("E011") | Some("E012") | Some("E013") | Some("E014")
+            | Some("E015") | Some("E016") => {
+                format!(
+                    "I found something unexpected while parsing:\n\n  {}",
+                    self.message
+                )
             }
             Some("E030") => {
-                format!("This cell is performing an effect that it hasn't declared:\n\n  {}", self.message)
+                format!(
+                    "This cell is performing an effect that it hasn't declared:\n\n  {}",
+                    self.message
+                )
             }
             _ => {
                 format!("I found an issue:\n\n  {}", self.message)
@@ -497,7 +522,10 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
             let underline = source_line.as_ref().map(|s| {
                 // Try to underline the whole token
                 let col_idx = col.saturating_sub(1);
-                if let Some(token_end) = s[col_idx..].chars().position(|c| c.is_whitespace() || c == '(' || c == ')' || c == '{' || c == '}') {
+                if let Some(token_end) = s[col_idx..]
+                    .chars()
+                    .position(|c| c.is_whitespace() || c == '(' || c == ')' || c == '{' || c == '}')
+                {
                     make_underline(*col, token_end.max(1))
                 } else {
                     make_underline(*col, s[col_idx..].len().max(1))
@@ -508,13 +536,20 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
             // Detect if this looks like a parameter parsing issue
             // In cell parameter lists, if we see an identifier where we expected comma/close,
             // it likely means a missing colon.
-            let looks_like_type_annotation = expected.trim() == "," &&
-                (found.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) ||
-                 matches!(found.as_str(), "Int" | "String" | "Float" | "Bool" | "Any"));
+            let looks_like_type_annotation = expected.trim() == ","
+                && (found
+                    .chars()
+                    .next()
+                    .map(|c| c.is_uppercase())
+                    .unwrap_or(false)
+                    || matches!(found.as_str(), "Int" | "String" | "Float" | "Bool" | "Any"));
 
             let friendly_message = if expected.trim() == ":" && found != ":" {
                 suggestions.push(format!("Try: name: {}", found));
-                format!("I was expecting a `:` after the parameter name, but found `{}`", found)
+                format!(
+                    "I was expecting a `:` after the parameter name, but found `{}`",
+                    found
+                )
             } else if looks_like_type_annotation {
                 suggestions.push("Add a `:` before the type annotation".to_string());
                 format!("I was expecting `,` or `)` after the parameter name, but found a type `{}`.\n\n  Did you forget the `:` between the parameter name and type?", found)
@@ -550,33 +585,54 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
             underline: None,
             suggestions: vec!["check for missing 'end' keywords".to_string()],
         },
-        ParseError::UnclosedBracket { bracket, open_line, open_col, current_line, current_col } => {
+        ParseError::UnclosedBracket {
+            bracket,
+            open_line,
+            open_col,
+            current_line,
+            current_col,
+        } => {
             let source_line = get_source_line(source, *open_line);
             let underline = source_line.as_ref().map(|_| make_underline(*open_col, 1));
             Diagnostic {
                 severity: Severity::Error,
                 code: Some("E012".to_string()),
-                message: format!("unclosed '{}' opened at line {}, col {}", bracket, open_line, open_col),
+                message: format!(
+                    "unclosed '{}' opened at line {}, col {}",
+                    bracket, open_line, open_col
+                ),
                 file: Some(filename.to_string()),
                 line: Some(*current_line),
                 col: Some(*current_col),
                 source_line,
                 underline,
-                suggestions: vec![format!("add closing '{}'", match *bracket {
-                    '(' => ')',
-                    '[' => ']',
-                    '{' => '}',
-                    _ => *bracket,
-                })],
+                suggestions: vec![format!(
+                    "add closing '{}'",
+                    match *bracket {
+                        '(' => ')',
+                        '[' => ']',
+                        '{' => '}',
+                        _ => *bracket,
+                    }
+                )],
             }
         }
-        ParseError::MissingEnd { construct, open_line, open_col, current_line, current_col } => {
+        ParseError::MissingEnd {
+            construct,
+            open_line,
+            open_col,
+            current_line,
+            current_col,
+        } => {
             let source_line = get_source_line(source, *open_line);
             let underline = source_line.as_ref().map(|_| make_underline(*open_col, 1));
             Diagnostic {
                 severity: Severity::Error,
                 code: Some("E013".to_string()),
-                message: format!("expected 'end' to close '{}' at line {}, col {}", construct, open_line, open_col),
+                message: format!(
+                    "expected 'end' to close '{}' at line {}, col {}",
+                    construct, open_line, open_col
+                ),
                 file: Some(filename.to_string()),
                 line: Some(*current_line),
                 col: Some(*current_col),

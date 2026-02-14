@@ -6,8 +6,8 @@
 //! - Closure captures (single and nested)
 
 use lumen_compiler::compiler::lexer::Lexer;
-use lumen_compiler::compiler::lower::lower;
 use lumen_compiler::compiler::lir::OpCode;
+use lumen_compiler::compiler::lower::lower;
 use lumen_compiler::compiler::parser::Parser;
 use lumen_compiler::compiler::resolve::resolve;
 use lumen_compiler::compiler::typecheck::typecheck;
@@ -16,7 +16,9 @@ fn compile_and_typecheck(src: &str) -> Result<lumen_compiler::compiler::lir::Lir
     let mut lexer = Lexer::new(src, 1, 0);
     let tokens = lexer.tokenize().map_err(|e| format!("{:?}", e))?;
     let mut parser = Parser::new(tokens);
-    let program = parser.parse_program(vec![]).map_err(|e| format!("{:?}", e))?;
+    let program = parser
+        .parse_program(vec![])
+        .map_err(|e| format!("{:?}", e))?;
     let symbols = resolve(&program).map_err(|e| format!("{:?}", e))?;
     typecheck(&program, &symbols).map_err(|e| format!("{:?}", e))?;
     Ok(lower(&program, &symbols, src))
@@ -246,8 +248,14 @@ cell test(c: Color) -> Int
 end
 "#;
     let err = compile_expect_error(src);
-    assert!(err.contains("IncompleteMatch"), "Should report incomplete match");
-    assert!(err.contains("blue") || err.contains("missing"), "Should mention missing variant 'blue'");
+    assert!(
+        err.contains("IncompleteMatch"),
+        "Should report incomplete match"
+    );
+    assert!(
+        err.contains("blue") || err.contains("missing"),
+        "Should mention missing variant 'blue'"
+    );
 }
 
 #[test]
@@ -365,7 +373,11 @@ cell test() -> set[Int]
 end
 "#;
     let module = compile_and_typecheck(src).unwrap();
-    let test_cell = module.cells.iter().find(|c| c.name == "test").expect("Should have test cell");
+    let test_cell = module
+        .cells
+        .iter()
+        .find(|c| c.name == "test")
+        .expect("Should have test cell");
     let ops: Vec<_> = test_cell.instructions.iter().map(|i| i.op).collect();
 
     // Set comprehensions should:
@@ -389,7 +401,11 @@ cell test() -> list[Int]
 end
 "#;
     let module = compile_and_typecheck(src).unwrap();
-    let test_cell = module.cells.iter().find(|c| c.name == "test").expect("Should have test cell");
+    let test_cell = module
+        .cells
+        .iter()
+        .find(|c| c.name == "test")
+        .expect("Should have test cell");
     let ops: Vec<_> = test_cell.instructions.iter().map(|i| i.op).collect();
 
     assert!(
@@ -410,7 +426,11 @@ cell test() -> map[String, Int]
 end
 "#;
     let module = compile_and_typecheck(src).unwrap();
-    let test_cell = module.cells.iter().find(|c| c.name == "test").expect("Should have test cell");
+    let test_cell = module
+        .cells
+        .iter()
+        .find(|c| c.name == "test")
+        .expect("Should have test cell");
     let ops: Vec<_> = test_cell.instructions.iter().map(|i| i.op).collect();
 
     assert!(
@@ -462,7 +482,11 @@ end
     let module = compile_and_typecheck(src).unwrap();
 
     // Outer cell should emit Closure and SetUpval
-    let test_cell = module.cells.iter().find(|c| c.name == "test").expect("Should have test cell");
+    let test_cell = module
+        .cells
+        .iter()
+        .find(|c| c.name == "test")
+        .expect("Should have test cell");
     let outer_ops: Vec<_> = test_cell.instructions.iter().map(|i| i.op).collect();
     assert!(
         outer_ops.contains(&OpCode::Closure),
@@ -475,7 +499,11 @@ end
 
     // Lambda cell should have GetUpval for the capture
     // Find the lambda cell (name starts with "<lambda/")
-    let lambda = module.cells.iter().find(|c| c.name.starts_with("<lambda/")).expect("Should have lambda cell");
+    let lambda = module
+        .cells
+        .iter()
+        .find(|c| c.name.starts_with("<lambda/"))
+        .expect("Should have lambda cell");
     let lambda_ops: Vec<_> = lambda.instructions.iter().map(|i| i.op).collect();
     assert!(
         lambda_ops.contains(&OpCode::GetUpval),
@@ -498,13 +526,17 @@ end
     let module = compile_and_typecheck(src).unwrap();
 
     // Should have 2 lambda cells (f and g)
-    let lambda_cells: Vec<_> = module.cells.iter().filter(|c| c.name.starts_with("<lambda/")).collect();
+    let lambda_cells: Vec<_> = module
+        .cells
+        .iter()
+        .filter(|c| c.name.starts_with("<lambda/"))
+        .collect();
     assert_eq!(lambda_cells.len(), 2, "Should have 2 lambda cells");
 
     // At least one of the lambdas should capture x
-    let has_getupval = lambda_cells.iter().any(|cell| {
-        cell.instructions.iter().any(|i| i.op == OpCode::GetUpval)
-    });
+    let has_getupval = lambda_cells
+        .iter()
+        .any(|cell| cell.instructions.iter().any(|i| i.op == OpCode::GetUpval));
     assert!(
         has_getupval,
         "At least one lambda should use GetUpval for captured variable"
@@ -523,7 +555,11 @@ end
     let module = compile_and_typecheck(src).unwrap();
 
     // Lambda should have both captures and params
-    let lambda = module.cells.iter().find(|c| c.name.starts_with("<lambda/")).expect("Should have lambda cell");
+    let lambda = module
+        .cells
+        .iter()
+        .find(|c| c.name.starts_with("<lambda/"))
+        .expect("Should have lambda cell");
     // First param is __capture_x, second is y
     assert_eq!(
         lambda.params.len(),
@@ -551,16 +587,27 @@ end
     let module = compile_and_typecheck(src).unwrap();
 
     // Count SetUpval instructions in the test cell (should be 2)
-    let test_cell = module.cells.iter().find(|c| c.name == "test").expect("Should have test cell");
+    let test_cell = module
+        .cells
+        .iter()
+        .find(|c| c.name == "test")
+        .expect("Should have test cell");
     let outer_ops: Vec<_> = test_cell.instructions.iter().map(|i| i.op).collect();
-    let setupval_count = outer_ops.iter().filter(|&&op| op == OpCode::SetUpval).count();
+    let setupval_count = outer_ops
+        .iter()
+        .filter(|&&op| op == OpCode::SetUpval)
+        .count();
     assert_eq!(
         setupval_count, 2,
         "Should emit 2 SetUpval instructions for 2 captures"
     );
 
     // Lambda should have 2 GetUpval instructions
-    let lambda = module.cells.iter().find(|c| c.name.starts_with("<lambda/")).expect("Should have lambda cell");
+    let lambda = module
+        .cells
+        .iter()
+        .find(|c| c.name.starts_with("<lambda/"))
+        .expect("Should have lambda cell");
     let getupval_count = lambda
         .instructions
         .iter()
@@ -582,7 +629,11 @@ end
 "#;
     let module = compile_and_typecheck(src).unwrap();
 
-    let lambda = module.cells.iter().find(|c| c.name.starts_with("<lambda/")).expect("Should have lambda cell");
+    let lambda = module
+        .cells
+        .iter()
+        .find(|c| c.name.starts_with("<lambda/"))
+        .expect("Should have lambda cell");
     // Should only have the actual parameter, no captures
     assert_eq!(
         lambda.params.len(),

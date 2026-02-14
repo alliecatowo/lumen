@@ -12,7 +12,10 @@ fn test_provider_registry_with_crypto_providers() {
     // Register multiple crypto tools
     registry.register("crypto.sha256", Box::new(CryptoProvider::sha256()));
     registry.register("crypto.uuid", Box::new(CryptoProvider::uuid()));
-    registry.register("crypto.base64_encode", Box::new(CryptoProvider::base64_encode()));
+    registry.register(
+        "crypto.base64_encode",
+        Box::new(CryptoProvider::base64_encode()),
+    );
 
     assert_eq!(registry.len(), 3);
     assert!(registry.has("crypto.sha256"));
@@ -190,7 +193,10 @@ fn test_mixed_provider_dispatch() {
             .dispatch(&request)
             .unwrap_or_else(|_| panic!("{tool_id} should work"));
         assert!(response.latency_ms < 1000, "Latency should be reasonable");
-        println!("✓ {} dispatched successfully ({}ms)", tool_id, response.latency_ms);
+        println!(
+            "✓ {} dispatched successfully ({}ms)",
+            tool_id, response.latency_ms
+        );
     }
 }
 
@@ -250,10 +256,14 @@ fn test_provider_effects_metadata() {
     registry.register("env.platform", Box::new(EnvProvider::platform()));
 
     // Verify effects metadata
-    let crypto_provider = registry.get("crypto.uuid").expect("Should find crypto.uuid");
+    let crypto_provider = registry
+        .get("crypto.uuid")
+        .expect("Should find crypto.uuid");
     assert_eq!(crypto_provider.effects(), vec!["crypto"]);
 
-    let env_provider = registry.get("env.platform").expect("Should find env.platform");
+    let env_provider = registry
+        .get("env.platform")
+        .expect("Should find env.platform");
     assert_eq!(env_provider.effects(), vec!["env"]);
 
     println!("✓ Crypto provider effects: {:?}", crypto_provider.effects());
@@ -278,7 +288,10 @@ fn test_latency_measurement() {
     // Run multiple times to check latency consistency
     for i in 0..5 {
         let response = registry.dispatch(&request).expect("Should work");
-        assert!(response.latency_ms < 100, "Should be very fast for local crypto");
+        assert!(
+            response.latency_ms < 100,
+            "Should be very fast for local crypto"
+        );
         println!("  Run {}: {}ms", i + 1, response.latency_ms);
     }
 

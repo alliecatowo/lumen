@@ -432,7 +432,11 @@ impl LirModule {
 
         // Merge policies
         for policy in &other.policies {
-            if !self.policies.iter().any(|p| p.tool_alias == policy.tool_alias) {
+            if !self
+                .policies
+                .iter()
+                .any(|p| p.tool_alias == policy.tool_alias)
+            {
                 self.policies.push(policy.clone());
             }
         }
@@ -456,7 +460,11 @@ impl LirModule {
 
         // Merge effect bindings
         for bind in &other.effect_binds {
-            if !self.effect_binds.iter().any(|b| b.effect_path == bind.effect_path && b.tool_alias == bind.tool_alias) {
+            if !self
+                .effect_binds
+                .iter()
+                .any(|b| b.effect_path == bind.effect_path && b.tool_alias == bind.tool_alias)
+            {
                 self.effect_binds.push(bind.clone());
             }
         }

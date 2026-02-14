@@ -8,7 +8,7 @@
 //! so it can be plugged directly into the VM's `tool_dispatcher` slot.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::{collections::HashMap, future::Future, pin::Pin, time::Instant};
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
@@ -68,9 +68,20 @@ pub struct ToolResponse {
     pub latency_ms: u64,
 }
 
+/// Boxed async result used by tool dispatcher and provider async paths.
+pub type ToolFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ToolError>> + Send + 'a>>;
+
 /// Tool dispatch trait — implementations handle HTTP, MCP, or built-in tool calls.
 pub trait ToolDispatcher: Send + Sync {
     fn dispatch(&self, request: &ToolRequest) -> Result<ToolResponse, ToolError>;
+
+    /// Async dispatch hook.
+    ///
+    /// Default implementation preserves backwards compatibility by delegating
+    /// to sync `dispatch`.
+    fn dispatch_async<'a>(&'a self, request: &'a ToolRequest) -> ToolFuture<'a, ToolResponse> {
+        Box::pin(async move { self.dispatch(request) })
+    }
 }
 
 /// Stub tool dispatcher for testing (returns configured responses).
@@ -163,6 +174,14 @@ pub trait ToolProvider: Send + Sync {
 
     /// Execute the tool with the given JSON input, returning JSON output.
     fn call(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError>;
+
+    /// Async execution hook.
+    ///
+    /// Default implementation preserves backwards compatibility by delegating
+    /// to sync `call`.
+    fn call_async<'a>(&'a self, input: serde_json::Value) -> ToolFuture<'a, serde_json::Value> {
+        Box::pin(async move { self.call(input) })
+    }
 
     /// Declared effect kinds this provider may trigger.
     fn effects(&self) -> Vec<String> {
@@ -293,7 +312,7 @@ impl ToolDispatcher for ProviderRegistry {
         // Check capabilities (future: validate against request requirements)
         let _capabilities = provider.capabilities();
 
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         let output = provider.call(request.args.clone())?;
         let latency_ms = start.elapsed().as_millis() as u64;
 
@@ -303,6 +322,30 @@ impl ToolDispatcher for ProviderRegistry {
         Ok(ToolResponse {
             outputs: output,
             latency_ms,
+        })
+    }
+
+    fn dispatch_async<'a>(&'a self, request: &'a ToolRequest) -> ToolFuture<'a, ToolResponse> {
+        Box::pin(async move {
+            let provider = self
+                .providers
+                .get(&request.tool_id)
+                .ok_or_else(|| ToolError::NotRegistered(request.tool_id.clone()))?;
+
+            // Check capabilities (future: validate against request requirements)
+            let _capabilities = provider.capabilities();
+
+            let start = Instant::now();
+            let output = provider.call_async(request.args.clone()).await?;
+            let latency_ms = start.elapsed().as_millis() as u64;
+
+            // TODO: Validate output against schema (output_schema)
+            // For now, we skip validation to maintain backward compatibility
+
+            Ok(ToolResponse {
+                outputs: output,
+                latency_ms,
+            })
         })
     }
 }
@@ -315,6 +358,7 @@ impl ToolDispatcher for ProviderRegistry {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
     // -- helpers ----------------------------------------------------------
 
@@ -379,6 +423,69 @@ mod tests {
         }
         fn call(&self, _input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
             Err(ToolError::InvocationFailed("intentional failure".into()))
+        }
+    }
+
+    /// Provider with distinct sync/async behavior so tests can verify dispatch path.
+    struct DualPathProvider {
+        schema: ToolSchema,
+    }
+
+    impl DualPathProvider {
+        fn new(name: &str) -> Self {
+            Self {
+                schema: ToolSchema {
+                    name: name.to_string(),
+                    description: "Provider with distinct sync/async responses".to_string(),
+                    input_schema: json!({"type": "object"}),
+                    output_schema: json!({"type": "object"}),
+                    effects: vec!["test".to_string()],
+                },
+            }
+        }
+    }
+
+    impl ToolProvider for DualPathProvider {
+        fn name(&self) -> &str {
+            &self.schema.name
+        }
+        fn version(&self) -> &str {
+            "1.0.0"
+        }
+        fn schema(&self) -> &ToolSchema {
+            &self.schema
+        }
+        fn call(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+            Ok(json!({ "path": "sync", "echo": input }))
+        }
+        fn call_async<'a>(&'a self, input: serde_json::Value) -> ToolFuture<'a, serde_json::Value> {
+            Box::pin(async move { Ok(json!({ "path": "async", "echo": input })) })
+        }
+    }
+
+    fn noop_waker() -> Waker {
+        fn clone(_: *const ()) -> RawWaker {
+            RawWaker::new(std::ptr::null(), &VTABLE)
+        }
+        fn wake(_: *const ()) {}
+        fn wake_by_ref(_: *const ()) {}
+        fn drop(_: *const ()) {}
+
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop);
+        // SAFETY: The no-op vtable never dereferences the data pointer.
+        unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
+    }
+
+    fn block_on<F: Future>(future: F) -> F::Output {
+        let mut future = Box::pin(future);
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        loop {
+            match future.as_mut().poll(&mut cx) {
+                Poll::Ready(output) => return output,
+                Poll::Pending => std::thread::yield_now(),
+            }
         }
     }
 
@@ -560,6 +667,67 @@ mod tests {
         assert!(response.latency_ms < 1000);
     }
 
+    #[test]
+    fn registry_dispatch_async_uses_provider_async_path() {
+        let mut reg = ProviderRegistry::new();
+        reg.register("dual", Box::new(DualPathProvider::new("dual")));
+
+        let request = ToolRequest {
+            tool_id: "dual".to_string(),
+            version: "1.0.0".to_string(),
+            args: json!({"hello": "world"}),
+            policy: json!({}),
+        };
+
+        let sync_response = reg.dispatch(&request).unwrap();
+        assert_eq!(
+            sync_response.outputs,
+            json!({"path": "sync", "echo": {"hello": "world"}})
+        );
+
+        let async_response = block_on(reg.dispatch_async(&request)).unwrap();
+        assert_eq!(
+            async_response.outputs,
+            json!({"path": "async", "echo": {"hello": "world"}})
+        );
+    }
+
+    #[test]
+    fn registry_dispatch_async_missing_tool_returns_not_registered() {
+        let reg = ProviderRegistry::new();
+        let request = ToolRequest {
+            tool_id: "missing".to_string(),
+            version: "".to_string(),
+            args: json!({}),
+            policy: json!({}),
+        };
+
+        let err = block_on(reg.dispatch_async(&request)).unwrap_err();
+        match err {
+            ToolError::NotRegistered(name) => assert_eq!(name, "missing"),
+            other => panic!("expected NotRegistered, got: {}", other),
+        }
+    }
+
+    #[test]
+    fn registry_dispatch_async_propagates_provider_error() {
+        let mut reg = ProviderRegistry::new();
+        reg.register("fail", Box::new(FailingProvider));
+
+        let request = ToolRequest {
+            tool_id: "fail".to_string(),
+            version: "".to_string(),
+            args: json!({}),
+            policy: json!({}),
+        };
+
+        let err = block_on(reg.dispatch_async(&request)).unwrap_err();
+        match err {
+            ToolError::InvocationFailed(msg) => assert!(msg.contains("intentional")),
+            other => panic!("expected InvocationFailed, got: {}", other),
+        }
+    }
+
     // -- Provider schema access -------------------------------------------
 
     #[test]
@@ -732,7 +900,11 @@ mod tests {
 
     #[test]
     fn capability_in_vector() {
-        let caps = [Capability::Chat, Capability::TextGeneration, Capability::Vision];
+        let caps = [
+            Capability::Chat,
+            Capability::TextGeneration,
+            Capability::Vision,
+        ];
         assert!(caps.contains(&Capability::Chat));
         assert!(caps.contains(&Capability::Vision));
         assert!(!caps.contains(&Capability::Streaming));

@@ -79,7 +79,7 @@ fn compile_with_imports_internal(
         }
 
         full_code.push_str(&block.code);
-        
+
         let lines_in_block = block.code.chars().filter(|&c| c == '\n').count();
         current_line += lines_in_block;
     }

@@ -63,7 +63,11 @@ fn is_doc_placeholder_var(name: &str) -> bool {
     !name.is_empty() && !name.starts_with("__")
 }
 
-fn desugar_pipe_application(input: &Expr, stage: &Expr, span: crate::compiler::tokens::Span) -> Expr {
+fn desugar_pipe_application(
+    input: &Expr,
+    stage: &Expr,
+    span: crate::compiler::tokens::Span,
+) -> Expr {
     match stage {
         Expr::Call(callee, args, call_span) => {
             let mut call_args = Vec::with_capacity(args.len() + 1);
@@ -339,11 +343,7 @@ pub fn resolve_type_expr(ty: &TypeExpr, symbols: &SymbolTable) -> Type {
 }
 
 /// Resolve a type expression with generic type parameter substitutions
-fn resolve_type_expr_with_subst(
-    ty: &TypeExpr,
-    symbols: &SymbolTable,
-    subst: &TypeSubst,
-) -> Type {
+fn resolve_type_expr_with_subst(ty: &TypeExpr, symbols: &SymbolTable, subst: &TypeSubst) -> Type {
     match ty {
         TypeExpr::Named(name, _) => {
             // Check if this is a generic type parameter
@@ -374,9 +374,9 @@ fn resolve_type_expr_with_subst(
                 }
             }
         }
-        TypeExpr::List(inner, _) => {
-            Type::List(Box::new(resolve_type_expr_with_subst(inner, symbols, subst)))
-        }
+        TypeExpr::List(inner, _) => Type::List(Box::new(resolve_type_expr_with_subst(
+            inner, symbols, subst,
+        ))),
         TypeExpr::Map(k, v, _) => Type::Map(
             Box::new(resolve_type_expr_with_subst(k, symbols, subst)),
             Box::new(resolve_type_expr_with_subst(v, symbols, subst)),
@@ -398,9 +398,9 @@ fn resolve_type_expr_with_subst(
                 .map(|t| resolve_type_expr_with_subst(t, symbols, subst))
                 .collect(),
         ),
-        TypeExpr::Set(inner, _) => {
-            Type::Set(Box::new(resolve_type_expr_with_subst(inner, symbols, subst)))
-        }
+        TypeExpr::Set(inner, _) => Type::Set(Box::new(resolve_type_expr_with_subst(
+            inner, symbols, subst,
+        ))),
         TypeExpr::Fn(params, ret, _, _) => {
             let param_types = params
                 .iter()
@@ -1014,8 +1014,11 @@ impl<'a> TypeChecker<'a> {
                         for (fname, fval) in fields {
                             let val_type = self.infer_expr(fval);
                             if let Some(field_def) = def.fields.iter().find(|f| f.name == *fname) {
-                                let expected =
-                                    resolve_type_expr_with_subst(&field_def.ty, self.symbols, &subst);
+                                let expected = resolve_type_expr_with_subst(
+                                    &field_def.ty,
+                                    self.symbols,
+                                    &subst,
+                                );
                                 self.check_compat(&expected, &val_type, span.line);
                             } else {
                                 let field_names: Vec<&str> =
@@ -1151,8 +1154,15 @@ impl<'a> TypeChecker<'a> {
                                 let mut inferred: HashMap<String, Type> = HashMap::new();
                                 for checked_arg in &checked_args {
                                     if let CheckedCallArg::Named(fname, arg_ty, _) = checked_arg {
-                                        if let Some(field_def) = def.fields.iter().find(|f| f.name == *fname) {
-                                            unify_for_inference(&field_def.ty, arg_ty, self.symbols, &mut inferred);
+                                        if let Some(field_def) =
+                                            def.fields.iter().find(|f| f.name == *fname)
+                                        {
+                                            unify_for_inference(
+                                                &field_def.ty,
+                                                arg_ty,
+                                                self.symbols,
+                                                &mut inferred,
+                                            );
                                         }
                                     }
                                 }
@@ -1171,11 +1181,18 @@ impl<'a> TypeChecker<'a> {
                             // Check constructor arguments match record fields
                             for checked_arg in &checked_args {
                                 if let CheckedCallArg::Named(fname, arg_ty, line) = checked_arg {
-                                    if let Some(field_def) = def.fields.iter().find(|f| f.name == *fname) {
-                                        let expected = resolve_type_expr_with_subst(&field_def.ty, self.symbols, &subst);
+                                    if let Some(field_def) =
+                                        def.fields.iter().find(|f| f.name == *fname)
+                                    {
+                                        let expected = resolve_type_expr_with_subst(
+                                            &field_def.ty,
+                                            self.symbols,
+                                            &subst,
+                                        );
                                         self.check_compat(&expected, arg_ty, *line);
                                     } else {
-                                        let field_names: Vec<&str> = def.fields.iter().map(|f| f.name.as_str()).collect();
+                                        let field_names: Vec<&str> =
+                                            def.fields.iter().map(|f| f.name.as_str()).collect();
                                         let suggestions = suggest_similar(fname, &field_names, 2);
                                         self.errors.push(TypeError::UnknownField {
                                             field: fname.clone(),
@@ -1214,7 +1231,8 @@ impl<'a> TypeChecker<'a> {
                 match &ot {
                     Type::Record(ref name) => {
                         if let Some(ti) = self.symbols.types.get(name) {
-                            if let crate::compiler::resolve::TypeInfoKind::Record(ref rd) = ti.kind {
+                            if let crate::compiler::resolve::TypeInfoKind::Record(ref rd) = ti.kind
+                            {
                                 if let Some(f) = rd.fields.iter().find(|f| f.name == *field) {
                                     return resolve_type_expr(&f.ty, self.symbols);
                                 }
@@ -1225,9 +1243,14 @@ impl<'a> TypeChecker<'a> {
                         // Generic type instantiation - apply substitution
                         if let Some(ti) = self.symbols.types.get(name) {
                             let subst = build_subst(&ti.generic_params, args);
-                            if let crate::compiler::resolve::TypeInfoKind::Record(ref rd) = ti.kind {
+                            if let crate::compiler::resolve::TypeInfoKind::Record(ref rd) = ti.kind
+                            {
                                 if let Some(f) = rd.fields.iter().find(|f| f.name == *field) {
-                                    return resolve_type_expr_with_subst(&f.ty, self.symbols, &subst);
+                                    return resolve_type_expr_with_subst(
+                                        &f.ty,
+                                        self.symbols,
+                                        &subst,
+                                    );
                                 }
                             }
                         }

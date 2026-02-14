@@ -64,3 +64,17 @@ jobs:
             echo "Checking $f..."
             cargo run --release --bin lumen -- check "$f" || true
           done
+
+  diag-latency-gate:
+    name: LSP Diag Latency Gate
+    runs-on: ubuntu-latest
+    env:
+      LUMEN_DIAG_BENCH_ITERATIONS: "120"
+      LUMEN_DIAG_BENCH_WARMUP_ITERATIONS: "20"
+      LUMEN_DIAG_BENCH_THRESHOLD_METRIC: "p95"
+      LUMEN_DIAG_BENCH_THRESHOLD_MS: "8.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo run -p lumen-lsp --bin diag_latency_bench

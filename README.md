@@ -25,6 +25,16 @@ Lumen gives you one language and one runtime for the whole flow:
 
 If you want to build robust AI systems without duct-taping five frameworks together, Lumen is the bet.
 
+## Community and Project Health
+
+- [Contributing Guide](CONTRIBUTING.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [License (MIT)](LICENSE)
+- [Bug Report Template](.github/ISSUE_TEMPLATE/bug_report.md)
+- [Feature Request Template](.github/ISSUE_TEMPLATE/feature_request.md)
+- [Pull Request Template](.github/pull_request_template.md)
+- [Private Security Report](https://github.com/lumen-lang/lumen/security/advisories/new)
+
 ## What makes it markdown-native?
 
 Lumen source is commonly authored in markdown with fenced `lumen` code blocks:
@@ -193,9 +203,8 @@ cargo test --workspace
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for workflow and contribution policy.
-Please also review the [Code of Conduct](CODE_OF_CONDUCT.md).
-Use the issue templates for [bug reports](.github/ISSUE_TEMPLATE/bug_report.md) and [feature requests](.github/ISSUE_TEMPLATE/feature_request.md).
+Start with [CONTRIBUTING.md](CONTRIBUTING.md), then open an issue or PR using the templates linked above.
+Please review the [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
 
 ## License
 

@@ -1,5 +1,5 @@
-use lumen_runtime::tools::*;
 use lumen_runtime::tools::Capability;
+use lumen_runtime::tools::*;
 use serde_json::{json, Value};
 
 /// Gemini tool type — each gets its own provider instance.
@@ -484,7 +484,10 @@ mod tests {
         let text = result.unwrap();
         let text_str = text.as_str().expect("Response should be a string");
         assert!(!text_str.is_empty(), "Response should not be empty");
-        assert!(text_str.contains("4"), "Response should contain the answer 4");
+        assert!(
+            text_str.contains("4"),
+            "Response should contain the answer 4"
+        );
         println!("Gemini chat response: {}", text_str);
     }
 
@@ -510,7 +513,11 @@ mod tests {
         }
 
         // Gemini embeddings are typically 768 dimensions
-        assert!(vec.len() > 100, "Embedding should have many dimensions, got {}", vec.len());
+        assert!(
+            vec.len() > 100,
+            "Embedding should have many dimensions, got {}",
+            vec.len()
+        );
         println!("Gemini embed dimensions: {}", vec.len());
     }
 
@@ -525,7 +532,11 @@ mod tests {
         }));
         assert!(result.is_err(), "Should fail with invalid model");
         if let Err(ToolError::InvocationFailed(msg)) = result {
-            assert!(msg.contains("API error"), "Error should mention API error: {}", msg);
+            assert!(
+                msg.contains("API error"),
+                "Error should mention API error: {}",
+                msg
+            );
         }
     }
 
@@ -540,7 +551,11 @@ mod tests {
             "system": "You are a pirate. Always respond like a pirate.",
             "temperature": 0.7
         }));
-        assert!(result.is_ok(), "API call with system instruction failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "API call with system instruction failed: {:?}",
+            result.err()
+        );
         let text = result.unwrap();
         let text_str = text.as_str().expect("Response should be a string");
         assert!(!text_str.is_empty(), "Response should not be empty");

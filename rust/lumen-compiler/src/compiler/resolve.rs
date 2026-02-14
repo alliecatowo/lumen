@@ -704,6 +704,7 @@ pub fn resolve_with_base(
     for item in &program.items {
         match item {
             Item::Record(r) => {
+                check_generic_param_bounds(&r.generic_params, &table, &mut errors);
                 let generics: Vec<String> =
                     r.generic_params.iter().map(|g| g.name.clone()).collect();
                 for field in &r.fields {
@@ -716,10 +717,50 @@ pub fn resolve_with_base(
                     );
                 }
             }
+            Item::Enum(e) => {
+                check_generic_param_bounds(&e.generic_params, &table, &mut errors);
+                let enum_generics: Vec<String> =
+                    e.generic_params.iter().map(|g| g.name.clone()).collect();
+                for variant in &e.variants {
+                    if let Some(payload) = &variant.payload {
+                        check_type_refs_with_generics(
+                            payload,
+                            &table,
+                            &type_alias_arities,
+                            &mut errors,
+                            &enum_generics,
+                        );
+                    }
+                }
+                for method in &e.methods {
+                    check_generic_param_bounds(&method.generic_params, &table, &mut errors);
+                    let mut method_generics = enum_generics.clone();
+                    method_generics.extend(method.generic_params.iter().map(|g| g.name.clone()));
+                    for param in &method.params {
+                        check_type_refs_with_generics(
+                            &param.ty,
+                            &table,
+                            &type_alias_arities,
+                            &mut errors,
+                            &method_generics,
+                        );
+                    }
+                    if let Some(return_type) = &method.return_type {
+                        check_type_refs_with_generics(
+                            return_type,
+                            &table,
+                            &type_alias_arities,
+                            &mut errors,
+                            &method_generics,
+                        );
+                    }
+                }
+            }
             Item::Cell(c) => {
                 if c.body.is_empty() {
                     continue;
                 }
+                check_generic_param_bounds(&c.generic_params, &table, &mut errors);
                 let generics: Vec<String> =
                     c.generic_params.iter().map(|g| g.name.clone()).collect();
                 for p in &c.params {
@@ -749,6 +790,7 @@ pub fn resolve_with_base(
                     if c.body.is_empty() {
                         continue;
                     }
+                    check_generic_param_bounds(&c.generic_params, &table, &mut errors);
                     let generics: Vec<String> =
                         c.generic_params.iter().map(|g| g.name.clone()).collect();
                     for p in &c.params {
@@ -797,6 +839,7 @@ pub fn resolve_with_base(
                     if c.body.is_empty() {
                         continue;
                     }
+                    check_generic_param_bounds(&c.generic_params, &table, &mut errors);
                     let generics: Vec<String> =
                         c.generic_params.iter().map(|g| g.name.clone()).collect();
                     for par in &c.params {
@@ -831,6 +874,7 @@ pub fn resolve_with_base(
             }
             Item::Effect(e) => {
                 for c in &e.operations {
+                    check_generic_param_bounds(&c.generic_params, &table, &mut errors);
                     let generics: Vec<String> =
                         c.generic_params.iter().map(|g| g.name.clone()).collect();
                     for p in &c.params {
@@ -861,6 +905,7 @@ pub fn resolve_with_base(
             }
             Item::Handler(h) => {
                 for c in &h.handles {
+                    check_generic_param_bounds(&c.generic_params, &table, &mut errors);
                     let generics: Vec<String> =
                         c.generic_params.iter().map(|g| g.name.clone()).collect();
                     for p in &c.params {
@@ -897,6 +942,7 @@ pub fn resolve_with_base(
                     }
                 }
                 for method in &t.methods {
+                    check_generic_param_bounds(&method.generic_params, &table, &mut errors);
                     let generics: Vec<String> = method
                         .generic_params
                         .iter()
@@ -923,9 +969,18 @@ pub fn resolve_with_base(
                 }
             }
             Item::Impl(i) => {
+                check_generic_param_bounds(&i.generic_params, &table, &mut errors);
                 let impl_generics: Vec<String> =
                     i.generic_params.iter().map(|g| g.name.clone()).collect();
+                check_impl_target_type_refs(
+                    i,
+                    &table,
+                    &type_alias_arities,
+                    &mut errors,
+                    &impl_generics,
+                );
                 for method in &i.cells {
+                    check_generic_param_bounds(&method.generic_params, &table, &mut errors);
                     let mut generics = impl_generics.clone();
                     generics.extend(method.generic_params.iter().map(|g| g.name.clone()));
                     for p in &method.params {
@@ -978,8 +1033,12 @@ pub fn resolve_with_base(
                         .or_insert(method);
                 }
 
-                for required_method in collect_required_trait_method_defs(&i.trait_name, &trait_defs) {
-                    let Some(actual_method) = implemented_methods.get(required_method.name.as_str()) else {
+                for required_method in
+                    collect_required_trait_method_defs(&i.trait_name, &trait_defs)
+                {
+                    let Some(actual_method) =
+                        implemented_methods.get(required_method.name.as_str())
+                    else {
                         continue;
                     };
                     if let Some(reason) =
@@ -1004,6 +1063,7 @@ pub fn resolve_with_base(
                 });
             }
             Item::TypeAlias(ta) => {
+                check_generic_param_bounds(&ta.generic_params, &table, &mut errors);
                 let generics: Vec<String> =
                     ta.generic_params.iter().map(|g| g.name.clone()).collect();
                 check_type_refs_with_generics(
@@ -3090,7 +3150,9 @@ fn trait_method_signature_mismatch_reason(expected: &CellDef, actual: &CellDef) 
         ));
     }
 
-    for (idx, (expected_param, actual_param)) in expected.params.iter().zip(&actual.params).enumerate() {
+    for (idx, (expected_param, actual_param)) in
+        expected.params.iter().zip(&actual.params).enumerate()
+    {
         if !type_expr_compatible(
             &expected_param.ty,
             &actual_param.ty,
@@ -3144,35 +3206,40 @@ fn type_expr_compatible(
     actual_generics: &[&str],
 ) -> bool {
     match (expected, actual) {
-        (TypeExpr::Named(expected_name, _), TypeExpr::Named(actual_name, _)) => {
-            names_compatible(expected_name, actual_name, expected_generics, actual_generics)
-        }
-        (TypeExpr::List(expected_inner, _), TypeExpr::List(actual_inner, _))
-        | (TypeExpr::Set(expected_inner, _), TypeExpr::Set(actual_inner, _)) => type_expr_compatible(
-            expected_inner,
-            actual_inner,
+        (TypeExpr::Named(expected_name, _), TypeExpr::Named(actual_name, _)) => names_compatible(
+            expected_name,
+            actual_name,
             expected_generics,
             actual_generics,
         ),
+        (TypeExpr::List(expected_inner, _), TypeExpr::List(actual_inner, _))
+        | (TypeExpr::Set(expected_inner, _), TypeExpr::Set(actual_inner, _)) => {
+            type_expr_compatible(
+                expected_inner,
+                actual_inner,
+                expected_generics,
+                actual_generics,
+            )
+        }
         (TypeExpr::Map(expected_k, expected_v, _), TypeExpr::Map(actual_k, actual_v, _))
-        | (
-            TypeExpr::Result(expected_k, expected_v, _),
-            TypeExpr::Result(actual_k, actual_v, _),
-        ) => {
+        | (TypeExpr::Result(expected_k, expected_v, _), TypeExpr::Result(actual_k, actual_v, _)) => {
             type_expr_compatible(expected_k, actual_k, expected_generics, actual_generics)
                 && type_expr_compatible(expected_v, actual_v, expected_generics, actual_generics)
         }
         (TypeExpr::Union(expected_types, _), TypeExpr::Union(actual_types, _))
         | (TypeExpr::Tuple(expected_types, _), TypeExpr::Tuple(actual_types, _)) => {
             expected_types.len() == actual_types.len()
-                && expected_types.iter().zip(actual_types).all(|(expected_ty, actual_ty)| {
-                    type_expr_compatible(
-                        expected_ty,
-                        actual_ty,
-                        expected_generics,
-                        actual_generics,
-                    )
-                })
+                && expected_types
+                    .iter()
+                    .zip(actual_types)
+                    .all(|(expected_ty, actual_ty)| {
+                        type_expr_compatible(
+                            expected_ty,
+                            actual_ty,
+                            expected_generics,
+                            actual_generics,
+                        )
+                    })
         }
         (TypeExpr::Null(_), TypeExpr::Null(_)) => true,
         (
@@ -3198,19 +3265,34 @@ fn type_expr_compatible(
                             actual_generics,
                         )
                     })
-                && type_expr_compatible(expected_ret, actual_ret, expected_generics, actual_generics)
+                && type_expr_compatible(
+                    expected_ret,
+                    actual_ret,
+                    expected_generics,
+                    actual_generics,
+                )
         }
-        (TypeExpr::Generic(expected_name, expected_args, _), TypeExpr::Generic(actual_name, actual_args, _)) => {
-            names_compatible(expected_name, actual_name, expected_generics, actual_generics)
-                && expected_args.len() == actual_args.len()
-                && expected_args.iter().zip(actual_args).all(|(expected_arg, actual_arg)| {
-                    type_expr_compatible(
-                        expected_arg,
-                        actual_arg,
-                        expected_generics,
-                        actual_generics,
-                    )
-                })
+        (
+            TypeExpr::Generic(expected_name, expected_args, _),
+            TypeExpr::Generic(actual_name, actual_args, _),
+        ) => {
+            names_compatible(
+                expected_name,
+                actual_name,
+                expected_generics,
+                actual_generics,
+            ) && expected_args.len() == actual_args.len()
+                && expected_args
+                    .iter()
+                    .zip(actual_args)
+                    .all(|(expected_arg, actual_arg)| {
+                        type_expr_compatible(
+                            expected_arg,
+                            actual_arg,
+                            expected_generics,
+                            actual_generics,
+                        )
+                    })
         }
         _ => false,
     }
@@ -3272,10 +3354,18 @@ fn format_type_expr(ty: &TypeExpr) -> String {
         TypeExpr::Named(name, _) => name.clone(),
         TypeExpr::List(inner, _) => format!("list[{}]", format_type_expr(inner)),
         TypeExpr::Map(key, value, _) => {
-            format!("map[{}, {}]", format_type_expr(key), format_type_expr(value))
+            format!(
+                "map[{}, {}]",
+                format_type_expr(key),
+                format_type_expr(value)
+            )
         }
         TypeExpr::Result(ok, err, _) => {
-            format!("result[{}, {}]", format_type_expr(ok), format_type_expr(err))
+            format!(
+                "result[{}, {}]",
+                format_type_expr(ok),
+                format_type_expr(err)
+            )
         }
         TypeExpr::Union(types, _) => types
             .iter()
@@ -3291,7 +3381,11 @@ fn format_type_expr(ty: &TypeExpr) -> String {
         TypeExpr::Fn(params, ret, effects, _) => {
             let rendered_params = params.iter().map(format_type_expr).collect::<Vec<_>>();
             if effects.is_empty() {
-                format!("fn({}) -> {}", rendered_params.join(", "), format_type_expr(ret))
+                format!(
+                    "fn({}) -> {}",
+                    rendered_params.join(", "),
+                    format_type_expr(ret)
+                )
             } else {
                 format!(
                     "fn({}) -> {} / {{{}}}",

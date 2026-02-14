@@ -5196,8 +5196,12 @@ mod tests {
         let mut vm = VM::new();
         vm.load(module);
 
-        let first = vm.execute("main", vec![]).expect("first run should succeed");
-        let second = vm.execute("main", vec![]).expect("second run should succeed");
+        let first = vm
+            .execute("main", vec![])
+            .expect("first run should succeed");
+        let second = vm
+            .execute("main", vec![])
+            .expect("second run should succeed");
 
         match first {
             Value::TraceRef(trace) => {
@@ -8124,7 +8128,9 @@ end
         let mut vm = VM::new();
         // Don't set fuel — should run normally
         vm.load(module);
-        let result = vm.execute("main", vec![]).expect("should run without fuel limit");
+        let result = vm
+            .execute("main", vec![])
+            .expect("should run without fuel limit");
         assert_eq!(result, Value::Int(99));
     }
 }

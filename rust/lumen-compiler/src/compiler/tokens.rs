@@ -187,7 +187,6 @@ pub enum TokenKind {
     PlusPlus,         // ++ concatenation
     Ampersand,        // & bitwise and / schema intersection
     Tilde,            // ~ bitwise not
-    TildeArrow,       // ~> illuminate operator
     Caret,            // ^ bitwise xor
     FloorDiv,         // // floor division
     FloorDivAssign,   // //= floor division assignment
@@ -343,7 +342,6 @@ impl fmt::Display for TokenKind {
             TokenKind::PlusPlus => write!(f, "++"),
             TokenKind::Ampersand => write!(f, "&"),
             TokenKind::Tilde => write!(f, "~"),
-            TokenKind::TildeArrow => write!(f, "~>"),
             TokenKind::Caret => write!(f, "^"),
             TokenKind::FloorDiv => write!(f, "//"),
             TokenKind::FloorDivAssign => write!(f, "//="),

@@ -2031,14 +2031,6 @@ fn collect_expr_call_requirements(
             let call_expr = desugar_pipe_application(left, right, *span);
             collect_expr_call_requirements(&call_expr, table, out);
         }
-        Expr::Illuminate {
-            input,
-            transform,
-            span,
-        } => {
-            let call_expr = desugar_pipe_application(input, transform, *span);
-            collect_expr_call_requirements(&call_expr, table, out);
-        }
         Expr::UnaryOp(_, inner, _)
         | Expr::ExpectSchema(inner, _, _)
         | Expr::TryExpr(inner, _)
@@ -2291,14 +2283,6 @@ fn collect_expr_effect_evidence(
         }
         Expr::Pipe { left, right, span } => {
             let call_expr = desugar_pipe_application(left, right, *span);
-            collect_expr_effect_evidence(&call_expr, table, current, out);
-        }
-        Expr::Illuminate {
-            input,
-            transform,
-            span,
-        } => {
-            let call_expr = desugar_pipe_application(input, transform, *span);
             collect_expr_effect_evidence(&call_expr, table, current, out);
         }
         Expr::UnaryOp(_, inner, _)
@@ -2647,14 +2631,6 @@ fn infer_expr_effects(
         }
         Expr::Pipe { left, right, span } => {
             let call_expr = desugar_pipe_application(left, right, *span);
-            infer_expr_effects(&call_expr, table, current, out);
-        }
-        Expr::Illuminate {
-            input,
-            transform,
-            span,
-        } => {
-            let call_expr = desugar_pipe_application(input, transform, *span);
             infer_expr_effects(&call_expr, table, current, out);
         }
         Expr::UnaryOp(_, inner, _)

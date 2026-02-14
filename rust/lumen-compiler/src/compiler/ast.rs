@@ -641,12 +641,6 @@ pub enum Expr {
         right: Box<Expr>,
         span: Span,
     },
-    /// Illuminate operator: data ~> transform calls an AI-capable cell with data as input
-    Illuminate {
-        input: Box<Expr>,
-        transform: Box<Expr>,
-        span: Span,
-    },
     /// Type test: expr is TypeName -> Bool
     IsType {
         expr: Box<Expr>,
@@ -700,7 +694,6 @@ impl Expr {
             Expr::Comprehension { span, .. } => *span,
             Expr::MatchExpr { span, .. } => *span,
             Expr::Pipe { span, .. } => *span,
-            Expr::Illuminate { span, .. } => *span,
             Expr::IsType { span, .. } => *span,
             Expr::TypeCast { span, .. } => *span,
         }

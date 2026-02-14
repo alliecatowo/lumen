@@ -1164,14 +1164,6 @@ impl<'a> TypeChecker<'a> {
                 let call_expr = desugar_pipe_application(left, right, *span);
                 self.infer_expr(&call_expr)
             }
-            Expr::Illuminate {
-                input,
-                transform,
-                span,
-            } => {
-                let call_expr = desugar_pipe_application(input, transform, *span);
-                self.infer_expr(&call_expr)
-            }
             Expr::UnaryOp(op, inner, _) => {
                 let t = self.infer_expr(inner);
                 match op {

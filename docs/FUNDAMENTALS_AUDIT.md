@@ -72,7 +72,6 @@ Assessed by reading the actual compiler source (tokens, AST, parser, LIR opcodes
 | Range step `1..10 step 2` | **[IMPLEMENTED]** | `Step` keyword, `RangeExpr` has `step: Option<Box<Expr>>` field, parser handles `step` after range |
 | Concatenation `++` | **[IMPLEMENTED]** | `PlusPlus` token, `BinOp::Concat`, `OpCode::Concat` |
 | Pipe `\|>` | **[IMPLEMENTED]** | `PipeForward` token, `Expr::Pipe`, desugars to first-arg function call |
-| Illuminate `~>` | **[IMPLEMENTED]** | `TildeArrow` token, `Expr::Illuminate`, AI-specific operator |
 | Membership `in` | **[IMPLEMENTED]** | `BinOp::In`, `OpCode::In` |
 
 ---

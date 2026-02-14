@@ -883,11 +883,6 @@ impl Formatter {
             Expr::Pipe { left, right, .. } => {
                 format!("{} |> {}", self.fmt_expr(left), self.fmt_expr(right))
             }
-            Expr::Illuminate {
-                input, transform, ..
-            } => {
-                format!("{} ~> {}", self.fmt_expr(input), self.fmt_expr(transform))
-            }
             Expr::UnaryOp(op, expr, _) => {
                 let op_str = match op {
                     UnaryOp::Neg => "-",

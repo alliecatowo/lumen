@@ -1193,24 +1193,7 @@ impl Lexer {
                         tokens.push(Token::new(TokenKind::Ampersand, self.span_from(so, sl, sc)));
                     }
                 }
-                '~' => {
-                    let so = self.byte_offset;
-                    let sl = self.line;
-                    let sc = self.col;
-                    self.advance();
-                    match self.current() {
-                        Some('>') => {
-                            self.advance();
-                            tokens.push(Token::new(
-                                TokenKind::TildeArrow,
-                                self.span_from(so, sl, sc),
-                            ));
-                        }
-                        _ => {
-                            tokens.push(Token::new(TokenKind::Tilde, self.span_from(so, sl, sc)));
-                        }
-                    }
-                }
+                '~' => tokens.push(self.single(TokenKind::Tilde)),
                 '^' => {
                     let (so, sl, sc) = (self.byte_offset, self.line, self.col);
                     self.advance();

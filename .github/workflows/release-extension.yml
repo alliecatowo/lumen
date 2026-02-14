@@ -62,9 +62,4 @@ jobs:
       - run: npm run compile
 
       - name: Publish to Open VSX
-        uses: HaaLeo/publish-vscode-extension@v1
-        with:
-          pat: ${{ secrets.OVSX_PAT }}
-          registryUrl: https://open-vsx.org
-          packagePath: ./editors/vscode
-          target: ${{ matrix.target }}
+        run: npx ovsx publish --pat ${{ secrets.OVSX_PAT }} --target ${{ matrix.target }}

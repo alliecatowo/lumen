@@ -26,6 +26,6 @@ serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "js"] }
 clap = { version = "4", features = ["derive"] }
 toml = "0.8"

@@ -51,30 +51,47 @@
     "commands": [
       {
         "command": "lumen.check",
-        "title": "Lumen: Check Current File",
+        "title": "Lumen: Check File",
         "icon": "$(check)"
       },
       {
         "command": "lumen.run",
-        "title": "Lumen: Run Current File",
+        "title": "Lumen: Run File",
         "icon": "$(run)"
       },
       {
         "command": "lumen.fmt",
-        "title": "Lumen: Format Current File",
+        "title": "Lumen: Format File",
         "icon": "$(symbol-color)"
+      },
+      {
+        "command": "lumen.lint",
+        "title": "Lumen: Lint File",
+        "icon": "$(warning)"
+      },
+      {
+        "command": "lumen.repl",
+        "title": "Lumen: Open REPL",
+        "icon": "$(terminal)"
       }
     ],
     "keybindings": [
       {
         "command": "lumen.check",
-        "key": "ctrl+shift+b",
-        "mac": "cmd+shift+b",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l",
         "when": "editorLangId == lumen || editorLangId == markdown && resourceFilename =~ /\\.lm\\.md$/"
       },
       {
         "command": "lumen.run",
-        "key": "f5",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r",
+        "when": "editorLangId == lumen || editorLangId == markdown && resourceFilename =~ /\\.lm\\.md$/"
+      },
+      {
+        "command": "lumen.fmt",
+        "key": "ctrl+shift+f",
+        "mac": "cmd+shift+f",
         "when": "editorLangId == lumen || editorLangId == markdown && resourceFilename =~ /\\.lm\\.md$/"
       }
     ],
@@ -91,15 +108,31 @@
     "configuration": {
       "title": "Lumen",
       "properties": {
+        "lumen.executablePath": {
+          "type": "string",
+          "default": "lumen",
+          "description": "Path to the lumen CLI binary. Defaults to finding it on PATH."
+        },
         "lumen.lspPath": {
           "type": "string",
           "default": "lumen-lsp",
           "description": "Path to the lumen-lsp binary. Defaults to finding it on PATH."
         },
+        "lumen.formatOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically format Lumen files on save."
+        },
+        "lumen.lintOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically lint Lumen files on save."
+        },
         "lumen.binPath": {
           "type": "string",
           "default": "lumen",
-          "description": "Path to the lumen CLI binary. Defaults to finding it on PATH."
+          "description": "Deprecated: Use lumen.executablePath instead. Path to the lumen CLI binary.",
+          "deprecationMessage": "Use lumen.executablePath instead"
         }
       }
     }

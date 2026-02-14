@@ -20,18 +20,18 @@
   "Record": {
     "prefix": "record",
     "body": [
-      "record ${1:Name} {",
-      "  ${2:field}: ${3:Type},",
-      "}"
+      "record ${1:Name}",
+      "  ${2:field}: ${3:Type}",
+      "end"
     ],
     "description": "Define a record"
   },
   "Enum": {
     "prefix": "enum",
     "body": [
-      "enum ${1:Name} {",
-      "  ${2:Variant}(${3:Type}),",
-      "}"
+      "enum ${1:Name}",
+      "  ${2:Variant}",
+      "end"
     ],
     "description": "Define an enum"
   },
@@ -39,7 +39,7 @@
     "prefix": "match",
     "body": [
       "match ${1:expr}",
-      "  | ${2:pattern} => ${3:body}",
+      "  ${2:Pattern} -> ${0}",
       "end"
     ],
     "description": "Match expression"
@@ -48,18 +48,18 @@
     "prefix": "if",
     "body": [
       "if ${1:condition}",
-      "  $0",
+      "  ${0}",
       "end"
     ],
     "description": "If statement"
   },
   "If-else": {
-    "prefix": "ifelse",
+    "prefix": "ifel",
     "body": [
       "if ${1:condition}",
       "  ${2}",
       "else",
-      "  ${3}",
+      "  ${0}",
       "end"
     ],
     "description": "If-else statement"
@@ -67,8 +67,8 @@
   "For": {
     "prefix": "for",
     "body": [
-      "for ${1:item} in ${2:iterable}",
-      "  $0",
+      "for ${1:item} in ${2:collection}",
+      "  ${0}",
       "end"
     ],
     "description": "For loop"
@@ -77,10 +77,36 @@
     "prefix": "while",
     "body": [
       "while ${1:condition}",
-      "  $0",
+      "  ${0}",
       "end"
     ],
     "description": "While loop"
+  },
+  "Let": {
+    "prefix": "let",
+    "body": [
+      "let ${1:name}: ${2:Type} = ${0}"
+    ],
+    "description": "Variable declaration"
+  },
+  "Grant": {
+    "prefix": "grant",
+    "body": [
+      "grant ${1:Tool} with",
+      "  ${0}",
+      "end"
+    ],
+    "description": "Define a grant with policy"
+  },
+  "Test": {
+    "prefix": "test",
+    "body": [
+      "cell test_${1:name}() -> Bool",
+      "  ${0}",
+      "  return true",
+      "end"
+    ],
+    "description": "Define a test cell"
   },
   "Lambda": {
     "prefix": "fn",
@@ -122,14 +148,16 @@
     ],
     "description": "Define a machine process"
   },
-  "Grant": {
-    "prefix": "grant",
+  "Process pipeline": {
+    "prefix": "pipeline",
     "body": [
-      "grant ${1:alias} = use tool \"${2:provider}:${3:tool}\" {",
-      "  $0",
+      "process ${1:name} = pipeline[${2:InputType}, ${3:OutputType}] {",
+      "  stage ${4:stage1}(data: ${2:InputType}) -> ${5:IntermediateType}",
+      "    $0",
+      "  end",
       "}"
     ],
-    "description": "Define a grant"
+    "description": "Define a pipeline process"
   },
   "Use tool": {
     "prefix": "use",
@@ -137,5 +165,68 @@
       "use tool \"${1:provider}:${2:tool}\""
     ],
     "description": "Use a tool"
+  },
+  "Import": {
+    "prefix": "import",
+    "body": [
+      "import ${1:module}"
+    ],
+    "description": "Import a module"
+  },
+  "Type alias": {
+    "prefix": "type",
+    "body": [
+      "type ${1:Name} = ${0:Type}"
+    ],
+    "description": "Define a type alias"
+  },
+  "Result type": {
+    "prefix": "result",
+    "body": [
+      "result[${1:T}, ${2:E}]"
+    ],
+    "description": "Result type with ok and err variants"
+  },
+  "List comprehension": {
+    "prefix": "listcomp",
+    "body": [
+      "[${1:expr} for ${2:item} in ${3:collection}]"
+    ],
+    "description": "List comprehension"
+  },
+  "Directive deterministic": {
+    "prefix": "@det",
+    "body": [
+      "@deterministic true"
+    ],
+    "description": "Enable deterministic mode"
+  },
+  "Directive location": {
+    "prefix": "@loc",
+    "body": [
+      "@location \"${1:path}\""
+    ],
+    "description": "Set execution location"
+  },
+  "Role system": {
+    "prefix": "rolesys",
+    "body": [
+      "role system: ${0:System prompt}"
+    ],
+    "description": "Define system role content"
+  },
+  "Role user": {
+    "prefix": "roleuser",
+    "body": [
+      "role user: ${0:User prompt}"
+    ],
+    "description": "Define user role content"
+  },
+  "Role assistant": {
+    "prefix": "roleast",
+    "body": [
+      "role assistant: ${0:Assistant response}"
+    ],
+    "description": "Define assistant role content"
   }
 }

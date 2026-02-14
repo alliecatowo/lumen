@@ -17,7 +17,7 @@ function getTerminal(): Terminal {
 
 function getLumenPath(): string {
   const config = workspace.getConfiguration("lumen");
-  return config.get("binPath") || "lumen";
+  return config.get("executablePath") || config.get("binPath") || "lumen";
 }
 
 function runLumenCommand(args: string[]) {
@@ -442,6 +442,68 @@ export function activate(context: ExtensionContext) {
   context.subscriptions.push(
     commands.registerCommand("lumen.fmt", () => {
       runLumenCommand(["fmt"]);
+    })
+  );
+
+  context.subscriptions.push(
+    commands.registerCommand("lumen.lint", () => {
+      runLumenCommand(["check"]);
+    })
+  );
+
+  context.subscriptions.push(
+    commands.registerCommand("lumen.repl", () => {
+      const lumenPath = getLumenPath();
+      const term = getTerminal();
+      term.show();
+      term.sendText(`${lumenPath} repl`);
+    })
+  );
+
+  // Format on save
+  context.subscriptions.push(
+    workspace.onWillSaveTextDocument((event) => {
+      const config = workspace.getConfiguration("lumen");
+      const formatOnSave = config.get("formatOnSave", false);
+
+      if (!formatOnSave) {
+        return;
+      }
+
+      const document = event.document;
+      const isLumenMarkdown =
+        document.languageId === "markdown" &&
+        document.uri.fsPath.endsWith(".lm.md");
+
+      if (document.languageId === "lumen" || isLumenMarkdown) {
+        const lumenPath = getLumenPath();
+        const filePath = document.uri.fsPath;
+        const term = getTerminal();
+        term.sendText(`${lumenPath} fmt "${filePath}"`, false);
+      }
+    })
+  );
+
+  // Lint on save
+  context.subscriptions.push(
+    workspace.onDidSaveTextDocument((document) => {
+      const config = workspace.getConfiguration("lumen");
+      const lintOnSave = config.get("lintOnSave", true);
+
+      if (!lintOnSave) {
+        return;
+      }
+
+      const isLumenMarkdown =
+        document.languageId === "markdown" &&
+        document.uri.fsPath.endsWith(".lm.md");
+
+      if (document.languageId === "lumen" || isLumenMarkdown) {
+        const lumenPath = getLumenPath();
+        const filePath = document.uri.fsPath;
+        const term = getTerminal();
+        term.sendText(`${lumenPath} check "${filePath}"`, false);
+      }
     })
   );
 

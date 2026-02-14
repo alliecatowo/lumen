@@ -108,12 +108,12 @@ The V1 release focuses on **core correctness and essential tooling**, not featur
 
 ### Must-Fix for V1
 
-- [ ] Close remaining P0 correctness and VM safety bugs (see `tasks.md`)
-- [ ] Add parser error recovery (collect multiple errors)
+- [x] Close remaining P0 correctness and VM safety bugs (rounds 16-20: silent drops, panic replacement, SetIndex error handling)
+- [x] Add parser error recovery (round 20: max 10 errors, statement-level sync)
 - [ ] Wire trace system into VM
-- [ ] Complete intrinsic stdlib mapping (51 unmapped functions)
+- [x] Complete intrinsic stdlib mapping (round 20: all 76 intrinsics mapped)
 - [ ] Add stack traces on runtime errors
-- [ ] Remove hardcoded type whitelists (resolver, typechecker)
+- [x] Remove hardcoded type whitelists (round 18: doc_mode placeholder cleanup)
 - [ ] Add duplicate definition detection (records, enums, cells, processes)
 - [ ] Document intrinsic stdlib in SPEC.md
 

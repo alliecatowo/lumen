@@ -1088,6 +1088,26 @@ pub fn resolve_with_base(
     }
 }
 
+fn check_generic_param_bounds(
+    _params: &[GenericParam],
+    _table: &SymbolTable,
+    _errors: &mut Vec<ResolveError>,
+) {
+    // TODO: Implement generic param bound validation
+    // For now, this is a stub to allow compilation
+}
+
+fn check_impl_target_type_refs(
+    _impl_decl: &ImplDef,
+    _table: &SymbolTable,
+    _type_alias_arities: &HashMap<String, usize>,
+    _errors: &mut Vec<ResolveError>,
+    _generics: &[String],
+) {
+    // TODO: Implement impl target type reference validation
+    // For now, this is a stub to allow compilation
+}
+
 fn check_effect_grants_for(
     cell_name: &str,
     line: usize,

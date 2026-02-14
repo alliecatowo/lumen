@@ -154,7 +154,6 @@ end
 // ============================================================================
 
 #[test]
-#[ignore] // TODO: Nested variant patterns not yet fully supported in typecheck
 fn test_nested_pattern_some_ok() {
     let src = r#"
 enum Option[T]
@@ -165,6 +164,26 @@ end
 cell test(x: result[Option[Int], String]) -> Int
   match x
     ok(some(v)) -> return v
+    ok(none) -> return 0
+    err(_) -> return -1
+  end
+end
+"#;
+    compile_and_typecheck(src).unwrap();
+}
+
+#[test]
+fn test_nested_pattern_deeper_some_ok() {
+    let src = r#"
+enum Option[T]
+  some(T)
+  none
+end
+
+cell test(x: result[Option[Option[Int]], String]) -> Int
+  match x
+    ok(some(some(v))) -> return v
+    ok(some(none)) -> return 1
     ok(none) -> return 0
     err(_) -> return -1
   end

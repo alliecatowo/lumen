@@ -20,9 +20,6 @@ node_modules/
 # OS
 Thumbs.db
 
-# Editor extensions
-editors/vscode/out/
-
 # Environment
 .env
 .env.*

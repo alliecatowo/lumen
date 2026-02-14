@@ -508,20 +508,20 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
             // Detect if this looks like a parameter parsing issue
             // In cell parameter lists, if we see an identifier where we expected comma/close,
             // it likely means a missing colon.
-            let looks_like_type_annotation = expected.contains("','") &&
+            let looks_like_type_annotation = expected.trim() == "," &&
                 (found.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) ||
                  matches!(found.as_str(), "Int" | "String" | "Float" | "Bool" | "Any"));
 
-            let friendly_message = if expected.contains("':'") && found != ":" {
+            let friendly_message = if expected.trim() == ":" && found != ":" {
                 suggestions.push(format!("Try: name: {}", found));
                 format!("I was expecting a `:` after the parameter name, but found `{}`", found)
             } else if looks_like_type_annotation {
                 suggestions.push("Add a `:` before the type annotation".to_string());
                 format!("I was expecting `,` or `)` after the parameter name, but found a type `{}`.\n\n  Did you forget the `:` between the parameter name and type?", found)
-            } else if expected.contains("'end'") {
+            } else if expected.contains("end") {
                 suggestions.push("Add 'end' to close this block".to_string());
                 format!("I was expecting 'end', but found `{}`", found)
-            } else if expected.contains("','") {
+            } else if expected.trim() == "," {
                 format!("I was expecting `,` or `)`, but found `{}`", found)
             } else {
                 format!("I was expecting {}, but found `{}`", expected, found)

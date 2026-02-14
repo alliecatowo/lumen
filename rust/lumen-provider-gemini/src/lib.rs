@@ -454,8 +454,8 @@ mod tests {
     #[test]
     #[ignore] // Run with: cargo test -p lumen-provider-gemini -- --ignored
     fn test_real_gemini_generate() {
-        let api_key = std::env::var("GEMINI_API_KEY")
-            .expect("GEMINI_API_KEY must be set for this test");
+        let api_key =
+            std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY must be set for this test");
         let provider = GeminiProvider::generate(api_key);
         let result = provider.call(json!({
             "prompt": "Say hello in exactly 3 words",
@@ -471,8 +471,8 @@ mod tests {
     #[test]
     #[ignore]
     fn test_real_gemini_chat() {
-        let api_key = std::env::var("GEMINI_API_KEY")
-            .unwrap_or_else(|_| "REMOVED_API_KEY".to_string());
+        let api_key =
+            std::env::var("GEMINI_API_KEY").unwrap_or_else(|_| "REMOVED_API_KEY".to_string());
         let provider = GeminiProvider::chat(api_key);
         let result = provider.call(json!({
             "messages": [
@@ -494,8 +494,8 @@ mod tests {
     #[test]
     #[ignore]
     fn test_real_gemini_embed() {
-        let api_key = std::env::var("GEMINI_API_KEY")
-            .unwrap_or_else(|_| "REMOVED_API_KEY".to_string());
+        let api_key =
+            std::env::var("GEMINI_API_KEY").unwrap_or_else(|_| "REMOVED_API_KEY".to_string());
         let provider = GeminiProvider::embed(api_key);
         let result = provider.call(json!({
             "text": "hello world"
@@ -524,8 +524,8 @@ mod tests {
     #[test]
     #[ignore]
     fn test_real_gemini_error_handling_invalid_model() {
-        let api_key = std::env::var("GEMINI_API_KEY")
-            .unwrap_or_else(|_| "REMOVED_API_KEY".to_string());
+        let api_key =
+            std::env::var("GEMINI_API_KEY").unwrap_or_else(|_| "REMOVED_API_KEY".to_string());
         let provider = GeminiProvider::generate(api_key).with_model("invalid-model-xyz");
         let result = provider.call(json!({
             "prompt": "test"
@@ -543,8 +543,8 @@ mod tests {
     #[test]
     #[ignore]
     fn test_real_gemini_with_system_instruction() {
-        let api_key = std::env::var("GEMINI_API_KEY")
-            .unwrap_or_else(|_| "REMOVED_API_KEY".to_string());
+        let api_key =
+            std::env::var("GEMINI_API_KEY").unwrap_or_else(|_| "REMOVED_API_KEY".to_string());
         let provider = GeminiProvider::generate(api_key);
         let result = provider.call(json!({
             "prompt": "Introduce yourself",

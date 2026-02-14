@@ -59,7 +59,7 @@ Examples:
   lumen fmt *.lm.md                    Format source files
   lumen test                           Run all test_* cells
   lumen lint --strict src/             Lint with warnings as errors
-",
+"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -876,9 +876,9 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
 
     // Optionally set up tracing
     let trace_store = trace_dir.map(|dir| {
-        Arc::new(Mutex::new(
-            lumen_runtime::trace::store::TraceStore::new(&dir),
-        ))
+        Arc::new(Mutex::new(lumen_runtime::trace::store::TraceStore::new(
+            &dir,
+        )))
     });
 
     if let Some(trace_store) = trace_store.as_ref() {
@@ -944,11 +944,7 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
                 }
             }
             println!("\n{}", result);
-            println!(
-                "{} Finished in {:.2}s",
-                green("✓"),
-                elapsed.as_secs_f64()
-            );
+            println!("{} Finished in {:.2}s", green("✓"), elapsed.as_secs_f64());
         }
         Err(e) => {
             if let Some(trace_store) = trace_store.as_ref() {
@@ -1041,8 +1037,8 @@ fn cmd_trace_show(run_id: &str, trace_dir: &Path, format: TraceShowFormat, verif
 }
 
 fn read_trace_events(path: &Path) -> Result<Vec<lumen_runtime::trace::events::TraceEvent>, String> {
-    let content =
-        std::fs::read_to_string(path).map_err(|e| format!("cannot read trace '{}': {}", path.display(), e))?;
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read trace '{}': {}", path.display(), e))?;
 
     content
         .lines()
@@ -1134,9 +1130,8 @@ fn replay_line(event: &lumen_runtime::trace::events::TraceEvent) -> String {
                 }
             }
             lumen_runtime::trace::events::TraceEventKind::CallExit => {
-                if let Some(result_type) = details
-                    .get("result_type")
-                    .and_then(|value| value.as_str())
+                if let Some(result_type) =
+                    details.get("result_type").and_then(|value| value.as_str())
                 {
                     parts.push(format!("result_type={}", result_type));
                 }
@@ -1213,7 +1208,11 @@ fn cmd_fmt(files: Vec<PathBuf>, check: bool) {
                     );
                     std::process::exit(1);
                 } else {
-                    println!("{} Finished in {:.2}s — all files formatted", green("✓"), elapsed.as_secs_f64());
+                    println!(
+                        "{} Finished in {:.2}s — all files formatted",
+                        green("✓"),
+                        elapsed.as_secs_f64()
+                    );
                 }
             } else {
                 println!(

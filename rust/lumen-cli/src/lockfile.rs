@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-pub const CURRENT_LOCKFILE_VERSION: u32 = 1;
+pub const CURRENT_LOCKFILE_VERSION: u32 = 2;
 
 fn default_lockfile_version() -> u32 {
     CURRENT_LOCKFILE_VERSION
@@ -224,6 +224,15 @@ fn normalize_path_source(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_tmp_lock_path(test_name: &str) -> std::path::PathBuf {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{}_{}_{}.lock", test_name, std::process::id(), ts))
+    }
 
     #[test]
     fn lock_file_round_trip() {
@@ -267,6 +276,72 @@ source = "path+../mathlib"
         assert_eq!(parsed.version, CURRENT_LOCKFILE_VERSION);
         assert_eq!(parsed.metadata.resolver, "path-v1");
         assert_eq!(parsed.package.len(), 1);
+    }
+
+    #[test]
+    fn lock_file_reads_v1_with_missing_metadata() {
+        let v1 = r#"
+version = 1
+
+[[package]]
+name = "mathlib"
+version = "0.1.0"
+source = "path+../mathlib"
+"#;
+        let parsed: LockFile = toml::from_str(v1).unwrap();
+        assert_eq!(parsed.version, 1);
+        assert_eq!(parsed.metadata.resolver, "path-v1");
+        assert_eq!(parsed.metadata.source_encoding, "project-relative");
+        assert_eq!(parsed.package.len(), 1);
+    }
+
+    #[test]
+    fn lock_file_v1_read_then_save_writes_normalized_v2() {
+        let path = unique_tmp_lock_path("lumen_lock_v1_to_v2");
+        let v1 = r#"
+version = 1
+
+[[package]]
+name = "zeta"
+version = "1.0.0"
+source = "path+./vendor/zeta"
+dependencies = ["beta 1.0.0", "alpha 1.0.0"]
+
+[[package]]
+name = "alpha"
+version = "2.0.0"
+source = "path+./vendor/alpha"
+"#;
+
+        std::fs::write(&path, v1).unwrap();
+
+        let loaded = LockFile::load(&path).unwrap();
+        assert_eq!(loaded.version, 1);
+
+        loaded.save(&path).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("version = 2"));
+        assert!(raw.contains("[metadata]"));
+        assert!(raw.contains("resolver = \"path-v1\""));
+        assert!(raw.contains("source_encoding = \"project-relative\""));
+
+        let saved: LockFile = toml::from_str(&raw).unwrap();
+        assert_eq!(saved.version, CURRENT_LOCKFILE_VERSION);
+        assert_eq!(
+            saved
+                .package
+                .iter()
+                .map(|pkg| pkg.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "zeta"]
+        );
+        assert_eq!(
+            saved.get_package("zeta").unwrap().dependencies,
+            vec!["alpha 1.0.0".to_string(), "beta 1.0.0".to_string()]
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

@@ -5,6 +5,7 @@
 
 use crate::config::{DependencySpec, LumenConfig};
 use crate::lockfile::{LockFile, LockedPackage};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::io::Write;
@@ -83,6 +84,22 @@ struct PublishDryRunReport {
     archive_size_bytes: u64,
     content_checksum: String,
     archive_checksum: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct LocalRegistryRecord {
+    name: String,
+    version: String,
+    archive_path: String,
+    file_count: usize,
+    archive_size_bytes: u64,
+    content_checksum: String,
+    archive_checksum: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct LocalRegistryIndex {
+    packages: Vec<LocalRegistryRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -875,15 +892,52 @@ pub fn cmd_pkg_update_with_lock(frozen: bool) {
 }
 
 /// Search for packages in the registry
-pub fn cmd_pkg_search(_query: &str) {
-    println!("{} Package registry not yet available.", gray(""));
-    println!();
-    println!("Registry support is planned for a future release.");
-    println!("For now, use path dependencies:");
+pub fn cmd_pkg_search(query: &str) {
+    let registry_dir = local_registry_dir();
+    let results = match search_local_registry(&registry_dir, query) {
+        Ok(results) => results,
+        Err(e) => {
+            eprintln!("{} {}", red("error:"), e);
+            std::process::exit(1);
+        }
+    };
+
     println!(
-        "  {} = {{ path = \"../package-name\" }}",
-        gray("package-name")
+        "{} {}",
+        status_label("Searching"),
+        gray("local fixture registry")
     );
+    println!(
+        "{} {}",
+        status_label("Registry"),
+        gray(&path_display(&registry_dir))
+    );
+
+    if results.is_empty() {
+        println!("{} no matches for '{}'", gray("info:"), query);
+        println!(
+            "{} {}",
+            status_label("Index"),
+            gray(&path_display(&registry_index_path(&registry_dir)))
+        );
+        return;
+    }
+
+    println!(
+        "{} {} match{} in local fixture registry",
+        green("✓"),
+        results.len(),
+        if results.len() == 1 { "" } else { "es" }
+    );
+    for record in results {
+        println!(
+            "  {}@{} {}",
+            bold(&record.name),
+            gray(&record.version),
+            gray("(local fixture)")
+        );
+        println!("    {} {}", gray("archive:"), gray(&record.archive_path));
+    }
 }
 
 /// Show package metadata and deterministic checksums for a local package or archive.
@@ -1035,14 +1089,6 @@ pub fn cmd_pkg_pack() {
 
 /// Validate package metadata/contents and run publish pipeline locally.
 pub fn cmd_pkg_publish(dry_run: bool) {
-    if !dry_run {
-        eprintln!(
-            "{} registry upload is not implemented yet; run `lpm publish --dry-run`",
-            red("error:")
-        );
-        std::process::exit(1);
-    }
-
     let (config_path, config) = match LumenConfig::load_with_path() {
         Some(pair) => pair,
         None => {
@@ -1057,45 +1103,106 @@ pub fn cmd_pkg_publish(dry_run: bool) {
     let project_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
     println!("{} package metadata + contents", status_label("Validating"));
 
-    match run_publish_dry_run(project_dir, &config) {
-        Ok(report) => {
+    if dry_run {
+        match run_publish_dry_run(project_dir, &config) {
+            Ok(report) => {
+                println!(
+                    "{} {}@{}",
+                    status_label("Prepared"),
+                    bold(&report.package_name),
+                    gray(&report.version)
+                );
+                println!(
+                    "{} {} file{} ({})",
+                    green("✓"),
+                    report.file_count,
+                    if report.file_count == 1 { "" } else { "s" },
+                    format_byte_size(report.archive_size_bytes)
+                );
+                println!("{}:", status_label("Checklist"));
+                println!("  {} package metadata", green("✓"));
+                println!("  {} source discovery", green("✓"));
+                println!("  {} deterministic entry order", green("✓"));
+                println!("  {} content checksum", green("✓"));
+                println!("  {} archive checksum", green("✓"));
+                println!(
+                    "{} {}",
+                    status_label("Artifact"),
+                    gray(&report.archive_path.display().to_string())
+                );
+                println!(
+                    "{} {}",
+                    status_label("Content"),
+                    gray(&report.content_checksum)
+                );
+                println!(
+                    "{} {}",
+                    status_label("Archive"),
+                    gray(&report.archive_checksum)
+                );
+                println!(
+                    "{} dry-run only (registry upload TODO)",
+                    status_label("Skipped")
+                );
+            }
+            Err(e) => {
+                eprintln!("{} {}", red("error:"), e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    let registry_dir = local_registry_dir();
+    println!(
+        "{} {}",
+        status_label("Publishing"),
+        gray("local fixture registry")
+    );
+    println!(
+        "{} {}",
+        status_label("Registry"),
+        gray(&path_display(&registry_dir))
+    );
+
+    match publish_to_local_registry(project_dir, &config, &registry_dir) {
+        Ok(record) => {
             println!(
                 "{} {}@{}",
-                status_label("Prepared"),
-                bold(&report.package_name),
-                gray(&report.version)
+                status_label("Published"),
+                bold(&record.name),
+                gray(&record.version)
             );
             println!(
                 "{} {} file{} ({})",
                 green("✓"),
-                report.file_count,
-                if report.file_count == 1 { "" } else { "s" },
-                format_byte_size(report.archive_size_bytes)
+                record.file_count,
+                if record.file_count == 1 { "" } else { "s" },
+                format_byte_size(record.archive_size_bytes)
             );
-            println!("{}:", status_label("Checklist"));
-            println!("  {} package metadata", green("✓"));
-            println!("  {} source discovery", green("✓"));
-            println!("  {} deterministic entry order", green("✓"));
-            println!("  {} content checksum", green("✓"));
-            println!("  {} archive checksum", green("✓"));
             println!(
                 "{} {}",
                 status_label("Artifact"),
-                gray(&report.archive_path.display().to_string())
+                gray(&path_display(&registry_dir.join(&record.archive_path)))
             );
             println!(
                 "{} {}",
                 status_label("Content"),
-                gray(&report.content_checksum)
+                gray(&record.content_checksum)
             );
             println!(
                 "{} {}",
                 status_label("Archive"),
-                gray(&report.archive_checksum)
+                gray(&record.archive_checksum)
             );
             println!(
-                "{} dry-run only (registry upload TODO)",
-                status_label("Skipped")
+                "{} {}",
+                status_label("Index"),
+                gray(&path_display(&registry_index_path(&registry_dir)))
+            );
+            println!(
+                "{} local fixture publish only (no remote upload)",
+                status_label("Note")
             );
         }
         Err(e) => {
@@ -1152,6 +1259,120 @@ fn run_publish_dry_run(
         content_checksum: packed.content_checksum,
         archive_checksum: packed.archive_checksum,
     })
+}
+
+fn local_registry_dir() -> PathBuf {
+    std::env::var("LUMEN_REGISTRY_DIR")
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        .filter(|raw| !raw.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(".lumen").join("registry"))
+}
+
+fn registry_index_path(registry_dir: &Path) -> PathBuf {
+    registry_dir.join("index.json")
+}
+
+fn path_display(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn registry_archive_relative_path(name: &str, version: &str) -> PathBuf {
+    PathBuf::from("packages")
+        .join(name)
+        .join(version)
+        .join(format!("{}-{}.tar", name, version))
+}
+
+fn load_local_registry_index(registry_dir: &Path) -> Result<LocalRegistryIndex, String> {
+    let index_path = registry_index_path(registry_dir);
+    if !index_path.is_file() {
+        return Ok(LocalRegistryIndex::default());
+    }
+
+    let data = std::fs::read_to_string(&index_path)
+        .map_err(|e| format!("cannot read '{}': {}", index_path.display(), e))?;
+    serde_json::from_str::<LocalRegistryIndex>(&data).map_err(|e| {
+        format!(
+            "invalid local registry index '{}': {}",
+            index_path.display(),
+            e
+        )
+    })
+}
+
+fn save_local_registry_index(
+    registry_dir: &Path,
+    index: &LocalRegistryIndex,
+) -> Result<(), String> {
+    std::fs::create_dir_all(registry_dir)
+        .map_err(|e| format!("cannot create '{}': {}", registry_dir.display(), e))?;
+    let mut encoded = serde_json::to_string_pretty(index)
+        .map_err(|e| format!("cannot serialize local registry index: {}", e))?;
+    encoded.push('\n');
+
+    let index_path = registry_index_path(registry_dir);
+    std::fs::write(&index_path, encoded)
+        .map_err(|e| format!("cannot write '{}': {}", index_path.display(), e))
+}
+
+fn publish_to_local_registry(
+    project_dir: &Path,
+    config: &LumenConfig,
+    registry_dir: &Path,
+) -> Result<LocalRegistryRecord, String> {
+    let (name, version) = validate_package_metadata(config)?;
+    let archive_rel = registry_archive_relative_path(&name, &version);
+    let archive_rel_str = path_display(&archive_rel);
+    let archive_path = registry_dir.join(&archive_rel);
+
+    let packed = pack_current_package(project_dir, config, &archive_path)?;
+    let mut index = load_local_registry_index(registry_dir)?;
+    let record = LocalRegistryRecord {
+        name: packed.package_name,
+        version: packed.version,
+        archive_path: archive_rel_str,
+        file_count: packed.file_count,
+        archive_size_bytes: packed.archive_size_bytes,
+        content_checksum: packed.content_checksum,
+        archive_checksum: packed.archive_checksum,
+    };
+
+    index
+        .packages
+        .retain(|entry| !(entry.name == record.name && entry.version == record.version));
+    index.packages.push(record.clone());
+    index
+        .packages
+        .sort_by(|a, b| a.name.cmp(&b.name).then(a.version.cmp(&b.version)));
+
+    save_local_registry_index(registry_dir, &index)?;
+    Ok(record)
+}
+
+fn search_local_registry(
+    registry_dir: &Path,
+    query: &str,
+) -> Result<Vec<LocalRegistryRecord>, String> {
+    let needle = query.trim().to_ascii_lowercase();
+    let mut matches: Vec<_> = load_local_registry_index(registry_dir)?
+        .packages
+        .into_iter()
+        .filter(|record| {
+            if needle.is_empty() {
+                true
+            } else {
+                let name = record.name.to_ascii_lowercase();
+                let package_ref =
+                    format!("{}@{}", record.name, record.version).to_ascii_lowercase();
+                name.contains(&needle) || package_ref.contains(&needle)
+            }
+        })
+        .collect();
+
+    matches.sort_by(|a, b| a.name.cmp(&b.name).then(a.version.cmp(&b.version)));
+    Ok(matches)
 }
 
 fn publish_dry_run_archive_path() -> PathBuf {
@@ -2266,6 +2487,52 @@ foo = { path = "./foo" }
 
         let err = run_publish_dry_run(&pkg_dir, &cfg).unwrap_err();
         assert!(err.contains("package.version"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn local_registry_publish_and_search_round_trip() {
+        let tmp = unique_tmp_dir("lumen_registry_round_trip");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let registry_dir = tmp.join("registry");
+        let (pkg_dir, cfg) = write_packable_fixture(&tmp);
+
+        let record = publish_to_local_registry(&pkg_dir, &cfg, &registry_dir).unwrap();
+        assert_eq!(record.name, "demo-pkg");
+        assert_eq!(record.version, "0.1.0");
+        assert_eq!(
+            record.archive_path,
+            "packages/demo-pkg/0.1.0/demo-pkg-0.1.0.tar"
+        );
+        assert!(registry_dir.join(&record.archive_path).is_file());
+
+        let matches = search_local_registry(&registry_dir, "demo").unwrap();
+        assert_eq!(matches, vec![record.clone()]);
+
+        let matches_by_ref = search_local_registry(&registry_dir, "demo-pkg@0.1.0").unwrap();
+        assert_eq!(matches_by_ref, vec![record.clone()]);
+
+        let index = load_local_registry_index(&registry_dir).unwrap();
+        assert_eq!(index.packages, vec![record]);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn local_registry_publish_replaces_same_name_and_version() {
+        let tmp = unique_tmp_dir("lumen_registry_dedupe");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let registry_dir = tmp.join("registry");
+        let (pkg_dir, cfg) = write_packable_fixture(&tmp);
+
+        let first = publish_to_local_registry(&pkg_dir, &cfg, &registry_dir).unwrap();
+        let second = publish_to_local_registry(&pkg_dir, &cfg, &registry_dir).unwrap();
+
+        let index = load_local_registry_index(&registry_dir).unwrap();
+        assert_eq!(index.packages.len(), 1);
+        assert_eq!(index.packages[0], second);
+        assert_eq!(first.archive_checksum, index.packages[0].archive_checksum);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

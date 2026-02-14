@@ -189,7 +189,12 @@ pub fn run_tests(
             red("✗ FAILED")
         };
 
-        println!("  {} {} ... {}", gray("test"), bold(&result.test_name), status);
+        println!(
+            "  {} {} ... {}",
+            gray("test"),
+            bold(&result.test_name),
+            status
+        );
     }
 
     // Print failure details
@@ -351,8 +356,7 @@ mod tests {
         )
         .expect("should write markdown test file");
 
-        let summary =
-            run_tests(Some(root.to_path_buf()), None, false).expect("tests should run");
+        let summary = run_tests(Some(root.to_path_buf()), None, false).expect("tests should run");
 
         assert_eq!(summary.total, 2);
         assert_eq!(summary.passed, 2);

@@ -3012,7 +3012,7 @@ fn collect_required_trait_methods(trait_name: &str, table: &SymbolTable) -> Vec<
     out
 }
 
-fn collect_trait_defs<'a>(program: &'a Program) -> HashMap<String, &'a TraitDef> {
+fn collect_trait_defs(program: &Program) -> HashMap<String, &TraitDef> {
     let mut defs = HashMap::new();
     for item in &program.items {
         if let Item::Trait(t) = item {

@@ -80,6 +80,7 @@ end
 
 ## Continue
 
-- [AI-Native Features](/language/ai-native)
-- [CLI Reference](/CLI)
-- [Runtime Model](/RUNTIME)
+- Browser runtime path: [Browser WASM Guide](/guide/wasm-browser)
+- AI-native details: [AI-Native Features](/language/ai-native)
+- CLI commands: [CLI Reference](/CLI)
+- Runtime details: [Runtime Model](/RUNTIME)

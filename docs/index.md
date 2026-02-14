@@ -3,50 +3,47 @@ layout: home
 
 hero:
   name: Lumen
-  text: Markdown-Native Language for AI Systems
-  tagline: Statically typed language + compiler + VM for deterministic, policy-aware agent workflows.
+  text: Typed, Markdown-Native Language for AI Systems
+  tagline: Build deterministic agent workflows with one language, one compiler, and one runtime.
   image:
     src: /logo.svg
     alt: Lumen
   actions:
     - theme: brand
-      text: Start in 5 Minutes
-      link: /guide/quickstart
+      text: Start Here
+      link: /guide/start-here
+    - theme: alt
+      text: Browser WASM
+      link: /guide/wasm-browser
     - theme: alt
       text: Language Tour
       link: /language/tour
-    - theme: alt
-      text: View on GitHub
-      link: https://github.com/alliecatowo/lumen
 
 features:
-  - icon: "🧠"
-    title: AI-Native by Design
-    details: Tools, grants, roles, orchestration, and policy controls are language features, not bolted-on frameworks.
+  - icon: "🚀"
+    title: Fast Onboarding
+    details: Follow a clear path from first program to runtime internals without guessing where to go next.
   - icon: "🧾"
-    title: Markdown-First Authoring
-    details: Keep architecture notes and runnable code in one `.lm.md` file with fenced `lumen` blocks.
-  - icon: "⚙️"
-    title: End-to-End Stack
-    details: Compiler pipeline, register VM, runtime tracing, and CLI tooling are all in-repo and implementation-driven.
+    title: Markdown-First Source
+    details: Keep architecture notes and runnable Lumen code together in `.lm.md` files.
+  - icon: "🧠"
+    title: AI-Native Constructs
+    details: Tools, grants, roles, and orchestration are first-class language features.
   - icon: "🛡️"
-    title: Deterministic Execution
-    details: Deterministic profile support, effect tracking, and trace output help make agent systems auditable.
+    title: Deterministic Runtime
+    details: Deterministic execution controls and explicit effects make behavior easier to audit.
 ---
 
-## Why Lumen?
+## Choose Your Starting Point
 
-Lumen is a statically typed language for shipping production-grade agent workflows without stitching together prompts, glue code, and orchestration layers by hand.
+- New to Lumen: [Start Here](/guide/start-here)
+- Want CLI setup now: [Quickstart](/guide/quickstart)
+- Want browser integration: [Browser WASM Guide](/guide/wasm-browser)
+- Want language basics first: [Language Tour](/language/tour)
 
-It gives you:
+## Core Docs
 
-- One language for business logic, orchestration, and tool calling.
-- First-class support for `.lm` and `.lm.md` source files.
-- An implementation-backed runtime model with deterministic execution controls.
-
-## Read Next
-
-- [Quickstart](/guide/quickstart)
-- [Language Tour](/language/tour)
 - [AI-Native Features](/language/ai-native)
 - [CLI Reference](/CLI)
+- [Runtime Model](/RUNTIME)
+- [Documentation Map](/guide/docs-map)

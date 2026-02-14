@@ -1,4 +1,5 @@
 import { defineConfig } from "vitepress";
+import { shikiLanguages } from "./shiki-languages";
 
 const repository = process.env.GITHUB_REPOSITORY?.split("/")[1] ?? "lumen";
 const base = process.env.CI ? `/${repository}/` : "/";
@@ -13,6 +14,7 @@ export default defineConfig({
   ignoreDeadLinks: [/\.\.\/SPEC/],
   head: [
     ["meta", { name: "theme-color", content: "#0f766e" }],
+    ["link", { rel: "icon", type: "image/svg+xml", href: "/logo.svg" }],
     ["meta", { property: "og:type", content: "website" }],
     ["meta", { property: "og:title", content: "Lumen Language Docs" }],
     [
@@ -25,27 +27,14 @@ export default defineConfig({
     ],
   ],
   markdown: {
-    config(md) {
-      const fallbackFence = md.renderer.rules.fence;
-      if (!fallbackFence) {
-        return;
-      }
-
-      md.renderer.rules.fence = (tokens, idx, options, env, self) => {
-        const token = tokens[idx];
-        const lang = token.info.trim().split(/\s+/)[0];
-        if (lang === "lumen" || lang === "ebnf") {
-          token.info = token.info.replace(lang, "txt");
-        }
-        return fallbackFence(tokens, idx, options, env, self);
-      };
-    },
+    languages: shikiLanguages,
   },
   themeConfig: {
     siteTitle: "Lumen",
     logo: "/logo.svg",
     nav: [
-      { text: "Guide", link: "/guide/quickstart" },
+      { text: "Guide", link: "/guide/start-here" },
+      { text: "WASM", link: "/guide/wasm-browser" },
       { text: "Language", link: "/language/tour" },
       { text: "Reference", link: "/CLI" },
       { text: "GitHub", link: "https://github.com/alliecatowo/lumen" },
@@ -60,7 +49,9 @@ export default defineConfig({
       {
         text: "Guide",
         items: [
+          { text: "Start Here", link: "/guide/start-here" },
           { text: "Quickstart", link: "/guide/quickstart" },
+          { text: "Browser WASM", link: "/guide/wasm-browser" },
           { text: "Documentation Map", link: "/guide/docs-map" },
         ],
       },

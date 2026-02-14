@@ -2,6 +2,12 @@
 
 Thanks for your interest in contributing.
 
+## Ground Rules
+
+- Review and follow our [Code of Conduct](CODE_OF_CONDUCT.md).
+- Use the issue templates for [bug reports](.github/ISSUE_TEMPLATE/bug_report.md) and [feature requests](.github/ISSUE_TEMPLATE/feature_request.md).
+- Contributions are licensed under the [MIT License](LICENSE).
+
 ## Project Intent
 
 Lumen is an **agentic coding experiment**. This repository was built 100% with coding agents (no hand-authored implementation passes), and the contribution model is intentionally aligned with that goal.
@@ -27,6 +33,7 @@ Agentic contributions are still expected to meet normal engineering standards:
 ## Practical Workflow
 
 1. Open an issue (or reference an existing one) describing the intended change.
+   Use the relevant issue template for consistency.
 2. Use your agent workflow to implement the change.
 3. Run checks locally (at minimum: `cargo test --workspace`).
 4. Submit a PR with:
@@ -34,6 +41,7 @@ Agentic contributions are still expected to meet normal engineering standards:
    - motivation,
    - testing evidence,
    - any follow-up work.
+   Use the PR template at `.github/pull_request_template.md`.
 
 ## Where to Start
 

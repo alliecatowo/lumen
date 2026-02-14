@@ -178,4 +178,10 @@ cargo test --workspace
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for workflow and project contribution policy.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for workflow and contribution policy.
+Please also review the [Code of Conduct](CODE_OF_CONDUCT.md).
+Use the issue templates for [bug reports](.github/ISSUE_TEMPLATE/bug_report.md) and [feature requests](.github/ISSUE_TEMPLATE/feature_request.md).
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

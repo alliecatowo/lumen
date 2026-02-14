@@ -2,6 +2,11 @@
 name = "lumen-compiler"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+description.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 serde = { workspace = true }
@@ -10,4 +15,4 @@ sha2 = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-lumen-vm = { path = "../lumen-vm" }
+lumen-vm = { path = "../lumen-vm", version = "0.1.1" }

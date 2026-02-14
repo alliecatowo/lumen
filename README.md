@@ -46,9 +46,12 @@ Building AI systems today means juggling Python notebooks, API clients, prompt t
 ## Quick Start
 
 ```bash
-# Install
-cargo install lumen-lang
+# Install (One-liner)
+curl -fsSL https://raw.githubusercontent.com/alliecatowo/lumen/main/scripts/install.sh | sh
 
+# Or via Cargo
+cargo install lumen-lang
+```
 # Create your first program
 cat > hello.lm.md << 'EOF'
 cell main() -> String

@@ -34,6 +34,12 @@
       "include": "#for-loop"
     },
     {
+      "include": "#match-statement"
+    },
+    {
+      "include": "#return-statement"
+    },
+    {
       "include": "#declaration-keywords"
     },
     {
@@ -267,6 +273,36 @@
             },
             "3": {
               "name": "keyword.control.lumen"
+            }
+          }
+        }
+      ]
+    },
+    "match-statement": {
+      "patterns": [
+        {
+          "match": "\\b(match)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.lumen"
+            },
+            "2": {
+              "name": "variable.other.lumen"
+            }
+          }
+        }
+      ]
+    },
+    "return-statement": {
+      "patterns": [
+        {
+          "match": "\\b(return)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.lumen"
+            },
+            "2": {
+              "name": "variable.other.lumen"
             }
           }
         }

@@ -206,6 +206,12 @@
           }
         },
         {
+          "scope": "variable.other.lumen",
+          "settings": {
+            "foreground": "#abb2bf"
+          }
+        },
+        {
           "scope": "variable.other.declaration.lumen",
           "settings": {
             "foreground": "#e5c07b"

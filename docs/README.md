@@ -4,6 +4,8 @@ This directory contains implementation and usage documentation.
 
 ## Documents
 
+- `../README.md#try-lumen-orbit`: quickest entrypoint to the flagship example.
+- `GETTING_STARTED.md#try-lumen-orbit-flagship-example`: exact run and CI-style commands for the flagship flow.
 - `../SPEC.md`: authoritative spec for currently implemented language behavior.
 - `ARCHITECTURE.md`: compiler/runtime architecture and data flow.
 - `RUNTIME.md`: VM model, values, process runtime behavior, and determinism profile.

@@ -86,6 +86,21 @@ cargo run --bin lumen -- check examples/hello.lm.md
 cargo run --bin lumen -- emit examples/hello.lm.md --output out.json
 ```
 
+## Try lumen-orbit
+
+The flagship example runs from `examples/lumen-orbit/`.
+
+```bash
+cargo run --bin lumen -- run examples/lumen-orbit/src/main.lm.md
+```
+
+CI-style check for the flagship example:
+
+```bash
+cargo run --release --bin lumen -- check examples/lumen-orbit/src/main.lm.md
+cargo run --release --bin lumen -- ci examples/lumen-orbit
+```
+
 ## Language Tour (Inline Examples)
 
 ### 1) Cells, bindings, and interpolation

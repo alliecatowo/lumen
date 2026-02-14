@@ -1,0 +1,32 @@
+[package]
+name = "lumen-orbit"
+version = "0.1.0"
+description = "Bold multi-module workspace showing realistic LLM + MCP orchestration"
+authors = ["Lumen Team <team@lumen.local>"]
+license = "MIT"
+readme = "README.md"
+
+[dependencies]
+# Standalone example workspace.
+
+[providers]
+"llm.chat" = "openai-compatible"
+"http.get" = "builtin-http"
+"github.search_issues" = "mcp-bridge"
+"slack.post_message" = "mcp-bridge"
+
+[providers.config.openai-compatible]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+default_model = "gpt-4o-mini"
+
+[providers.config.builtin-http]
+timeout_ms = 4000
+
+[providers.mcp.github]
+uri = "npx -y @modelcontextprotocol/server-github"
+tools = ["github.search_issues"]
+
+[providers.mcp.slack]
+uri = "npx -y @modelcontextprotocol/server-slack"
+tools = ["slack.post_message"]

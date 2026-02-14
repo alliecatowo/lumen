@@ -37,6 +37,7 @@ features:
 ## Choose Your Starting Point
 
 - New to Lumen: [Start Here](/guide/start-here)
+- Want the flagship example first: [Try lumen-orbit](/GETTING_STARTED#try-lumen-orbit-flagship-example)
 - Want CLI setup now: [Quickstart](/guide/quickstart)
 - Want browser integration: [Browser WASM Guide](/guide/wasm-browser)
 - Want language basics first: [Language Tour](/language/tour)

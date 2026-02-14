@@ -1798,13 +1798,13 @@ impl VM {
                 OpCode::Schema => {
                     let bx = instr.bx() as usize;
                     let type_name = if bx < module.strings.len() {
-                        &module.strings[bx]
+                        module.strings[bx].clone()
                     } else {
-                        ""
+                        String::new()
                     };
-                    let val = &self.registers[base + a];
+                    let val = self.registers[base + a].clone();
 
-                    let valid = match type_name {
+                    let valid = match type_name.as_str() {
                         "Int" => matches!(val, Value::Int(_)),
                         "Float" => matches!(val, Value::Float(_)),
                         "String" => matches!(val, Value::String(_)),
@@ -1813,7 +1813,7 @@ impl VM {
                         "Map" => matches!(val, Value::Map(_)),
                         "Tuple" => matches!(val, Value::Tuple(_)),
                         "Set" => matches!(val, Value::Set(_)),
-                        _ => match val {
+                        _ => match &val {
                             Value::Record(r) => r.type_name == type_name,
                             _ => false,
                         },
@@ -1821,7 +1821,7 @@ impl VM {
 
                     self.emit_debug_event(DebugEvent::SchemaValidate {
                         cell_name: cell.name.clone(),
-                        schema: type_name.to_string(),
+                        schema: type_name.clone(),
                         valid,
                     });
 

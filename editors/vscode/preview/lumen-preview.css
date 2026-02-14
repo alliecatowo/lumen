@@ -1,0 +1,139 @@
+/* Lumen syntax highlighting for VS Code markdown preview */
+pre.lumen-preview {
+  background: var(--vscode-textCodeBlock-background, #1e1e2e);
+  border-radius: 6px;
+  padding: 16px;
+  overflow-x: auto;
+  font-family: var(--vscode-editor-font-family, 'Fira Code', 'Cascadia Code', monospace);
+  font-size: var(--vscode-editor-font-size, 14px);
+  line-height: 1.5;
+}
+
+pre.lumen-preview code {
+  background: transparent;
+  padding: 0;
+}
+
+/* Control keywords: cell, end, if, else, match, return, etc. */
+.lm-keyword {
+  color: #c678dd;
+  font-weight: bold;
+}
+
+/* Declaration keywords: record, enum, use, grant, etc. */
+.lm-decl {
+  color: #e06c75;
+  font-weight: bold;
+}
+
+/* AI keywords: role, expect, where, etc. */
+.lm-ai {
+  color: #d19a66;
+  font-style: italic;
+}
+
+/* Role names: system, user, assistant */
+.lm-role-name {
+  color: #56b6c2;
+  font-weight: bold;
+  font-style: italic;
+}
+
+/* Role content: text after role system: ... */
+.lm-role-text {
+  color: #98c379;
+  font-style: italic;
+}
+
+/* Types: String, Int, Bool, etc. */
+.lm-type {
+  color: #56b6c2;
+}
+
+/* Type definitions: name after record/enum */
+.lm-type-def {
+  color: #e5c07b;
+  font-weight: bold;
+}
+
+/* Type annotations: type names after : or -> */
+.lm-type-ann {
+  color: #e5c07b;
+  font-weight: bold;
+}
+
+/* Type constructors: PullRequest(...) */
+.lm-constructor {
+  color: #e5c07b;
+}
+
+/* Function definitions: name after cell */
+.lm-func-def {
+  color: #61afef;
+  font-weight: bold;
+}
+
+/* Function calls: print(...), append(...) */
+.lm-func-call {
+  color: #61afef;
+}
+
+/* Method calls: .generate(...) */
+.lm-method {
+  color: #61afef;
+  font-style: italic;
+}
+
+/* Variable declarations: name after let */
+.lm-var-decl {
+  color: #e5c07b;
+}
+
+/* Named parameters: repo:, number: */
+.lm-param-label {
+  color: #e06c75;
+  font-style: italic;
+}
+
+/* Property access: .severity, .number */
+.lm-property {
+  color: #e5c07b;
+}
+
+/* Strings */
+.lm-string {
+  color: #98c379;
+}
+
+/* String interpolation */
+.lm-interp {
+  color: #e5c07b;
+}
+
+/* Numbers */
+.lm-number {
+  color: #d19a66;
+}
+
+/* Comments */
+.lm-comment {
+  color: #5c6370;
+  font-style: italic;
+}
+
+/* Constants: true, false, null */
+.lm-constant {
+  color: #d19a66;
+  font-weight: bold;
+}
+
+/* Operators: ->, =>, |>, and, or, not */
+.lm-operator {
+  color: #c678dd;
+}
+
+/* Directives: @tool, @test */
+.lm-directive {
+  color: #e5c07b;
+  font-style: italic;
+}

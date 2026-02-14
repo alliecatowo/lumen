@@ -799,6 +799,9 @@ fn resolve_error_line(e: &ResolveError) -> usize {
         ResolveError::CircularImport { .. } => 1,
         ResolveError::ModuleNotFound { line, .. } => *line,
         ResolveError::ImportedSymbolNotFound { line, .. } => *line,
+        ResolveError::GenericArityMismatch { line, .. } => *line,
+        ResolveError::UndefinedTrait { line, .. } => *line,
+        ResolveError::TraitMissingMethods { line, .. } => *line,
     }
 }
 

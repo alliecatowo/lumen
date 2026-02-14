@@ -3,20 +3,69 @@
   "name": "Lumen",
   "scopeName": "source.lumen",
   "patterns": [
-    { "include": "#comments" },
-    { "include": "#directives" },
-    { "include": "#strings" },
-    { "include": "#raw-strings" },
-    { "include": "#numbers" },
-    { "include": "#constants" },
-    { "include": "#cell-definition" },
-    { "include": "#declaration-keywords" },
-    { "include": "#control-keywords" },
-    { "include": "#ai-keywords" },
-    { "include": "#storage-types" },
-    { "include": "#operators" },
-    { "include": "#type-annotations" },
-    { "include": "#identifiers" }
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#directives"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#raw-strings"
+    },
+    {
+      "include": "#role-blocks"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#constants"
+    },
+    {
+      "include": "#cell-definition"
+    },
+    {
+      "include": "#let-declaration"
+    },
+    {
+      "include": "#for-loop"
+    },
+    {
+      "include": "#declaration-keywords"
+    },
+    {
+      "include": "#control-keywords"
+    },
+    {
+      "include": "#ai-keywords"
+    },
+    {
+      "include": "#storage-types"
+    },
+    {
+      "include": "#type-constructor"
+    },
+    {
+      "include": "#function-call"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#type-annotations"
+    },
+    {
+      "include": "#property-access"
+    },
+    {
+      "include": "#named-argument"
+    },
+    {
+      "include": "#identifiers"
+    }
   ],
   "repository": {
     "comments": {
@@ -51,13 +100,19 @@
               "begin": "\\{",
               "end": "\\}",
               "beginCaptures": {
-                "0": { "name": "punctuation.definition.interpolation.begin.lumen" }
+                "0": {
+                  "name": "punctuation.definition.interpolation.begin.lumen"
+                }
               },
               "endCaptures": {
-                "0": { "name": "punctuation.definition.interpolation.end.lumen" }
+                "0": {
+                  "name": "punctuation.definition.interpolation.end.lumen"
+                }
               },
               "patterns": [
-                { "include": "source.lumen" }
+                {
+                  "include": "source.lumen"
+                }
               ]
             }
           ]
@@ -70,6 +125,45 @@
           "name": "string.quoted.other.raw.lumen",
           "begin": "r\"",
           "end": "\""
+        }
+      ]
+    },
+    "role-blocks": {
+      "patterns": [
+        {
+          "begin": "\\b(role)\\s+(system|user|assistant)\\s*:",
+          "end": "$",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.other.ai.lumen"
+            },
+            "2": {
+              "name": "support.type.role.lumen"
+            }
+          },
+          "contentName": "string.unquoted.role-content.lumen",
+          "patterns": [
+            {
+              "name": "meta.interpolation.lumen",
+              "begin": "\\{",
+              "end": "\\}",
+              "beginCaptures": {
+                "0": {
+                  "name": "punctuation.definition.interpolation.begin.lumen"
+                }
+              },
+              "endCaptures": {
+                "0": {
+                  "name": "punctuation.definition.interpolation.end.lumen"
+                }
+              },
+              "patterns": [
+                {
+                  "include": "source.lumen"
+                }
+              ]
+            }
+          ]
         }
       ]
     },
@@ -118,16 +212,62 @@
         {
           "match": "\\b(cell)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(",
           "captures": {
-            "1": { "name": "keyword.control.lumen" },
-            "2": { "name": "entity.name.function.lumen" }
+            "1": {
+              "name": "keyword.control.lumen"
+            },
+            "2": {
+              "name": "entity.name.function.definition.lumen"
+            }
           }
         },
         {
           "match": "\\b(async)\\s+(cell)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(",
           "captures": {
-            "1": { "name": "keyword.control.lumen" },
-            "2": { "name": "keyword.control.lumen" },
-            "3": { "name": "entity.name.function.lumen" }
+            "1": {
+              "name": "keyword.control.lumen"
+            },
+            "2": {
+              "name": "keyword.control.lumen"
+            },
+            "3": {
+              "name": "entity.name.function.definition.lumen"
+            }
+          }
+        }
+      ]
+    },
+    "let-declaration": {
+      "patterns": [
+        {
+          "match": "\\b(let)\\s+(mut\\s+)?([a-zA-Z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.lumen"
+            },
+            "2": {
+              "name": "keyword.control.lumen"
+            },
+            "3": {
+              "name": "variable.other.declaration.lumen"
+            }
+          }
+        }
+      ]
+    },
+    "for-loop": {
+      "patterns": [
+        {
+          "match": "\\b(for)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s+(in)\\b",
+          "captures": {
+            "1": {
+              "name": "keyword.control.lumen"
+            },
+            "2": {
+              "name": "variable.other.declaration.lumen"
+            },
+            "3": {
+              "name": "keyword.control.lumen"
+            }
           }
         }
       ]
@@ -143,6 +283,17 @@
     "declaration-keywords": {
       "patterns": [
         {
+          "match": "\\b(record|enum|process|trait|impl|type|const|import|from|pub|mod|macro|extern|union)\\s+([A-Z][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.lumen"
+            },
+            "2": {
+              "name": "entity.name.type.definition.lumen"
+            }
+          }
+        },
+        {
           "name": "keyword.declaration.lumen",
           "match": "\\b(record|enum|use|tool|grant|bind|effect|handler|handle|agent|pipeline|orchestration|machine|memory|guardrail|eval|pattern|process|trait|impl|type|const|import|from|pub|mod|macro|extern|union|state|transition|stage|to)\\b"
         }
@@ -151,7 +302,7 @@
     "ai-keywords": {
       "patterns": [
         {
-          "name": "keyword.other.lumen",
+          "name": "keyword.other.ai.lumen",
           "match": "\\b(role|expect|schema|emit|parallel|race|vote|select|timeout|observe|approve|checkpoint|escalate|comptime|where|step|guard)\\b"
         }
       ]
@@ -160,7 +311,39 @@
       "patterns": [
         {
           "name": "storage.type.lumen",
-          "match": "\\b(Int|Float|String|Bool|Bytes|Json|Null|Any|list|map|set|tuple|result|int|float|string|bool|bytes|json|ok|err)\\b"
+          "match": "\\b(Int|Float|String|Bool|Bytes|Json|Null|Any|list|map|set|tuple|result|int|float|string|bool|bytes|json|ok|err|Void)\\b"
+        }
+      ]
+    },
+    "type-constructor": {
+      "patterns": [
+        {
+          "match": "\\b([A-Z][a-zA-Z0-9_]*)\\s*\\(",
+          "captures": {
+            "1": {
+              "name": "entity.name.type.constructor.lumen"
+            }
+          }
+        }
+      ]
+    },
+    "function-call": {
+      "patterns": [
+        {
+          "match": "\\.([a-z_][a-zA-Z0-9_]*)\\s*\\(",
+          "captures": {
+            "1": {
+              "name": "support.function.method.lumen"
+            }
+          }
+        },
+        {
+          "match": "\\b([a-z_][a-zA-Z0-9_]*)\\s*\\(",
+          "captures": {
+            "1": {
+              "name": "support.function.call.lumen"
+            }
+          }
         }
       ]
     },
@@ -168,7 +351,7 @@
       "patterns": [
         {
           "name": "keyword.operator.logical.lumen",
-          "match": "\\b(and|or|not)\\b"
+          "match": "\\b(and|or|not|is)\\b"
         },
         {
           "name": "keyword.operator.arrow.lumen",
@@ -185,6 +368,10 @@
         {
           "name": "keyword.operator.comparison.lumen",
           "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.compound-assign.lumen",
+          "match": "\\+=|-=|\\*=|/=|%="
         },
         {
           "name": "keyword.operator.assignment.lumen",
@@ -205,15 +392,61 @@
         {
           "match": "(->)\\s*([A-Z][a-zA-Z0-9_]*)",
           "captures": {
-            "1": { "name": "keyword.operator.arrow.lumen" },
-            "2": { "name": "entity.name.type.lumen" }
+            "1": {
+              "name": "keyword.operator.arrow.lumen"
+            },
+            "2": {
+              "name": "entity.name.type.lumen"
+            }
           }
         },
         {
           "match": "(:)\\s*([A-Z][a-zA-Z0-9_]*)",
           "captures": {
-            "1": { "name": "punctuation.separator.type.lumen" },
-            "2": { "name": "entity.name.type.lumen" }
+            "1": {
+              "name": "punctuation.separator.type.lumen"
+            },
+            "2": {
+              "name": "entity.name.type.lumen"
+            }
+          }
+        },
+        {
+          "match": "(:)\\s*(list|map|set|tuple|result)\\b",
+          "captures": {
+            "1": {
+              "name": "punctuation.separator.type.lumen"
+            },
+            "2": {
+              "name": "storage.type.lumen"
+            }
+          }
+        }
+      ]
+    },
+    "property-access": {
+      "patterns": [
+        {
+          "match": "\\.([a-z_][a-zA-Z0-9_]*)(?!\\s*\\()",
+          "captures": {
+            "1": {
+              "name": "variable.other.property.lumen"
+            }
+          }
+        }
+      ]
+    },
+    "named-argument": {
+      "patterns": [
+        {
+          "match": "\\b([a-z_][a-zA-Z0-9_]*)\\s*(:)\\s*(?!:)",
+          "captures": {
+            "1": {
+              "name": "variable.parameter.label.lumen"
+            },
+            "2": {
+              "name": "punctuation.separator.key-value.lumen"
+            }
           }
         }
       ]

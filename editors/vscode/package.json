@@ -14,7 +14,7 @@
   ],
   "activationEvents": [
     "onLanguage:lumen",
-    "onLanguage:lumen-markdown"
+    "onLanguage:markdown"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -27,16 +27,6 @@
         ],
         "extensions": [
           ".lm"
-        ],
-        "configuration": "./language-configuration.json"
-      },
-      {
-        "id": "lumen-markdown",
-        "aliases": [
-          "Lumen Markdown"
-        ],
-        "extensions": [
-          ".lm.md"
         ],
         "configuration": "./language-configuration.json"
       }
@@ -80,21 +70,21 @@
         "command": "lumen.check",
         "key": "ctrl+shift+b",
         "mac": "cmd+shift+b",
-        "when": "editorLangId == lumen || editorLangId == lumen-markdown"
+        "when": "editorLangId == lumen || editorLangId == markdown && resourceFilename =~ /\\.lm\\.md$/"
       },
       {
         "command": "lumen.run",
         "key": "f5",
-        "when": "editorLangId == lumen || editorLangId == lumen-markdown"
+        "when": "editorLangId == lumen || editorLangId == markdown && resourceFilename =~ /\\.lm\\.md$/"
       }
+    ],
+    "markdown.markdownItPlugins": true,
+    "markdown.previewStyles": [
+      "./preview/lumen-preview.css"
     ],
     "snippets": [
       {
         "language": "lumen",
-        "path": "./snippets/lumen.json"
-      },
-      {
-        "language": "lumen-markdown",
         "path": "./snippets/lumen.json"
       }
     ],
@@ -112,6 +102,186 @@
           "description": "Path to the lumen CLI binary. Defaults to finding it on PATH."
         }
       }
+    }
+  },
+  "configurationDefaults": {
+    "editor.tokenColorCustomizations": {
+      "textMateRules": [
+        {
+          "scope": "keyword.control.lumen",
+          "settings": {
+            "foreground": "#c678dd",
+            "fontStyle": "bold"
+          }
+        },
+        {
+          "scope": "keyword.declaration.lumen",
+          "settings": {
+            "foreground": "#e06c75",
+            "fontStyle": "bold"
+          }
+        },
+        {
+          "scope": "keyword.other.ai.lumen",
+          "settings": {
+            "foreground": "#d19a66",
+            "fontStyle": "italic"
+          }
+        },
+        {
+          "scope": "support.type.role.lumen",
+          "settings": {
+            "foreground": "#56b6c2",
+            "fontStyle": "bold italic"
+          }
+        },
+        {
+          "scope": "string.unquoted.role-content.lumen",
+          "settings": {
+            "foreground": "#98c379",
+            "fontStyle": "italic"
+          }
+        },
+        {
+          "scope": [
+            "keyword.operator.logical.lumen",
+            "keyword.operator.arrow.lumen",
+            "keyword.operator.comparison.lumen",
+            "keyword.operator.arithmetic.lumen",
+            "keyword.operator.spread.lumen",
+            "keyword.operator.null-coalesce.lumen",
+            "keyword.operator.bang.lumen",
+            "keyword.operator.compound-assign.lumen"
+          ],
+          "settings": {
+            "foreground": "#c678dd"
+          }
+        },
+        {
+          "scope": "keyword.operator.assignment.lumen",
+          "settings": {
+            "foreground": "#abb2bf"
+          }
+        },
+        {
+          "scope": "storage.type.lumen",
+          "settings": {
+            "foreground": "#56b6c2"
+          }
+        },
+        {
+          "scope": [
+            "entity.name.type.lumen",
+            "entity.name.type.definition.lumen"
+          ],
+          "settings": {
+            "foreground": "#e5c07b",
+            "fontStyle": "bold"
+          }
+        },
+        {
+          "scope": "entity.name.type.constructor.lumen",
+          "settings": {
+            "foreground": "#e5c07b"
+          }
+        },
+        {
+          "scope": "entity.name.function.definition.lumen",
+          "settings": {
+            "foreground": "#61afef",
+            "fontStyle": "bold"
+          }
+        },
+        {
+          "scope": "support.function.call.lumen",
+          "settings": {
+            "foreground": "#61afef"
+          }
+        },
+        {
+          "scope": "support.function.method.lumen",
+          "settings": {
+            "foreground": "#61afef",
+            "fontStyle": "italic"
+          }
+        },
+        {
+          "scope": "variable.other.declaration.lumen",
+          "settings": {
+            "foreground": "#e5c07b"
+          }
+        },
+        {
+          "scope": "variable.parameter.label.lumen",
+          "settings": {
+            "foreground": "#e06c75",
+            "fontStyle": "italic"
+          }
+        },
+        {
+          "scope": "variable.other.property.lumen",
+          "settings": {
+            "foreground": "#e5c07b"
+          }
+        },
+        {
+          "scope": [
+            "string.quoted.double.lumen",
+            "string.quoted.other.raw.lumen"
+          ],
+          "settings": {
+            "foreground": "#98c379"
+          }
+        },
+        {
+          "scope": "meta.interpolation.lumen",
+          "settings": {
+            "foreground": "#e5c07b"
+          }
+        },
+        {
+          "scope": [
+            "constant.numeric.integer.lumen",
+            "constant.numeric.float.lumen",
+            "constant.numeric.hex.lumen",
+            "constant.numeric.binary.lumen",
+            "constant.numeric.octal.lumen"
+          ],
+          "settings": {
+            "foreground": "#d19a66"
+          }
+        },
+        {
+          "scope": [
+            "constant.language.boolean.lumen",
+            "constant.language.null.lumen"
+          ],
+          "settings": {
+            "foreground": "#d19a66",
+            "fontStyle": "bold"
+          }
+        },
+        {
+          "scope": "comment.line.number-sign.lumen",
+          "settings": {
+            "foreground": "#5c6370",
+            "fontStyle": "italic"
+          }
+        },
+        {
+          "scope": "keyword.preprocessor.lumen",
+          "settings": {
+            "foreground": "#e5c07b",
+            "fontStyle": "italic"
+          }
+        },
+        {
+          "scope": "punctuation.separator.type.lumen",
+          "settings": {
+            "foreground": "#abb2bf"
+          }
+        }
+      ]
     }
   },
   "dependencies": {

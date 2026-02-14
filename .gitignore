@@ -15,6 +15,11 @@
 .DS_Store
 Thumbs.db
 
+# Editor extensions
+editors/vscode/node_modules/
+editors/vscode/out/
+editors/vscode/package-lock.json
+
 # Environment
 .env
 .env.*

@@ -16,7 +16,7 @@ cargo test -p lumen-compiler -- spec_suite::test_name  # Single test by name
 ## CLI Commands
 
 ```bash
-lumen check <file>                       # Type-check a .lm.md file
+lumen check <file>                       # Type-check a .lm or .lm.md file
 lumen run <file>                         # Compile and execute (default cell: main)
 lumen run <file> --cell <name>           # Run specific cell
 lumen run <file> --trace-dir <dir>       # Enable trace recording
@@ -36,7 +36,7 @@ lumen build wasm --target <web|nodejs|wasi>  # Build WASM target (requires wasm-
 
 ## Project Overview
 
-Lumen is a statically typed programming language for AI-native systems. Source files are markdown (`.lm.md`) with fenced Lumen code blocks. The compiler produces LIR bytecode executed on a register-based VM.
+Lumen is a statically typed programming language for AI-native systems. Source can be markdown (`.lm.md`) with fenced Lumen code blocks or raw source (`.lm`). The compiler produces LIR bytecode executed on a register-based VM.
 
 **Formal Grammar**: See `docs/GRAMMAR.md` for the complete EBNF grammar specification covering all language constructs, operator precedence, and lexical rules.
 
@@ -59,7 +59,7 @@ Other key paths:
 - `SPEC.md` — Implementation-accurate language specification (source of truth)
 - `docs/GRAMMAR.md` — Formal EBNF grammar specification
 - `examples/*.lm.md` — Example programs (30 total)
-- `tasks.md` — Outstanding implementation work
+- `docs/research/EXECUTION_TRACKER.md` — Outstanding implementation work
 - `docs/GETTING_STARTED.md` — Installation and tutorial guide
 - `docs/ARCHITECTURE.md` — Component overview
 - `docs/RUNTIME.md` — Runtime semantics (futures, processes, tool dispatch, traces)
@@ -262,7 +262,7 @@ Providers implement `capabilities()` method to advertise supported features. The
 - **Effects** declared on cells as effect rows: `cell foo() -> Int / {http, trace}`
 - **Processes** (memory, machine, pipeline, etc.) are constructor-backed runtime objects with typed methods
 - **Grants** provide capability-scoped tool access with policy constraints
-- Source format is always markdown with fenced `lumen` code blocks
+- Source format supports markdown (`.lm.md`) with fenced `lumen` blocks and raw (`.lm`) files
 
 **Syntactic Sugar**:
 - **Pipe operator** `|>`: `data |> transform() |> format()` — value becomes first argument
@@ -307,4 +307,3 @@ lumen build wasm --target nodejs
 **Strategy**: See `docs/WASM_STRATEGY.md` for architecture rationale, roadmap, and deployment options. The VM-to-WASM approach leverages existing code and enables both browser (zero-latency AI inference) and server (WASI edge functions) use cases.
 
 **Current Limitations**: No filesystem in browser (use WASI), no tool providers yet (Phase 3), no multi-file imports. See roadmap for planned enhancements.
-

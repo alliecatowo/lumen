@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/public/logo.svg" alt="Lumen Logo" width="180" />
+  <img src="./docs/public/logo.svg" alt="Lumen Logo" width="180" />
 </p>
 
 <h1 align="center">Lumen</h1>
@@ -40,7 +40,7 @@ Building AI systems today means juggling Python notebooks, API clients, prompt t
 | **Agents** | First-class language construct | Class hierarchies |
 | **Processes** | Pipelines, state machines, memory built-in | External libraries |
 | **Effects** | Explicit in type signatures | Implicit, untracked |
-| **Source** | Markdown-native (.lm.md) | Separate code and docs |
+| **Source** | Markdown-native (`.lm.md`) + raw (`.lm`) | Separate code and docs |
 
 ## Quick Start
 
@@ -63,7 +63,7 @@ lumen run hello.lm.md
 
 ### 📝 Markdown-Native Source
 
-Write code and documentation together:
+Write code and documentation together in `.lm.md`, or use `.lm` for source-only modules:
 
 ````markdown
 # User Authentication
@@ -160,6 +160,11 @@ lumen build wasm --target web
 | [State Machine](examples/state_machine.lm.md) | Machine process |
 | [Data Pipeline](examples/data_pipeline.lm.md) | Pipeline process |
 | [Code Reviewer](examples/code_reviewer.lm.md) | AI code analysis |
+| [Syntax Sugar](examples/syntax_sugar.lm.md) | Pipes, ranges, interpolation |
+| [Fibonacci](examples/fibonacci.lm.md) | Recursive algorithms |
+| [Linked List](examples/linked_list.lm.md) | Generic data structures |
+
+See all [30 examples](examples/) in the examples directory.
 
 ## Language Tour
 
@@ -230,12 +235,12 @@ end
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    .lm.md Source Files                       │
+│                 .lm.md / .lm Source Files                    │
 └─────────────────────────┬───────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                    Markdown Extraction                       │
+│     Markdown Extraction (.lm.md) / Direct Parse (.lm)        │
 └─────────────────────────┬───────────────────────────────────┘
                           │
                           ▼
@@ -267,7 +272,7 @@ cd lumen
 # Build
 cargo build --release
 
-# Test
+# Test (1163+ tests)
 cargo test --workspace
 
 # Run
@@ -286,14 +291,15 @@ lumen/
 ├── examples/               # Example programs
 ├── editors/               # Editor support (VS Code)
 ├── rust/
-│   ├── lumen-compiler/    # Compiler implementation
-│   ├── lumen-vm/          # Virtual machine
+│   ├── lumen-compiler/    # Compiler pipeline
+│   ├── lumen-vm/          # Register-based virtual machine
+│   ├── lumen-runtime/     # Runtime: tool dispatch, caching, tracing
 │   ├── lumen-cli/         # Command-line interface
 │   ├── lumen-lsp/         # Language Server Protocol
 │   ├── lumen-wasm/        # WebAssembly bindings
-│   └── lumen-provider-*/  # Tool providers
+│   └── lumen-provider-*/  # Tool providers (HTTP, JSON, FS, MCP)
 ├── SPEC.md                # Implementation-accurate spec
-└── tasks.md               # Outstanding work
+└── CLAUDE.md              # AI assistant instructions
 ```
 
 ## Contributing

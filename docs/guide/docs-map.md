@@ -23,16 +23,17 @@ Use this page as the top-level index for Lumen docs.
 
 ## Project Planning and Research
 
-- `tasks.md`
+- `docs/research/EXECUTION_TRACKER.md`
 - `ROADMAP.md`
 - `VISION.md`
 - `docs/WASM_STRATEGY.md`
-- `docs/TOOLING_GAPS.md`
-- `docs/COMPETITIVE_ANALYSIS.md`
+- `docs/TODO_AUDIT.md`
+- `docs/research/PL_COMPETITIVE_BRIEF_2026.md`
+- `docs/research/ECOSYSTEM_BENCHMARK_2026.md`
 - `docs/research/*`
 
 ## External Links
 
 - GitHub repo: <https://github.com/alliecatowo/lumen>
 - Spec file: <https://github.com/alliecatowo/lumen/blob/main/SPEC.md>
-- Open tasks: <https://github.com/alliecatowo/lumen/blob/main/tasks.md>
+- Execution tracker: <https://github.com/alliecatowo/lumen/blob/main/docs/research/EXECUTION_TRACKER.md>

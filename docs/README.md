@@ -10,11 +10,11 @@ This directory contains implementation and usage documentation.
 - `ARCHITECTURE.md`: compiler/runtime architecture and data flow.
 - `RUNTIME.md`: VM model, values, process runtime behavior, and determinism profile.
 - `CLI.md`: CLI command reference.
-- `../tasks.md`: concrete outstanding work.
+- `research/EXECUTION_TRACKER.md`: concrete outstanding work.
 - `../ROADMAP.md`: strategic direction.
 
 ## Source of Truth Policy
 
 - `SPEC.md` describes what exists now.
-- `tasks.md` tracks what is missing.
+- `docs/research/EXECUTION_TRACKER.md` tracks what is missing.
 - `ROADMAP.md` tracks where the platform is going.

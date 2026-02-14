@@ -241,7 +241,7 @@ Loop B measurable exit:
 
 Deliverables:
 
-- Fix P0 safety defects already tracked in `tasks.md` (arithmetic, slicing, bounds, unwraps, fuel).
+- Fix P0 safety defects already tracked in `docs/research/EXECUTION_TRACKER.md` (arithmetic, slicing, bounds, unwraps, fuel).
 - Add deterministic-profile enforcement hooks in typechecker/lowering.
 - Wire trace store into VM for real execution events.
 

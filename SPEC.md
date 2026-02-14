@@ -5,13 +5,13 @@ It intentionally excludes planned work that is not fully implemented.
 
 Planned and outstanding work lives in:
 
-- `tasks.md`
+- `docs/research/EXECUTION_TRACKER.md`
 - `ROADMAP.md`
 
 ## 1. Source Model
 
-Lumen source is typically authored in markdown.
-Compiler input may contain fenced Lumen blocks.
+Lumen source is typically authored in markdown (`.lm.md`), with raw `.lm` files also supported as first-class input.
+For markdown files, compiler input may contain fenced Lumen blocks.
 
 ```lumen
 cell main() -> Int
@@ -798,7 +798,7 @@ The Lumen code is identical. Only the configuration changes.
 
 This spec covers implemented behavior only.
 
-Not-yet-complete language areas are intentionally excluded and tracked in `tasks.md` / `ROADMAP.md`.
+Not-yet-complete language areas are intentionally excluded and tracked in `docs/research/EXECUTION_TRACKER.md` / `ROADMAP.md`.
 
 ### Nested Pattern Matching
 
@@ -837,4 +837,3 @@ end
 ```
 
 Nested patterns are compiled to efficient sequential checks with early exit on mismatch.
-

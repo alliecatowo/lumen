@@ -15,36 +15,36 @@ Lumen has differentiators (effect-aware agent semantics, deterministic profile, 
 
 | Domain | What Best Languages Do Right | Why It Wins | Lumen Gap Right Now | Surpass Action For Lumen |
 |---|---|---|---|---|
-| Systems/perf (Rust/C++/Zig) | Ownership + memory safety (Rust), RAII and low-level control (C++), explicit allocators/comptime (Zig) [1][2][3][4] | Predictable performance with explicit resource behavior | VM/runtime has unresolved safety defects and panic paths (`rust/lumen-vm/src/vm.rs`, `rust/lumen-vm/src/values.rs`, `tasks.md`) | Define VM safety contract: checked arithmetic, UTF-8-safe slicing, register bounds, no `unwrap` in dispatch path; add perf baselines and fail CI on regressions |
-| Concurrency/reliability (Go/Erlang/Elixir) | Lightweight concurrency + context cancellation (Go), supervision/restart strategy (Erlang/Elixir OTP) [5][6][7][8] | Resilience under partial failure and high concurrency | Futures exist, but no supervision tree semantics, async tool dispatch is still sync-bound (`rust/lumen-runtime/src/tools.rs`, `tasks.md`) | Add supervised process groups and failure policy declarations; make tool dispatch async-native with bounded timeouts and cancellation propagation |
-| Type safety & ergonomics (Rust/TS/Kotlin/Swift) | Strong type systems + ergonomic null/error handling + strict mode workflows [1][9][10][11] | Fewer production bugs without sacrificing developer speed | Generics/traits parsed but incomplete or unverified (`rust/lumen-compiler/src/compiler/typecheck.rs`, `rust/lumen-compiler/src/compiler/resolve.rs`, `tasks.md`) | Complete generic instantiation + trait conformance + better diagnostics; keep strict-by-default and add targeted escape hatches |
+| Systems/perf (Rust/C++/Zig) | Ownership + memory safety (Rust), RAII and low-level control (C++), explicit allocators/comptime (Zig) [1][2][3][4] | Predictable performance with explicit resource behavior | VM/runtime has unresolved safety defects and panic paths (`rust/lumen-vm/src/vm.rs`, `rust/lumen-vm/src/values.rs`, `docs/research/EXECUTION_TRACKER.md`) | Define VM safety contract: checked arithmetic, UTF-8-safe slicing, register bounds, no `unwrap` in dispatch path; add perf baselines and fail CI on regressions |
+| Concurrency/reliability (Go/Erlang/Elixir) | Lightweight concurrency + context cancellation (Go), supervision/restart strategy (Erlang/Elixir OTP) [5][6][7][8] | Resilience under partial failure and high concurrency | Futures exist, but no supervision tree semantics, async tool dispatch is still sync-bound (`rust/lumen-runtime/src/tools.rs`, `docs/research/EXECUTION_TRACKER.md`) | Add supervised process groups and failure policy declarations; make tool dispatch async-native with bounded timeouts and cancellation propagation |
+| Type safety & ergonomics (Rust/TS/Kotlin/Swift) | Strong type systems + ergonomic null/error handling + strict mode workflows [1][9][10][11] | Fewer production bugs without sacrificing developer speed | Generics/traits parsed but incomplete or unverified (`rust/lumen-compiler/src/compiler/typecheck.rs`, `rust/lumen-compiler/src/compiler/resolve.rs`, `docs/research/EXECUTION_TRACKER.md`) | Complete generic instantiation + trait conformance + better diagnostics; keep strict-by-default and add targeted escape hatches |
 | Data/science (Python/R/Julia) | Rich package ecosystems and rapid data workflows; multiple dispatch and domain libraries [12][13][14] | Fast iteration + huge reusable ecosystem | No data-science-oriented stdlib surface, limited package ingestion path from external ecosystems (`docs/PACKAGE_REGISTRY.md`) | Add typed dataframe/table + vector ops in stdlib and stable external connector story (CSV/Parquet/Arrow/HTTP tools), with deterministic transforms |
-| Web/backend ergonomics (TypeScript/Go/Rust) | Batteries-included server libs, mature async frameworks, strong DX around APIs [15][16][9] | Teams ship APIs quickly with predictable operational behavior | No first-class web service scaffolding; constrained output contracts for HTTP/tool responses are incomplete (`docs/CLI.md`, `tasks.md`) | Add `service` package template + typed route contracts + generated request/response schemas + replayable API test fixtures |
+| Web/backend ergonomics (TypeScript/Go/Rust) | Batteries-included server libs, mature async frameworks, strong DX around APIs [15][16][9] | Teams ship APIs quickly with predictable operational behavior | No first-class web service scaffolding; constrained output contracts for HTTP/tool responses are incomplete (`docs/CLI.md`, `docs/research/EXECUTION_TRACKER.md`) | Add `service` package template + typed route contracts + generated request/response schemas + replayable API test fixtures |
 | Tooling/package ecosystem (Cargo/npm/pip/go modules) | Deterministic lockfiles, workspaces, discovery/publishing, clear dependency semantics [17][18][19][20] | Reproducibility + ecosystem growth | `lumen pkg search` is stub; no registry-backed publish/install flow (`docs/PACKAGE_REGISTRY.md`, `rust/lumen-cli/src/pkg.rs`) | Ship minimal public registry protocol + provenance/checksum verification + workspace-aware resolver and offline cache |
-| Build/test/lint/format/docs DX (Rust/Go) | Standard built-in workflows (`cargo test/doc/clippy`, `go test/fmt/vet/doc`) [21][22] | Team-wide consistency, faster CI, lower maintenance costs | CLI commands exist but parity/coverage and integration quality are uneven (`rust/lumen-cli/src/main.rs`, `docs/CLI.md`, `docs/TOOLING_GAPS.md`) | Unify DX contract: one command for check+lint+test+doc gates, machine-readable outputs, and CI profiles |
+| Build/test/lint/format/docs DX (Rust/Go) | Standard built-in workflows (`cargo test/doc/clippy`, `go test/fmt/vet/doc`) [21][22] | Team-wide consistency, faster CI, lower maintenance costs | CLI commands exist but parity/coverage and integration quality are uneven (`rust/lumen-cli/src/main.rs`, `docs/CLI.md`, `docs/TODO_AUDIT.md`) | Unify DX contract: one command for check+lint+test+doc gates, machine-readable outputs, and CI profiles |
 | Interop/FFI/deployment | Strong C-interop paths (Rust/Go/Zig), multi-target deploy patterns including componentized WASM [23][24][25][26] | Reuse existing ecosystems and simplify deployment | No explicit FFI story; WASM/build targets appear partial (`rust/lumen-cli/src/main.rs`, `docs/WASM_STRATEGY.md`) | Define Lumen ABI + `extern tool/extern fn` boundary + WASI component target; prioritize host/tool portability |
 
 ## 2) Top 20 Deficits for Lumen (Current)
 
-1. Generic type instantiation is not complete in type checking (`rust/lumen-compiler/src/compiler/typecheck.rs`, `tasks.md`).
-2. Trait conformance/method dispatch remains incomplete (`rust/lumen-compiler/src/compiler/resolve.rs`, `tasks.md`).
-3. Parser error recovery still fails fast, hurting DX (`rust/lumen-compiler/src/compiler/parser.rs`, `tasks.md`).
-4. LSP incremental parsing is missing, reducing editor responsiveness (`rust/lumen-lsp/src/main.rs`, `tasks.md`).
-5. `!=` lowering bug causes incorrect semantics (`rust/lumen-compiler/src/compiler/lower.rs`, `tasks.md`).
-6. Closure capture/upvalue model is broken (`rust/lumen-compiler/src/compiler/lower.rs`, `rust/lumen-vm/src/vm.rs`, `tasks.md`).
-7. Set/map comprehension lowering is incorrect (`rust/lumen-compiler/src/compiler/lower.rs`, `tasks.md`).
-8. `if let`/`while let` pattern path is incomplete (`rust/lumen-compiler/src/compiler/parser.rs`, `tasks.md`).
-9. Arithmetic overflow/div-by-zero semantics are unsafe (`rust/lumen-vm/src/vm.rs`, `tasks.md`).
-10. UTF-8 string slicing is unsafe and can panic (`rust/lumen-vm/src/vm.rs`, `tasks.md`).
-11. VM register bounds and unwrap safety are incomplete (`rust/lumen-vm/src/vm.rs`, `tasks.md`).
-12. Trace infrastructure is not fully wired into VM execution (`rust/lumen-vm/src/vm.rs`, `rust/lumen-runtime/src/trace/store.rs`, `tasks.md`).
-13. Cache persistence path is incomplete on startup (`rust/lumen-runtime/src/cache.rs`, `tasks.md`).
-14. Tool dispatch is synchronous, blocking true async orchestration (`rust/lumen-runtime/src/tools.rs`, `tasks.md`).
+1. Generic type instantiation is not complete in type checking (`rust/lumen-compiler/src/compiler/typecheck.rs`, `docs/research/EXECUTION_TRACKER.md`).
+2. Trait conformance/method dispatch remains incomplete (`rust/lumen-compiler/src/compiler/resolve.rs`, `docs/research/EXECUTION_TRACKER.md`).
+3. Parser error recovery still fails fast, hurting DX (`rust/lumen-compiler/src/compiler/parser.rs`, `docs/research/EXECUTION_TRACKER.md`).
+4. LSP incremental parsing is missing, reducing editor responsiveness (`rust/lumen-lsp/src/main.rs`, `docs/research/EXECUTION_TRACKER.md`).
+5. `!=` lowering bug causes incorrect semantics (`rust/lumen-compiler/src/compiler/lower.rs`, `docs/research/EXECUTION_TRACKER.md`).
+6. Closure capture/upvalue model is broken (`rust/lumen-compiler/src/compiler/lower.rs`, `rust/lumen-vm/src/vm.rs`, `docs/research/EXECUTION_TRACKER.md`).
+7. Set/map comprehension lowering is incorrect (`rust/lumen-compiler/src/compiler/lower.rs`, `docs/research/EXECUTION_TRACKER.md`).
+8. `if let`/`while let` pattern path is incomplete (`rust/lumen-compiler/src/compiler/parser.rs`, `docs/research/EXECUTION_TRACKER.md`).
+9. Arithmetic overflow/div-by-zero semantics are unsafe (`rust/lumen-vm/src/vm.rs`, `docs/research/EXECUTION_TRACKER.md`).
+10. UTF-8 string slicing is unsafe and can panic (`rust/lumen-vm/src/vm.rs`, `docs/research/EXECUTION_TRACKER.md`).
+11. VM register bounds and unwrap safety are incomplete (`rust/lumen-vm/src/vm.rs`, `docs/research/EXECUTION_TRACKER.md`).
+12. Trace infrastructure is not fully wired into VM execution (`rust/lumen-vm/src/vm.rs`, `rust/lumen-runtime/src/trace/store.rs`, `docs/research/EXECUTION_TRACKER.md`).
+13. Cache persistence path is incomplete on startup (`rust/lumen-runtime/src/cache.rs`, `docs/research/EXECUTION_TRACKER.md`).
+14. Tool dispatch is synchronous, blocking true async orchestration (`rust/lumen-runtime/src/tools.rs`, `docs/research/EXECUTION_TRACKER.md`).
 15. Package registry/publishing is not implemented (`docs/PACKAGE_REGISTRY.md`, `rust/lumen-cli/src/pkg.rs`).
-16. MCP bridge is still missing (`ROADMAP.md`, `tasks.md`).
-17. Intrinsic stdlib mapping is incomplete from source names (`rust/lumen-compiler/src/compiler/lower.rs`, `tasks.md`).
-18. Runtime `where` constraints and field defaults are incomplete (`rust/lumen-compiler/src/compiler/constraints.rs`, `tasks.md`).
-19. Build/test/lint/doc command contract is not yet at Rust/Go ecosystem reliability (`rust/lumen-cli/src/main.rs`, `docs/TOOLING_GAPS.md`).
+16. MCP bridge is still missing (`ROADMAP.md`, `docs/research/EXECUTION_TRACKER.md`).
+17. Intrinsic stdlib mapping is incomplete from source names (`rust/lumen-compiler/src/compiler/lower.rs`, `docs/research/EXECUTION_TRACKER.md`).
+18. Runtime `where` constraints and field defaults are incomplete (`rust/lumen-compiler/src/compiler/constraints.rs`, `docs/research/EXECUTION_TRACKER.md`).
+19. Build/test/lint/doc command contract is not yet at Rust/Go ecosystem reliability (`rust/lumen-cli/src/main.rs`, `docs/TODO_AUDIT.md`).
 20. Interop and deployment boundary (FFI + robust WASM component story) is not yet production-ready (`docs/WASM_STRATEGY.md`, `rust/lumen-cli/src/main.rs`).
 
 ## 3) Top 20 Leapfrog Opportunities
@@ -95,7 +95,7 @@ Lumen has differentiators (effect-aware agent semantics, deterministic profile, 
 - Exit criteria: machine-readable output and nonzero exit on any gate failure.
 
 5. Research-to-roadmap sync note.
-- Files: `ROADMAP.md`, `tasks.md` (append only concise deltas if accepted).
+- Files: `ROADMAP.md`, `docs/research/EXECUTION_TRACKER.md` (append only concise deltas if accepted).
 - Deliverable: top 5 execution deltas from this brief.
 - Exit criteria: no broad rewrite, only actionable additions.
 
@@ -195,7 +195,7 @@ Lumen has differentiators (effect-aware agent semantics, deterministic profile, 
 ### Internal Repo Evidence
 
 - `ROADMAP.md`
-- `tasks.md`
+- `docs/research/EXECUTION_TRACKER.md`
 - `docs/ARCHITECTURE.md`
 - `docs/RUNTIME.md`
 - `docs/CLI.md`

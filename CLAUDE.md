@@ -38,6 +38,8 @@ lumen build wasm --target <web|nodejs|wasi>  # Build WASM target (requires wasm-
 
 Lumen is a statically typed programming language for AI-native systems. Source files are markdown (`.lm.md`) with fenced Lumen code blocks. The compiler produces LIR bytecode executed on a register-based VM.
 
+**Formal Grammar**: See `docs/GRAMMAR.md` for the complete EBNF grammar specification covering all language constructs, operator precedence, and lexical rules.
+
 ## Workspace Layout
 
 The Cargo workspace root is `/Cargo.toml` with members under `rust/`:
@@ -55,6 +57,7 @@ The Cargo workspace root is `/Cargo.toml` with members under `rust/`:
 
 Other key paths:
 - `SPEC.md` — Implementation-accurate language specification (source of truth)
+- `docs/GRAMMAR.md` — Formal EBNF grammar specification
 - `examples/*.lm.md` — Example programs (22 total)
 - `tasks.md` — Outstanding implementation work
 - `docs/GETTING_STARTED.md` — Installation and tutorial guide

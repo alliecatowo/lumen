@@ -212,12 +212,6 @@
           }
         },
         {
-          "scope": "variable.other.declaration.lumen",
-          "settings": {
-            "foreground": "#e5c07b"
-          }
-        },
-        {
           "scope": "variable.parameter.label.lumen",
           "settings": {
             "foreground": "#e06c75",

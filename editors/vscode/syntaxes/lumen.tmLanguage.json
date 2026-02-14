@@ -254,7 +254,7 @@
               "name": "keyword.control.lumen"
             },
             "3": {
-              "name": "variable.other.declaration.lumen"
+              "name": "variable.other.lumen"
             }
           }
         }
@@ -269,7 +269,7 @@
               "name": "keyword.control.lumen"
             },
             "2": {
-              "name": "variable.other.declaration.lumen"
+              "name": "variable.other.lumen"
             },
             "3": {
               "name": "keyword.control.lumen"

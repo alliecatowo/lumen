@@ -744,7 +744,12 @@ impl Formatter {
                 self.writeln(&self.fmt_expr(&s.expr));
             }
             Stmt::While(s) => {
-                self.writeln(&format!("while {}", self.fmt_expr(&s.condition)));
+                let label_str = if let Some(label) = &s.label {
+                    format!("@{} ", label)
+                } else {
+                    String::new()
+                };
+                self.writeln(&format!("while {}{}", label_str, self.fmt_expr(&s.condition)));
                 self.push_indent();
                 for stmt in &s.body {
                     self.fmt_stmt(stmt);
@@ -753,7 +758,11 @@ impl Formatter {
                 self.writeln("end");
             }
             Stmt::Loop(s) => {
-                self.writeln("loop");
+                if let Some(label) = &s.label {
+                    self.writeln(&format!("loop @{}", label));
+                } else {
+                    self.writeln("loop");
+                }
                 self.push_indent();
                 for stmt in &s.body {
                     self.fmt_stmt(stmt);
@@ -1082,9 +1091,6 @@ impl Formatter {
             }
             Expr::TypeCast { expr, target_type, .. } => {
                 format!("{} as {}", self.fmt_expr(expr), target_type)
-            }
-            Expr::NullSafeIndex(obj, idx, _) => {
-                format!("{}?[{}]", self.fmt_expr(obj), self.fmt_expr(idx))
             }
         }
     }

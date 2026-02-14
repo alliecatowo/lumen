@@ -590,6 +590,7 @@ impl VM {
             | OpCode::Sub
             | OpCode::Mul
             | OpCode::Div
+            | OpCode::FloorDiv
             | OpCode::Mod
             | OpCode::Pow
             | OpCode::Concat
@@ -1306,6 +1307,27 @@ impl VM {
                         return Err(VmError::DivisionByZero);
                     }
                     self.arith_op(base, a, b, c, |x, y| x.checked_div(y), |x, y| x / y)?;
+                }
+                OpCode::FloorDiv => {
+                    // Floor division: integer division for ints, floor(a/b) for floats
+                    let is_zero = matches!(
+                        (&self.registers[base + b], &self.registers[base + c]),
+                        (Value::Int(_), Value::Int(0))
+                    ) || matches!(
+                        &self.registers[base + c],
+                        Value::Float(f) if *f == 0.0
+                    );
+                    if is_zero {
+                        return Err(VmError::DivisionByZero);
+                    }
+                    let result = match (&self.registers[base + b], &self.registers[base + c]) {
+                        (Value::Int(x), Value::Int(y)) => Value::Int(x.div_euclid(*y)),
+                        (Value::Float(x), Value::Float(y)) => Value::Float((*x / *y).floor()),
+                        (Value::Int(x), Value::Float(y)) => Value::Float((*x as f64 / *y).floor()),
+                        (Value::Float(x), Value::Int(y)) => Value::Float((*x / *y as f64).floor()),
+                        _ => Value::Null,
+                    };
+                    self.registers[base + a] = result;
                 }
                 OpCode::Mod => {
                     // Pre-check for integer modulo by zero

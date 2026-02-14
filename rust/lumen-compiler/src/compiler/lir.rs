@@ -42,6 +42,7 @@ pub enum OpCode {
     Pow = 0x25,    // A, B, C: A = B ** C
     Neg = 0x26,    // A, B:    A = -B
     Concat = 0x27, // A, B, C: A = B ++ C
+    FloorDiv = 0x2E, // A, B, C: A = B // C (floor division)
 
     // Bitwise
     BitOr = 0x28,  // A, B, C: A = B | C

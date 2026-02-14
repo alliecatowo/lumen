@@ -1,211 +1,315 @@
-# Lumen
+<p align="center">
+  <img src="docs/public/logo.svg" alt="Lumen Logo" width="180" />
+</p>
 
-![Status](https://img.shields.io/badge/status-active-success)
-![Markdown Native](https://img.shields.io/badge/authoring-markdown--native-blue)
-![AI Native](https://img.shields.io/badge/focus-ai--native-purple)
-![Runtime](https://img.shields.io/badge/runtime-register--vm-orange)
-![Built with Agents](https://img.shields.io/badge/built%20with-agents-ff69b4)
+<h1 align="center">Lumen</h1>
 
-Lumen is a **statically typed, markdown-native programming language** for building AI-native systems.
+<p align="center">
+  <strong>The AI-Native Programming Language</strong>
+</p>
 
-Write programs in `.lm` or `.lm.md` files, keep your code and intent together, and compile to a VM runtime that supports modern language fundamentals **plus** first-class tooling for effects, orchestration, policy-aware execution, and agent workflows.
+<p align="center">
+  <em>Build deterministic agent workflows with static types, first-class AI primitives, and markdown-native source files.</em>
+</p>
+
+<p align="center">
+  <a href="https://alliecatowo.github.io/lumen/"><strong>📚 Documentation</strong></a> ·
+  <a href="https://alliecatowo.github.io/lumen/playground"><strong>🎮 Playground</strong></a> ·
+  <a href="https://github.com/alliecatowo/lumen/issues"><strong>🐛 Issues</strong></a> ·
+  <a href="https://github.com/alliecatowo/lumen/discussions"><strong>💬 Discussions</strong></a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/github/actions/workflow/status/alliecatowo/lumen/ci.yml?branch=main&label=CI&style=flat-square" alt="CI Status" />
+  <img src="https://img.shields.io/github/actions/workflow/status/alliecatowo/lumen/pages.yml?branch=main&label=Docs&style=flat-square" alt="Docs Status" />
+  <img src="https://img.shields.io/crates/v/lumen-lang?style=flat-square" alt="Crates.io" />
+  <img src="https://img.shields.io/github/license/alliecatowo/lumen?style=flat-square" alt="License" />
+  <img src="https://img.shields.io/github/stars/alliecatowo/lumen?style=flat-square" alt="Stars" />
+</p>
 
 ---
 
 ## Why Lumen?
 
-Most AI software today is stitched together from prompts, glue code, and infrastructure spread across too many layers.
+Building AI systems today means juggling Python notebooks, API clients, prompt templates, and orchestration frameworks. **Lumen unifies this into one language:**
 
-Lumen gives you one language and one runtime for the whole flow:
+| Feature | Lumen | Traditional Stack |
+|---------|-------|-------------------|
+| **Tools** | Typed interfaces with policy constraints | Framework wrappers |
+| **Grants** | Built-in safety limits (tokens, timeouts, domains) | Manual validation |
+| **Agents** | First-class language construct | Class hierarchies |
+| **Processes** | Pipelines, state machines, memory built-in | External libraries |
+| **Effects** | Explicit in type signatures | Implicit, untracked |
+| **Source** | Markdown-native (.lm.md) | Separate code and docs |
 
-- **Language ergonomics you expect**: types, functions, control flow, records, pattern matching.
-- **Agentic features you actually need**: tool declarations, grants, role prompts, and policy controls.
-- **Dual-format source files**: `.lm` (raw) and `.lm.md` (markdown with fenced `lumen` blocks) are both first-class.
-- **Compiler + VM stack**: from lexer/parser/typechecker to LIR lowering and register-based execution.
+## Quick Start
 
-If you want to build robust AI systems without duct-taping five frameworks together, Lumen is the bet.
+```bash
+# Install
+cargo install lumen-lang
 
-## Community and Project Health
+# Create your first program
+cat > hello.lm.md << 'EOF'
+cell main() -> String
+  return "Hello, World!"
+end
+EOF
 
-- [Contributing Guide](CONTRIBUTING.md)
-- [Code of Conduct](CODE_OF_CONDUCT.md)
-- [License (MIT)](LICENSE)
-- [Bug Report Template](.github/ISSUE_TEMPLATE/bug_report.md)
-- [Feature Request Template](.github/ISSUE_TEMPLATE/feature_request.md)
-- [Pull Request Template](.github/pull_request_template.md)
-- [Private Security Report](https://github.com/lumen-lang/lumen/security/advisories/new)
+# Run it
+lumen run hello.lm.md
+```
 
-## What makes it markdown-native?
+## Features
 
-Lumen source is commonly authored in markdown with fenced `lumen` code blocks:
+### 📝 Markdown-Native Source
+
+Write code and documentation together:
 
 ````markdown
-# My Agent
+# User Authentication
 
-This cell greets the operator.
+This module handles user login and session management.
 
 ```lumen
-cell main() -> Null
-  let name = "Lumen"
-  print("Hello from markdown, {name}!")
-  return null
+record User
+  id: String
+  name: String
+  email: String where email.contains("@")
+end
+
+cell authenticate(email: String, password: String) -> result[User, String]
+  # Implementation here
 end
 ```
 ````
 
-That means you can keep architecture notes, rationale, and runnable language code in one artifact. If you prefer raw source files, use `.lm` with the same CLI commands.
+### 🔒 Statically Typed
 
-## Current State
-
-- Compiler pipeline: `lexer -> parser -> resolver -> typechecker -> LIR lowering`
-- Runtime: register VM with tool dispatch, structured values, futures, traces, and process runtime objects
-- CLI commands: `check`, `run`, `emit`, `trace show`, `cache clear`
-
-## Quick Start
-
-### Prerequisites
-
-- Rust stable
-- Cargo
-
-### Build
-
-```bash
-git clone https://github.com/lumen-lang/lumen.git
-cd lumen
-cargo build --release
-```
-
-### Run a program (`.lm.md` or `.lm`)
-
-```bash
-cargo run --bin lumen -- run examples/hello.lm.md
-```
-
-Use `examples/hello.lm` the same way for raw source files.
-
-### Typecheck only
-
-```bash
-cargo run --bin lumen -- check examples/hello.lm.md
-```
-
-### Emit LIR JSON
-
-```bash
-cargo run --bin lumen -- emit examples/hello.lm.md --output out.json
-```
-
-## Try lumen-orbit
-
-The flagship example runs from `examples/lumen-orbit/`.
-
-```bash
-cargo run --bin lumen -- run examples/lumen-orbit/src/main.lm.md
-```
-
-CI-style check for the flagship example:
-
-```bash
-cargo run --release --bin lumen -- check examples/lumen-orbit/src/main.lm.md
-cargo run --release --bin lumen -- ci examples/lumen-orbit
-```
-
-## Language Tour (Inline Examples)
-
-### 1) Cells, bindings, and interpolation
+Catch errors at compile time:
 
 ```lumen
-cell greet(name: String) -> String
-  let punctuation = "!"
-  return "Hello, {name}{punctuation}"
+cell divide(a: Int, b: Int) -> result[Int, String]
+  if b == 0
+    return err("Division by zero")
+  end
+  return ok(a / b)
 end
 ```
 
-### 2) Control flow with `if`, `while`, and `match`
+### 🤖 AI-Native Constructs
 
-```lumen
-cell classify(n: Int) -> String
-  let i = 0
-  while i < n
-    i += 1
-  end
-
-  let label = "other"
-  match n
-    0 -> label = "zero"
-    1 -> label = "one"
-    _ -> label = "many"
-  end
-
-  if i == n
-    return label
-  end
-  return "unreachable"
-end
-```
-
-### 3) Records with constraints
-
-```lumen
-record Invoice
-  subtotal: Float where subtotal >= 0.0
-  tax: Float where tax >= 0.0
-  total: Float where total == subtotal + tax
-end
-
-cell make_invoice() -> Invoice
-  return Invoice(subtotal: 100.0, tax: 10.0, total: 110.0)
-end
-```
-
-### 4) Agentic primitives (tools, grants, and roles)
+Tools, grants, and agents are built-in:
 
 ```lumen
 use tool llm.chat as Chat
 
 grant Chat
   model "gpt-4o"
-  max_tokens 512
-  temperature 0.2
+  max_tokens 1024
+  temperature 0.7
 
-cell summarize(text: String) -> String
-  role system: You are a concise assistant.
-  role user: Summarize this text: {text}
-  return "summary placeholder"
+agent Assistant
+  cell respond(message: String) -> String / {llm}
+    role system: You are a helpful assistant.
+    role user: {message}
+    return Chat(prompt: message)
+  end
 end
 ```
 
-For runnable examples, start here:
+### ⚡ Deterministic Runtime
 
-- `examples/hello.lm.md`
-- `examples/language_features.lm.md`
-- `examples/invoice_agent.lm.md`
-- `examples/data_pipeline.lm.md`
+Reproducible execution for auditable AI:
 
-## Repository Guide
+```lumen
+@deterministic true
 
-- `SPEC.md`: implementation-accurate language specification
-- `tasks.md`: concrete outstanding implementation tasks
-- `ROADMAP.md`: long-horizon direction and platform goals
-- `docs/`: architecture and developer documentation
-- `rust/lumen-compiler`: compiler implementation
-- `rust/lumen-vm`: VM/runtime implementation
-- `rust/lumen-cli`: command-line interface
+cell main() -> String
+  # Nondeterministic operations rejected at compile time
+  # uuid()      # Error!
+  # timestamp() # Error!
+  return "Deterministic output"
+end
+```
+
+### 🌐 WASM Ready
+
+Compile to WebAssembly for browser execution:
+
+```bash
+lumen build wasm --target web
+```
+
+## Documentation
+
+| Resource | Description |
+|----------|-------------|
+| [Getting Started](https://alliecatowo.github.io/lumen/learn/getting-started) | Installation and first program |
+| [Tutorial](https://alliecatowo.github.io/lumen/learn/tutorial/basics) | Step-by-step language guide |
+| [AI-Native Features](https://alliecatowo.github.io/lumen/learn/ai-native/tools) | Tools, grants, agents, processes |
+| [Language Reference](https://alliecatowo.github.io/lumen/reference/overview) | Complete specification |
+| [API Reference](https://alliecatowo.github.io/lumen/api/builtins) | Standard library |
+| [Playground](https://alliecatowo.github.io/lumen/playground) | Try Lumen in your browser |
+
+## Examples
+
+| Example | Description |
+|---------|-------------|
+| [Hello World](examples/hello.lm.md) | Basic program |
+| [AI Chat](examples/ai_chat.lm.md) | LLM-powered chatbot |
+| [State Machine](examples/state_machine.lm.md) | Machine process |
+| [Data Pipeline](examples/data_pipeline.lm.md) | Pipeline process |
+| [Code Reviewer](examples/code_reviewer.lm.md) | AI code analysis |
+
+## Language Tour
+
+### Cells (Functions)
+
+```lumen
+cell greet(name: String) -> String
+  return "Hello, {name}!"
+end
+```
+
+### Records with Constraints
+
+```lumen
+record Product
+  name: String where length(name) > 0
+  price: Float where price >= 0.0
+end
+```
+
+### Pattern Matching
+
+```lumen
+cell classify(n: Int) -> String
+  match n
+    0 -> return "zero"
+    1 -> return "one"
+    _ -> return "many"
+  end
+end
+```
+
+### Error Handling
+
+```lumen
+cell safe_divide(a: Int, b: Int) -> String
+  match divide(a, b)
+    ok(value) -> return "Result: {value}"
+    err(msg) -> return "Error: {msg}"
+  end
+end
+```
+
+### Processes
+
+```lumen
+pipeline DataProcessor
+  stages:
+    -> extract
+    -> transform
+    -> load
+  
+  cell extract(source: String) -> list[Json]
+    # Extract data
+  end
+  
+  cell transform(data: list[Json]) -> list[Record]
+    # Transform data
+  end
+  
+  cell load(records: list[Record]) -> Int
+    # Load data
+  end
+end
+```
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    .lm.md Source Files                       │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    Markdown Extraction                       │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Lexer → Parser → Resolver → Typechecker → Constraint Val   │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    LIR Bytecode                              │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    Register VM                               │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐       │
+│  │  Values  │ │ Futures  │ │  Tools   │ │ Traces   │       │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘       │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## Development
 
-Run all tests:
-
 ```bash
+# Clone
+git clone https://github.com/alliecatowo/lumen.git
+cd lumen
+
+# Build
+cargo build --release
+
+# Test
 cargo test --workspace
+
+# Run
+cargo run --bin lumen -- run examples/hello.lm.md
+```
+
+## Repository Structure
+
+```
+lumen/
+├── docs/                    # VitePress documentation site
+│   ├── learn/              # Tutorials and guides
+│   ├── reference/          # Language specification
+│   ├── api/                # Standard library docs
+│   └── examples/           # Example documentation
+├── examples/               # Example programs
+├── editors/               # Editor support (VS Code)
+├── rust/
+│   ├── lumen-compiler/    # Compiler implementation
+│   ├── lumen-vm/          # Virtual machine
+│   ├── lumen-cli/         # Command-line interface
+│   ├── lumen-lsp/         # Language Server Protocol
+│   ├── lumen-wasm/        # WebAssembly bindings
+│   └── lumen-provider-*/  # Tool providers
+├── SPEC.md                # Implementation-accurate spec
+└── tasks.md               # Outstanding work
 ```
 
 ## Contributing
 
-Start with [CONTRIBUTING.md](CONTRIBUTING.md), then open an issue or PR using the templates linked above.
-Please review the [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
+We welcome contributions! Please see:
+
+- [Contributing Guide](CONTRIBUTING.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Good First Issues](https://github.com/alliecatowo/lumen/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+MIT License - see [LICENSE](LICENSE) for details.
+
+---
+
+<p align="center">
+  Made with ❤️ by the Lumen community
+</p>

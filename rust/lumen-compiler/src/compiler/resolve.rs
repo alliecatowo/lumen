@@ -1089,23 +1089,38 @@ pub fn resolve_with_base(
 }
 
 fn check_generic_param_bounds(
-    _params: &[GenericParam],
-    _table: &SymbolTable,
-    _errors: &mut Vec<ResolveError>,
+    params: &[GenericParam],
+    table: &SymbolTable,
+    errors: &mut Vec<ResolveError>,
 ) {
-    // TODO: Implement generic param bound validation
-    // For now, this is a stub to allow compilation
+    for param in params {
+        for bound in &param.bounds {
+            if !table.traits.contains_key(bound) {
+                errors.push(ResolveError::UndefinedTrait {
+                    name: bound.clone(),
+                    line: param.span.line,
+                });
+            }
+        }
+    }
 }
 
 fn check_impl_target_type_refs(
-    _impl_decl: &ImplDef,
-    _table: &SymbolTable,
-    _type_alias_arities: &HashMap<String, usize>,
-    _errors: &mut Vec<ResolveError>,
-    _generics: &[String],
+    impl_decl: &ImplDef,
+    table: &SymbolTable,
+    type_alias_arities: &HashMap<String, usize>,
+    errors: &mut Vec<ResolveError>,
+    generics: &[String],
 ) {
-    // TODO: Implement impl target type reference validation
-    // For now, this is a stub to allow compilation
+    if !impl_decl.trait_name.is_empty() && !table.traits.contains_key(&impl_decl.trait_name) {
+        errors.push(ResolveError::UndefinedTrait {
+            name: impl_decl.trait_name.clone(),
+            line: impl_decl.span.line,
+        });
+    }
+
+    let target = TypeExpr::Named(impl_decl.target_type.clone(), impl_decl.span);
+    check_type_refs_with_generics(&target, table, type_alias_arities, errors, generics);
 }
 
 fn check_effect_grants_for(

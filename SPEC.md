@@ -623,3 +623,42 @@ The Lumen code is identical. Only the configuration changes.
 This spec covers implemented behavior only.
 
 Not-yet-complete language areas are intentionally excluded and tracked in `tasks.md` / `ROADMAP.md`.
+
+### Nested Pattern Matching
+
+Patterns can be nested arbitrarily deep, allowing complex destructuring in a single match arm:
+
+```lumen
+enum Result
+  Ok(val: Int)
+  Err(msg: String)
+end
+
+enum Option
+  Some(result: Result)
+  None
+end
+
+cell unwrap_or_zero(opt: Option) -> Int
+  match opt
+    Some(Ok(val)) -> val              # 2-level nesting
+    Some(Err(msg)) -> 0
+    None -> 0
+  end
+end
+
+# Deeper nesting also works
+match deeply_nested
+  Wrapper(Some(Ok(value))) -> value   # 3-level nesting
+  _ -> default
+end
+
+# Nested patterns work with guards and OR patterns
+match result
+  Some(Ok(n)) | Some(Err(_)) if n > 0 -> "positive success"
+  _ -> "other"
+end
+```
+
+Nested patterns are compiled to efficient sequential checks with early exit on mismatch.
+

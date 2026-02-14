@@ -3,6 +3,7 @@ import { shikiLanguages } from "./shiki-languages";
 
 const repository = process.env.GITHUB_REPOSITORY?.split("/")[1] ?? "lumen";
 const base = process.env.CI ? `/${repository}/` : "/";
+const iconHref = `${base}logo.svg`;
 
 export default defineConfig({
   title: "Lumen",
@@ -14,7 +15,8 @@ export default defineConfig({
   ignoreDeadLinks: [/\.\.\/SPEC/],
   head: [
     ["meta", { name: "theme-color", content: "#0f766e" }],
-    ["link", { rel: "icon", type: "image/svg+xml", href: "/logo.svg" }],
+    ["link", { rel: "icon", type: "image/svg+xml", href: iconHref }],
+    ["link", { rel: "apple-touch-icon", href: iconHref }],
     ["meta", { property: "og:type", content: "website" }],
     ["meta", { property: "og:title", content: "Lumen Language Docs" }],
     [

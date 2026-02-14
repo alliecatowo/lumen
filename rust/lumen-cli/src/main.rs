@@ -53,8 +53,8 @@ fn status_label(label: &str) -> String {
 {all-args}{after-help}
 
 Examples:
-  lumen check hello.lm.md              Type-check a file
-  lumen run hello.lm.md                Compile and run (default: main cell)
+  lumen check hello.lm                 Type-check a file
+  lumen run hello.lumen                Compile and run (default: main cell)
   lumen run hello.lm.md --cell test    Run a specific cell
   lumen fmt *.lm.md                    Format source files
   lumen test                           Run all test_* cells
@@ -68,13 +68,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Type-check a `.lm` or `.lm.md` source file
+    /// Type-check a `.lm`, `.lumen`, `.lm.md`, or `.lumen.md` source file
     Check {
         /// Path to the source file
         #[arg()]
         file: PathBuf,
     },
-    /// Compile and run a `.lm` or `.lm.md` file
+    /// Compile and run a `.lm`, `.lumen`, `.lm.md`, or `.lumen.md` file
     Run {
         /// Path to the source file
         #[arg()]
@@ -88,7 +88,7 @@ enum Commands {
         #[arg(long)]
         trace_dir: Option<PathBuf>,
     },
-    /// Compile a `.lm` or `.lm.md` file to LIR JSON
+    /// Compile a `.lm`, `.lumen`, `.lm.md`, or `.lumen.md` file to LIR JSON
     Emit {
         /// Path to the source file
         #[arg()]
@@ -544,7 +544,7 @@ fn cmd_ci(path: PathBuf) {
     if path.is_file() {
         if !is_lumen_source(&path) {
             eprintln!(
-                "{} expected a .lm or .lm.md file, got '{}'",
+                "{} expected a .lm, .lumen, .lm.md, or .lumen.md file, got '{}'",
                 red("error:"),
                 path.display()
             );
@@ -559,7 +559,7 @@ fn cmd_ci(path: PathBuf) {
     source_files.sort();
     if source_files.is_empty() {
         eprintln!(
-            "{} no .lm/.lm.md files found under {}",
+            "{} no .lm/.lumen/.lm.md/.lumen.md files found under {}",
             red("error:"),
             path.display()
         );
@@ -712,7 +712,10 @@ fn gate_run_tests(path: &Path) -> bool {
 
 fn gate_doc_sanity(markdown_files: &[PathBuf]) -> bool {
     if markdown_files.is_empty() {
-        eprintln!("{} no .lm.md files found for doc sanity", red("error:"));
+        eprintln!(
+            "{} no .lm.md/.lumen.md files found for doc sanity",
+            red("error:")
+        );
         return false;
     }
 
@@ -765,7 +768,13 @@ fn collect_lumen_sources(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), St
 }
 
 fn is_lumen_source(path: &Path) -> bool {
-    is_markdown_source(path) || path.extension().and_then(|s| s.to_str()) == Some("lm")
+    if is_markdown_source(path) {
+        return true;
+    }
+    matches!(
+        path.extension().and_then(|s| s.to_str()),
+        Some("lm") | Some("lumen")
+    )
 }
 
 fn read_source(path: &PathBuf) -> String {
@@ -783,7 +792,7 @@ fn read_source(path: &PathBuf) -> String {
 fn is_markdown_source(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
-        .map(|n| n.ends_with(".lm.md"))
+        .map(|n| n.ends_with(".lm.md") || n.ends_with(".lumen.md"))
         .unwrap_or(false)
 }
 
@@ -822,11 +831,7 @@ fn compile_source_file(
     let resolver = RefCell::new(resolver);
     let resolve_import = |module_path: &str| resolver.borrow_mut().resolve(module_path);
 
-    if is_markdown_source(path) {
-        lumen_compiler::compile_with_imports(source, &resolve_import)
-    } else {
-        lumen_compiler::compile_raw_with_imports(source, &resolve_import)
-    }
+    lumen_compiler::compile_with_imports(source, &resolve_import)
 }
 
 fn cmd_check(file: &PathBuf) {
@@ -978,7 +983,10 @@ fn cmd_emit(file: &PathBuf, output: Option<PathBuf>) {
         }
     };
 
-    let json = lumen_compiler::compiler::emit::emit_json(&module);
+    let json = lumen_compiler::compiler::emit::emit_json(&module).unwrap_or_else(|e| {
+        eprintln!("{} emit failed: {}", red("error:"), e);
+        std::process::exit(1);
+    });
 
     if let Some(ref out_path) = output {
         println!("{} LIR to {}", status_label("Emitting"), out_path.display());

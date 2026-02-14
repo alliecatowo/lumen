@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 #[derive(Parser)]
 #[command(
     name = "lpx",
-    about = "Lumen Package Executor — run any .lm or .lm.md file",
+    about = "Lumen Package Executor — run any .lm/.lumen/.lm.md/.lumen.md file",
     version
 )]
 struct Args {
@@ -22,13 +22,6 @@ struct Args {
     /// Emit trace to the given directory
     #[arg(long)]
     trace_dir: Option<PathBuf>,
-}
-
-fn is_markdown_source(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .map(|n| n.ends_with(".lm.md"))
-        .unwrap_or(false)
 }
 
 fn find_project_root(start: &Path) -> Option<PathBuf> {
@@ -66,11 +59,7 @@ fn compile_source_file(
     let resolver = RefCell::new(resolver);
     let resolve_import = |module_path: &str| resolver.borrow_mut().resolve(module_path);
 
-    if is_markdown_source(path) {
-        lumen_compiler::compile_with_imports(source, &resolve_import)
-    } else {
-        lumen_compiler::compile_raw_with_imports(source, &resolve_import)
-    }
+    lumen_compiler::compile_with_imports(source, &resolve_import)
 }
 
 fn main() {

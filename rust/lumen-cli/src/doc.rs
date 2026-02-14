@@ -1,4 +1,4 @@
-//! Auto-generate documentation from .lm.md files
+//! Auto-generate documentation from Lumen source files.
 
 use lumen_compiler::compiler::ast::{
     CellDef, EnumDef, Item, Program, RecordDef, TypeAliasDef, TypeExpr,
@@ -51,7 +51,7 @@ struct TypeAliasDoc {
 /// Generate documentation for a single file
 pub fn cmd_doc(path: &Path, format: &str, output: Option<&Path>) -> Result<(), String> {
     if path.is_dir() {
-        // Generate docs for all .lm.md files in directory
+        // Generate docs for all supported Lumen source files in directory
         generate_directory_docs(path, format, output)
     } else {
         // Generate docs for single file
@@ -62,24 +62,14 @@ pub fn cmd_doc(path: &Path, format: &str, output: Option<&Path>) -> Result<(), S
 fn generate_directory_docs(dir: &Path, format: &str, output: Option<&Path>) -> Result<(), String> {
     let mut all_docs = Vec::new();
 
-    // Find all .lm.md files
+    // Find all supported Lumen source files
     for entry in std::fs::read_dir(dir).map_err(|e| format!("Cannot read directory: {}", e))? {
         let entry = entry.map_err(|e| format!("Cannot read entry: {}", e))?;
         let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) == Some("md")
-            && path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| s.ends_with(".lm"))
-                .unwrap_or(false)
-        {
+        if is_lumen_source(&path) {
             let source = std::fs::read_to_string(&path)
                 .map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
-            let filename = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown")
-                .trim_end_matches(".lm");
+            let filename = module_name_for_path(&path);
             let doc = extract_module_doc(&source, filename)?;
             all_docs.push(doc);
         }
@@ -96,11 +86,7 @@ fn generate_directory_docs(dir: &Path, format: &str, output: Option<&Path>) -> R
 fn generate_file_docs(path: &Path, format: &str, output: Option<&Path>) -> Result<(), String> {
     let source = std::fs::read_to_string(path)
         .map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
-    let filename = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unknown")
-        .trim_end_matches(".lm");
+    let filename = module_name_for_path(path);
 
     let doc = extract_module_doc(&source, filename)?;
 
@@ -110,6 +96,33 @@ fn generate_file_docs(path: &Path, format: &str, output: Option<&Path>) -> Resul
     };
 
     write_output(&rendered, output)
+}
+
+fn is_lumen_source(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|name| {
+            name.ends_with(".lm")
+                || name.ends_with(".lumen")
+                || name.ends_with(".lm.md")
+                || name.ends_with(".lumen.md")
+        })
+        .unwrap_or(false)
+}
+
+fn module_name_for_path(path: &Path) -> &str {
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown");
+    if let Some(stripped) = name.strip_suffix(".lm.md") {
+        stripped
+    } else if let Some(stripped) = name.strip_suffix(".lumen.md") {
+        stripped
+    } else if let Some(stripped) = name.strip_suffix(".lm") {
+        stripped
+    } else if let Some(stripped) = name.strip_suffix(".lumen") {
+        stripped
+    } else {
+        name
+    }
 }
 
 fn write_output(content: &str, output: Option<&Path>) -> Result<(), String> {

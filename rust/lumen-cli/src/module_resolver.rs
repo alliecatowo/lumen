@@ -5,10 +5,12 @@ use std::path::PathBuf;
 
 /// Resolves import paths to source files.
 ///
-/// Handles both .lm and .lm.md extensions, checking `.lm` first.
+/// Handles `.lm`, `.lumen`, `.lm.md`, and `.lumen.md` sources.
 /// For module paths like "utils.math", checks:
 /// - utils/math.lm
+/// - utils/math.lumen
 /// - utils/math.lm.md
+/// - utils/math.lumen.md
 pub struct ModuleResolver {
     /// Search roots for resolving relative imports.
     search_roots: Vec<PathBuf>,
@@ -32,7 +34,7 @@ impl ModuleResolver {
 
     /// Resolve a module path to its source content.
     ///
-    /// Module path format: "utils.math" resolves to utils/math.lm or utils/math.lm.md
+    /// Module path format: "utils.math" resolves to a supported Lumen source path.
     pub fn resolve(&mut self, module_path: &str) -> Option<String> {
         // Check cache first
         if let Some(cached) = self.cache.get(module_path) {
@@ -45,11 +47,17 @@ impl ModuleResolver {
         for root in &self.search_roots {
             let candidates = [
                 root.join(format!("{}.lm", fs_path)),
+                root.join(format!("{}.lumen", fs_path)),
                 root.join(format!("{}.lm.md", fs_path)),
+                root.join(format!("{}.lumen.md", fs_path)),
                 root.join(fs_path.clone()).join("mod.lm"),
+                root.join(fs_path.clone()).join("mod.lumen"),
                 root.join(fs_path.clone()).join("mod.lm.md"),
+                root.join(fs_path.clone()).join("mod.lumen.md"),
                 root.join(fs_path.clone()).join("main.lm"),
+                root.join(fs_path.clone()).join("main.lumen"),
                 root.join(fs_path.clone()).join("main.lm.md"),
+                root.join(fs_path.clone()).join("main.lumen.md"),
             ];
 
             for path in &candidates {

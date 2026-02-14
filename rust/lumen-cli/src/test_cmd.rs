@@ -54,13 +54,13 @@ pub fn run_tests(
 ) -> Result<TestRunSummary, String> {
     let target_path = path.unwrap_or_else(|| PathBuf::from("."));
 
-    // Collect all .lm and .lm.md files.
+    // Collect all supported Lumen source files.
     let mut test_files = Vec::new();
     collect_test_files(&target_path, &mut test_files);
 
     if test_files.is_empty() {
         return Err(format!(
-            "no .lm/.lm.md files found in {}",
+            "no lumen source files (.lm/.lumen/.lm.md/.lumen.md) found in {}",
             target_path.display()
         ));
     }
@@ -270,9 +270,12 @@ fn collect_test_files(path: &Path, files: &mut Vec<PathBuf>) {
 fn is_lumen_source(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
-        .map(|n| n.ends_with(".lm.md"))
+        .map(|n| n.ends_with(".lm.md") || n.ends_with(".lumen.md"))
         .unwrap_or(false)
-        || path.extension().and_then(|s| s.to_str()) == Some("lm")
+        || matches!(
+            path.extension().and_then(|s| s.to_str()),
+            Some("lm") | Some("lumen")
+        )
 }
 
 #[cfg(test)]

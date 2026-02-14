@@ -452,7 +452,7 @@ fn resolve_dep(
         let has_sources = has_lumen_sources(&dep_path);
         if !has_sources {
             return Err(format!(
-                "dependency '{}': no lumen.toml or .lm/.lm.md files found in '{}'",
+                "dependency '{}': no lumen source files (.lm/.lumen/.lm.md/.lumen.md) found in '{}'",
                 name,
                 dep_path.display()
             ));
@@ -488,13 +488,13 @@ fn resolve_dep(
     Ok(())
 }
 
-/// Compile all `.lm` and `.lm.md` files found in a package directory.
+/// Compile all supported Lumen source files found in a package directory.
 /// Returns the number of files compiled, or the first error.
 fn compile_package_sources(pkg_dir: &Path) -> Result<usize, String> {
     let sources = find_lumen_sources(pkg_dir);
     if sources.is_empty() {
         return Err(format!(
-            "no .lm/.lm.md files found in '{}'",
+            "no lumen source files (.lm/.lumen/.lm.md/.lumen.md) found in '{}'",
             pkg_dir.display()
         ));
     }
@@ -526,11 +526,7 @@ fn compile_source_with_imports(source_path: &Path, pkg_dir: &Path) -> Result<(),
 
     let resolve_import = |module_path: &str| resolve_module_from_roots(module_path, &roots);
 
-    let compile_result = if is_markdown_source(source_path) {
-        lumen_compiler::compile_with_imports(&content, &resolve_import)
-    } else {
-        lumen_compiler::compile_raw_with_imports(&content, &resolve_import)
-    };
+    let compile_result = lumen_compiler::compile_with_imports(&content, &resolve_import);
 
     compile_result.map_err(|e| format!("{}: {}", source_path.display(), e))?;
     Ok(())
@@ -541,11 +537,17 @@ fn resolve_module_from_roots(module_path: &str, roots: &[PathBuf]) -> Option<Str
     for root in roots {
         let candidates = [
             root.join(format!("{}.lm", fs_path)),
+            root.join(format!("{}.lumen", fs_path)),
             root.join(format!("{}.lm.md", fs_path)),
+            root.join(format!("{}.lumen.md", fs_path)),
             root.join(fs_path.clone()).join("mod.lm"),
+            root.join(fs_path.clone()).join("mod.lumen"),
             root.join(fs_path.clone()).join("mod.lm.md"),
+            root.join(fs_path.clone()).join("mod.lumen.md"),
             root.join(fs_path.clone()).join("main.lm"),
+            root.join(fs_path.clone()).join("main.lumen"),
             root.join(fs_path.clone()).join("main.lm.md"),
+            root.join(fs_path.clone()).join("main.lumen.md"),
         ];
 
         for candidate in candidates {
@@ -559,22 +561,20 @@ fn resolve_module_from_roots(module_path: &str, roots: &[PathBuf]) -> Option<Str
     None
 }
 
-fn is_markdown_source(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .map(|n| n.ends_with(".lm.md"))
-        .unwrap_or(false)
-}
-
 fn is_lumen_source(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
-        .map(|name| name.ends_with(".lm") || name.ends_with(".lm.md"))
+        .map(|name| {
+            name.ends_with(".lm")
+                || name.ends_with(".lumen")
+                || name.ends_with(".lm.md")
+                || name.ends_with(".lumen.md")
+        })
         .unwrap_or(false)
 }
 
-/// Find all `.lm` and `.lm.md` files in a directory (searches `src/` subdirectory first,
-/// then top level).
+/// Find all supported Lumen source files in a directory (searches `src/`
+/// subdirectory first, then top level).
 fn find_lumen_sources(dir: &Path) -> Vec<PathBuf> {
     let mut sources = Vec::new();
     let src_dir = dir.join("src");
@@ -1581,7 +1581,10 @@ fn build_package_bundle(project_dir: &Path, config: &LumenConfig) -> Result<Pack
 
     let sources = find_lumen_sources(project_dir);
     if sources.is_empty() {
-        return Err("package must contain at least one .lm or .lm.md source file".to_string());
+        return Err(
+            "package must contain at least one source file (.lm/.lumen/.lm.md/.lumen.md)"
+                .to_string(),
+        );
     }
     for source in sources {
         let rel = source.strip_prefix(project_dir).map_err(|_| {

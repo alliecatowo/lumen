@@ -299,6 +299,147 @@ impl Default for ProviderRegistry {
     }
 }
 
+fn validate_provider_output(
+    schema: &serde_json::Value,
+    output: &serde_json::Value,
+) -> Result<(), ToolError> {
+    if let Err(reason) = validate_schema_value(schema, output, "$") {
+        let expected_schema = serde_json::to_string(schema).unwrap_or_else(|_| "<schema>".into());
+        let actual_output = serde_json::to_string(output).unwrap_or_else(|_| "<output>".into());
+        return Err(ToolError::OutputValidationFailed {
+            expected_schema,
+            actual: format!("{actual_output} ({reason})"),
+        });
+    }
+    Ok(())
+}
+
+fn validate_schema_value(
+    schema: &serde_json::Value,
+    value: &serde_json::Value,
+    path: &str,
+) -> Result<(), String> {
+    let schema_obj = match schema {
+        serde_json::Value::Null => return Ok(()),
+        serde_json::Value::Bool(true) => return Ok(()),
+        serde_json::Value::Bool(false) => {
+            return Err(format!("{path}: schema is false"));
+        }
+        serde_json::Value::Object(map) if map.is_empty() => return Ok(()),
+        serde_json::Value::Object(map) => map,
+        _ => return Ok(()),
+    };
+
+    if let Some(const_value) = schema_obj.get("const") {
+        if const_value != value {
+            return Err(format!("{path}: value does not match const"));
+        }
+    }
+
+    if let Some(enum_values) = schema_obj.get("enum").and_then(|v| v.as_array()) {
+        if !enum_values.iter().any(|candidate| candidate == value) {
+            return Err(format!("{path}: value is not in enum"));
+        }
+    }
+
+    if let Some(type_decl) = schema_obj.get("type") {
+        let type_matches = match type_decl {
+            serde_json::Value::String(expected) => value_matches_type(value, expected),
+            serde_json::Value::Array(candidates) => candidates
+                .iter()
+                .filter_map(|candidate| candidate.as_str())
+                .any(|expected| value_matches_type(value, expected)),
+            _ => true,
+        };
+        if !type_matches {
+            return Err(format!(
+                "{path}: expected type {}, got {}",
+                type_decl,
+                value_type_name(value)
+            ));
+        }
+    }
+
+    if let Some(obj) = value.as_object() {
+        if let Some(required_fields) = schema_obj.get("required").and_then(|v| v.as_array()) {
+            for required in required_fields.iter().filter_map(|field| field.as_str()) {
+                if !obj.contains_key(required) {
+                    return Err(format!("{path}: missing required property '{required}'"));
+                }
+            }
+        }
+
+        let props = schema_obj.get("properties").and_then(|v| v.as_object());
+        if let Some(props) = props {
+            for (name, prop_schema) in props {
+                if let Some(prop_value) = obj.get(name) {
+                    let prop_path = format!("{path}.{name}");
+                    validate_schema_value(prop_schema, prop_value, &prop_path)?;
+                }
+            }
+        }
+
+        if let Some(additional) = schema_obj.get("additionalProperties") {
+            for (key, extra_value) in obj {
+                if props.is_some_and(|p| p.contains_key(key)) {
+                    continue;
+                }
+                match additional {
+                    serde_json::Value::Bool(true) => {}
+                    serde_json::Value::Bool(false) => {
+                        return Err(format!(
+                            "{path}: additional property '{key}' is not allowed"
+                        ));
+                    }
+                    schema => {
+                        let prop_path = format!("{path}.{key}");
+                        validate_schema_value(schema, extra_value, &prop_path)?;
+                    }
+                }
+            }
+        }
+    }
+
+    if let (Some(items_schema), Some(items)) = (schema_obj.get("items"), value.as_array()) {
+        for (index, item) in items.iter().enumerate() {
+            let item_path = format!("{path}[{index}]");
+            validate_schema_value(items_schema, item, &item_path)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn value_type_name(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(number) => {
+            if number.is_i64() || number.is_u64() {
+                "integer"
+            } else {
+                "number"
+            }
+        }
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+fn value_matches_type(value: &serde_json::Value, expected_type: &str) -> bool {
+    match expected_type {
+        "null" => value.is_null(),
+        "boolean" => value.is_boolean(),
+        "number" => value.is_number(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "string" => value.is_string(),
+        "array" => value.is_array(),
+        "object" => value.is_object(),
+        _ => true,
+    }
+}
+
 /// The registry doubles as a `ToolDispatcher`.  It resolves `request.tool_id`
 /// to a registered provider, forwards the call, and wraps the result in a
 /// `ToolResponse`.
@@ -315,9 +456,7 @@ impl ToolDispatcher for ProviderRegistry {
         let start = Instant::now();
         let output = provider.call(request.args.clone())?;
         let latency_ms = start.elapsed().as_millis() as u64;
-
-        // TODO: Validate output against schema (output_schema)
-        // For now, we skip validation to maintain backward compatibility
+        validate_provider_output(&provider.schema().output_schema, &output)?;
 
         Ok(ToolResponse {
             outputs: output,
@@ -338,9 +477,7 @@ impl ToolDispatcher for ProviderRegistry {
             let start = Instant::now();
             let output = provider.call_async(request.args.clone()).await?;
             let latency_ms = start.elapsed().as_millis() as u64;
-
-            // TODO: Validate output against schema (output_schema)
-            // For now, we skip validation to maintain backward compatibility
+            validate_provider_output(&provider.schema().output_schema, &output)?;
 
             Ok(ToolResponse {
                 outputs: output,
@@ -460,6 +597,48 @@ mod tests {
         }
         fn call_async<'a>(&'a self, input: serde_json::Value) -> ToolFuture<'a, serde_json::Value> {
             Box::pin(async move { Ok(json!({ "path": "async", "echo": input })) })
+        }
+    }
+
+    struct UnionOutputProvider {
+        schema: ToolSchema,
+        output: serde_json::Value,
+    }
+
+    impl UnionOutputProvider {
+        fn new(name: &str, output_schema: serde_json::Value, output: serde_json::Value) -> Self {
+            Self {
+                schema: ToolSchema {
+                    name: name.to_string(),
+                    description: "Provider used for schema validation tests".to_string(),
+                    input_schema: json!({"type": "object"}),
+                    output_schema,
+                    effects: vec!["test".to_string()],
+                },
+                output,
+            }
+        }
+    }
+
+    impl ToolProvider for UnionOutputProvider {
+        fn name(&self) -> &str {
+            &self.schema.name
+        }
+        fn version(&self) -> &str {
+            "1.0.0"
+        }
+        fn schema(&self) -> &ToolSchema {
+            &self.schema
+        }
+        fn call(&self, _input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+            Ok(self.output.clone())
+        }
+        fn call_async<'a>(
+            &'a self,
+            _input: serde_json::Value,
+        ) -> ToolFuture<'a, serde_json::Value> {
+            let output = self.output.clone();
+            Box::pin(async move { Ok(output) })
         }
     }
 
@@ -665,6 +844,93 @@ mod tests {
         let response = reg.dispatch(&request).unwrap();
         // Latency should be very small but non-negative
         assert!(response.latency_ms < 1000);
+    }
+
+    #[test]
+    fn registry_dispatch_rejects_schema_mismatch_output() {
+        let mut reg = ProviderRegistry::new();
+        reg.register(
+            "bad",
+            Box::new(UnionOutputProvider::new(
+                "bad",
+                json!({"type": "string"}),
+                json!({"status": "wrong-shape"}),
+            )),
+        );
+
+        let request = ToolRequest {
+            tool_id: "bad".to_string(),
+            version: "1.0.0".to_string(),
+            args: json!({}),
+            policy: json!({}),
+        };
+
+        let err = reg
+            .dispatch(&request)
+            .expect_err("schema mismatch should fail");
+        match err {
+            ToolError::OutputValidationFailed {
+                expected_schema,
+                actual,
+            } => {
+                assert!(expected_schema.contains("\"string\""));
+                assert!(actual.contains("wrong-shape"));
+            }
+            other => panic!("expected OutputValidationFailed, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn registry_dispatch_async_rejects_schema_mismatch_output() {
+        let mut reg = ProviderRegistry::new();
+        reg.register(
+            "bad_async",
+            Box::new(UnionOutputProvider::new(
+                "bad_async",
+                json!({"type": "object", "required": ["ok"]}),
+                json!({"missing_ok": true}),
+            )),
+        );
+
+        let request = ToolRequest {
+            tool_id: "bad_async".to_string(),
+            version: "1.0.0".to_string(),
+            args: json!({}),
+            policy: json!({}),
+        };
+
+        let err = block_on(reg.dispatch_async(&request)).expect_err("schema mismatch should fail");
+        match err {
+            ToolError::OutputValidationFailed { actual, .. } => {
+                assert!(actual.contains("missing required property"));
+            }
+            other => panic!("expected OutputValidationFailed, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn registry_dispatch_accepts_union_output_type() {
+        let mut reg = ProviderRegistry::new();
+        reg.register(
+            "union",
+            Box::new(UnionOutputProvider::new(
+                "union",
+                json!({"type": ["object", "string", "null"]}),
+                json!("ok"),
+            )),
+        );
+
+        let request = ToolRequest {
+            tool_id: "union".to_string(),
+            version: "1.0.0".to_string(),
+            args: json!({}),
+            policy: json!({}),
+        };
+
+        let response = reg
+            .dispatch(&request)
+            .expect("union schema should validate");
+        assert_eq!(response.outputs, json!("ok"));
     }
 
     #[test]

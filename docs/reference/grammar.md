@@ -678,6 +678,15 @@ pub fn parse_program(&mut self, directives: Vec<Directive>) -> Result<Program, P
 
 The parser consumes a token stream from the lexer and produces an AST `Program` node containing directives and items (declarations/statements).
 
+### 9.11 Source File Ingestion
+
+Lumen accepts `.lm`, `.lumen`, `.lm.md`, and `.lumen.md` inputs.
+
+- For markdown files, fenced ````lumen`/`lm` blocks are extracted and concatenated.
+- For unfenced source files, code is compiled directly (no fences required).
+- Top-level directives (for example `@doc_mode true`) are recognized in both flows.
+- Backward compatibility is preserved for fenced ` ```lumen ` extraction in markdown files.
+
 ## 10. Cross-References
 
 For implementation details, see:

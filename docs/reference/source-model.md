@@ -2,10 +2,10 @@
 
 Lumen accepts two first-class source formats:
 
-- `.lm.md` (markdown-native, recommended)
-- `.lm` (raw source)
+- Markdown files: `.lm.md`, `.lumen.md`
+- Unfenced source files: `.lm`, `.lumen`
 
-## Markdown-Native Files (`.lm.md`)
+## Markdown-Native Files (`.lm.md`, `.lumen.md`)
 
 For markdown source, Lumen extracts code from fenced `lumen` blocks:
 
@@ -35,17 +35,19 @@ The compiler:
 3. Concatenates them into a single source
 4. Compiles and executes
 
-## Raw Source Files (`.lm`)
+## Unfenced Source Files (`.lm`, `.lumen`)
 
-Raw `.lm` files are compiled directly with no markdown extraction:
+Unfenced source files are compiled without requiring fenced code blocks:
 
 ```lumen
 cell main() -> String
-  return "Hello from raw source"
+  return "Hello from unfenced source"
 end
 ```
 
-Use `.lm` when you want source-only modules; use `.lm.md` when you want code and narrative in one file.
+Use `.lm`/`.lumen` when you want direct source files. Use `.lm.md`/`.lumen.md` when you want code and narrative in one file.
+
+The compiler accepts the same directives and interpolation features in both fenced and unfenced source.
 
 ## Top-Level Directives
 
@@ -165,20 +167,26 @@ import math: add as plus
 
 ## File Resolution
 
-When importing `import foo: bar`:
+When importing `import foo: bar`, resolution checks:
 
-1. Look for `foo.lm.md` in the same directory
-2. Look for `foo.lm` in the same directory
-3. Look for `foo/mod.lm.md` in subdirectory
-4. Look for `foo/mod.lm` in subdirectory
-5. Look for `foo/main.lm.md` in subdirectory
-6. Look for `foo/main.lm` in subdirectory
+1. `foo.lm`
+2. `foo.lumen`
+3. `foo.lm.md`
+4. `foo.lumen.md`
+5. `foo/mod.lm`
+6. `foo/mod.lumen`
+7. `foo/mod.lm.md`
+8. `foo/mod.lumen.md`
+9. `foo/main.lm`
+10. `foo/main.lumen`
+11. `foo/main.lm.md`
+12. `foo/main.lumen.md`
 
 ## Best Practices
 
 ### Documentation-First Modules
 
-Prefer `.lm.md` for user-facing modules so design notes, examples, and implementation stay together:
+Prefer `.lm.md`/`.lumen.md` for user-facing modules so design notes, examples, and implementation stay together:
 
 ````markdown
 # User Service
@@ -206,7 +214,7 @@ end
 
 ### Source-Only Modules
 
-Use `.lm` for modules that do not need embedded prose, such as generated code or low-noise internals.
+Use `.lm`/`.lumen` for modules that do not need embedded prose, such as generated code or low-noise internals.
 
 ### Organization
 

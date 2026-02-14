@@ -5,6 +5,10 @@
   "version": "0.1.0",
   "publisher": "lumen-lang",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alliecatowo/lumen.git"
+  },
   "icon": "icon.png",
   "engines": {
     "vscode": "^1.75.0"

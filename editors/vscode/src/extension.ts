@@ -507,13 +507,35 @@ export function activate(context: ExtensionContext) {
     })
   );
 
-  // Look for `lumen-lsp` binary. Prefer a workspace-local build, fall back to PATH.
+  // Look for `lumen-lsp` binary.
+  // 1. Check workspace configuration
+  // 2. Check bundled binary in `server/` directory
+  // 3. Fallback to PATH ("lumen-lsp")
   const config = workspace.getConfiguration("lumen");
-  const serverPath: string =
-    config.get("lspPath") || "lumen-lsp";
+  let serverPath = config.get("lspPath");
+
+  if (!serverPath) {
+    const platform = process.platform;
+    const isWindows = platform === "win32";
+    const binaryName = isWindows ? "lumen-lsp.exe" : "lumen-lsp";
+    const bundledPath = context.asAbsolutePath(`server/${binaryName}`);
+
+    try {
+      const fs = require("fs");
+      if (fs.existsSync(bundledPath)) {
+        serverPath = bundledPath;
+      }
+    } catch (e) {
+      // Ignore error, fall back to PATH
+    }
+  }
+
+  if (!serverPath) {
+    serverPath = "lumen-lsp";
+  }
 
   const serverOptions: ServerOptions = {
-    command: serverPath,
+    command: serverPath as string,
     args: [],
   };
 

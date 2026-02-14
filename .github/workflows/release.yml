@@ -51,9 +51,9 @@ jobs:
       - name: Build
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }} --bin lumen
+            cross build --release --target ${{ matrix.target }} --bin lumen --bin lumen-lsp
           else
-            cargo build --release --target ${{ matrix.target }} --bin lumen
+            cargo build --release --target ${{ matrix.target }} --bin lumen --bin lumen-lsp
           fi
         shell: bash
 
@@ -61,13 +61,13 @@ jobs:
         if: matrix.os != 'windows-latest'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../${{ matrix.name }}.tar.gz lumen
+          tar czf ../../../${{ matrix.name }}.tar.gz lumen lumen-lsp
 
       - name: Package (Windows)
         if: matrix.os == 'windows-latest'
         run: |
           cd target/${{ matrix.target }}/release
-          Compress-Archive -Path lumen.exe -DestinationPath ../../../${{ matrix.name }}.zip
+          Compress-Archive -Path lumen.exe,lumen-lsp.exe -DestinationPath ../../../${{ matrix.name }}.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

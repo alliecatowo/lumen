@@ -6,29 +6,65 @@ on:
       - "v*"
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+            binary_name: lumen-lsp
+          - target: win32-x64
+            os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            binary_name: lumen-lsp.exe
+          - target: darwin-x64
+            os: macos-latest
+            rust_target: x86_64-apple-darwin
+            binary_name: lumen-lsp
+          - target: darwin-arm64
+            os: macos-latest
+            rust_target: aarch64-apple-darwin
+            binary_name: lumen-lsp
+
+    name: Publish ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: ./editors/vscode
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - uses: actions/setup-node@v4
         with:
           node-version: 18
-          
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Build Language Server
+        working-directory: ${{ github.workspace }}
+        run: cargo build --release --bin lumen-lsp --target ${{ matrix.rust_target }}
+
+      - name: Copy Binary
+        shell: bash
+        run: |
+          mkdir -p server
+          cp ../../target/${{ matrix.rust_target }}/release/${{ matrix.binary_name }} server/
+          ls -l server/
+
       - run: npm ci
-      
       - run: npm run compile
-      
+
       - name: Publish to Open VSX
         uses: HaaLeo/publish-vscode-extension@v1
         with:
           pat: ${{ secrets.OVSX_PAT }}
           registryUrl: https://open-vsx.org
           packagePath: ./editors/vscode
+          target: ${{ matrix.target }}

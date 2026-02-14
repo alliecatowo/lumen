@@ -3,25 +3,34 @@
 :root {
   --vp-font-family-base: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
   --vp-font-family-mono: "JetBrains Mono", "Fira Code", "Consolas", monospace;
-  --vp-c-brand-1: #0f766e;
-  --vp-c-brand-2: #0d9488;
-  --vp-c-brand-3: #14b8a6;
-  --vp-c-brand-soft: rgba(15, 118, 110, 0.16);
+  
+  /* Pink brand colors from logo #FF4FA3 */
+  --vp-c-brand-1: #FF4FA3;
+  --vp-c-brand-2: #FF6BB3;
+  --vp-c-brand-3: #FF8DC4;
+  --vp-c-brand-soft: rgba(255, 79, 163, 0.14);
+  
   --vp-home-hero-name-color: transparent;
-  --vp-home-hero-name-background: linear-gradient(120deg, #0f766e, #0ea5e9);
+  --vp-home-hero-name-background: linear-gradient(120deg, #FF4FA3, #FF8DC4);
   --vp-home-hero-image-background-image: radial-gradient(
     circle at center,
-    rgba(13, 148, 136, 0.35) 0%,
-    rgba(14, 165, 233, 0.2) 45%,
-    rgba(6, 95, 70, 0.12) 100%
+    rgba(255, 79, 163, 0.35) 0%,
+    rgba(255, 141, 196, 0.2) 45%,
+    rgba(255, 79, 163, 0.12) 100%
   );
   --vp-home-hero-image-filter: blur(56px);
+  
+  /* Code block play button */
+  --play-button-bg: #FF4FA3;
+  --play-button-bg-hover: #FF6BB3;
+  --play-button-success: #10B981;
+  --play-button-error: #EF4444;
 }
 
 .VPHome {
   background:
-    radial-gradient(circle at 10% 10%, rgba(13, 148, 136, 0.09), transparent 40%),
-    radial-gradient(circle at 90% 5%, rgba(14, 165, 233, 0.08), transparent 36%);
+    radial-gradient(circle at 10% 10%, rgba(255, 79, 163, 0.09), transparent 40%),
+    radial-gradient(circle at 90% 5%, rgba(255, 141, 196, 0.08), transparent 36%);
 }
 
 .VPHero {
@@ -29,15 +38,15 @@
 }
 
 .VPFeature {
-  border: 1px solid rgba(13, 148, 136, 0.18);
-  background: linear-gradient(140deg, rgba(255, 255, 255, 0.88), rgba(240, 253, 250, 0.9));
+  border: 1px solid rgba(255, 79, 163, 0.18);
+  background: linear-gradient(140deg, rgba(255, 255, 255, 0.88), rgba(255, 245, 250, 0.9));
   transition: transform 220ms ease, box-shadow 220ms ease, border-color 220ms ease;
 }
 
 .VPFeature:hover {
   transform: translateY(-3px);
-  border-color: rgba(13, 148, 136, 0.45);
-  box-shadow: 0 18px 36px rgba(15, 118, 110, 0.14);
+  border-color: rgba(255, 79, 163, 0.45);
+  box-shadow: 0 18px 36px rgba(255, 79, 163, 0.14);
 }
 
 .vp-doc h1,
@@ -48,23 +57,106 @@
 
 .vp-doc a {
   text-underline-offset: 0.14em;
+  color: var(--vp-c-brand-1);
+}
+
+.vp-doc a:hover {
+  color: var(--vp-c-brand-2);
+}
+
+/* Code block play button */
+.lumen-play-button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  background: var(--play-button-bg);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s, background 0.2s;
+  z-index: 10;
+}
+
+.vp-code-group:hover .lumen-play-button,
+div[class*='language-']:hover .lumen-play-button {
+  opacity: 1;
+}
+
+.lumen-play-button:hover {
+  background: var(--play-button-bg-hover);
+}
+
+.lumen-play-button.running {
+  opacity: 1;
+  background: var(--vp-c-text-2);
+  cursor: wait;
+}
+
+.lumen-play-button.success {
+  background: var(--play-button-success);
+}
+
+.lumen-play-button.error {
+  background: var(--play-button-error);
+}
+
+.lumen-play-button svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* Inline output display */
+.lumen-inline-output {
+  margin-top: 8px;
+  padding: 12px;
+  border-radius: 8px;
+  font-family: var(--vp-font-family-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  background: var(--vp-c-bg-soft);
+  border: 1px solid var(--vp-c-divider);
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.lumen-inline-output.success {
+  border-color: rgba(16, 185, 129, 0.45);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.lumen-inline-output.error {
+  border-color: rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.08);
+  color: #EF4444;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --vp-c-bg: #021716;
-    --vp-c-bg-alt: #06211e;
-    --vp-c-bg-soft: #0a2c28;
+    --vp-c-bg: #0D0D0D;
+    --vp-c-bg-alt: #1A1A1A;
+    --vp-c-bg-soft: #242424;
   }
 
   .VPFeature {
-    background: linear-gradient(145deg, rgba(9, 44, 40, 0.95), rgba(6, 55, 69, 0.92));
-    border-color: rgba(20, 184, 166, 0.22);
+    background: linear-gradient(145deg, rgba(30, 30, 30, 0.95), rgba(40, 20, 30, 0.92));
+    border-color: rgba(255, 79, 163, 0.22);
   }
 
   .VPFeature:hover {
-    border-color: rgba(45, 212, 191, 0.55);
+    border-color: rgba(255, 141, 196, 0.55);
     box-shadow: 0 18px 42px rgba(0, 0, 0, 0.38);
+  }
+  
+  .lumen-inline-output.error {
+    color: #FF6B6B;
   }
 }
 

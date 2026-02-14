@@ -14,7 +14,7 @@ export default defineConfig({
   lastUpdated: true,
   ignoreDeadLinks: [/\.\.\/SPEC/],
   head: [
-    ["meta", { name: "theme-color", content: "#0f766e" }],
+    ["meta", { name: "theme-color", content: "#FF4FA3" }],
     ["link", { rel: "icon", type: "image/svg+xml", href: iconHref }],
     ["link", { rel: "apple-touch-icon", href: iconHref }],
     ["meta", { property: "og:type", content: "website" }],
@@ -30,6 +30,14 @@ export default defineConfig({
   ],
   markdown: {
     languages: shikiLanguages,
+  },
+  vite: {
+    optimizeDeps: {
+      exclude: ["/wasm/lumen_wasm.js"],
+    },
+    build: {
+      target: "esnext",
+    },
   },
   themeConfig: {
     siteTitle: "Lumen",
@@ -85,8 +93,7 @@ export default defineConfig({
           items: [
             { text: "Effects System", link: "/learn/advanced/effects" },
             { text: "Async & Futures", link: "/learn/advanced/async" },
-            { text: "Memory & Machines", link: "/learn/advanced/processes" },
-            { text: "WASM Deployment", link: "/learn/advanced/wasm" },
+            { text: "WASM Deployment", link: "/guide/wasm-browser" },
           ],
         },
       ],
@@ -104,25 +111,10 @@ export default defineConfig({
           ],
         },
         {
-          text: "Declarations",
-          items: [
-            { text: "Records", link: "/reference/records" },
-            { text: "Enums", link: "/reference/enums" },
-            { text: "Cells (Functions)", link: "/reference/cells" },
-            { text: "Agents", link: "/reference/agents" },
-            { text: "Effects & Handlers", link: "/reference/effects" },
-            { text: "Traits & Impls", link: "/reference/traits" },
-          ],
-        },
-        {
           text: "AI Constructs",
           items: [
             { text: "Tools", link: "/reference/tools" },
             { text: "Grants & Policies", link: "/reference/grants" },
-            { text: "Processes", link: "/reference/processes" },
-            { text: "Pipelines", link: "/reference/pipelines" },
-            { text: "Memory", link: "/reference/memory" },
-            { text: "Machines", link: "/reference/machines" },
           ],
         },
         {
@@ -130,15 +122,12 @@ export default defineConfig({
           items: [
             { text: "@strict", link: "/reference/directives/strict" },
             { text: "@deterministic", link: "/reference/directives/deterministic" },
-            { text: "@doc_mode", link: "/reference/directives/doc-mode" },
           ],
         },
         {
           text: "Appendix",
           items: [
             { text: "Grammar (EBNF)", link: "/reference/grammar" },
-            { text: "Keywords", link: "/reference/keywords" },
-            { text: "Operator Precedence", link: "/reference/operators" },
           ],
         },
       ],
@@ -146,38 +135,7 @@ export default defineConfig({
         {
           text: "Standard Library",
           items: [
-            { text: "Overview", link: "/api/overview" },
             { text: "Builtins", link: "/api/builtins" },
-          ],
-        },
-        {
-          text: "Collections",
-          items: [
-            { text: "list", link: "/api/list" },
-            { text: "map", link: "/api/map" },
-            { text: "set", link: "/api/set" },
-            { text: "tuple", link: "/api/tuple" },
-          ],
-        },
-        {
-          text: "Types",
-          items: [
-            { text: "result", link: "/api/result" },
-            { text: "Json", link: "/api/json" },
-            { text: "Bytes", link: "/api/bytes" },
-          ],
-        },
-        {
-          text: "String",
-          items: [
-            { text: "String Operations", link: "/api/string" },
-          ],
-        },
-        {
-          text: "Async",
-          items: [
-            { text: "Future", link: "/api/future" },
-            { text: "Orchestration", link: "/api/orchestration" },
           ],
         },
       ],
@@ -186,35 +144,12 @@ export default defineConfig({
           text: "Basics",
           items: [
             { text: "Hello World", link: "/examples/hello-world" },
-            { text: "Calculator", link: "/examples/calculator" },
-            { text: "Fibonacci", link: "/examples/fibonacci" },
-            { text: "String Utils", link: "/examples/string-utils" },
-          ],
-        },
-        {
-          text: "Data Structures",
-          items: [
-            { text: "Linked List", link: "/examples/linked-list" },
-            { text: "Sorting", link: "/examples/sorting" },
-            { text: "Data Pipeline", link: "/examples/data-pipeline" },
           ],
         },
         {
           text: "AI-Native",
           items: [
             { text: "AI Chat", link: "/examples/ai-chat" },
-            { text: "Code Reviewer", link: "/examples/code-reviewer" },
-            { text: "Invoice Agent", link: "/examples/invoice-agent" },
-            { text: "State Machine", link: "/examples/state-machine" },
-            { text: "Task Tracker", link: "/examples/task-tracker" },
-          ],
-        },
-        {
-          text: "Advanced",
-          items: [
-            { text: "WASM Browser", link: "/examples/wasm-browser" },
-            { text: "Syntax Sugar", link: "/examples/syntax-sugar" },
-            { text: "Language Features", link: "/examples/language-features" },
           ],
         },
       ],
@@ -225,23 +160,13 @@ export default defineConfig({
             { text: "CLI Reference", link: "/guide/cli" },
             { text: "Configuration", link: "/guide/configuration" },
             { text: "Tool Providers", link: "/guide/providers" },
-            { text: "MCP Integration", link: "/guide/mcp" },
-            { text: "Package Management", link: "/guide/packages" },
-          ],
-        },
-        {
-          text: "Internal",
-          items: [
-            { text: "Architecture", link: "/guide/architecture" },
-            { text: "Runtime Model", link: "/guide/runtime" },
-            { text: "LIR Bytecode", link: "/guide/lir" },
           ],
         },
       ],
     },
     footer: {
       message: "MIT Licensed",
-      copyright: "Copyright © 2026 Lumen contributors",
+      copyright: "Copyright 2026 Lumen contributors",
     },
     editLink: {
       pattern: "https://github.com/alliecatowo/lumen/edit/main/docs/:path",

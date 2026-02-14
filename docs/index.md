@@ -47,12 +47,11 @@ features:
 cargo install lumen-lang
 
 # Create your first program
-echo '# My First Program
-```lumen
+cat > hello.lm.md << 'EOF'
 cell main() -> String
   return "Hello, World!"
 end
-```' > hello.lm.md
+EOF
 
 # Run it
 lumen run hello.lm.md
@@ -68,23 +67,9 @@ Building AI systems today means juggling Python notebooks, API clients, prompt t
 - **Processes** provide structured workflows (pipelines, state machines, memory)
 - **Effects** make side effects explicit and auditable
 
-## Choose Your Path
+## Try It Now
 
-<div class="path-cards">
-
-### New to Lumen?
-[Start with the Tutorial](/learn/getting-started) — Learn the basics step by step.
-
-### Coming from Python/JS?
-[See What's Different](/learn/introduction#comparison) — Quick orientation for experienced developers.
-
-### Building AI Agents?
-[AI-Native Features Guide](/learn/ai-native/tools) — Deep dive into tools, grants, and orchestration.
-
-### Need Reference?
-[Language Reference](/reference/overview) — Complete specification of syntax and semantics.
-
-</div>
+Head to the [Playground](/playground) to run Lumen code directly in your browser—no installation required.
 
 ## Example: AI Chat Agent
 
@@ -114,25 +99,3 @@ end
 
 - [GitHub](https://github.com/alliecatowo/lumen) — Source code and issues
 - [Examples](/examples/hello-world) — Working code samples
-- [FAQ](/learn/faq) — Common questions answered
-
-<style>
-.path-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 1rem;
-  margin: 1.5rem 0;
-}
-.path-cards > div {
-  padding: 1rem;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 8px;
-}
-.path-cards h3 {
-  margin-top: 0;
-}
-.path-cards p {
-  margin-bottom: 0;
-  color: var(--vp-c-text-2);
-}
-</style>

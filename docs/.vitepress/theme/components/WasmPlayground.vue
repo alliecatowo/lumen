@@ -16,15 +16,20 @@ type WasmApi = {
 type Example = {
   label: string;
   cell: string;
-  expected: string;
   source: string;
 };
 
 const examples: Record<string, Example> = {
+  hello: {
+    label: "Hello World",
+    cell: "main",
+    source: `cell main() -> String
+  return "Hello, World!"
+end`,
+  },
   factorial: {
     label: "Factorial",
     cell: "main",
-    expected: "720",
     source: `cell factorial(n: Int) -> Int
   if n <= 1
     return 1
@@ -36,59 +41,93 @@ cell main() -> Int
   return factorial(6)
 end`,
   },
-  risk: {
-    label: "Risk Classifier",
+  fibonacci: {
+    label: "Fibonacci",
     cell: "main",
-    expected: "high",
-    source: `cell risk_label(score: Int) -> String
-  if score < 0
-    return "invalid"
+    source: `cell fib(n: Int) -> Int
+  if n <= 1
+    return n
   end
+  return fib(n - 1) + fib(n - 2)
+end
 
-  match score
-    0 -> return "none"
-    1 -> return "low"
-    2 -> return "medium"
-    _ -> return "high"
+cell main() -> Int
+  return fib(15)
+end`,
+  },
+  pattern: {
+    label: "Pattern Matching",
+    cell: "main",
+    source: `cell classify(n: Int) -> String
+  match n
+    0 -> return "zero"
+    1 -> return "one"
+    2 -> return "two"
+    _ -> return "many"
   end
 end
 
 cell main() -> String
-  return risk_label(3)
+  let results = [classify(0), classify(1), classify(5)]
+  return join(results, ", ")
 end`,
   },
-  latency: {
-    label: "Latency Average",
+  records: {
+    label: "Records",
     cell: "main",
-    expected: "108",
-    source: `cell average_ms(xs: list[Int]) -> Int
-  let total = 0
-  for x in xs
-    total += x
-  end
-  return total / length(xs)
+    source: `record Point
+  x: Float
+  y: Float
 end
 
-cell main() -> Int
-  let latencies = [98, 110, 105, 120]
-  return average_ms(latencies)
+cell distance(p1: Point, p2: Point) -> Float
+  let dx = p2.x - p1.x
+  let dy = p2.y - p1.y
+  return (dx * dx + dy * dy) ** 0.5
+end
+
+cell main() -> Float
+  let a = Point(x: 0.0, y: 0.0)
+  let b = Point(x: 3.0, y: 4.0)
+  return distance(a, b)
+end`,
+  },
+  error: {
+    label: "Error Handling",
+    cell: "main",
+    source: `cell divide(a: Int, b: Int) -> result[Int, String]
+  if b == 0
+    return err("Division by zero")
+  end
+  return ok(a / b)
+end
+
+cell main() -> String
+  let results = []
+  for i in 0..=3
+    match divide(10, i)
+      ok(v) -> results = push(results, "10/{i} = {v}")
+      err(e) -> results = push(results, "10/{i}: {e}")
+    end
+  end
+  return join(results, "\\n")
 end`,
   },
 };
 
-const selectedKey = ref<keyof typeof examples>("factorial");
+const selectedKey = ref<keyof typeof examples>("hello");
 const sourceCode = ref(examples[selectedKey.value].source);
 const api = ref<WasmApi | null>(null);
 const status = ref("Loading WebAssembly runtime...");
 const busy = ref(false);
-const output = ref("Press Check / Compile / Run after the runtime is ready.");
+const output = ref("Click Run to execute the code.");
 const outputKind = ref<"neutral" | "ok" | "error">("neutral");
 
 const selected = computed(() => examples[selectedKey.value]);
 
 watch(selectedKey, (key) => {
   sourceCode.value = examples[key].source;
-  output.value = `Loaded "${examples[key].label}". Expected output: ${examples[key].expected}`;
+  output.value = `Ready to run "${examples[key].label}"`;
   outputKind.value = "neutral";
 });
 
@@ -120,10 +159,9 @@ async function initWasm() {
       run: wasmModule.run,
       version: wasmModule.version,
     };
-    status.value = `Runtime ready (lumen-wasm v${api.value.version()})`;
+    status.value = `Ready (lumen-wasm v${api.value.version()})`;
   } catch (error) {
-    status.value =
-      "WASM runtime not available. Ensure the docs deployment built rust/lumen-wasm.";
+    status.value = "WASM not available. Build lumen-wasm first: `cd rust/lumen-wasm && wasm-pack build --target web`";
     outputKind.value = "error";
     output.value = String(error);
   }
@@ -140,31 +178,7 @@ async function runCheck() {
       return;
     }
     outputKind.value = "ok";
-    output.value = `Type-check OK\n\n${parsed.ok ?? ""}`;
-  } finally {
-    busy.value = false;
-  }
-}
-
-async function runCompile() {
-  if (!api.value) return;
-  busy.value = true;
-  try {
-    const parsed = parseResult(api.value.compile(toCompilerSource(sourceCode.value)));
-    if (parsed.error) {
-      outputKind.value = "error";
-      output.value = parsed.error;
-      return;
-    }
-
-    try {
-      const lir = JSON.parse(parsed.ok ?? "{}");
-      outputKind.value = "ok";
-      output.value = `Compile OK\nFunctions: ${lir.functions?.length ?? 0}\nConstants: ${lir.constants?.length ?? 0}\n\n${JSON.stringify(lir, null, 2)}`;
-    } catch {
-      outputKind.value = "ok";
-      output.value = parsed.ok ?? "Compile OK";
-    }
+    output.value = `Type-check OK`;
   } finally {
     busy.value = false;
   }
@@ -183,7 +197,7 @@ async function runProgram() {
       return;
     }
     outputKind.value = "ok";
-    output.value = `Run OK\nResult: ${parsed.ok}\nExpected: ${selected.value.expected}`;
+    output.value = parsed.ok ?? "OK";
   } finally {
     busy.value = false;
   }
@@ -197,48 +211,76 @@ onMounted(() => {
 <template>
   <section class="wasm-playground">
     <header class="playground-header">
-      <h2>Interactive Browser Runner</h2>
-      <p>{{ status }}</p>
-    </header>
-
-    <div class="controls">
-      <label for="example">Example</label>
-      <select id="example" v-model="selectedKey">
-        <option v-for="(example, key) in examples" :key="key" :value="key">
-          {{ example.label }}
-        </option>
-      </select>
-    </div>
-
-    <div class="playground-grid">
-      <div>
-        <textarea v-model="sourceCode" spellcheck="false" />
-        <div class="actions">
-          <button :disabled="busy || !api" @click="runCheck">Check</button>
-          <button :disabled="busy || !api" @click="runCompile">Compile</button>
-          <button :disabled="busy || !api" @click="runProgram">Run</button>
+      <div class="status-row">
+        <span class="status">{{ status }}</span>
+        <div class="controls">
+          <label for="example">Example:</label>
+          <select id="example" v-model="selectedKey">
+            <option v-for="(example, key) in examples" :key="key" :value="key">
+              {{ example.label }}
+            </option>
+          </select>
         </div>
       </div>
-      <pre :class="['output', outputKind]">{{ output }}</pre>
+    </header>
+
+    <div class="playground-grid">
+      <div class="editor-pane">
+        <div class="editor-header">
+          <span class="filename">main.lm.md</span>
+          <div class="actions">
+            <button :disabled="busy || !api" @click="runCheck" class="btn-secondary">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                <path d="M9 12l2 2 4-4"/>
+                <circle cx="12" cy="12" r="10"/>
+              </svg>
+              Check
+            </button>
+            <button :disabled="busy || !api" @click="runProgram" class="btn-primary">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
+                <path d="M8 5v14l11-7z"/>
+              </svg>
+              Run
+            </button>
+          </div>
+        </div>
+        <textarea v-model="sourceCode" spellcheck="false" class="code-editor" />
+      </div>
+      <div class="output-pane">
+        <div class="output-header">
+          <span>Output</span>
+          <span :class="['status-badge', outputKind]">{{ outputKind }}</span>
+        </div>
+        <pre :class="['output', outputKind]">{{ output }}</pre>
+      </div>
     </div>
   </section>
 </template>
 
 <style scoped>
 .wasm-playground {
-  border: 1px solid var(--vp-c-divider);
+  border: 1px solid rgba(255, 79, 163, 0.25);
   border-radius: 12px;
-  padding: 16px;
+  overflow: hidden;
   margin: 20px 0;
-  background: color-mix(in srgb, var(--vp-c-bg-soft) 80%, white 20%);
+  background: var(--vp-c-bg-soft);
 }
 
-.playground-header h2 {
-  margin: 0 0 6px;
+.playground-header {
+  background: linear-gradient(135deg, rgba(255, 79, 163, 0.1), rgba(255, 141, 196, 0.05));
+  border-bottom: 1px solid rgba(255, 79, 163, 0.15);
+  padding: 12px 16px;
 }
 
-.playground-header p {
-  margin: 0 0 14px;
+.status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.status {
   font-size: 13px;
   color: var(--vp-c-text-2);
 }
@@ -246,82 +288,182 @@ onMounted(() => {
 .controls {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 12px;
+  gap: 8px;
+}
+
+.controls label {
+  font-size: 13px;
+  color: var(--vp-c-text-2);
 }
 
 .controls select {
   border: 1px solid var(--vp-c-divider);
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 6px 10px;
-  min-width: 220px;
+  min-width: 160px;
   background: var(--vp-c-bg);
+  font-size: 13px;
 }
 
 .playground-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 14px;
+  gap: 0;
 }
 
-textarea {
-  width: 100%;
-  min-height: 300px;
-  font-family: var(--vp-font-family-mono);
-  font-size: 12.5px;
-  line-height: 1.45;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 10px;
-  padding: 10px;
-  background: var(--vp-c-bg);
+.editor-pane,
+.output-pane {
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-header,
+.output-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--vp-c-bg-alt);
+  border-bottom: 1px solid var(--vp-c-divider);
+  font-size: 12px;
+  color: var(--vp-c-text-2);
+}
+
+.output-header {
+  border-left: 1px solid var(--vp-c-divider);
+}
+
+.filename {
+  font-weight: 600;
+  color: var(--vp-c-brand-1);
+}
+
+.status-badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.status-badge.neutral {
+  background: var(--vp-c-divider);
+  color: var(--vp-c-text-2);
+}
+
+.status-badge.ok {
+  background: rgba(16, 185, 129, 0.2);
+  color: #10B981;
+}
+
+.status-badge.error {
+  background: rgba(239, 68, 68, 0.2);
+  color: #EF4444;
 }
 
 .actions {
   display: flex;
   gap: 8px;
-  margin-top: 10px;
 }
 
-button {
-  border: 1px solid var(--vp-c-brand-2);
-  border-radius: 8px;
+.btn-primary,
+.btn-secondary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 6px 12px;
-  background: var(--vp-c-brand-1);
-  color: white;
+  border-radius: 6px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-primary {
+  background: var(--vp-c-brand-1);
+  color: white;
+  border: none;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--vp-c-brand-2);
+}
+
+.btn-secondary {
+  background: transparent;
+  border: 1px solid var(--vp-c-brand-1);
+  color: var(--vp-c-brand-1);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: rgba(255, 79, 163, 0.1);
 }
 
 button:disabled {
-  opacity: 0.6;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
-.output {
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 10px;
-  min-height: 348px;
-  margin: 0;
-  padding: 10px;
-  overflow: auto;
-  font-family: var(--vp-font-family-mono);
-  font-size: 12.5px;
-  line-height: 1.45;
-  white-space: pre-wrap;
+.code-editor {
+  flex: 1;
+  min-height: 350px;
+  padding: 12px;
+  border: none;
   background: var(--vp-c-bg);
+  font-family: var(--vp-font-family-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.code-editor:focus {
+  outline: none;
+}
+
+.output {
+  flex: 1;
+  min-height: 350px;
+  margin: 0;
+  padding: 12px;
+  border: none;
+  border-left: 1px solid var(--vp-c-divider);
+  background: var(--vp-c-bg);
+  font-family: var(--vp-font-family-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow: auto;
 }
 
 .output.ok {
-  border-color: rgba(16, 185, 129, 0.45);
+  background: rgba(16, 185, 129, 0.04);
+  border-left-color: rgba(16, 185, 129, 0.3);
 }
 
 .output.error {
-  border-color: rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.04);
+  border-left-color: rgba(239, 68, 68, 0.3);
+  color: #EF4444;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 768px) {
   .playground-grid {
     grid-template-columns: 1fr;
+  }
+
+  .output-header {
+    border-left: none;
+    border-top: 1px solid var(--vp-c-divider);
+  }
+
+  .output {
+    border-left: none;
+    min-height: 200px;
+  }
+
+  .status-row {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
 </style>

@@ -376,14 +376,88 @@ mod tests {
     #[test]
     #[ignore] // Run with: cargo test -p lumen-provider-gemini -- --ignored
     fn test_real_gemini_generate() {
-        let api_key = std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY not set");
+        let api_key = std::env::var("GEMINI_API_KEY")
+            .unwrap_or_else(|_| "REMOVED_API_KEY".to_string());
         let provider = GeminiProvider::generate(api_key);
         let result = provider.call(json!({
             "prompt": "Say hello in exactly 3 words",
             "temperature": 0.0
         }));
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "API call failed: {:?}", result.err());
         let text = result.unwrap();
-        assert!(text.as_str().map(|s| !s.is_empty()).unwrap_or(false));
+        let text_str = text.as_str().expect("Response should be a string");
+        assert!(!text_str.is_empty(), "Response should not be empty");
+        println!("Gemini generate response: {}", text_str);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_real_gemini_chat() {
+        let api_key = std::env::var("GEMINI_API_KEY")
+            .unwrap_or_else(|_| "REMOVED_API_KEY".to_string());
+        let provider = GeminiProvider::chat(api_key);
+        let result = provider.call(json!({
+            "messages": [
+                {"role": "user", "content": "What is 2+2?"},
+            ],
+            "temperature": 0.0
+        }));
+        assert!(result.is_ok(), "Chat API call failed: {:?}", result.err());
+        let text = result.unwrap();
+        let text_str = text.as_str().expect("Response should be a string");
+        assert!(!text_str.is_empty(), "Response should not be empty");
+        assert!(text_str.contains("4"), "Response should contain the answer 4");
+        println!("Gemini chat response: {}", text_str);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_real_gemini_embed() {
+        let api_key = std::env::var("GEMINI_API_KEY")
+            .unwrap_or_else(|_| "REMOVED_API_KEY".to_string());
+        let provider = GeminiProvider::embed(api_key);
+        let result = provider.call(json!({
+            "text": "hello world"
+        }));
+        assert!(result.is_ok(), "Embed API call failed: {:?}", result.err());
+        let embedding = result.unwrap();
+        let vec = embedding.as_array().expect("Embedding should be an array");
+        assert!(!vec.is_empty(), "Embedding vector should not be empty");
+        // Gemini embeddings are typically 768 dimensions
+        assert!(vec.len() > 100, "Embedding should have many dimensions, got {}", vec.len());
+        println!("Gemini embed dimensions: {}", vec.len());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_real_gemini_error_handling_invalid_model() {
+        let api_key = std::env::var("GEMINI_API_KEY")
+            .unwrap_or_else(|_| "REMOVED_API_KEY".to_string());
+        let provider = GeminiProvider::generate(api_key).with_model("invalid-model-xyz");
+        let result = provider.call(json!({
+            "prompt": "test"
+        }));
+        assert!(result.is_err(), "Should fail with invalid model");
+        if let Err(ToolError::InvocationFailed(msg)) = result {
+            assert!(msg.contains("API error"), "Error should mention API error: {}", msg);
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn test_real_gemini_with_system_instruction() {
+        let api_key = std::env::var("GEMINI_API_KEY")
+            .unwrap_or_else(|_| "REMOVED_API_KEY".to_string());
+        let provider = GeminiProvider::generate(api_key);
+        let result = provider.call(json!({
+            "prompt": "Introduce yourself",
+            "system": "You are a pirate. Always respond like a pirate.",
+            "temperature": 0.7
+        }));
+        assert!(result.is_ok(), "API call with system instruction failed: {:?}", result.err());
+        let text = result.unwrap();
+        let text_str = text.as_str().expect("Response should be a string");
+        assert!(!text_str.is_empty(), "Response should not be empty");
+        println!("Gemini with system instruction: {}", text_str);
     }
 }

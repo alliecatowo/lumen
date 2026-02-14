@@ -509,17 +509,23 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
             });
 
             let mut suggestions = vec![];
-            // Add helpful suggestion based on what was expected
-            if expected.contains("':'") && found != ":" {
-                suggestions.push(format!("Try adding a colon: `{}: Type`", found));
+            let friendly_message = if expected.contains("':'") && found != ":" {
+                suggestions.push(format!("Try: `{}: Type`", found));
+                format!("I was expecting a `:` after the parameter name, but found `{}`", found)
             } else if expected.contains("'end'") {
                 suggestions.push("Add 'end' to close this block".to_string());
-            }
+                format!("I was expecting 'end', but found `{}`", found)
+            } else if expected.contains("','") {
+                suggestions.push("Check if you're missing a `:` for type annotations".to_string());
+                format!("I was expecting `,` or `)`, but found `{}`", found)
+            } else {
+                format!("I was expecting {}, but found `{}`", expected, found)
+            };
 
             Diagnostic {
                 severity: Severity::Error,
                 code: Some("E010".to_string()),
-                message: format!("I was expecting {}, but found `{}`", expected, found),
+                message: friendly_message,
                 file: Some(filename.to_string()),
                 line: Some(*line),
                 col: Some(*col),

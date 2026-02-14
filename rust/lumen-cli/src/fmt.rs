@@ -202,33 +202,77 @@ impl Formatter {
             header.push(']');
         }
 
-        header.push('(');
+        // Build parameter list
+        let mut params_str = String::new();
         for (i, param) in cell.params.iter().enumerate() {
             if i > 0 {
-                header.push_str(", ");
+                params_str.push_str(", ");
             }
-            header.push_str(&param.name);
-            header.push_str(": ");
-            header.push_str(&self.fmt_type(&param.ty));
+            params_str.push_str(&param.name);
+            params_str.push_str(": ");
+            params_str.push_str(&self.fmt_type(&param.ty));
             if let Some(default) = &param.default_value {
-                header.push_str(" = ");
-                header.push_str(&self.fmt_expr(default));
+                params_str.push_str(" = ");
+                params_str.push_str(&self.fmt_expr(default));
             }
         }
-        header.push(')');
 
-        if let Some(ret) = &cell.return_type {
-            header.push_str(" -> ");
-            header.push_str(&self.fmt_type(ret));
+        let return_str = if let Some(ret) = &cell.return_type {
+            format!(" -> {}", self.fmt_type(ret))
+        } else {
+            String::new()
+        };
+
+        let effects_str = if !cell.effects.is_empty() {
+            format!(" / {{{}}}", cell.effects.join(", "))
+        } else {
+            String::new()
+        };
+
+        // Check if the entire signature fits on one line (target 100 chars)
+        let one_line = format!(
+            "{}({}){}{}",
+            header,
+            params_str,
+            return_str,
+            effects_str
+        );
+
+        if one_line.len() <= 100 {
+            self.writeln(&one_line);
+        } else if cell.params.len() <= 3 {
+            // Short param list — keep on one line even if slightly long
+            self.writeln(&one_line);
+        } else {
+            // Multi-line param list
+            header.push('(');
+            self.writeln(&header.trim_end());
+            self.push_indent();
+            for (i, param) in cell.params.iter().enumerate() {
+                let mut line = param.name.clone();
+                line.push_str(": ");
+                line.push_str(&self.fmt_type(&param.ty));
+                if let Some(default) = &param.default_value {
+                    line.push_str(" = ");
+                    line.push_str(&self.fmt_expr(default));
+                }
+                if i < cell.params.len() - 1 {
+                    line.push(',');
+                }
+                self.writeln(&line);
+            }
+            self.pop_indent();
+            let close = format!("){}{}", return_str, effects_str);
+            self.writeln(&close);
+            self.push_indent();
+            for stmt in &cell.body {
+                self.fmt_stmt(stmt);
+            }
+            self.pop_indent();
+            self.writeln("end");
+            return;
         }
 
-        if !cell.effects.is_empty() {
-            header.push_str(" / {");
-            header.push_str(&cell.effects.join(", "));
-            header.push('}');
-        }
-
-        self.writeln(&header);
         self.push_indent();
         for stmt in &cell.body {
             self.fmt_stmt(stmt);
@@ -655,12 +699,30 @@ impl Formatter {
                 self.writeln(&format!("match {}", self.fmt_expr(&s.subject)));
                 self.push_indent();
                 for arm in &s.arms {
-                    self.writeln(&format!("| {} =>", self.fmt_pattern(&arm.pattern)));
-                    self.push_indent();
-                    for stmt in &arm.body {
-                        self.fmt_stmt(stmt);
+                    // Check if arm body is a single short statement (return/expr)
+                    let is_short_arm = arm.body.len() == 1 && match &arm.body[0] {
+                        Stmt::Return(r) => self.fmt_expr(&r.value).len() < 40,
+                        Stmt::Expr(e) => self.fmt_expr(&e.expr).len() < 40,
+                        _ => false,
+                    };
+
+                    if is_short_arm {
+                        // Format short arms on one line: pattern -> value
+                        let value = match &arm.body[0] {
+                            Stmt::Return(r) => self.fmt_expr(&r.value),
+                            Stmt::Expr(e) => self.fmt_expr(&e.expr),
+                            _ => unreachable!(),
+                        };
+                        self.writeln(&format!("{} -> {}", self.fmt_pattern(&arm.pattern), value));
+                    } else {
+                        // Format long arms with indentation
+                        self.writeln(&format!("{} ->", self.fmt_pattern(&arm.pattern)));
+                        self.push_indent();
+                        for stmt in &arm.body {
+                            self.fmt_stmt(stmt);
+                        }
+                        self.pop_indent();
                     }
-                    self.pop_indent();
                 }
                 self.pop_indent();
                 self.writeln("end");
@@ -1256,21 +1318,37 @@ end"#;
     }
 
     #[test]
-    fn test_match_formatting() {
+    fn test_match_short_arms() {
+        // Short arms should be on one line: pattern -> value
         let input = r#"cell check(x: Int) -> String
   match x
-    | 1 =>
-      return "one"
-    | 2 =>
-      return "two"
-    | _ =>
-      return "other"
+    1 -> return "one"
+    2 -> return "two"
+    _ -> return "other"
   end
 end"#;
         let output = format_lumen_code(input);
         assert!(output.contains("match x"));
-        assert!(output.contains("  | 1 =>"));
-        assert!(output.contains("    return \"one\""));
+        assert!(output.contains("1 -> \"one\""));
+        assert!(output.contains("2 -> \"two\""));
+        assert!(output.contains("_ -> \"other\""));
+    }
+
+    #[test]
+    fn test_match_long_arms() {
+        // Long arms should be indented
+        let input = r#"cell process(x: Int) -> String
+  match x
+    1 ->
+      let msg = "one"
+      return msg
+    _ ->
+      return "other"
+  end
+end"#;
+        let output = format_lumen_code(input);
+        assert!(output.contains("1 ->"));
+        assert!(output.contains("    let msg = \"one\""));
     }
 
     #[test]
@@ -1315,9 +1393,149 @@ end"#;
 
     #[test]
     fn test_parse_error_returns_original() {
-        // Use syntax that genuinely doesn't parse
         let input = "cell foo( -> Int"; // Missing closing paren
         let output = format_lumen_code(input);
         assert_eq!(input, output);
+    }
+
+    #[test]
+    fn test_enum_formatting() {
+        let input = r#"enum Status
+  Active
+  Inactive
+  Pending(String)
+end"#;
+        let output = format_lumen_code(input);
+        assert!(output.contains("enum Status"));
+        assert!(output.contains("  Active"));
+        assert!(output.contains("  Inactive"));
+        assert!(output.contains("  Pending(String)"));
+    }
+
+    #[test]
+    fn test_while_loop() {
+        let input = r#"cell count() -> Int
+  let i = 0
+  while i < 10
+    i = i + 1
+  end
+  return i
+end"#;
+        let output = format_lumen_code(input);
+        assert!(output.contains("while i < 10"));
+        assert!(output.contains("    i = i + 1"));
+    }
+
+    #[test]
+    fn test_for_loop() {
+        let input = r#"cell sum(items: list[Int]) -> Int
+  let total = 0
+  for x in items
+    total = total + x
+  end
+  return total
+end"#;
+        let output = format_lumen_code(input);
+        assert!(output.contains("for x in items"));
+        assert!(output.contains("    total = total + x"));
+    }
+
+    #[test]
+    fn test_compound_assignment() {
+        let input = r#"cell calc() -> Int
+  let x = 10
+  x += 5
+  x -= 3
+  x *= 2
+  return x
+end"#;
+        let output = format_lumen_code(input);
+        assert!(output.contains("x += 5"));
+        assert!(output.contains("x -= 3"));
+        assert!(output.contains("x *= 2"));
+    }
+
+    #[test]
+    fn test_string_interpolation() {
+        let input = r#"cell greet(name: String) -> String
+  return "Hello, {name}!"
+end"#;
+        let output = format_lumen_code(input);
+        assert!(output.contains("\"Hello, {name}!\""));
+    }
+
+    #[test]
+    fn test_list_and_map_literals() {
+        let input = r#"cell data() -> tuple[list[Int], map[String, Int]]
+  let nums = [1, 2, 3]
+  let scores = {"alice": 90, "bob": 85}
+  return (nums, scores)
+end"#;
+        let output = format_lumen_code(input);
+        assert!(output.contains("[1, 2, 3]"));
+        assert!(output.contains("{\"alice\": 90, \"bob\": 85}"));
+    }
+
+    #[test]
+    fn test_record_with_constraints() {
+        let input = r#"record User
+  name: String
+  age: Int where age >= 0
+  email: String = "none@example.com"
+end"#;
+        let output = format_lumen_code(input);
+        assert!(output.contains("age: Int where age >= 0"));
+        assert!(output.contains("email: String = \"none@example.com\""));
+    }
+
+    #[test]
+    fn test_idempotent() {
+        let input = r#"cell fibonacci(n: Int) -> Int
+  if n <= 1
+    return n
+  end
+  return fibonacci(n - 1) + fibonacci(n - 2)
+end"#;
+        let output1 = format_lumen_code(input);
+        let output2 = format_lumen_code(&output1);
+        assert_eq!(output1, output2, "Formatter should be idempotent");
+    }
+
+    #[test]
+    fn test_empty_file() {
+        let input = "";
+        let output = format_lumen_code(input);
+        assert_eq!(output, "");
+    }
+
+    #[test]
+    fn test_only_comments() {
+        // Comments aren't in AST, so file with only comments returns original
+        let input = "// Just a comment\n// Another comment";
+        let output = format_lumen_code(input);
+        assert_eq!(input, output);
+    }
+
+    #[test]
+    fn test_lambda_expression() {
+        let input = r#"cell apply(f: fn(Int) -> Int, x: Int) -> Int
+  return f(x)
+end
+
+cell main() -> Int
+  let double = fn(n: Int) -> Int => n * 2
+  return apply(double, 5)
+end"#;
+        let output = format_lumen_code(input);
+        assert!(output.contains("fn(n: Int) -> Int => n * 2"));
+    }
+
+    #[test]
+    fn test_effects() {
+        let input = r#"cell fetch_data(url: String) -> String / {http}
+  return get(url)
+end"#;
+        let output = format_lumen_code(input);
+        assert!(output.contains("-> String / {http}"));
     }
 }

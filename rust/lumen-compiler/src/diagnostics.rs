@@ -444,6 +444,86 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
             underline: None,
             suggestions: vec!["check for missing 'end' keywords".to_string()],
         },
+        ParseError::UnclosedBracket { bracket, open_line, open_col, current_line, current_col } => {
+            let source_line = get_source_line(source, *open_line);
+            let underline = source_line.as_ref().map(|_| make_underline(*open_col, 1));
+            Diagnostic {
+                severity: Severity::Error,
+                code: Some("E012".to_string()),
+                message: format!("unclosed '{}' opened at line {}, col {}", bracket, open_line, open_col),
+                file: Some(filename.to_string()),
+                line: Some(*current_line),
+                col: Some(*current_col),
+                source_line,
+                underline,
+                suggestions: vec![format!("add closing '{}'", match *bracket {
+                    '(' => ')',
+                    '[' => ']',
+                    '{' => '}',
+                    _ => *bracket,
+                })],
+            }
+        }
+        ParseError::MissingEnd { construct, open_line, open_col, current_line, current_col } => {
+            let source_line = get_source_line(source, *open_line);
+            let underline = source_line.as_ref().map(|_| make_underline(*open_col, 1));
+            Diagnostic {
+                severity: Severity::Error,
+                code: Some("E013".to_string()),
+                message: format!("expected 'end' to close '{}' at line {}, col {}", construct, open_line, open_col),
+                file: Some(filename.to_string()),
+                line: Some(*current_line),
+                col: Some(*current_col),
+                source_line,
+                underline,
+                suggestions: vec!["add 'end' to close the block".to_string()],
+            }
+        }
+        ParseError::MissingType { line, col, .. } => {
+            let source_line = get_source_line(source, *line);
+            let underline = source_line.as_ref().map(|_| make_underline(*col, 1));
+            Diagnostic {
+                severity: Severity::Error,
+                code: Some("E014".to_string()),
+                message: "missing type annotation".to_string(),
+                file: Some(filename.to_string()),
+                line: Some(*line),
+                col: Some(*col),
+                source_line,
+                underline,
+                suggestions: vec![],
+            }
+        }
+        ParseError::IncompleteExpression { line, col, .. } => {
+            let source_line = get_source_line(source, *line);
+            let underline = source_line.as_ref().map(|_| make_underline(*col, 1));
+            Diagnostic {
+                severity: Severity::Error,
+                code: Some("E015".to_string()),
+                message: "incomplete expression".to_string(),
+                file: Some(filename.to_string()),
+                line: Some(*line),
+                col: Some(*col),
+                source_line,
+                underline,
+                suggestions: vec![],
+            }
+        }
+        ParseError::MalformedConstruct { line, col, .. } => {
+            let source_line = get_source_line(source, *line);
+            let underline = source_line.as_ref().map(|_| make_underline(*col, 1));
+            Diagnostic {
+                severity: Severity::Error,
+                code: Some("E016".to_string()),
+                message: "malformed construct".to_string(),
+                file: Some(filename.to_string()),
+                line: Some(*line),
+                col: Some(*col),
+                source_line,
+                underline,
+                suggestions: vec![],
+            }
+        }
     }
 }
 

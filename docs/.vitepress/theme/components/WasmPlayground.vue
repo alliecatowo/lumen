@@ -100,6 +100,14 @@ function parseResult(result: LumenResult): { ok?: string; error?: string } {
   }
 }
 
+function toCompilerSource(source: string): string {
+  const trimmed = source.trim();
+  if (trimmed.includes("```lumen")) {
+    return source;
+  }
+  return `\`\`\`lumen\n${source}\n\`\`\``;
+}
+
 async function initWasm() {
   try {
     const moduleUrl = withBase("/wasm/lumen_wasm.js");
@@ -125,7 +133,7 @@ async function runCheck() {
   if (!api.value) return;
   busy.value = true;
   try {
-    const parsed = parseResult(api.value.check(sourceCode.value));
+    const parsed = parseResult(api.value.check(toCompilerSource(sourceCode.value)));
     if (parsed.error) {
       outputKind.value = "error";
       output.value = parsed.error;
@@ -142,7 +150,7 @@ async function runCompile() {
   if (!api.value) return;
   busy.value = true;
   try {
-    const parsed = parseResult(api.value.compile(sourceCode.value));
+    const parsed = parseResult(api.value.compile(toCompilerSource(sourceCode.value)));
     if (parsed.error) {
       outputKind.value = "error";
       output.value = parsed.error;
@@ -166,7 +174,9 @@ async function runProgram() {
   if (!api.value) return;
   busy.value = true;
   try {
-    const parsed = parseResult(api.value.run(sourceCode.value, selected.value.cell));
+    const parsed = parseResult(
+      api.value.run(toCompilerSource(sourceCode.value), selected.value.cell),
+    );
     if (parsed.error) {
       outputKind.value = "error";
       output.value = parsed.error;

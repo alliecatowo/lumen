@@ -21,6 +21,8 @@ module.exports = grammar({
     [$.record_pattern, $.record_expression],
     [$.pattern, $.expression],
     [$.type_annotation, $.expression],
+    [$.record_field_value, $.expression],
+    [$.let_statement, $.let_destructure_statement],
   ],
 
   rules: {
@@ -79,6 +81,7 @@ module.exports = grammar({
     ),
 
     parameter: $ => seq(
+      optional('...'),
       field('name', $.identifier),
       optional(seq(':', field('type', $.type_annotation))),
       optional(seq('=', field('default', $.expression)))
@@ -262,12 +265,15 @@ module.exports = grammar({
       'end'
     ),
 
-    // Import declaration
+    // Import declaration: import module.path: Name1, Name2 or import module.path: *
     import_declaration: $ => seq(
       'import',
-      field('module', $.qualified_name),
+      field('module', choice($.qualified_name, $.identifier)),
       ':',
-      sep1($.import_item, ',')
+      choice(
+        '*',
+        sep1($.import_item, ',')
+      )
     ),
 
     import_item: $ => seq(
@@ -279,8 +285,7 @@ module.exports = grammar({
     const_declaration: $ => seq(
       'const',
       field('name', $.identifier),
-      ':',
-      field('type', $.type_annotation),
+      optional(seq(':', field('type', $.type_annotation))),
       '=',
       field('value', $.expression)
     ),
@@ -316,6 +321,7 @@ module.exports = grammar({
     // Statements
     _statement: $ => choice(
       $.let_statement,
+      $.let_destructure_statement,
       $.assignment_statement,
       $.compound_assignment,
       $.if_statement,
@@ -329,6 +335,7 @@ module.exports = grammar({
       $.halt_statement,
       $.emit_statement,
       $.try_statement,
+      $.defer_statement,
       $.expression_statement,
     ),
 
@@ -338,6 +345,27 @@ module.exports = grammar({
       field('name', $.identifier),
       optional(seq(':', field('type', $.type_annotation))),
       optional(seq('=', field('value', $.expression)))
+    ),
+
+    // Destructuring let: let (a, b) = ..., let [x, y] = ..., let { a, b } = ...
+    let_destructure_statement: $ => seq(
+      'let',
+      optional('mut'),
+      field('pattern', choice(
+        $.tuple_pattern,
+        $.list_pattern,
+        $.record_destructure_pattern,
+        $.variant_pattern,
+      )),
+      '=',
+      field('value', $.expression)
+    ),
+
+    // Record destructuring pattern with braces: { a, b }
+    record_destructure_pattern: $ => seq(
+      '{',
+      sep1($.identifier, ','),
+      '}'
     ),
 
     assignment_statement: $ => seq(
@@ -350,9 +378,16 @@ module.exports = grammar({
       field('value', $.expression)
     ),
 
+    // Compound assignments: +=, -=, *=, /=, //=, %=, **=, &=, |=, ^=
     compound_assignment: $ => seq(
-      field('target', $.identifier),
-      field('operator', choice('+=', '-=', '*=', '/=')),
+      field('target', choice(
+        $.identifier,
+        $.member_expression,
+        $.index_expression
+      )),
+      field('operator', choice(
+        '+=', '-=', '*=', '/=', '//=', '%=', '**=', '&=', '|=', '^='
+      )),
       field('value', $.expression)
     ),
 
@@ -360,11 +395,18 @@ module.exports = grammar({
       'if',
       field('condition', $.expression),
       repeat($._statement),
+      repeat($.elif_clause),
       optional(seq(
         'else',
         repeat($._statement)
       )),
       'end'
+    ),
+
+    elif_clause: $ => seq(
+      'elif',
+      field('condition', $.expression),
+      repeat($._statement)
     ),
 
     match_statement: $ => seq(
@@ -387,36 +429,58 @@ module.exports = grammar({
       )
     ),
 
+    // For loop with optional label and filter
     for_statement: $ => seq(
       'for',
-      field('variable', $.identifier),
+      optional(field('label', $.label)),
+      field('variable', choice(
+        $.identifier,
+        $.tuple_pattern,
+      )),
       'in',
       field('iterable', $.expression),
+      optional(seq('if', field('filter', $.expression))),
       repeat($._statement),
       'end'
     ),
 
+    // While loop with optional label
     while_statement: $ => seq(
       'while',
+      optional(field('label', $.label)),
       field('condition', $.expression),
       repeat($._statement),
       'end'
     ),
 
+    // Loop with optional label
     loop_statement: $ => seq(
       'loop',
+      optional(field('label', $.label)),
       repeat($._statement),
       'end'
     ),
+
+    // Label: @name
+    label: $ => seq('@', $.identifier),
 
     return_statement: $ => seq(
       'return',
       optional(field('value', $.expression))
     ),
 
-    break_statement: $ => 'break',
+    // Break with optional label and value
+    break_statement: $ => seq(
+      'break',
+      optional(field('label', $.label)),
+      optional(field('value', $.expression))
+    ),
 
-    continue_statement: $ => 'continue',
+    // Continue with optional label
+    continue_statement: $ => seq(
+      'continue',
+      optional(field('label', $.label))
+    ),
 
     halt_statement: $ => seq(
       'halt',
@@ -441,6 +505,13 @@ module.exports = grammar({
       'end'
     ),
 
+    // Defer block: defer ... end
+    defer_statement: $ => seq(
+      'defer',
+      repeat($._statement),
+      'end'
+    ),
+
     expression_statement: $ => $.expression,
 
     // Patterns
@@ -454,6 +525,7 @@ module.exports = grammar({
       $.record_pattern,
       $.type_pattern,
       $.or_pattern,
+      $.range_pattern,
     ),
 
     literal_pattern: $ => choice(
@@ -481,7 +553,7 @@ module.exports = grammar({
       '[',
       optional(seq(
         sep1($.pattern, ','),
-        optional(seq(',', '...', field('rest', $.identifier)))
+        optional(seq(',', '...', optional(field('rest', $.identifier))))
       )),
       ']'
     ),
@@ -501,8 +573,7 @@ module.exports = grammar({
 
     field_pattern: $ => seq(
       field('name', $.identifier),
-      ':',
-      field('pattern', $.pattern)
+      optional(seq(':', field('pattern', $.pattern)))
     ),
 
     type_pattern: $ => seq(
@@ -517,6 +588,13 @@ module.exports = grammar({
       field('right', $.pattern)
     ),
 
+    // Range pattern: 1..10 or 1..=10
+    range_pattern: $ => seq(
+      field('start', choice($.integer, $.float)),
+      field('operator', choice('..', '..=')),
+      field('end', choice($.integer, $.float))
+    ),
+
     // Expressions
     expression: $ => choice(
       $.literal,
@@ -526,6 +604,7 @@ module.exports = grammar({
       $.call_expression,
       $.member_expression,
       $.index_expression,
+      $.null_safe_index_expression,
       $.list_expression,
       $.map_expression,
       $.set_expression,
@@ -536,12 +615,16 @@ module.exports = grammar({
       $.null_coalesce_expression,
       $.null_safe_expression,
       $.try_expression,
+      $.null_assert_expression,
+      $.is_expression,
+      $.as_expression,
       $.await_expression,
       $.spawn_expression,
       $.parenthesized_expression,
       $.if_expression,
       $.match_expression,
       $.string_interpolation,
+      $.range_expression,
     ),
 
     literal: $ => choice(
@@ -555,18 +638,16 @@ module.exports = grammar({
 
     binary_expression: $ => {
       const table = [
-        [12, choice('*', '/', '%')],
+        [12, choice('*', '/', '//', '%')],
         [11, choice('+', '-', '++')],
         [10, choice('<<', '>>')],
         [9, choice('<', '<=', '>', '>=')],
         [8, choice('==', '!=')],
         [7, '&'],
         [6, '^'],
-        [5, '|'],
+        [5, 'in'],
         [4, 'and'],
         [3, 'or'],
-        [2, '..'],
-        [1, '..='],
       ];
 
       return choice(...table.map(([precedence, operator]) =>
@@ -579,7 +660,7 @@ module.exports = grammar({
     },
 
     unary_expression: $ => prec(13, seq(
-      field('operator', choice('not', '-', '~', '!')),
+      field('operator', choice('not', '-', '~')),
       field('operand', $.expression)
     )),
 
@@ -607,12 +688,20 @@ module.exports = grammar({
     member_expression: $ => prec(16, seq(
       field('object', $.expression),
       '.',
-      field('property', $.identifier)
+      field('property', choice($.identifier, $.integer))
     )),
 
     index_expression: $ => prec(16, seq(
       field('object', $.expression),
       '[',
+      field('index', $.expression),
+      ']'
+    )),
+
+    // Null-safe index: expr?[index]
+    null_safe_index_expression: $ => prec(16, seq(
+      field('object', $.expression),
+      '?[',
       field('index', $.expression),
       ']'
     )),
@@ -635,11 +724,20 @@ module.exports = grammar({
       field('value', $.expression)
     ),
 
-    set_expression: $ => seq(
-      'set',
-      '[',
-      optional(sep1($.expression, ',')),
-      ']'
+    // Set expression: {1, 2, 3} or set[1, 2, 3]
+    set_expression: $ => choice(
+      seq(
+        'set',
+        '[',
+        optional(sep1($.expression, ',')),
+        ']'
+      ),
+      seq(
+        'set',
+        '{',
+        optional(sep1($.expression, ',')),
+        '}'
+      )
     ),
 
     tuple_expression: $ => seq(
@@ -658,17 +756,25 @@ module.exports = grammar({
       ')'
     ),
 
-    record_field_value: $ => seq(
-      field('name', $.identifier),
-      ':',
-      field('value', $.expression)
+    // Record field value: name: expr or shorthand: just name
+    record_field_value: $ => choice(
+      seq(
+        field('name', $.identifier),
+        ':',
+        field('value', $.expression)
+      ),
+      field('name', $.identifier)
     ),
 
     lambda_expression: $ => seq(
       'fn',
       field('parameters', $.parameter_list),
       choice(
-        seq('=>', field('body', $.expression)),
+        seq(
+          optional(seq('->', field('return_type', $.type_annotation))),
+          '=>',
+          field('body', $.expression)
+        ),
         seq(
           optional(seq('->', field('return_type', $.type_annotation))),
           repeat($._statement),
@@ -698,6 +804,33 @@ module.exports = grammar({
     try_expression: $ => prec(17, seq(
       field('expression', $.expression),
       '?'
+    )),
+
+    // Null assert: expr!
+    null_assert_expression: $ => prec(17, seq(
+      field('expression', $.expression),
+      '!'
+    )),
+
+    // Type test: expr is Type
+    is_expression: $ => prec.left(9, seq(
+      field('expression', $.expression),
+      'is',
+      field('type', $.type_annotation)
+    )),
+
+    // Type cast: expr as Type
+    as_expression: $ => prec.left(9, seq(
+      field('expression', $.expression),
+      'as',
+      field('type', $.type_annotation)
+    )),
+
+    // Range expression: start..end or start..=end
+    range_expression: $ => prec.left(2, seq(
+      field('start', $.expression),
+      field('operator', choice('..', '..=')),
+      field('end', $.expression)
     )),
 
     await_expression: $ => seq(
@@ -753,6 +886,7 @@ module.exports = grammar({
       'end'
     ),
 
+    // String interpolation uses {expr} (not ${expr})
     string_interpolation: $ => seq(
       '"',
       repeat(choice(
@@ -762,10 +896,10 @@ module.exports = grammar({
       '"'
     ),
 
-    string_content: $ => token(prec(-1, /[^"${\\]+/)),
+    string_content: $ => token(prec(-1, /[^"{\\]+/)),
 
     interpolation: $ => seq(
-      '${',
+      '{',
       $.expression,
       '}'
     ),
@@ -775,6 +909,7 @@ module.exports = grammar({
       $.primary_type,
       $.union_type,
       $.function_type,
+      $.optional_type,
     ),
 
     primary_type: $ => choice(
@@ -821,6 +956,12 @@ module.exports = grammar({
       field('right', $.type_annotation)
     )),
 
+    // Optional type sugar: T? desugars to T | Null
+    optional_type: $ => prec(2, seq(
+      field('type', $.primary_type),
+      '?'
+    )),
+
     function_type: $ => seq(
       'fn',
       '(',
@@ -840,16 +981,16 @@ module.exports = grammar({
     identifier: $ => /[a-zA-Z_][a-zA-Z0-9_]*/,
 
     integer: $ => token(choice(
-      /[0-9]+/,
-      /0x[0-9a-fA-F]+/,
-      /0b[01]+/,
-      /0o[0-7]+/
+      /[0-9][0-9_]*/,
+      /0x[0-9a-fA-F][0-9a-fA-F_]*/,
+      /0b[01][01_]*/,
+      /0o[0-7][0-7_]*/
     )),
 
     float: $ => token(choice(
-      /[0-9]+\.[0-9]+/,
-      /[0-9]+\.[0-9]+[eE][+-]?[0-9]+/,
-      /[0-9]+[eE][+-]?[0-9]+/
+      /[0-9][0-9_]*\.[0-9][0-9_]*/,
+      /[0-9][0-9_]*\.[0-9][0-9_]*[eE][+-]?[0-9]+/,
+      /[0-9][0-9_]*[eE][+-]?[0-9]+/
     )),
 
     string: $ => token(choice(
@@ -867,10 +1008,8 @@ module.exports = grammar({
       '"'
     )),
 
-    comment: $ => token(choice(
-      seq('//', /.*/),
-      seq('/*', /[^*]*\*+([^/*][^*]*\*+)*/, '/')
-    )),
+    // Lumen comments use # (not //)
+    comment: $ => token(seq('#', /.*/)),
   }
 });
 

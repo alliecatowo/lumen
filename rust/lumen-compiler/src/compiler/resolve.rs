@@ -364,34 +364,54 @@ pub fn resolve_with_base(
     for item in &program.items {
         use std::collections::hash_map::Entry;
         match item {
-            Item::Record(r) => match table.types.entry(r.name.clone()) {
-                Entry::Occupied(_) => {
+            Item::Record(r) => {
+                // Cross-kind: check if a type alias already uses this name
+                if table.type_aliases.contains_key(&r.name) {
                     errors.push(ResolveError::Duplicate {
                         name: r.name.clone(),
                         line: r.span.line,
                     });
+                } else {
+                    match table.types.entry(r.name.clone()) {
+                        Entry::Occupied(_) => {
+                            errors.push(ResolveError::Duplicate {
+                                name: r.name.clone(),
+                                line: r.span.line,
+                            });
+                        }
+                        Entry::Vacant(entry) => {
+                            entry.insert(TypeInfo {
+                                kind: TypeInfoKind::Record(r.clone()),
+                                generic_params: r.generic_params.iter().map(|gp| gp.name.clone()).collect(),
+                            });
+                        }
+                    }
                 }
-                Entry::Vacant(entry) => {
-                    entry.insert(TypeInfo {
-                        kind: TypeInfoKind::Record(r.clone()),
-                        generic_params: r.generic_params.iter().map(|gp| gp.name.clone()).collect(),
-                    });
-                }
-            },
-            Item::Enum(e) => match table.types.entry(e.name.clone()) {
-                Entry::Occupied(_) => {
+            }
+            Item::Enum(e) => {
+                // Cross-kind: check if a type alias already uses this name
+                if table.type_aliases.contains_key(&e.name) {
                     errors.push(ResolveError::Duplicate {
                         name: e.name.clone(),
                         line: e.span.line,
                     });
+                } else {
+                    match table.types.entry(e.name.clone()) {
+                        Entry::Occupied(_) => {
+                            errors.push(ResolveError::Duplicate {
+                                name: e.name.clone(),
+                                line: e.span.line,
+                            });
+                        }
+                        Entry::Vacant(entry) => {
+                            entry.insert(TypeInfo {
+                                kind: TypeInfoKind::Enum(e.clone()),
+                                generic_params: e.generic_params.iter().map(|gp| gp.name.clone()).collect(),
+                            });
+                        }
+                    }
                 }
-                Entry::Vacant(entry) => {
-                    entry.insert(TypeInfo {
-                        kind: TypeInfoKind::Enum(e.clone()),
-                        generic_params: e.generic_params.iter().map(|gp| gp.name.clone()).collect(),
-                    });
-                }
-            },
+            }
             Item::Cell(c) => match table.cells.entry(c.name.clone()) {
                 Entry::Occupied(_) => {
                     errors.push(ResolveError::Duplicate {
@@ -427,10 +447,34 @@ pub fn resolve_with_base(
                     }
                 }
 
-                if !table.types.contains_key(&a.name) {
-                    table.types.insert(
-                        a.name.clone(),
-                        TypeInfo {
+                // Check cross-kind: agent name vs explicit record/enum type
+                match table.types.entry(a.name.clone()) {
+                    Entry::Occupied(existing) => {
+                        match &existing.get().kind {
+                            TypeInfoKind::Builtin => {
+                                errors.push(ResolveError::Duplicate {
+                                    name: a.name.clone(),
+                                    line: a.span.line,
+                                });
+                            }
+                            TypeInfoKind::Record(rd) => {
+                                if rd.span.line != a.span.line {
+                                    errors.push(ResolveError::Duplicate {
+                                        name: a.name.clone(),
+                                        line: a.span.line,
+                                    });
+                                }
+                            }
+                            TypeInfoKind::Enum(_) => {
+                                errors.push(ResolveError::Duplicate {
+                                    name: a.name.clone(),
+                                    line: a.span.line,
+                                });
+                            }
+                        }
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(TypeInfo {
                             kind: TypeInfoKind::Record(RecordDef {
                                 name: a.name.clone(),
                                 generic_params: vec![],
@@ -439,8 +483,8 @@ pub fn resolve_with_base(
                                 span: a.span,
                             }),
                             generic_params: vec![],
-                        },
-                    );
+                        });
+                    }
                 }
 
                 if !table.cells.contains_key(&a.name) {
@@ -519,10 +563,38 @@ pub fn resolve_with_base(
                         });
                     }
                 }
-                if !table.types.contains_key(&p.name) {
-                    table.types.insert(
-                        p.name.clone(),
-                        TypeInfo {
+                // Check cross-kind: process name vs explicit record/enum type
+                match table.types.entry(p.name.clone()) {
+                    Entry::Occupied(existing) => {
+                        // If the existing type is a Builtin, that's a conflict
+                        // If it was inserted by another process, also a conflict
+                        match &existing.get().kind {
+                            TypeInfoKind::Builtin => {
+                                errors.push(ResolveError::Duplicate {
+                                    name: p.name.clone(),
+                                    line: p.span.line,
+                                });
+                            }
+                            TypeInfoKind::Record(rd) => {
+                                // If the existing record was defined at a different line,
+                                // it's an explicit record definition — conflict
+                                if rd.span.line != p.span.line {
+                                    errors.push(ResolveError::Duplicate {
+                                        name: p.name.clone(),
+                                        line: p.span.line,
+                                    });
+                                }
+                            }
+                            TypeInfoKind::Enum(_) => {
+                                errors.push(ResolveError::Duplicate {
+                                    name: p.name.clone(),
+                                    line: p.span.line,
+                                });
+                            }
+                        }
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(TypeInfo {
                             kind: TypeInfoKind::Record(RecordDef {
                                 name: p.name.clone(),
                                 generic_params: vec![],
@@ -531,8 +603,8 @@ pub fn resolve_with_base(
                                 span: p.span,
                             }),
                             generic_params: vec![],
-                        },
-                    );
+                        });
+                    }
                 }
                 if !table.cells.contains_key(&p.name) {
                     table.cells.insert(
@@ -645,17 +717,27 @@ pub fn resolve_with_base(
                 );
             }
             Item::Grant(_) => {} // Grants reference tools, checked below
-            Item::TypeAlias(ta) => match table.type_aliases.entry(ta.name.clone()) {
-                Entry::Occupied(_) => {
+            Item::TypeAlias(ta) => {
+                // Cross-kind: check if a record/enum already uses this name
+                if table.types.contains_key(&ta.name) {
                     errors.push(ResolveError::Duplicate {
                         name: ta.name.clone(),
                         line: ta.span.line,
                     });
+                } else {
+                    match table.type_aliases.entry(ta.name.clone()) {
+                        Entry::Occupied(_) => {
+                            errors.push(ResolveError::Duplicate {
+                                name: ta.name.clone(),
+                                line: ta.span.line,
+                            });
+                        }
+                        Entry::Vacant(entry) => {
+                            entry.insert(ta.type_expr.clone());
+                        }
+                    }
                 }
-                Entry::Vacant(entry) => {
-                    entry.insert(ta.type_expr.clone());
-                }
-            },
+            }
             Item::Trait(t) => {
                 let methods: Vec<String> = t.methods.iter().map(|m| m.name.clone()).collect();
                 match table.traits.entry(t.name.clone()) {
@@ -683,14 +765,21 @@ pub fn resolve_with_base(
                 });
             }
             Item::ConstDecl(c) => {
-                table.consts.insert(
-                    c.name.clone(),
-                    ConstInfo {
-                        name: c.name.clone(),
-                        ty: c.type_ann.clone(),
-                        value: Some(c.value.clone()),
-                    },
-                );
+                match table.consts.entry(c.name.clone()) {
+                    Entry::Occupied(_) => {
+                        errors.push(ResolveError::Duplicate {
+                            name: c.name.clone(),
+                            line: c.span.line,
+                        });
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(ConstInfo {
+                            name: c.name.clone(),
+                            ty: c.type_ann.clone(),
+                            value: Some(c.value.clone()),
+                        });
+                    }
+                }
             }
             Item::Import(_) | Item::MacroDecl(_) => {}
         }
@@ -4040,5 +4129,132 @@ mod tests {
         )
         .unwrap();
         assert_eq!(table.impls.len(), 1);
+    }
+
+    // ── Cross-kind duplicate detection tests ──
+
+    #[test]
+    fn test_duplicate_type_alias_vs_record() {
+        // A type alias and a record with the same name should conflict
+        let err = resolve_src(
+            "type Foo = String\n\nrecord Foo\n  x: Int\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::Duplicate { name, .. } if name == "Foo"
+        )));
+    }
+
+    #[test]
+    fn test_duplicate_record_vs_type_alias() {
+        // Reverse order: record first, then type alias
+        let err = resolve_src(
+            "record Foo\n  x: Int\nend\n\ntype Foo = String",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::Duplicate { name, .. } if name == "Foo"
+        )));
+    }
+
+    #[test]
+    fn test_duplicate_type_alias_vs_enum() {
+        let err = resolve_src(
+            "type Color = String\n\nenum Color\n  Red\n  Blue\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::Duplicate { name, .. } if name == "Color"
+        )));
+    }
+
+    #[test]
+    fn test_duplicate_enum_vs_type_alias() {
+        let err = resolve_src(
+            "enum Color\n  Red\n  Blue\nend\n\ntype Color = String",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::Duplicate { name, .. } if name == "Color"
+        )));
+    }
+
+    #[test]
+    fn test_duplicate_type_alias_detection() {
+        // Two type aliases with the same name
+        let err = resolve_src(
+            "type Foo = String\n\ntype Foo = Int",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::Duplicate { name, .. } if name == "Foo"
+        )));
+    }
+
+    #[test]
+    fn test_duplicate_const_detection() {
+        let err = resolve_src(
+            "const MAX = 100\n\nconst MAX = 200",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::Duplicate { name, .. } if name == "MAX"
+        )));
+    }
+
+    #[test]
+    fn test_duplicate_trait_detection() {
+        let err = resolve_src(
+            "trait Printable\n  cell show() -> String\n    return \"\"\n  end\nend\n\ntrait Printable\n  cell display() -> String\n    return \"\"\n  end\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::Duplicate { name, .. } if name == "Printable"
+        )));
+    }
+
+    #[test]
+    fn test_duplicate_handler_detection() {
+        let err = resolve_src(
+            "effect io\n  cell read() -> String\n    return \"\"\n  end\nend\n\nhandler MyHandler\n  handle io.read() -> String\n    return \"\"\n  end\nend\n\nhandler MyHandler\n  handle io.read() -> String\n    return \"x\"\n  end\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::Duplicate { name, .. } if name == "MyHandler"
+        )));
+    }
+
+    #[test]
+    fn test_record_vs_enum_same_name() {
+        // Record and enum with same name should conflict (both go in types)
+        let err = resolve_src(
+            "record Foo\n  x: Int\nend\n\nenum Foo\n  A\n  B\nend",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ResolveError::Duplicate { name, .. } if name == "Foo"
+        )));
+    }
+
+    #[test]
+    fn test_no_false_positive_distinct_names() {
+        // Different names should not conflict
+        let table = resolve_src(
+            "record Foo\n  x: Int\nend\n\nenum Bar\n  A\n  B\nend\n\ntype Baz = String\n\ncell qux() -> Int\n  return 1\nend",
+        )
+        .unwrap();
+        assert!(table.types.contains_key("Foo"));
+        assert!(table.types.contains_key("Bar"));
+        assert!(table.type_aliases.contains_key("Baz"));
+        assert!(table.cells.contains_key("qux"));
     }
 }

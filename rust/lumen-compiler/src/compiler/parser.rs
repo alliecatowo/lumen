@@ -4393,6 +4393,32 @@ impl Parser {
             self.advance();
             let rhs = self.parse_expr(r_bp)?;
             let span = lhs.span().merge(rhs.span());
+
+            // Chained comparisons: desugar `a < b < c` into `a < b and b < c`.
+            // Only ordering comparisons (Lt, Gt, LtEq, GtEq) can be chained.
+            // Note: the middle operand `b` is duplicated in the AST and will be
+            // evaluated twice at runtime.
+            if matches!(op, BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq) {
+                let next = self.peek_kind();
+                if matches!(next, TokenKind::Lt | TokenKind::LtEq | TokenKind::Gt | TokenKind::GtEq) {
+                    let op2 = match self.peek_kind() {
+                        TokenKind::Lt => BinOp::Lt,
+                        TokenKind::LtEq => BinOp::LtEq,
+                        TokenKind::Gt => BinOp::Gt,
+                        TokenKind::GtEq => BinOp::GtEq,
+                        _ => unreachable!(),
+                    };
+                    self.advance();
+                    let rhs2 = self.parse_expr(r_bp)?;
+                    let left_cmp = Expr::BinOp(Box::new(lhs), op, Box::new(rhs.clone()), span);
+                    let right_span = rhs.span().merge(rhs2.span());
+                    let right_cmp = Expr::BinOp(Box::new(rhs), op2, Box::new(rhs2), right_span);
+                    let full_span = left_cmp.span().merge(right_cmp.span());
+                    lhs = Expr::BinOp(Box::new(left_cmp), BinOp::And, Box::new(right_cmp), full_span);
+                    continue;
+                }
+            }
+
             lhs = Expr::BinOp(Box::new(lhs), op, Box::new(rhs), span);
         }
         Ok(lhs)
@@ -6888,6 +6914,61 @@ end
                 "Error message should mention line/col: {}",
                 msg
             );
+        }
+    }
+
+    #[test]
+    fn test_chained_comparison() {
+        // `0 < x < 100` should desugar to `(0 < x) and (x < 100)`
+        let prog = parse_src("cell f(x: Int) -> Bool\n  return 0 < x < 100\nend").unwrap();
+        let cell = match &prog.items[0] {
+            Item::Cell(c) => c,
+            _ => panic!("expected cell"),
+        };
+        let ret = match &cell.body[0] {
+            Stmt::Return(r) => &r.value,
+            _ => panic!("expected return"),
+        };
+        // Top-level should be And
+        match ret {
+            Expr::BinOp(left, BinOp::And, right, _) => {
+                match left.as_ref() {
+                    Expr::BinOp(_, BinOp::Lt, _, _) => {}
+                    other => panic!("expected Lt on left, got {:?}", other),
+                }
+                match right.as_ref() {
+                    Expr::BinOp(_, BinOp::Lt, _, _) => {}
+                    other => panic!("expected Lt on right, got {:?}", other),
+                }
+            }
+            other => panic!("expected And(Lt, Lt), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_chained_comparison_mixed_ops() {
+        // `a >= b > c` should desugar to `(a >= b) and (b > c)`
+        let prog = parse_src("cell f(a: Int, b: Int, c: Int) -> Bool\n  return a >= b > c\nend").unwrap();
+        let cell = match &prog.items[0] {
+            Item::Cell(c) => c,
+            _ => panic!("expected cell"),
+        };
+        let ret = match &cell.body[0] {
+            Stmt::Return(r) => &r.value,
+            _ => panic!("expected return"),
+        };
+        match ret {
+            Expr::BinOp(left, BinOp::And, right, _) => {
+                match left.as_ref() {
+                    Expr::BinOp(_, BinOp::GtEq, _, _) => {}
+                    other => panic!("expected GtEq on left, got {:?}", other),
+                }
+                match right.as_ref() {
+                    Expr::BinOp(_, BinOp::Gt, _, _) => {}
+                    other => panic!("expected Gt on right, got {:?}", other),
+                }
+            }
+            other => panic!("expected And(GtEq, Gt), got {:?}", other),
         }
     }
 }

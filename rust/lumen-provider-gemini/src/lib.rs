@@ -455,7 +455,7 @@ mod tests {
     #[ignore] // Run with: cargo test -p lumen-provider-gemini -- --ignored
     fn test_real_gemini_generate() {
         let api_key = std::env::var("GEMINI_API_KEY")
-            .unwrap_or_else(|_| "REMOVED_API_KEY".to_string());
+            .expect("GEMINI_API_KEY must be set for this test");
         let provider = GeminiProvider::generate(api_key);
         let result = provider.call(json!({
             "prompt": "Say hello in exactly 3 words",

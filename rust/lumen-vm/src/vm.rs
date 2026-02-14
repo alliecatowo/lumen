@@ -246,6 +246,9 @@ pub struct VM {
     await_fuel: u32,
     max_instructions: u64,
     instruction_count: u64,
+    /// Optional fuel counter. Each instruction decrements fuel by 1.
+    /// When fuel hits 0, execution stops with a "fuel exhausted" error.
+    fuel: Option<u64>,
 }
 
 const MAX_AWAIT_RETRIES: u32 = 10_000;
@@ -275,6 +278,7 @@ impl VM {
             await_fuel: MAX_AWAIT_RETRIES,
             max_instructions: DEFAULT_MAX_INSTRUCTIONS,
             instruction_count: 0,
+            fuel: None,
         }
     }
 
@@ -448,6 +452,12 @@ impl VM {
 
     pub fn set_instruction_limit(&mut self, max_instructions: u64) {
         self.max_instructions = max_instructions;
+    }
+
+    /// Set the fuel counter. Each executed instruction consumes one unit of fuel.
+    /// When fuel reaches 0, execution stops with a "fuel exhausted" error.
+    pub fn set_fuel(&mut self, fuel: u64) {
+        self.fuel = Some(fuel);
     }
 
     /// Capture the current call stack for error reporting.
@@ -995,6 +1005,13 @@ impl VM {
             self.instruction_count = self.instruction_count.saturating_add(1);
             if self.instruction_count > self.max_instructions {
                 return Err(VmError::InstructionLimitExceeded(self.max_instructions));
+            }
+
+            if let Some(ref mut fuel) = self.fuel {
+                if *fuel == 0 {
+                    return Err(VmError::Runtime("fuel exhausted".into()));
+                }
+                *fuel -= 1;
             }
 
             let module = self.module.as_ref().ok_or(VmError::NoModule)?;
@@ -7872,5 +7889,112 @@ end
             // Should have frames for divide, helper, and main
             assert!(!trace.is_empty());
         }
+    }
+
+    #[test]
+    fn test_fuel_exhaustion() {
+        // Create a simple infinite loop: Jmp -1
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: None,
+                registers: 1,
+                constants: vec![],
+                instructions: vec![Instruction::sax(OpCode::Jmp, -1)],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        vm.set_fuel(10);
+        vm.load(module);
+        let err = vm
+            .execute("main", vec![])
+            .expect_err("should run out of fuel");
+        match &err {
+            VmError::Runtime(msg) => assert_eq!(msg, "fuel exhausted"),
+            other => panic!("expected fuel exhausted, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_fuel_sufficient_for_simple_program() {
+        // A program that returns 42 — should succeed with enough fuel
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: None,
+                registers: 1,
+                constants: vec![Constant::Int(42)],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        vm.set_fuel(100);
+        vm.load(module);
+        let result = vm.execute("main", vec![]).expect("should have enough fuel");
+        assert_eq!(result, Value::Int(42));
+    }
+
+    #[test]
+    fn test_no_fuel_set_runs_normally() {
+        // Without set_fuel, the program runs normally (no fuel limit)
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: None,
+                registers: 1,
+                constants: vec![Constant::Int(99)],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        // Don't set fuel — should run normally
+        vm.load(module);
+        let result = vm.execute("main", vec![]).expect("should run without fuel limit");
+        assert_eq!(result, Value::Int(99));
     }
 }

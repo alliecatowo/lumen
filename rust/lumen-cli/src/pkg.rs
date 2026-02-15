@@ -393,10 +393,29 @@ fn resolve_dependencies_with_registry(
         .map(Path::to_path_buf)
         .unwrap_or_else(local_registry_dir);
 
+    // Determine registry URL from config, env var, or override
     let registry_url = if let Some(dir) = registry_dir_override {
+        // Explicit override (e.g., from --registry flag)
         format!("file://{}", dir.canonicalize().unwrap_or(dir.to_path_buf()).display())
+    } else if let Some(url) = std::env::var("LUMEN_REGISTRY").ok() {
+        // Environment variable takes precedence
+        url
+    } else if let Some(ref reg) = config.registry {
+        // Config file registry
+        reg.effective_url().map_err(|e| format!("{}: hint: set LUMEN_REGISTRY or add [registry] to lumen.toml", e))?
     } else {
-        "https://registry.lumen.sh".to_string()
+        // No registry configured - provide helpful error
+        return Err(concat!(
+            "No package registry configured.\n\n",
+            "Options:\n",
+            "1. Set environment variable: export LUMEN_REGISTRY=https://your-registry.com\n",
+            "2. Add to lumen.toml:\n",
+            "   [registry]\n",
+            "   default = \"https://your-registry.com\"\n",
+            "3. Use local registry: export LUMEN_REGISTRY=file:///path/to/registry\n\n",
+            "For now, you can use path dependencies for local development.\n",
+            "See: https://lumen-lang.org/docs/package-registry"
+        ).to_string());
     };
 
     let mut lockfile = None;

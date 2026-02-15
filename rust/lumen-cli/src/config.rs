@@ -91,6 +91,72 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 // =============================================================================
+// Registry Configuration
+// =============================================================================
+
+/// Registry configuration.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct RegistryConfig {
+    /// Default registry URL.
+    #[serde(default = "default_registry_url")]
+    pub default: String,
+
+    /// Named registries (alias -> URL).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub registries: HashMap<String, String>,
+
+    /// Whether to use local cache when offline.
+    #[serde(default = "default_true")]
+    pub offline_fallback: bool,
+}
+
+fn default_registry_url() -> String {
+    // Check environment variable first
+    if let Ok(url) = std::env::var("LUMEN_REGISTRY") {
+        return url;
+    }
+    // Default to a placeholder that will error gracefully
+    "lumen://default".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for RegistryConfig {
+    fn default() -> Self {
+        Self {
+            default: default_registry_url(),
+            registries: HashMap::new(),
+            offline_fallback: true,
+        }
+    }
+}
+
+impl RegistryConfig {
+    /// Get the effective registry URL.
+    pub fn effective_url(&self) -> Result<String, String> {
+        let url = &self.default;
+        
+        // Handle special schemes
+        if url.starts_with("lumen://") {
+            return Err(format!(
+                "No registry configured. Set LUMEN_REGISTRY env var or add [registry] section to lumen.toml.
+                 Example: export LUMEN_REGISTRY=https://your-registry.com
+                 Or use a local registry: export LUMEN_REGISTRY=file:///path/to/registry"
+            ));
+        }
+        
+        Ok(url.clone())
+    }
+
+    /// Get a named registry URL.
+    pub fn get_registry(&self, name: &str) -> Option<&String> {
+        self.registries.get(name)
+    }
+}
+
+// =============================================================================
 // Core Config Structure
 // =============================================================================
 
@@ -100,6 +166,10 @@ pub struct LumenConfig {
     /// Package metadata (required for publishable packages).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package: Option<PackageInfo>,
+
+    /// Registry configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry: Option<RegistryConfig>,
 
     /// Toolchain constraints for reproducibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -633,6 +703,23 @@ pub struct McpConfig {
 // =============================================================================
 
 impl LumenConfig {
+    /// Get the registry URL to use.
+    pub fn registry_url(&self) -> Result<String, String> {
+        if let Some(ref reg) = self.registry {
+            reg.effective_url()
+        } else {
+            // Check environment variable
+            if let Ok(url) = std::env::var("LUMEN_REGISTRY") {
+                return Ok(url);
+            }
+            Err(format!(
+                "No registry configured. Set LUMEN_REGISTRY env var or add [registry] section to lumen.toml.
+                 Example: export LUMEN_REGISTRY=https://your-registry.com
+                 Or use a local registry: export LUMEN_REGISTRY=file:///path/to/registry"
+            ))
+        }
+    }
+
     /// Load config from `lumen.toml`, searching current dir then parents.
     pub fn load() -> Self {
         Self::find_and_load()

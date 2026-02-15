@@ -2,6 +2,16 @@ name = "wares-transparency-log"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
 
+# Enable workers.dev subdomain for testing
+workers_dev = true
+
+# Custom domain (flat structure to avoid TLS issues)
+# After deploying, add via dashboard or:
+# wrangler deploy && echo "Now add custom domain in dashboard: wares-log.lumen-lang.com"
+[[custom_domains]]
+domain = "wares-log.lumen-lang.com"
+zone_id = "YOUR_ZONE_ID"
+
 # D1 Database for storing log entries
 [[d1_databases]]
 binding = "wares_transparency_log"
@@ -13,9 +23,12 @@ database_id = "222b303b-3e32-43a0-be42-24b480d78201"
 # Set via wrangler secret put REGISTRY_API_KEY
 # REGISTRY_API_KEY = "your-secret-api-key"
 
-# Custom domain
-# Add via: wrangler deploy && wrangler deploy --dispatch-namespace production
-# Or manually: Cloudflare Dashboard → Workers → wares-transparency-log → Triggers → Add Custom Domain
-[[routes]]
-pattern = "log.wares.lumen-lang.com"
-custom_domain = true
+# Custom domain - use flat structure to avoid TLS issues with sub-subdomains
+# The domain will be: wares-log.lumen-lang.com (not log.wares.lumen-lang.com)
+# This attaches directly to the worker without needing a route
+
+# Deploy with: wrangler deploy
+# Then in dashboard: Workers & Pages → wares-transparency-log → Settings → Triggers 
+# → Add Custom Domain → wares-log.lumen-lang.com
+
+# Or use wrangler triggers command (see DEPLOY.md)

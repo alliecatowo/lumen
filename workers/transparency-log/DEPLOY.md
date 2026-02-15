@@ -1,69 +1,93 @@
 # Deploy Transparency Log Worker
 
-## Quick Deploy
+## The Issue
+
+`log.wares.lumen-lang.com` is a sub-subdomain (log → wares → lumen-lang), which causes TLS certificate issues.
+
+**Solution**: Use `wares-log.lumen-lang.com` instead (flat structure).
+
+## Deploy
 
 ```bash
 cd workers/transparency-log
 
-# 1. Deploy the worker
+# Update the zone_id in wrangler.toml first!
+vim wrangler.toml
+# Change zone_id to your lumen-lang.com zone ID
+
+# Deploy
 wrangler deploy
-
-# 2. Add custom domain (choose ONE method):
-
-# Method A: Via wrangler (recommended)
-wrangler route publish --pattern "log.wares.lumen-lang.com/*" --script wares-transparency-log
-
-# Method B: Via Cloudflare API (if you have API token)
-curl -X POST "https://api.cloudflare.com/client/v4/zones/YOUR_ZONE_ID/workers/routes" \
-  -H "Authorization: Bearer YOUR_API_TOKEN" \
-  -H "Content-Type: application/json" \
-  --data '{
-    "pattern": "log.wares.lumen-lang.com/*",
-    "script": "wares-transparency-log"
-  }'
-
-# Method C: Dashboard (easiest)
-# 1. Go to https://dash.cloudflare.com → your domain → Workers Routes
-# 2. Click "Add Route"
-# 3. Pattern: log.wares.lumen-lang.com/*
-# 4. Worker: wares-transparency-log
-# 5. Click Save
 ```
 
-## Manual Dashboard Steps
+## Add Custom Domain (Choose One)
 
-1. Go to [Cloudflare Dashboard](https://dash.cloudflare.com)
-2. Select your domain (lumen-lang.com)
-3. Click **Workers & Pages** in the left sidebar
-4. Click **Add route**
-5. Fill in:
-   - **Route**: `log.wares.lumen-lang.com/*`
-   - **Worker**: `wares-transparency-log`
-   - **Environment**: Production
-6. Click **Save**
+### Method 1: Dashboard (Easiest)
+
+1. Go to https://dash.cloudflare.com
+2. Click **Workers & Pages** (sidebar)
+3. Click **wares-transparency-log**
+4. Click **Settings** tab
+5. Click **Triggers**
+6. Click **Add Custom Domain**
+7. Enter: `wares-log.lumen-lang.com`
+8. Click **Add Domain**
+
+Done! Cloudflare handles the TLS certificate automatically.
+
+### Method 2: Update wrangler.toml
+
+```toml
+[[custom_domains]]
+domain = "wares-log.lumen-lang.com"
+zone_id = "YOUR_ZONE_ID_HERE"  # Get from dash.cloudflare.com → lumen-lang.com → Overview (right sidebar)
+```
+
+Then: `wrangler deploy`
+
+### Method 3: Cloudflare API
+
+```bash
+# Get your zone ID from the dashboard
+ZONE_ID="your-zone-id"
+AUTH_TOKEN="your-api-token"
+
+curl -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/workers/domains" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{
+    "environment": "production",
+    "hostname": "wares-log.lumen-lang.com",
+    "service": "wares-transparency-log",
+    "zone_id": "'"$ZONE_ID"'"
+  }'
+```
 
 ## Verify
 
 ```bash
 # Should return {"status":"ok","service":"wares-transparency-log"}
-curl https://log.wares.lumen-lang.com/health
+curl https://wares-log.lumen-lang.com/health
 
 # Check log info
-curl https://log.wares.lumen-lang.com/api/v1/log
+curl https://wares-log.lumen-lang.com/api/v1/log
 ```
 
-## DNS Check
-
-Make sure you have a DNS record pointing to the worker:
+## Finding Your Zone ID
 
 ```bash
-# Check DNS resolution
-dig log.wares.lumen-lang.com
+# In your terminal with wrangler logged in
+wrangler whoami
 
-# Should show Cloudflare IPs (104.21.x.x or 172.67.x.x)
+# Or check the dashboard:
+# dash.cloudflare.com → lumen-lang.com → Overview → API section (right side)
 ```
 
-If DNS isn't resolving, add a CNAME record in Cloudflare DNS:
-- **Name**: `log`
-- **Target**: `wares-transparency-log.YOUR_SUBDOMAIN.workers.dev`
-- **Proxy status**: Orange cloud (proxied)
+## Update Client Config
+
+Once deployed, update the transparency log URL:
+
+```bash
+# In TRUST_SETUP.md or your client config
+# Change from: https://log.wares.lumen-lang.com
+# To:          https://wares-log.lumen-lang.com
+```

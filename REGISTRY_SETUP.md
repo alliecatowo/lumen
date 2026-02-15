@@ -10,7 +10,7 @@ Fill in:
 - **Application name**: `Wares Registry`
 - **Homepage URL**: `https://wares.lumen-lang.com`
 - **Authorization callback URL**: `https://wares.lumen-lang.com/api/v1/auth/oidc/callback/test`
-  - Note: The `/test` at the end is a placeholder - the actual session ID will be appended dynamically
+  - The `/test` is just a placeholder - GitHub requires a valid URL. The actual callback will use dynamic session IDs like `/callback/abc123`
 
 Click **Register application**
 

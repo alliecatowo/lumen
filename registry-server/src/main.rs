@@ -199,13 +199,52 @@ async fn oidc_callback(
 ) -> Json<serde_json::Value> {
     info!("Received OAuth callback for session {}", session_id);
 
-    // For now, just return success
-    // The actual code/state exchange should be done via the token endpoint
-    Json(serde_json::json!({
-        "success": true,
-        "message": "Please use POST /api/v1/auth/oidc/token/:session_id to complete authentication",
-        "session_id": session_id
-    }))
+    // Get session to check status
+    let session = match state.oidc.get_session(&session_id) {
+        Some(s) => s,
+        None => {
+            return Json(serde_json::json!({
+                "success": false,
+                "error": "Session not found"
+            }));
+        }
+    };
+
+    match session.status {
+        SessionStatus::Completed => {
+            if let Some(result) = session.result {
+                Json(serde_json::json!({
+                    "success": true,
+                    "identity": result.identity.identity_string(),
+                    "message": "Authentication successful! You can close this window."
+                }))
+            } else {
+                Json(serde_json::json!({
+                    "success": false,
+                    "error": "Session completed but no result found"
+                }))
+            }
+        }
+        SessionStatus::Pending => {
+            Json(serde_json::json!({
+                "success": true,
+                "message": "Authentication pending. Please complete the flow in your browser.",
+                "session_id": session_id
+            }))
+        }
+        SessionStatus::Failed => {
+            Json(serde_json::json!({
+                "success": false,
+                "error": "Authentication failed"
+            }))
+        }
+        SessionStatus::Expired => {
+            Json(serde_json::json!({
+                "success": false,
+                "error": "Session expired"
+            }))
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]

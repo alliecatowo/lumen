@@ -22,6 +22,9 @@ pub struct Storage {
     client: Client,
     bucket_name: String,
     cache: Arc<RwLock<HashMap<String, PackageIndex>>>,
+    // In-memory storage for testing (when R2 is not configured)
+    memory_storage: Arc<RwLock<HashMap<String, Vec<u8>>>>,
+    use_memory: bool,
 }
 
 impl std::fmt::Debug for Storage {
@@ -49,6 +52,7 @@ impl Storage {
                 None,
                 "lumen-registry",
             ))
+            .behavior_config(aws_sdk_s3::config::BehaviorVersion::latest())
             .build();
 
         let client = Client::from_conf(config);

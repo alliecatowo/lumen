@@ -1,0 +1,5 @@
+[package]
+name = "test-hello-ware"
+version = "0.1.0"
+description = "A test ware for the transparency log"
+license = "MIT"

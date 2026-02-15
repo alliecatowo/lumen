@@ -65,27 +65,11 @@
           </NuxtLink>
         </div>
 
-        <div v-if="loading" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          <div v-for="i in 6" :key="i" class="card">
-            <Skeleton class="h-6 w-3/4 bg-lumen-bgSecondary rounded mb-3" />
-            <Skeleton class="h-4 w-full bg-lumen-bgSecondary rounded mb-2" />
-            <Skeleton class="h-4 w-2/3 bg-lumen-bgSecondary rounded" />
-          </div>
+        <div v-if="loading" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <WareCardSkeleton v-for="i in 3" :key="i" />
         </div>
 
-        <div v-else-if="featuredWares.length" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          <WareCard v-for="ware in featuredWares" :key="ware.name" :ware="ware" />
-        </div>
-
-        <div v-if="loading" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          <div v-for="i in 6" :key="i" class="card">
-            <Skeleton className="h-6 w-3/4 bg-lumen-bgSecondary rounded mb-3" />
-            <Skeleton className="h-4 w-full bg-lumen-bgSecondary rounded mb-2" />
-            <Skeleton className="h-4 w-2/3 bg-lumen-bgSecondary rounded" />
-          </div>
-        </div>
-
-        <div v-else-if="featuredWares.length" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div v-else-if="featuredWares.length" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           <WareCard v-for="ware in featuredWares" :key="ware.name" :ware="ware" />
         </div>
 
@@ -101,6 +85,16 @@
       </div>
     </section>
 
+    <!-- Latest Wares -->
+    <section v-if="latestWares.length" class="py-16 bg-lumen-bgSecondary/30">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <h2 class="text-2xl font-bold text-lumen-text mb-8">Recently Updated</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <WareCard v-for="ware in latestWares" :key="`latest-${ware.name}`" :ware="ware" variant="compact" />
+        </div>
+      </div>
+    </section>
+
     <!-- Quick Install Section -->
     <section class="py-16 bg-lumen-bgSecondary border-t border-lumen-border">
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -109,7 +103,8 @@
           <p class="text-lumen-textMuted mb-6">
             Install packages using the Lumen CLI
           </p>
-          <div class="bg-lumen-bg rounded-xl border border-lumen-border p-6 text-left">
+          <div class="bg-lumen-bg rounded-xl border border-lumen-border p-6 text-left relative overflow-hidden group">
+            <div class="absolute inset-0 bg-gradient-to-r from-lumen-accent/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
             <div class="flex items-center gap-2 text-lumen-textMuted text-sm mb-2">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -117,7 +112,7 @@
               Terminal
             </div>
             <code class="block font-mono text-lg text-lumen-accent">
-              wrhs install &lt;package-name&gt;
+              wares install &lt;package-name&gt;
             </code>
           </div>
         </div>
@@ -131,6 +126,7 @@ const { fetchIndex, searchWares } = useWaresApi()
 
 const loading = ref(true)
 const featuredWares = ref<any[]>([])
+const latestWares = ref<any[]>([])
 const stats = ref([
   { label: 'Total Wares', value: '—' },
   { label: 'Total Downloads', value: '—' },
@@ -149,7 +145,12 @@ onMounted(async () => {
     ]
     
     if (index.packages?.length) {
-      featuredWares.value = index.packages.slice(0, 6)
+      // For now, let's treat the first 3 as "featured" and the rest as "latest"
+      // In a real system, we'd have a 'featured' flag or better sorting.
+      featuredWares.value = index.packages.slice(0, 3)
+      latestWares.value = [...index.packages].sort((a, b) => 
+        new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime()
+      ).slice(0, 8)
     }
   }
   loading.value = false

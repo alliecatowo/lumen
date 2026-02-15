@@ -1,0 +1,499 @@
+{
+    "wallTime": 14,
+    "cpuTime": 1,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "scriptVersion": {
+        "id": "c9227f48-c278-4d29-8c89-e4f1151e5648"
+    },
+    "scriptName": "wares-registry",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "[DEBUG] Fetching audit for test-package from https://wares-transparency-log.alliecatowo.workers.dev"
+            ],
+            "level": "log",
+            "timestamp": 1771197245559
+        },
+        {
+            "message": [
+                "[DEBUG] Query Status: 404, Log Status: 404"
+            ],
+            "level": "log",
+            "timestamp": 1771197245572
+        },
+        {
+            "message": [
+                "[DEBUG] Upstream error: error code: 1042"
+            ],
+            "level": "error",
+            "timestamp": 1771197245572
+        },
+        {
+            "message": [
+                "[DEBUG] Audit fetch error:",
+                "Upstream error: 404/404"
+            ],
+            "level": "error",
+            "timestamp": 1771197245572
+        }
+    ],
+    "eventTimestamp": 1771197245559,
+    "event": {
+        "request": {
+            "url": "https://wares-registry.alliecatowo.workers.dev/v1/wares/test-package/audit",
+            "method": "GET",
+            "headers": {
+                "accept": "*/*",
+                "accept-encoding": "gzip, br",
+                "cf-connecting-ip": "2601:201:8283:4ba0::8b78",
+                "cf-ipcountry": "US",
+                "cf-ray": "9ce87fe0b842cb91",
+                "cf-visitor": "{\"scheme\":\"https\"}",
+                "connection": "Keep-Alive",
+                "host": "wares-registry.alliecatowo.workers.dev",
+                "user-agent": "curl/8.15.0",
+                "x-forwarded-proto": "https",
+                "x-real-ip": "2601:201:8283:4ba0::8b78"
+            },
+            "cf": {
+                "httpProtocol": "HTTP/2",
+                "requestPriority": "weight=16;exclusive=0;group=0;group-weight=0",
+                "edgeRequestKeepAliveStatus": 1,
+                "requestHeaderNames": {},
+                "clientTcpRtt": 27,
+                "colo": "LAX",
+                "asn": 7922,
+                "asOrganization": "Comcast Cable Communications, LLC",
+                "country": "US",
+                "isEUCountry": false,
+                "city": "Fresno",
+                "continent": "NA",
+                "region": "California",
+                "regionCode": "CA",
+                "timezone": "America/Los_Angeles",
+                "longitude": "-119.77237",
+                "latitude": "36.74773",
+                "postalCode": "93737",
+                "metroCode": "866",
+                "tlsVersion": "TLSv1.3",
+                "tlsCipher": "AEAD-AES256-GCM-SHA384",
+                "tlsClientRandom": "9wmh88KjA5bQpm6jMx8erUsjGtv9yYEotyRKpZIjJ4E=",
+                "tlsClientCiphersSha1": "6R1RJRIub6EbCJH8lSVa2s5xElU=",
+                "tlsClientExtensionsSha1": "4oF0LRxQXUDhrRY0MazQAVJh7Go=",
+                "tlsClientExtensionsSha1Le": "Ea9swA+X7+AQtmDnJ28MlyPK/Fg=",
+                "tlsExportedAuthenticator": {
+                    "clientHandshake": "134a6fae64dbfc23ed3ef1938a9c6b6235ba241e08cb85bd74df7e058700e9db68344edcb929ca111b03a7cf5b309748",
+                    "serverHandshake": "a3fd8fdb2ea0b0e52c5dee1677b986f45d277c11e189c00a9025d721e0c7d0fbc51746b91c5f13220735f9378daba12a",
+                    "clientFinished": "91efd33916d431e4e31586469dd38617c44117e60b34e13f7bbdbaef1cc33807312228a461cd96385e6c172182418a5e",
+                    "serverFinished": "0b4dd1e014b0e20a190c01c93ed1434f02f75b75c4c3147298446b1fdea9949467176b058be849c6846bc4af6c4ba627"
+                },
+                "tlsClientHelloLength": "1593",
+                "tlsClientAuth": {
+                    "certPresented": "0",
+                    "certVerified": "NONE",
+                    "certRevoked": "0",
+                    "certIssuerDN": "",
+                    "certSubjectDN": "",
+                    "certIssuerDNRFC2253": "",
+                    "certSubjectDNRFC2253": "",
+                    "certIssuerDNLegacy": "",
+                    "certSubjectDNLegacy": "",
+                    "certSerial": "",
+                    "certIssuerSerial": "",
+                    "certSKI": "",
+                    "certIssuerSKI": "",
+                    "certFingerprintSHA1": "",
+                    "certFingerprintSHA256": "",
+                    "certNotBefore": "",
+                    "certNotAfter": ""
+                },
+                "verifiedBotCategory": ""
+            }
+        },
+        "response": {
+            "status": 500
+        }
+    }
+}
+ction": "Keep-Alive",
+                "host": "wares-registry.alliecatowo.workers.dev",
+                "user-agent": "curl/8.15.0",
+                "x-forwarded-proto": "https",
+                "x-real-ip": "2601:201:8283:4ba0::8b78"
+            },
+            "cf": {
+                "httpProtocol": "HTTP/2",
+                "requestPriority": "weight=16;exclusive=0;group=0;group-weight=0",
+                "edgeRequestKeepAliveStatus": 1,
+                "requestHeaderNames": {},
+                "clientTcpRtt": 27,
+                "colo": "LAX",
+                "asn": 7922,
+                "asOrganization": "Comcast Cable Communications, LLC",
+                "country": "US",
+                "isEUCountry": false,
+                "city": "Fresno",
+                "continent": "NA",
+                "region": "California",
+                "regionCode": "CA",
+                "timezone": "America/Los_Angeles",
+                "longitude": "-119.77237",
+                "latitude": "36.74773",
+                "postalCode": "93737",
+                "metroCode": "866",
+                "tlsVersion": "TLSv1.3",
+                "tlsCipher": "AEAD-AES256-GCM-SHA384",
+                "tlsClientRandom": "9wmh88KjA5bQpm6jMx8erUsjGtv9yYEotyRKpZIjJ4E=",
+                "tlsClientCiphersSha1": "6R1RJRIub6EbCJH8lSVa2s5xElU=",
+                "tlsClientExtensionsSha1": "4oF0LRxQXUDhrRY0MazQAVJh7Go=",
+                "tlsClientExtensionsSha1Le": "Ea9swA+X7+AQtmDnJ28MlyPK/Fg=",
+                "tlsExportedAuthenticator": {
+                    "clientHandshake": "134a6fae64dbfc23ed3ef1938a9c6b6235ba241e08cb85bd74df7e058700e9db68344edcb929ca111b03a7cf5b309748",
+                    "serverHandshake": "a3fd8fdb2ea0b0e52c5dee1677b986f45d277c11e189c00a9025d721e0c7d0fbc51746b91c5f13220735f9378daba12a",
+                    "clientFinished": "91efd33916d431e4e31586469dd38617c44117e60b34e13f7bbdbaef1cc33807312228a461cd96385e6c172182418a5e",
+                    "serverFinished": "0b4dd1e014b0e20a190c01c93ed1434f02f75b75c4c3147298446b1fdea9949467176b058be849c6846bc4af6c4ba627"
+                },
+                "tlsClientHelloLength": "1593",
+                "tlsClientAuth": {
+                    "certPresented": "0",
+                    "certVerified": "NONE",
+                    "certRevoked": "0",
+                    "certIssuerDN": "",
+                    "certSubjectDN": "",
+                    "certIssuerDNRFC2253": "",
+                    "certSubjectDNRFC2253": "",
+                    "certIssuerDNLegacy": "",
+                    "certSubjectDNLegacy": "",
+                    "certSerial": "",
+                    "certIssuerSerial": "",
+                    "certSKI": "",
+                    "certIssuerSKI": "",
+                    "certFingerprintSHA1": "",
+                    "certFingerprintSHA256": "",
+                    "certNotBefore": "",
+                    "certNotAfter": ""
+                },
+                "verifiedBotCategory": ""
+            }
+        },
+        "response": {
+            "status": 500
+        }
+    }
+}
+{
+    "wallTime": 3,
+    "cpuTime": 0,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "scriptVersion": {
+        "id": "c9227f48-c278-4d29-8c89-e4f1151e5648"
+    },
+    "scriptName": "wares-registry",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "[DEBUG] Fetching audit for test-package from https://wares-transparency-log.alliecatowo.workers.dev"
+            ],
+            "level": "log",
+            "timestamp": 1771197284451
+        },
+        {
+            "message": [
+                "[DEBUG] Query Status: 404, Log Status: 404"
+            ],
+            "level": "log",
+            "timestamp": 1771197284454
+        },
+        {
+            "message": [
+                "[DEBUG] Upstream error: error code: 1042"
+            ],
+            "level": "error",
+            "timestamp": 1771197284454
+        },
+        {
+            "message": [
+                "[DEBUG] Audit fetch error:",
+                "Upstream error: 404/404"
+            ],
+            "level": "error",
+            "timestamp": 1771197284454
+        }
+    ],
+    "eventTimestamp": 1771197284451,
+    "event": {
+        "request": {
+            "url": "https://wares-registry.alliecatowo.workers.dev/v1/wares/test-package/audit",
+            "method": "GET",
+            "headers": {
+                "accept": "*/*",
+                "accept-encoding": "gzip, br",
+                "cf-connecting-ip": "2601:201:8283:4ba0::8b78",
+                "cf-ipcountry": "US",
+                "cf-ray": "9ce880d3ca66d7a8",
+                "cf-visitor": "{\"scheme\":\"https\"}",
+                "connection": "Keep-Alive",
+                "host": "wares-registry.alliecatowo.workers.dev",
+                "user-agent": "curl/8.15.0",
+                "x-forwarded-proto": "https",
+                "x-real-ip": "2601:201:8283:4ba0::8b78"
+            },
+            "cf": {
+                "httpProtocol": "HTTP/2",
+                "requestPriority": "weight=16;exclusive=0;group=0;group-weight=0",
+                "edgeRequestKeepAliveStatus": 1,
+                "requestHeaderNames": {},
+                "clientTcpRtt": 24,
+                "colo": "LAX",
+                "asn": 7922,
+                "asOrganization": "Comcast Cable Communications, LLC",
+                "country": "US",
+                "isEUCountry": false,
+                "city": "Fresno",
+                "continent": "NA",
+                "region": "California",
+                "regionCode": "CA",
+                "timezone": "America/Los_Angeles",
+                "longitude": "-119.77237",
+                "latitude": "36.74773",
+                "postalCode": "93737",
+                "metroCode": "866",
+                "tlsVersion": "TLSv1.3",
+                "tlsCipher": "AEAD-AES256-GCM-SHA384",
+                "tlsClientRandom": "W5B5PCHJOTuQXa8f5S66ePcC9rpKva3y08LcM8l5Nr0=",
+                "tlsClientCiphersSha1": "6R1RJRIub6EbCJH8lSVa2s5xElU=",
+                "tlsClientExtensionsSha1": "4oF0LRxQXUDhrRY0MazQAVJh7Go=",
+                "tlsClientExtensionsSha1Le": "Ea9swA+X7+AQtmDnJ28MlyPK/Fg=",
+                "tlsExportedAuthenticator": {
+                    "clientHandshake": "213ddc89fb6b8be60817cdcd76a855a408355dea899b057741ea34c1e9a72652ce37fd93b7b9b6870f045df42fbbf3e8",
+                    "serverHandshake": "5935a70f632f87572db3db65068d52852f54954d632525cb6f59bdf9fa1075bb545cf3ece5c7f7cc20ec729de555d676",
+                    "clientFinished": "5a4ba0990b61c28745590a1a3b69bf614316be9b98ef72c0e131609c2cbb336b8a14675d5d8b0b25153492241e2fb4fb",
+                    "serverFinished": "fdc7c9060c502702ac72b69e7832f67cadb36c090b294daa7b79b2cd7f4505a419cb12366b6232823a05c8d04474c610"
+                },
+                "tlsClientHelloLength": "1593",
+                "tlsClientAuth": {
+                    "certPresented": "0",
+                    "certVerified": "NONE",
+                    "certRevoked": "0",
+                    "certIssuerDN": "",
+                    "certSubjectDN": "",
+                    "certIssuerDNRFC2253": "",
+                    "certSubjectDNRFC2253": "",
+                    "certIssuerDNLegacy": "",
+                    "certSubjectDNLegacy": "",
+                    "certSerial": "",
+                    "certIssuerSerial": "",
+                    "certSKI": "",
+                    "certIssuerSKI": "",
+                    "certFingerprintSHA1": "",
+                    "certFingerprintSHA256": "",
+                    "certNotBefore": "",
+                    "certNotAfter": ""
+                },
+                "verifiedBotCategory": ""
+            }
+        },
+        "response": {
+            "status": 500
+        }
+    }
+}
+{
+    "wallTime": 0,
+    "cpuTime": 0,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "scriptVersion": {
+        "id": "5b26560f-6fb0-46ab-a0a7-4a46da94015e"
+    },
+    "scriptName": "wares-registry",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [],
+    "eventTimestamp": 1771197355363,
+    "event": {
+        "request": {
+            "url": "https://wares-registry.alliecatowo.workers.dev/",
+            "method": "GET",
+            "headers": {
+                "accept-encoding": "gzip, br",
+                "cf-connecting-ip": "2a06:98c0:3600::103",
+                "cf-force-legacy-fl": "1",
+                "cf-ipcountry": "US",
+                "cf-ray": "9ce8828ef13bae99",
+                "cf-visitor": "{\"scheme\":\"https\"}",
+                "cf-worker": "cfone.cfdata.org",
+                "connection": "Keep-Alive",
+                "host": "wares-registry.alliecatowo.workers.dev",
+                "x-forwarded-proto": "https",
+                "x-real-ip": "2a06:98c0:3600::103"
+            },
+            "cf": {
+                "requestHeaderNames": {},
+                "httpProtocol": "HTTP/1.1",
+                "tlsCipher": "",
+                "continent": "NA",
+                "asn": 13335,
+                "clientAcceptEncoding": "identity",
+                "verifiedBotCategory": "",
+                "country": "US",
+                "isEUCountry": false,
+                "region": "California",
+                "tlsClientCiphersSha1": "",
+                "tlsClientAuth": {
+                    "certIssuerDNLegacy": "",
+                    "certIssuerSKI": "",
+                    "certSubjectDNRFC2253": "",
+                    "certSubjectDNLegacy": "",
+                    "certFingerprintSHA256": "",
+                    "certNotBefore": "",
+                    "certSKI": "",
+                    "certSerial": "",
+                    "certIssuerDN": "",
+                    "certVerified": "NONE",
+                    "certNotAfter": "",
+                    "certSubjectDN": "",
+                    "certPresented": "0",
+                    "certRevoked": "0",
+                    "certIssuerSerial": "",
+                    "certIssuerDNRFC2253": "",
+                    "certFingerprintSHA1": ""
+                },
+                "tlsClientRandom": "",
+                "tlsClientHelloLength": "",
+                "colo": "SJC",
+                "timezone": "America/Los_Angeles",
+                "longitude": "-121.84590",
+                "latitude": "37.24880",
+                "edgeRequestKeepAliveStatus": 1,
+                "requestPriority": "",
+                "postalCode": "95153",
+                "city": "San Jose",
+                "tlsVersion": "",
+                "regionCode": "CA",
+                "asOrganization": "Cloudflare, Inc.",
+                "metroCode": "807",
+                "tlsClientExtensionsSha1Le": "",
+                "tlsClientExtensionsSha1": ""
+            }
+        },
+        "response": {
+            "status": 404
+        }
+    }
+}
+{
+    "wallTime": 348,
+    "cpuTime": 1,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "scriptVersion": {
+        "id": "5b26560f-6fb0-46ab-a0a7-4a46da94015e"
+    },
+    "scriptName": "wares-registry",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "[DEBUG] Fetching audit for test-package using Service Binding"
+            ],
+            "level": "log",
+            "timestamp": 1771197355295
+        },
+        {
+            "message": [
+                "[DEBUG] Query Status: 200, Log Status: 200"
+            ],
+            "level": "log",
+            "timestamp": 1771197355642
+        }
+    ],
+    "eventTimestamp": 1771197355295,
+    "event": {
+        "request": {
+            "url": "https://wares-registry.alliecatowo.workers.dev/v1/wares/test-package/audit",
+            "method": "GET",
+            "headers": {
+                "accept": "*/*",
+                "accept-encoding": "gzip, br",
+                "cf-connecting-ip": "2601:201:8283:4ba0::8b78",
+                "cf-ipcountry": "US",
+                "cf-ray": "9ce8828e8bfa9dfc",
+                "cf-visitor": "{\"scheme\":\"https\"}",
+                "connection": "Keep-Alive",
+                "host": "wares-registry.alliecatowo.workers.dev",
+                "user-agent": "curl/8.15.0",
+                "x-forwarded-proto": "https",
+                "x-real-ip": "2601:201:8283:4ba0::8b78"
+            },
+            "cf": {
+                "httpProtocol": "HTTP/2",
+                "requestPriority": "weight=16;exclusive=0;group=0;group-weight=0",
+                "edgeRequestKeepAliveStatus": 1,
+                "requestHeaderNames": {},
+                "clientTcpRtt": 20,
+                "colo": "LAX",
+                "asn": 7922,
+                "asOrganization": "Comcast Cable Communications, LLC",
+                "country": "US",
+                "isEUCountry": false,
+                "city": "Fresno",
+                "continent": "NA",
+                "region": "California",
+                "regionCode": "CA",
+                "timezone": "America/Los_Angeles",
+                "longitude": "-119.77237",
+                "latitude": "36.74773",
+                "postalCode": "93737",
+                "metroCode": "866",
+                "tlsVersion": "TLSv1.3",
+                "tlsCipher": "AEAD-AES256-GCM-SHA384",
+                "tlsClientRandom": "4uJtWL0IxczYFvzBfzyVlJpQeUaogY4AnrddSSXnBzk=",
+                "tlsClientCiphersSha1": "6R1RJRIub6EbCJH8lSVa2s5xElU=",
+                "tlsClientExtensionsSha1": "4oF0LRxQXUDhrRY0MazQAVJh7Go=",
+                "tlsClientExtensionsSha1Le": "Ea9swA+X7+AQtmDnJ28MlyPK/Fg=",
+                "tlsExportedAuthenticator": {
+                    "clientHandshake": "26b812b43c1efd40b5b3362cc037eaa1b8b1348b228015a63508e8a8154814aa5188ad331f41b5b9a92e4cf3a0b67476",
+                    "serverHandshake": "0eacc4396421c84c000637a06a7185ee7437ec33fa3592a3ca6f1aa8a2b26c5a50e53f2647bc703fb46e9d40b983c22e",
+                    "clientFinished": "f4c51b24c15cf01a2e1b1f1d413e82263123440675f8ee09e042c5744e1e926fafd861745abe3e85ab36d16eae99e3ab",
+                    "serverFinished": "c286fe43e3debcd612e9e47832a7a717674cc7595001fa5c0abeed4261c257e8de23222840de33127fe022be8203a2b7"
+                },
+                "tlsClientHelloLength": "1593",
+                "tlsClientAuth": {
+                    "certPresented": "0",
+                    "certVerified": "NONE",
+                    "certRevoked": "0",
+                    "certIssuerDN": "",
+                    "certSubjectDN": "",
+                    "certIssuerDNRFC2253": "",
+                    "certSubjectDNRFC2253": "",
+                    "certIssuerDNLegacy": "",
+                    "certSubjectDNLegacy": "",
+                    "certSerial": "",
+                    "certIssuerSerial": "",
+                    "certSKI": "",
+                    "certIssuerSKI": "",
+                    "certFingerprintSHA1": "",
+                    "certFingerprintSHA256": "",
+                    "certNotBefore": "",
+                    "certNotAfter": ""
+                },
+                "verifiedBotCategory": ""
+            }
+        },
+        "response": {
+            "status": 200
+        }
+    }
+}

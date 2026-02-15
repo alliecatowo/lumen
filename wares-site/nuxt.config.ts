@@ -2,7 +2,7 @@ export default defineNuxtConfig({
   devtools: { enabled: false },
   compatibilityDate: '2024-11-01',
   ssr: true,
-  
+
   app: {
     head: {
       title: 'Lumen Wares',
@@ -27,7 +27,7 @@ export default defineNuxtConfig({
 
   runtimeConfig: {
     public: {
-      apiBase: 'https://wares.lumen-lang.com/api/v1'
+      apiBase: 'https://wares-registry.alliecatowo.workers.dev/v1'
     }
   },
 

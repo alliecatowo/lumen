@@ -1,7 +1,7 @@
-//! Package manager operations for Lumen projects.
+//! High-level package management operations.
 //!
-//! Provides `pkg init` (scaffold a new package) and `pkg build`
-//! (resolve path-based dependencies and compile).
+//! Provides `init`, `build`, `check`, etc.
+//! Moved from `pkg.rs`.
 
 use crate::config::{DependencySpec, FeatureDef, LumenConfig};
 use crate::git::{
@@ -9,14 +9,12 @@ use crate::git::{
     GitResolver,
 };
 use crate::lockfile::{LockFile, LockedArtifact, LockedPackage};
-use crate::registry::{
-    ArtifactInfo, IntegrityInfo, R2Client, RegistryClient, RegistryPackageIndex,
-    RegistryVersionMetadata,
-};
-use crate::registry_cmd::{is_authenticated, publish_with_auth};
-use crate::resolver::{
+use crate::wares::{
+    ArtifactInfo, IntegrityInfo, RegistryClient, RegistryPackageIndex,
+    RegistryVersionMetadata, R2Client,
     ResolutionError, ResolutionPolicy, ResolutionRequest, ResolvedPackage, ResolvedSource, Resolver,
 };
+use crate::registry_cmd::{is_authenticated, publish_with_auth};
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -25,7 +23,6 @@ use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tar::Archive;
 
 // ANSI color helpers
 fn green(s: &str) -> String {
@@ -142,7 +139,7 @@ struct PackageInspectReport {
 }
 
 /// Scaffold a new Lumen package in the current directory (or a named subdirectory).
-pub fn cmd_pkg_init(name: Option<String>) {
+pub fn init(name: Option<String>) {
     let base = match &name {
         Some(n) => {
             let p = PathBuf::from(n);
@@ -230,7 +227,7 @@ end
 }
 
 /// Build a Lumen package: resolve dependencies and compile.
-pub fn cmd_pkg_build() {
+pub fn build() {
     let (config_path, config) = match LumenConfig::load_with_path() {
         Some(pair) => pair,
         None => {
@@ -307,7 +304,7 @@ pub fn cmd_pkg_build() {
 }
 
 /// Type-check a Lumen package and all dependencies without running.
-pub fn cmd_pkg_check() {
+pub fn check() {
     let (config_path, config) = match LumenConfig::load_with_path() {
         Some(pair) => pair,
         None => {
@@ -481,7 +478,7 @@ fn resolve_dependencies_with_registry(
     let resolved_packages = match resolver.resolve(&request) {
         Ok(pkgs) => pkgs,
         Err(e) => {
-            return Err(crate::resolver::format_resolution_error(&e));
+            return Err(crate::wares::resolver::format_resolution_error(&e));
         }
     };
 
@@ -492,7 +489,7 @@ fn resolve_dependencies_with_registry(
 
     for pkg in resolved_packages {
         pkg_map.insert(pkg.name.clone(), pkg.clone());
-        let deps: Vec<String> = pkg.deps.iter().map(|(n, _)| n.clone()).collect();
+        let deps: Vec<String> = pkg.deps.iter().map(|(n, _): &(String, DependencySpec)| n.clone()).collect();
         graph.insert(pkg.name.clone(), deps);
     }
 
@@ -1025,7 +1022,7 @@ fn sync_lockfile(
 }
 
 /// Add a dependency to lumen.toml
-pub fn cmd_pkg_add(package: &str, path_opt: Option<&str>) {
+pub fn add(package: &str, path_opt: Option<&str>) {
     let (config_path, mut config) = match LumenConfig::load_with_path() {
         Some(pair) => pair,
         None => {
@@ -1110,7 +1107,7 @@ pub fn cmd_pkg_add(package: &str, path_opt: Option<&str>) {
 
 /// Remove a dependency from lumen.toml
 #[allow(dead_code)]
-pub fn cmd_pkg_remove(package: &str) {
+pub fn remove(package: &str) {
     let (config_path, mut config) = match LumenConfig::load_with_path() {
         Some(pair) => pair,
         None => {
@@ -1143,7 +1140,7 @@ pub fn cmd_pkg_remove(package: &str) {
 
 /// List all dependencies from lumen.toml
 #[allow(dead_code)]
-pub fn cmd_pkg_list() {
+pub fn list() {
     let config = LumenConfig::load();
 
     if config.dependencies.is_empty() {
@@ -1219,13 +1216,13 @@ pub fn cmd_pkg_list() {
 
 /// Install dependencies from lumen.toml and generate lumen.lock.
 #[allow(dead_code)]
-pub fn cmd_pkg_install() {
-    cmd_pkg_install_with_lock(false);
+pub fn install() {
+    install_with_lock(false);
 }
 
 /// Install dependencies from lumen.toml and generate lumen.lock.
 /// When `frozen` is true, fail instead of writing if the lockfile would change.
-pub fn cmd_pkg_install_with_lock(frozen: bool) {
+pub fn install_with_lock(frozen: bool) {
     let (config_path, config) = match LumenConfig::load_with_path() {
         Some(pair) => pair,
         None => {
@@ -1272,13 +1269,13 @@ pub fn cmd_pkg_install_with_lock(frozen: bool) {
 
 /// Update dependencies to latest compatible versions.
 #[allow(dead_code)]
-pub fn cmd_pkg_update() {
-    cmd_pkg_update_with_lock(false);
+pub fn update() {
+    update_with_lock(false);
 }
 
 /// Update dependencies to latest compatible versions.
 /// When `frozen` is true, fail instead of writing if the lockfile would change.
-pub fn cmd_pkg_update_with_lock(frozen: bool) {
+pub fn update_with_lock(frozen: bool) {
     let (config_path, config) = match LumenConfig::load_with_path() {
         Some(pair) => pair,
         None => {
@@ -1324,7 +1321,7 @@ pub fn cmd_pkg_update_with_lock(frozen: bool) {
     };
 
     // Run update resolution
-    let resolved_packages = match resolver.update(
+    let resolved_packages: Vec<ResolvedPackage> = match resolver.update(
         &request,
         &previous_lock.unwrap_or_default(),
         None, // Update all packages
@@ -1334,7 +1331,7 @@ pub fn cmd_pkg_update_with_lock(frozen: bool) {
             eprintln!(
                 "{} {}",
                 red("error:"),
-                crate::resolver::format_resolution_error(&e)
+                crate::wares::resolver::format_resolution_error(&e)
             );
             std::process::exit(1);
         }
@@ -1412,7 +1409,7 @@ pub fn cmd_pkg_update_with_lock(frozen: bool) {
 }
 
 /// Search for packages in the registry
-pub fn cmd_pkg_search(query: &str) {
+pub fn search(query: &str) {
     let registry_dir = local_registry_dir();
     let results = match search_local_registry(&registry_dir, query) {
         Ok(results) => results,
@@ -1523,7 +1520,7 @@ fn search_local_registry(
 // These would be fully implemented in a complete implementation
 
 /// Show package info from the registry.
-pub fn cmd_pkg_info(package: &str, version: Option<&str>) {
+pub fn info(package: &str, version: Option<&str>) {
     let registry_url = LumenConfig::load().registry_url();
 
     let client = RegistryClient::new(&registry_url);
@@ -1553,7 +1550,7 @@ pub fn cmd_pkg_info(package: &str, version: Option<&str>) {
                     yellow("⚠"),
                     index.yanked.len()
                 );
-                for (ver, reason) in &index.yanked {
+                for (ver, reason) in index.yanked.iter() {
                     if reason.is_empty() {
                         println!(
                             "    {} {} {} (no reason given)",
@@ -1571,8 +1568,8 @@ pub fn cmd_pkg_info(package: &str, version: Option<&str>) {
             let available_count = index.versions.len() - index.yanked.len();
             println!("\n  {} {} version(s) available", gray("→"), available_count);
 
-            if let Some(latest) = index.latest {
-                if index.yanked.contains_key(&latest) {
+            if let Some(ref latest) = index.latest {
+                if index.yanked.contains_key(latest.as_str()) {
                     println!(
                         "  {} {} ({})",
                         gray("Latest:"),
@@ -1621,7 +1618,7 @@ pub fn cmd_pkg_info(package: &str, version: Option<&str>) {
 }
 
 #[allow(dead_code)]
-pub fn cmd_pkg_pack() {
+pub fn pack() {
     let (config_path, config) = match LumenConfig::load_with_path() {
         Some(pair) => pair,
         None => {
@@ -1793,23 +1790,23 @@ fn try_publish_to_r2(
     let secret_access_key = std::env::var("R2_SECRET_KEY").map_err(|_| "R2_SECRET_KEY not set")?;
 
     // Create R2 client using the builder pattern
-    let r2_config = crate::registry::R2Config::new(account_id, access_key_id, secret_access_key)
+    let r2_config = crate::wares::R2Config::new(account_id.to_string(), access_key_id, secret_access_key)
         .with_bucket("lumen-registry");
 
-    let client =
-        R2Client::new(r2_config).map_err(|e| format!("Failed to create R2 client: {}", e))?;
+    let client = R2Client::new(r2_config);
 
     // Compute hash for the tarball
     let hash = Sha256::digest(tarball_data);
     let hash_hex = hex::encode(hash);
 
     // Upload the tarball
+    let key = format!("wares/{}/{}.tarball", package_name, version);
     client
-        .upload_artifact(tarball_data, Some("application/gzip"))
+        .upload_artifact(&key, tarball_data, "application/gzip")
         .map_err(|e| format!("Failed to upload artifact: {}", e))?;
 
     // Upload the package index
-    let index = crate::registry::RegistryPackageIndex {
+    let index = crate::wares::RegistryPackageIndex {
         name: package_name.to_string(),
         versions: vec![version.to_string()],
         latest: Some(version.to_string()),
@@ -1823,8 +1820,9 @@ fn try_publish_to_r2(
     let index_json =
         serde_json::to_string(&index).map_err(|e| format!("Failed to serialize index: {}", e))?;
 
+    let index_key = format!("wares/{}/index.json", package_name);
     let _index_cid = client
-        .upload_artifact(index_json.as_bytes(), Some("application/json"))
+        .upload_artifact(&index_key, index_json.as_bytes(), "application/json")
         .map_err(|e| format!("Failed to upload index: {}", e))?;
 
     println!(
@@ -1838,7 +1836,7 @@ fn try_publish_to_r2(
 }
 
 /// Publish the current package to the registry.
-pub fn cmd_pkg_publish(dry_run: bool) {
+pub fn publish(dry_run: bool) {
     let (config_path, config) = match LumenConfig::load_with_path() {
         Some(pair) => pair,
         None => {
@@ -2084,7 +2082,7 @@ impl std::fmt::Display for DependencyKind {
 }
 
 /// Add a dependency to lumen.toml with a specific kind.
-pub fn cmd_pkg_add_with_kind(package: &str, path_opt: Option<&str>, kind: DependencyKind) {
+pub fn add_with_kind(package: &str, path_opt: Option<&str>, kind: DependencyKind) {
     let (config_path, mut config) = match LumenConfig::load_with_path() {
         Some(pair) => pair,
         None => {
@@ -2228,7 +2226,7 @@ pub fn publish_package(package_dir: &Path) -> Result<(), String> {
 }
 
 /// Install dependencies with a specific kind (normal, dev, build).
-pub fn cmd_pkg_install_with_kind(kind: DependencyKind, frozen: bool) {
+pub fn install_with_kind(kind: DependencyKind, frozen: bool) {
     let (config_path, config) = match LumenConfig::load_with_path() {
         Some(pair) => pair,
         None => {

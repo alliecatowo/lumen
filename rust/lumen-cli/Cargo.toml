@@ -14,23 +14,12 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "lumen"
-path = "src/main.rs"
+path = "src/bin/lumen.rs"
 
 [[bin]]
 name = "wares"
-path = "src/wares.rs"
+path = "src/bin/wares.rs"
 
-[[bin]]
-name = "wrhs"
-path = "src/wares.rs"
-
-[[bin]]
-name = "lpm"
-path = "src/lpm.rs"
-
-[[bin]]
-name = "lpx"
-path = "src/lpx.rs"
 
 [dependencies]
 lumen-compiler = { path = "../lumen-compiler", version = "0.1.1" }

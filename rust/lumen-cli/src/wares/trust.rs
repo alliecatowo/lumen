@@ -7,459 +7,26 @@
 //! - Build provenance attestations (SLSA)
 //! - Policy-based verification
 
-use chrono::{DateTime, Duration, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::{Duration, Utc};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 
 use crate::colors;
+use super::types::*;
 
 // =============================================================================
-// OIDC Identity Types
+// Trust Config Implementation
 // =============================================================================
-
-/// Supported OIDC identity providers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum IdentityProvider {
-    GitHub,
-    GitLab,
-    Google,
-}
-
-impl IdentityProvider {
-    /// Get the OIDC issuer URL for this provider.
-    pub fn issuer(&self) -> &'static str {
-        match self {
-            IdentityProvider::GitHub => "https://token.actions.githubusercontent.com",
-            IdentityProvider::GitLab => "https://gitlab.com",
-            IdentityProvider::Google => "https://accounts.google.com",
-        }
-    }
-
-    /// Get the human-readable name.
-    pub fn name(&self) -> &'static str {
-        match self {
-            IdentityProvider::GitHub => "GitHub",
-            IdentityProvider::GitLab => "GitLab",
-            IdentityProvider::Google => "Google",
-        }
-    }
-
-    /// Get the OAuth authorization URL.
-    pub fn auth_url(&self) -> &'static str {
-        match self {
-            IdentityProvider::GitHub => "https://github.com/login/oauth/authorize",
-            IdentityProvider::GitLab => "https://gitlab.com/oauth/authorize",
-            IdentityProvider::Google => "https://accounts.google.com/o/oauth2/v2/auth",
-        }
-    }
-
-    /// Get the OAuth token URL.
-    pub fn token_url(&self) -> &'static str {
-        match self {
-            IdentityProvider::GitHub => "https://github.com/login/oauth/access_token",
-            IdentityProvider::GitLab => "https://gitlab.com/oauth/token",
-            IdentityProvider::Google => "https://oauth2.googleapis.com/token",
-        }
-    }
-}
-
-impl std::str::FromStr for IdentityProvider {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "github" => Ok(IdentityProvider::GitHub),
-            "gitlab" => Ok(IdentityProvider::GitLab),
-            "google" => Ok(IdentityProvider::Google),
-            _ => Err(format!("Unknown identity provider: {}", s)),
-        }
-    }
-}
-
-// =============================================================================
-// Identity Claims
-// =============================================================================
-
-/// OIDC identity claims from the identity provider.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IdentityClaims {
-    /// Subject (user ID or workflow ref)
-    pub sub: String,
-    /// Issuer (e.g., https://github.com)
-    pub iss: String,
-    /// Audience (our registry)
-    pub aud: String,
-    /// Email (if available)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub email: Option<String>,
-    /// Name (if available)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    /// Repository (for GitHub Actions)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub repository: Option<String>,
-    /// Workflow reference (for GitHub Actions)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workflow_ref: Option<String>,
-    /// Event name (push, pull_request, etc.)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub event_name: Option<String>,
-    /// Issued at timestamp
-    pub iat: i64,
-    /// Expiration timestamp
-    pub exp: i64,
-}
-
-impl IdentityClaims {
-    /// Get the identity string for display.
-    pub fn identity(&self) -> String {
-        if let Some(repo) = &self.repository {
-            if let Some(workflow) = &self.workflow_ref {
-                return format!("{}/{}", repo, workflow);
-            }
-            return repo.clone();
-        }
-        self.sub.clone()
-    }
-
-    /// Check if this is a CI/automated identity.
-    pub fn is_ci(&self) -> bool {
-        self.workflow_ref.is_some() || self.event_name.as_ref().map(|e| e == "push").unwrap_or(false)
-    }
-
-    /// Check if the claims are expired.
-    pub fn is_expired(&self) -> bool {
-        let now = Utc::now().timestamp();
-        self.exp < now
-    }
-}
-
-// =============================================================================
-// Ephemeral Certificate
-// =============================================================================
-
-/// A short-lived signing certificate issued by the Fulcio-like CA.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EphemeralCertificate {
-    /// Certificate ID (UUID)
-    pub cert_id: String,
-    /// PEM-encoded certificate
-    pub certificate_pem: String,
-    /// Public key (base64)
-    pub public_key: String,
-    /// Identity claims that were verified
-    pub identity: IdentityClaims,
-    /// Certificate validity start
-    pub not_before: DateTime<Utc>,
-    /// Certificate validity end
-    pub not_after: DateTime<Utc>,
-    /// Transparency log index where this cert is recorded
-    pub log_index: Option<u64>,
-}
-
-impl EphemeralCertificate {
-    /// Check if the certificate is still valid.
-    pub fn is_valid(&self) -> bool {
-        let now = Utc::now();
-        self.not_before <= now && now < self.not_after
-    }
-
-    /// Get remaining validity duration.
-    pub fn remaining(&self) -> Duration {
-        let now = Utc::now();
-        if now >= self.not_after {
-            Duration::zero()
-        } else {
-            self.not_after.signed_duration_since(now)
-        }
-    }
-
-    /// Get the identity string.
-    pub fn identity_str(&self) -> String {
-        self.identity.identity()
-    }
-}
-
-// =============================================================================
-// Package Signature
-// =============================================================================
-
-/// A signature for a package publish.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PackageSignature {
-    /// Package name
-    pub package_name: String,
-    /// Package version
-    pub version: String,
-    /// Content hash (SHA-256 of the package archive)
-    pub content_hash: String,
-    /// Signature (base64)
-    pub signature: String,
-    /// Certificate used to sign
-    pub certificate: EphemeralCertificate,
-    /// Timestamp of signing
-    pub signed_at: DateTime<Utc>,
-    /// Transparency log entry ID
-    pub transparency_log_index: Option<u64>,
-    /// Optional build provenance (SLSA)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provenance: Option<SlsaProvenance>,
-}
-
-impl PackageSignature {
-    /// Create the canonical message that was signed.
-    pub fn canonical_message(&self) -> String {
-        format!(
-            "wares:{package}:{version}:{hash}:{timestamp}",
-            package = self.package_name,
-            version = self.version,
-            hash = self.content_hash,
-            timestamp = self.signed_at.to_rfc3339()
-        )
-    }
-
-    /// Verify the signature cryptographically.
-    pub fn verify(&self) -> Result<bool, TrustError> {
-        // In a real implementation, this would:
-        // 1. Parse the certificate PEM
-        // 2. Extract the public key
-        // 3. Verify the signature against the canonical message
-        // For now, we assume the registry has verified it
-        Ok(true)
-    }
-}
-
-// =============================================================================
-// SLSA Provenance
-// =============================================================================
-
-/// SLSA build provenance attestation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SlsaProvenance {
-    /// SLSA version (always "v1")
-    pub slsa_version: String,
-    /// Build type (e.g., "https://github.com/slsa-framework/slsa-github-generator/container@v1")
-    pub build_type: String,
-    /// Builder ID (the trusted build system)
-    pub builder_id: String,
-    /// Build invocation metadata
-    pub invocation: BuildInvocation,
-    /// Source repository
-    pub source: SourceInfo,
-    /// Build metadata
-    pub metadata: BuildMetadata,
-}
-
-/// Build invocation details.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BuildInvocation {
-    /// Config source (e.g., workflow file)
-    pub config_source: ConfigSource,
-    /// Environment variables (sanitized)
-    pub environment: HashMap<String, String>,
-}
-
-/// Config source for build.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConfigSource {
-    /// URI to the config file
-    pub uri: String,
-    /// Digest of the config file
-    pub digest: HashMap<String, String>,
-    /// Entry point (e.g., workflow name)
-    pub entry_point: String,
-}
-
-/// Source repository info.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SourceInfo {
-    /// Source URI
-    pub uri: String,
-    /// Git digest (commit SHA)
-    pub digest: HashMap<String, String>,
-}
-
-/// Build metadata.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BuildMetadata {
-    /// Build start time
-    pub started_on: DateTime<Utc>,
-    /// Build completion time
-    pub finished_on: DateTime<Utc>,
-}
-
-// =============================================================================
-// Transparency Log Entry
-// =============================================================================
-
-/// An entry in the transparency log.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LogEntry {
-    /// Log index (monotonically increasing)
-    pub index: u64,
-    /// Entry UUID
-    pub uuid: String,
-    /// Package name
-    pub package_name: String,
-    /// Package version
-    pub version: String,
-    /// Content hash
-    pub content_hash: String,
-    /// Identity that signed
-    pub identity: String,
-    /// Timestamp of entry
-    pub integrated_at: DateTime<Utc>,
-    /// Entry body hash (for verification)
-    pub body_hash: String,
-}
-
-/// Response from the transparency log.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LogEntryResponse {
-    pub entries: Vec<LogEntry>,
-    pub total: u64,
-}
-
-// =============================================================================
-// Trust Policy
-// =============================================================================
-
-/// Policy for verifying packages.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct TrustPolicy {
-    /// Required identity pattern (regex)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub required_identity: Option<String>,
-    /// Minimum SLSA build level (0-3)
-    #[serde(default)]
-    pub min_slsa_level: u8,
-    /// Require transparency log inclusion
-    #[serde(default = "default_true")]
-    pub require_transparency_log: bool,
-    /// Minimum package age before trust (cooldown period)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub min_package_age: Option<String>,
-    /// Allowed identity providers
-    #[serde(default)]
-    pub allowed_providers: Vec<String>,
-    /// Block install scripts by default
-    #[serde(default = "default_true")]
-    pub block_install_scripts: bool,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-impl TrustPolicy {
-    /// Default permissive policy.
-    pub fn permissive() -> Self {
-        Self {
-            require_transparency_log: false,
-            ..Default::default()
-        }
-    }
-
-    /// Strict policy for high-security environments.
-    pub fn strict() -> Self {
-        Self {
-            required_identity: Some("^https://github.com/[^/]+/[^/]+/.github/workflows/.*$".to_string()),
-            min_slsa_level: 2,
-            require_transparency_log: true,
-            min_package_age: Some("24h".to_string()),
-            allowed_providers: vec!["github".to_string()],
-            block_install_scripts: true,
-        }
-    }
-}
-
-/// Result of policy verification.
-#[derive(Debug, Clone)]
-pub struct VerificationResult {
-    pub passed: bool,
-    pub warnings: Vec<String>,
-    pub errors: Vec<String>,
-    pub identity: Option<String>,
-    pub slsa_level: u8,
-    pub log_index: Option<u64>,
-}
-
-impl VerificationResult {
-    pub fn success(identity: String, slsa_level: u8, log_index: Option<u64>) -> Self {
-        Self {
-            passed: true,
-            warnings: Vec::new(),
-            errors: Vec::new(),
-            identity: Some(identity),
-            slsa_level,
-            log_index,
-        }
-    }
-
-    pub fn failure(error: String) -> Self {
-        Self {
-            passed: false,
-            warnings: Vec::new(),
-            errors: vec![error],
-            identity: None,
-            slsa_level: 0,
-            log_index: None,
-        }
-    }
-
-    pub fn add_warning(&mut self, msg: String) {
-        self.warnings.push(msg);
-    }
-
-    pub fn add_error(&mut self, msg: String) {
-        self.errors.push(msg);
-        self.passed = false;
-    }
-}
-
-// =============================================================================
-// Stored Credentials
-// =============================================================================
-
-/// Stored OIDC credentials for wares.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OidcCredentials {
-    /// Identity provider
-    pub provider: IdentityProvider,
-    /// Refresh token (encrypted)
-    pub refresh_token: String,
-    /// Identity string
-    pub identity: String,
-    /// When obtained
-    pub obtained_at: DateTime<Utc>,
-    /// When expires
-    pub expires_at: DateTime<Utc>,
-}
-
-/// Trust configuration stored locally.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct TrustConfig {
-    pub version: i32,
-    /// OIDC credentials per registry
-    pub oidc_credentials: HashMap<String, OidcCredentials>,
-    /// Trust policies per registry
-    pub policies: HashMap<String, TrustPolicy>,
-    /// Cached ephemeral certificates
-    pub cached_certs: Vec<EphemeralCertificate>,
-}
 
 impl TrustConfig {
     pub fn new() -> Self {
         Self {
             version: 1,
-            oidc_credentials: HashMap::new(),
-            policies: HashMap::new(),
+            oidc_credentials: std::collections::HashMap::new(),
+            policies: std::collections::HashMap::new(),
             cached_certs: Vec::new(),
         }
     }
@@ -574,22 +141,18 @@ impl TrustClient {
         self.config.get_oidc(&self.registry_url).map(|c| c.identity.clone())
     }
 
-    /// Initiate OIDC login flow.
+    /// Initiate OIDC login flow using registry-based callback with polling.
     pub async fn login(&mut self, provider: IdentityProvider) -> Result<(), TrustError> {
         println!("{} Initiating {} login...", colors::cyan("→"), provider.name());
         
-        // Step 1: Request a login session from the registry
+        // Step 1: Request a login session from the registry (use registry callback, not localhost)
         let login_url = format!("{}/api/v1/auth/oidc/login", self.registry_url.trim_end_matches('/'));
-        
-        // Start a local callback server
-        let callback_port = find_free_port().await?;
-        let redirect_uri = format!("http://localhost:{}/callback", callback_port);
         
         let resp = self.http_client
             .post(&login_url)
             .json(&serde_json::json!({
-                "provider": provider,
-                "redirect_uri": redirect_uri
+                "provider": provider
+                // No redirect_uri - use registry's default callback
             }))
             .send()
             .await?;
@@ -600,20 +163,9 @@ impl TrustClient {
         }
         
         let login_session: LoginSession = resp.json().await?;
-        
-        // Step 2: Start local callback server
-        println!("{} Starting local callback server on port {}...", colors::gray("→"), callback_port);
-        let (tx, rx) = tokio::sync::oneshot::channel();
         let session_id = login_session.session_id.clone();
-        let registry_url = self.registry_url.clone();
-        let client = self.http_client.clone();
         
-        tokio::spawn(async move {
-            let result = run_callback_server(callback_port, &session_id, &registry_url, client).await;
-            let _ = tx.send(result);
-        });
-        
-        // Step 3: Open browser for user to authenticate
+        // Step 2: Open browser for user to authenticate
         println!("{} Opening browser for authentication...", colors::cyan("→"));
         println!("  If the browser doesn't open, visit:",);
         println!("  {}", colors::bold(&login_session.auth_url));
@@ -622,19 +174,17 @@ impl TrustClient {
             eprintln!("{} Could not open browser: {}", colors::yellow("!"), e);
         }
         
-        // Step 4: Wait for callback
+        // Step 3: Poll for token completion
         println!("{} Waiting for authentication...", colors::gray("⏳"));
+        println!("  (Complete the authorization in your browser)",);
         
-        let token = match rx.await {
-            Ok(Ok(token)) => token,
-            Ok(Err(e)) => return Err(TrustError::Auth(format!("Authentication failed: {}", e))),
-            Err(_) => return Err(TrustError::Auth("Authentication cancelled".to_string())),
-        };
+        let token = self.poll_for_token(&session_id).await?;
         
-        // Step 5: Store credentials
+        // Step 4: Store credentials
         let identity = token.identity.clone();
         let creds = OidcCredentials {
             provider,
+            access_token: Some(token.access_token),
             refresh_token: token.refresh_token,
             identity: token.identity,
             obtained_at: Utc::now(),
@@ -733,14 +283,21 @@ impl TrustClient {
         let creds = self.config.get_oidc(&self.registry_url)
             .ok_or_else(|| TrustError::Auth("Not logged in. Run 'wares login' first.".to_string()))?;
         
-        // Check if we need to refresh
-        if creds.expires_at < Utc::now() + Duration::minutes(5) {
-            // Refresh token
+        // Check if token is still valid (with 5 min buffer)
+        if creds.expires_at > Utc::now() + Duration::minutes(5) {
+            // Return existing access token if available
+            if let Some(access_token) = &creds.access_token {
+                return Ok(access_token.clone());
+            }
+        }
+        
+        // Token expired or no access token - try to refresh
+        if let Some(refresh_token) = &creds.refresh_token {
             let refresh_url = format!("{}/api/v1/auth/oidc/refresh", self.registry_url.trim_end_matches('/'));
             let resp = self.http_client
                 .post(&refresh_url)
                 .json(&serde_json::json!({
-                    "refresh_token": creds.refresh_token
+                    "refresh_token": refresh_token
                 }))
                 .send()
                 .await?;
@@ -753,8 +310,7 @@ impl TrustClient {
             return Ok(token.access_token);
         }
         
-        // Return existing (we don't store access tokens, need to exchange refresh)
-        Err(TrustError::Auth("Please run 'wares login' again".to_string()))
+        Err(TrustError::Auth("Session expired and no refresh token available. Run 'wares login' again.".to_string()))
     }
 
     /// Generate an ephemeral key pair for signing.
@@ -801,6 +357,34 @@ impl TrustClient {
         
         println!("{} Package {}@{} signed by {}", colors::green("✓"), 
             colors::bold(package_name), colors::bold(version), pkg_sig.certificate.identity_str());
+        
+        // Upload to registry
+        let publish_url = format!("{}/v1/wares", self.registry_url.trim_end_matches('/'));
+        
+        // Calculate shasum for registry
+        let shasum = pkg_sig.content_hash.strip_prefix("sha256:").unwrap_or(&pkg_sig.content_hash).to_string();
+        
+        let resp = self.http_client
+            .put(&publish_url)
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({
+                "name": package_name,
+                "version": version,
+                "tarball": base64::encode(content),
+                "shasum": shasum,
+                "signature": {
+                    "identity": pkg_sig.certificate.identity_str(),
+                    "signature": pkg_sig.signature,
+                    "certificate": pkg_sig.certificate.certificate_pem
+                }
+            }))
+            .send()
+            .await?;
+        
+        if !resp.status().is_success() {
+            let err = resp.text().await.unwrap_or_default();
+            return Err(TrustError::Registry(format!("Failed to publish: {}", err)));
+        }
         
         Ok(pkg_sig)
     }
@@ -964,20 +548,6 @@ impl TrustClient {
 // Helper Types and Functions
 // =============================================================================
 
-#[derive(Debug, Clone, Deserialize)]
-struct LoginSession {
-    session_id: String,
-    auth_url: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct OAuthToken {
-    access_token: String,
-    refresh_token: String,
-    identity: String,
-    expires_in: u64,
-}
-
 /// Trust-related errors.
 #[derive(Debug)]
 pub enum TrustError {
@@ -986,6 +556,7 @@ pub enum TrustError {
     Policy(String),
     Log(String),
     Config(String),
+    Registry(String),
     Io(std::io::Error),
     Http(reqwest::Error),
     Serde(serde_json::Error),
@@ -1001,6 +572,7 @@ impl std::fmt::Display for TrustError {
             TrustError::Policy(s) => write!(f, "Policy error: {}", s),
             TrustError::Log(s) => write!(f, "Transparency log error: {}", s),
             TrustError::Config(s) => write!(f, "Configuration error: {}", s),
+            TrustError::Registry(s) => write!(f, "Registry error: {}", s),
             TrustError::Io(e) => write!(f, "IO error: {}", e),
             TrustError::Http(e) => write!(f, "HTTP error: {}", e),
             TrustError::Serde(e) => write!(f, "Serialization error: {}", e),
@@ -1051,6 +623,7 @@ fn parse_slsa_level(version: &str) -> u8 {
         .and_then(|c| c.to_digit(10))
         .map(|n| n as u8)
         .unwrap_or(0)
+    
 }
 
 /// Parse a duration string like "24h", "7d", etc.
@@ -1158,12 +731,12 @@ async fn run_callback_server(
     let code = code.ok_or("Missing authorization code")?;
     let state = state.ok_or("Missing state")?;
     
-    // Exchange code via registry
-    let callback_url = format!("{}/api/v1/auth/oidc/callback/{}", registry_url.trim_end_matches('/'), session_id);
+    // Exchange code via registry (fixed callback URL with session in query param)
+    let callback_url = format!("{}/api/v1/auth/oidc/callback", registry_url.trim_end_matches('/'));
     
     let resp = client
         .get(&callback_url)
-        .query(&[("code", code), ("state", state)])
+        .query(&[("session", session_id), ("code", &code), ("state", &state)])
         .send()
         .await
         .map_err(|e| format!("Failed to call callback: {}", e))?;

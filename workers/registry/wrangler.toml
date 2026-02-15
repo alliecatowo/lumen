@@ -12,8 +12,15 @@ bucket_name = "wares-registry"
 # Set via wrangler secret put for sensitive values
 # TRANSPARENCY_LOG_URL = "https://wares-transparency-log.alliecatowo.workers.dev"
 # TRANSPARENCY_LOG_API_KEY = "..."
+# CA_PRIVATE_KEY = "..."
+# CA_CERTIFICATE = "..."
+
+# Service Bindings
+[[services]]
+binding = "LOG_WORKER"
+service = "wares-transparency-log"
 
 # Custom domain - api.wares.lumen-lang.com
 routes = [
-  { pattern = "api.wares.lumen-lang.com", custom_domain = true }
+  { pattern = "api.wares.lumen-lang.com/*", custom_domain = true }
 ]

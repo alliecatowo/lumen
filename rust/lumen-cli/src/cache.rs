@@ -67,7 +67,7 @@ impl Default for CacheConfig {
         let cache_dir = dirs::cache_dir()
             .unwrap_or_else(|| std::env::temp_dir())
             .join("lumen");
-        
+
         Self {
             cache_dir,
             max_size: 1024 * 1024 * 1024, // 1 GB
@@ -119,18 +119,14 @@ impl CacheKey {
             }
             Self::GitSha(sha) => {
                 if sha.len() >= 4 {
-                    PathBuf::from("content/git")
-                        .join(&sha[..2])
-                        .join(&sha[2..])
+                    PathBuf::from("content/git").join(&sha[..2]).join(&sha[2..])
                 } else {
                     PathBuf::from("content/git").join(sha)
                 }
             }
-            Self::Registry { name, version } => {
-                PathBuf::from("metadata")
-                    .join(name.replace('@', "").replace(':', "/"))
-                    .join(format!("{}.json", version))
-            }
+            Self::Registry { name, version } => PathBuf::from("metadata")
+                .join(name.replace('@', "").replace(':', "/"))
+                .join(format!("{}.json", version)),
         }
     }
 }
@@ -253,10 +249,10 @@ impl ContentCache {
         // Ensure cache directory exists
         std::fs::create_dir_all(&config.cache_dir)
             .map_err(|e| CacheError::DirectoryError(e.to_string()))?;
-        
+
         // Load or create index
         let index = Self::load_index(&config.cache_dir)?;
-        
+
         Ok(Self { config, index })
     }
 
@@ -270,11 +266,11 @@ impl ContentCache {
     pub fn get(&mut self, key: &CacheKey) -> Option<Vec<u8>> {
         let key_str = key.to_string();
         let path = self.config.cache_dir.join(key.to_path());
-        
+
         if !path.exists() {
             return None;
         }
-        
+
         // Update access stats
         if let Some(entry) = self.index.entries.get_mut(&key_str) {
             if entry.is_expired() {
@@ -286,12 +282,12 @@ impl ContentCache {
                 .unwrap_or_default()
                 .as_secs();
         }
-        
+
         // Read content
         let mut file = File::open(&path).ok()?;
         let mut content = Vec::new();
         file.read_to_end(&mut content).ok()?;
-        
+
         // Verify hash if configured
         if self.config.verify_on_read {
             if let Some(entry) = self.index.entries.get(&key_str) {
@@ -303,44 +299,47 @@ impl ContentCache {
                 }
             }
         }
-        
+
         Some(content)
     }
 
     /// Store content in the cache.
-    pub fn put(&mut self, key: &CacheKey, content: &[u8], source: Option<&str>) -> Result<(), CacheError> {
+    pub fn put(
+        &mut self,
+        key: &CacheKey,
+        content: &[u8],
+        source: Option<&str>,
+    ) -> Result<(), CacheError> {
         // Compute hash
         let hash = format!("{:x}", Sha256::digest(content));
-        
+
         // Check size limits
         let new_size = content.len() as u64;
         self.ensure_space(new_size)?;
-        
+
         // Determine storage path
         let path = self.config.cache_dir.join(key.to_path());
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| CacheError::WriteError(e.to_string()))?;
+            std::fs::create_dir_all(parent).map_err(|e| CacheError::WriteError(e.to_string()))?;
         }
-        
+
         // Write content
-        let mut file = File::create(&path)
-            .map_err(|e| CacheError::WriteError(e.to_string()))?;
+        let mut file = File::create(&path).map_err(|e| CacheError::WriteError(e.to_string()))?;
         file.write_all(content)
             .map_err(|e| CacheError::WriteError(e.to_string()))?;
-        
+
         // Update index
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        
+
         let expires_at = if self.config.ttl_secs > 0 {
             now + self.config.ttl_secs
         } else {
             0
         };
-        
+
         let entry = CacheEntry {
             hash,
             size: new_size,
@@ -351,15 +350,19 @@ impl ContentCache {
             source: source.map(|s| s.to_string()),
             package: None,
         };
-        
+
         self.index.insert(&key.to_string(), entry);
         self.save_index()?;
-        
+
         Ok(())
     }
 
     /// Store content and return its hash.
-    pub fn put_hashed(&mut self, content: &[u8], source: Option<&str>) -> Result<CacheKey, CacheError> {
+    pub fn put_hashed(
+        &mut self,
+        content: &[u8],
+        source: Option<&str>,
+    ) -> Result<CacheKey, CacheError> {
         let hash = format!("{:x}", Sha256::digest(content));
         let key = CacheKey::Sha256(hash);
         self.put(&key, content, source)?;
@@ -382,19 +385,19 @@ impl ContentCache {
             .filter(|(_, e)| e.is_expired())
             .map(|(k, _)| k.clone())
             .collect();
-        
+
         let count = expired.len() as u64;
         for key in expired {
             let key = CacheKey::Sha256(key); // Simplified - should parse properly
             self.remove(&key);
         }
-        
+
         self.index.last_cleaned = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         self.save_index()?;
-        
+
         Ok(count)
     }
 
@@ -415,57 +418,60 @@ impl ContentCache {
         if !index_path.exists() {
             return Ok(CacheIndex::new());
         }
-        
+
         let content = std::fs::read_to_string(&index_path)
             .map_err(|e| CacheError::IndexError(e.to_string()))?;
-        
-        serde_json::from_str(&content)
-            .map_err(|e| CacheError::IndexError(e.to_string()))
+
+        serde_json::from_str(&content).map_err(|e| CacheError::IndexError(e.to_string()))
     }
 
     fn save_index(&self) -> Result<(), CacheError> {
         let index_path = self.config.cache_dir.join("index.json");
         let content = serde_json::to_string_pretty(&self.index)
             .map_err(|e| CacheError::IndexError(e.to_string()))?;
-        
-        std::fs::write(&index_path, content)
-            .map_err(|e| CacheError::IndexError(e.to_string()))
+
+        std::fs::write(&index_path, content).map_err(|e| CacheError::IndexError(e.to_string()))
     }
 
     fn ensure_space(&mut self, needed: u64) -> Result<(), CacheError> {
         if self.config.max_size == 0 {
             return Ok(()); // Unlimited
         }
-        
+
         let available = self.config.max_size.saturating_sub(self.index.total_size);
         if needed <= available {
             return Ok(());
         }
-        
+
         // Need to evict entries using LRU
         let to_free = needed.saturating_sub(available);
         let mut freed = 0u64;
-        
-        let lru_entries: Vec<String> = self.index.lru_order()
+
+        let lru_entries: Vec<String> = self
+            .index
+            .lru_order()
             .iter()
             .map(|(k, _)| (*k).clone())
             .collect();
-        
+
         for key in lru_entries {
             if freed >= to_free {
                 break;
             }
             if let Some(entry) = self.index.remove(&key) {
-                let path = self.config.cache_dir.join(CacheKey::Sha256(key.clone()).to_path());
+                let path = self
+                    .config
+                    .cache_dir
+                    .join(CacheKey::Sha256(key.clone()).to_path());
                 let _ = std::fs::remove_file(&path);
                 freed += entry.size;
             }
         }
-        
+
         if freed < to_free {
             return Err(CacheError::InsufficientSpace);
         }
-        
+
         Ok(())
     }
 }
@@ -493,10 +499,16 @@ impl std::fmt::Display for CacheStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "Cache Statistics:")?;
         writeln!(f, "  Entries: {}", self.entry_count)?;
-        writeln!(f, "  Size: {} / {} ({:.1}%)",
+        writeln!(
+            f,
+            "  Size: {} / {} ({:.1}%)",
             format_bytes(self.total_size),
             format_bytes(self.max_size),
-            if self.max_size > 0 { (self.total_size as f64 / self.max_size as f64) * 100.0 } else { 0.0 }
+            if self.max_size > 0 {
+                (self.total_size as f64 / self.max_size as f64) * 100.0
+            } else {
+                0.0
+            }
         )?;
         writeln!(f, "  Hit Rate: {:.1}%", self.hit_rate * 100.0)?;
         Ok(())
@@ -566,7 +578,7 @@ fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
     const GB: u64 = MB * 1024;
-    
+
     if bytes >= GB {
         format!("{:.1} GB", bytes as f64 / GB as f64)
     } else if bytes >= MB {
@@ -612,10 +624,10 @@ mod tests {
             source: None,
             package: None,
         };
-        
+
         // No expiration
         assert!(!entry.is_expired());
-        
+
         // Expired in past
         entry.expires_at = 1;
         assert!(entry.is_expired());
@@ -633,7 +645,7 @@ mod tests {
     fn test_cache_index() {
         let mut index = CacheIndex::new();
         assert!(index.entries.is_empty());
-        
+
         let entry = CacheEntry {
             hash: "abc".to_string(),
             size: 100,
@@ -644,11 +656,11 @@ mod tests {
             source: None,
             package: None,
         };
-        
+
         index.insert("test", entry);
         assert!(index.entries.contains_key("test"));
         assert_eq!(index.total_size, 100);
-        
+
         index.remove("test");
         assert!(index.entries.is_empty());
         assert_eq!(index.total_size, 0);

@@ -1,15 +1,17 @@
 //! lpm — Lumen Package Manager
 //! Alias for `lumen pkg` subcommands.
 
+mod auth;
+mod cache;
 mod config;
+mod git;
 mod lockfile;
 mod pkg;
 mod registry;
+mod registry_cmd;
 mod resolver;
-mod git;
-mod workspace;
-mod cache;
 mod semver;
+mod workspace;
 
 use clap::{Parser, Subcommand};
 
@@ -91,7 +93,7 @@ fn main() {
         Commands::Install { frozen } => pkg::cmd_pkg_install_with_lock(frozen),
         Commands::Update { frozen } => pkg::cmd_pkg_update_with_lock(frozen),
         Commands::Search { query } => pkg::cmd_pkg_search(&query),
-        Commands::Info { target } => pkg::cmd_pkg_info(target.as_deref()),
+        Commands::Info { target } => pkg::cmd_pkg_info(target.as_deref().unwrap_or(""), None),
         Commands::Pack => pkg::cmd_pkg_pack(),
         Commands::Publish { dry_run } => pkg::cmd_pkg_publish(dry_run),
     }

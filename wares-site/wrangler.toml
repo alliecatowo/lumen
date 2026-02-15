@@ -1,0 +1,6 @@
+name = "wares-lumen-lang"
+compatibility_date = "2024-11-01"
+pages_build_output_dir = ".output/public"
+
+[vars]
+API_BASE = "https://wares.lumen-lang.com/api/v1"

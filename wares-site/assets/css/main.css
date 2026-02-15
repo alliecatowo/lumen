@@ -1,0 +1,65 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  @apply bg-lumen-bg text-lumen-text antialiased;
+}
+
+::selection {
+  @apply bg-lumen-accent/30;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-lumen-bgSecondary;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-lumen-border rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-lumen-textMuted;
+}
+
+@layer components {
+  .btn-primary {
+    @apply px-4 py-2 bg-lumen-accent text-white font-medium rounded-lg
+           hover:bg-lumen-accentHover transition-colors duration-200
+           focus:outline-none focus:ring-2 focus:ring-lumen-accent/50;
+  }
+
+  .btn-secondary {
+    @apply px-4 py-2 bg-lumen-surface text-lumen-text font-medium rounded-lg
+           border border-lumen-border hover:bg-lumen-border transition-colors duration-200
+           focus:outline-none focus:ring-2 focus:ring-lumen-border;
+  }
+
+  .input-field {
+    @apply w-full px-4 py-3 bg-lumen-surface border border-lumen-border rounded-lg
+           text-lumen-text placeholder-lumen-textMuted
+           focus:outline-none focus:border-lumen-accent focus:ring-1 focus:ring-lumen-accent/30
+           transition-all duration-200;
+  }
+
+  .card {
+    @apply bg-lumen-surface border border-lumen-border rounded-xl p-6
+           hover:border-lumen-accent/50 transition-colors duration-200;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+           bg-lumen-accentSubtle text-lumen-accent;
+  }
+}

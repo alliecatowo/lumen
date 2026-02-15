@@ -1,7 +1,48 @@
 //! Module resolution for Lumen imports.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Compile a source file with import resolution.
+pub fn compile_source_file(
+    path: &Path,
+    source: &str,
+) -> Result<lumen_compiler::compiler::lir::LirModule, lumen_compiler::CompileError> {
+    let source_dir = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let mut resolver = ModuleResolver::new(source_dir.clone());
+
+    if let Some(project_root) = find_project_root(&source_dir) {
+        let src_dir = project_root.join("src");
+        if src_dir.is_dir() && src_dir != source_dir {
+            resolver.add_root(src_dir);
+        }
+        if project_root != source_dir {
+            resolver.add_root(project_root);
+        }
+    }
+
+    let resolver = RefCell::new(resolver);
+    let resolve_import = |module_path: &str| resolver.borrow_mut().resolve(module_path);
+
+    lumen_compiler::compile_with_imports(source, &resolve_import)
+}
+
+/// Find project root by looking for lumen.toml.
+fn find_project_root(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
+    loop {
+        if dir.join("lumen.toml").exists() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
 
 /// Resolves import paths to source files.
 ///

@@ -313,15 +313,17 @@ impl DependencyGraph {
             in_degree.entry(node.as_str()).or_insert(0);
         }
         
-        // Build graph
+        // Build graph - edge (from, to) means "from depends on to"
+        // So "to" must come before "from" in build order
         for (from, deps) in &self.edges {
             for to in deps {
-                *in_degree.entry(to.as_str()).or_insert(0) += 1;
+                // from depends on to, so from has one more incoming edge
+                *in_degree.entry(from.as_str()).or_insert(0) += 1;
                 dependents.entry(to.as_str()).or_default().push(from.as_str());
             }
         }
         
-        // Kahn's algorithm
+        // Kahn's algorithm - start with nodes that have no dependencies
         let mut queue: Vec<&str> = in_degree
             .iter()
             .filter(|(_, &deg)| deg == 0)
@@ -334,6 +336,7 @@ impl DependencyGraph {
         while let Some(name) = queue.pop() {
             result.push(name.to_string());
             
+            // Process all nodes that depend on this one
             if let Some(deps) = dependents.get(name) {
                 let mut sorted_deps: Vec<_> = deps.iter().copied().collect();
                 sorted_deps.sort();

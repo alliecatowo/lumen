@@ -1,0 +1,19 @@
+name = "wares-registry"
+main = "worker.ts"
+compatibility_date = "2024-01-01"
+
+# R2 bucket for package storage
+[[r2_buckets]]
+binding = "REGISTRY_BUCKET"
+bucket_name = "wares-registry"
+
+# Environment variables
+[vars]
+# Set via wrangler secret put for sensitive values
+# TRANSPARENCY_LOG_URL = "https://wares-transparency-log.alliecatowo.workers.dev"
+# TRANSPARENCY_LOG_API_KEY = "..."
+
+# Custom domain - api.wares.lumen-lang.com
+routes = [
+  { pattern = "api.wares.lumen-lang.com", custom_domain = true }
+]

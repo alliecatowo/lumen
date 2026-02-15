@@ -143,5 +143,5 @@ end
 ## Community
 
 <img src="https://img.shields.io/github/actions/workflow/status/alliecatowo/lumen/pages.yml?branch=main&label=Docs&style=flat-square" alt="Docs Status" />
-<a href="https://open-vsx.org/extension/alliecatowo/lumen-lang"><img src="https://img.shields.io/open-vsx/v/alliecatowo/lumen-lang?style=flat-square&label=Open%20VSX" alt="Open VSX" /></a>
-<img src="https://img.shields.io/crates/v/alliecatowo/lumen-lang?style=flat-square" alt="Crates.io" />
+<a href="https://open-vsx.org/extension/lumen-lang/lumen-lang"><img src="https://img.shields.io/open-vsx/v/lumen-lang/lumen-lang?style=flat-square&label=Open%20VSX" alt="Open VSX" /></a>
+<img src="https://img.shields.io/crates/v/lumen-lang/lumen-lang?style=flat-square" alt="Crates.io" />

@@ -1,31 +1,17 @@
 //! Lumen CLI — command-line interface for the Lumen language.
 
-mod auth;
-mod config;
-mod doc;
-mod fmt;
-mod lint;
-mod lockfile;
-mod module_resolver;
-mod pkg;
-mod registry;
-mod registry_cmd;
-mod resolver;
-mod git;
-mod workspace;
-mod cache;
-mod repl;
-mod semver;
-mod test_cmd;
-mod build_script;
-mod colors;
+use lumen_cli::{
+    auth, build_script, cache, colors, config, doc, fmt, git, lint,
+    lockfile, module_resolver, registry_cmd, repl, semver, test_cmd,
+    wares, workspace,
+};
 
-use colors::{green, red, yellow, cyan, bold, gray, status_label};
-
+use colors::{bold, cyan, gray, green, red, status_label, yellow};
 use clap::{Parser as ClapParser, Subcommand, ValueEnum};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
 
 #[derive(ClapParser)]
 #[command(
@@ -97,15 +83,8 @@ enum Commands {
         #[command(subcommand)]
         sub: CacheCommands,
     },
-    /// Create a lumen.toml config file in the current directory
-    Init,
     /// Start an interactive REPL
     Repl,
-    /// Package manager commands
-    Pkg {
-        #[command(subcommand)]
-        sub: PkgCommands,
-    },
     /// Format Lumen source files
     Fmt {
         /// Files to format (or stdin)
@@ -155,16 +134,6 @@ enum Commands {
         #[command(subcommand)]
         sub: BuildCommands,
     },
-    /// Registry authentication and management
-    Registry {
-        #[command(subcommand)]
-        sub: RegistrySubcommands,
-    },
-    /// Workspace commands for monorepos
-    Ws {
-        #[command(subcommand)]
-        sub: WsCommands,
-    },
 }
 
 #[derive(Subcommand)]
@@ -177,87 +146,6 @@ enum BuildCommands {
         /// Release build (optimized)
         #[arg(long)]
         release: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum RegistrySubcommands {
-    /// Login to a registry
-    Login {
-        /// Registry URL (defaults to configured default)
-        #[arg(long)]
-        registry: Option<String>,
-        /// Token (if not provided, will prompt interactively)
-        #[arg(long)]
-        token: Option<String>,
-        /// Token name/description
-        #[arg(long)]
-        name: Option<String>,
-    },
-    /// Logout from a registry
-    Logout {
-        /// Registry URL (defaults to configured default)
-        #[arg(long)]
-        registry: Option<String>,
-    },
-    /// Show current authenticated user
-    Whoami {
-        /// Registry URL (defaults to configured default)
-        #[arg(long)]
-        registry: Option<String>,
-    },
-    /// Manage authentication tokens
-    #[command(subcommand)]
-    Token(RegistryTokenCommands),
-    /// Manage package owners
-    #[command(subcommand)]
-    Owner(RegistryOwnerCommands),
-}
-
-#[derive(Subcommand)]
-enum RegistryTokenCommands {
-    /// List stored tokens
-    List,
-    /// Add a new token
-    Add {
-        /// Registry URL
-        registry: String,
-        /// API token
-        token: String,
-        /// Token name
-        #[arg(long)]
-        name: Option<String>,
-    },
-    /// Remove a token
-    Remove {
-        /// Registry URL
-        registry: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum RegistryOwnerCommands {
-    /// Add an owner to a package
-    Add {
-        /// Package name
-        package: String,
-        /// User email
-        email: String,
-        /// Owner role (maintainer or owner)
-        #[arg(long, default_value = "maintainer")]
-        role: String,
-    },
-    /// Remove an owner from a package
-    Remove {
-        /// Package name
-        package: String,
-        /// User email
-        email: String,
-    },
-    /// List owners of a package
-    List {
-        /// Package name
-        package: String,
     },
 }
 
@@ -293,94 +181,6 @@ enum CacheCommands {
         #[arg(long, default_value = ".lumen/cache")]
         cache_dir: PathBuf,
     },
-}
-
-#[derive(Subcommand)]
-enum PkgCommands {
-    /// Create a new Lumen package
-    Init {
-        /// Package name (creates a subdirectory; omit to init in current dir)
-        name: Option<String>,
-    },
-    /// Compile the package and all dependencies
-    Build,
-    /// Type-check the package and all dependencies without running
-    Check,
-    /// Add a dependency to this package
-    Add {
-        /// Package name
-        package: String,
-        /// Path to the dependency
-        #[arg(long)]
-        path: Option<String>,
-        /// Add as a dev dependency
-        #[arg(long)]
-        dev: bool,
-        /// Add as a build dependency
-        #[arg(long)]
-        build: bool,
-    },
-    /// Remove a dependency from this package
-    Remove {
-        /// Package name
-        package: String,
-    },
-    /// List dependencies
-    List,
-    /// Install dependencies from lumen.toml and write lumen.lock
-    Install {
-        /// Fail if lumen.lock would be changed
-        #[arg(long, alias = "locked")]
-        frozen: bool,
-        /// Install dev dependencies only
-        #[arg(long)]
-        dev: bool,
-        /// Install build dependencies only
-        #[arg(long)]
-        build: bool,
-    },
-    /// Update dependencies to latest compatible versions
-    Update {
-        /// Fail if lumen.lock would be changed
-        #[arg(long, alias = "locked")]
-        frozen: bool,
-    },
-    /// Search for a package in the registry
-    Search {
-        /// Search query
-        query: String,
-    },
-    /// Create a deterministic package archive in dist/
-    Pack,
-    /// Validate package metadata/contents and (eventually) publish
-    Publish {
-        /// Validate/package locally without uploading
-        #[arg(long)]
-        dry_run: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum WsCommands {
-    /// Build all workspace members in dependency order
-    Build,
-    /// Run tests for all workspace members
-    Test {
-        /// Filter tests by name substring
-        #[arg(long)]
-        filter: Option<String>,
-        /// Show additional details
-        #[arg(short, long)]
-        verbose: bool,
-    },
-    /// Publish all workspace members in reverse dependency order
-    Publish {
-        /// Validate/package locally without uploading
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// List all workspace members
-    List,
 }
 
 /// Register all provider crates into the runtime registry.
@@ -542,49 +342,7 @@ fn main() {
         Commands::Cache { sub } => match sub {
             CacheCommands::Clear { cache_dir } => cmd_cache_clear(&cache_dir),
         },
-        Commands::Init => cmd_init(),
         Commands::Repl => repl::run_repl(),
-        Commands::Pkg { sub } => match sub {
-            PkgCommands::Init { name } => pkg::cmd_pkg_init(name),
-            PkgCommands::Build => pkg::cmd_pkg_build(),
-            PkgCommands::Check => pkg::cmd_pkg_check(),
-            PkgCommands::Add { package, path, dev, build } => {
-                let kind = if build {
-                    pkg::DependencyKind::Build
-                } else if dev {
-                    pkg::DependencyKind::Dev
-                } else {
-                    pkg::DependencyKind::Normal
-                };
-                pkg::cmd_pkg_add_with_kind(&package, path.as_deref(), kind)
-            }
-            PkgCommands::Remove { package } => pkg::cmd_pkg_remove(&package),
-            PkgCommands::List => pkg::cmd_pkg_list(),
-            PkgCommands::Install { frozen, dev, build } => {
-                let kind = if build {
-                    pkg::DependencyKind::Build
-                } else if dev {
-                    pkg::DependencyKind::Dev
-                } else {
-                    pkg::DependencyKind::Normal
-                };
-                if kind != pkg::DependencyKind::Normal {
-                    pkg::cmd_pkg_install_with_kind(kind, frozen)
-                } else {
-                    pkg::cmd_pkg_install_with_lock(frozen)
-                }
-            }
-            PkgCommands::Update { frozen } => pkg::cmd_pkg_update_with_lock(frozen),
-            PkgCommands::Search { query } => pkg::cmd_pkg_search(&query),
-            PkgCommands::Pack => pkg::cmd_pkg_pack(),
-            PkgCommands::Publish { dry_run } => pkg::cmd_pkg_publish(dry_run),
-        },
-        Commands::Ws { sub } => match sub {
-            WsCommands::Build => workspace::cmd_ws_build(),
-            WsCommands::Test { filter, verbose } => workspace::cmd_ws_test(filter, verbose),
-            WsCommands::Publish { dry_run } => workspace::cmd_ws_publish(dry_run),
-            WsCommands::List => workspace::cmd_ws_list(),
-        },
         Commands::Fmt { files, check } => cmd_fmt(files, check),
         Commands::Doc {
             path,
@@ -600,63 +358,6 @@ fn main() {
         Commands::Ci { path } => cmd_ci(path),
         Commands::Build { sub } => match sub {
             BuildCommands::Wasm { target, release } => cmd_build_wasm(&target, release),
-        },
-        Commands::Registry { sub } => match sub {
-            RegistrySubcommands::Login { registry, token, name } => {
-                registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Login {
-                    registry,
-                    token,
-                    name,
-                })
-            }
-            RegistrySubcommands::Logout { registry } => {
-                registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Logout { registry })
-            }
-            RegistrySubcommands::Whoami { registry } => {
-                registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Whoami { registry })
-            }
-            RegistrySubcommands::Token(token_cmd) => match token_cmd {
-                RegistryTokenCommands::List => {
-                    registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Token {
-                        sub: registry_cmd::TokenCommands::List,
-                    })
-                }
-                RegistryTokenCommands::Add { registry, token, name } => {
-                    registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Token {
-                        sub: registry_cmd::TokenCommands::Add {
-                            registry,
-                            token,
-                            name,
-                        },
-                    })
-                }
-                RegistryTokenCommands::Remove { registry } => {
-                    registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Token {
-                        sub: registry_cmd::TokenCommands::Remove { registry },
-                    })
-                }
-            },
-            RegistrySubcommands::Owner(owner_cmd) => match owner_cmd {
-                RegistryOwnerCommands::Add { package, email, role } => {
-                    registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Owner {
-                        sub: registry_cmd::OwnerCommands::Add {
-                            package,
-                            email,
-                            role: Some(role),
-                        },
-                    })
-                }
-                RegistryOwnerCommands::Remove { package, email } => {
-                    registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Owner {
-                        sub: registry_cmd::OwnerCommands::Remove { package, email },
-                    })
-                }
-                RegistryOwnerCommands::List { package } => {
-                    registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Owner {
-                        sub: registry_cmd::OwnerCommands::List { package },
-                    })
-                }
-            },
         },
     }
 }
@@ -1260,7 +961,7 @@ fn read_trace_events(path: &Path) -> Result<Vec<lumen_runtime::trace::events::Tr
                 .map_err(|e| format!("invalid JSON in trace at line {}: {}", idx + 1, e))
         })
         .collect()
-}
+    }
 
 fn verify_trace_chain(events: &[lumen_runtime::trace::events::TraceEvent]) -> Result<(), String> {
     lumen_runtime::trace::store::verify_event_chain(events)
@@ -1356,22 +1057,6 @@ fn cmd_cache_clear(cache_dir: &PathBuf) {
             cache_dir.display()
         );
     }
-}
-
-fn cmd_init() {
-    let path = PathBuf::from("lumen.toml");
-    if path.exists() {
-        eprintln!(
-            "{} lumen.toml already exists — not overwriting",
-            red("error:")
-        );
-        std::process::exit(1);
-    }
-    std::fs::write(&path, config::LumenConfig::default_template()).unwrap_or_else(|e| {
-        eprintln!("{} writing lumen.toml: {}", red("error:"), e);
-        std::process::exit(1);
-    });
-    println!("{} lumen.toml", status_label("Created"));
 }
 
 fn cmd_fmt(files: Vec<PathBuf>, check: bool) {
@@ -1521,157 +1206,5 @@ fn cmd_build_wasm(target: &str, release: bool) {
             );
         }
         _ => {}
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use lumen_runtime::trace::events::TraceEventKind;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn write_temp_lumen_file(contents: &str) -> PathBuf {
-        let mut path = std::env::temp_dir();
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after unix epoch")
-            .as_nanos();
-        path.push(format!(
-            "lumen-recovery-{}-{}.lm",
-            std::process::id(),
-            timestamp
-        ));
-        std::fs::write(&path, contents).expect("failed to write temp lumen file");
-        path
-    }
-
-    fn write_temp_trace_events() -> Vec<lumen_runtime::trace::events::TraceEvent> {
-        let mut base = std::env::temp_dir();
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after unix epoch")
-            .as_nanos();
-        base.push(format!(
-            "lumen-trace-test-{}-{}",
-            std::process::id(),
-            timestamp
-        ));
-        let trace_dir = base.join("trace");
-        std::fs::create_dir_all(&trace_dir).expect("trace dir should be created");
-
-        let mut store = lumen_runtime::trace::store::TraceStore::new(&base);
-        let run_id = store.start_run("doc-123");
-        store.cell_start("main");
-        store.end_run();
-
-        let path = trace_dir.join(format!("{}.jsonl", run_id));
-        let events = read_trace_events(&path).expect("trace events should be readable");
-        let _ = std::fs::remove_dir_all(&base);
-        events
-    }
-
-    #[test]
-    fn parses_test_command_with_defaults() {
-        let cli = Cli::try_parse_from(["lumen", "test"]).expect("test command should parse");
-        match cli.command {
-            Commands::Test {
-                path,
-                filter,
-                verbose,
-            } => {
-                assert!(path.is_none());
-                assert!(filter.is_none());
-                assert!(!verbose);
-            }
-            _ => panic!("expected test command"),
-        }
-    }
-
-    #[test]
-    fn parses_test_command_with_flags() {
-        let cli = Cli::try_parse_from([
-            "lumen",
-            "test",
-            "examples/demo.lm.md",
-            "--filter",
-            "auth",
-            "--verbose",
-        ])
-        .expect("test command with flags should parse");
-
-        match cli.command {
-            Commands::Test {
-                path,
-                filter,
-                verbose,
-            } => {
-                assert_eq!(path, Some(PathBuf::from("examples/demo.lm.md")));
-                assert_eq!(filter, Some("auth".to_string()));
-                assert!(verbose);
-            }
-            _ => panic!("expected test command"),
-        }
-    }
-
-    #[test]
-    fn parses_ci_command_default_path() {
-        let cli = Cli::try_parse_from(["lumen", "ci"]).expect("ci command should parse");
-        match cli.command {
-            Commands::Ci { path } => {
-                assert_eq!(path, PathBuf::from("."));
-            }
-            _ => panic!("expected ci command"),
-        }
-    }
-
-    #[test]
-    fn check_path_collects_multiple_parse_diagnostics_for_one_file() {
-        let source = include_str!("../tests/fixtures/recovery_multi_diag.lm");
-        let temp_file = write_temp_lumen_file(source);
-        let filename = temp_file.display().to_string();
-
-        let result = compile_source_file(&temp_file, source);
-        let _ = std::fs::remove_file(&temp_file);
-
-        let err = result.expect_err("expected malformed file to fail compilation");
-        let parse_count = match &err {
-            lumen_compiler::CompileError::Parse(errors) => errors.len(),
-            other => panic!("expected parse errors, got {:?}", other),
-        };
-        assert!(
-            parse_count >= 3,
-            "expected at least 3 parse errors, got {}",
-            parse_count
-        );
-
-        let rendered = lumen_compiler::format_error(&err, source, &filename);
-        let rendered_count = rendered.matches("PARSE ERROR").count();
-        assert!(
-            rendered_count >= 3,
-            "expected at least 3 rendered parse diagnostics, got {}",
-            rendered_count
-        );
-    }
-
-    #[test]
-    fn verify_trace_chain_accepts_valid_hash_chain() {
-        let events = write_temp_trace_events();
-        verify_trace_chain(&events).expect("valid chain should pass");
-    }
-
-    #[test]
-    fn verify_trace_chain_rejects_tampered_payload() {
-        let mut events = write_temp_trace_events();
-        let target = events
-            .iter_mut()
-            .find(|event| event.kind == TraceEventKind::CellStart)
-            .expect("cell start should exist");
-        target.message = Some("tampered".to_string());
-        let err = verify_trace_chain(&events).expect_err("tampered event should fail");
-        assert!(
-            err.contains("trace event hash mismatch"),
-            "unexpected error: {}",
-            err
-        );
     }
 }

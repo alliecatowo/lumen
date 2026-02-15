@@ -1063,7 +1063,8 @@ pub fn cmd_ws_build() {
         }
 
         // Build the package
-        match crate::pkg::build_package(&member.abs_path) {
+        // Build the package
+        match crate::wares::ops::build_package(&member.abs_path) {
             Ok(_) => {
                 println!("    {} build succeeded", crate::colors::green("✓"));
             }
@@ -1162,7 +1163,7 @@ pub fn cmd_ws_check() {
         );
 
         // Check the package
-        match crate::pkg::validate_package(&member.abs_path) {
+        match crate::wares::ops::validate_package(&member.abs_path) {
             Ok(_) => {
                 println!("    {} check passed", crate::colors::green("✓"));
             }
@@ -1343,7 +1344,8 @@ pub fn cmd_ws_publish(dry_run: bool) {
 
         if dry_run {
             // Just validate
-            match crate::pkg::validate_package(&member.abs_path) {
+            // Just validate
+            match crate::wares::ops::validate_package(&member.abs_path) {
                 Ok(_) => {
                     println!("    {} validation passed", crate::colors::green("✓"));
                 }
@@ -1354,7 +1356,8 @@ pub fn cmd_ws_publish(dry_run: bool) {
             }
         } else {
             // Actually publish
-            match crate::pkg::publish_package(&member.abs_path) {
+            // Actually publish
+            match crate::wares::ops::publish_package(&member.abs_path) {
                 Ok(_) => {
                     println!("    {} published successfully", crate::colors::green("✓"));
                 }

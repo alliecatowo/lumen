@@ -5,8 +5,11 @@
  * - OIDC authentication (GitHub)
  * - Package publishing
  * - Transparency log integration
+ * - Transparency log integration
  * - R2 storage
  */
+
+import { CertificateAuthority, IdentityClaims } from './src/ca';
 
 export interface Env {
   REGISTRY_BUCKET: R2Bucket;
@@ -14,6 +17,8 @@ export interface Env {
   TRANSPARENCY_LOG_API_KEY: string;
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;
+  CA_PRIVATE_KEY: string;
+  CA_CERTIFICATE?: string;
 }
 
 // In-memory session storage (use KV in production)
@@ -41,7 +46,7 @@ export default {
     const url = new URL(request.url);
     let path = url.pathname;
     const method = request.method;
-    
+
     // CORS headers
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
@@ -54,25 +59,70 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
+    // Normalize path to handle both /v1 and /api/v1 prefixes
+    if (path.startsWith('/api/v1')) {
+      path = path.replace('/api/v1', '/v1');
+    }
+
     try {
-      // Health check
+      // Health check (always available)
       if (path === '/health') {
         return json({ status: 'ok', service: 'wares-registry' }, corsHeaders);
       }
 
       // OIDC Authentication endpoints
-      if (path === '/api/v1/auth/oidc/login' && method === 'POST') {
+      if (path === '/v1/auth/oidc/login' && method === 'POST') {
         return handleLogin(request, env, corsHeaders);
       }
-      
-      if (path.match(/^\/api\/v1\/auth\/oidc\/callback\/[^/]+$/) && method === 'GET') {
-        const sessionId = path.split('/').pop()!;
+
+      if (path === '/v1/auth/oidc/callback' && method === 'GET') {
+        // Extract session ID from state parameter (format: sessionId:randomState)
+        const stateParam = url.searchParams.get('state');
+        if (!stateParam) {
+          return json({ error: 'Missing state parameter' }, corsHeaders, 400);
+        }
+        const sessionId = stateParam.split(':')[0];
         return handleCallback(sessionId, url, env, corsHeaders);
       }
-      
-      if (path.match(/^\/api\/v1\/auth\/oidc\/token\/[^/]+$/) && method === 'POST') {
-        const sessionId = path.split('/').pop()!;
+
+      if (path.match(/^\/v1\/auth\/oidc\/token/) && (method === 'POST' || method === 'GET')) {
+        // Support both /token/:sessionId and /token?session_id=:sessionId
+        let sessionId = path.split('/').pop()!;
+        if (!sessionId || sessionId === 'token') {
+          sessionId = url.searchParams.get('session_id') || '';
+        }
+        if (!sessionId) {
+          return json({ error: 'Missing session_id' }, corsHeaders, 400);
+        }
         return handleToken(sessionId, corsHeaders);
+      }
+
+      // Ephemeral certificate endpoint (Sigstore-style)
+      if (path === '/v1/auth/cert' && method === 'POST') {
+        return handleCert(request, env, corsHeaders);
+      }
+
+      // User profile
+      if (path === '/v1/auth/user' && method === 'GET') {
+        const user = await validateUser(request, env);
+        if (!user) return json({ error: 'Unauthorized' }, corsHeaders, 401);
+
+        // Fetch user's packages
+        const list = await env.REGISTRY_BUCKET.list({ prefix: 'wares/' });
+        const userPackages: any[] = [];
+        for (const obj of list.objects) {
+          if (obj.key?.endsWith('/index.json')) {
+            const indexObj = await env.REGISTRY_BUCKET.get(obj.key);
+            if (indexObj) {
+              const data = await indexObj.json() as any;
+              if (data.owner === user.identity) {
+                userPackages.push(data);
+              }
+            }
+          }
+        }
+
+        return json({ ...user, packages: userPackages }, corsHeaders);
       }
 
       // Package endpoints
@@ -82,6 +132,45 @@ export default {
 
       if (path === '/v1/search' && method === 'GET') {
         return searchPackages(url, env, corsHeaders);
+      }
+
+      // Package audit logs
+      const auditMatch = path.match(/^\/v1\/wares\/([^/]+)\/audit$/);
+      if (auditMatch && method === 'GET') {
+        const name = auditMatch[1];
+        if (env.TRANSPARENCY_LOG_URL || (env as any).LOG_WORKER) {
+          try {
+            const logBinding = (env as any).LOG_WORKER;
+            const baseUrl = logBinding ? 'http://log.internal' : env.TRANSPARENCY_LOG_URL;
+            console.log(`[DEBUG] Fetching audit for ${name} using ${logBinding ? 'Service Binding' : 'URL'}`);
+
+            const [queryRes, logRes] = await Promise.all([
+              (logBinding || { fetch }).fetch(`${baseUrl}/api/v1/log/query?package=${name}`),
+              (logBinding || { fetch }).fetch(`${baseUrl}/api/v1/log`)
+            ]);
+
+            console.log(`[DEBUG] Query Status: ${queryRes.status}, Log Status: ${logRes.status}`);
+
+            if (!queryRes.ok || !logRes.ok) {
+              const errorText = await (!queryRes.ok ? queryRes.text() : logRes.text());
+              console.error(`[DEBUG] Upstream error: ${errorText}`);
+              throw new Error(`Upstream error: ${queryRes.status}/${logRes.status}`);
+            }
+
+            const queryData = await queryRes.json() as any;
+            const logInfo = await logRes.json() as any;
+
+            return json({
+              entries: queryData.entries || [],
+              total: queryData.total || 0,
+              logInfo
+            }, corsHeaders);
+          } catch (e: any) {
+            console.error('[DEBUG] Audit fetch error:', e.message);
+            return json({ error: `Audit fetch failed: ${e.message}` }, corsHeaders, 500);
+          }
+        }
+        return json({ error: 'Audit system unavailable' }, corsHeaders, 503);
       }
 
       const waresMatch = path.match(/^\/v1\/wares\/([^/]+)$/);
@@ -98,10 +187,10 @@ export default {
         return publishPackage(request, env, corsHeaders);
       }
 
-      return json({ 
+      return json({
         error: 'Not found',
         path,
-        hint: 'Use /health, /api/v1/auth/oidc/*, /v1/index, /v1/wares/*, /v1/search'
+        hint: 'Use /health, /v1/auth/oidc/*, /v1/index, /v1/wares/*, /v1/search'
       }, corsHeaders, 404);
 
     } catch (e) {
@@ -113,16 +202,17 @@ export default {
 
 // OIDC Login
 async function handleLogin(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
-  const body = await request.json() as { provider: string };
+  const body = await request.json() as { provider: string; redirect_uri?: string };
   const provider = body.provider || 'github';
-  
+
   const sessionId = generateId();
   const state = generateId();
   const pkceVerifier = generatePKCE();
-  
+
   const baseUrl = getBaseUrl(request);
-  const redirectUri = `${baseUrl}/api/v1/auth/oidc/callback/${sessionId}`;
-  
+  // Use client's redirect_uri if provided (for CLI localhost callback), otherwise use registry callback
+  const redirectUri = body.redirect_uri || `${baseUrl}/api/v1/auth/oidc/callback`;
+
   const session: OAuthSession = {
     sessionId,
     provider,
@@ -132,53 +222,58 @@ async function handleLogin(request: Request, env: Env, corsHeaders: Record<strin
     createdAt: Date.now(),
     status: 'pending'
   };
-  
+
   sessions.set(sessionId, session);
-  
+
   // Build GitHub OAuth URL
   const clientId = env.GITHUB_CLIENT_ID;
   if (!clientId) {
     return json({ error: 'GitHub OAuth not configured' }, corsHeaders, 500);
   }
-  
+
   const pkceChallenge = await pkceChallengeFromVerifier(pkceVerifier);
+  // Encode session_id in state parameter (format: sessionId:randomState)
+  const stateParam = `${sessionId}:${state}`;
   const authUrl = `https://github.com/login/oauth/authorize?` +
     `client_id=${clientId}&` +
     `redirect_uri=${encodeURIComponent(redirectUri)}&` +
-    `state=${state}&` +
+    `state=${stateParam}&` +
     `scope=read:user%20user:email&` +
     `response_type=code&` +
     `code_challenge=${pkceChallenge}&` +
     `code_challenge_method=S256`;
-  
+
   return json({ session_id: sessionId, auth_url: authUrl }, corsHeaders);
 }
 
 // OAuth Callback
 async function handleCallback(
-  sessionId: string, 
-  url: URL, 
-  env: Env, 
+  sessionId: string,
+  url: URL,
+  env: Env,
   corsHeaders: Record<string, string>
 ): Promise<Response> {
   const session = sessions.get(sessionId);
   if (!session) {
     return json({ error: 'Session not found' }, corsHeaders, 404);
   }
-  
+
   const code = url.searchParams.get('code');
-  const state = url.searchParams.get('state');
+  const stateParam = url.searchParams.get('state');
   const error = url.searchParams.get('error');
-  
+
+  // Extract original random state from state parameter (format: sessionId:randomState)
+  const state = stateParam?.split(':')[1];
+
   if (error) {
     session.status = 'failed';
     return json({ error: `OAuth error: ${error}` }, corsHeaders, 400);
   }
-  
+
   if (!code || !state || state !== session.state) {
     return json({ error: 'Invalid code or state' }, corsHeaders, 400);
   }
-  
+
   // Exchange code for token
   const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
     method: 'POST',
@@ -195,14 +290,14 @@ async function handleCallback(
       code_verifier: session.pkceVerifier
     })
   });
-  
+
   const tokenData = await tokenRes.json() as any;
-  
+
   if (tokenData.error) {
     session.status = 'failed';
     return json({ error: tokenData.error_description || tokenData.error }, corsHeaders, 400);
   }
-  
+
   // Fetch user info
   const userRes = await fetch('https://api.github.com/user', {
     headers: {
@@ -210,19 +305,19 @@ async function handleCallback(
       'User-Agent': 'wares-registry/1.0'
     }
   });
-  
+
   const userData = await userRes.json() as any;
-  const identity = userData.login 
-    ? `github.com/${userData.login}` 
+  const identity = userData.login
+    ? `github.com/${userData.login}`
     : `github.com/user/${userData.id}`;
-  
+
   session.result = {
     accessToken: tokenData.access_token,
     identity,
     expiresIn: tokenData.expires_in || 3600
   };
   session.status = 'completed';
-  
+
   // Return HTML for browser
   return new Response(`
     <html>
@@ -239,26 +334,26 @@ async function handleCallback(
 
 // Get Token
 async function handleToken(
-  sessionId: string, 
+  sessionId: string,
   corsHeaders: Record<string, string>
 ): Promise<Response> {
   const session = sessions.get(sessionId);
   if (!session) {
     return json({ error: 'Session not found' }, corsHeaders, 404);
   }
-  
+
   if (session.status === 'pending') {
     return json({ error: 'Authentication pending' }, corsHeaders, 202);
   }
-  
+
   if (session.status === 'failed') {
     return json({ error: 'Authentication failed' }, corsHeaders, 400);
   }
-  
+
   if (!session.result) {
     return json({ error: 'No result found' }, corsHeaders, 500);
   }
-  
+
   return json({
     access_token: session.result.accessToken,
     identity: session.result.identity,
@@ -266,99 +361,220 @@ async function handleToken(
   }, corsHeaders);
 }
 
+// Ephemeral Certificate issuance (Sigstore-style)
+async function handleCert(
+  request: Request,
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  const body = await request.json() as { oidc_token: string; public_key: string };
+
+  if (!body.oidc_token || !body.public_key) {
+    return json({ error: 'Missing oidc_token or public_key' }, corsHeaders, 400);
+  }
+
+  // Verify the OIDC token with GitHub
+  const userRes = await fetch('https://api.github.com/user', {
+    headers: {
+      'Authorization': `Bearer ${body.oidc_token}`,
+      'User-Agent': 'wares-registry/1.0'
+    }
+  });
+
+  if (!userRes.ok) {
+    return json({ error: 'Invalid OIDC token' }, corsHeaders, 401);
+  }
+
+  const userData = await userRes.json() as any;
+  const identity = userData.login
+    ? `github.com/${userData.login}`
+    : `github.com/user/${userData.id}`;
+
+  try {
+    if (!env.CA_PRIVATE_KEY) {
+      console.error('CA_PRIVATE_KEY not configured');
+      return json({ error: 'Server misconfiguration: CA key missing' }, corsHeaders, 500);
+    }
+
+    const ca = new CertificateAuthority(env.CA_PRIVATE_KEY);
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const identityClaims: IdentityClaims = {
+      sub: identity,
+      iss: 'https://github.com',
+      aud: 'wares.lumen-lang.com',
+      iat: nowSec,
+      exp: nowSec + 600, // 10 minutes
+      name: userData.name || userData.login,
+    };
+
+    const cert = await ca.issueCertificate(
+      body.public_key,
+      identityClaims
+    );
+
+    return json(cert, corsHeaders);
+
+  } catch (e) {
+    console.error('Certificate issuance failed:', e);
+    return json({ error: 'Certificate issuance failed', details: String(e) }, corsHeaders, 500);
+  }
+}
+
 // Package management functions
 async function listPackages(env: Env, corsHeaders: Record<string, string>): Promise<Response> {
   const list = await env.REGISTRY_BUCKET.list({ prefix: 'wares/' });
-  const packages: string[] = [];
-  
+  const packages: any[] = [];
+  const seenNames = new Set<string>();
+
   for (const obj of list.objects) {
     if (obj.key?.endsWith('/index.json')) {
       const name = obj.key.replace('wares/', '').replace('/index.json', '');
-      packages.push(name);
+
+      if (seenNames.has(name)) continue;
+      seenNames.add(name);
+
+      const indexObj = await env.REGISTRY_BUCKET.get(obj.key);
+      if (indexObj) {
+        const data = await indexObj.json() as any;
+        packages.push({
+          name,
+          version: data.latest || '0.1.0',
+          description: data.description || 'A Lumen package.',
+          author: data.author || 'Anonymous',
+          downloads: data.downloads || 0,
+          keywords: data.keywords || [],
+          isVerified: data.isVerified || false,
+          owner: data.owner || null,
+          updatedAt: data.updatedAt || new Date().toISOString()
+        });
+      }
     }
   }
-  
-  return json(packages, corsHeaders);
+
+  // Frontend expects this structure in index.vue
+  return json({
+    packages: packages.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
+    totalPackages: seenNames.size,
+    totalDownloads: packages.reduce((acc, p) => acc + (p.downloads || 0), 0),
+    categories: ['CLI', 'Utils', 'AI', 'HTTP', 'Database', 'Logic'],
+    contributors: Array.from(new Set(packages.map(p => p.author))).length
+  }, corsHeaders);
 }
 
 async function searchPackages(
-  url: URL, 
-  env: Env, 
+  url: URL,
+  env: Env,
   corsHeaders: Record<string, string>
 ): Promise<Response> {
   const query = url.searchParams.get('q') || '';
   const limit = parseInt(url.searchParams.get('limit') || '20');
-  
+
   const list = await env.REGISTRY_BUCKET.list({ prefix: 'wares/' });
   const results: any[] = [];
-  
+  const seenNames = new Set<string>();
+
   for (const obj of list.objects) {
     if (obj.key?.endsWith('/index.json')) {
       const name = obj.key.replace('wares/', '').replace('/index.json', '');
+
+      if (seenNames.has(name)) continue;
+
       if (!query || name.toLowerCase().includes(query.toLowerCase())) {
         const index = await env.REGISTRY_BUCKET.get(obj.key);
         if (index) {
           const data = await index.json() as any;
-          results.push({ name, version: data.latest, description: data.description });
+          seenNames.add(name);
+          results.push({
+            name,
+            version: data.latest || '0.1.0',
+            description: data.description || 'A Lumen package.',
+            author: data.author || 'Anonymous',
+            downloads: data.downloads || 0,
+            keywords: data.keywords || [],
+            isVerified: data.isVerified || false,
+            owner: data.owner || null,
+            updatedAt: data.updatedAt || new Date().toISOString()
+          });
         }
       }
       if (results.length >= limit) break;
     }
   }
-  
-  return json({ packages: results, total: results.length }, corsHeaders);
+
+  // search.vue line 120: results.value = res?.results || []
+  return json({ results: results, total: results.length }, corsHeaders);
 }
 
 async function getPackage(
-  name: string, 
-  env: Env, 
+  name: string,
+  env: Env,
   corsHeaders: Record<string, string>
 ): Promise<Response> {
   const indexKey = `wares/${name}/index.json`;
   const index = await env.REGISTRY_BUCKET.get(indexKey);
-  
+
   if (!index) {
     return json({ error: 'Package not found' }, corsHeaders, 404);
   }
-  
+
   return new Response(index.body, {
     headers: { 'Content-Type': 'application/json', ...corsHeaders }
   });
 }
 
 async function downloadPackage(
-  name: string, 
-  version: string, 
-  env: Env, 
+  name: string,
+  version: string,
+  env: Env,
   corsHeaders: Record<string, string>
 ): Promise<Response> {
   const tarballKey = `wares/${name}/${version}.tarball`;
   const tarball = await env.REGISTRY_BUCKET.get(tarballKey);
-  
+
   if (!tarball) {
     return json({ error: 'Version not found' }, corsHeaders, 404);
   }
-  
+
   return new Response(tarball.body, {
-    headers: { 
+    headers: {
       'Content-Type': 'application/gzip',
       'Content-Disposition': `attachment; filename="${name}-${version}.tgz"`,
-      ...corsHeaders 
+      ...corsHeaders
     }
   });
 }
 
 async function publishPackage(
-  request: Request, 
-  env: Env, 
+  request: Request,
+  env: Env,
   corsHeaders: Record<string, string>
 ): Promise<Response> {
+  const user = await validateUser(request, env);
   const body = await request.json() as any;
-  const { name, version, tarball, shasum, signature } = body;
-  
+  const { name, version, tarball, shasum, signature, description, author } = body;
+
   if (!name || !version || !tarball) {
     return json({ error: 'Missing required fields' }, corsHeaders, 400);
   }
+
+  // Check ownership
+  const indexKey = `wares/${name}/index.json`;
+  const existing = await env.REGISTRY_BUCKET.get(indexKey);
+  let index: any = { name, versions: [], latest: null, owner: user?.identity || null };
+
+  if (existing) {
+    index = await existing.json();
+    if (index.owner && user && index.owner !== user.identity) {
+      return json({ error: 'Package owned by another user' }, corsHeaders, 403);
+    }
+  }
+
+  // Update index metadata
+  index.description = description || index.description;
+  index.author = author || (user ? user.identity.split('/').pop() : 'Anonymous');
+  index.isVerified = !!user;
+  index.updatedAt = new Date().toISOString();
 
   // Upload tarball
   const tarballKey = `wares/${name}/${version}.tarball`;
@@ -368,9 +584,12 @@ async function publishPackage(
   });
 
   // Submit to transparency log
-  if (env.TRANSPARENCY_LOG_URL && env.TRANSPARENCY_LOG_API_KEY) {
+  if (env.TRANSPARENCY_LOG_URL || (env as any).LOG_WORKER) {
     try {
-      await fetch(`${env.TRANSPARENCY_LOG_URL}/api/v1/log/entries`, {
+      const logBinding = (env as any).LOG_WORKER;
+      const baseUrl = logBinding ? 'http://log.internal' : env.TRANSPARENCY_LOG_URL;
+
+      await (logBinding || { fetch }).fetch(`${baseUrl}/api/v1/log/entries`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -380,9 +599,9 @@ async function publishPackage(
           package_name: name,
           version,
           content_hash: `sha256:${shasum}`,
-          identity: signature?.identity || 'unknown',
-          signature: signature?.signature || '',
-          certificate: signature?.certificate || ''
+          identity: user?.identity || signature?.identity || 'unknown',
+          signature: signature?.signature || 'none',
+          certificate: signature?.certificate || 'none'
         })
       });
     } catch (e) {
@@ -390,26 +609,46 @@ async function publishPackage(
     }
   }
 
-  // Update index
-  const indexKey = `wares/${name}/index.json`;
-  let index: any = { name, versions: [], latest: null };
-  
-  const existing = await env.REGISTRY_BUCKET.get(indexKey);
-  if (existing) {
-    index = await existing.json();
-  }
-  
+  // Finalize index
   if (!index.versions.includes(version)) {
     index.versions.push(version);
     index.versions.sort((a: string, b: string) => compareVersions(b, a));
     index.latest = index.versions[0];
   }
-  
+
   await env.REGISTRY_BUCKET.put(indexKey, JSON.stringify(index), {
     httpMetadata: { contentType: 'application/json' },
   });
 
   return json({ success: true, name, version }, corsHeaders, 201);
+}
+
+// User Validation
+async function validateUser(request: Request, env: Env): Promise<{ identity: string; name?: string; avatar?: string } | null> {
+  const auth = request.headers.get('Authorization');
+  if (!auth || !auth.startsWith('Bearer ')) return null;
+  const token = auth.split(' ')[1];
+
+  // In a real system, we'd verify the token with GitHub
+  // For this implementation, we fetch user info from GitHub to validate
+  try {
+    const res = await fetch('https://api.github.com/user', {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'User-Agent': 'wares-registry/1.0'
+      }
+    });
+
+    if (!res.ok) return null;
+    const data = await res.json() as any;
+    return {
+      identity: `github.com/${data.login}`,
+      name: data.name || data.login,
+      avatar: data.avatar_url
+    };
+  } catch (e) {
+    return null;
+  }
 }
 
 // Helpers

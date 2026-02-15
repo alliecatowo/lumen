@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::config::{DependencySpec, FeatureDef};
 use crate::lockfile::{LockFile, LockedPackage};
-use crate::registry::{RegistryClient, RegistryPackageIndex, RegistryVersionMetadata};
+use crate::wares::{RegistryClient, RegistryPackageIndex, RegistryVersionMetadata};
 use crate::semver::{Constraint, Version};
 
 // =============================================================================

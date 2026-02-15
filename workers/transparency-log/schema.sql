@@ -4,7 +4,7 @@
 -- Log entries table (the actual transparency log)
 CREATE TABLE IF NOT EXISTS log_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    index INTEGER UNIQUE NOT NULL,           -- Monotonic index (0, 1, 2, ...)
+    "index" INTEGER UNIQUE NOT NULL,         -- Monotonic index (0, 1, 2, ...)
     uuid TEXT UNIQUE NOT NULL,               -- Entry UUID
     package_name TEXT NOT NULL,              -- Package name
     version TEXT NOT NULL,                   -- Package version

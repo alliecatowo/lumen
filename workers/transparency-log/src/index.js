@@ -11,7 +11,7 @@
  * - Query by package name, version, or time range
  * 
  * Storage schema in D1 (SQLite):
- * - log_entries: id, index, uuid, package_name, version, content_hash, 
+ * - log_entries: id, "index", uuid, package_name, version, content_hash, 
  *                identity, entry_body, prev_hash, this_hash, integrated_at
  * - checkpoints: id, tree_size, root_hash, timestamp, signed_tree_head
  */
@@ -31,7 +31,7 @@ export default {
     
     // Get log info (tree size, root hash)
     router.get('/api/v1/log', async () => {
-      const checkpoint = await getLatestCheckpoint(env.DB);
+      const checkpoint = await getLatestCheckpoint(env.wares_transparency_log);
       return json({
         tree_size: checkpoint?.tree_size || 0,
         root_hash: checkpoint?.root_hash || null,
@@ -47,7 +47,7 @@ export default {
         return error(400, 'Invalid index');
       }
       
-      const entry = await getLogEntry(env.DB, index);
+      const entry = await getLogEntry(env.wares_transparency_log, index);
       if (!entry) {
         return error(404, 'Entry not found');
       }
@@ -64,11 +64,11 @@ export default {
       const limit = Math.min(parseInt(url.searchParams.get('limit') || '100'), 1000);
       const offset = parseInt(url.searchParams.get('offset') || '0');
       
-      const entries = await queryLogEntries(env.DB, { 
+      const entries = await queryLogEntries(env.wares_transparency_log, { 
         packageName, version, identity, limit, offset 
       });
       
-      const total = await countLogEntries(env.DB, { packageName, version, identity });
+      const total = await countLogEntries(env.wares_transparency_log, { packageName, version, identity });
       
       return json({
         entries,
@@ -103,7 +103,7 @@ export default {
       }
       
       // Add entry to log
-      const entry = await addLogEntry(env.DB, body);
+      const entry = await addLogEntry(env.wares_transparency_log, body);
       
       return json({
         inserted: true,
@@ -122,7 +122,7 @@ export default {
       const body = await req.json();
       const { package_name, version, content_hash, identity } = body;
       
-      const entry = await getLogEntry(env.DB, index);
+      const entry = await getLogEntry(env.wares_transparency_log, index);
       if (!entry) {
         return error(404, 'Entry not found');
       }
@@ -136,7 +136,7 @@ export default {
       }
       
       // Generate inclusion proof
-      const proof = await generateInclusionProof(env.DB, index);
+      const proof = await generateInclusionProof(env.wares_transparency_log, index);
       
       return json({
         valid: true,
@@ -147,7 +147,7 @@ export default {
     
     // Get checkpoint (signed tree head)
     router.get('/api/v1/log/checkpoint', async () => {
-      const checkpoint = await getLatestCheckpoint(env.DB);
+      const checkpoint = await getLatestCheckpoint(env.wares_transparency_log);
       if (!checkpoint) {
         return error(404, 'No checkpoint found');
       }
@@ -159,8 +159,8 @@ export default {
       const url = new URL(req.url);
       const startIndex = parseInt(url.searchParams.get('start') || '0');
       
-      const entries = await getEntriesSince(env.DB, startIndex);
-      const checkpoint = await getLatestCheckpoint(env.DB);
+      const entries = await getEntriesSince(env.wares_transparency_log, startIndex);
+      const checkpoint = await getLatestCheckpoint(env.wares_transparency_log);
       
       return json({
         entries,
@@ -178,7 +178,7 @@ export default {
 
 async function getLogEntry(db, index) {
   const stmt = db.prepare(`
-    SELECT * FROM log_entries WHERE index = ?
+    SELECT * FROM log_entries WHERE "index" = ?
   `);
   const result = await stmt.bind(index).first();
   return result;
@@ -201,7 +201,7 @@ async function queryLogEntries(db, { packageName, version, identity, limit, offs
     params.push(identity);
   }
   
-  sql += ' ORDER BY index DESC LIMIT ? OFFSET ?';
+  sql += ' ORDER BY "index" DESC LIMIT ? OFFSET ?';
   params.push(limit, offset);
   
   const stmt = db.prepare(sql);
@@ -253,7 +253,7 @@ async function addLogEntry(db, body) {
   
   const stmt = db.prepare(`
     INSERT INTO log_entries (
-      index, uuid, package_name, version, content_hash, 
+      "index", uuid, package_name, version, content_hash, 
       identity, entry_body, prev_hash, this_hash, integrated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
@@ -286,7 +286,7 @@ async function addLogEntry(db, body) {
 }
 
 async function getNextIndex(db) {
-  const result = await db.prepare('SELECT MAX(index) as max_index FROM log_entries').first();
+  const result = await db.prepare('SELECT MAX("index") as max_index FROM log_entries').first();
   return (result?.max_index ?? -1) + 1;
 }
 
@@ -302,7 +302,7 @@ async function updateCheckpoint(db) {
   const treeSize = count?.count || 0;
   
   // Get root hash (hash of all entry hashes)
-  const entries = await db.prepare('SELECT this_hash FROM log_entries ORDER BY index').all();
+  const entries = await db.prepare('SELECT this_hash FROM log_entries ORDER BY "index"').all();
   const hashes = entries.results?.map(e => e.this_hash) || [];
   const rootHash = await computeMerkleRoot(hashes);
   
@@ -321,7 +321,7 @@ async function updateCheckpoint(db) {
 
 async function getEntriesSince(db, startIndex) {
   const stmt = db.prepare(`
-    SELECT * FROM log_entries WHERE index >= ? ORDER BY index
+    SELECT * FROM log_entries WHERE "index" >= ? ORDER BY "index"
   `);
   const result = await stmt.bind(startIndex).all();
   return result.results || [];

@@ -1152,9 +1152,12 @@ source = "path+../mathlib"
 checksum = "sha256:abc123"
 "#;
         let parsed: LockFile = toml::from_str(old).unwrap();
-        // Should be migrated to v4
-        assert_eq!(parsed.version, CURRENT_LOCKFILE_VERSION);
-        assert_eq!(parsed.packages.len(), 1);
+        // Parsing preserves version 3; migration happens in load()
+        assert_eq!(parsed.version, 3);
+        // After migration to current version
+        let migrated = parsed.migrate_to_current().unwrap();
+        assert_eq!(migrated.version, CURRENT_LOCKFILE_VERSION);
+        assert_eq!(migrated.packages.len(), 1);
     }
 
     #[test]

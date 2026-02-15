@@ -73,7 +73,7 @@
 //! debug = true
 //!
 //! [profile.release]
-//! opt-level = 3
+//! opt-level = "3"
 //! lto = true
 //! strip = true
 //!
@@ -712,7 +712,7 @@ default = []
 # @acme/test-helpers = "^0.1"
 
 [profile.release]
-opt-level = 3
+opt-level = "3"
 lto = true
 
 [providers]
@@ -774,27 +774,31 @@ lto = true
     /// Get all features that should be enabled given a set of requested features.
     pub fn resolve_features(&self, requested: &[String]) -> Vec<String> {
         let mut resolved = std::collections::HashSet::new();
+        let mut to_process: Vec<String> = requested.to_vec();
 
-        // Add default features if not explicitly overridden
-        if !requested.is_empty() || self.features.contains_key("default") {
+        // Add default features to processing queue
+        if to_process.is_empty() || self.features.contains_key("default") {
             if let Some(def) = self.features.get("default") {
                 match def {
                     FeatureDef::Simple(features) => {
                         for f in features {
-                            resolved.insert(f.clone());
+                            if !to_process.contains(f) {
+                                to_process.push(f.clone());
+                            }
                         }
                     }
                     FeatureDef::Detailed { enables, .. } => {
                         for f in enables {
-                            resolved.insert(f.clone());
+                            if !to_process.contains(f) {
+                                to_process.push(f.clone());
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Add requested features and their dependencies
-        let mut to_process: Vec<String> = requested.to_vec();
+        // Process all features and their dependencies
         while let Some(feature) = to_process.pop() {
             if resolved.insert(feature.clone()) {
                 if let Some(def) = self.features.get(&feature) {
@@ -1016,7 +1020,7 @@ client = { path = "src/client.lm.md" }
     fn parse_build_profile() {
         let toml = r#"
 [profile.release]
-opt-level = 3
+opt-level = "3"
 lto = true
 strip = true
 "#;

@@ -5,12 +5,8 @@ compatibility_date = "2024-01-01"
 # Enable workers.dev subdomain for testing
 workers_dev = true
 
-# Custom domain (flat structure to avoid TLS issues)
-# After deploying, add via dashboard or:
-# wrangler deploy && echo "Now add custom domain in dashboard: wares-log.lumen-lang.com"
-[[custom_domains]]
-domain = "wares-log.lumen-lang.com"
-zone_id = "YOUR_ZONE_ID"
+# Custom domain - user added via dashboard: logs.wares.lumen-lang.com
+# No additional config needed if added via dashboard
 
 # D1 Database for storing log entries
 [[d1_databases]]

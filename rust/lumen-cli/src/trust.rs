@@ -888,8 +888,11 @@ impl TrustClient {
             return Ok(false);
         };
         
+        // Use transparency log URL from env or default
+        let log_url = std::env::var("WARES_LOG_URL")
+            .unwrap_or_else(|_| "https://logs.wares.lumen-lang.com".to_string());
         let verify_url = format!("{}/api/v1/log/verify/{}", 
-            self.registry_url.trim_end_matches('/'),
+            log_url.trim_end_matches('/'),
             index
         );
         
@@ -922,8 +925,10 @@ impl TrustClient {
         &self,
         package_name: &str,
     ) -> Result<Vec<LogEntry>, TrustError> {
+        let log_url = std::env::var("WARES_LOG_URL")
+            .unwrap_or_else(|_| "https://logs.wares.lumen-lang.com".to_string());
         let url = format!("{}/api/v1/log/query?package={}",
-            self.registry_url.trim_end_matches('/'),
+            log_url.trim_end_matches('/'),
             urlencoding::encode(package_name)
         );
         

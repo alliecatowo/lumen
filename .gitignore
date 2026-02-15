@@ -43,3 +43,4 @@ wares-site/dist
 
 # Registry server build artifacts
 registry-server/target/
+test-ware/

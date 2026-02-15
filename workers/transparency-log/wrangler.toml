@@ -1,0 +1,19 @@
+name = "wares-transparency-log"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+# D1 Database for storing log entries
+[[d1_databases]]
+binding = "DB"
+database_name = "wares-transparency-log"
+database_id = "YOUR_DATABASE_ID_HERE"
+
+# Environment variables
+[vars]
+# Set via wrangler secret put REGISTRY_API_KEY
+# REGISTRY_API_KEY = "your-secret-api-key"
+
+# Custom domains
+routes = [
+  { pattern = "log.wares.lumen-lang.com", custom_domain = true }
+]

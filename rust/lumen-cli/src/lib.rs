@@ -21,3 +21,5 @@ pub mod semver;
 pub mod test_cmd;
 pub mod build_script;
 pub mod colors;
+pub mod trust;
+pub mod wares_cli;

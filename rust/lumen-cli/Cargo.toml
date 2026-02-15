@@ -66,6 +66,13 @@ shell-words = "1.1"
 hmac = "0.12"
 hex = "0.4"
 
+# Trust/Sigstore dependencies
+urlencoding = "2"
+open = "5"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+regex = "1"
+humantime = "2"
+
 [features]
 default = ["http", "json", "fs", "env", "crypto", "keyring", "ed25519"]
 http = ["lumen-provider-http"]

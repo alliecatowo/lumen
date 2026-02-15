@@ -149,6 +149,7 @@ pub struct OidcFlow {
     gitlab_client_secret: String,
     google_client_id: String,
     google_client_secret: String,
+    base_url: String,
 }
 
 impl OidcFlow {
@@ -159,6 +160,7 @@ impl OidcFlow {
         gitlab_client_secret: String,
         google_client_id: String,
         google_client_secret: String,
+        base_url: String,
     ) -> Self {
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -174,11 +176,12 @@ impl OidcFlow {
             gitlab_client_secret,
             google_client_id,
             google_client_secret,
+            base_url,
         }
     }
 
     /// Create a new OAuth session
-    pub fn create_session(&self, provider: IdentityProvider, redirect_uri: String) -> OAuthSession {
+    pub fn create_session(&self, provider: IdentityProvider) -> OAuthSession {
         let session_id = generate_random_string(32);
         let state = generate_random_string(32);
         let pkce_verifier = generate_pkce_verifier();
@@ -188,6 +191,12 @@ impl OidcFlow {
             IdentityProvider::GitLab => self.gitlab_client_id.clone(),
             IdentityProvider::Google => self.google_client_id.clone(),
         };
+
+        // Build redirect URI from base URL
+        let redirect_uri = format!("{}/api/v1/auth/oidc/callback/{}", 
+            self.base_url.trim_end_matches('/'), 
+            session_id
+        );
 
         let session = OAuthSession {
             session_id: session_id.clone(),

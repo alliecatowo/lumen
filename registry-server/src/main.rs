@@ -164,19 +164,13 @@ struct LoginResponse {
 #[derive(Debug, Deserialize)]
 struct LoginRequest {
     provider: IdentityProvider,
-    #[serde(default)]
-    redirect_uri: Option<String>,
 }
 
 async fn oidc_login(
     State(state): State<Arc<AppState>>,
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, AppError> {
-    let redirect_uri = req.redirect_uri.unwrap_or_else(|| {
-        "http://localhost:8976/callback".to_string()
-    });
-
-    let session = state.oidc.create_session(req.provider, redirect_uri);
+    let session = state.oidc.create_session(req.provider);
     let auth_url = state.oidc.get_auth_url(&session);
 
     info!("Created OIDC session {} for provider {:?}", session.session_id, req.provider);
@@ -638,6 +632,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "https://wares-transparency-log.alliecatowo.workers.dev".to_string());
     let transparency_log_key = std::env::var("TRANSPARENCY_LOG_API_KEY")
         .unwrap_or_default();
+    
+    // Base URL for OAuth callbacks (should be your public registry URL)
+    let base_url = std::env::var("BASE_URL")
+        .unwrap_or_else(|_| "http://localhost:3000".to_string());
 
     // Initialize components
     let storage = Storage::from_environment().await?;
@@ -649,6 +647,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         gitlab_client_secret,
         google_client_id,
         google_client_secret,
+        base_url.clone(),
     );
     
     // Load CA from environment or generate new

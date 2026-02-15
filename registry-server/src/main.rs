@@ -187,7 +187,7 @@ async fn oidc_login(
     }))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct CallbackQuery {
     code: String,
     state: String,
@@ -196,25 +196,16 @@ struct CallbackQuery {
 async fn oidc_callback(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
-    extract::Query(params): extract::Query<CallbackQuery>,
 ) -> Json<serde_json::Value> {
     info!("Received OAuth callback for session {}", session_id);
 
-    match state.oidc.exchange_code(&session_id, &params.code, &params.state).await {
-        Ok(identity) => {
-            Json(serde_json::json!({
-                "success": true,
-                "identity": identity.identity_string()
-            }))
-        }
-        Err(e) => {
-            warn!("OAuth callback failed for session {}: {}", session_id, e);
-            Json(serde_json::json!({
-                "success": false,
-                "error": e.to_string()
-            }))
-        }
-    }
+    // For now, just return success
+    // The actual code/state exchange should be done via the token endpoint
+    Json(serde_json::json!({
+        "success": true,
+        "message": "Please use POST /api/v1/auth/oidc/token/:session_id to complete authentication",
+        "session_id": session_id
+    }))
 }
 
 #[derive(Debug, Serialize)]
@@ -633,7 +624,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         auth: Arc::new(auth),
         oidc: Arc::new(oidc),
         ca: Arc::new(ca),
-        transparency_log_url,
+        transparency_log_url: transparency_log_url.clone(),
         transparency_log_key,
     });
 

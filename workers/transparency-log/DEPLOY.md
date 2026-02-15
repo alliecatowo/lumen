@@ -1,93 +1,39 @@
 # Deploy Transparency Log Worker
 
-## The Issue
+## Deployed!
 
-`log.wares.lumen-lang.com` is a sub-subdomain (log → wares → lumen-lang), which causes TLS certificate issues.
-
-**Solution**: Use `wares-log.lumen-lang.com` instead (flat structure).
-
-## Deploy
-
-```bash
-cd workers/transparency-log
-
-# Update the zone_id in wrangler.toml first!
-vim wrangler.toml
-# Change zone_id to your lumen-lang.com zone ID
-
-# Deploy
-wrangler deploy
-```
-
-## Add Custom Domain (Choose One)
-
-### Method 1: Dashboard (Easiest)
-
-1. Go to https://dash.cloudflare.com
-2. Click **Workers & Pages** (sidebar)
-3. Click **wares-transparency-log**
-4. Click **Settings** tab
-5. Click **Triggers**
-6. Click **Add Custom Domain**
-7. Enter: `wares-log.lumen-lang.com`
-8. Click **Add Domain**
-
-Done! Cloudflare handles the TLS certificate automatically.
-
-### Method 2: Update wrangler.toml
-
-```toml
-[[custom_domains]]
-domain = "wares-log.lumen-lang.com"
-zone_id = "YOUR_ZONE_ID_HERE"  # Get from dash.cloudflare.com → lumen-lang.com → Overview (right sidebar)
-```
-
-Then: `wrangler deploy`
-
-### Method 3: Cloudflare API
-
-```bash
-# Get your zone ID from the dashboard
-ZONE_ID="your-zone-id"
-AUTH_TOKEN="your-api-token"
-
-curl -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/workers/domains" \
-  -H "Authorization: Bearer $AUTH_TOKEN" \
-  -H "Content-Type: application/json" \
-  --data '{
-    "environment": "production",
-    "hostname": "wares-log.lumen-lang.com",
-    "service": "wares-transparency-log",
-    "zone_id": "'"$ZONE_ID"'"
-  }'
-```
+✅ Worker: `wares-transparency-log`  
+✅ URL: https://wares-transparency-log.alliecatowo.workers.dev  
+✅ Custom Domain: https://logs.wares.lumen-lang.com (added via dashboard)
 
 ## Verify
 
 ```bash
-# Should return {"status":"ok","service":"wares-transparency-log"}
-curl https://wares-log.lumen-lang.com/health
+# Health check
+curl https://logs.wares.lumen-lang.com/health
+# → {"status":"ok","service":"wares-transparency-log"}
 
-# Check log info
-curl https://wares-log.lumen-lang.com/api/v1/log
+# Log info
+curl https://logs.wares.lumen-lang.com/api/v1/log
+# → {"tree_size":0,"root_hash":null,...}
 ```
 
-## Finding Your Zone ID
+## Environment Variable
+
+Set this in your shell or CI:
 
 ```bash
-# In your terminal with wrangler logged in
-wrangler whoami
-
-# Or check the dashboard:
-# dash.cloudflare.com → lumen-lang.com → Overview → API section (right side)
+export WARES_LOG_URL=https://logs.wares.lumen-lang.com
 ```
 
-## Update Client Config
+Or it defaults to that URL in the client.
 
-Once deployed, update the transparency log URL:
+## Test with D1
 
 ```bash
-# In TRUST_SETUP.md or your client config
-# Change from: https://log.wares.lumen-lang.com
-# To:          https://wares-log.lumen-lang.com
+# Run schema migration
+wrangler d1 execute wares-transparency-log --file=schema.sql --remote
+
+# Check entries
+wrangler d1 execute wares-transparency-log --command="SELECT * FROM log_entries LIMIT 5" --remote
 ```

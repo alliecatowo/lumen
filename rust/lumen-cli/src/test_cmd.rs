@@ -85,7 +85,7 @@ pub fn run_tests(
         };
 
         let filename = file_path.display().to_string();
-        let module = match crate::compile_source_file(file_path, &source) {
+        let module = match crate::module_resolver::compile_source_file(file_path, &source) {
             Ok(m) => m,
             Err(e) => {
                 let mut error_message = "compilation failed".to_string();

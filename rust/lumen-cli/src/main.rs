@@ -1,5 +1,6 @@
 //! Lumen CLI — command-line interface for the Lumen language.
 
+mod auth;
 mod config;
 mod doc;
 mod fmt;
@@ -8,6 +9,7 @@ mod lockfile;
 mod module_resolver;
 mod pkg;
 mod registry;
+mod registry_cmd;
 mod resolver;
 mod git;
 mod workspace;
@@ -15,34 +17,15 @@ mod cache;
 mod repl;
 mod semver;
 mod test_cmd;
+mod build_script;
+mod colors;
+
+use colors::{green, red, yellow, cyan, bold, gray, status_label};
 
 use clap::{Parser as ClapParser, Subcommand, ValueEnum};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-
-// ANSI color helpers
-fn green(s: &str) -> String {
-    format!("\x1b[32m{}\x1b[0m", s)
-}
-fn red(s: &str) -> String {
-    format!("\x1b[31m{}\x1b[0m", s)
-}
-fn yellow(s: &str) -> String {
-    format!("\x1b[33m{}\x1b[0m", s)
-}
-fn cyan(s: &str) -> String {
-    format!("\x1b[36m{}\x1b[0m", s)
-}
-fn bold(s: &str) -> String {
-    format!("\x1b[1m{}\x1b[0m", s)
-}
-fn gray(s: &str) -> String {
-    format!("\x1b[90m{}\x1b[0m", s)
-}
-fn status_label(label: &str) -> String {
-    format!("\x1b[1;32m{:>12}\x1b[0m", label)
-}
 
 #[derive(ClapParser)]
 #[command(
@@ -172,6 +155,16 @@ enum Commands {
         #[command(subcommand)]
         sub: BuildCommands,
     },
+    /// Registry authentication and management
+    Registry {
+        #[command(subcommand)]
+        sub: RegistrySubcommands,
+    },
+    /// Workspace commands for monorepos
+    Ws {
+        #[command(subcommand)]
+        sub: WsCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -184,6 +177,87 @@ enum BuildCommands {
         /// Release build (optimized)
         #[arg(long)]
         release: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum RegistrySubcommands {
+    /// Login to a registry
+    Login {
+        /// Registry URL (defaults to configured default)
+        #[arg(long)]
+        registry: Option<String>,
+        /// Token (if not provided, will prompt interactively)
+        #[arg(long)]
+        token: Option<String>,
+        /// Token name/description
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Logout from a registry
+    Logout {
+        /// Registry URL (defaults to configured default)
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Show current authenticated user
+    Whoami {
+        /// Registry URL (defaults to configured default)
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Manage authentication tokens
+    #[command(subcommand)]
+    Token(RegistryTokenCommands),
+    /// Manage package owners
+    #[command(subcommand)]
+    Owner(RegistryOwnerCommands),
+}
+
+#[derive(Subcommand)]
+enum RegistryTokenCommands {
+    /// List stored tokens
+    List,
+    /// Add a new token
+    Add {
+        /// Registry URL
+        registry: String,
+        /// API token
+        token: String,
+        /// Token name
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Remove a token
+    Remove {
+        /// Registry URL
+        registry: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum RegistryOwnerCommands {
+    /// Add an owner to a package
+    Add {
+        /// Package name
+        package: String,
+        /// User email
+        email: String,
+        /// Owner role (maintainer or owner)
+        #[arg(long, default_value = "maintainer")]
+        role: String,
+    },
+    /// Remove an owner from a package
+    Remove {
+        /// Package name
+        package: String,
+        /// User email
+        email: String,
+    },
+    /// List owners of a package
+    List {
+        /// Package name
+        package: String,
     },
 }
 
@@ -239,6 +313,12 @@ enum PkgCommands {
         /// Path to the dependency
         #[arg(long)]
         path: Option<String>,
+        /// Add as a dev dependency
+        #[arg(long)]
+        dev: bool,
+        /// Add as a build dependency
+        #[arg(long)]
+        build: bool,
     },
     /// Remove a dependency from this package
     Remove {
@@ -252,6 +332,12 @@ enum PkgCommands {
         /// Fail if lumen.lock would be changed
         #[arg(long, alias = "locked")]
         frozen: bool,
+        /// Install dev dependencies only
+        #[arg(long)]
+        dev: bool,
+        /// Install build dependencies only
+        #[arg(long)]
+        build: bool,
     },
     /// Update dependencies to latest compatible versions
     Update {
@@ -272,6 +358,29 @@ enum PkgCommands {
         #[arg(long)]
         dry_run: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum WsCommands {
+    /// Build all workspace members in dependency order
+    Build,
+    /// Run tests for all workspace members
+    Test {
+        /// Filter tests by name substring
+        #[arg(long)]
+        filter: Option<String>,
+        /// Show additional details
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    /// Publish all workspace members in reverse dependency order
+    Publish {
+        /// Validate/package locally without uploading
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// List all workspace members
+    List,
 }
 
 /// Register all provider crates into the runtime registry.
@@ -439,14 +548,42 @@ fn main() {
             PkgCommands::Init { name } => pkg::cmd_pkg_init(name),
             PkgCommands::Build => pkg::cmd_pkg_build(),
             PkgCommands::Check => pkg::cmd_pkg_check(),
-            PkgCommands::Add { package, path } => pkg::cmd_pkg_add(&package, path.as_deref()),
+            PkgCommands::Add { package, path, dev, build } => {
+                let kind = if build {
+                    pkg::DependencyKind::Build
+                } else if dev {
+                    pkg::DependencyKind::Dev
+                } else {
+                    pkg::DependencyKind::Normal
+                };
+                pkg::cmd_pkg_add_with_kind(&package, path.as_deref(), kind)
+            }
             PkgCommands::Remove { package } => pkg::cmd_pkg_remove(&package),
             PkgCommands::List => pkg::cmd_pkg_list(),
-            PkgCommands::Install { frozen } => pkg::cmd_pkg_install_with_lock(frozen),
+            PkgCommands::Install { frozen, dev, build } => {
+                let kind = if build {
+                    pkg::DependencyKind::Build
+                } else if dev {
+                    pkg::DependencyKind::Dev
+                } else {
+                    pkg::DependencyKind::Normal
+                };
+                if kind != pkg::DependencyKind::Normal {
+                    pkg::cmd_pkg_install_with_kind(kind, frozen)
+                } else {
+                    pkg::cmd_pkg_install_with_lock(frozen)
+                }
+            }
             PkgCommands::Update { frozen } => pkg::cmd_pkg_update_with_lock(frozen),
             PkgCommands::Search { query } => pkg::cmd_pkg_search(&query),
             PkgCommands::Pack => pkg::cmd_pkg_pack(),
             PkgCommands::Publish { dry_run } => pkg::cmd_pkg_publish(dry_run),
+        },
+        Commands::Ws { sub } => match sub {
+            WsCommands::Build => workspace::cmd_ws_build(),
+            WsCommands::Test { filter, verbose } => workspace::cmd_ws_test(filter, verbose),
+            WsCommands::Publish { dry_run } => workspace::cmd_ws_publish(dry_run),
+            WsCommands::List => workspace::cmd_ws_list(),
         },
         Commands::Fmt { files, check } => cmd_fmt(files, check),
         Commands::Doc {
@@ -463,6 +600,63 @@ fn main() {
         Commands::Ci { path } => cmd_ci(path),
         Commands::Build { sub } => match sub {
             BuildCommands::Wasm { target, release } => cmd_build_wasm(&target, release),
+        },
+        Commands::Registry { sub } => match sub {
+            RegistrySubcommands::Login { registry, token, name } => {
+                registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Login {
+                    registry,
+                    token,
+                    name,
+                })
+            }
+            RegistrySubcommands::Logout { registry } => {
+                registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Logout { registry })
+            }
+            RegistrySubcommands::Whoami { registry } => {
+                registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Whoami { registry })
+            }
+            RegistrySubcommands::Token(token_cmd) => match token_cmd {
+                RegistryTokenCommands::List => {
+                    registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Token {
+                        sub: registry_cmd::TokenCommands::List,
+                    })
+                }
+                RegistryTokenCommands::Add { registry, token, name } => {
+                    registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Token {
+                        sub: registry_cmd::TokenCommands::Add {
+                            registry,
+                            token,
+                            name,
+                        },
+                    })
+                }
+                RegistryTokenCommands::Remove { registry } => {
+                    registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Token {
+                        sub: registry_cmd::TokenCommands::Remove { registry },
+                    })
+                }
+            },
+            RegistrySubcommands::Owner(owner_cmd) => match owner_cmd {
+                RegistryOwnerCommands::Add { package, email, role } => {
+                    registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Owner {
+                        sub: registry_cmd::OwnerCommands::Add {
+                            package,
+                            email,
+                            role: Some(role),
+                        },
+                    })
+                }
+                RegistryOwnerCommands::Remove { package, email } => {
+                    registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Owner {
+                        sub: registry_cmd::OwnerCommands::Remove { package, email },
+                    })
+                }
+                RegistryOwnerCommands::List { package } => {
+                    registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Owner {
+                        sub: registry_cmd::OwnerCommands::List { package },
+                    })
+                }
+            },
         },
     }
 }

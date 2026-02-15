@@ -181,8 +181,8 @@ impl RegistryClient {
 
         if full_url.starts_with("file://") {
             let path = Path::new(full_url.strip_prefix("file://").unwrap());
-            let mut source =
-                File::open(path).map_err(|e| format!("failed to open {}: {}", path.display(), e))?;
+            let mut source = File::open(path)
+                .map_err(|e| format!("failed to open {}: {}", path.display(), e))?;
             let mut buffer = [0; 8192];
             loop {
                 let n = source.read(&mut buffer).map_err(|e| e.to_string())?;
@@ -190,11 +190,14 @@ impl RegistryClient {
                     break;
                 }
                 hasher.update(&buffer[..n]);
-                file.write_all(&buffer[..n])
-                    .map_err(|e| e.to_string())?;
+                file.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
             }
         } else {
-            let mut resp = self.client.get(&full_url).send().map_err(|e| e.to_string())?;
+            let mut resp = self
+                .client
+                .get(&full_url)
+                .send()
+                .map_err(|e| e.to_string())?;
             if !resp.status().is_success() {
                 return Err(format!(
                     "failed to download '{}': {}",
@@ -209,8 +212,7 @@ impl RegistryClient {
                     break;
                 }
                 hasher.update(&buffer[..n]);
-                file.write_all(&buffer[..n])
-                    .map_err(|e| e.to_string())?;
+                file.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
             }
         }
 
@@ -286,6 +288,667 @@ impl RegistryClient {
         // TODO: Implement actual signature verification
         // For v0, we just check that a signature exists
         Ok(())
+    }
+}
+
+// =============================================================================
+// Cloudflare R2 Registry Client
+// =============================================================================
+
+/// Error types for R2 registry operations.
+#[derive(Debug, thiserror::Error)]
+pub enum R2Error {
+    #[error("HTTP error: {0}")]
+    Http(String),
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("Serialization error: {0}")]
+    Serialization(String),
+
+    #[error("Authentication error: {0}")]
+    Authentication(String),
+
+    #[error("Invalid configuration: {0}")]
+    InvalidConfig(String),
+
+    #[error("Content hash mismatch: expected {expected}, got {actual}")]
+    HashMismatch { expected: String, actual: String },
+
+    #[error("R2 API error: {status} - {message}")]
+    ApiError { status: u16, message: String },
+}
+
+impl From<reqwest::Error> for R2Error {
+    fn from(e: reqwest::Error) -> Self {
+        R2Error::Http(e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for R2Error {
+    fn from(e: serde_json::Error) -> Self {
+        R2Error::Serialization(e.to_string())
+    }
+}
+
+/// Result type for R2 operations.
+pub type R2Result<T> = Result<T, R2Error>;
+
+/// Configuration for Cloudflare R2 registry client.
+#[derive(Debug, Clone)]
+pub struct R2Config {
+    /// Cloudflare account ID.
+    pub account_id: String,
+    /// R2 access key ID.
+    pub access_key_id: String,
+    /// R2 secret access key.
+    pub secret_access_key: String,
+    /// R2 bucket name (defaults to "lumen-registry").
+    pub bucket: String,
+    /// Custom public URL for CDN access (optional).
+    /// If not provided, uses the R2.dev subdomain.
+    pub public_url: Option<String>,
+    /// Timeout for requests in seconds.
+    pub timeout_secs: u64,
+    /// Region (defaults to "auto" for Cloudflare R2).
+    pub region: String,
+}
+
+impl R2Config {
+    /// Create a new R2 configuration.
+    pub fn new(
+        account_id: impl Into<String>,
+        access_key_id: impl Into<String>,
+        secret_access_key: impl Into<String>,
+    ) -> Self {
+        Self {
+            account_id: account_id.into(),
+            access_key_id: access_key_id.into(),
+            secret_access_key: secret_access_key.into(),
+            bucket: "lumen-registry".to_string(),
+            public_url: None,
+            timeout_secs: 60,
+            region: "auto".to_string(),
+        }
+    }
+
+    /// Set the bucket name.
+    pub fn with_bucket(mut self, bucket: impl Into<String>) -> Self {
+        self.bucket = bucket.into();
+        self
+    }
+
+    /// Set the custom public URL for CDN access.
+    pub fn with_public_url(mut self, url: impl Into<String>) -> Self {
+        self.public_url = Some(url.into());
+        self
+    }
+
+    /// Set the timeout in seconds.
+    pub fn with_timeout(mut self, secs: u64) -> Self {
+        self.timeout_secs = secs;
+        self
+    }
+
+    /// Get the S3-compatible endpoint URL.
+    pub fn endpoint(&self) -> String {
+        format!("https://{}.r2.cloudflarestorage.com", self.account_id)
+    }
+
+    /// Get the public base URL for reading artifacts.
+    /// Uses custom public URL if set, otherwise falls back to R2.dev.
+    pub fn public_base_url(&self) -> String {
+        if let Some(ref url) = self.public_url {
+            url.trim_end_matches('/').to_string()
+        } else {
+            // Default R2.dev public URL format
+            format!("https://pub-{}.r2.dev", self.account_id.replace("-", ""))
+        }
+    }
+
+    /// Build from lumen.toml config if R2 credentials are present.
+    pub fn from_lumen_config(config: &crate::config::LumenConfig) -> Option<Self> {
+        let registry = config.registry.as_ref()?;
+        let (account_id, access_key) = registry.r2_credentials()?;
+
+        // Split the access key into ID and secret
+        // Format is typically "access_key_id:secret_access_key"
+        let (key_id, secret) = if access_key.contains(':') {
+            let parts: Vec<&str> = access_key.splitn(2, ':').collect();
+            (parts[0].to_string(), parts[1].to_string())
+        } else {
+            // If no colon, treat the whole thing as the key ID
+            // and expect the secret to be in an env var
+            let secret = std::env::var("R2_SECRET_ACCESS_KEY").ok()?;
+            (access_key.to_string(), secret)
+        };
+
+        Some(Self::new(account_id, key_id, secret))
+    }
+}
+
+/// Cloudflare R2 registry client.
+///
+/// This client provides methods to upload and download packages from
+/// a Cloudflare R2 bucket using the S3-compatible API for writes and
+/// direct HTTP for public reads.
+#[derive(Debug, Clone)]
+pub struct R2Client {
+    config: R2Config,
+    http_client: reqwest::blocking::Client,
+}
+
+impl R2Client {
+    /// Create a new R2 client with the given configuration.
+    pub fn new(config: R2Config) -> R2Result<Self> {
+        let http_client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(config.timeout_secs))
+            .build()
+            .map_err(|e| R2Error::Http(e.to_string()))?;
+
+        Ok(Self {
+            config,
+            http_client,
+        })
+    }
+
+    /// Create an R2 client from lumen.toml configuration.
+    pub fn from_config(config: &crate::config::LumenConfig) -> R2Result<Self> {
+        let r2_config = R2Config::from_lumen_config(config)
+            .ok_or_else(|| R2Error::InvalidConfig(
+                "R2 credentials not found in config. Set r2_account_id and r2_access_key in [registry] section.".to_string()
+            ))?;
+        Self::new(r2_config)
+    }
+
+    // =========================================================================
+    // Artifact Operations
+    // =========================================================================
+
+    /// Upload a package artifact to R2.
+    ///
+    /// The artifact is stored using content-addressing based on its SHA-256 hash.
+    /// Returns the content hash (CID) of the uploaded artifact.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - The artifact data to upload
+    /// * `content_type` - Optional MIME type (defaults to application/gzip for tarballs)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let artifact_data = std::fs::read("package.tar.gz")?;
+    /// let cid = client.upload_artifact(&artifact_data, None)?;
+    /// println!("Uploaded to: {}", cid); // e.g., "sha256:abc123..."
+    /// ```
+    pub fn upload_artifact(&self, data: &[u8], content_type: Option<&str>) -> R2Result<String> {
+        // Compute SHA-256 hash for content addressing
+        let hash = compute_sha256(data);
+        let cid = format!("sha256:{}", hash);
+
+        // Build the storage path: artifacts/sha256/{first2}/{remaining}
+        let key = artifact_path(&hash);
+
+        // Determine content type
+        let content_type = content_type.unwrap_or("application/gzip");
+
+        // Upload to R2 using S3-compatible API
+        self.upload_to_s3(&key, data, content_type)?;
+
+        Ok(cid)
+    }
+
+    /// Download an artifact by its content hash (CID).
+    ///
+    /// For public reads, this uses the direct HTTP CDN URL which is
+    /// faster and doesn't require authentication.
+    ///
+    /// # Arguments
+    ///
+    /// * `cid` - Content identifier (e.g., "sha256:abc123...")
+    /// * `verify` - Whether to verify the downloaded content matches the CID
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let data = client.download_artifact("sha256:abc123...", true)?;
+    /// std::fs::write("package.tar.gz", data)?;
+    /// ```
+    pub fn download_artifact(&self, cid: &str, verify: bool) -> R2Result<Vec<u8>> {
+        // Extract the hash from the CID
+        let hash = extract_hash_from_cid(cid)?;
+
+        // Build the URL for public access
+        let key = artifact_path(&hash);
+        let url = format!("{}/{}", self.config.public_base_url(), key);
+
+        // Download via HTTP
+        let response = self.http_client.get(&url).send()?;
+
+        if !response.status().is_success() {
+            return Err(R2Error::ApiError {
+                status: response.status().as_u16(),
+                message: format!("Failed to download artifact: {}", response.status()),
+            });
+        }
+
+        let data = response.bytes()?.to_vec();
+
+        // Verify content hash if requested
+        if verify {
+            let actual_hash = compute_sha256(&data);
+            if actual_hash != hash {
+                return Err(R2Error::HashMismatch {
+                    expected: hash,
+                    actual: actual_hash,
+                });
+            }
+        }
+
+        Ok(data)
+    }
+
+    /// Check if an artifact exists in the registry.
+    pub fn artifact_exists(&self, cid: &str) -> R2Result<bool> {
+        let hash = extract_hash_from_cid(cid)?;
+        let key = artifact_path(&hash);
+
+        // Use HEAD request to check existence without downloading
+        let url = format!("{}/{}", self.config.public_base_url(), key);
+
+        let response = self.http_client.head(&url).send()?;
+
+        match response.status() {
+            reqwest::StatusCode::OK => Ok(true),
+            reqwest::StatusCode::NOT_FOUND => Ok(false),
+            status => Err(R2Error::ApiError {
+                status: status.as_u16(),
+                message: format!("Unexpected status checking artifact: {}", status),
+            }),
+        }
+    }
+
+    // =========================================================================
+    // Index Operations
+    // =========================================================================
+
+    /// Update the global package index.
+    ///
+    /// This uploads a new `index.json` to the root of the registry.
+    pub fn update_global_index(&self, index: &GlobalIndex) -> R2Result<()> {
+        let data = serde_json::to_vec_pretty(index)?;
+        self.upload_to_s3("index.json", &data, "application/json")?;
+        Ok(())
+    }
+
+    /// Fetch the global package index.
+    ///
+    /// Uses the public HTTP endpoint for fast CDN-backed reads.
+    pub fn fetch_global_index(&self) -> R2Result<GlobalIndex> {
+        let url = format!("{}/index.json", self.config.public_base_url());
+
+        let response = self.http_client.get(&url).send()?;
+
+        if !response.status().is_success() {
+            return Err(R2Error::ApiError {
+                status: response.status().as_u16(),
+                message: format!("Failed to fetch global index: {}", response.status()),
+            });
+        }
+
+        let index: GlobalIndex = response.json()?;
+        Ok(index)
+    }
+
+    /// Update a package's version index.
+    ///
+    /// This uploads a new `index.json` to the package directory.
+    pub fn update_package_index(&self, name: &str, index: &RegistryPackageIndex) -> R2Result<()> {
+        let key = package_index_path(name);
+        let data = serde_json::to_vec_pretty(index)?;
+        self.upload_to_s3(&key, &data, "application/json")?;
+        Ok(())
+    }
+
+    /// Fetch a package's version index.
+    pub fn fetch_package_index(&self, name: &str) -> R2Result<RegistryPackageIndex> {
+        let key = package_index_path(name);
+        let url = format!("{}/{}", self.config.public_base_url(), key);
+
+        let response = self.http_client.get(&url).send()?;
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(R2Error::ApiError {
+                status: 404,
+                message: format!("Package '{}' not found", name),
+            });
+        }
+
+        if !response.status().is_success() {
+            return Err(R2Error::ApiError {
+                status: response.status().as_u16(),
+                message: format!("Failed to fetch package index: {}", response.status()),
+            });
+        }
+
+        let index: RegistryPackageIndex = response.json()?;
+        Ok(index)
+    }
+
+    /// Upload version metadata for a package.
+    ///
+    /// This creates the `{version}.json` file for a specific package version.
+    pub fn upload_version_metadata(
+        &self,
+        name: &str,
+        version: &str,
+        metadata: &RegistryVersionMetadata,
+    ) -> R2Result<()> {
+        let key = version_metadata_path(name, version);
+        let data = serde_json::to_vec_pretty(metadata)?;
+        self.upload_to_s3(&key, &data, "application/json")?;
+        Ok(())
+    }
+
+    /// Fetch version metadata for a package.
+    pub fn fetch_version_metadata(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> R2Result<RegistryVersionMetadata> {
+        let key = version_metadata_path(name, version);
+        let url = format!("{}/{}", self.config.public_base_url(), key);
+
+        let response = self.http_client.get(&url).send()?;
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(R2Error::ApiError {
+                status: 404,
+                message: format!("Version '{}@{}' not found", name, version),
+            });
+        }
+
+        if !response.status().is_success() {
+            return Err(R2Error::ApiError {
+                status: response.status().as_u16(),
+                message: format!("Failed to fetch version metadata: {}", response.status()),
+            });
+        }
+
+        let metadata: RegistryVersionMetadata = response.json()?;
+        Ok(metadata)
+    }
+
+    /// Publish a complete package version.
+    ///
+    /// This uploads the artifact and updates all necessary index files.
+    ///
+    /// # Arguments
+    ///
+    /// * `metadata` - Package version metadata
+    /// * `artifact_data` - The package tarball data
+    ///
+    /// # Returns
+    ///
+    /// The CID of the uploaded artifact.
+    pub fn publish_version(
+        &self,
+        metadata: &RegistryVersionMetadata,
+        artifact_data: &[u8],
+    ) -> R2Result<String> {
+        let name = &metadata.name;
+        let version = &metadata.version;
+
+        // 1. Upload the artifact
+        let cid = self.upload_artifact(artifact_data, Some("application/gzip"))?;
+
+        // 2. Upload version metadata
+        self.upload_version_metadata(name, version, metadata)?;
+
+        // 3. Update or create package index
+        let mut pkg_index = match self.fetch_package_index(name) {
+            Ok(index) => index,
+            Err(R2Error::ApiError { status: 404, .. }) => RegistryPackageIndex {
+                name: name.clone(),
+                versions: Vec::new(),
+                latest: None,
+                yanked: BTreeMap::new(),
+                prereleases: Vec::new(),
+                description: metadata.description.clone(),
+                categories: Vec::new(),
+                downloads: Some(0),
+            },
+            Err(e) => return Err(e),
+        };
+
+        // Add version if not already present
+        if !pkg_index.versions.contains(&version.to_string()) {
+            pkg_index.versions.push(version.to_string());
+            pkg_index.versions.sort();
+        }
+
+        // Update latest version (simple semver comparison)
+        if !version.contains('-') {
+            // Not a prerelease
+            pkg_index.latest = Some(version.to_string());
+        }
+
+        self.update_package_index(name, &pkg_index)?;
+
+        // 4. Update global index
+        let mut global_index = match self.fetch_global_index() {
+            Ok(index) => index,
+            Err(_) => GlobalIndex {
+                name: "lumen-registry".to_string(),
+                version: "1.0.0".to_string(),
+                updated_at: Some(chrono::Utc::now().to_rfc3339()),
+                package_count: Some(0),
+                packages: Vec::new(),
+                checkpoint: None,
+            },
+        };
+
+        // Check if package is already in index
+        let entry_exists = global_index.packages.iter().any(|p| p.name == *name);
+        if !entry_exists {
+            global_index.packages.push(IndexEntry {
+                name: name.clone(),
+                latest: Some(version.to_string()),
+                description: metadata.description.clone(),
+                updated_at: Some(chrono::Utc::now().to_rfc3339()),
+            });
+            global_index.package_count = Some(global_index.packages.len() as u64);
+        } else {
+            // Update existing entry
+            for entry in &mut global_index.packages {
+                if entry.name == *name {
+                    entry.latest = Some(version.to_string());
+                    entry.description = metadata.description.clone();
+                    entry.updated_at = Some(chrono::Utc::now().to_rfc3339());
+                }
+            }
+        }
+
+        global_index.updated_at = Some(chrono::Utc::now().to_rfc3339());
+        self.update_global_index(&global_index)?;
+
+        Ok(cid)
+    }
+
+    // =========================================================================
+    // S3-Compatible API Methods
+    // =========================================================================
+
+    /// Upload data to R2 using S3-compatible API with AWS Signature V4.
+    fn upload_to_s3(&self, key: &str, data: &[u8], content_type: &str) -> R2Result<()> {
+        let endpoint = self.config.endpoint();
+        let url = format!("{}/{}/{}", endpoint, self.config.bucket, key);
+
+        // Generate AWS Signature V4 headers
+        let headers = self.sign_s3_request("PUT", &url, data, content_type)?;
+
+        let response = self
+            .http_client
+            .put(&url)
+            .headers(headers)
+            .body(data.to_vec())
+            .send()?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().unwrap_or_default();
+            return Err(R2Error::ApiError {
+                status: status.as_u16(),
+                message: format!("S3 upload failed: {} - {}", status, body),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Generate AWS Signature V4 headers for S3-compatible requests.
+    fn sign_s3_request(
+        &self,
+        method: &str,
+        url: &str,
+        payload: &[u8],
+        content_type: &str,
+    ) -> R2Result<reqwest::header::HeaderMap> {
+        use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE, HOST};
+
+        let url = reqwest::Url::parse(url).map_err(|e| R2Error::InvalidConfig(e.to_string()))?;
+        let host = url
+            .host_str()
+            .ok_or_else(|| R2Error::InvalidConfig("No host in URL".to_string()))?;
+
+        let now = chrono::Utc::now();
+        let date_stamp = now.format("%Y%m%d").to_string();
+        let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
+
+        // Compute payload hash
+        let payload_hash = compute_sha256(payload);
+
+        // Build canonical request
+        let canonical_uri = url.path();
+        let canonical_querystring = url.query().unwrap_or("");
+
+        let canonical_headers = format!(
+            "host:{}\nx-amz-content-sha256:{}\nx-amz-date:{}\n",
+            host, payload_hash, amz_date
+        );
+        let signed_headers = "host;x-amz-content-sha256;x-amz-date";
+
+        let canonical_request = format!(
+            "{}\n{}\n{}\n{}\n{}\n{}",
+            method,
+            canonical_uri,
+            canonical_querystring,
+            canonical_headers,
+            signed_headers,
+            payload_hash
+        );
+
+        // Create string to sign
+        let algorithm = "AWS4-HMAC-SHA256";
+        let credential_scope = format!("{}/{}/s3/aws4_request", date_stamp, self.config.region);
+        let string_to_sign = format!(
+            "{}\n{}\n{}\n{}",
+            algorithm,
+            amz_date,
+            credential_scope,
+            compute_sha256(canonical_request.as_bytes())
+        );
+
+        // Calculate signature
+        let signature = self.calculate_signature(&date_stamp, &string_to_sign)?;
+
+        // Build authorization header
+        let authorization_header = format!(
+            "{} Credential={}/{}, SignedHeaders={}, Signature={}",
+            algorithm, self.config.access_key_id, credential_scope, signed_headers, signature
+        );
+
+        // Build header map
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HOST,
+            HeaderValue::from_str(host).map_err(|e| R2Error::Http(e.to_string()))?,
+        );
+        headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_str(content_type).map_err(|e| R2Error::Http(e.to_string()))?,
+        );
+        headers.insert(
+            "x-amz-date",
+            HeaderValue::from_str(&amz_date).map_err(|e| R2Error::Http(e.to_string()))?,
+        );
+        headers.insert(
+            "x-amz-content-sha256",
+            HeaderValue::from_str(&payload_hash).map_err(|e| R2Error::Http(e.to_string()))?,
+        );
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            HeaderValue::from_str(&authorization_header)
+                .map_err(|e| R2Error::Http(e.to_string()))?,
+        );
+
+        Ok(headers)
+    }
+
+    /// Calculate AWS Signature V4 signature.
+    fn calculate_signature(&self, date_stamp: &str, string_to_sign: &str) -> R2Result<String> {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+
+        type HmacSha256 = Hmac<Sha256>;
+
+        // Derive signing key
+        let secret = format!("AWS4{}", self.config.secret_access_key);
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+            .map_err(|e| R2Error::Authentication(e.to_string()))?;
+        mac.update(date_stamp.as_bytes());
+        let date_key = mac.finalize().into_bytes();
+
+        let mut mac = HmacSha256::new_from_slice(&date_key)
+            .map_err(|e| R2Error::Authentication(e.to_string()))?;
+        mac.update(self.config.region.as_bytes());
+        let date_region_key = mac.finalize().into_bytes();
+
+        let mut mac = HmacSha256::new_from_slice(&date_region_key)
+            .map_err(|e| R2Error::Authentication(e.to_string()))?;
+        mac.update(b"s3");
+        let date_region_service_key = mac.finalize().into_bytes();
+
+        let mut mac = HmacSha256::new_from_slice(&date_region_service_key)
+            .map_err(|e| R2Error::Authentication(e.to_string()))?;
+        mac.update(b"aws4_request");
+        let signing_key = mac.finalize().into_bytes();
+
+        // Sign the string
+        let mut mac = HmacSha256::new_from_slice(&signing_key)
+            .map_err(|e| R2Error::Authentication(e.to_string()))?;
+        mac.update(string_to_sign.as_bytes());
+        let signature = mac.finalize().into_bytes();
+
+        Ok(hex_encode(&signature))
+    }
+
+    // =========================================================================
+    // Accessors
+    // =========================================================================
+
+    /// Get the R2 configuration.
+    pub fn config(&self) -> &R2Config {
+        &self.config
+    }
+
+    /// Get the public URL for an artifact by CID.
+    pub fn artifact_url(&self, cid: &str) -> R2Result<String> {
+        let hash = extract_hash_from_cid(cid)?;
+        let key = artifact_path(&hash);
+        Ok(format!("{}/{}", self.config.public_base_url(), key))
     }
 }
 
@@ -530,13 +1193,14 @@ impl RegistryBuilder {
         deps: BTreeMap<String, String>,
         artifacts: Vec<ArtifactInfo>,
     ) -> &mut Self {
-        let entry = self.packages.entry(name.to_string()).or_insert_with(|| {
-            PackageBuilder {
+        let entry = self
+            .packages
+            .entry(name.to_string())
+            .or_insert_with(|| PackageBuilder {
                 versions: BTreeMap::new(),
                 description: None,
                 categories: Vec::new(),
-            }
-        });
+            });
 
         entry.versions.insert(
             version.to_string(),
@@ -607,7 +1271,10 @@ impl RegistryBuilder {
         for (name, pkg) in &self.packages {
             let (scope, pkg_name) = parse_package_name(name);
             let pkg_dir = if let Some(s) = scope {
-                output_dir.join("packages").join(format!("@{}", s)).join(pkg_name)
+                output_dir
+                    .join("packages")
+                    .join(format!("@{}", s))
+                    .join(pkg_name)
             } else {
                 output_dir.join("packages").join(pkg_name)
             };
@@ -688,8 +1355,57 @@ fn cid_to_hash(cid: &str) -> Result<String, String> {
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let content = serde_json::to_string_pretty(value)
         .map_err(|e| format!("failed to serialize JSON: {}", e))?;
-    std::fs::write(path, content)
-        .map_err(|e| format!("failed to write {}: {}", path.display(), e))
+    std::fs::write(path, content).map_err(|e| format!("failed to write {}: {}", path.display(), e))
+}
+
+/// Compute SHA-256 hash of data.
+fn compute_sha256(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hex_encode(&hasher.finalize())
+}
+
+/// Extract the hex hash from a CID.
+fn extract_hash_from_cid(cid: &str) -> R2Result<String> {
+    if cid.starts_with("sha256:") {
+        Ok(cid.strip_prefix("sha256:").unwrap().to_string())
+    } else if cid.starts_with("cid:sha256:") {
+        Ok(cid.strip_prefix("cid:sha256:").unwrap().to_string())
+    } else {
+        Err(R2Error::InvalidConfig(format!(
+            "Unsupported CID format: {}. Expected sha256:... or cid:sha256:...",
+            cid
+        )))
+    }
+}
+
+/// Build the storage path for an artifact based on its hash.
+/// Follows the content-addressed structure: artifacts/sha256/{first2}/{remaining}
+fn artifact_path(hash: &str) -> String {
+    if hash.len() < 4 {
+        return format!("artifacts/sha256/{}/{}", &hash[..2.min(hash.len())], hash);
+    }
+    format!("artifacts/sha256/{}/{}", &hash[..2], &hash[2..])
+}
+
+/// Build the storage path for a package index.
+fn package_index_path(name: &str) -> String {
+    let (scope, pkg) = parse_package_name(name);
+    if let Some(s) = scope {
+        format!("packages/@{}/{}/index.json", s, pkg)
+    } else {
+        format!("packages/{}/index.json", pkg)
+    }
+}
+
+/// Build the storage path for version metadata.
+fn version_metadata_path(name: &str, version: &str) -> String {
+    let (scope, pkg) = parse_package_name(name);
+    if let Some(s) = scope {
+        format!("packages/@{}/{}/{}.json", s, pkg, version)
+    } else {
+        format!("packages/{}/{}.json", pkg, version)
+    }
 }
 
 // =============================================================================
@@ -715,14 +1431,8 @@ mod tests {
 
     #[test]
     fn test_cid_to_hash() {
-        assert_eq!(
-            cid_to_hash("sha256:abc123").unwrap(),
-            "sha256:abc123"
-        );
-        assert_eq!(
-            cid_to_hash("cid:sha256:abc123").unwrap(),
-            "sha256:abc123"
-        );
+        assert_eq!(cid_to_hash("sha256:abc123").unwrap(), "sha256:abc123");
+        assert_eq!(cid_to_hash("cid:sha256:abc123").unwrap(), "sha256:abc123");
     }
 
     #[test]
@@ -750,5 +1460,94 @@ mod tests {
         assert!(temp_dir.join("index.json").exists());
         assert!(temp_dir.join("packages/test-pkg/index.json").exists());
         assert!(temp_dir.join("packages/test-pkg/1.0.0.json").exists());
+    }
+
+    #[test]
+    fn test_compute_sha256() {
+        let data = b"hello world";
+        let hash = compute_sha256(data);
+        assert_eq!(hash.len(), 64); // SHA-256 hex string is 64 chars
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_extract_hash_from_cid() {
+        assert_eq!(extract_hash_from_cid("sha256:abc123").unwrap(), "abc123");
+        assert_eq!(
+            extract_hash_from_cid("cid:sha256:def456").unwrap(),
+            "def456"
+        );
+        assert!(extract_hash_from_cid("invalid").is_err());
+    }
+
+    #[test]
+    fn test_artifact_path() {
+        let hash = "abcdef1234567890";
+        let path = artifact_path(hash);
+        assert_eq!(path, "artifacts/sha256/ab/cdef1234567890");
+    }
+
+    #[test]
+    fn test_package_index_path() {
+        assert_eq!(
+            package_index_path("simple-pkg"),
+            "packages/simple-pkg/index.json"
+        );
+        assert_eq!(
+            package_index_path("@scope/name"),
+            "packages/@scope/name/index.json"
+        );
+    }
+
+    #[test]
+    fn test_version_metadata_path() {
+        assert_eq!(
+            version_metadata_path("simple-pkg", "1.0.0"),
+            "packages/simple-pkg/1.0.0.json"
+        );
+        assert_eq!(
+            version_metadata_path("@scope/name", "2.1.0"),
+            "packages/@scope/name/2.1.0.json"
+        );
+    }
+
+    #[test]
+    fn test_r2_config() {
+        let config = R2Config::new("account123", "key_id", "secret_key")
+            .with_bucket("my-bucket")
+            .with_public_url("https://cdn.example.com");
+
+        assert_eq!(config.account_id, "account123");
+        assert_eq!(config.access_key_id, "key_id");
+        assert_eq!(config.bucket, "my-bucket");
+        assert_eq!(
+            config.public_url,
+            Some("https://cdn.example.com".to_string())
+        );
+        assert_eq!(
+            config.endpoint(),
+            "https://account123.r2.cloudflarestorage.com"
+        );
+        assert_eq!(config.public_base_url(), "https://cdn.example.com");
+    }
+
+    #[test]
+    fn test_r2_config_from_lumen_config() {
+        let toml = r#"
+[package]
+name = "test"
+
+[registry]
+r2_account_id = "my_account"
+r2_access_key = "key_id:secret_key"
+"#;
+        let lumen_config: crate::config::LumenConfig = toml::from_str(toml).unwrap();
+        let r2_config = R2Config::from_lumen_config(&lumen_config);
+
+        assert!(r2_config.is_some());
+        let config = r2_config.unwrap();
+        assert_eq!(config.account_id, "my_account");
+        assert_eq!(config.access_key_id, "key_id");
+        assert_eq!(config.secret_access_key, "secret_key");
     }
 }

@@ -29,3 +29,17 @@ docs/.vitepress/dist/
 docs/.vitepress/cache/
 docs/public/wasm/
 docs/node_modules/
+
+# Wrangler
+.wrangler/
+
+# Test package
+test_package/
+
+# Nuxt/wares-site build artifacts
+wares-site/.nuxt/
+wares-site/.output/
+wares-site/dist
+
+# Registry server build artifacts
+registry-server/target/

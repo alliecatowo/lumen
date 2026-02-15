@@ -5,6 +5,7 @@
 //! - Version constraints (exact, caret, tilde, range, wildcard, compound)
 //! - Pre-release handling per semver spec
 //! - Constraint satisfaction checking
+//! - Constraint compatibility checking for conflict detection
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -137,6 +138,32 @@ impl Version {
             build: Vec::new(),
         }
     }
+
+    /// Compare two versions with optional pre-release inclusion.
+    /// When `include_prerelease` is false, pre-release versions are treated as
+    /// less than their release counterparts (standard semver behavior).
+    pub fn cmp_with_prerelease(&self, other: &Self, include_prerelease: bool) -> Ordering {
+        if include_prerelease {
+            return self.cmp(other);
+        }
+
+        // Compare base versions only
+        match self.major.cmp(&other.major) {
+            Ordering::Equal => {}
+            ord => return ord,
+        }
+        match self.minor.cmp(&other.minor) {
+            Ordering::Equal => {}
+            ord => return ord,
+        }
+        match self.patch.cmp(&other.patch) {
+            Ordering::Equal => {}
+            ord => return ord,
+        }
+
+        // Ignore pre-release differences when include_prerelease is false
+        Ordering::Equal
+    }
 }
 
 impl fmt::Display for Version {
@@ -258,8 +285,8 @@ impl Ord for Version {
         // Pre-release versions have lower precedence than normal versions
         match (self.pre.is_empty(), other.pre.is_empty()) {
             (true, true) => Ordering::Equal,
-            (true, false) => Ordering::Greater,  // self is release, other is pre-release
-            (false, true) => Ordering::Less,     // self is pre-release, other is release
+            (true, false) => Ordering::Greater, // self is release, other is pre-release
+            (false, true) => Ordering::Less,    // self is pre-release, other is release
             (false, false) => {
                 // Both have pre-release, compare identifiers
                 for (a, b) in self.pre.iter().zip(other.pre.iter()) {
@@ -302,7 +329,10 @@ pub enum Constraint {
         max_inclusive: bool,
     },
     /// Wildcard: `1.2.*`, `1.x`, `*`
-    Wildcard { major: Option<u64>, minor: Option<u64> },
+    Wildcard {
+        major: Option<u64>,
+        minor: Option<u64>,
+    },
     /// Logical OR of constraints: `^1.2.3 || ^2.0.0`
     Or(Vec<Constraint>),
     /// Logical AND of constraints: `>=1.0.0 <2.0.0`
@@ -316,6 +346,28 @@ pub enum Constraint {
 impl Constraint {
     /// Check if a version satisfies this constraint.
     pub fn matches(&self, version: &Version) -> bool {
+        self.matches_pre(version, false)
+    }
+
+    /// Check if a version satisfies this constraint with explicit prerelease handling.
+    ///
+    /// # Arguments
+    ///
+    /// * `version` - The version to check
+    /// * `include_prerelease` - If true, pre-release versions are considered for matching
+    ///                         even when the constraint doesn't specify a pre-release
+    ///
+    /// # Semver Prerelease Rules
+    ///
+    /// By default (include_prerelease=false):
+    /// - Pre-release versions are excluded from ranges unless the constraint version
+    ///   is also a pre-release
+    /// - Wildcard `*` includes pre-releases
+    /// - Exact constraints include pre-releases if they match exactly
+    ///
+    /// When include_prerelease=true:
+    /// - Pre-release versions are considered for all constraint types
+    pub fn matches_pre(&self, version: &Version, include_prerelease: bool) -> bool {
         match self {
             Constraint::Exact(v) => version == v,
 
@@ -327,8 +379,8 @@ impl Constraint {
 
                 // Pre-release handling per semver spec:
                 // Pre-release versions are excluded from ranges unless the constraint
-                // version is also a pre-release
-                if version.is_prerelease() && !v.is_prerelease() {
+                // version is also a pre-release (and include_prerelease is false)
+                if version.is_prerelease() && !v.is_prerelease() && !include_prerelease {
                     return false;
                 }
 
@@ -344,13 +396,11 @@ impl Constraint {
             Constraint::Tilde(v) => {
                 // ~1.2.3 := >=1.2.3 <1.3.0
                 // Pre-release handling similar to caret
-                if version.is_prerelease() && !v.is_prerelease() {
+                if version.is_prerelease() && !v.is_prerelease() && !include_prerelease {
                     return version.base() == v.base() && version >= v;
                 }
 
-                version.major == v.major
-                    && version.minor == v.minor
-                    && version.patch >= v.patch
+                version.major == v.major && version.minor == v.minor && version.patch >= v.patch
             }
 
             Constraint::GreaterThan(v, inclusive) => {
@@ -375,6 +425,15 @@ impl Constraint {
                 min_inclusive,
                 max_inclusive,
             } => {
+                // Pre-release handling for ranges
+                if version.is_prerelease()
+                    && !min.is_prerelease()
+                    && !max.is_prerelease()
+                    && !include_prerelease
+                {
+                    return false;
+                }
+
                 let min_ok = if *min_inclusive {
                     version >= min
                 } else {
@@ -389,28 +448,160 @@ impl Constraint {
             }
 
             Constraint::Wildcard { major, minor } => {
-                // Pre-releases don't match wildcards unless the wildcard is for *
-                if version.is_prerelease() && (major.is_some() || minor.is_some()) {
-                    return false;
-                }
-
                 match (major, minor) {
-                    (None, None) => true, // *
-                    (Some(maj), None) => version.major == *maj, // 1.x or 1.*
+                    (None, None) => true, // * - includes pre-releases
+                    (Some(maj), None) => {
+                        // 1.x or 1.*
+                        if version.is_prerelease() && !include_prerelease {
+                            return false;
+                        }
+                        version.major == *maj
+                    }
                     (Some(maj), Some(min)) => {
-                        version.major == *maj && version.minor == *min // 1.2.*
+                        // 1.2.*
+                        if version.is_prerelease() && !include_prerelease {
+                            return false;
+                        }
+                        version.major == *maj && version.minor == *min
                     }
                     (None, Some(_)) => unreachable!(), // Invalid state
                 }
             }
 
-            Constraint::Or(constraints) => constraints.iter().any(|c| c.matches(version)),
+            Constraint::Or(constraints) => constraints
+                .iter()
+                .any(|c| c.matches_pre(version, include_prerelease)),
 
-            Constraint::And(constraints) => constraints.iter().all(|c| c.matches(version)),
+            Constraint::And(constraints) => constraints
+                .iter()
+                .all(|c| c.matches_pre(version, include_prerelease)),
 
             Constraint::Any => true,
 
             Constraint::None => false,
+        }
+    }
+
+    /// Check if two constraints can both be satisfied by some version.
+    /// This is useful for detecting conflicts early in resolution.
+    ///
+    /// Returns true if there exists at least one version that satisfies both constraints.
+    pub fn is_compatible(&self, other: &Constraint) -> bool {
+        // Handle special cases
+        match (self, other) {
+            (Constraint::Any, _) | (_, Constraint::Any) => return true,
+            (Constraint::None, _) | (_, Constraint::None) => return false,
+            _ => {}
+        }
+
+        // For OR constraints, at least one branch must be compatible
+        if let Constraint::Or(branches) = self {
+            return branches.iter().any(|b| b.is_compatible(other));
+        }
+        if let Constraint::Or(branches) = other {
+            return branches.iter().any(|b| b.is_compatible(self));
+        }
+
+        // For AND constraints, all branches must be compatible
+        if let Constraint::And(branches) = self {
+            return branches.iter().all(|b| b.is_compatible(other));
+        }
+        if let Constraint::And(branches) = other {
+            return branches.iter().all(|b| b.is_compatible(self));
+        }
+
+        // Compare version bounds
+        let self_bounds = self.version_bounds();
+        let other_bounds = other.version_bounds();
+
+        // Check if bounds overlap
+        self_bounds.overlaps(&other_bounds)
+    }
+
+    /// Get the version bounds represented by this constraint.
+    fn version_bounds(&self) -> VersionBounds {
+        match self {
+            Constraint::Exact(v) => VersionBounds {
+                min: Some(v.clone()),
+                max: Some(v.clone()),
+                min_inclusive: true,
+                max_inclusive: true,
+            },
+            Constraint::Caret(v) => {
+                if v.major > 0 {
+                    VersionBounds {
+                        min: Some(v.clone()),
+                        max: Some(Version::new(v.major + 1, 0, 0)),
+                        min_inclusive: true,
+                        max_inclusive: false,
+                    }
+                } else if v.minor > 0 {
+                    VersionBounds {
+                        min: Some(v.clone()),
+                        max: Some(Version::new(0, v.minor + 1, 0)),
+                        min_inclusive: true,
+                        max_inclusive: false,
+                    }
+                } else {
+                    VersionBounds {
+                        min: Some(v.clone()),
+                        max: Some(Version::new(0, 0, v.patch + 1)),
+                        min_inclusive: true,
+                        max_inclusive: false,
+                    }
+                }
+            }
+            Constraint::Tilde(v) => VersionBounds {
+                min: Some(v.clone()),
+                max: Some(Version::new(v.major, v.minor + 1, 0)),
+                min_inclusive: true,
+                max_inclusive: false,
+            },
+            Constraint::GreaterThan(v, inclusive) => VersionBounds {
+                min: Some(v.clone()),
+                max: None,
+                min_inclusive: *inclusive,
+                max_inclusive: false,
+            },
+            Constraint::LessThan(v, inclusive) => VersionBounds {
+                min: None,
+                max: Some(v.clone()),
+                min_inclusive: false,
+                max_inclusive: *inclusive,
+            },
+            Constraint::Range {
+                min,
+                max,
+                min_inclusive,
+                max_inclusive,
+            } => VersionBounds {
+                min: Some(min.clone()),
+                max: Some(max.clone()),
+                min_inclusive: *min_inclusive,
+                max_inclusive: *max_inclusive,
+            },
+            Constraint::Wildcard { major, minor } => match (major, minor) {
+                (None, None) => VersionBounds::unbounded(),
+                (Some(maj), None) => VersionBounds {
+                    min: Some(Version::new(*maj, 0, 0)),
+                    max: Some(Version::new(maj + 1, 0, 0)),
+                    min_inclusive: true,
+                    max_inclusive: false,
+                },
+                (Some(maj), Some(min)) => VersionBounds {
+                    min: Some(Version::new(*maj, *min, 0)),
+                    max: Some(Version::new(*maj, min + 1, 0)),
+                    min_inclusive: true,
+                    max_inclusive: false,
+                },
+                (None, Some(_)) => VersionBounds::unbounded(),
+            },
+            Constraint::Or(_) | Constraint::And(_) => {
+                // Should have been handled above
+                VersionBounds::unbounded()
+            }
+            Constraint::Any => VersionBounds::unbounded(),
+            Constraint::None => VersionBounds::empty(),
         }
     }
 
@@ -419,7 +610,9 @@ impl Constraint {
         let s = s.trim();
 
         if s.is_empty() {
-            return Err(SemverError::InvalidConstraint("Empty constraint".to_string()));
+            return Err(SemverError::InvalidConstraint(
+                "Empty constraint".to_string(),
+            ));
         }
 
         // Handle OR constraints (||)
@@ -530,6 +723,22 @@ impl Constraint {
             .max()
             .cloned()
     }
+
+    /// Find the best (highest) version that satisfies this constraint with prerelease handling.
+    pub fn find_best_with_prerelease<'a, I>(
+        &self,
+        versions: I,
+        include_prerelease: bool,
+    ) -> Option<Version>
+    where
+        I: IntoIterator<Item = &'a Version>,
+    {
+        versions
+            .into_iter()
+            .filter(|v| self.matches_pre(v, include_prerelease))
+            .max()
+            .cloned()
+    }
 }
 
 impl fmt::Display for Constraint {
@@ -568,6 +777,73 @@ impl fmt::Display for Constraint {
             }
             Constraint::Any => write!(f, "*"),
             Constraint::None => write!(f, "none"),
+        }
+    }
+}
+
+/// Version bounds for constraint compatibility checking.
+#[derive(Debug, Clone)]
+struct VersionBounds {
+    min: Option<Version>,
+    max: Option<Version>,
+    min_inclusive: bool,
+    max_inclusive: bool,
+}
+
+impl VersionBounds {
+    fn unbounded() -> Self {
+        Self {
+            min: None,
+            max: None,
+            min_inclusive: false,
+            max_inclusive: false,
+        }
+    }
+
+    fn empty() -> Self {
+        Self {
+            min: Some(Version::new(0, 0, 0)),
+            max: Some(Version::new(0, 0, 0)),
+            min_inclusive: false,
+            max_inclusive: false,
+        }
+    }
+
+    fn overlaps(&self, other: &VersionBounds) -> bool {
+        // Check if there's any version that satisfies both bounds
+
+        // Determine the effective minimum
+        let (min, min_inclusive) = match (&self.min, &other.min) {
+            (None, None) => (None, true),
+            (Some(v), None) => (Some(v.clone()), self.min_inclusive),
+            (None, Some(v)) => (Some(v.clone()), other.min_inclusive),
+            (Some(a), Some(b)) => match a.cmp(b) {
+                Ordering::Greater => (Some(a.clone()), self.min_inclusive),
+                Ordering::Less => (Some(b.clone()), other.min_inclusive),
+                Ordering::Equal => (Some(a.clone()), self.min_inclusive && other.min_inclusive),
+            },
+        };
+
+        // Determine the effective maximum
+        let (max, max_inclusive) = match (&self.max, &other.max) {
+            (None, None) => (None, true),
+            (Some(v), None) => (Some(v.clone()), self.max_inclusive),
+            (None, Some(v)) => (Some(v.clone()), other.max_inclusive),
+            (Some(a), Some(b)) => match a.cmp(b) {
+                Ordering::Less => (Some(a.clone()), self.max_inclusive),
+                Ordering::Greater => (Some(b.clone()), other.max_inclusive),
+                Ordering::Equal => (Some(a.clone()), self.max_inclusive && other.max_inclusive),
+            },
+        };
+
+        // Check if bounds are compatible
+        match (&min, &max) {
+            (Some(min_v), Some(max_v)) => match min_v.cmp(max_v) {
+                Ordering::Less => true,
+                Ordering::Equal => min_inclusive && max_inclusive,
+                Ordering::Greater => false,
+            },
+            _ => true, // At least one bound is unbounded, so they overlap
         }
     }
 }
@@ -949,7 +1225,7 @@ mod tests {
         // Ordering should be equal (neither is greater or less)
         assert_eq!(v1.cmp(&v2), Ordering::Equal);
         assert_eq!(v1.cmp(&v3), Ordering::Equal);
-        
+
         // But equality considers all fields including build metadata
         assert_ne!(v1, v2); // Different build metadata means not equal
         assert_ne!(v1, v3); // Has build vs no build
@@ -1012,26 +1288,61 @@ mod tests {
     #[test]
     fn test_parse_wildcard_constraints() {
         let c = Constraint::parse("*").unwrap();
-        assert_eq!(c, Constraint::Wildcard { major: None, minor: None });
+        assert_eq!(
+            c,
+            Constraint::Wildcard {
+                major: None,
+                minor: None
+            }
+        );
 
         let c = Constraint::parse("1.x").unwrap();
-        assert_eq!(c, Constraint::Wildcard { major: Some(1), minor: None });
+        assert_eq!(
+            c,
+            Constraint::Wildcard {
+                major: Some(1),
+                minor: None
+            }
+        );
 
         let c = Constraint::parse("1.*").unwrap();
-        assert_eq!(c, Constraint::Wildcard { major: Some(1), minor: None });
+        assert_eq!(
+            c,
+            Constraint::Wildcard {
+                major: Some(1),
+                minor: None
+            }
+        );
 
         let c = Constraint::parse("1.2.x").unwrap();
-        assert_eq!(c, Constraint::Wildcard { major: Some(1), minor: Some(2) });
+        assert_eq!(
+            c,
+            Constraint::Wildcard {
+                major: Some(1),
+                minor: Some(2)
+            }
+        );
 
         let c = Constraint::parse("1.2.*").unwrap();
-        assert_eq!(c, Constraint::Wildcard { major: Some(1), minor: Some(2) });
+        assert_eq!(
+            c,
+            Constraint::Wildcard {
+                major: Some(1),
+                minor: Some(2)
+            }
+        );
     }
 
     #[test]
     fn test_parse_range_constraint() {
         let c = Constraint::parse(">=1.2.3 <2.0.0").unwrap();
         match c {
-            Constraint::Range { min, max, min_inclusive, max_inclusive } => {
+            Constraint::Range {
+                min,
+                max,
+                min_inclusive,
+                max_inclusive,
+            } => {
                 assert_eq!(min, "1.2.3".parse::<Version>().unwrap());
                 assert_eq!(max, "2.0.0".parse::<Version>().unwrap());
                 assert!(min_inclusive);
@@ -1190,6 +1501,17 @@ mod tests {
     }
 
     #[test]
+    fn test_prerelease_matches_with_include_flag() {
+        let c = Constraint::parse("^1.0.0").unwrap();
+
+        // Without include_prerelease flag
+        assert!(!c.matches_pre(&"1.0.1-alpha".parse().unwrap(), false));
+
+        // With include_prerelease flag
+        assert!(c.matches_pre(&"1.0.1-alpha".parse().unwrap(), true));
+    }
+
+    #[test]
     fn test_prerelease_excluded_from_tilde() {
         let c = Constraint::parse("~1.2.0").unwrap();
 
@@ -1231,8 +1553,75 @@ mod tests {
 
         // Verify ordering
         for i in 0..versions.len() - 1 {
-            assert!(versions[i] < versions[i + 1], "{} should be < {}", versions[i], versions[i + 1]);
+            assert!(
+                versions[i] < versions[i + 1],
+                "{} should be < {}",
+                versions[i],
+                versions[i + 1]
+            );
         }
+    }
+
+    // ==================== Constraint Compatibility Tests ====================
+
+    #[test]
+    fn test_compatible_exact() {
+        let c1 = Constraint::parse("=1.2.3").unwrap();
+        let c2 = Constraint::parse("=1.2.3").unwrap();
+        assert!(c1.is_compatible(&c2));
+
+        let c3 = Constraint::parse("=1.2.4").unwrap();
+        assert!(!c1.is_compatible(&c3));
+    }
+
+    #[test]
+    fn test_compatible_caret_overlap() {
+        let c1 = Constraint::parse("^1.2.0").unwrap();
+        let c2 = Constraint::parse("^1.3.0").unwrap();
+        assert!(c1.is_compatible(&c2));
+
+        let c3 = Constraint::parse("^2.0.0").unwrap();
+        assert!(!c1.is_compatible(&c3));
+    }
+
+    #[test]
+    fn test_compatible_range_overlap() {
+        let c1 = Constraint::parse(">=1.0.0 <2.0.0").unwrap();
+        let c2 = Constraint::parse(">=1.5.0 <1.8.0").unwrap();
+        assert!(c1.is_compatible(&c2));
+
+        let c3 = Constraint::parse(">=2.0.0 <3.0.0").unwrap();
+        assert!(!c1.is_compatible(&c3));
+    }
+
+    #[test]
+    fn test_compatible_wildcard() {
+        let c1 = Constraint::parse("1.*").unwrap();
+        let c2 = Constraint::parse("^1.2.0").unwrap();
+        assert!(c1.is_compatible(&c2));
+
+        let c3 = Constraint::parse("2.*").unwrap();
+        assert!(!c1.is_compatible(&c3));
+    }
+
+    #[test]
+    fn test_compatible_or() {
+        let c1 = Constraint::parse("^1.0.0 || ^2.0.0").unwrap();
+        let c2 = Constraint::parse("^1.5.0").unwrap();
+        assert!(c1.is_compatible(&c2));
+
+        let c3 = Constraint::parse("^3.0.0").unwrap();
+        assert!(!c1.is_compatible(&c3));
+    }
+
+    #[test]
+    fn test_compatible_and() {
+        let c1 = Constraint::parse(">=1.0.0").unwrap();
+        let c2 = Constraint::parse("<2.0.0").unwrap();
+        let c3 = Constraint::And(vec![c1.clone(), c2.clone()]);
+
+        let c4 = Constraint::parse("^1.5.0").unwrap();
+        assert!(c3.is_compatible(&c4));
     }
 
     // ==================== Edge Cases ====================
@@ -1263,9 +1652,15 @@ mod tests {
     fn test_complex_prerelease() {
         let v: Version = "1.0.0-alpha-123.456.beta-xyz".parse().unwrap();
         assert_eq!(v.pre.len(), 3);
-        assert_eq!(v.pre[0], PrereleaseIdentifier::Alpha("alpha-123".to_string()));
+        assert_eq!(
+            v.pre[0],
+            PrereleaseIdentifier::Alpha("alpha-123".to_string())
+        );
         assert_eq!(v.pre[1], PrereleaseIdentifier::Numeric(456));
-        assert_eq!(v.pre[2], PrereleaseIdentifier::Alpha("beta-xyz".to_string()));
+        assert_eq!(
+            v.pre[2],
+            PrereleaseIdentifier::Alpha("beta-xyz".to_string())
+        );
     }
 
     #[test]
@@ -1274,6 +1669,9 @@ mod tests {
         assert!(c.matches(&"0.0.0".parse().unwrap()));
         assert!(c.matches(&"1.2.3".parse().unwrap()));
         assert!(c.matches(&"999.999.999".parse().unwrap()));
+
+        // Any is compatible with everything
+        assert!(c.is_compatible(&Constraint::parse("^1.0.0").unwrap()));
     }
 
     #[test]
@@ -1281,6 +1679,9 @@ mod tests {
         let c = Constraint::none();
         assert!(!c.matches(&"0.0.0".parse().unwrap()));
         assert!(!c.matches(&"1.2.3".parse().unwrap()));
+
+        // None is compatible with nothing
+        assert!(!c.is_compatible(&Constraint::parse("^1.0.0").unwrap()));
     }
 
     #[test]
@@ -1363,7 +1764,10 @@ mod tests {
     fn test_prerelease_identifier_edge_cases() {
         // Hyphen in identifier
         let v: Version = "1.0.0-alpha-beta".parse().unwrap();
-        assert_eq!(v.pre[0], PrereleaseIdentifier::Alpha("alpha-beta".to_string()));
+        assert_eq!(
+            v.pre[0],
+            PrereleaseIdentifier::Alpha("alpha-beta".to_string())
+        );
 
         // Numeric followed by alpha
         let v: Version = "1.0.0-0.alpha".parse().unwrap();
@@ -1411,7 +1815,10 @@ mod tests {
         );
         assert_eq!(
             Constraint::wildcard(Some(1), None),
-            Constraint::Wildcard { major: Some(1), minor: None }
+            Constraint::Wildcard {
+                major: Some(1),
+                minor: None
+            }
         );
         assert_eq!(Constraint::any(), Constraint::Any);
         assert_eq!(Constraint::none(), Constraint::None);
@@ -1445,7 +1852,7 @@ mod tests {
     #[test]
     fn test_multiple_and_constraints() {
         // Test that we can have more than 2 constraints ANDed
-        // Note: != operator is not implemented, so we test with >= and < 
+        // Note: != operator is not implemented, so we test with >= and <
         let c = Constraint::parse(">=1.0.0 <2.0.0 >=1.2.0").unwrap();
         match c {
             Constraint::And(constraints) => {
@@ -1467,7 +1874,7 @@ mod tests {
         // But release versions match
         assert!(c.matches(&"1.2.3".parse().unwrap()));
         assert!(c.matches(&"1.2.4".parse().unwrap()));
-        
+
         // If the constraint IS a pre-release, then pre-releases can match
         let c_pre = Constraint::parse("^1.2.3-alpha").unwrap();
         assert!(c_pre.matches(&"1.2.3-alpha".parse().unwrap()));
@@ -1481,5 +1888,31 @@ mod tests {
         let c = Constraint::parse("*").unwrap();
         assert!(c.matches(&"1.0.0-alpha".parse().unwrap()));
         assert!(c.matches(&"1.0.0".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_find_best_with_prerelease() {
+        let versions: Vec<Version> = vec![
+            "1.0.0-alpha".parse().unwrap(),
+            "1.0.0-beta".parse().unwrap(),
+            "1.0.0".parse().unwrap(),
+            "1.1.0-alpha".parse().unwrap(),
+            "1.1.0".parse().unwrap(),
+        ];
+
+        let c = Constraint::parse("^1.0.0").unwrap();
+
+        // Without prerelease, should get 1.1.0
+        assert_eq!(c.find_best(&versions), Some("1.1.0".parse().unwrap()));
+
+        // Without prerelease, 1.1.0-alpha should not be considered
+        assert_eq!(
+            c.find_best_with_prerelease(&versions, false),
+            Some("1.1.0".parse().unwrap())
+        );
+
+        // With prerelease, 1.1.0-alpha could be found if we filtered for it
+        let c_alpha = Constraint::parse(">=1.1.0-alpha").unwrap();
+        assert!(c_alpha.matches_pre(&"1.1.0-alpha".parse().unwrap(), true));
     }
 }

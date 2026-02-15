@@ -93,7 +93,7 @@ impl CertificateAuthority {
         issuer: &str,
         validity_minutes: i64,
     ) -> Result<IssuedCertificate, CaError> {
-        let cert_id = format!("cert-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}",
+        let cert_id = format!("cert-{}-{}-{}-{}-{}",
             generate_random_hex(8),
             generate_random_hex(4),
             generate_random_hex(4),
@@ -131,9 +131,9 @@ impl CertificateAuthority {
             log_index: None,
         };
 
-        self.issued_certs.write().insert(cert_id, cert.clone());
-        
         info!("Issued certificate {} valid until {}", cert_id, expires_at);
+        
+        self.issued_certs.write().insert(cert_id, cert.clone());
 
         Ok(cert)
     }

@@ -108,15 +108,40 @@ pub struct RegistryConfig {
     /// Whether to use local cache when offline.
     #[serde(default = "default_true")]
     pub offline_fallback: bool,
+
+    /// R2 account ID for Cloudflare R2 storage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r2_account_id: Option<String>,
+
+    /// R2 access key for Cloudflare R2 storage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r2_access_key: Option<String>,
+
+    /// Token configuration for registries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tokens: Vec<RegistryToken>,
+}
+
+/// Token configuration for a specific registry.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct RegistryToken {
+    /// Registry URL this token is for.
+    pub registry: String,
+    /// API token (stored encrypted, not plain text in production).
+    /// Use `lumen registry login` to set this securely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// Token name/description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Token scopes (publish, yank, owner, admin).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
 }
 
 fn default_registry_url() -> String {
-    // Check environment variable first
-    if let Ok(url) = std::env::var("LUMEN_REGISTRY") {
-        return url;
-    }
-    // Default to a placeholder that will error gracefully
-    "lumen://default".to_string()
+    // Default production registry
+    "https://api.wares.lumen-lang.com".to_string()
 }
 
 fn default_true() -> bool {
@@ -129,30 +154,42 @@ impl Default for RegistryConfig {
             default: default_registry_url(),
             registries: HashMap::new(),
             offline_fallback: true,
+            r2_account_id: None,
+            r2_access_key: None,
+            tokens: Vec::new(),
         }
     }
 }
 
 impl RegistryConfig {
-    /// Get the effective registry URL.
-    pub fn effective_url(&self) -> Result<String, String> {
-        let url = &self.default;
-        
-        // Handle special schemes
-        if url.starts_with("lumen://") {
-            return Err(format!(
-                "No registry configured. Set LUMEN_REGISTRY env var or add [registry] section to lumen.toml.
-                 Example: export LUMEN_REGISTRY=https://your-registry.com
-                 Or use a local registry: export LUMEN_REGISTRY=file:///path/to/registry"
-            ));
+    /// Get the effective registry URL with explicit precedence:
+    /// 1. LUMEN_REGISTRY env var (for local development override)
+    /// 2. Config [registry].default
+    pub fn effective_url(&self) -> String {
+        // 1. Check environment variable first (local override)
+        if let Ok(url) = std::env::var("LUMEN_REGISTRY") {
+            return url;
         }
-        
-        Ok(url.clone())
+        // 2. Use configured default
+        self.default.clone()
     }
 
     /// Get a named registry URL.
     pub fn get_registry(&self, name: &str) -> Option<&String> {
         self.registries.get(name)
+    }
+
+    /// Get token for a specific registry.
+    pub fn get_token(&self, registry: &str) -> Option<&RegistryToken> {
+        self.tokens.iter().find(|t| t.registry == registry)
+    }
+
+    /// Get R2 credentials if configured
+    pub fn r2_credentials(&self) -> Option<(&str, &str)> {
+        match (&self.r2_account_id, &self.r2_access_key) {
+            (Some(account), Some(key)) => Some((account.as_str(), key.as_str())),
+            _ => None,
+        }
     }
 }
 
@@ -184,11 +221,19 @@ pub struct LumenConfig {
     pub dependencies: HashMap<String, DependencySpec>,
 
     /// Development dependencies (tests, benchmarks).
-    #[serde(default, skip_serializing_if = "HashMap::is_empty", rename = "dev-dependencies")]
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        rename = "dev-dependencies"
+    )]
     pub dev_dependencies: HashMap<String, DependencySpec>,
 
     /// Build-time dependencies (build scripts, codegen).
-    #[serde(default, skip_serializing_if = "HashMap::is_empty", rename = "build-dependencies")]
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        rename = "build-dependencies"
+    )]
     pub build_dependencies: HashMap<String, DependencySpec>,
 
     /// Target-specific dependencies.
@@ -206,6 +251,10 @@ pub struct LumenConfig {
     /// Provider configuration for tool integrations.
     #[serde(default)]
     pub providers: ProviderSection,
+
+    /// Build script configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<BuildConfig>,
 }
 
 // =============================================================================
@@ -283,7 +332,11 @@ pub struct PackageInfo {
     pub edition: Option<String>,
 
     /// Minimum compiler version required.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "lumen-version")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "lumen-version"
+    )]
     pub lumen_version: Option<String>,
 
     /// Exports defining the public API.
@@ -299,8 +352,15 @@ pub struct PackageInfo {
     pub lib: Option<LibTarget>,
 
     /// Published status (true = publishable, false = private, array = restricted registries).
-    #[serde(default = "default_publish", skip_serializing_if = "is_default_publish")]
+    #[serde(
+        default = "default_publish",
+        skip_serializing_if = "is_default_publish"
+    )]
     pub publish: Option<PublishPolicy>,
+
+    /// Build script configuration (path to build script or inline config).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<PackageBuildSpec>,
 }
 
 impl Default for PackageInfo {
@@ -328,6 +388,7 @@ impl Default for PackageInfo {
             bin: HashMap::new(),
             lib: None,
             publish: None,
+            build: None,
         }
     }
 }
@@ -506,11 +567,19 @@ pub struct TargetDeps {
     pub dependencies: HashMap<String, DependencySpec>,
 
     /// Dev dependencies for this target.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty", rename = "dev-dependencies")]
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        rename = "dev-dependencies"
+    )]
     pub dev_dependencies: HashMap<String, DependencySpec>,
 
     /// Build dependencies for this target.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty", rename = "build-dependencies")]
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        rename = "build-dependencies"
+    )]
     pub build_dependencies: HashMap<String, DependencySpec>,
 }
 
@@ -576,6 +645,153 @@ impl Default for BuildProfile {
             panic: None,
             incremental: None,
             env: HashMap::new(),
+        }
+    }
+}
+
+// =============================================================================
+// Build Script Configuration
+// =============================================================================
+
+/// Package-level build specification - can be a simple path or detailed config.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(untagged)]
+pub enum PackageBuildSpec {
+    /// Simple path to build script: `build = "build.lm"`
+    Simple(String),
+    /// Detailed build configuration with pre/post hooks.
+    Detailed {
+        /// Pre-build hooks (run before compilation).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pre: Vec<String>,
+        /// Post-build hooks (run after compilation).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        post: Vec<String>,
+        /// Build script to run for code generation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        script: Option<String>,
+    },
+}
+
+impl PackageBuildSpec {
+    /// Get the build script path if specified.
+    pub fn script_path(&self) -> Option<&str> {
+        match self {
+            PackageBuildSpec::Simple(path) => Some(path),
+            PackageBuildSpec::Detailed { script, .. } => script.as_deref(),
+        }
+    }
+
+    /// Get pre-build hooks if any.
+    pub fn pre_hooks(&self) -> &[String] {
+        match self {
+            PackageBuildSpec::Simple(_) => &[],
+            PackageBuildSpec::Detailed { pre, .. } => pre,
+        }
+    }
+
+    /// Get post-build hooks if any.
+    pub fn post_hooks(&self) -> &[String] {
+        match self {
+            PackageBuildSpec::Simple(_) => &[],
+            PackageBuildSpec::Detailed { post, .. } => post,
+        }
+    }
+
+    /// Check if this is a simple script path.
+    pub fn is_simple(&self) -> bool {
+        matches!(self, PackageBuildSpec::Simple(_))
+    }
+}
+
+/// Build configuration in lumen.toml.
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct BuildConfig {
+    /// Simple script to run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
+
+    /// Detailed build steps.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<BuildStep>,
+
+    /// Environment variables for all steps.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
+
+    /// Dependencies that trigger rebuild when changed.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        rename = "rerun-if-changed"
+    )]
+    pub rerun_if_changed: Vec<String>,
+}
+
+/// A single build step.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct BuildStep {
+    /// Name of this step (for logging).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+
+    /// Command to execute.
+    pub command: String,
+
+    /// Arguments to pass to the command.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+
+    /// Environment variables for this step.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
+
+    /// Expected output files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<String>,
+
+    /// Files/patterns that should trigger rebuild when changed.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        rename = "rerun-if-changed"
+    )]
+    pub rerun_if_changed: Vec<String>,
+
+    /// Working directory for this step (relative to package root).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
+}
+
+impl BuildStep {
+    /// Create a new build step from a shell command string.
+    pub fn from_shell_command(command: &str) -> Self {
+        // Parse the command string, handling quotes
+        let parts = shell_words::split(command)
+            .unwrap_or_else(|_| command.split_whitespace().map(String::from).collect());
+
+        if parts.is_empty() {
+            return Self {
+                name: Some("shell".to_string()),
+                command: String::new(),
+                args: vec![],
+                env: HashMap::new(),
+                outputs: vec![],
+                rerun_if_changed: vec![],
+                working_dir: None,
+            };
+        }
+
+        Self {
+            name: Some(parts[0].clone()),
+            command: parts[0].clone(),
+            args: parts.into_iter().skip(1).collect(),
+            env: HashMap::new(),
+            outputs: vec![],
+            rerun_if_changed: vec![],
+            working_dir: None,
         }
     }
 }
@@ -704,20 +920,21 @@ pub struct McpConfig {
 
 impl LumenConfig {
     /// Get the registry URL to use.
-    pub fn registry_url(&self) -> Result<String, String> {
-        if let Some(ref reg) = self.registry {
-            reg.effective_url()
-        } else {
-            // Check environment variable
-            if let Ok(url) = std::env::var("LUMEN_REGISTRY") {
-                return Ok(url);
-            }
-            Err(format!(
-                "No registry configured. Set LUMEN_REGISTRY env var or add [registry] section to lumen.toml.
-                 Example: export LUMEN_REGISTRY=https://your-registry.com
-                 Or use a local registry: export LUMEN_REGISTRY=file:///path/to/registry"
-            ))
+    /// Precedence: env var > config > default
+    pub fn registry_url(&self) -> String {
+        // Check env var first
+        if let Ok(url) = std::env::var("LUMEN_REGISTRY") {
+            return url;
         }
+        // Then config
+        if let Some(registry) = &self.registry {
+            let url = registry.effective_url();
+            if !url.is_empty() {
+                return url;
+            }
+        }
+        // Default
+        "https://wares.lumen-lang.com".to_string()
     }
 
     /// Load config from `lumen.toml`, searching current dir then parents.
@@ -736,8 +953,7 @@ impl LumenConfig {
     pub fn load_from(path: &std::path::Path) -> Result<Self, String> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read '{}': {}", path.display(), e))?;
-        toml::from_str(&content)
-            .map_err(|e| format!("invalid toml in '{}': {}", path.display(), e))
+        toml::from_str(&content).map_err(|e| format!("invalid toml in '{}': {}", path.display(), e))
     }
 
     fn find_and_load() -> Option<(PathBuf, Self)> {
@@ -851,9 +1067,7 @@ lto = true
             .get("default")
             .map(|def| match def {
                 FeatureDef::Simple(features) => features.contains(&feature.to_string()),
-                FeatureDef::Detailed { enables, .. } => {
-                    enables.contains(&feature.to_string())
-                }
+                FeatureDef::Detailed { enables, .. } => enables.contains(&feature.to_string()),
             })
             .unwrap_or(false)
     }
@@ -930,7 +1144,10 @@ lto = true
             // Check version
             if let Some(version) = &pkg.version {
                 if crate::semver::Version::from_str(version).is_err() {
-                    errors.push(format!("Invalid version '{}': must be valid semver", version));
+                    errors.push(format!(
+                        "Invalid version '{}': must be valid semver",
+                        version
+                    ));
                 }
             }
 

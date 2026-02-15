@@ -4,9 +4,9 @@ compatibility_date = "2024-01-01"
 
 # D1 Database for storing log entries
 [[d1_databases]]
-binding = "DB"
+binding = "wares_transparency_log"
 database_name = "wares-transparency-log"
-database_id = "YOUR_DATABASE_ID_HERE"
+database_id = "222b303b-3e32-43a0-be42-24b480d78201"
 
 # Environment variables
 [vars]

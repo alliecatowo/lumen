@@ -1097,7 +1097,7 @@ mod tests {
 
     #[test]
     fn test_resolver_creation() {
-        let resolver = Resolver::new("https://registry.example.com", None);
+        let resolver = Resolver::new("https://example.com/registry", None);
         assert!(resolver.locked.is_empty());
     }
 
@@ -1121,7 +1121,7 @@ mod tests {
 
         let request = ResolutionRequest {
             root_deps: deps,
-            registry_url: "https://registry.example.com".to_string(),
+            registry_url: "https://example.com/registry".to_string(),
         };
 
         assert_eq!(request.root_deps.len(), 1);

@@ -29,7 +29,7 @@
 //! [[package]]
 //! name = "@acme/http-utils"
 //! version = "1.2.0"
-//! source = "registry+https://registry.lumen.sh"
+//! source = "registry+https://example.com/registry"
 //! resolved = "cid:bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"
 //! integrity = "sha512-Low1Rb...=="
 //! manifest_hash = "sha256:def456..."
@@ -190,7 +190,7 @@ pub struct LockedPackage {
     /// Package source URL with scheme.
     ///
     /// Formats:
-    /// - `registry+https://registry.lumen.sh`
+    /// - `registry+https://example.com/registry`
     /// - `path+../relative/path`
     /// - `git+https://github.com/org/repo?rev=sha`
     pub source: String,
@@ -1102,7 +1102,7 @@ mod tests {
         lock.add_package(LockedPackage {
             name: "@acme/http-utils".to_string(),
             version: "1.2.0".to_string(),
-            source: "registry+https://registry.lumen.sh".to_string(),
+            source: "registry+https://example.com/registry".to_string(),
             resolved: Some("cid:bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi".to_string()),
             integrity: Some("sha512-Low1Rb...==".to_string()),
             manifest_hash: Some("sha256:def456".to_string()),
@@ -1209,7 +1209,7 @@ checksum = "sha256:abc123"
         lock.add_package(LockedPackage {
             name: "a".to_string(),
             version: "1.0.0".to_string(),
-            source: "registry+https://registry.lumen.sh".to_string(),
+            source: "registry+https://example.com/registry".to_string(),
             resolved: None,
             integrity: None,
             manifest_hash: None,
@@ -1226,7 +1226,7 @@ checksum = "sha256:abc123"
         lock.add_package(LockedPackage {
             name: "b".to_string(),
             version: "1.0.0".to_string(),
-            source: "registry+https://registry.lumen.sh".to_string(),
+            source: "registry+https://example.com/registry".to_string(),
             resolved: None,
             integrity: None,
             manifest_hash: None,
@@ -1253,13 +1253,13 @@ checksum = "sha256:abc123"
         lock1.add_package(LockedPackage::from_registry(
             "a".to_string(),
             "1.0.0".to_string(),
-            "https://registry.lumen.sh".to_string(),
+            "https://example.com/registry".to_string(),
             "sha256:abc".to_string(),
         ));
         lock1.add_package(LockedPackage::from_registry(
             "b".to_string(),
             "1.0.0".to_string(),
-            "https://registry.lumen.sh".to_string(),
+            "https://example.com/registry".to_string(),
             "sha256:def".to_string(),
         ));
 
@@ -1267,13 +1267,13 @@ checksum = "sha256:abc123"
         lock2.add_package(LockedPackage::from_registry(
             "a".to_string(),
             "2.0.0".to_string(),
-            "https://registry.lumen.sh".to_string(),
+            "https://example.com/registry".to_string(),
             "sha256:xyz".to_string(),
         ));
         lock2.add_package(LockedPackage::from_registry(
             "c".to_string(),
             "1.0.0".to_string(),
-            "https://registry.lumen.sh".to_string(),
+            "https://example.com/registry".to_string(),
             "sha256:123".to_string(),
         ));
 
@@ -1296,7 +1296,7 @@ checksum = "sha256:abc123"
         let valid_pkg = LockedPackage::from_registry(
             "test".to_string(),
             "1.0.0".to_string(),
-            "https://registry.lumen.sh".to_string(),
+            "https://example.com/registry".to_string(),
             "sha256:abc".to_string(),
         );
         assert!(valid_pkg.verify_integrity().is_ok());
@@ -1304,7 +1304,7 @@ checksum = "sha256:abc123"
         let invalid_pkg = LockedPackage {
             name: "test".to_string(),
             version: "1.0.0".to_string(),
-            source: "registry+https://registry.lumen.sh".to_string(),
+            source: "registry+https://example.com/registry".to_string(),
             resolved: None,
             integrity: None,
             manifest_hash: None,

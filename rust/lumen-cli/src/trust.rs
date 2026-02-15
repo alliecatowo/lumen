@@ -580,44 +580,58 @@ impl TrustClient {
         
         // Step 1: Request a login session from the registry
         let login_url = format!("{}/api/v1/auth/oidc/login", self.registry_url.trim_end_matches('/'));
+        
+        // Start a local callback server
+        let callback_port = find_free_port().await?;
+        let redirect_uri = format!("http://localhost:{}/callback", callback_port);
+        
         let resp = self.http_client
             .post(&login_url)
             .json(&serde_json::json!({
                 "provider": provider,
-                "redirect_uri": "http://localhost:0/callback"
+                "redirect_uri": redirect_uri
             }))
             .send()
             .await?;
         
         if !resp.status().is_success() {
-            return Err(TrustError::Auth(format!("Login request failed: {}", resp.status())));
+            let err_text = resp.text().await.unwrap_or_default();
+            return Err(TrustError::Auth(format!("Login request failed: {}", err_text)));
         }
         
         let login_session: LoginSession = resp.json().await?;
         
-        // Step 2: Open browser for user to authenticate
-        let auth_url = format!(
-            "{}?client_id={}&redirect_uri={}&state={}&scope=openid%20email%20profile",
-            provider.auth_url(),
-            login_session.client_id,
-            urlencoding::encode(&login_session.redirect_uri),
-            login_session.state
-        );
+        // Step 2: Start local callback server
+        println!("{} Starting local callback server on port {}...", colors::gray("→"), callback_port);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let session_id = login_session.session_id.clone();
+        let registry_url = self.registry_url.clone();
+        let client = self.http_client.clone();
         
+        tokio::spawn(async move {
+            let result = run_callback_server(callback_port, &session_id, &registry_url, client).await;
+            let _ = tx.send(result);
+        });
+        
+        // Step 3: Open browser for user to authenticate
         println!("{} Opening browser for authentication...", colors::cyan("→"));
         println!("  If the browser doesn't open, visit:",);
-        println!("  {}", colors::bold(&auth_url));
+        println!("  {}", colors::bold(&login_session.auth_url));
         
-        if let Err(e) = open::that(&auth_url) {
+        if let Err(e) = open::that(&login_session.auth_url) {
             eprintln!("{} Could not open browser: {}", colors::yellow("!"), e);
         }
         
-        // Step 3: Poll for completion or start local callback server
+        // Step 4: Wait for callback
         println!("{} Waiting for authentication...", colors::gray("⏳"));
         
-        let token = self.poll_for_token(&login_session.session_id).await?;
+        let token = match rx.await {
+            Ok(Ok(token)) => token,
+            Ok(Err(e)) => return Err(TrustError::Auth(format!("Authentication failed: {}", e))),
+            Err(_) => return Err(TrustError::Auth("Authentication cancelled".to_string())),
+        };
         
-        // Step 4: Store credentials
+        // Step 5: Store credentials
         let identity = token.identity.clone();
         let creds = OidcCredentials {
             provider,
@@ -953,9 +967,7 @@ impl TrustClient {
 #[derive(Debug, Clone, Deserialize)]
 struct LoginSession {
     session_id: String,
-    client_id: String,
-    state: String,
-    redirect_uri: String,
+    auth_url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1079,4 +1091,127 @@ fn format_duration(d: Duration) -> String {
     } else {
         format!("{}d", secs / 86400)
     }
+}
+
+// =============================================================================
+// Local Callback Server for OAuth
+// =============================================================================
+
+use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+/// Find a free port on localhost
+async fn find_free_port() -> Result<u16, TrustError> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    drop(listener);
+    Ok(port)
+}
+
+/// Run a simple HTTP server to handle the OAuth callback
+async fn run_callback_server(
+    port: u16,
+    session_id: &str,
+    registry_url: &str,
+    client: reqwest::Client,
+) -> Result<OAuthToken, String> {
+    let addr = format!("127.0.0.1:{}", port);
+    let listener = TcpListener::bind(&addr).await
+        .map_err(|e| format!("Failed to bind: {}", e))?;
+    
+    // Accept one connection
+    let (mut socket, _) = listener.accept().await
+        .map_err(|e| format!("Failed to accept: {}", e))?;
+    
+    let mut buffer = [0u8; 4096];
+    let n = socket.read(&mut buffer).await
+        .map_err(|e| format!("Failed to read: {}", e))?;
+    
+    let request = String::from_utf8_lossy(&buffer[..n]);
+    
+    // Parse query parameters from request line
+    let code = extract_query_param(&request, "code");
+    let state = extract_query_param(&request, "state");
+    let error = extract_query_param(&request, "error");
+    
+    // Send response
+    let response_body = if error.is_some() {
+        "Authentication failed. You can close this window."
+    } else {
+        "Authentication successful! You can close this window."
+    };
+    
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
+        response_body.len(),
+        response_body
+    );
+    
+    socket.write_all(response.as_bytes()).await.ok();
+    
+    // Check for error
+    if let Some(err) = error {
+        return Err(format!("OAuth error: {}", err));
+    }
+    
+    // Get code and state
+    let code = code.ok_or("Missing authorization code")?;
+    let state = state.ok_or("Missing state")?;
+    
+    // Exchange code via registry
+    let callback_url = format!("{}/api/v1/auth/oidc/callback/{}", registry_url.trim_end_matches('/'), session_id);
+    
+    let resp = client
+        .get(&callback_url)
+        .query(&[("code", code), ("state", state)])
+        .send()
+        .await
+        .map_err(|e| format!("Failed to call callback: {}", e))?;
+    
+    if !resp.status().is_success() {
+        let err = resp.text().await.unwrap_or_default();
+        return Err(format!("Callback failed: {}", err));
+    }
+    
+    // Get token
+    let token_url = format!("{}/api/v1/auth/oidc/token/{}", registry_url.trim_end_matches('/'), session_id);
+    let resp = client
+        .post(&token_url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to get token: {}", e))?;
+    
+    if !resp.status().is_success() {
+        return Err("Failed to get token".to_string());
+    }
+    
+    let token: OAuthToken = resp.json().await
+        .map_err(|e| format!("Failed to parse token: {}", e))?;
+    
+    Ok(token)
+}
+
+fn extract_query_param(request: &str, name: &str) -> Option<String> {
+    // Find request line (e.g., "GET /callback?code=xxx&state=yyy HTTP/1.1")
+    let request_line = request.lines().next()?;
+    let path_start = request_line.find(' ')? + 1;
+    let path_end = request_line[path_start..].find(' ')?;
+    let path = &request_line[path_start..path_start + path_end];
+    
+    // Extract query string
+    let query_start = path.find('?')?;
+    let query = &path[query_start + 1..];
+    
+    // Parse params
+    for param in query.split('&') {
+        let mut parts = param.splitn(2, '=');
+        let key = parts.next()?;
+        let value = parts.next()?;
+        
+        if key == name {
+            return Some(urlencoding::decode(value).ok()?.into_owned());
+        }
+    }
+    
+    None
 }

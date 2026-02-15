@@ -7,7 +7,13 @@ mod lint;
 mod lockfile;
 mod module_resolver;
 mod pkg;
+mod registry;
+mod resolver;
+mod git;
+mod workspace;
+mod cache;
 mod repl;
+mod semver;
 mod test_cmd;
 
 use clap::{Parser as ClapParser, Subcommand, ValueEnum};

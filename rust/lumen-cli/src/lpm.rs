@@ -4,6 +4,12 @@
 mod config;
 mod lockfile;
 mod pkg;
+mod registry;
+mod resolver;
+mod git;
+mod workspace;
+mod cache;
+mod semver;
 
 use clap::{Parser, Subcommand};
 

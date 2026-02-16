@@ -1,0 +1,48 @@
+name: Deploy Wares Site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'wares-site/**'
+      - 'docs/**'
+  workflow_dispatch:
+
+permissions:
+  pages: write
+  id-token: write
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: wares-site/package-lock.json
+      - run: npm ci
+        working-directory: wares-site
+      - run: npm run docs:build
+        working-directory: wares-site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: wares-site/.vitepress/dist
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment

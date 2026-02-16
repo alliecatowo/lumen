@@ -1,0 +1,41 @@
+name: Deploy Workers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'workers/**'
+  workflow_dispatch:
+
+jobs:
+  deploy-registry:
+    name: Deploy Registry Worker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install wrangler
+        run: npm install -g wrangler
+      - name: Deploy registry
+        working-directory: workers/registry
+        run: wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+  deploy-transparency:
+    name: Deploy Transparency Log Worker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install wrangler
+        run: npm install -g wrangler
+      - name: Deploy transparency log
+        working-directory: workers/transparency
+        run: wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

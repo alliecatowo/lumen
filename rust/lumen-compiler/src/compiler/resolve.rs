@@ -305,7 +305,7 @@ impl SymbolTable {
         let mut types = HashMap::new();
         // Register builtin types
         for name in &[
-            "String", "Int", "Float", "Bool", "Bytes", "Json", "Null", "Self",
+            "String", "Int", "Float", "Bool", "Bytes", "Json", "Null", "Self", "Any",
         ] {
             types.insert(
                 name.to_string(),

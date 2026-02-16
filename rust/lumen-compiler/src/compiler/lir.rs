@@ -193,7 +193,10 @@ pub enum IntrinsicId {
     ReadDir = 79,
     Exists = 80,
     Mkdir = 81,
-    Exit = 82,
+    Eval = 82,
+    Guardrail = 83,
+    Pattern = 84,
+    Exit = 85,
 }
 
 /// A 32-bit instruction

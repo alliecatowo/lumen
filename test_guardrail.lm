@@ -1,0 +1,6 @@
+cell main()
+  print("Guardrail test:")
+  print(guardrail(1, "Int"))
+  print("Pattern test:")
+  print(pattern(1, "x"))
+end

@@ -1,0 +1,30 @@
+guardrail IntGuard
+  schema: "Int"
+end
+
+eval MyEval
+  source: "return input + 42"
+end
+
+pattern MyPattern
+  pattern: r"hello {name}"
+end
+
+cell main()
+  print("Guardrail test (Valid):")
+  print(IntGuard.run(10))
+  
+  print("Eval test:")
+  print(MyEval.run(8))
+  
+  print("Pattern test:")
+  let caps = MyPattern.run("hello world")
+  if caps != null
+    print("Caps object:", caps)
+    let n = caps.name
+    print("Name is:", n)
+    print("Direct access name:", caps.name)
+  else
+    print("Match failed")
+  end
+end

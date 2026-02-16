@@ -334,6 +334,9 @@ fn intrinsic_description(id: &IntrinsicId) -> &str {
         ReadDir => "List directory entries as a list of strings",
         Exists => "Check if a file or directory path exists",
         Mkdir => "Create a directory (and parent directories)",
+        Eval => "Evaluate a block of code at runtime",
+        Guardrail => "Enforce safety invariants on a value",
+        Pattern => "Define a reusable pattern matcher",
         Exit => "Exit the process with a status code",
     }
 }

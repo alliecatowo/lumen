@@ -765,8 +765,9 @@ fn wrap_as_source(input: &str, session_state: &SessionState) -> String {
         // Statement — wrap as-is
         session_state.build_source(input)
     } else {
-        // Expression — wrap in cell main() with explicit return
-        let wrapped = format!("cell main()\n  return {}\nend", input);
+        // Expression — wrap in explicit return so it is returned by the synthesized main
+        // We do NOT wrap in `cell main()` because that would hide top-level variables (like `let x = ...`).
+        let wrapped = format!("return {}", input);
         session_state.build_source(&wrapped)
     }
 }
@@ -774,6 +775,7 @@ fn wrap_as_source(input: &str, session_state: &SessionState) -> String {
 /// Evaluate input: compile and run, printing the result.
 fn eval_input(input: &str, session_state: &mut SessionState) {
     let source = wrap_as_source(input, session_state);
+
 
     let module = match lumen_compiler::compile(&source) {
         Ok(m) => m,

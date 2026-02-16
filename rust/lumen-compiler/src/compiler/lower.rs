@@ -8,6 +8,105 @@ use crate::compiler::tokens::Span;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
+/// Map a string name to an IntrinsicId, if it corresponds to a built-in function.
+fn get_intrinsic_id(name: &str) -> Option<IntrinsicId> {
+    match name {
+        // "print" and "format" are variadic and should be lowered as Calls
+        // to call_builtin instead of Intrinsic opcodes.
+        "len" | "length" => Some(IntrinsicId::Length),
+        "range" => Some(IntrinsicId::Range),
+        "string" => Some(IntrinsicId::ToString),
+        "int" => Some(IntrinsicId::ToInt),
+        "float" => Some(IntrinsicId::ToFloat),
+        "type" | "type_of" => Some(IntrinsicId::TypeOf),
+        "keys" => Some(IntrinsicId::Keys),
+        "values" => Some(IntrinsicId::Values),
+        "join" => Some(IntrinsicId::Join),
+        "split" => Some(IntrinsicId::Split),
+        "append" => Some(IntrinsicId::Append),
+        "contains" | "has" => Some(IntrinsicId::Contains),
+        "slice" => Some(IntrinsicId::Slice),
+        "min" => Some(IntrinsicId::Min),
+        "max" => Some(IntrinsicId::Max),
+        "confirm" | "matches" => Some(IntrinsicId::Matches),
+        "trace_ref" => Some(IntrinsicId::TraceRef),
+        "abs" => Some(IntrinsicId::Abs),
+        // Collection operations
+        "sort" => Some(IntrinsicId::Sort),
+        "reverse" => Some(IntrinsicId::Reverse),
+        "map" => Some(IntrinsicId::Map),
+        "filter" => Some(IntrinsicId::Filter),
+        "reduce" => Some(IntrinsicId::Reduce),
+        "flat_map" => Some(IntrinsicId::FlatMap),
+        "zip" => Some(IntrinsicId::Zip),
+        "enumerate" => Some(IntrinsicId::Enumerate),
+        "any" => Some(IntrinsicId::Any),
+        "all" => Some(IntrinsicId::All),
+        "find" => Some(IntrinsicId::Find),
+        "position" => Some(IntrinsicId::Position),
+        "group_by" => Some(IntrinsicId::GroupBy),
+        "chunk" => Some(IntrinsicId::Chunk),
+        "window" => Some(IntrinsicId::Window),
+        "flatten" => Some(IntrinsicId::Flatten),
+        "unique" => Some(IntrinsicId::Unique),
+        "take" => Some(IntrinsicId::Take),
+        "drop" => Some(IntrinsicId::Drop),
+        "first" => Some(IntrinsicId::First),
+        "last" => Some(IntrinsicId::Last),
+        "is_empty" => Some(IntrinsicId::IsEmpty),
+        // String operations
+        "chars" => Some(IntrinsicId::Chars),
+        "starts_with" => Some(IntrinsicId::StartsWith),
+        "ends_with" => Some(IntrinsicId::EndsWith),
+        "index_of" => Some(IntrinsicId::IndexOf),
+        "pad_left" => Some(IntrinsicId::PadLeft),
+        "pad_right" => Some(IntrinsicId::PadRight),
+        "trim" => Some(IntrinsicId::Trim),
+        "upper" => Some(IntrinsicId::Upper),
+        "lower" => Some(IntrinsicId::Lower),
+        "replace" => Some(IntrinsicId::Replace),
+        // Math operations
+        "round" => Some(IntrinsicId::Round),
+        "ceil" => Some(IntrinsicId::Ceil),
+        "floor" => Some(IntrinsicId::Floor),
+        "sqrt" => Some(IntrinsicId::Sqrt),
+        "pow" => Some(IntrinsicId::Pow),
+        "log" => Some(IntrinsicId::Log),
+        "sin" => Some(IntrinsicId::Sin),
+        "cos" => Some(IntrinsicId::Cos),
+        "clamp" => Some(IntrinsicId::Clamp),
+        // Utility operations
+        "clone" => Some(IntrinsicId::Clone),
+        "sizeof" => Some(IntrinsicId::Sizeof),
+        "debug" => Some(IntrinsicId::Debug),
+        "count" => Some(IntrinsicId::Count),
+        "hash" => Some(IntrinsicId::Hash),
+        "diff" => Some(IntrinsicId::Diff),
+        "patch" => Some(IntrinsicId::Patch),
+        "redact" => Some(IntrinsicId::Redact),
+        "validate" => Some(IntrinsicId::Validate),
+        // Map/Set operations
+        "has_key" => Some(IntrinsicId::HasKey),
+        "merge" => Some(IntrinsicId::Merge),
+        "size" => Some(IntrinsicId::Size),
+        "add" => Some(IntrinsicId::Add),
+        "remove" => Some(IntrinsicId::Remove),
+        "entries" => Some(IntrinsicId::Entries),
+        "to_set" => Some(IntrinsicId::ToSet),
+        // Formatting / filesystem / process
+        // "format" => Some(IntrinsicId::Format),
+        "partition" => Some(IntrinsicId::Partition),
+        "read_dir" => Some(IntrinsicId::ReadDir),
+        "exists" => Some(IntrinsicId::Exists),
+        "mkdir" => Some(IntrinsicId::Mkdir),
+        "eval" => Some(IntrinsicId::Eval),
+        "guardrail" => Some(IntrinsicId::Guardrail),
+        "pattern" => Some(IntrinsicId::Pattern),
+        "exit" => Some(IntrinsicId::Exit),
+        _ => None,
+    }
+}
+
 /// Return the LIR constant for a built-in math constant name, if any.
 fn builtin_math_constant_value(name: &str) -> Option<Constant> {
     match name {
@@ -161,6 +260,23 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                     kind: p.kind.clone(),
                     name: Some(p.name.clone()),
                 });
+                for (key, val) in &p.configs {
+                    let json_val = if let Some(cv) = try_const_eval(val) {
+                        match cv {
+                            ConstValue::Int(n) => n.to_string(),
+                            ConstValue::Float(f) => f.to_string(),
+                            ConstValue::String(s) => serde_json::to_string(&s).unwrap_or_else(|_| format!("\"{}\"", s)),
+                            ConstValue::Bool(b) => b.to_string(),
+                            ConstValue::Null => "null".to_string(),
+                        }
+                    } else {
+                        "null".to_string()
+                    };
+                    module.addons.push(LirAddon {
+                        kind: "process.config".to_string(),
+                        name: Some(format!("{}.{}={}", p.name, key, json_val)),
+                    });
+                }
                 if !p.pipeline_stages.is_empty() {
                     let stages_json =
                         serde_json::to_string(&p.pipeline_stages).unwrap_or_default();
@@ -390,7 +506,7 @@ fn try_const_eval(expr: &Expr) -> Option<ConstValue> {
         // Leaf literals
         Expr::IntLit(n, _) => Some(ConstValue::Int(*n)),
         Expr::FloatLit(f, _) => Some(ConstValue::Float(*f)),
-        Expr::StringLit(s, _) => Some(ConstValue::String(s.clone())),
+        Expr::StringLit(s, _) | Expr::RawStringLit(s, _) => Some(ConstValue::String(s.clone())),
         Expr::BoolLit(b, _) => Some(ConstValue::Bool(*b)),
         Expr::NullLit(_) => Some(ConstValue::Null),
 
@@ -2443,97 +2559,7 @@ impl<'a> Lowerer<'a> {
 
                     // Only treat as intrinsic if it's not a defined cell
                     let intrinsic = if !self.symbols.cells.contains_key(name) {
-                        match name.as_str() {
-                            "print" => Some(IntrinsicId::Print),
-                            "len" | "length" => Some(IntrinsicId::Length),
-                            "range" => Some(IntrinsicId::Range),
-                            "string" => Some(IntrinsicId::ToString),
-                            "int" => Some(IntrinsicId::ToInt),
-                            "float" => Some(IntrinsicId::ToFloat),
-                            "type" | "type_of" => Some(IntrinsicId::TypeOf),
-                            "keys" => Some(IntrinsicId::Keys),
-                            "values" => Some(IntrinsicId::Values),
-                            "join" => Some(IntrinsicId::Join),
-                            "split" => Some(IntrinsicId::Split),
-                            "append" => Some(IntrinsicId::Append),
-                            "contains" | "has" => Some(IntrinsicId::Contains),
-                            "slice" => Some(IntrinsicId::Slice),
-                            "min" => Some(IntrinsicId::Min),
-                            "max" => Some(IntrinsicId::Max),
-                            "confirm" | "matches" => Some(IntrinsicId::Matches),
-                            "trace_ref" => Some(IntrinsicId::TraceRef),
-                            "abs" => Some(IntrinsicId::Abs),
-                            // Collection operations
-                            "sort" => Some(IntrinsicId::Sort),
-                            "reverse" => Some(IntrinsicId::Reverse),
-                            "map" => Some(IntrinsicId::Map),
-                            "filter" => Some(IntrinsicId::Filter),
-                            "reduce" => Some(IntrinsicId::Reduce),
-                            "flat_map" => Some(IntrinsicId::FlatMap),
-                            "zip" => Some(IntrinsicId::Zip),
-                            "enumerate" => Some(IntrinsicId::Enumerate),
-                            "any" => Some(IntrinsicId::Any),
-                            "all" => Some(IntrinsicId::All),
-                            "find" => Some(IntrinsicId::Find),
-                            "position" => Some(IntrinsicId::Position),
-                            "group_by" => Some(IntrinsicId::GroupBy),
-                            "chunk" => Some(IntrinsicId::Chunk),
-                            "window" => Some(IntrinsicId::Window),
-                            "flatten" => Some(IntrinsicId::Flatten),
-                            "unique" => Some(IntrinsicId::Unique),
-                            "take" => Some(IntrinsicId::Take),
-                            "drop" => Some(IntrinsicId::Drop),
-                            "first" => Some(IntrinsicId::First),
-                            "last" => Some(IntrinsicId::Last),
-                            "is_empty" => Some(IntrinsicId::IsEmpty),
-                            // String operations
-                            "chars" => Some(IntrinsicId::Chars),
-                            "starts_with" => Some(IntrinsicId::StartsWith),
-                            "ends_with" => Some(IntrinsicId::EndsWith),
-                            "index_of" => Some(IntrinsicId::IndexOf),
-                            "pad_left" => Some(IntrinsicId::PadLeft),
-                            "pad_right" => Some(IntrinsicId::PadRight),
-                            "trim" => Some(IntrinsicId::Trim),
-                            "upper" => Some(IntrinsicId::Upper),
-                            "lower" => Some(IntrinsicId::Lower),
-                            "replace" => Some(IntrinsicId::Replace),
-                            // Math operations
-                            "round" => Some(IntrinsicId::Round),
-                            "ceil" => Some(IntrinsicId::Ceil),
-                            "floor" => Some(IntrinsicId::Floor),
-                            "sqrt" => Some(IntrinsicId::Sqrt),
-                            "pow" => Some(IntrinsicId::Pow),
-                            "log" => Some(IntrinsicId::Log),
-                            "sin" => Some(IntrinsicId::Sin),
-                            "cos" => Some(IntrinsicId::Cos),
-                            "clamp" => Some(IntrinsicId::Clamp),
-                            // Utility operations
-                            "clone" => Some(IntrinsicId::Clone),
-                            "sizeof" => Some(IntrinsicId::Sizeof),
-                            "debug" => Some(IntrinsicId::Debug),
-                            "count" => Some(IntrinsicId::Count),
-                            "hash" => Some(IntrinsicId::Hash),
-                            "diff" => Some(IntrinsicId::Diff),
-                            "patch" => Some(IntrinsicId::Patch),
-                            "redact" => Some(IntrinsicId::Redact),
-                            "validate" => Some(IntrinsicId::Validate),
-                            // Map/Set operations
-                            "has_key" => Some(IntrinsicId::HasKey),
-                            "merge" => Some(IntrinsicId::Merge),
-                            "size" => Some(IntrinsicId::Size),
-                            "add" => Some(IntrinsicId::Add),
-                            "remove" => Some(IntrinsicId::Remove),
-                            "entries" => Some(IntrinsicId::Entries),
-                            "to_set" => Some(IntrinsicId::ToSet),
-                            // Formatting / filesystem / process
-                            "format" => Some(IntrinsicId::Format),
-                            "partition" => Some(IntrinsicId::Partition),
-                            "read_dir" => Some(IntrinsicId::ReadDir),
-                            "exists" => Some(IntrinsicId::Exists),
-                            "mkdir" => Some(IntrinsicId::Mkdir),
-                            "exit" => Some(IntrinsicId::Exit),
-                            _ => None,
-                        }
+                        get_intrinsic_id(name)
                     } else {
                         None
                     };
@@ -2602,6 +2628,46 @@ impl<'a> Lowerer<'a> {
                             consts.push(Constant::String(format!("{}.{}", agent_name, field)));
                             instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
                             dest
+                        } else if let Some(id) = get_intrinsic_id(field) {
+                            // Dot access method call on intrinsic: list.len() -> len(list)
+                            // Lower obj as first arg
+                            let obj_reg = self.lower_expr(obj, ra, consts, instrs);
+                            
+                            // Lower other args
+                            let mut arg_regs = vec![obj_reg];
+                            for arg in args {
+                                match arg {
+                                    CallArg::Positional(e) | CallArg::Named(_, e, _) => {
+                                        arg_regs.push(self.lower_expr(e, ra, consts, instrs));
+                                    }
+                                    CallArg::Role(_, e, _) => {
+                                        arg_regs.push(self.lower_expr(e, ra, consts, instrs));
+                                    }
+                                }
+                            }
+
+                            // Move to contiguous block
+                            let start_reg = ra.alloc_temp();
+                            // Reserve slots
+                            for _ in 0..arg_regs.len().saturating_sub(1) {
+                                ra.alloc_temp();
+                            }
+
+                            for (i, &reg) in arg_regs.iter().enumerate() {
+                                let target = start_reg + i as u8;
+                                if reg != target {
+                                    instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
+                                }
+                            }
+
+                            let dest = ra.alloc_temp();
+                            instrs.push(Instruction::abc(
+                                OpCode::Intrinsic,
+                                dest,
+                                id as u8,
+                                start_reg,
+                            ));
+                            return dest;
                         } else {
                             let obj_reg = self.lower_expr(obj, ra, consts, instrs);
                             implicit_self_arg = Some(obj_reg);
@@ -2609,6 +2675,46 @@ impl<'a> Lowerer<'a> {
                             self.emit_get_field(dest, obj_reg, field, ra, consts, instrs);
                             dest
                         }
+                    } else if let Some(id) = get_intrinsic_id(field) {
+                         // Dot access method call on intrinsic: list.len() -> len(list)
+                        // Lower obj as first arg
+                        let obj_reg = self.lower_expr(obj, ra, consts, instrs);
+                        
+                        // Lower other args
+                        let mut arg_regs = vec![obj_reg];
+                        for arg in args {
+                            match arg {
+                                CallArg::Positional(e) | CallArg::Named(_, e, _) => {
+                                    arg_regs.push(self.lower_expr(e, ra, consts, instrs));
+                                }
+                                CallArg::Role(_, e, _) => {
+                                    arg_regs.push(self.lower_expr(e, ra, consts, instrs));
+                                }
+                            }
+                        }
+
+                        // Move to contiguous block
+                        let start_reg = ra.alloc_temp();
+                        // Reserve slots
+                        for _ in 0..arg_regs.len().saturating_sub(1) {
+                            ra.alloc_temp();
+                        }
+
+                        for (i, &reg) in arg_regs.iter().enumerate() {
+                            let target = start_reg + i as u8;
+                            if reg != target {
+                                instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
+                            }
+                        }
+
+                        let dest = ra.alloc_temp();
+                        instrs.push(Instruction::abc(
+                            OpCode::Intrinsic,
+                            dest,
+                            id as u8,
+                            start_reg,
+                        ));
+                        return dest;
                     } else {
                         let obj_reg = self.lower_expr(obj, ra, consts, instrs);
                         implicit_self_arg = Some(obj_reg);

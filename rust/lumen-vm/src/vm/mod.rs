@@ -17,6 +17,7 @@ use crate::values::{
     UnionValue, Value,
 };
 use lumen_compiler::compiler::lir::*;
+
 use lumen_runtime::tools::{ProviderRegistry, ToolDispatcher, ToolRequest};
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
@@ -316,6 +317,7 @@ pub struct VM {
     pub(crate) machine_graphs: BTreeMap<String, MachineGraphDef>,
     pub(crate) memory_runtime: BTreeMap<u64, MemoryRuntime>,
     pub(crate) machine_runtime: BTreeMap<u64, MachineRuntime>,
+    pub(crate) process_configs: BTreeMap<String, BTreeMap<String, Value>>,
     pub(crate) await_fuel: u32,
     pub(crate) effect_handlers: Vec<EffectScope>,
     pub(crate) suspended_continuation: Option<SuspendedContinuation>,
@@ -353,6 +355,7 @@ impl VM {
             machine_graphs: BTreeMap::new(),
             memory_runtime: BTreeMap::new(),
             machine_runtime: BTreeMap::new(),
+            process_configs: BTreeMap::new(),
             await_fuel: MAX_AWAIT_RETRIES,
             effect_handlers: Vec::new(),
             suspended_continuation: None,
@@ -370,6 +373,80 @@ impl VM {
     /// previously configured dispatcher.
     pub fn set_provider_registry(&mut self, registry: ProviderRegistry) {
         self.tool_dispatcher = Some(Box::new(registry));
+    }
+
+    pub(crate) fn validate_schema(&self, val: &Value, schema_name: &str) -> bool {
+        match schema_name {
+            "Int" | "int" => matches!(val, Value::Int(_)),
+            "Float" | "float" => matches!(val, Value::Float(_)),
+            "String" | "string" => matches!(val, Value::String(_)),
+            "Bool" | "bool" => matches!(val, Value::Bool(_)),
+            "List" | "list" => matches!(val, Value::List(_)),
+            "Map" | "map" => matches!(val, Value::Map(_)),
+            "Tuple" | "tuple" => matches!(val, Value::Tuple(_)),
+            "Set" | "set" => matches!(val, Value::Set(_)),
+            "Any" | "any" => true,
+            "Null" | "null" => matches!(val, Value::Null),
+            _ => match val {
+                Value::Record(r) => r.type_name == schema_name,
+                _ => false,
+            },
+        }
+    }
+
+    pub(crate) fn extract_pattern_captures(
+        &self,
+        pattern: &str,
+        input: &str,
+    ) -> Option<BTreeMap<String, Value>> {
+        let mut captures = BTreeMap::new();
+        let mut current_input = input;
+        let mut current_pattern = pattern;
+
+        while let Some(placeholder_start) = current_pattern.find('{') {
+            let prefix = &current_pattern[..placeholder_start];
+            if !current_input.starts_with(prefix) {
+                return None;
+            }
+            current_input = &current_input[prefix.len()..];
+            current_pattern = &current_pattern[placeholder_start + 1..];
+
+            if let Some(placeholder_end) = current_pattern.find('}') {
+                let key = &current_pattern[..placeholder_end];
+                current_pattern = &current_pattern[placeholder_end + 1..];
+
+                if let Some(next_prefix_start) = current_pattern.find('{') {
+                    let next_prefix = &current_pattern[..next_prefix_start];
+                    if let Some(match_pos) = current_input.find(next_prefix) {
+                        let val = &current_input[..match_pos];
+                        captures.insert(key.to_string(), Value::String(StringRef::Owned(val.to_string())));
+                        current_input = &current_input[match_pos..];
+                    } else {
+                        return None;
+                    }
+                } else {
+                    if current_pattern.is_empty() {
+                        captures.insert(key.to_string(), Value::String(StringRef::Owned(current_input.to_string())));
+                        current_input = "";
+                    } else if current_input.ends_with(current_pattern) {
+                        let val = &current_input[..current_input.len() - current_pattern.len()];
+                        captures.insert(key.to_string(), Value::String(StringRef::Owned(val.to_string())));
+                        current_input = "";
+                        current_pattern = "";
+                    } else {
+                        return None;
+                    }
+                }
+            } else {
+                return None;
+            }
+        }
+
+        if current_input == current_pattern {
+            Some(captures)
+        } else {
+            None
+        }
     }
 
     fn emit_debug_event(&mut self, event: DebugEvent) {
@@ -395,6 +472,7 @@ impl VM {
         self.scheduled_futures.clear();
         self.memory_runtime.clear();
         self.machine_runtime.clear();
+        self.process_configs.clear();
         self.machine_graphs.clear();
         self.await_fuel = MAX_AWAIT_RETRIES;
         self.effect_handlers.clear();
@@ -427,6 +505,21 @@ impl VM {
                         {
                             self.pipeline_stages
                                 .insert(pipeline_name.to_string(), stages);
+                        }
+                    }
+                }
+                if addon.kind == "process.config" {
+                    if let Some(ref name) = addon.name {
+                        if let Some((target, payload)) = name.split_once('=') {
+                            if let Some((process_name, config_key)) = target.split_once('.') {
+                                if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(payload) {
+                                    let val = helpers::json_to_value(&json_val);
+                                    self.process_configs
+                                        .entry(process_name.to_string())
+                                        .or_default()
+                                        .insert(config_key.to_string(), val);
+                                }
+                            }
                         }
                     }
                 }
@@ -1122,7 +1215,7 @@ impl VM {
         });
 
         // Execute
-        self.run().map_err(|err| {
+        self.run_until(0).map_err(|err| {
             let frames = self.capture_stack_trace();
             err.with_stack_trace(frames)
         })
@@ -1153,8 +1246,12 @@ impl VM {
         }
     }
 
-    fn run(&mut self) -> Result<Value, VmError> {
+    pub(crate) fn run_until(&mut self, limit: usize) -> Result<Value, VmError> {
         loop {
+            if self.frames.len() <= limit {
+                return Ok(Value::Null);
+            }
+
             let (cell_idx, base, instr, cell_registers) = {
                 let frame = match self.frames.last() {
                     Some(f) => f,
@@ -2349,6 +2446,19 @@ impl VM {
                 self.emit_debug_event(DebugEvent::CallEnter { cell_name });
             }
             _ => {
+                println!("DEBUG: cannot call {:?} (type: {})", callee, callee.type_name());
+                println!("DEBUG: Current frame: {:?}", self.frames.last());
+                if let Some(frame) = self.frames.last() {
+                     if let Some(module) = self.module.as_ref() {
+                         if let Some(cell) = module.cells.get(frame.cell_idx) {
+                             println!("DEBUG: Instructions for cell '{}':", cell.name);
+                             println!("DEBUG: Constants: {:?}", cell.constants);
+                             for (i, instr) in cell.instructions.iter().enumerate() {
+                                 println!("  {:03}: {:?}", i, instr);
+                             }
+                         }
+                     }
+                }
                 return Err(VmError::TypeError(format!("cannot call {}", callee)));
             }
         }

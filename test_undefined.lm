@@ -1,0 +1,3 @@
+cell main()
+  non_existent_cell()
+end

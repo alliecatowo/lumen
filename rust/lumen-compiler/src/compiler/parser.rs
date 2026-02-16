@@ -2,6 +2,7 @@
 
 use crate::compiler::ast::*;
 use crate::compiler::tokens::{Span, Token, TokenKind};
+use std::collections::BTreeMap;
 use thiserror::Error;
 
 #[derive(Debug, Error, Clone)]
@@ -2829,6 +2830,7 @@ impl Parser {
         let mut pipeline_stages = Vec::new();
         let mut machine_initial = None;
         let mut machine_states = Vec::new();
+        let mut configs = BTreeMap::new();
 
         self.skip_newlines();
         let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
@@ -2910,6 +2912,13 @@ impl Parser {
                     self.advance();
                     self.consume_block_until_end();
                 }
+                TokenKind::Ident(_) if matches!(self.peek_n_kind(1), Some(TokenKind::Colon)) => {
+                    let key = self.expect_ident()?;
+                    self.expect(&TokenKind::Colon)?;
+                    let val = self.parse_expr(0)?;
+                    configs.insert(key, val);
+                    self.consume_rest_of_line();
+                }
                 TokenKind::Ident(_) => {
                     self.consume_named_section_or_line();
                 }
@@ -2938,6 +2947,7 @@ impl Parser {
         Ok(ProcessDecl {
             kind,
             name,
+            configs: configs.into_iter().collect(),
             cells,
             grants,
             pipeline_stages,

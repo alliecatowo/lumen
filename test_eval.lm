@@ -1,0 +1,5 @@
+cell main()
+  print("Eval test:")
+  print(eval("return 42"))
+  print(eval("let x = 10\nreturn x + 5"))
+end

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3,0] - 2026-02-16
+
+### Changed
+- Version bump to 0.3,0
+
 All notable changes to the Lumen project will be documented in this file.
 
 ## [0.2.0] - 2026-02-15

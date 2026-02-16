@@ -7207,4 +7207,110 @@ end
             other => panic!("expected And(GtEq, Gt), got {:?}", other),
         }
     }
+
+    #[test]
+    fn test_markdown_block_docstring_on_cell() {
+        let src = "```\nThis is the main function.\n```\ncell main() -> Int\n  return 42\nend";
+        let prog = parse_src(src).unwrap();
+        assert_eq!(prog.items.len(), 1);
+        if let Item::Cell(c) = &prog.items[0] {
+            assert_eq!(c.name, "main");
+            assert_eq!(c.doc, Some("This is the main function.".to_string()));
+        } else {
+            panic!("expected cell");
+        }
+    }
+
+    #[test]
+    fn test_markdown_block_docstring_on_record() {
+        let src = "```\nA point in 2D space.\n```\nrecord Point\n  x: Int\n  y: Int\nend";
+        let prog = parse_src(src).unwrap();
+        assert_eq!(prog.items.len(), 1);
+        if let Item::Record(r) = &prog.items[0] {
+            assert_eq!(r.name, "Point");
+            assert_eq!(r.doc, Some("A point in 2D space.".to_string()));
+        } else {
+            panic!("expected record");
+        }
+    }
+
+    #[test]
+    fn test_markdown_block_docstring_on_enum() {
+        let src = "```\nRepresents a color.\n```\nenum Color\n  Red\n  Green\n  Blue\nend";
+        let prog = parse_src(src).unwrap();
+        assert_eq!(prog.items.len(), 1);
+        if let Item::Enum(e) = &prog.items[0] {
+            assert_eq!(e.name, "Color");
+            assert_eq!(e.doc, Some("Represents a color.".to_string()));
+        } else {
+            panic!("expected enum");
+        }
+    }
+
+    #[test]
+    fn test_markdown_block_standalone_comment() {
+        let src = "```\nJust a comment, not attached to anything.\n```\n";
+        let prog = parse_src(src).unwrap();
+        // Standalone markdown block should be ignored (no items)
+        assert_eq!(prog.items.len(), 0);
+    }
+
+    #[test]
+    fn test_markdown_block_before_pub_cell() {
+        let src = "```\nPublic entry point.\n```\npub cell main() -> Int\n  return 1\nend";
+        let prog = parse_src(src).unwrap();
+        assert_eq!(prog.items.len(), 1);
+        if let Item::Cell(c) = &prog.items[0] {
+            assert_eq!(c.name, "main");
+            assert!(c.is_pub);
+            assert_eq!(c.doc, Some("Public entry point.".to_string()));
+        } else {
+            panic!("expected cell");
+        }
+    }
+
+    #[test]
+    fn test_markdown_block_with_lang_tag_docstring() {
+        let src = "```markdown\n# Main\nEntry point for the program.\n```\ncell main() -> Int\n  return 0\nend";
+        let prog = parse_src(src).unwrap();
+        assert_eq!(prog.items.len(), 1);
+        if let Item::Cell(c) = &prog.items[0] {
+            assert_eq!(c.name, "main");
+            assert_eq!(c.doc, Some("# Main\nEntry point for the program.".to_string()));
+        } else {
+            panic!("expected cell");
+        }
+    }
+
+    #[test]
+    fn test_multiple_markdown_blocks_and_declarations() {
+        let src = "```\nDoc for add\n```\ncell add(a: Int, b: Int) -> Int\n  return a + b\nend\n\n```\nDoc for sub\n```\ncell sub(a: Int, b: Int) -> Int\n  return a - b\nend";
+        let prog = parse_src(src).unwrap();
+        assert_eq!(prog.items.len(), 2);
+        if let Item::Cell(c) = &prog.items[0] {
+            assert_eq!(c.name, "add");
+            assert_eq!(c.doc, Some("Doc for add".to_string()));
+        } else {
+            panic!("expected cell");
+        }
+        if let Item::Cell(c) = &prog.items[1] {
+            assert_eq!(c.name, "sub");
+            assert_eq!(c.doc, Some("Doc for sub".to_string()));
+        } else {
+            panic!("expected cell");
+        }
+    }
+
+    #[test]
+    fn test_cell_without_markdown_block_has_no_doc() {
+        let src = "cell main() -> Int\n  return 42\nend";
+        let prog = parse_src(src).unwrap();
+        assert_eq!(prog.items.len(), 1);
+        if let Item::Cell(c) = &prog.items[0] {
+            assert_eq!(c.name, "main");
+            assert_eq!(c.doc, None);
+        } else {
+            panic!("expected cell");
+        }
+    }
 }

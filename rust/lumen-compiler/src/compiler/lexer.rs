@@ -1490,4 +1490,48 @@ mod tests {
         let tokens = lexer.tokenize().unwrap();
         assert!(matches!(&tokens[0].kind, TokenKind::StringLit(s) if s == "A"));
     }
+
+    #[test]
+    fn test_lex_markdown_block() {
+        let src = "```\nHello world\n```";
+        let mut lexer = Lexer::new(src, 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::MarkdownBlock(s) if s == "Hello world"));
+    }
+
+    #[test]
+    fn test_lex_markdown_block_with_lang_tag() {
+        let src = "```markdown\n# Title\nSome text\n```";
+        let mut lexer = Lexer::new(src, 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::MarkdownBlock(s) if s == "# Title\nSome text"));
+    }
+
+    #[test]
+    fn test_lex_markdown_block_before_cell() {
+        let src = "```\nDocstring for main\n```\ncell main() -> Int\n  return 42\nend";
+        let mut lexer = Lexer::new(src, 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::MarkdownBlock(s) if s == "Docstring for main"));
+        // Next meaningful token after newline should be Cell
+        let cell_tok = tokens.iter().find(|t| matches!(t.kind, TokenKind::Cell));
+        assert!(cell_tok.is_some());
+    }
+
+    #[test]
+    fn test_lex_unterminated_markdown_block() {
+        let src = "```\nUnclosed block";
+        let mut lexer = Lexer::new(src, 1, 0);
+        let result = lexer.tokenize();
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), LexError::UnterminatedMarkdownBlock { .. }));
+    }
+
+    #[test]
+    fn test_lex_markdown_block_empty() {
+        let src = "```\n```";
+        let mut lexer = Lexer::new(src, 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::MarkdownBlock(s) if s.is_empty()));
+    }
 }

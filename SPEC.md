@@ -144,6 +144,7 @@ The parser/resolver supports:
 - `import`
 - `const`
 - `macro`
+- `extern`
 
 ```lumen
 use tool llm.chat as Chat
@@ -155,6 +156,25 @@ const MAX_RETRIES: Int = 3
 
 cell main() -> Int
   return MAX_RETRIES
+end
+```
+
+## 2.8 Extern Declarations
+
+`extern` declares a foreign function interface (FFI) cell whose implementation is provided externally (e.g., by a host runtime or linked library). The compiler records the signature but does not require a body.
+
+```lumen
+extern cell malloc(size: Int) -> addr[Byte]
+extern cell free(ptr: addr[Byte]) -> Null
+```
+
+Extern cells participate in the type system like regular cells — they can be called, passed as values, and their signatures are checked at call sites. However, the compiler does not generate LIR bytecode for them; the runtime must supply an implementation at load time.
+
+```lumen
+extern cell rand_int(lo: Int, hi: Int) -> Int
+
+cell roll_dice() -> Int
+  return rand_int(1, 6)
 end
 ```
 
@@ -231,6 +251,9 @@ Implemented expression families include:
 - **shift operators** (`<<`, `>>`) — bitwise left and right shift (both operands must be `Int`)
 - **bitwise operators** (`&`, `|`, `^`, `~`) — AND, OR, XOR, NOT
 - **is/as expressions** — `expr is Type` (type test), `expr as Type` (type cast)
+- **compose operator** (`~>`) for function composition
+- `when` multi-branch conditional expression
+- `comptime` compile-time constant evaluation
 - `await`
 - orchestration await block forms:
   - `await parallel for ... end`
@@ -303,6 +326,80 @@ cell main() -> Int
 end
 ```
 
+### Compose Operator (`~>`)
+
+The compose operator `~>` creates a new function by composing two or more functions. Unlike `|>` which pipes a value eagerly, `~>` produces a closure that applies the functions in sequence when called.
+
+```lumen
+cell double(x: Int) -> Int
+  return x * 2
+end
+
+cell add_one(x: Int) -> Int
+  return x + 1
+end
+
+cell main() -> Int
+  let transform = double ~> add_one
+  # transform(5) is equivalent to add_one(double(5)) = 11
+  return transform(5)
+end
+```
+
+Multiple compositions chain left-to-right:
+
+```lumen
+let process = parse ~> validate ~> transform
+# process(x) is equivalent to transform(validate(parse(x)))
+```
+
+### `when` Expression
+
+`when` is a multi-branch conditional expression. Each branch has a condition and a result value, separated by `->`. The branches are evaluated top-to-bottom; the first matching condition's value is returned. A wildcard `_` serves as the default branch.
+
+```lumen
+cell grade(score: Int) -> String
+  let letter = when
+    score >= 90 -> "A"
+    score >= 80 -> "B"
+    score >= 70 -> "C"
+    score >= 60 -> "D"
+    _ -> "F"
+  end
+  return letter
+end
+```
+
+`when` is an expression and can appear anywhere a value is expected:
+
+```lumen
+cell classify(x: Int) -> String
+  return when
+    x > 0 -> "positive"
+    x < 0 -> "negative"
+    _ -> "zero"
+  end
+end
+```
+
+### `comptime` Expression
+
+`comptime` evaluates an expression at compile time. The body must consist of pure, deterministic operations that the compiler can fully evaluate. The result is embedded as a constant in the compiled output.
+
+```lumen
+let table = comptime
+  build_lookup(256)
+end
+```
+
+```lumen
+const MAX = comptime
+  1024 * 1024
+end
+```
+
+This is useful for precomputing lookup tables, configuration constants, or any value that does not depend on runtime state.
+
 ## 5. Statements and Control Flow
 
 Implemented statement families include:
@@ -317,6 +414,8 @@ Implemented statement families include:
 - `return`
 - `halt`
 - `emit`
+- `defer`
+- `yield`
 
 ```lumen
 cell main() -> Int
@@ -392,6 +491,69 @@ cell sum(...nums: list[Int]) -> Int
 ```
 
 Note: Variadic parameter expansion is parsed but not yet fully wired through the type system. The parameter is stored with a `variadic: true` flag in the AST.
+
+### `defer` Statement
+
+`defer` schedules a block of code to run when the enclosing scope exits, regardless of how it exits (normal return, early return, or error). Multiple `defer` blocks execute in reverse order of declaration (LIFO — last deferred, first executed).
+
+```lumen
+cell process_file(path: String) -> String
+  let handle = open(path)
+  defer
+    close(handle)
+  end
+  return read(handle)
+end
+```
+
+`defer` is useful for resource cleanup, releasing locks, or restoring state:
+
+```lumen
+cell with_logging(name: String) -> Int
+  print("entering {name}")
+  defer
+    print("exiting {name}")
+  end
+  defer
+    flush_logs()
+  end
+  return compute(name)
+end
+```
+
+In the example above, `flush_logs()` runs first, then `print("exiting {name}")` — reverse order of declaration.
+
+### `yield` Statement
+
+`yield` produces a value from a generator cell without terminating it. The cell's execution suspends and can be resumed to produce the next value. Generator cells declare their return type as `yield T`.
+
+```lumen
+cell fibonacci() -> yield Int
+  let a = 0
+  let b = 1
+  loop
+    yield a
+    let temp = b
+    b = a + b
+    a = temp
+  end
+end
+```
+
+Generator cells produce lazy iterators that can be consumed with `for` loops or collected into lists:
+
+```lumen
+cell main() -> list[Int]
+  let mut result = []
+  for n in fibonacci()
+    if n > 100
+      break
+    end
+    result = append(result, n)
+  end
+  return result
+end
+```
 
 ## 6. Pattern Matching
 

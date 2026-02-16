@@ -903,8 +903,8 @@ impl AuthenticatedClient {
             "shasum": content_hash.replace("sha256:", ""),
             "signature": {
                 "signature": signature.signature,
-                "certificate": signature.certificate, // Placeholder or real cert if available
-                "identity": signature.identity,
+                "certificate": signature.key_id,
+                "identity": signature.algorithm,
                 "key_id": signature.key_id,
                 "timestamp": signature.timestamp.to_rfc3339(),
             },

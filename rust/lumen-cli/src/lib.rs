@@ -9,6 +9,7 @@ pub mod fmt;
 pub mod lint;
 pub mod lockfile;
 pub mod module_resolver;
+pub mod registry;
 pub mod registry_cmd;
 pub mod git;
 pub mod workspace;

@@ -411,7 +411,7 @@ fn resolve_dependencies_with_registry(
         .registry
         .as_ref()
         .map(|r| r.effective_url())
-        .unwrap_or_else(|| "https://registry.lumen-lang.org".to_string());
+        .unwrap_or_else(|| "https://wares.lumen-lang.com/api/v1".to_string());
 
     // Local cache directory for downloaded packages (separate from registry URL)
     let registry_dir = registry_dir_override
@@ -476,7 +476,7 @@ fn resolve_dependencies_with_registry(
 
     // Run resolution
     let resolved_packages = match resolver.resolve(&request) {
-        Ok(pkgs) => pkgs,
+        Ok(result) => result,
         Err(e) => {
             return Err(crate::wares::resolver::format_resolution_error(&e));
         }
@@ -487,7 +487,7 @@ fn resolve_dependencies_with_registry(
     let mut graph: HashMap<String, Vec<String>> = HashMap::new();
     let mut pkg_map: HashMap<String, ResolvedPackage> = HashMap::new();
 
-    for pkg in resolved_packages {
+    for pkg in resolved_packages.packages {
         pkg_map.insert(pkg.name.clone(), pkg.clone());
         let deps: Vec<String> = pkg.deps.iter().map(|(n, _): &(String, DependencySpec)| n.clone()).collect();
         graph.insert(pkg.name.clone(), deps);
@@ -1326,7 +1326,7 @@ pub fn update_with_lock(frozen: bool) {
         &previous_lock.unwrap_or_default(),
         None, // Update all packages
     ) {
-        Ok(pkgs) => pkgs,
+        Ok(result) => result.packages,
         Err(e) => {
             eprintln!(
                 "{} {}",
@@ -1793,7 +1793,8 @@ fn try_publish_to_r2(
     let r2_config = crate::wares::R2Config::new(account_id.to_string(), access_key_id, secret_access_key)
         .with_bucket("lumen-registry");
 
-    let client = R2Client::new(r2_config);
+    let client = R2Client::new(r2_config)
+        .map_err(|e| format!("Failed to create R2 client: {}", e))?;
 
     // Compute hash for the tarball
     let hash = Sha256::digest(tarball_data);
@@ -1802,7 +1803,7 @@ fn try_publish_to_r2(
     // Upload the tarball
     let key = format!("wares/{}/{}.tarball", package_name, version);
     client
-        .upload_artifact(&key, tarball_data, "application/gzip")
+        .put_object(&key, tarball_data, "application/gzip")
         .map_err(|e| format!("Failed to upload artifact: {}", e))?;
 
     // Upload the package index
@@ -1821,8 +1822,8 @@ fn try_publish_to_r2(
         serde_json::to_string(&index).map_err(|e| format!("Failed to serialize index: {}", e))?;
 
     let index_key = format!("wares/{}/index.json", package_name);
-    let _index_cid = client
-        .upload_artifact(&index_key, index_json.as_bytes(), "application/json")
+    client
+        .put_object(&index_key, index_json.as_bytes(), "application/json")
         .map_err(|e| format!("Failed to upload index: {}", e))?;
 
     println!(
@@ -1950,6 +1951,9 @@ pub fn publish(dry_run: bool) {
         build_deps: config.build_dependencies.clone(),
         features: vec![],
         registry_url: registry_url.clone(),
+        include_dev: false,
+        include_build: false,
+        include_yanked: false,
     };
     
     let proof_val = match resolver.resolve(&request) {

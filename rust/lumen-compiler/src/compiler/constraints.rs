@@ -60,7 +60,8 @@ fn validate_constraint_expr(expr: &Expr, field: &str, errors: &mut Vec<Constrain
             | BinOp::BitOr
             | BinOp::BitXor
             | BinOp::Shl
-            | BinOp::Shr => {
+            | BinOp::Shr
+            | BinOp::Compose => {
                 validate_constraint_expr(lhs, field, errors);
                 validate_constraint_expr(rhs, field, errors);
             }

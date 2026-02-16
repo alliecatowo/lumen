@@ -781,6 +781,14 @@ impl R2Client {
     // S3-Compatible API Methods
     // =========================================================================
 
+    /// Upload data to a specific key in R2 using S3-compatible API with AWS Signature V4.
+    ///
+    /// This is the low-level upload method. For content-addressed uploads, use
+    /// [`upload_artifact`] instead.
+    pub fn put_object(&self, key: &str, data: &[u8], content_type: &str) -> R2Result<()> {
+        self.upload_to_s3(key, data, content_type)
+    }
+
     /// Upload data to R2 using S3-compatible API with AWS Signature V4.
     fn upload_to_s3(&self, key: &str, data: &[u8], content_type: &str) -> R2Result<()> {
         let endpoint = self.config.endpoint();

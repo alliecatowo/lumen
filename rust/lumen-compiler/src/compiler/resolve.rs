@@ -1784,7 +1784,7 @@ fn infer_machine_expr_type(expr: &Expr, scope: &HashMap<String, TypeExpr>) -> Op
                 | BinOp::And
                 | BinOp::Or
                 | BinOp::In => Some("Bool".to_string()),
-                BinOp::PipeForward | BinOp::Concat => Some("Any".to_string()),
+                BinOp::PipeForward | BinOp::Concat | BinOp::Compose => Some("Any".to_string()),
                 BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
                     Some("Int".to_string())
                 }
@@ -2098,6 +2098,7 @@ fn collect_stmt_call_requirements(
             }
         }
         Stmt::Emit(s) => collect_expr_call_requirements(&s.value, table, out),
+        Stmt::Yield(s) => collect_expr_call_requirements(&s.value, table, out),
         Stmt::CompoundAssign(s) => collect_expr_call_requirements(&s.value, table, out),
         Stmt::Break(_) | Stmt::Continue(_) => {}
         Stmt::Defer(s) => {
@@ -2246,6 +2247,20 @@ fn collect_expr_call_requirements(
                 collect_stmt_call_requirements(s, table, out);
             }
         }
+        Expr::WhenExpr {
+            arms, else_body, ..
+        } => {
+            for arm in arms {
+                collect_expr_call_requirements(&arm.condition, table, out);
+                collect_expr_call_requirements(&arm.body, table, out);
+            }
+            if let Some(eb) = else_body {
+                collect_expr_call_requirements(eb, table, out);
+            }
+        }
+        Expr::ComptimeExpr(inner, _) => {
+            collect_expr_call_requirements(inner, table, out);
+        }
         Expr::IntLit(_, _)
         | Expr::FloatLit(_, _)
         | Expr::StringLit(_, _)
@@ -2351,6 +2366,10 @@ fn collect_stmt_effect_evidence(
         Stmt::Emit(s) => {
             collect_expr_effect_evidence(&s.value, table, current, out);
             push_effect_evidence(out, "emit", s.span.line, "emit statement".to_string());
+        }
+        Stmt::Yield(s) => {
+            collect_expr_effect_evidence(&s.value, table, current, out);
+            push_effect_evidence(out, "emit", s.span.line, "yield statement".to_string());
         }
         Stmt::CompoundAssign(s) => collect_expr_effect_evidence(&s.value, table, current, out),
         Stmt::Break(_) | Stmt::Continue(_) => {}
@@ -2610,6 +2629,20 @@ fn collect_expr_effect_evidence(
                 collect_stmt_effect_evidence(s, table, current, out);
             }
         }
+        Expr::WhenExpr {
+            arms, else_body, ..
+        } => {
+            for arm in arms {
+                collect_expr_effect_evidence(&arm.condition, table, current, out);
+                collect_expr_effect_evidence(&arm.body, table, current, out);
+            }
+            if let Some(eb) = else_body {
+                collect_expr_effect_evidence(eb, table, current, out);
+            }
+        }
+        Expr::ComptimeExpr(inner, _) => {
+            collect_expr_effect_evidence(inner, table, current, out);
+        }
         Expr::IntLit(_, _)
         | Expr::FloatLit(_, _)
         | Expr::StringLit(_, _)
@@ -2697,6 +2730,10 @@ fn infer_stmt_effects(
             }
         }
         Stmt::Emit(s) => {
+            infer_expr_effects(&s.value, table, current, out);
+            out.insert("emit".into());
+        }
+        Stmt::Yield(s) => {
             infer_expr_effects(&s.value, table, current, out);
             out.insert("emit".into());
         }
@@ -2903,6 +2940,20 @@ fn infer_expr_effects(
             for s in stmts {
                 infer_stmt_effects(s, table, current, out);
             }
+        }
+        Expr::WhenExpr {
+            arms, else_body, ..
+        } => {
+            for arm in arms {
+                infer_expr_effects(&arm.condition, table, current, out);
+                infer_expr_effects(&arm.body, table, current, out);
+            }
+            if let Some(eb) = else_body {
+                infer_expr_effects(eb, table, current, out);
+            }
+        }
+        Expr::ComptimeExpr(inner, _) => {
+            infer_expr_effects(inner, table, current, out);
         }
         Expr::IntLit(_, _)
         | Expr::FloatLit(_, _)
@@ -3715,6 +3766,7 @@ mod tests {
                 })],
                 is_pub: false,
                 is_async: false,
+                is_extern: false,
                 where_clauses: vec![],
                 span: sp,
             })],
@@ -3752,6 +3804,7 @@ mod tests {
                 })],
                 is_pub: false,
                 is_async: false,
+                is_extern: false,
                 where_clauses: vec![],
                 span: sp,
             })],

@@ -167,6 +167,7 @@ pub struct CellDef {
     pub body: Vec<Stmt>,
     pub is_pub: bool,
     pub is_async: bool,
+    pub is_extern: bool,
     pub where_clauses: Vec<Expr>,
     pub span: Span,
 }
@@ -338,6 +339,7 @@ pub enum Stmt {
     Emit(EmitStmt),
     CompoundAssign(CompoundAssignStmt),
     Defer(DeferStmt),
+    Yield(YieldStmt),
 }
 
 impl Stmt {
@@ -358,6 +360,7 @@ impl Stmt {
             Stmt::Emit(s) => s.span,
             Stmt::CompoundAssign(s) => s.span,
             Stmt::Defer(s) => s.span,
+            Stmt::Yield(s) => s.span,
         }
     }
 }
@@ -526,6 +529,12 @@ pub struct DeferStmt {
     pub span: Span,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct YieldStmt {
+    pub value: Expr,
+    pub span: Span,
+}
+
 // ── Expressions ──
 
 /// Lambda body can be a single expression or a block
@@ -660,6 +669,14 @@ pub enum Expr {
         target_type: String,
         span: Span,
     },
+    /// When expression: multi-branch conditional
+    WhenExpr {
+        arms: Vec<WhenArm>,
+        else_body: Option<Box<Expr>>,
+        span: Span,
+    },
+    /// Compile-time evaluated expression
+    ComptimeExpr(Box<Expr>, Span),
 }
 
 impl Expr {
@@ -703,8 +720,17 @@ impl Expr {
             Expr::Pipe { span, .. } => *span,
             Expr::IsType { span, .. } => *span,
             Expr::TypeCast { span, .. } => *span,
+            Expr::WhenExpr { span, .. } => *span,
+            Expr::ComptimeExpr(_, s) => *s,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhenArm {
+    pub condition: Expr,
+    pub body: Expr,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -745,6 +771,7 @@ pub enum BinOp {
     BitXor,
     Shl,
     Shr,
+    Compose,
 }
 
 impl fmt::Display for BinOp {
@@ -773,6 +800,7 @@ impl fmt::Display for BinOp {
             BinOp::BitXor => write!(f, "^"),
             BinOp::Shl => write!(f, "<<"),
             BinOp::Shr => write!(f, ">>"),
+            BinOp::Compose => write!(f, "~>"),
         }
     }
 }

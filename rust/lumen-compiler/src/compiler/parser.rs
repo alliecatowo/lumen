@@ -467,6 +467,7 @@ impl Parser {
                 body: top_level_stmts,
                 is_pub: false,
                 is_async: false,
+                is_extern: false,
                 where_clauses: vec![],
                 span: span_start.merge(end_span),
             }));
@@ -584,7 +585,26 @@ impl Parser {
                     span: start.merge(self.current().span),
                 }))
             }
-            TokenKind::Extern | TokenKind::Comptime => {
+            TokenKind::Extern => {
+                self.advance(); // consume extern
+                self.skip_newlines();
+                if matches!(self.peek_kind(), TokenKind::Cell) {
+                    let mut c = self.parse_cell(false)?;
+                    c.is_pub = is_pub;
+                    c.is_async = is_async;
+                    c.is_extern = true;
+                    Ok(Item::Cell(c))
+                } else {
+                    let start = self.current().span;
+                    self.consume_rest_of_line();
+                    Ok(Item::Addon(AddonDecl {
+                        kind: "extern".into(),
+                        name: None,
+                        span: start.merge(self.current().span),
+                    }))
+                }
+            }
+            TokenKind::Comptime => {
                 let start = self.current().span;
                 let kind = format!("{}", self.peek_kind());
                 self.advance();
@@ -925,6 +945,7 @@ impl Parser {
                 body: vec![Stmt::Return(ReturnStmt { value: expr, span })],
                 is_pub: false,
                 is_async: false,
+                is_extern: false,
                 where_clauses: vec![],
                 span,
             });
@@ -959,6 +980,7 @@ impl Parser {
                     body: vec![],
                     is_pub: false,
                     is_async: false,
+                    is_extern: false,
                     where_clauses: vec![],
                     span: start.merge(end_span),
                 });
@@ -977,6 +999,7 @@ impl Parser {
             body,
             is_pub: false,
             is_async: false,
+            is_extern: false,
             where_clauses: vec![],
             span: start.merge(end_span),
         })
@@ -1159,6 +1182,12 @@ impl Parser {
             TokenKind::Break => self.parse_break(),
             TokenKind::Continue => self.parse_continue(),
             TokenKind::Emit => self.parse_emit(),
+            TokenKind::Yield => {
+                let start = self.advance().span;
+                let value = self.parse_expr(0)?;
+                let span = start.merge(value.span());
+                Ok(Stmt::Yield(YieldStmt { value, span }))
+            }
             TokenKind::Defer => self.parse_defer(),
             TokenKind::Where => {
                 let s = self.current().span;
@@ -3312,6 +3341,7 @@ impl Parser {
                 body: vec![Stmt::Return(ReturnStmt { value: expr, span })],
                 is_pub: false,
                 is_async: false,
+                is_extern: false,
                 where_clauses: vec![],
                 span,
             });
@@ -3342,6 +3372,7 @@ impl Parser {
                     body: vec![],
                     is_pub: false,
                     is_async: false,
+                    is_extern: false,
                     where_clauses: vec![],
                     span: start.merge(end_span),
                 });
@@ -3360,6 +3391,7 @@ impl Parser {
             body,
             is_pub: false,
             is_async: false,
+            is_extern: false,
             where_clauses: vec![],
             span: start.merge(end_span),
         })
@@ -4087,7 +4119,7 @@ impl Parser {
                     self.tokens.get(i).map(|t| &t.kind),
                     Some(
                         TokenKind::PipeForward
-                            | TokenKind::Compose
+                            | TokenKind::ComposeArrow
                             | TokenKind::RightShift
                             | TokenKind::LeftShift
                             | TokenKind::Dot
@@ -4107,6 +4139,9 @@ impl Parser {
                             | TokenKind::And
                             | TokenKind::Or
                             | TokenKind::In
+                            | TokenKind::Pipe
+                            | TokenKind::Ampersand
+                            | TokenKind::Caret
                     )
                 ) {
                     while self.pos < i {
@@ -4181,10 +4216,8 @@ impl Parser {
                 TokenKind::And => (BinOp::And, (12, 13)),
                 TokenKind::Or => (BinOp::Or, (10, 11)),
                 TokenKind::PlusPlus => (BinOp::Concat, (18, 19)),
-                // Pipe |> and compose >> / step: produce Expr::Pipe
-                TokenKind::PipeForward | TokenKind::Compose | TokenKind::Step => {
-                    // Note: Compose (>>) is legacy; new code should use |> for pipes
-                    // and >> now lexes as RightShift for bitwise shift
+                // Pipe |> and step: produce Expr::Pipe
+                TokenKind::PipeForward | TokenKind::Step => {
                     if min_bp > 16 {
                         break;
                     }
@@ -4198,10 +4231,22 @@ impl Parser {
                     };
                     continue;
                 }
-                TokenKind::Ampersand => (BinOp::BitAnd, (14, 15)),
-                TokenKind::Caret => (BinOp::BitXor, (14, 15)),
-                TokenKind::LeftShift => (BinOp::Shl, (14, 15)),
-                TokenKind::RightShift => (BinOp::Shr, (14, 15)),
+                // Compose ~>: produce Expr::BinOp with BinOp::Compose
+                TokenKind::ComposeArrow => {
+                    if min_bp > 16 {
+                        break;
+                    }
+                    self.advance();
+                    let rhs = self.parse_expr(17)?;
+                    let span = lhs.span().merge(rhs.span());
+                    lhs = Expr::BinOp(Box::new(lhs), BinOp::Compose, Box::new(rhs), span);
+                    continue;
+                }
+                TokenKind::Pipe => (BinOp::BitOr, (14, 15)),
+                TokenKind::Caret => (BinOp::BitXor, (15, 16)),
+                TokenKind::Ampersand => (BinOp::BitAnd, (16, 17)),
+                TokenKind::LeftShift => (BinOp::Shl, (20, 21)),
+                TokenKind::RightShift => (BinOp::Shr, (20, 21)),
                 TokenKind::PlusAssign => (BinOp::Add, (2, 3)),
                 TokenKind::MinusAssign => (BinOp::Sub, (2, 3)),
                 TokenKind::StarAssign => (BinOp::Mul, (2, 3)),
@@ -4586,8 +4631,61 @@ impl Parser {
             TokenKind::When => {
                 let s = self.advance().span;
                 self.skip_newlines();
-                self.consume_block_until_end();
-                Ok(Expr::Ident("when_expr".into(), s))
+                let mut arms = Vec::new();
+                let mut else_body = None;
+                while !matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
+                    self.skip_newlines();
+                    if matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
+                        break;
+                    }
+                    let arm_start = self.current().span;
+                    // Check for wildcard/else arm: _ -> expr
+                    if matches!(self.peek_kind(), TokenKind::Ident(ref n) if n == "_") {
+                        let id_span = self.current().span;
+                        self.advance(); // consume _
+                        if matches!(self.peek_kind(), TokenKind::Arrow) {
+                            self.advance(); // consume ->
+                            self.skip_newlines();
+                            let body = self.parse_expr(0)?;
+                            else_body = Some(Box::new(body));
+                            self.skip_newlines();
+                            continue;
+                        }
+                        // Not followed by ->, treat as normal condition starting with _
+                        // Put back by creating an ident expr
+                        let cond = Expr::Ident("_".into(), id_span);
+                        // Try to finish the condition if there's more
+                        if matches!(self.peek_kind(), TokenKind::Arrow) {
+                            self.advance();
+                            self.skip_newlines();
+                            let body = self.parse_expr(0)?;
+                            let span = arm_start.merge(body.span());
+                            arms.push(WhenArm { condition: cond, body, span });
+                            self.skip_newlines();
+                            continue;
+                        }
+                    }
+                    let cond = self.parse_expr(0)?;
+                    self.skip_newlines();
+                    if matches!(self.peek_kind(), TokenKind::Arrow) {
+                        self.advance(); // consume ->
+                    }
+                    self.skip_newlines();
+                    let body = self.parse_expr(0)?;
+                    let span = arm_start.merge(body.span());
+                    arms.push(WhenArm { condition: cond, body, span });
+                    self.skip_newlines();
+                }
+                let end_span = if matches!(self.peek_kind(), TokenKind::End) {
+                    self.advance().span
+                } else {
+                    s
+                };
+                Ok(Expr::WhenExpr {
+                    arms,
+                    else_body,
+                    span: s.merge(end_span),
+                })
             }
             TokenKind::Loop => {
                 // Reuse statement-level loop parser, wrap as block expr
@@ -4637,11 +4735,56 @@ impl Parser {
             TokenKind::Comptime => {
                 let s = self.advance().span;
                 if matches!(self.peek_kind(), TokenKind::LBrace) {
-                    self.consume_balanced_group();
+                    // comptime { block }: consume balanced braces and wrap as placeholder
+                    let save = self.pos;
+                    self.advance(); // consume {
+                    self.skip_newlines();
+                    // Try parsing as a block of statements
+                    let result = (|| -> Result<Vec<Stmt>, ParseError> {
+                        if matches!(self.peek_kind(), TokenKind::Indent) {
+                            self.advance();
+                        }
+                        self.skip_newlines();
+                        let mut stmts = Vec::new();
+                        while !matches!(
+                            self.peek_kind(),
+                            TokenKind::RBrace | TokenKind::Eof | TokenKind::Dedent
+                        ) {
+                            stmts.push(self.parse_stmt()?);
+                            self.skip_newlines();
+                        }
+                        if matches!(self.peek_kind(), TokenKind::Dedent) {
+                            self.advance();
+                        }
+                        self.skip_newlines();
+                        Ok(stmts)
+                    })();
+                    match result {
+                        Ok(stmts) => {
+                            let end_span = if matches!(self.peek_kind(), TokenKind::RBrace) {
+                                self.advance().span
+                            } else {
+                                s
+                            };
+                            let block = Expr::BlockExpr(stmts, s.merge(end_span));
+                            Ok(Expr::ComptimeExpr(Box::new(block), s.merge(end_span)))
+                        }
+                        Err(_) => {
+                            // Fallback: consume balanced group
+                            self.pos = save;
+                            self.consume_balanced_group();
+                            let end_span = self.current().span;
+                            Ok(Expr::ComptimeExpr(
+                                Box::new(Expr::NullLit(s)),
+                                s.merge(end_span),
+                            ))
+                        }
+                    }
                 } else {
-                    self.consume_rest_of_line();
+                    let expr = self.parse_expr(0)?;
+                    let span = s.merge(expr.span());
+                    Ok(Expr::ComptimeExpr(Box::new(expr), span))
                 }
-                Ok(Expr::Ident("comptime".into(), s))
             }
             TokenKind::Use => {
                 let s = self.advance().span;

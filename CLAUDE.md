@@ -215,6 +215,10 @@ Providers implement `capabilities()` method to advertise supported features. The
 
 **Optional type sugar**: `T?` in type position desugars to `T | Null` in the parser. This applies to parameter types, return types, let bindings, and record fields.
 
+**Compose vs Pipe**: `|>` pipes a VALUE through functions (eager, left to right): `5 |> double() |> add(3)` immediately evaluates. `~>` COMPOSES functions into a new function (lazy, creates closure): `double ~> add_one` returns a callable that applies `double` then `add_one` when invoked.
+
+**Defer execution order**: Multiple `defer` blocks in a scope execute in LIFO (reverse) order when the scope exits. The last `defer` registered runs first.
+
 ## Tooling and Editor Support
 
 **Tree-sitter grammar**: Located at `tree-sitter-lumen/grammar.js`. Comprehensive coverage of all language constructs for building LSPs, formatters, and analysis tools.
@@ -262,10 +266,14 @@ Providers implement `capabilities()` method to advertise supported features. The
 - **Effects** declared on cells as effect rows: `cell foo() -> Int / {http, trace}`
 - **Processes** (memory, machine, pipeline, etc.) are constructor-backed runtime objects with typed methods
 - **Grants** provide capability-scoped tool access with policy constraints
+- **Extern** declarations for FFI: `extern cell malloc(size: Int) -> addr[Byte]`
+- **Defer** for scope-exit cleanup: `defer ... end` (LIFO execution order)
+- **Yield** for generator cells: `cell gen() -> yield Int` with `yield value`
 - Source format supports markdown (`.lm.md`) with fenced `lumen` blocks and raw (`.lm`) files
 
 **Syntactic Sugar**:
 - **Pipe operator** `|>`: `data |> transform() |> format()` — value becomes first argument
+- **Compose operator** `~>`: `parse ~> validate ~> transform` — creates a new composed function (lazy, creates closure)
 - **String interpolation**: `"Hello, {name}!"` — embed expressions in strings
 - **Range expressions**: `1..5` (exclusive), `1..=5` (inclusive) — concise iteration
 - **Optional type sugar**: `T?` is shorthand for `T | Null`
@@ -279,6 +287,10 @@ Providers implement `capabilities()` method to advertise supported features. The
 - **Null-safe index**: `collection?[index]` — returns `null` if collection is null
 - **Variadic parameters**: `...param` syntax is parsed in cell signatures (type system wiring pending)
 - **Match exhaustiveness**: compiler checks all enum variants are covered in match statements
+- **`when` expression**: multi-branch conditional — `when score >= 90 -> "A" ... _ -> "F" end`
+- **`comptime` expression**: compile-time constant evaluation — `comptime build_lookup(256) end`
+- **`defer` statement**: scope-exit cleanup — `defer close(handle) end` (executes in LIFO order)
+- **`yield` statement**: generator/lazy iterator — `yield value` in cells returning `yield T`
 - See `examples/syntax_sugar.lm.md` for comprehensive examples
 
 

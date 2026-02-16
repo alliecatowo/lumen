@@ -21,13 +21,13 @@
   ],
   "folding": {
     "markers": {
-      "start": "^\\s*(cell|record|enum|if|for|while|loop|match|agent|pipeline|orchestration|machine|memory|guardrail|eval|effect|handler|trait|impl)\\b",
+      "start": "^\\s*(cell|record|enum|if|for|while|loop|match|when|handle|defer|comptime|agent|pipeline|orchestration|machine|memory|guardrail|eval|effect|handler|trait|impl)\\b",
       "end": "^\\s*end\\b"
     }
   },
   "wordPattern": "[a-zA-Z_][a-zA-Z0-9_]*",
   "indentationRules": {
-    "increaseIndentPattern": "^\\s*(cell|record|enum|if|else|for|while|loop|match|agent|pipeline|orchestration|machine|memory|guardrail|eval|effect|handler|trait|impl|when|handle)\\b",
+    "increaseIndentPattern": "^\\s*(cell|record|enum|if|else|for|while|loop|match|when|handle|defer|comptime|agent|pipeline|orchestration|machine|memory|guardrail|eval|effect|handler|trait|impl)\\b",
     "decreaseIndentPattern": "^\\s*(end|else)\\b"
   }
 }

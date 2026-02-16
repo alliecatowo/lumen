@@ -27,7 +27,12 @@
           "lumen"
         ],
         "extensions": [
-          ".lm"
+          ".lm",
+          ".lumen"
+        ],
+        "filenames": [],
+        "filenamePatterns": [
+          "*.lm.md"
         ],
         "configuration": "./language-configuration.json"
       }

@@ -1426,8 +1426,14 @@ mod tests {
 
     #[test]
     fn test_parse_package_name() {
+        // Bare names still parse (validation is separate) — returns (None, name)
         assert_eq!(parse_package_name("simple"), (None, "simple"));
+        // Namespaced names extract scope and local name
         assert_eq!(parse_package_name("@scope/name"), (Some("scope"), "name"));
+        assert_eq!(
+            parse_package_name("@alliecatowo/lumen-utils"),
+            (Some("alliecatowo"), "lumen-utils")
+        );
     }
 
     #[test]

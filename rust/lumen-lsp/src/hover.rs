@@ -35,13 +35,7 @@ pub fn build_hover(params: HoverParams, text: &str, program: Option<&Program>) -
                         cell.name, params_str, return_str, effects_str
                     );
 
-                    return Some(Hover {
-                        contents: HoverContents::Markup(MarkupContent {
-                            kind: MarkupKind::Markdown,
-                            value: format!("```lumen\n{}\n```", signature),
-                        }),
-                        range: None,
-                    });
+                    return Some(make_hover(&signature, cell.doc.as_deref()));
                 }
                 Item::Record(record) if record.name == word => {
                     let fields_str = record
@@ -53,13 +47,7 @@ pub fn build_hover(params: HoverParams, text: &str, program: Option<&Program>) -
 
                     let signature = format!("record {}\n{}\nend", record.name, fields_str);
 
-                    return Some(Hover {
-                        contents: HoverContents::Markup(MarkupContent {
-                            kind: MarkupKind::Markdown,
-                            value: format!("```lumen\n{}\n```", signature),
-                        }),
-                        range: None,
-                    });
+                    return Some(make_hover(&signature, record.doc.as_deref()));
                 }
                 Item::Enum(enum_def) if enum_def.name == word => {
                     let variants_str = enum_def
@@ -77,13 +65,7 @@ pub fn build_hover(params: HoverParams, text: &str, program: Option<&Program>) -
 
                     let signature = format!("enum {}\n{}\nend", enum_def.name, variants_str);
 
-                    return Some(Hover {
-                        contents: HoverContents::Markup(MarkupContent {
-                            kind: MarkupKind::Markdown,
-                            value: format!("```lumen\n{}\n```", signature),
-                        }),
-                        range: None,
-                    });
+                    return Some(make_hover(&signature, enum_def.doc.as_deref()));
                 }
                 Item::TypeAlias(alias) if alias.name == word => {
                     let signature = format!(
@@ -92,35 +74,22 @@ pub fn build_hover(params: HoverParams, text: &str, program: Option<&Program>) -
                         type_expr_to_string(&alias.type_expr)
                     );
 
-                    return Some(Hover {
-                        contents: HoverContents::Markup(MarkupContent {
-                            kind: MarkupKind::Markdown,
-                            value: format!("```lumen\n{}\n```", signature),
-                        }),
-                        range: None,
-                    });
+                    return Some(make_hover(&signature, alias.doc.as_deref()));
                 }
                 Item::Process(process) if process.name == word => {
                     let signature = format!("process {} {}", process.kind, process.name);
 
-                    return Some(Hover {
-                        contents: HoverContents::Markup(MarkupContent {
-                            kind: MarkupKind::Markdown,
-                            value: format!("```lumen\n{}\n```", signature),
-                        }),
-                        range: None,
-                    });
+                    return Some(make_hover(&signature, None));
                 }
                 Item::Effect(effect) if effect.name == word => {
                     let signature = format!("effect {}", effect.name);
 
-                    return Some(Hover {
-                        contents: HoverContents::Markup(MarkupContent {
-                            kind: MarkupKind::Markdown,
-                            value: format!("```lumen\n{}\n```", signature),
-                        }),
-                        range: None,
-                    });
+                    return Some(make_hover(&signature, None));
+                }
+                Item::Handler(handler) if handler.name == word => {
+                    let signature = format!("handler {}", handler.name);
+
+                    return Some(make_hover(&signature, handler.doc.as_deref()));
                 }
                 _ => {}
             }
@@ -129,6 +98,25 @@ pub fn build_hover(params: HoverParams, text: &str, program: Option<&Program>) -
 
     // Check for builtins
     get_builtin_hover(&word)
+}
+
+/// Build a hover result with an optional docstring prepended above the signature.
+fn make_hover(signature: &str, doc: Option<&str>) -> Hover {
+    let code_block = format!("```lumen\n{}\n```", signature);
+    let value = match doc {
+        Some(content) if !content.is_empty() => {
+            format!("{}\n\n---\n\n{}", content, code_block)
+        }
+        _ => code_block,
+    };
+
+    Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value,
+        }),
+        range: None,
+    }
 }
 
 fn get_builtin_hover(name: &str) -> Option<Hover> {
@@ -233,7 +221,7 @@ fn extract_word_at_position(text: &str, position: Position) -> Option<String> {
     Some(line[start..end].to_string())
 }
 
-fn type_expr_to_string(ty: &lumen_compiler::compiler::ast::TypeExpr) -> String {
+pub fn type_expr_to_string(ty: &lumen_compiler::compiler::ast::TypeExpr) -> String {
     use lumen_compiler::compiler::ast::TypeExpr;
 
     match ty {

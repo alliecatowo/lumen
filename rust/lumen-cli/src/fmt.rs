@@ -1,8 +1,12 @@
 //! Lumen code formatter
 //!
 //! AST-aware formatter that produces beautiful, consistent output like rustfmt or prettier.
-//! Formats `.lm.md` files by preserving markdown structure and reformatting
-//! code inside ```lumen ... ``` fenced blocks using the compiler's AST.
+//!
+//! Supports two file modes:
+//! - **`.lm.md` files** (markdown-first): Preserves markdown structure, formats code inside
+//!   `` ```lumen ... ``` `` fenced blocks.
+//! - **`.lm` / `.lumen` files** (code-first): Formats Lumen code, preserves `` ``` ... ``` ``
+//!   markdown blocks verbatim. Keeps docstrings attached to their declarations.
 
 use lumen_compiler::compiler::ast::*;
 use lumen_compiler::markdown::extract::extract_blocks;
@@ -49,6 +53,89 @@ pub fn format_file(content: &str) -> String {
             // Regular markdown - preserve as-is
             output.push_str(line);
             output.push('\n');
+        }
+    }
+
+    output
+}
+
+/// Format a .lm/.lumen file (code-first mode with embedded markdown blocks)
+///
+/// In code-first mode, everything outside triple-backtick fences is Lumen code,
+/// and ``` ... ``` blocks are markdown comments/docstrings. The formatter:
+/// - Preserves markdown blocks verbatim
+/// - Formats code sections using the AST-based pretty printer
+/// - Maintains blank lines around markdown blocks
+/// - Keeps docstrings attached to their declarations (no added blank line)
+pub fn format_lm_source(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut output = String::new();
+    let mut i = 0;
+
+    while i < lines.len() {
+        if lines[i].trim().starts_with("```") {
+            // Markdown block — preserve verbatim through closing ```
+            output.push_str(lines[i]);
+            output.push('\n');
+            i += 1;
+            while i < lines.len() {
+                output.push_str(lines[i]);
+                output.push('\n');
+                if lines[i].trim().starts_with("```") {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+        } else {
+            // Code section — collect everything until next ``` or EOF
+            let mut code_lines: Vec<&str> = Vec::new();
+            while i < lines.len() && !lines[i].trim().starts_with("```") {
+                code_lines.push(lines[i]);
+                i += 1;
+            }
+
+            // Count leading blank lines (preserve spacing after markdown blocks)
+            let mut leading = 0;
+            for line in &code_lines {
+                if line.trim().is_empty() {
+                    leading += 1;
+                } else {
+                    break;
+                }
+            }
+
+            // Count trailing blank lines (preserve spacing before markdown blocks)
+            let mut trailing = 0;
+            for line in code_lines.iter().rev() {
+                if line.trim().is_empty() {
+                    trailing += 1;
+                } else {
+                    break;
+                }
+            }
+
+            let code_end = code_lines.len().saturating_sub(trailing);
+
+            // Emit leading blank lines
+            for _ in 0..leading {
+                output.push('\n');
+            }
+
+            // Format actual code (if any non-blank lines exist)
+            if leading < code_end {
+                let actual_code: String = code_lines[leading..code_end]
+                    .iter()
+                    .map(|l| format!("{}\n", l))
+                    .collect();
+                let formatted = format_lumen_code(actual_code.trim());
+                output.push_str(&formatted);
+            }
+
+            // Emit trailing blank lines
+            for _ in 0..trailing {
+                output.push('\n');
+            }
         }
     }
 
@@ -1309,7 +1396,16 @@ pub fn format_files(files: &[PathBuf], check_mode: bool) -> Result<(bool, usize)
         let content = std::fs::read_to_string(file)
             .map_err(|e| format!("error reading '{}': {}", file.display(), e))?;
 
-        let formatted = format_file(&content);
+        let is_lm_md = file
+            .to_str()
+            .map(|s| s.ends_with(".lm.md"))
+            .unwrap_or(false);
+
+        let formatted = if is_lm_md {
+            format_file(&content)
+        } else {
+            format_lm_source(&content)
+        };
 
         if content != formatted {
             needs_formatting = true;
@@ -1614,5 +1710,190 @@ end"#;
 end"#;
         let output = format_lumen_code(input);
         assert!(output.contains("-> String / {http}"));
+    }
+
+    // --- Tests for .lm file markdown block preservation ---
+
+    #[test]
+    fn test_lm_preserves_markdown_block() {
+        let input = "\
+```
+# Module Overview
+This module does things.
+```
+
+cell greet() -> String
+  return \"hello\"
+end
+";
+        let output = format_lm_source(input);
+        assert!(output.contains("# Module Overview"), "markdown heading preserved");
+        assert!(output.contains("This module does things."), "markdown body preserved");
+        assert!(output.contains("```\n# Module Overview"), "opening fence preserved");
+        assert!(output.contains("  return \"hello\""), "code is formatted");
+    }
+
+    #[test]
+    fn test_lm_docstring_stays_attached() {
+        // No blank line between closing ``` and declaration = docstring
+        let input = "\
+```
+Adds two integers.
+```
+cell add(a: Int, b: Int) -> Int
+  return a+b
+end
+";
+        let output = format_lm_source(input);
+        // The docstring closing ``` should be immediately followed by the cell
+        assert!(
+            output.contains("```\ncell add("),
+            "docstring stays attached to declaration, got:\n{}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_lm_blank_line_between_markdown_and_code() {
+        // Blank line between markdown block and code = NOT a docstring
+        let input = "\
+```
+# Overview
+```
+
+cell foo() -> Int
+  return 42
+end
+";
+        let output = format_lm_source(input);
+        // The blank line between the markdown block and code should be preserved
+        assert!(
+            output.contains("```\n\ncell foo("),
+            "blank line preserved between markdown and code, got:\n{}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_lm_multiple_markdown_blocks() {
+        let input = "\
+```
+# Header
+```
+
+cell first() -> Int
+  return 1
+end
+
+```
+# Second section
+```
+
+cell second() -> Int
+  return 2
+end
+";
+        let output = format_lm_source(input);
+        assert!(output.contains("# Header"), "first markdown block preserved");
+        assert!(output.contains("# Second section"), "second markdown block preserved");
+        assert!(output.contains("cell first()"), "first cell present");
+        assert!(output.contains("cell second()"), "second cell present");
+    }
+
+    #[test]
+    fn test_lm_code_only_no_markdown() {
+        // A .lm file with no markdown blocks should format normally
+        let input = "\
+cell foo() -> Int
+  return 42
+end
+
+cell bar() -> Int
+  return 99
+end
+";
+        let output = format_lm_source(input);
+        assert!(output.contains("cell foo() -> Int"));
+        assert!(output.contains("  return 42"));
+        assert!(output.contains("cell bar() -> Int"));
+    }
+
+    #[test]
+    fn test_lm_markdown_block_content_not_formatted() {
+        // Markdown content should NOT be run through the code formatter
+        let input = "\
+```
+This has **bold** and *italic* markdown.
+- List item 1
+- List item 2
+```
+cell main() -> Int
+  return 0
+end
+";
+        let output = format_lm_source(input);
+        assert!(
+            output.contains("This has **bold** and *italic* markdown."),
+            "markdown formatting preserved verbatim"
+        );
+        assert!(output.contains("- List item 1"), "list preserved");
+        assert!(output.contains("- List item 2"), "list preserved");
+    }
+
+    #[test]
+    fn test_lm_empty_file() {
+        let output = format_lm_source("");
+        assert_eq!(output, "");
+    }
+
+    #[test]
+    fn test_lm_only_markdown() {
+        let input = "\
+```
+Just documentation, no code.
+```
+";
+        let output = format_lm_source(input);
+        assert!(output.contains("Just documentation, no code."));
+    }
+
+    #[test]
+    fn test_lm_idempotent() {
+        let input = "\
+```
+Docstring for add.
+```
+cell add(a: Int, b: Int) -> Int
+  return a + b
+end
+
+```
+# Section Two
+```
+
+cell multiply(a: Int, b: Int) -> Int
+  return a * b
+end
+";
+        let output1 = format_lm_source(input);
+        let output2 = format_lm_source(&output1);
+        assert_eq!(output1, output2, "lm formatter should be idempotent");
+    }
+
+    #[test]
+    fn test_lm_markdown_with_code_fence_info() {
+        // Markdown blocks might have info strings like ```markdown
+        let input = "\
+```markdown
+# Title
+Some description here.
+```
+cell main() -> Int
+  return 0
+end
+";
+        let output = format_lm_source(input);
+        assert!(output.contains("```markdown"), "info string preserved");
+        assert!(output.contains("# Title"), "content preserved");
     }
 }

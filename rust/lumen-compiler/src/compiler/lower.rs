@@ -822,6 +822,8 @@ impl<'a> Lowerer<'a> {
         ra: &mut RegAlloc,
         instrs: &mut Vec<Instruction>,
     ) {
+        // Note: For tail calls we don't free temps - the call never returns
+        // to this frame, so register cleanup happens naturally
         let base = ra.alloc_temp();
         if callee_reg != base {
             instrs.push(Instruction::abc(OpCode::Move, base, callee_reg, 0));
@@ -1239,6 +1241,8 @@ impl<'a> Lowerer<'a> {
                     let offset = (after - jmp_idx - 1) as i32;
                     instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, offset);
                 }
+                // After if statement completes, free any temps used for condition checking
+                ra.free_statement_temps();
             }
             Stmt::For(fs) => {
                 let iter_reg = self.lower_expr(&fs.iter, ra, consts, instrs);
@@ -1333,6 +1337,8 @@ impl<'a> Lowerer<'a> {
                 for bj in ctx.break_jumps {
                     instrs[bj] = Instruction::sax(OpCode::Jmp, (after_loop - bj - 1) as i32);
                 }
+                // After for loop completes, free any temps used for iteration
+                ra.free_statement_temps();
             }
             Stmt::Match(ms) => {
                 let subj_reg = self.lower_expr(&ms.subject, ra, consts, instrs);
@@ -1365,6 +1371,8 @@ impl<'a> Lowerer<'a> {
                 for jmp_idx in end_jumps {
                     instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, (end - jmp_idx - 1) as i32);
                 }
+                // After match statement completes, free any temps used for subject/patterns
+                ra.free_statement_temps();
             }
             Stmt::Return(rs) => {
                 // Tail call optimization: if returning a direct call to a
@@ -1428,7 +1436,10 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Stmt::Expr(es) => {
-                self.lower_expr(&es.expr, ra, consts, instrs);
+                let _ = self.lower_expr(&es.expr, ra, consts, instrs);
+                // Expression statement result is discarded - free all temps
+                // that were allocated above the named bindings high-water mark
+                ra.free_statement_temps();
             }
             Stmt::While(ws) => {
                 let loop_start = instrs.len();
@@ -1462,6 +1473,8 @@ impl<'a> Lowerer<'a> {
                 for bj in ctx.break_jumps {
                     instrs[bj] = Instruction::sax(OpCode::Jmp, (after - bj - 1) as i32);
                 }
+                // After while loop completes, free any temps used for condition
+                ra.free_statement_temps();
             }
             Stmt::Loop(ls) => {
                 let loop_start = instrs.len();
@@ -1566,6 +1579,8 @@ impl<'a> Lowerer<'a> {
             }
         }
     }
+
+
 
     fn push_const_int(
         &mut self,

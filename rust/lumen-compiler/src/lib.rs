@@ -4,6 +4,7 @@
 
 pub mod compiler;
 pub mod diagnostics;
+pub mod lang_ref;
 pub mod markdown;
 
 use compiler::ast::{Directive, ImportDecl, ImportList, Item};

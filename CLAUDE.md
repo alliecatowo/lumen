@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build --release                    # Build all crates
-cargo test --workspace                   # Run all tests (~1100+ passing, 20 ignored; 1,328 as of Phase 2)
+cargo test --workspace                   # Run all tests (~1365 passing, 22 ignored)
 cargo test -p lumen-compiler             # Tests for compiler only
 cargo test -p lumen-vm                   # Tests for VM only
 cargo test -p lumen-runtime              # Tests for runtime only
@@ -16,7 +16,7 @@ cargo test -p lumen-compiler -- spec_suite::test_name  # Single test by name
 ## CLI Commands
 
 ```bash
-lumen check <file>                       # Type-check a .lm or .lm.md file
+lumen check <file>                       # Type-check a .lm, .lm.md, or .lumen file
 lumen run <file>                         # Compile and execute (default cell: main)
 lumen run <file> --cell <name>           # Run specific cell
 lumen run <file> --trace-dir <dir>       # Enable trace recording
@@ -32,11 +32,13 @@ lumen pkg check                          # Type-check package
 lumen trace show <run-id>                # Display trace events
 lumen cache clear                        # Clear tool result cache
 lumen build wasm --target <web|nodejs|wasi>  # Build WASM target (requires wasm-pack)
+lumen lang-ref                              # Print language reference
+lumen lang-ref --format json                # Print language reference as JSON
 ```
 
 ## Project Overview
 
-Lumen is a statically typed programming language for AI-native systems. Source can be markdown (`.lm.md`) with fenced Lumen code blocks or raw source (`.lm`). The compiler produces LIR bytecode executed on a register-based VM.
+Lumen is a statically typed programming language for AI-native systems. Source can be markdown (`.lm.md`) with fenced Lumen code blocks, raw source (`.lm`), or markdown-native (`.lumen`). The compiler produces LIR bytecode executed on a register-based VM.
 
 **Formal Grammar**: See `docs/GRAMMAR.md` for the complete EBNF grammar specification covering all language constructs, operator precedence, and lexical rules.
 
@@ -75,7 +77,7 @@ Entry point: `lumen_compiler::compile(source: &str) -> Result<LirModule, Compile
 **Error formatting**: `lumen_compiler::format_error(err, source, filename)` produces human-readable diagnostics with source context and location info.
 
 Seven sequential stages:
-1. **Markdown extraction** (`markdown/extract.rs`) — Pulls code blocks and `@directives` from `.lm.md`
+1. **Markdown extraction** (`markdown/extract.rs`) — Pulls code blocks and `@directives` from `.lm.md` and `.lumen` files
 2. **Lexing** (`compiler/lexer.rs`) — Tokenizes concatenated code blocks
 3. **Parsing** (`compiler/parser.rs`) — Produces `Program` AST (`ast.rs` defines all node types)
 4. **Resolution** (`compiler/resolve.rs`) — Builds symbol table, infers effects, evaluates grant policies, emits effect provenance diagnostics
@@ -95,10 +97,10 @@ import module.path: Name1 as Alias      # Named import with alias
 ```
 
 **Module resolution** (`rust/lumen-cli/src/module_resolver.rs`):
-- `import models` → searches for `models.lm.md`, then `models.lm` in the same directory
-- `import utils.math` → searches for `utils/math.lm.md`, then `utils/math.lm`
+- `import models` → searches for `models.lm.md`, `models.lm`, then `models.lumen` in the same directory
+- `import utils.math` → searches for `utils/math.lm.md`, `utils/math.lm`, then `utils/math.lumen`
 - `import std.foo` → searches stdlib/ directory (if configured)
-- Also checks `mod.lm.md`, `mod.lm`, `main.lm.md`, `main.lm` for directory-based modules
+- Also checks `mod.lm.md`, `mod.lm`, `mod.lumen`, `main.lm.md`, `main.lm`, `main.lumen` for directory-based modules
 
 **Compilation pipeline with imports** (`rust/lumen-compiler/src/lib.rs`):
 1. Scan source for `import` declarations
@@ -158,6 +160,18 @@ Process declarations compile to constructor-backed record objects with typed met
 - `FutureState` enum: Pending, Completed, Error
 - `FutureSchedule`: `Eager` (default) or `DeferredFifo` (default under `@deterministic true`)
 - Orchestration builtins: `parallel`, `race`, `vote`, `select`, `timeout` — all execute with deterministic argument-order semantics
+
+### Algebraic Effects
+
+Lumen implements algebraic effects with one-shot delimited continuations:
+
+- **Effect operations**: `perform Effect.operation(args)` invokes an effect operation
+- **Effect handlers**: `handle body with Effect.op(params) -> resume(value) end` handles effects
+- **VM implementation**: Four LIR opcodes (`Perform`, `HandlePush`, `HandlePop`, `Resume`) manage the effect handler stack
+- **Continuations**: `SuspendedContinuation` captures the continuation when an effect is performed, allowing handlers to resume execution with a value
+- **One-shot semantics**: Each continuation can only be resumed once, ensuring deterministic control flow
+
+The VM maintains an effect handler stack (`EffectScope`) that tracks active handlers. When `perform` is executed, the VM searches up the handler stack for a matching handler. If found, the continuation is captured and the handler is invoked. The handler can call `resume(value)` to continue execution with a value, or return normally to abort the continuation.
 
 ### Tool Policy Enforcement
 
@@ -236,11 +250,13 @@ Providers implement `capabilities()` method to advertise supported features. The
 
 **Index out-of-bounds**: List/tuple index out-of-bounds returns a runtime error instead of `Value::Null`. Supports Python-style negative indices.
 
+**Markdown blocks in .lm/.lumen files**: Triple-backtick blocks are markdown comments/docstrings. Blocks preceding declarations become rich docstrings for LSP hover.
+
 ## Tooling and Editor Support
 
 **Tree-sitter grammar**: Located at `tree-sitter-lumen/grammar.js`. Comprehensive coverage of all language constructs for building LSPs, formatters, and analysis tools.
 
-**VS Code extension**: Located at `editors/vscode/`. Includes TextMate grammar (`.tmLanguage.json`) for syntax highlighting. Supports `.lm` and `.lm.md` files with fenced code block recognition.
+**VS Code extension**: Located at `editors/vscode/`. Includes TextMate grammar (`.tmLanguage.json`) for syntax highlighting. Supports `.lm`, `.lm.md`, and `.lumen` files with fenced code block recognition.
 
 **Diagnostics**: The `lumen_compiler::diagnostics` module provides error formatting with source context. `format_error()` generates human-readable output with line numbers, column offsets, and highlighted excerpts.
 
@@ -257,6 +273,8 @@ Providers implement `capabilities()` method to advertise supported features. The
 - Consistent indentation and spacing
 - Alignment of field declarations and match arms
 - Preservation of comments and documentation
+- Markdown block support in `.lm`/`.lumen` files (code-first mode)
+- Docstring preservation (blocks stay attached to declarations)
 - `--check` mode for CI/CD integration
 
 **VM debug capabilities**: The VM includes:
@@ -265,14 +283,20 @@ Providers implement `capabilities()` method to advertise supported features. The
 - Future state tracking for async operations
 - Tool call recording and replay via trace events
 
-**LSP capabilities** (future): Planned support includes go-to-definition, hover documentation, completion, diagnostics, and code actions.
+**LSP capabilities**: Full implementation includes:
+- **Hover**: Rich docstrings with markdown formatting above type signatures
+- **Document symbols**: Cells as Functions, records as Structs, enums with member children, processes as Classes, effects as Interfaces
+- **Signature help**: Parameter labels, return types, docstrings, builtin function table
+- **Folding ranges**: Region kind for code blocks, Comment kind for markdown blocks
+- **Semantic tokens**: `MarkdownBlock` mapped to COMMENT with multi-line delta handling
+- **Diagnostics**: Real-time type checking and error reporting
 
 ## Test Structure
 
 - `rust/lumen-compiler/tests/spec_markdown_sweep.rs` — Compiles every code block in `SPEC.md` (auto-stubs undefined types)
 - `rust/lumen-compiler/tests/spec_suite.rs` — Semantic compiler tests (compile-ok and compile-err cases)
 - Unit tests inline in source files across all crates
-- **Test counts**: ~1100+ passing (1,328 as of Phase 2), 20 ignored (ignored tests are integration tests requiring external services: Gemini API, MCP servers, provider registry)
+- **Test counts**: ~1365 passing, 22 ignored (ignored tests are integration tests requiring external services: Gemini API, MCP servers, provider registry)
 - All 30 examples type-check successfully; most run end-to-end
 
 ## Language Essentials
@@ -281,21 +305,23 @@ Providers implement `capabilities()` method to advertise supported features. The
 - **Records** are typed structs with optional field constraints (`where` clauses)
 - **Enums** have variants with optional payloads
 - **Effects** declared on cells as effect rows: `cell foo() -> Int / {http, trace}`
+- **Algebraic effects**: `perform Effect.operation(args)` — invoke an effect operation
+- **Effect handlers**: `handle body with Effect.op(params) -> resume(value) end` — handle effects with one-shot delimited continuations
 - **Processes** (memory, machine, pipeline, etc.) are constructor-backed runtime objects with typed methods
 - **Grants** provide capability-scoped tool access with policy constraints
 - **Extern** declarations for FFI: `extern cell malloc(size: Int) -> addr[Byte]`
 - **Defer** for scope-exit cleanup: `defer ... end` (LIFO execution order)
 - **Yield** for generator cells: `cell gen() -> yield Int` with `yield value`
-- Source format supports markdown (`.lm.md`) with fenced `lumen` blocks and raw (`.lm`) files
+- Source format supports markdown (`.lm.md`) with fenced `lumen` blocks, raw (`.lm`) files, and markdown-native (`.lumen`) files
 
 **Syntactic Sugar**:
 - **Pipe operator** `|>`: `data |> transform() |> format()` — value becomes first argument
 - **Compose operator** `~>`: `parse ~> validate ~> transform` — creates a new composed function (lazy, creates closure)
 - **`when` expression**: multi-branch conditional — `when score >= 90 -> "A" ... _ -> "F" end`
 - **`comptime` expression**: compile-time constant evaluation — `comptime build_lookup(256) end`
+- **`defer` statement**: scope-exit cleanup — `defer close(handle) end` (executes in LIFO order)
 - **`extern` declaration**: FFI — `extern cell malloc(size: Int) -> addr[Byte]`
 - **`yield` statement**: generator/lazy iterator — `yield value` in cells returning `yield T`
-- **`defer` statement**: scope-exit cleanup — `defer close(handle) end` (executes in LIFO order)
 - **String interpolation**: `"Hello, {name}!"` — embed expressions in strings
 - **Range expressions**: `1..5` (exclusive), `1..=5` (inclusive) — concise iteration
 - **Optional type sugar**: `T?` is shorthand for `T | Null`

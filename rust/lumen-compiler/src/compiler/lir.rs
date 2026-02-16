@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// Opcodes for the Lumen register VM.
 /// Hex values match SPEC section 40.2.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum_macros::EnumIter, strum_macros::EnumCount)]
 #[repr(u8)]
 pub enum OpCode {
     // Misc
@@ -106,7 +106,7 @@ pub enum OpCode {
 }
 
 /// Intrinsic function IDs
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum_macros::EnumIter, strum_macros::EnumCount)]
 #[repr(u8)]
 pub enum IntrinsicId {
     Length = 0,

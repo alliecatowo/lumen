@@ -6,6 +6,7 @@ pub mod auth;
 pub mod config;
 pub mod doc;
 pub mod fmt;
+pub mod lang_ref;
 pub mod lint;
 pub mod lockfile;
 pub mod module_resolver;

@@ -65,6 +65,16 @@ jobs:
             cargo run --release --bin lumen -- check "$f" || true
           done
 
+  lang-ref:
+    name: Language Reference
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify lang-ref generates
+        run: cargo run --release --bin lumen -- lang-ref > /dev/null
+
   diag-latency-gate:
     name: LSP Diag Latency Gate
     runs-on: ubuntu-latest

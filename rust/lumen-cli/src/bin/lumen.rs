@@ -1,8 +1,8 @@
 //! Lumen CLI — command-line interface for the Lumen language.
 
 use lumen_cli::{
-    auth, build_script, cache, colors, config, doc, fmt, git, lint,
-    lockfile, module_resolver, registry_cmd, repl, semver, test_cmd,
+    auth, build_script, cache, colors, config, doc, fmt, git, lang_ref,
+    lint, lockfile, module_resolver, registry_cmd, repl, semver, test_cmd,
     wares, workspace,
 };
 
@@ -103,6 +103,12 @@ enum Commands {
         /// Output file (defaults to stdout)
         #[arg(long, short)]
         output: Option<PathBuf>,
+    },
+    /// Generate auto-generated language reference from compiler source
+    LangRef {
+        /// Output as JSON instead of markdown
+        #[arg(long)]
+        json: bool,
     },
     /// Lint Lumen source files
     Lint {
@@ -349,6 +355,7 @@ fn main() {
             format,
             output,
         } => cmd_doc(&path, &format, output),
+        Commands::LangRef { json } => lang_ref::run(json),
         Commands::Lint { files, strict } => cmd_lint(files, strict),
         Commands::Test {
             path,

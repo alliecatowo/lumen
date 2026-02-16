@@ -14,6 +14,34 @@ LIR bytecode and executes on a register-based virtual machine.
 `lumen` code blocks, or as raw source (`.lm`). The compiler extracts and concatenates
 all fenced lumen blocks from markdown files.
 
+**Markdown blocks in .lm/.lumen files.** In `.lm` and `.lumen` files, code is the default
+mode. Triple-backtick blocks (fenced code blocks using three backticks) are treated as
+markdown comments/docstrings, not as executable code. If a markdown block immediately
+precedes a declaration (cell, record, enum, etc.), it becomes that declaration's docstring,
+which is displayed in LSP hover with rich markdown formatting.
+
+Example (showing a markdown block as a docstring):
+
+```lumen
+# A markdown block (triple backticks) containing:
+# "Computes the factorial of a non-negative integer."
+# appears before the cell declaration below:
+
+cell factorial(n: Int) -> Int
+  if n <= 1
+    return 1
+  end
+  return n * factorial(n - 1)
+end
+```
+
+The markdown block above `factorial` becomes its docstring, shown when hovering over
+the cell name in an LSP-enabled editor.
+
+If a markdown block immediately precedes a declaration (cell, record, enum, etc.), it
+becomes that declaration's docstring. Docstrings are displayed in LSP hover with rich
+markdown formatting, enabling documentation to be embedded alongside code.
+
 **Design philosophy.** Minimal syntax, light on tokens (indentation-based blocks terminated
 by `end`), high-level defaults with low-level escape hatches when needed.
 
@@ -374,6 +402,9 @@ effect database
 end
 ```
 
+See Section 9.2 for comprehensive documentation of algebraic effects, including `perform`
+statements, `handle` expressions, and effect handlers.
+
 ### 4.9 Effect Bindings
 
 `bind effect` explicitly maps an effect to a tool alias:
@@ -385,7 +416,9 @@ bind effect database.query to DbQuery
 
 ### 4.10 Handlers
 
-Handlers provide implementations for effect operations:
+Handlers provide implementations for effect operations. There are two forms:
+
+**Top-level handler declarations** provide default implementations:
 
 ```lumen
 handler MockDb
@@ -394,6 +427,10 @@ handler MockDb
   end
 end
 ```
+
+**Handler expressions** (`handle...with...end`) install handlers inline. See Section 9.2
+for comprehensive documentation of algebraic effects, including the `handle` expression
+syntax, `perform` statements, and `resume` continuations.
 
 ### 4.11 Tool Declarations and Grants
 
@@ -1123,7 +1160,129 @@ end
 The resolver infers effects for cells that omit explicit rows. Strict mode reports
 inferred-but-undeclared effects. Effect diagnostics include cause hints tracing the source.
 
-### 9.2 Tool Abstraction
+### 9.2 Algebraic Effects
+
+Effects are a mechanism for structured side effects. Instead of directly performing I/O or
+other side effects, code "performs" an effect operation, and an enclosing handler
+intercepts it and decides what to do.
+
+**Declaring Effects.** Effects declare typed operation interfaces:
+
+```lumen
+effect Console
+  cell log(message: String) -> Null
+  cell read_line() -> String
+end
+```
+
+**Effect Bindings.** `bind effect` explicitly maps an effect to a tool alias:
+
+```lumen
+use tool http.get as HttpGet
+bind effect http to HttpGet
+```
+
+**Performing Effects.** The `perform` statement invokes an effect operation:
+
+```lumen
+cell fetch_data(url: String) -> String / {http}
+  let response = perform http.get(url)
+  return response
+end
+```
+
+When `perform` is executed, control transfers to the nearest matching handler on the
+effect handler stack. If no handler is found, the effect propagates up the call stack.
+
+**Handling Effects.** The `handle...with...end` expression installs an effect handler:
+
+```lumen
+cell main() -> String
+  let result = handle
+    fetch_data("https://example.com")
+  with
+    http.get(url) =>
+      resume("mock response for " + url)
+  end
+  return result
+end
+```
+
+The handler syntax is `Effect.operation(params) => body`. The handler body can call
+`resume(value)` to continue the suspended computation with the given value. This uses
+one-shot delimited continuations — each continuation can only be resumed once.
+
+**Multiple Handlers.** A single `handle` expression can handle multiple effect operations:
+
+```lumen
+effect IO
+  cell read() -> String
+  cell write(msg: String) -> Null
+end
+
+cell main() -> Null / {IO}
+  let result = handle
+    perform IO.write("hello")
+    let input = perform IO.read()
+    return null
+  with
+    IO.read() =>
+      resume("input")
+    IO.write(msg) =>
+      resume(null)
+  end
+  return result
+end
+```
+
+**Effect Rows on Signatures.** Cells declare which effects they may perform using effect
+rows:
+
+```lumen
+effect http
+  cell get(url: String) -> String
+end
+
+cell process(data: String) -> Int / {http, trace}
+  # This cell may perform http and trace effects
+  emit "processing"
+  let resp = perform http.get(data)
+  return len(resp)
+end
+```
+
+**Key Concepts:**
+- `perform Effect.operation(args)` — invokes an effect operation, transferring control
+  to the nearest matching handler
+- `handle body with handlers end` — installs effect handlers that intercept operations
+- `resume(value)` — continues the suspended computation with the given value (one-shot
+  continuation)
+- Effect handlers are stack-based — inner handlers shadow outer ones
+- Effect rows `/ {effect1, effect2}` — declare which effects a cell may perform
+- Unhandled effects propagate up the call stack
+
+**Handler Stack Semantics.** When an effect is performed:
+1. The VM searches up the effect handler stack for a matching handler
+2. If found, the continuation is captured (current execution state is saved)
+3. Control transfers to the handler code
+4. The handler can call `resume(value)` to continue execution with a value, or return
+   normally to abort the continuation
+5. Each continuation can only be resumed once (one-shot semantics)
+
+**Top-Level Handlers.** Handlers can also be declared at the top level:
+
+```lumen
+handler MockDb
+  handle database.query(sql: String) -> list[Json]
+    return []
+  end
+end
+```
+
+Top-level handlers provide default implementations that can be used when no explicit
+handler is installed.
+
+### 9.3 Tool Abstraction
 
 A `use tool` declaration introduces a tool as a typed interface. At the language level,
 the compiler validates tool usage without knowing which provider handles the call:
@@ -1138,14 +1297,14 @@ cell ask(prompt: String) -> String / {llm}
 end
 ```
 
-### 9.3 Grant Policies
+### 9.4 Grant Policies
 
 Grants attach constraints to tool aliases. At runtime, `validate_tool_policy()` merges
 all grants and checks them before dispatch. Violations produce errors.
 
 Constraint keys: `domain` (URL pattern), `timeout_ms`, `max_tokens`, and custom keys.
 
-### 9.4 Tool Call Semantics
+### 9.5 Tool Call Semantics
 
 When a tool is called:
 1. Look up tool alias in the provider registry
@@ -1154,7 +1313,7 @@ When a tool is called:
 4. Record trace event (tool name, input, output, duration, provider)
 5. Return result
 
-### 9.5 MCP Server Bridge
+### 9.6 MCP Server Bridge
 
 MCP servers are exposed as Lumen tool providers. Each tool from an MCP server becomes
 available as `server.tool_name` with the `"mcp"` effect kind:
@@ -1332,6 +1491,26 @@ full chain (e.g., `a → b → c → a`).
 Imported modules are compiled to LIR and merged via `LirModule::merge()`, which
 deduplicates string tables and prevents duplicate definitions.
 
+### 12.5 Package Naming Policy
+
+All packages must be namespaced using the `@namespace/name` format. Bare top-level
+package names are not allowed. This ensures clear ownership and prevents naming conflicts:
+
+```lumen
+# Valid package names
+@lumen/stdlib
+@acme/utils
+@myorg/analytics
+
+# Invalid: bare top-level names
+stdlib  # Error: must be namespaced
+utils   # Error: must be namespaced
+```
+
+The `@` prefix indicates a package namespace, and the `/` separator distinguishes the
+namespace from the package name. This policy applies to all package declarations and
+imports.
+
 ## 13. Configuration
 
 Runtime configuration is specified in `lumen.toml`, searched in order:
@@ -1365,3 +1544,53 @@ tools = ["github.create_issue", "github.search_repos"]
 ```
 
 The same Lumen source works with different providers by changing only `lumen.toml`.
+
+## 14. Language Server Protocol (LSP)
+
+Lumen provides a full Language Server Protocol implementation for editor integration.
+The LSP server supports the following capabilities:
+
+**Hover.** Rich docstrings with markdown formatting are displayed when hovering over
+declarations. Docstrings come from markdown blocks that immediately precede declarations
+in `.lm` and `.lumen` files.
+
+**Go-to-definition.** Jump to the definition of any symbol (cells, records, enums,
+types, etc.) across the codebase, including symbols imported from other modules.
+
+**Completion.** Context-aware code completion suggests:
+- Available cells, records, enums, and types
+- Field names for record construction
+- Enum variants in match expressions
+- Import suggestions for unresolved symbols
+
+**Document symbols.** Hierarchical symbol outline showing:
+- Cells as Functions
+- Records as Structs
+- Enums with member children (variants)
+- Processes as Classes
+- Effects as Interfaces
+
+**Signature help.** Parameter information displayed when calling cells:
+- Parameter names and types
+- Return types
+- Docstrings
+- Builtin function signatures
+
+**Semantic tokens.** Syntax highlighting enhanced with semantic information:
+- Distinguishes types, functions, variables, and constants
+- Marks markdown blocks as comments
+- Handles multi-line markdown blocks with delta encoding
+
+**Folding ranges.** Code folding support:
+- Region kind for code blocks
+- Comment kind for markdown blocks
+
+**Diagnostics.** Real-time type checking and error reporting:
+- Type mismatches
+- Unresolved symbols
+- Effect errors
+- Constraint violations
+- Exhaustiveness checks for match statements
+
+The LSP server integrates with any editor that supports the Language Server Protocol,
+including VS Code, Neovim, Emacs, and others.

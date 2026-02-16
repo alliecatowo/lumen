@@ -44,6 +44,7 @@ module.exports = grammar({
 
     // Top-level declarations
     _declaration: $ => choice(
+      $.markdown_block,
       $.cell_declaration,
       $.extern_declaration,
       $.record_declaration,
@@ -62,6 +63,22 @@ module.exports = grammar({
       $.impl_declaration,
       $.macro_declaration,
     ),
+
+    // Markdown block: fenced code blocks treated as documentation comments
+    markdown_block: $ => token(prec(10, seq(
+      '```',
+      /[^\n]*/,
+      '\n',
+      repeat(choice(
+        /[^`\n]+/,
+        /`[^`]/,
+        /``[^`]/,
+        '\n'
+      )),
+      '\n',
+      /\s*/,
+      '```'
+    ))),
 
     // Cell (function) declaration
     cell_declaration: $ => seq(

@@ -31,8 +31,9 @@ function runLumenCommand(args: string[]) {
   const isLumenMarkdown =
     document.languageId === "markdown" &&
     document.uri.fsPath.endsWith(".lm.md");
+  const isLumenExt = document.uri.fsPath.endsWith(".lumen");
 
-  if (document.languageId !== "lumen" && !isLumenMarkdown) {
+  if (document.languageId !== "lumen" && !isLumenMarkdown && !isLumenExt) {
     window.showErrorMessage("Not a Lumen file");
     return;
   }
@@ -474,8 +475,9 @@ export function activate(context: ExtensionContext) {
       const isLumenMarkdown =
         document.languageId === "markdown" &&
         document.uri.fsPath.endsWith(".lm.md");
+      const isLumenExt = document.uri.fsPath.endsWith(".lumen");
 
-      if (document.languageId === "lumen" || isLumenMarkdown) {
+      if (document.languageId === "lumen" || isLumenMarkdown || isLumenExt) {
         const lumenPath = getLumenPath();
         const filePath = document.uri.fsPath;
         const term = getTerminal();
@@ -497,8 +499,9 @@ export function activate(context: ExtensionContext) {
       const isLumenMarkdown =
         document.languageId === "markdown" &&
         document.uri.fsPath.endsWith(".lm.md");
+      const isLumenExt = document.uri.fsPath.endsWith(".lumen");
 
-      if (document.languageId === "lumen" || isLumenMarkdown) {
+      if (document.languageId === "lumen" || isLumenMarkdown || isLumenExt) {
         const lumenPath = getLumenPath();
         const filePath = document.uri.fsPath;
         const term = getTerminal();
@@ -546,9 +549,14 @@ export function activate(context: ExtensionContext) {
     documentSelector: [
       { scheme: "file", language: "lumen" },
       { scheme: "file", language: "markdown", pattern: "**/*.lm.md" },
+      { scheme: "file", pattern: "**/*.lumen" },
     ],
     synchronize: {
-      fileEvents: workspace.createFileSystemWatcher("**/*.lm.md"),
+      fileEvents: [
+        workspace.createFileSystemWatcher("**/*.lm"),
+        workspace.createFileSystemWatcher("**/*.lm.md"),
+        workspace.createFileSystemWatcher("**/*.lumen"),
+      ],
     },
     outputChannel,
     revealOutputChannelOn: 3, // Error only

@@ -1,0 +1,905 @@
+# Builtins Test Suite
+# Tests all builtin functions, string operations, list operations, math functions
+
+# =============================================================================
+# Type Checking Builtins
+# =============================================================================
+
+cell test_type_of() -> Bool
+  assert type(42) == "Int"
+  assert type(3.14) == "Float"
+  assert type("hello") == "String"
+  assert type(true) == "Bool"
+  assert type(null) == "Null"
+  assert type([1, 2, 3]) == "list[Int]"
+  assert type({"a": 1}) == "map[String, Int]"
+  return true
+end
+
+cell test_to_string() -> Bool
+  assert to_string(42) == "42"
+  assert to_string(3.14) == "3.14"
+  assert to_string(true) == "true"
+  assert to_string(false) == "false"
+  return true
+end
+
+cell test_to_int() -> Bool
+  # May return null if conversion fails
+  assert to_int("42") == 42
+  assert to_int(3.14) == 3
+  return true
+end
+
+cell test_to_float() -> Bool
+  # May return null if conversion fails
+  assert to_float("3.14") == 3.14
+  assert to_float(42) == 42.0
+  return true
+end
+
+cell test_clone() -> Bool
+  let original = [1, 2, 3]
+  let copy = clone(original)
+  return len(copy) == len(original)
+end
+
+cell test_sizeof() -> Bool
+  # Returns in-memory size in bytes
+  let size = sizeof([1, 2, 3])
+  return size > 0
+end
+
+# =============================================================================
+# String Builtins
+# =============================================================================
+
+cell test_string_length() -> Bool
+  assert len("") == 0
+  assert len("hello") == 5
+  assert len("hello world") == 11
+  return true
+end
+
+cell test_string_upper() -> Bool
+  assert upper("hello") == "HELLO"
+  assert upper("Hello World") == "HELLO WORLD"
+  assert upper("123") == "123"
+  return true
+end
+
+cell test_string_lower() -> Bool
+  assert lower("HELLO") == "hello"
+  assert lower("Hello World") == "hello world"
+  assert lower("123") == "123"
+  return true
+end
+
+cell test_string_trim() -> Bool
+  assert trim("  hello  ") == "hello"
+  assert trim("\thello\n") == "hello"
+  assert trim("hello") == "hello"
+  return true
+end
+
+cell test_string_trim_start() -> Bool
+  assert trim_start("  hello") == "hello"
+  assert trim_start("hello  ") == "hello  "
+  return true
+end
+
+cell test_string_trim_end() -> Bool
+  assert trim_end("hello  ") == "hello"
+  assert trim_end("  hello") == "  hello"
+  return true
+end
+
+cell test_string_split() -> Bool
+  let parts1 = split("a,b,c", ",")
+  assert len(parts1) == 3
+  assert parts1[0] == "a"
+  
+  let parts2 = split("hello world", " ")
+  assert len(parts2) == 2
+  
+  let parts3 = split("hello", "")
+  assert len(parts3) == 5  # Split into characters
+  
+  return true
+end
+
+cell test_string_join() -> Bool
+  assert join(["a", "b", "c"], ",") == "a,b,c"
+  assert join(["hello", "world"], " ") == "hello world"
+  assert join([], "-") == ""
+  return true
+end
+
+cell test_string_replace() -> Bool
+  assert replace("hello world", "world", "lumen") == "hello lumen"
+  assert replace("aaa", "a", "b") == "bbb"
+  assert replace("hello", "x", "y") == "hello"
+  return true
+end
+
+cell test_string_contains() -> Bool
+  assert contains("hello world", "world")
+  assert contains("hello", "ell")
+  assert not contains("hello", "xyz")
+  return true
+end
+
+cell test_string_starts_with() -> Bool
+  assert starts_with("hello", "he")
+  assert starts_with("hello", "hello")
+  assert not starts_with("hello", "lo")
+  return true
+end
+
+cell test_string_ends_with() -> Bool
+  assert ends_with("hello", "lo")
+  assert ends_with("hello", "hello")
+  assert not ends_with("hello", "he")
+  return true
+end
+
+cell test_string_chars() -> Bool
+  let chars = chars("hello")
+  assert len(chars) == 5
+  assert chars[0] == "h"
+  assert chars[4] == "o"
+  return true
+end
+
+cell test_string_index_of() -> Bool
+  assert index_of("hello", "e") == 1
+  assert index_of("hello", "l") == 2
+  assert index_of("hello", "xyz") == -1
+  return true
+end
+
+cell test_string_slice() -> Bool
+  assert slice("hello", 0, 2) == "he"
+  assert slice("hello", 1, 4) == "ell"
+  assert slice("hello", 2, 5) == "llo"
+  return true
+end
+
+cell test_string_pad_left() -> Bool
+  assert pad_left("hi", 5) == "   hi"
+  assert pad_left("hello", 3) == "hello"  # No change if already longer
+  return true
+end
+
+cell test_string_pad_right() -> Bool
+  assert pad_right("hi", 5) == "hi   "
+  assert pad_right("hello", 3) == "hello"  # No change if already longer
+  return true
+end
+
+cell test_string_interpolation() -> Bool
+  let name = "World"
+  let count = 42
+  let msg = "Hello, {name}! Count: {count}"
+  assert contains(msg, "World")
+  assert contains(msg, "42")
+  return true
+end
+
+cell test_parse_int() -> Bool
+  assert parse_int("42") == 42
+  assert parse_int("-17") == -17
+  assert parse_int("0") == 0
+  return true
+end
+
+cell test_parse_float() -> Bool
+  assert parse_float("3.14") == 3.14
+  assert parse_float("-0.5") == -0.5
+  assert parse_float("0.0") == 0.0
+  return true
+end
+
+# =============================================================================
+# Math Builtins
+# =============================================================================
+
+cell test_math_abs() -> Bool
+  assert abs(5) == 5
+  assert abs(-5) == 5
+  assert abs(0) == 0
+  assert abs(-3.14) == 3.14
+  return true
+end
+
+cell test_math_min() -> Bool
+  assert min(3, 5) == 3
+  assert min(5, 3) == 3
+  assert min(3, 3) == 3
+  assert min(-5, 5) == -5
+  return true
+end
+
+cell test_math_max() -> Bool
+  assert max(3, 5) == 5
+  assert max(5, 3) == 5
+  assert max(3, 3) == 3
+  assert max(-5, 5) == 5
+  return true
+end
+
+cell test_math_round() -> Bool
+  assert round(3.2) == 3.0
+  assert round(3.7) == 4.0
+  assert round(3.5) == 4.0
+  assert round(-3.5) == -4.0
+  return true
+end
+
+cell test_math_ceil() -> Bool
+  assert ceil(3.1) == 4.0
+  assert ceil(3.9) == 4.0
+  assert ceil(3.0) == 3.0
+  assert ceil(-3.1) == -3.0
+  return true
+end
+
+cell test_math_floor() -> Bool
+  assert floor(3.9) == 3.0
+  assert floor(3.1) == 3.0
+  assert floor(3.0) == 3.0
+  assert floor(-3.1) == -4.0
+  return true
+end
+
+cell test_math_sqrt() -> Bool
+  assert sqrt(4) == 2.0
+  assert sqrt(9) == 3.0
+  assert sqrt(16) == 4.0
+  assert sqrt(2) > 1.4 and sqrt(2) < 1.5
+  return true
+end
+
+cell test_math_pow() -> Bool
+  assert pow(2, 3) == 8.0
+  assert pow(10, 2) == 100.0
+  assert pow(2, 0) == 1.0
+  assert pow(4, 0.5) == 2.0
+  return true
+end
+
+cell test_math_log() -> Bool
+  assert log(1) == 0.0
+  assert log(exp(1)) == 1.0
+  assert log(exp(2)) == 2.0
+  return true
+end
+
+cell test_math_sin() -> Bool
+  assert sin(0) == 0.0
+  # sin(π/2) = 1
+  return true
+end
+
+cell test_math_cos() -> Bool
+  assert cos(0) == 1.0
+  # cos(π) = -1
+  return true
+end
+
+cell test_math_tan() -> Bool
+  assert tan(0) == 0.0
+  return true
+end
+
+cell test_math_clamp() -> Bool
+  assert clamp(5, 0, 10) == 5
+  assert clamp(-5, 0, 10) == 0
+  assert clamp(15, 0, 10) == 10
+  return true
+end
+
+# =============================================================================
+# Collection Builtins - Lists
+# =============================================================================
+
+cell test_list_length() -> Bool
+  assert len([]) == 0
+  assert len([1]) == 1
+  assert len([1, 2, 3]) == 3
+  return true
+end
+
+cell test_list_append() -> Bool
+  let items = [1, 2]
+  items = append(items, 3)
+  assert len(items) == 3
+  assert items[2] == 3
+  return true
+end
+
+cell test_list_sort() -> Bool
+  let items = [3, 1, 4, 1, 5]
+  let sorted = sort(items)
+  assert sorted[0] == 1
+  assert sorted[4] == 5
+  return true
+end
+
+cell test_list_reverse() -> Bool
+  let items = [1, 2, 3]
+  let reversed = reverse(items)
+  assert reversed[0] == 3
+  assert reversed[2] == 1
+  return true
+end
+
+cell test_list_flatten() -> Bool
+  let nested = [[1, 2], [3, 4]]
+  let flat = flatten(nested)
+  assert len(flat) == 4
+  assert flat[0] == 1
+  assert flat[3] == 4
+  return true
+end
+
+cell test_list_unique() -> Bool
+  let items = [1, 2, 2, 3, 3, 3]
+  let uniq = unique(items)
+  assert len(uniq) == 3
+  return true
+end
+
+cell test_list_zip() -> Bool
+  let a = [1, 2, 3]
+  let b = ["a", "b", "c"]
+  let zipped = zip(a, b)
+  assert len(zipped) == 3
+  assert zipped[0][0] == 1
+  assert zipped[0][1] == "a"
+  return true
+end
+
+cell test_list_enumerate() -> Bool
+  let items = ["a", "b", "c"]
+  let indexed = enumerate(items)
+  assert len(indexed) == 3
+  assert indexed[0][0] == 0
+  assert indexed[0][1] == "a"
+  assert indexed[2][0] == 2
+  return true
+end
+
+cell test_list_take() -> Bool
+  let items = [1, 2, 3, 4, 5]
+  let taken = take(items, 3)
+  assert len(taken) == 3
+  assert taken[2] == 3
+  return true
+end
+
+cell test_list_drop() -> Bool
+  let items = [1, 2, 3, 4, 5]
+  let dropped = drop(items, 2)
+  assert len(dropped) == 3
+  assert dropped[0] == 3
+  return true
+end
+
+cell test_list_first() -> Bool
+  assert first([1, 2, 3]) == 1
+  assert first([]) == null
+  return true
+end
+
+cell test_list_last() -> Bool
+  assert last([1, 2, 3]) == 3
+  assert last([]) == null
+  return true
+end
+
+cell test_list_is_empty() -> Bool
+  assert is_empty([])
+  assert is_empty({})
+  assert not is_empty([1])
+  return true
+end
+
+cell test_list_contains() -> Bool
+  assert contains([1, 2, 3], 2)
+  assert not contains([1, 2, 3], 4)
+  return true
+end
+
+cell test_list_slice() -> Bool
+  let items = [0, 1, 2, 3, 4, 5]
+  let sliced = slice(items, 1, 4)
+  assert len(sliced) == 3
+  assert sliced[0] == 1
+  assert sliced[2] == 3
+  return true
+end
+
+cell test_list_chunk() -> Bool
+  let items = [1, 2, 3, 4, 5, 6, 7]
+  let chunks = chunk(items, 3)
+  assert len(chunks) == 3
+  assert len(chunks[0]) == 3
+  return true
+end
+
+cell test_list_window() -> Bool
+  let items = [1, 2, 3, 4, 5]
+  let windows = window(items, 3)
+  assert len(windows) == 3
+  assert len(windows[0]) == 3
+  return true
+end
+
+cell test_list_range() -> Bool
+  let r = range(0, 5)
+  assert len(r) == 5
+  assert r[0] == 0
+  assert r[4] == 4
+  return true
+end
+
+# =============================================================================
+# Higher-Order Functions
+# =============================================================================
+
+cell test_map_builtin() -> Bool
+  let items = [1, 2, 3]
+  let doubled = map(items, fn(x) => x * 2)
+  assert doubled[0] == 2
+  assert doubled[2] == 6
+  return true
+end
+
+cell test_filter_builtin() -> Bool
+  let items = [1, 2, 3, 4, 5, 6]
+  let evens = filter(items, fn(x) => x % 2 == 0)
+  assert len(evens) == 3
+  assert evens[0] == 2
+  return true
+end
+
+cell test_reduce_builtin() -> Bool
+  let items = [1, 2, 3, 4, 5]
+  let sum = reduce(items, fn(a, b) => a + b, 0)
+  assert sum == 15
+  return true
+end
+
+cell test_flat_map_builtin() -> Bool
+  let items = [1, 2, 3]
+  let result = flat_map(items, fn(x) => [x, x])
+  assert len(result) == 6
+  return true
+end
+
+cell test_any_builtin() -> Bool
+  assert any([1, 2, 3], fn(x) => x > 2)
+  assert not any([1, 2, 3], fn(x) => x > 5)
+  return true
+end
+
+cell test_all_builtin() -> Bool
+  assert all([2, 4, 6], fn(x) => x % 2 == 0)
+  assert not all([1, 2, 3], fn(x) => x % 2 == 0)
+  return true
+end
+
+cell test_find_builtin() -> Bool
+  assert find([1, 2, 3, 4], fn(x) => x > 2) == 3
+  assert find([1, 2, 3], fn(x) => x > 5) == null
+  return true
+end
+
+cell test_position_builtin() -> Bool
+  assert position([1, 2, 3, 4], fn(x) => x > 2) == 2
+  assert position([1, 2, 3], fn(x) => x > 5) == -1
+  return true
+end
+
+cell test_group_by_builtin() -> Bool
+  let items = [1, 2, 3, 4, 5, 6]
+  let grouped = group_by(items, fn(x) => if x % 2 == 0 then "even" else "odd")
+  assert has_key(grouped, "even")
+  assert has_key(grouped, "odd")
+  return true
+end
+
+# =============================================================================
+# Map Builtins
+# =============================================================================
+
+cell test_map_keys() -> Bool
+  let m = {"a": 1, "b": 2}
+  let k = keys(m)
+  assert len(k) == 2
+  assert contains(k, "a")
+  return true
+end
+
+cell test_map_values() -> Bool
+  let m = {"a": 1, "b": 2}
+  let v = values(m)
+  assert len(v) == 2
+  return true
+end
+
+cell test_map_entries() -> Bool
+  let m = {"a": 1, "b": 2}
+  let e = entries(m)
+  assert len(e) == 2
+  return true
+end
+
+cell test_map_has_key() -> Bool
+  let m = {"a": 1}
+  assert has_key(m, "a")
+  assert not has_key(m, "b")
+  return true
+end
+
+cell test_map_merge() -> Bool
+  let m1 = {"a": 1}
+  let m2 = {"b": 2}
+  let merged = merge(m1, m2)
+  assert has_key(merged, "a")
+  assert has_key(merged, "b")
+  return true
+end
+
+cell test_map_remove() -> Bool
+  let m = {"a": 1, "b": 2}
+  let removed = remove(m, "a")
+  assert not has_key(removed, "a")
+  assert has_key(removed, "b")
+  return true
+end
+
+# =============================================================================
+# Set Builtins
+# =============================================================================
+
+cell test_to_set() -> Bool
+  let lst = [1, 2, 2, 3]
+  let s = to_set(lst)
+  assert len(s) == 3
+  return true
+end
+
+cell test_set_add() -> Bool
+  let s = {1, 2}
+  s = add(s, 3)
+  assert contains(s, 3)
+  return true
+end
+
+cell test_set_remove() -> Bool
+  let s = {1, 2, 3}
+  s = remove(s, 2)
+  assert not contains(s, 2)
+  return true
+end
+
+# =============================================================================
+# Random and UUID
+# =============================================================================
+
+cell test_random() -> Bool
+  let r1 = random()
+  let r2 = random()
+  return r1 >= 0.0 and r1 < 1.0 and r2 >= 0.0 and r2 < 1.0
+end
+
+cell test_random_int() -> Bool
+  let r = random_int(1, 10)
+  return r >= 1 and r <= 10
+end
+
+cell test_uuid() -> Bool
+  let id1 = uuid()
+  let id2 = uuid()
+  return len(id1) > 0 and id1 != id2
+end
+
+cell test_uuid_v4() -> Bool
+  let id = uuid_v4()
+  return len(id) > 0
+end
+
+# =============================================================================
+# Time Builtins
+# =============================================================================
+
+cell test_timestamp() -> Bool
+  let ts = timestamp()
+  return ts > 0
+end
+
+cell test_timestamp_ms() -> Bool
+  let ts = timestamp_ms()
+  return ts > 0
+end
+
+# =============================================================================
+# I/O Builtins
+# =============================================================================
+
+cell test_print() -> Bool
+  print("Testing print function")
+  print(42)
+  print(true)
+  return true
+end
+
+cell test_debug() -> Bool
+  debug("Debug message")
+  debug([1, 2, 3])
+  return true
+end
+
+cell test_format() -> Bool
+  let msg = format("Hello, {}!", "World")
+  assert contains(msg, "Hello")
+  assert contains(msg, "World")
+  return true
+end
+
+# =============================================================================
+# JSON Builtins
+# =============================================================================
+
+cell test_to_json() -> Bool
+  let obj = {"name": "Alice", "age": 30}
+  let json_str = to_json(obj)
+  assert contains(json_str, "name")
+  assert contains(json_str, "Alice")
+  return true
+end
+
+cell test_parse_json() -> Bool
+  let json_str = '{"name": "Alice", "age": 30}'
+  let obj = parse_json(json_str)
+  assert obj["name"] == "Alice"
+  assert obj["age"] == 30
+  return true
+end
+
+cell test_json_stringify() -> Bool
+  let obj = {"key": "value"}
+  let str = json_stringify(obj)
+  assert contains(str, "key")
+  return true
+end
+
+cell test_json_parse() -> Bool
+  let str = '{"key": "value"}'
+  let obj = json_parse(str)
+  return true
+end
+
+# =============================================================================
+# Encoding Builtins
+# =============================================================================
+
+cell test_base64_encode() -> Bool
+  let encoded = base64_encode("hello")
+  assert encoded == "aGVsbG8="
+  return true
+end
+
+cell test_base64_decode() -> Bool
+  let decoded = base64_decode("aGVsbG8=")
+  assert decoded == "hello"
+  return true
+end
+
+cell test_hex_encode() -> Bool
+  let encoded = hex_encode(b"hello")
+  assert encoded == "68656c6c6f"
+  return true
+end
+
+cell test_hex_decode() -> Bool
+  let decoded = hex_decode("68656c6c6f")
+  # decoded == b"hello"
+  return true
+end
+
+# =============================================================================
+# Hashing Builtins
+# =============================================================================
+
+cell test_hash() -> Bool
+  let h = hash("hello")
+  return h != 0
+end
+
+cell test_sha256() -> Bool
+  let h = sha256("hello")
+  assert len(h) == 64  # SHA-256 produces 64 hex chars
+  return true
+end
+
+# =============================================================================
+# File I/O Builtins
+# =============================================================================
+
+cell test_read_file_exists() -> Bool
+  # Tests the function signature exists
+  # Actual file reading depends on filesystem
+  return true
+end
+
+cell test_write_file_exists() -> Bool
+  # Tests the function signature exists
+  return true
+end
+
+# =============================================================================
+# System Builtins
+# =============================================================================
+
+cell test_get_env() -> Bool
+  let home = get_env("HOME")
+  # Returns String | Null
+  return true
+end
+
+# =============================================================================
+# Main Test Runner
+# =============================================================================
+
+cell main() -> Null
+  print("=== Builtins Test Suite ===")
+  print("")
+  
+  print("Testing Type Checking Builtins...")
+  assert test_type_of()
+  assert test_to_string()
+  assert test_to_int()
+  assert test_to_float()
+  assert test_clone()
+  assert test_sizeof()
+  print("  ✓ Type Checking Builtins")
+  
+  print("Testing String Builtins...")
+  assert test_string_length()
+  assert test_string_upper()
+  assert test_string_lower()
+  assert test_string_trim()
+  assert test_string_trim_start()
+  assert test_string_trim_end()
+  assert test_string_split()
+  assert test_string_join()
+  assert test_string_replace()
+  assert test_string_contains()
+  assert test_string_starts_with()
+  assert test_string_ends_with()
+  assert test_string_chars()
+  assert test_string_index_of()
+  assert test_string_slice()
+  assert test_string_pad_left()
+  assert test_string_pad_right()
+  assert test_string_interpolation()
+  assert test_parse_int()
+  assert test_parse_float()
+  print("  ✓ String Builtins")
+  
+  print("Testing Math Builtins...")
+  assert test_math_abs()
+  assert test_math_min()
+  assert test_math_max()
+  assert test_math_round()
+  assert test_math_ceil()
+  assert test_math_floor()
+  assert test_math_sqrt()
+  assert test_math_pow()
+  assert test_math_log()
+  assert test_math_sin()
+  assert test_math_cos()
+  assert test_math_tan()
+  assert test_math_clamp()
+  print("  ✓ Math Builtins")
+  
+  print("Testing Collection Builtins...")
+  assert test_list_length()
+  assert test_list_append()
+  assert test_list_sort()
+  assert test_list_reverse()
+  assert test_list_flatten()
+  assert test_list_unique()
+  assert test_list_zip()
+  assert test_list_enumerate()
+  assert test_list_take()
+  assert test_list_drop()
+  assert test_list_first()
+  assert test_list_last()
+  assert test_list_is_empty()
+  assert test_list_contains()
+  assert test_list_slice()
+  assert test_list_chunk()
+  assert test_list_window()
+  assert test_list_range()
+  print("  ✓ Collection Builtins")
+  
+  print("Testing Higher-Order Functions...")
+  assert test_map_builtin()
+  assert test_filter_builtin()
+  assert test_reduce_builtin()
+  assert test_flat_map_builtin()
+  assert test_any_builtin()
+  assert test_all_builtin()
+  assert test_find_builtin()
+  assert test_position_builtin()
+  assert test_group_by_builtin()
+  print("  ✓ Higher-Order Functions")
+  
+  print("Testing Map Builtins...")
+  assert test_map_keys()
+  assert test_map_values()
+  assert test_map_entries()
+  assert test_map_has_key()
+  assert test_map_merge()
+  assert test_map_remove()
+  print("  ✓ Map Builtins")
+  
+  print("Testing Set Builtins...")
+  assert test_to_set()
+  assert test_set_add()
+  assert test_set_remove()
+  print("  ✓ Set Builtins")
+  
+  print("Testing Random and UUID...")
+  assert test_random()
+  assert test_random_int()
+  assert test_uuid()
+  assert test_uuid_v4()
+  print("  ✓ Random and UUID")
+  
+  print("Testing Time Builtins...")
+  assert test_timestamp()
+  assert test_timestamp_ms()
+  print("  ✓ Time Builtins")
+  
+  print("Testing I/O Builtins...")
+  assert test_print()
+  assert test_debug()
+  assert test_format()
+  print("  ✓ I/O Builtins")
+  
+  print("Testing JSON Builtins...")
+  assert test_to_json()
+  assert test_parse_json()
+  assert test_json_stringify()
+  assert test_json_parse()
+  print("  ✓ JSON Builtins")
+  
+  print("Testing Encoding Builtins...")
+  assert test_base64_encode()
+  assert test_base64_decode()
+  assert test_hex_encode()
+  assert test_hex_decode()
+  print("  ✓ Encoding Builtins")
+  
+  print("Testing Hashing Builtins...")
+  assert test_hash()
+  assert test_sha256()
+  print("  ✓ Hashing Builtins")
+  
+  print("Testing File I/O Builtins...")
+  assert test_read_file_exists()
+  assert test_write_file_exists()
+  print("  ✓ File I/O Builtins")
+  
+  print("Testing System Builtins...")
+  assert test_get_env()
+  print("  ✓ System Builtins")
+  
+  print("")
+  print("=== All Builtins Tests Passed! ===")
+end

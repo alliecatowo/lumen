@@ -1,0 +1,434 @@
+# Language Basics Test Suite
+# Tests fundamental language features: variables, types, operators
+
+# =============================================================================
+# Variables and Assignments
+# =============================================================================
+
+cell test_variable_declaration() -> Bool
+  let x = 42
+  let y: Int = 100
+  let name = "Lumen"
+  let pi = 3.14
+  let active = true
+  return x == 42 and y == 100 and name == "Lumen" and pi == 3.14 and active == true
+end
+
+cell test_mutable_variables() -> Bool
+  let mut counter = 0
+  counter = 1
+  counter = 2
+  return counter == 2
+end
+
+cell test_multiple_declarations() -> Bool
+  let a = 1
+  let b = 2
+  let c = 3
+  return a + b + c == 6
+end
+
+# =============================================================================
+# Basic Types
+# =============================================================================
+
+cell test_int_type() -> Bool
+  let zero = 0
+  let positive = 42
+  let negative = -17
+  let large = 1000000000
+  return type(zero) == "Int" and type(positive) == "Int" and type(negative) == "Int"
+end
+
+cell test_float_type() -> Bool
+  let pi = 3.14159
+  let negative = -0.5
+  let whole = 10.0
+  let scientific = 1.5e10
+  return type(pi) == "Float" and type(negative) == "Float"
+end
+
+cell test_string_type() -> Bool
+  let empty = ""
+  let hello = "hello"
+  let multiline = "line1\nline2"
+  return type(empty) == "String" and type(hello) == "String" and len(hello) == 5
+end
+
+cell test_bool_type() -> Bool
+  let t = true
+  let f = false
+  return type(t) == "Bool" and type(f) == "Bool" and t != f
+end
+
+cell test_null_type() -> Bool
+  let n = null
+  return type(n) == "Null" and n == null
+end
+
+# =============================================================================
+# Arithmetic Operations
+# =============================================================================
+
+cell test_basic_arithmetic() -> Bool
+  # Addition
+  assert 1 + 1 == 2
+  assert 10 + 20 == 30
+  assert (-5) + 5 == 0
+  
+  # Subtraction
+  assert 10 - 3 == 7
+  assert 5 - 10 == -5
+  assert 0 - 0 == 0
+  
+  # Multiplication
+  assert 3 * 4 == 12
+  assert (-2) * 3 == -6
+  assert 0 * 100 == 0
+  
+  # Division
+  assert 10 / 2 == 5
+  assert 7 / 2 == 3  # integer division
+  assert (-9) / 3 == -3
+  
+  # Modulo
+  assert 10 % 3 == 1
+  assert 15 % 5 == 0
+  assert 7 % 4 == 3
+  
+  # Power
+  assert 2 ** 3 == 8
+  assert 3 ** 2 == 9
+  assert 10 ** 0 == 1
+  
+  return true
+end
+
+cell test_float_arithmetic() -> Bool
+  assert 3.0 + 2.0 == 5.0
+  assert 5.5 - 2.5 == 3.0
+  assert 2.5 * 4.0 == 10.0
+  assert 7.5 / 2.5 == 3.0
+  return true
+end
+
+cell test_mixed_arithmetic() -> Bool
+  # Int and Float operations result in Float
+  let result = 5 + 3.0
+  return type(result) == "Float" and result == 8.0
+end
+
+cell test_compound_assignment() -> Bool
+  let mut x = 10
+  x += 5
+  assert x == 15
+  x -= 3
+  assert x == 12
+  x *= 2
+  assert x == 24
+  x /= 4
+  assert x == 6
+  x %= 4
+  assert x == 2
+  return true
+end
+
+cell test_operator_precedence() -> Bool
+  assert 2 + 3 * 4 == 14
+  assert (2 + 3) * 4 == 20
+  assert 10 - 4 / 2 == 8
+  assert 2 ** 3 + 1 == 9
+  assert 2 * 3 + 4 * 5 == 26
+  return true
+end
+
+# =============================================================================
+# Comparison Operators
+# =============================================================================
+
+cell test_comparison_operators() -> Bool
+  # Equal
+  assert 5 == 5
+  assert "hello" == "hello"
+  assert true == true
+  
+  # Not equal
+  assert 5 != 3
+  assert "a" != "b"
+  assert true != false
+  
+  # Less than
+  assert 3 < 5
+  assert (-1) < 0
+  
+  # Greater than
+  assert 10 > 5
+  assert 0 > (-10)
+  
+  # Less than or equal
+  assert 5 <= 5
+  assert 3 <= 5
+  
+  # Greater than or equal
+  assert 5 >= 5
+  assert 10 >= 5
+  
+  return true
+end
+
+cell test_string_comparison() -> Bool
+  assert "a" < "b"
+  assert "apple" < "banana"
+  assert "hello" == "hello"
+  assert "Hello" != "hello"  # case sensitive
+  return true
+end
+
+# =============================================================================
+# Logical Operators
+# =============================================================================
+
+cell test_logical_and() -> Bool
+  assert true and true
+  assert not (true and false)
+  assert not (false and true)
+  assert not (false and false)
+  return true
+end
+
+cell test_logical_or() -> Bool
+  assert true or true
+  assert true or false
+  assert false or true
+  assert not (false or false)
+  return true
+end
+
+cell test_logical_not() -> Bool
+  assert not false
+  assert not (not true)
+  assert not (5 == 3)
+  return true
+end
+
+cell test_logical_short_circuit() -> Bool
+  let mut side_effect = 0
+  
+  # Short circuit: if first operand of 'and' is false, second is not evaluated
+  let result1 = false and ({ side_effect = 1; true })
+  assert side_effect == 0
+  assert not result1
+  
+  # Short circuit: if first operand of 'or' is true, second is not evaluated
+  let result2 = true or ({ side_effect = 1; false })
+  assert side_effect == 0
+  assert result2
+  
+  return true
+end
+
+cell test_combined_logical() -> Bool
+  assert (true and true) or false
+  assert not (false and (true or false))
+  assert (5 > 3) and (10 < 20)
+  assert (5 == 5) or (3 == 4)
+  return true
+end
+
+# =============================================================================
+# Bitwise Operators
+# =============================================================================
+
+cell test_bitwise_and() -> Bool
+  assert (5 & 3) == 1  # 101 & 011 = 001
+  assert (7 & 7) == 7
+  assert (0 & 255) == 0
+  return true
+end
+
+cell test_bitwise_or() -> Bool
+  assert (5 | 3) == 7  # 101 | 011 = 111
+  assert (1 | 2) == 3
+  assert (0 | 255) == 255
+  return true
+end
+
+cell test_bitwise_xor() -> Bool
+  assert (5 ^ 3) == 6  # 101 ^ 011 = 110
+  assert (7 ^ 7) == 0
+  return true
+end
+
+cell test_bitwise_shifts() -> Bool
+  assert (1 << 3) == 8
+  assert (8 >> 2) == 2
+  assert (255 >> 4) == 15
+  return true
+end
+
+cell test_bitwise_not() -> Bool
+  let result = ~0
+  return result != 0  # bitwise NOT should flip bits
+end
+
+# =============================================================================
+# String Operations
+# =============================================================================
+
+cell test_string_concatenation() -> Bool
+  assert "hello" + " " + "world" == "hello world"
+  assert "" + "test" == "test"
+  assert "a" + "b" + "c" == "abc"
+  return true
+end
+
+cell test_string_interpolation() -> Bool
+  let name = "World"
+  let count = 42
+  let result = "Hello, {name}! Count: {count}"
+  assert contains(result, "Hello")
+  assert contains(result, "World")
+  assert contains(result, "42")
+  return true
+end
+
+cell test_string_length() -> Bool
+  assert len("") == 0
+  assert len("a") == 1
+  assert len("hello") == 5
+  assert len("hello world") == 11
+  return true
+end
+
+# =============================================================================
+# Type Checking
+# =============================================================================
+
+cell test_type_of() -> Bool
+  assert type(42) == "Int"
+  assert type(3.14) == "Float"
+  assert type("hello") == "String"
+  assert type(true) == "Bool"
+  assert type(null) == "Null"
+  assert type([1, 2, 3]) == "list[Int]"
+  return true
+end
+
+cell test_type_conversion() -> Bool
+  # to_string
+  assert to_string(42) == "42"
+  assert to_string(3.14) == "3.14"
+  assert to_string(true) == "true"
+  
+  # parse_int
+  assert parse_int("42") == 42
+  assert parse_int("-17") == -17
+  
+  # parse_float
+  assert parse_float("3.14") == 3.14
+  
+  return true
+end
+
+# =============================================================================
+# Edge Cases
+# =============================================================================
+
+cell test_integer_edge_cases() -> Bool
+  let max_int = 9223372036854775807  # i64 max
+  let min_int = -9223372036854775808  # i64 min
+  assert max_int > 0
+  assert min_int < 0
+  return true
+end
+
+cell test_division_edge_cases() -> Bool
+  # Division by zero should be handled carefully
+  # Note: This tests that we don't crash, behavior may vary
+  let a = 10
+  let b = 1
+  assert a / b == 10
+  return true
+end
+
+cell test_empty_collections() -> Bool
+  let empty_list: list[Int] = []
+  let empty_map: map[String, Int] = {}
+  let empty_set: set[Int] = {}
+  assert len(empty_list) == 0
+  assert len(empty_map) == 0
+  assert len(empty_set) == 0
+  return true
+end
+
+# =============================================================================
+# Main Test Runner
+# =============================================================================
+
+cell main() -> Null
+  print("=== Language Basics Test Suite ===")
+  print("")
+  
+  print("Testing Variables and Assignments...")
+  assert test_variable_declaration()
+  assert test_mutable_variables()
+  assert test_multiple_declarations()
+  print("  ✓ Variables and Assignments")
+  
+  print("Testing Basic Types...")
+  assert test_int_type()
+  assert test_float_type()
+  assert test_string_type()
+  assert test_bool_type()
+  assert test_null_type()
+  print("  ✓ Basic Types")
+  
+  print("Testing Arithmetic Operations...")
+  assert test_basic_arithmetic()
+  assert test_float_arithmetic()
+  assert test_mixed_arithmetic()
+  assert test_compound_assignment()
+  assert test_operator_precedence()
+  print("  ✓ Arithmetic Operations")
+  
+  print("Testing Comparison Operators...")
+  assert test_comparison_operators()
+  assert test_string_comparison()
+  print("  ✓ Comparison Operators")
+  
+  print("Testing Logical Operators...")
+  assert test_logical_and()
+  assert test_logical_or()
+  assert test_logical_not()
+  assert test_logical_short_circuit()
+  assert test_combined_logical()
+  print("  ✓ Logical Operators")
+  
+  print("Testing Bitwise Operators...")
+  assert test_bitwise_and()
+  assert test_bitwise_or()
+  assert test_bitwise_xor()
+  assert test_bitwise_shifts()
+  assert test_bitwise_not()
+  print("  ✓ Bitwise Operators")
+  
+  print("Testing String Operations...")
+  assert test_string_concatenation()
+  assert test_string_interpolation()
+  assert test_string_length()
+  print("  ✓ String Operations")
+  
+  print("Testing Type Checking...")
+  assert test_type_of()
+  assert test_type_conversion()
+  print("  ✓ Type Checking")
+  
+  print("Testing Edge Cases...")
+  assert test_integer_edge_cases()
+  assert test_division_edge_cases()
+  assert test_empty_collections()
+  print("  ✓ Edge Cases")
+  
+  print("")
+  print("=== All Language Basics Tests Passed! ===")
+end

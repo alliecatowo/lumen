@@ -1,0 +1,636 @@
+# End-to-End Integration Test Suite
+# Tests complex programs and real-world patterns
+
+# =============================================================================
+# Calculator Application
+# =============================================================================
+
+enum Op
+  Add
+  Subtract
+  Multiply
+  Divide
+end
+
+cell calculate(a: Float, b: Float, op: Op) -> result[Float, String]
+  match op
+    Op.Add -> return ok(a + b)
+    Op.Subtract -> return ok(a - b)
+    Op.Multiply -> return ok(a * b)
+    Op.Divide -> 
+      if b == 0.0
+        return err("Cannot divide by zero")
+      end
+      return ok(a / b)
+  end
+end
+
+cell test_calculator() -> Bool
+  let r1 = calculate(10.0, 5.0, Op.Add)
+  let r2 = calculate(10.0, 5.0, Op.Subtract)
+  let r3 = calculate(10.0, 5.0, Op.Multiply)
+  let r4 = calculate(10.0, 5.0, Op.Divide)
+  let r5 = calculate(10.0, 0.0, Op.Divide)
+  
+  return unwrap(r1) == 15.0 and unwrap(r2) == 5.0 and 
+         unwrap(r3) == 50.0 and unwrap(r4) == 2.0 and
+         is_err(r5)
+end
+
+# =============================================================================
+# Stack Data Structure
+# =============================================================================
+
+record Stack[T]
+  items: list[T]
+
+  cell push(self: Stack[T], item: T) -> Stack[T]
+    return Stack(items: append(self.items, item))
+  end
+
+  cell pop(self: Stack[T]) -> tuple[T | Null, Stack[T]]
+    let n = len(self.items)
+    if n == 0
+      return (null, self)
+    end
+    let top = self.items[n - 1]
+    let rest = slice(self.items, 0, n - 1)
+    return (top, Stack(items: rest))
+  end
+
+  cell peek(self: Stack[T]) -> T | Null
+    let n = len(self.items)
+    if n == 0
+      return null
+    end
+    return self.items[n - 1]
+  end
+
+  cell is_empty(self: Stack[T]) -> Bool
+    return len(self.items) == 0
+  end
+
+  cell size(self: Stack[T]) -> Int
+    return len(self.items)
+  end
+end
+
+cell test_stack_operations() -> Bool
+  let s1 = Stack[Int](items: [])
+  let s2 = s1.push(1).push(2).push(3)
+  let (top1, s3) = s2.pop()
+  let (top2, s4) = s3.pop()
+  
+  return top1 == 3 and top2 == 2 and s4.size() == 1
+end
+
+# =============================================================================
+# Queue Data Structure
+# =============================================================================
+
+record Queue[T]
+  items: list[T]
+
+  cell enqueue(self: Queue[T], item: T) -> Queue[T]
+    return Queue(items: append(self.items, item))
+  end
+
+  cell dequeue(self: Queue[T]) -> tuple[T | Null, Queue[T]]
+    if len(self.items) == 0
+      return (null, self)
+    end
+    let front = self.items[0]
+    let rest = drop(self.items, 1)
+    return (front, Queue(items: rest))
+  end
+
+  cell is_empty(self: Queue[T]) -> Bool
+    return len(self.items) == 0
+  end
+
+  cell size(self: Queue[T]) -> Int
+    return len(self.items)
+  end
+end
+
+cell test_queue_operations() -> Bool
+  let q1 = Queue[String](items: [])
+  let q2 = q1.enqueue("a").enqueue("b").enqueue("c")
+  let (front1, q3) = q2.dequeue()
+  let (front2, q4) = q3.dequeue()
+  
+  return front1 == "a" and front2 == "b" and q4.size() == 1
+end
+
+# =============================================================================
+# Binary Search Tree
+# =============================================================================
+
+enum Tree[T]
+  Empty
+  Node(value: T, left: Tree[T], right: Tree[T])
+end
+
+cell tree_insert[T](tree: Tree[T], value: T, compare: fn(T, T) -> Int) -> Tree[T]
+  match tree
+    Tree.Empty -> return Tree.Node(value: value, left: Tree.Empty, right: Tree.Empty)
+    Tree.Node(v, left, right) ->
+      let cmp = compare(value, v)
+      if cmp < 0
+        return Tree.Node(value: v, left: tree_insert(left, value, compare), right: right)
+      else
+        if cmp > 0
+          return Tree.Node(value: v, left: left, right: tree_insert(right, value, compare))
+        else
+          return tree  # Value already exists
+        end
+      end
+  end
+end
+
+cell tree_contains[T](tree: Tree[T], value: T, compare: fn(T, T) -> Int) -> Bool
+  match tree
+    Tree.Empty -> return false
+    Tree.Node(v, left, right) ->
+      let cmp = compare(value, v)
+      if cmp == 0
+        return true
+      else
+        if cmp < 0
+          return tree_contains(left, value, compare)
+        else
+          return tree_contains(right, value, compare)
+        end
+      end
+  end
+end
+
+cell tree_to_list[T](tree: Tree[T]) -> list[T]
+  match tree
+    Tree.Empty -> return []
+    Tree.Node(v, left, right) ->
+      let left_list = tree_to_list(left)
+      let right_list = tree_to_list(right)
+      return append(append(left_list, v), right_list)
+  end
+end
+
+cell test_binary_search_tree() -> Bool
+  let compare = fn(a: Int, b: Int) => a - b
+  let empty_tree = Tree[Int].Empty
+  
+  let t1 = tree_insert(empty_tree, 5, compare)
+  let t2 = tree_insert(t1, 3, compare)
+  let t3 = tree_insert(t2, 7, compare)
+  let t4 = tree_insert(t3, 1, compare)
+  let t5 = tree_insert(t4, 9, compare)
+  
+  return tree_contains(t5, 3, compare) and 
+         tree_contains(t5, 9, compare) and
+         not tree_contains(t5, 100, compare)
+end
+
+# =============================================================================
+# JSON Parser/Serializer
+# =============================================================================
+
+record Person
+  name: String
+  age: Int
+  email: String
+end
+
+cell person_to_json(person: Person) -> String
+  return '{"name":"{person.name}","age":{person.age},"email":"{person.email}"}'
+end
+
+cell test_json_workflow() -> Bool
+  let person = Person(name: "Alice", age: 30, email: "alice@example.com")
+  let json = person_to_json(person)
+  
+  return contains(json, "Alice") and contains(json, "30")
+end
+
+# =============================================================================
+# HTTP Request Builder Pattern
+# =============================================================================
+
+record Request
+  method: String = "GET"
+  url: String = ""
+  headers: map[String, String] = {}
+  body: String | Null = null
+
+  cell with_method(self: Request, m: String) -> Request
+    return Request(method: m, url: self.url, headers: self.headers, body: self.body)
+  end
+
+  cell with_url(self: Request, u: String) -> Request
+    return Request(method: self.method, url: u, headers: self.headers, body: self.body)
+  end
+
+  cell with_header(self: Request, key: String, value: String) -> Request
+    let new_headers = merge(self.headers, {(key): value})
+    return Request(method: self.method, url: self.url, headers: new_headers, body: self.body)
+  end
+
+  cell with_body(self: Request, b: String) -> Request
+    return Request(method: self.method, url: self.url, headers: self.headers, body: b)
+  end
+end
+
+cell test_request_builder() -> Bool
+  let request = Request()
+    .with_method("POST")
+    .with_url("https://api.example.com/users")
+    .with_header("Content-Type", "application/json")
+    .with_header("Authorization", "Bearer token")
+    .with_body('{"name":"Alice"}')
+  
+  return request.method == "POST" and 
+         request.url == "https://api.example.com/users" and
+         has_key(request.headers, "Content-Type")
+end
+
+# =============================================================================
+# Validation Framework
+# =============================================================================
+
+type Validator[T] = fn(T) -> result[T, String]
+
+cell validate_not_empty(s: String) -> result[String, String]
+  if len(s) == 0
+    return err("String cannot be empty")
+  end
+  return ok(s)
+end
+
+cell validate_min_length(s: String, min: Int) -> result[String, String]
+  if len(s) < min
+    return err("String must be at least {min} characters")
+  end
+  return ok(s)
+end
+
+cell validate_positive(n: Int) -> result[Int, String]
+  if n <= 0
+    return err("Number must be positive")
+  end
+  return ok(n)
+end
+
+cell validate_all[T](value: T, validators: list[Validator[T]]) -> result[T, String]
+  for validator in validators
+    let r = validator(value)
+    if is_err(r)
+      return r
+    end
+  end
+  return ok(value)
+end
+
+cell test_validation_framework() -> Bool
+  let string_validators: list[Validator[String]] = [
+    validate_not_empty,
+    fn(s) => validate_min_length(s, 3)
+  ]
+  
+  let r1 = validate_all("hello", string_validators)
+  let r2 = validate_all("", string_validators)
+  let r3 = validate_all("ab", string_validators)
+  let r4 = validate_positive(5)
+  let r5 = validate_positive(-3)
+  
+  return is_ok(r1) and is_err(r2) and is_err(r3) and is_ok(r4) and is_err(r5)
+end
+
+# =============================================================================
+# Event System
+# =============================================================================
+
+record Event
+  name: String
+  data: map[String, String]
+end
+type EventHandler = fn(Event) -> Null
+
+record EventBus
+  handlers: map[String, list[EventHandler]]
+
+  cell on(self: EventBus, event_name: String, handler: EventHandler) -> EventBus
+    let existing = if has_key(self.handlers, event_name) then self.handlers[event_name] else []
+    let updated = append(existing, handler)
+    let new_handlers = merge(self.handlers, {(event_name): updated})
+    return EventBus(handlers: new_handlers)
+  end
+
+  cell emit(self: EventBus, event: Event) -> Null
+    if has_key(self.handlers, event.name)
+      let handlers = self.handlers[event.name]
+      for handler in handlers
+        handler(event)
+      end
+    end
+    return null
+  end
+end
+
+cell test_event_system() -> Bool
+  let bus = EventBus(handlers: {})
+  let mut received: list[String] = []
+  
+  let handler = fn(e: Event) => { received = append(received, e.data["msg"]); }
+  
+  let bus2 = bus.on("test", handler)
+  bus2.emit(Event(name: "test", data: {"msg": "hello"}))
+  bus2.emit(Event(name: "test", data: {"msg": "world"}))
+  
+  return len(received) == 2 and received[0] == "hello"
+end
+
+# =============================================================================
+# Sorting Algorithms
+# =============================================================================
+
+cell quicksort(items: list[Int]) -> list[Int]
+  if len(items) <= 1
+    return items
+  end
+  
+  let pivot = items[0]
+  let rest = drop(items, 1)
+  
+  let less = filter(rest, fn(x) => x <= pivot)
+  let greater = filter(rest, fn(x) => x > pivot)
+  
+  return append(append(quicksort(less), pivot), quicksort(greater))
+end
+
+cell mergesort(items: list[Int]) -> list[Int]
+  if len(items) <= 1
+    return items
+  end
+  
+  let mid = len(items) / 2
+  let left = slice(items, 0, mid)
+  let right = slice(items, mid, len(items))
+  
+  return merge_sorted(mergesort(left), mergesort(right))
+end
+
+cell merge_sorted(left: list[Int], right: list[Int]) -> list[Int]
+  let mut result: list[Int] = []
+  let mut i = 0
+  let mut j = 0
+  
+  while i < len(left) and j < len(right)
+    if left[i] <= right[j]
+      result = append(result, left[i])
+      i = i + 1
+    else
+      result = append(result, right[j])
+      j = j + 1
+    end
+  end
+  
+  # Append remaining elements
+  while i < len(left)
+    result = append(result, left[i])
+    i = i + 1
+  end
+  while j < len(right)
+    result = append(result, right[j])
+    j = j + 1
+  end
+  
+  return result
+end
+
+cell test_sorting_algorithms() -> Bool
+  let unsorted = [64, 34, 25, 12, 22, 11, 90, 5]
+  let quick_sorted = quicksort(unsorted)
+  let merge_sorted = mergesort(unsorted)
+  
+  return len(quick_sorted) == len(unsorted) and 
+         len(merge_sorted) == len(unsorted) and
+         quick_sorted[0] == 5 and merge_sorted[0] == 5
+end
+
+# =============================================================================
+# Memoization
+# =============================================================================
+
+record MemoCache[K, V]
+  cache: map[K, V]
+
+  cell get_or_compute(self: MemoCache[K, V], key: K, compute: fn(K) -> V) -> tuple[V, MemoCache[K, V]]
+    if has_key(self.cache, key)
+      return (self.cache[key], self)
+    end
+    
+    let value = compute(key)
+    let new_cache = merge(self.cache, {(key): value})
+    return (value, MemoCache(cache: new_cache))
+  end
+end
+
+cell fibonacci_memoized(n: Int, cache: MemoCache[Int, Int]) -> tuple[Int, MemoCache[Int, Int]]
+  if n < 2
+    return (n, cache)
+  end
+  
+  let fib_compute = fn(k: Int) -> Int
+    let (v1, _) = fibonacci_memoized(k - 1, cache)
+    let (v2, _) = fibonacci_memoized(k - 2, cache)
+    return v1 + v2
+  end
+  
+  return cache.get_or_compute(n, fib_compute)
+end
+
+cell test_memoization() -> Bool
+  let cache = MemoCache[Int, Int](cache: {})
+  let (result, _) = fibonacci_memoized(10, cache)
+  
+  return result == 55
+end
+
+# =============================================================================
+# State Machine
+# =============================================================================
+
+enum TrafficLight
+  Red
+  Yellow
+  Green
+end
+
+cell next_light(current: TrafficLight) -> TrafficLight
+  match current
+    TrafficLight.Red -> return TrafficLight.Green
+    TrafficLight.Green -> return TrafficLight.Yellow
+    TrafficLight.Yellow -> return TrafficLight.Red
+  end
+end
+
+cell test_state_machine() -> Bool
+  let cycle = [
+    TrafficLight.Red,
+    next_light(TrafficLight.Red),
+    next_light(next_light(TrafficLight.Red)),
+    next_light(next_light(next_light(TrafficLight.Red)))
+  ]
+  
+  return cycle[0] == TrafficLight.Red and
+         cycle[1] == TrafficLight.Green and
+         cycle[2] == TrafficLight.Yellow and
+         cycle[3] == TrafficLight.Red
+end
+
+# =============================================================================
+# Pipeline Processing
+# =============================================================================
+
+cell pipeline_map[T, U](items: list[T], f: fn(T) -> U) -> list[U]
+  return map(items, f)
+end
+
+cell pipeline_filter[T](items: list[T], pred: fn(T) -> Bool) -> list[T]
+  return filter(items, pred)
+end
+
+cell pipeline_reduce[T](items: list[T], f: fn(T, T) -> T, init: T) -> T
+  return reduce(items, f, init)
+end
+
+cell test_pipeline_processing() -> Bool
+  let data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+  
+  # Pipeline: filter evens -> double -> sum
+  let evens = pipeline_filter(data, fn(x) => x % 2 == 0)
+  let doubled = pipeline_map(evens, fn(x) => x * 2)
+  let sum = pipeline_reduce(doubled, fn(a, b) => a + b, 0)
+  
+  # evens: [2, 4, 6, 8, 10]
+  # doubled: [4, 8, 12, 16, 20]
+  # sum: 60
+  return sum == 60
+end
+
+# =============================================================================
+# Configuration Management
+# =============================================================================
+
+record Config
+  settings: map[String, String | Int | Bool]
+
+  cell get_string(self: Config, key: String, default: String) -> String
+    if has_key(self.settings, key)
+      let value = self.settings[key]
+      if value is String
+        return value
+      end
+    end
+    return default
+  end
+
+  cell get_int(self: Config, key: String, default: Int) -> Int
+    if has_key(self.settings, key)
+      let value = self.settings[key]
+      if value is Int
+        return value
+      end
+    end
+    return default
+  end
+
+  cell get_bool(self: Config, key: String, default: Bool) -> Bool
+    if has_key(self.settings, key)
+      let value = self.settings[key]
+      if value is Bool
+        return value
+      end
+    end
+    return default
+  end
+
+  cell set(self: Config, key: String, value: String | Int | Bool) -> Config
+    let new_settings = merge(self.settings, {(key): value})
+    return Config(settings: new_settings)
+  end
+end
+
+cell test_config_management() -> Bool
+  let config = Config(settings: {})
+    .set("host", "localhost")
+    .set("port", 8080)
+    .set("debug", true)
+  
+  return config.get_string("host", "") == "localhost" and
+         config.get_int("port", 0) == 8080 and
+         config.get_bool("debug", false) == true
+end
+
+# =============================================================================
+# Main Test Runner
+# =============================================================================
+
+cell main() -> Null
+  print("=== End-to-End Integration Test Suite ===")
+  print("")
+  
+  print("Testing Calculator Application...")
+  assert test_calculator()
+  print("  ✓ Calculator Application")
+  
+  print("Testing Stack Data Structure...")
+  assert test_stack_operations()
+  print("  ✓ Stack Data Structure")
+  
+  print("Testing Queue Data Structure...")
+  assert test_queue_operations()
+  print("  ✓ Queue Data Structure")
+  
+  print("Testing Binary Search Tree...")
+  assert test_binary_search_tree()
+  print("  ✓ Binary Search Tree")
+  
+  print("Testing JSON Workflow...")
+  assert test_json_workflow()
+  print("  ✓ JSON Workflow")
+  
+  print("Testing Request Builder Pattern...")
+  assert test_request_builder()
+  print("  ✓ Request Builder Pattern")
+  
+  print("Testing Validation Framework...")
+  assert test_validation_framework()
+  print("  ✓ Validation Framework")
+  
+  print("Testing Event System...")
+  assert test_event_system()
+  print("  ✓ Event System")
+  
+  print("Testing Sorting Algorithms...")
+  assert test_sorting_algorithms()
+  print("  ✓ Sorting Algorithms")
+  
+  print("Testing Memoization...")
+  assert test_memoization()
+  print("  ✓ Memoization")
+  
+  print("Testing State Machine...")
+  assert test_state_machine()
+  print("  ✓ State Machine")
+  
+  print("Testing Pipeline Processing...")
+  assert test_pipeline_processing()
+  print("  ✓ Pipeline Processing")
+  
+  print("Testing Configuration Management...")
+  assert test_config_management()
+  print("  ✓ Configuration Management")
+  
+  print("")
+  print("=== All End-to-End Integration Tests Passed! ===")
+end

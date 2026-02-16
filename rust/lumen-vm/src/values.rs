@@ -187,6 +187,17 @@ impl Value {
         }
     }
 
+    /// Convert to string, resolving interned strings using the provided table.
+    /// For non-string values, returns the same as `as_string()`.
+    pub fn as_string_resolved(&self, strings: &crate::strings::StringTable) -> String {
+        match self {
+            Value::String(StringRef::Interned(id)) => {
+                strings.resolve(*id).unwrap_or("").to_string()
+            }
+            _ => self.as_string(),
+        }
+    }
+
     pub fn as_int(&self) -> Option<i64> {
         match self {
             Value::Int(n) => Some(*n),

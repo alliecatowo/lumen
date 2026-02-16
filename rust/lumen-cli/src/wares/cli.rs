@@ -360,9 +360,25 @@ async fn cmd_install_package(package: &str, frozen: bool, locked: bool, trust_le
     println!("{} Installing {}...", colors::status_label("Trust"), colors::bold(package));
     println!("  Policy: {}", colors::cyan(trust_level));
 
-    // Parse package@version
-    let (name, _version) = if let Some(idx) = package.find('@') {
-        (&package[..idx], Some(&package[idx + 1..]))
+    // Validate: package must be namespaced
+    if !package.starts_with('@') {
+        eprintln!(
+            "{} package '{}' must be namespaced: @namespace/name",
+            colors::red("error:"),
+            package
+        );
+        std::process::exit(1);
+    }
+
+    // Parse @scope/name@version — version separator is the '@' after the '/'
+    let (name, _version) = if let Some(slash_idx) = package.find('/') {
+        let after_slash = &package[slash_idx + 1..];
+        if let Some(ver_offset) = after_slash.find('@') {
+            let ver_idx = slash_idx + 1 + ver_offset;
+            (&package[..ver_idx], Some(&package[ver_idx + 1..]))
+        } else {
+            (package, None)
+        }
     } else {
         (package, None)
     };
@@ -762,7 +778,20 @@ async fn cmd_publish(dry_run: bool, provenance: bool, no_log: bool, registry_url
 }
 
 async fn cmd_trust_check(package_spec: &str, show_log: bool, format: &str, registry_url: &str) {
-    let (name, version) = if let Some(idx) = package_spec.find('@') {
+    // Parse @scope/name@version — version separator is the '@' after the '/'
+    let (name, version) = if package_spec.starts_with('@') {
+        if let Some(slash_idx) = package_spec.find('/') {
+            let after_slash = &package_spec[slash_idx + 1..];
+            if let Some(ver_offset) = after_slash.find('@') {
+                let ver_idx = slash_idx + 1 + ver_offset;
+                (&package_spec[..ver_idx], Some(&package_spec[ver_idx + 1..]))
+            } else {
+                (package_spec, None)
+            }
+        } else {
+            (package_spec, None)
+        }
+    } else if let Some(idx) = package_spec.find('@') {
         (&package_spec[..idx], Some(&package_spec[idx + 1..]))
     } else {
         (package_spec, None)

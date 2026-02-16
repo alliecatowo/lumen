@@ -156,12 +156,30 @@ pub fn init(name: Option<String>) {
         None => PathBuf::from("."),
     };
 
-    let pkg_name = name.clone().unwrap_or_else(|| {
-        std::env::current_dir()
-            .ok()
-            .and_then(|p| p.file_name().map(|f| f.to_string_lossy().to_string()))
-            .unwrap_or_else(|| "my-package".to_string())
-    });
+    let pkg_name = match &name {
+        Some(n) if n.contains('/') && n.starts_with('@') => n.clone(),
+        Some(n) => {
+            eprintln!(
+                "{} package name '{}' must be namespaced: @namespace/name (e.g., @yourname/{})",
+                red("error:"),
+                n,
+                n
+            );
+            std::process::exit(1);
+        }
+        None => {
+            let dir_name = std::env::current_dir()
+                .ok()
+                .and_then(|p| p.file_name().map(|f| f.to_string_lossy().to_string()))
+                .unwrap_or_else(|| "my-package".to_string());
+            eprintln!(
+                "{} package name must be namespaced: @namespace/name\n  example: lumen pkg init @yourname/{}",
+                red("error:"),
+                dir_name
+            );
+            std::process::exit(1);
+        }
+    };
 
     let toml_path = base.join("lumen.toml");
     if toml_path.exists() {
@@ -2126,6 +2144,22 @@ pub fn add_with_kind(package: &str, path_opt: Option<&str>, kind: DependencyKind
             std::process::exit(1);
         }
     };
+
+    // Validate: all package names must be namespaced (@namespace/name)
+    // except git URLs and path dependencies
+    if !package.starts_with("http")
+        && !package.starts_with("git@")
+        && path_opt.is_none()
+        && !package.starts_with('@')
+    {
+        eprintln!(
+            "{} package name '{}' must be namespaced: @namespace/name\n  example: wares add @scope/{}",
+            red("error:"),
+            package,
+            package
+        );
+        std::process::exit(1);
+    }
 
     let (dep_name, dep_spec) = if package.starts_with("http") || package.starts_with("git@") {
         let url = package.to_string();

@@ -1136,7 +1136,7 @@ lto = true
         if let Some(pkg) = &self.package {
             if !is_valid_package_name(&pkg.name) {
                 errors.push(format!(
-                    "Invalid package name '{}': must be lowercase alphanumeric with hyphens",
+                    "Invalid package name '{}': must be namespaced as @namespace/name (e.g., @alliecatowo/my-package). Bare top-level names are not allowed.",
                     pkg.name
                 ));
             }
@@ -1181,30 +1181,33 @@ lto = true
 }
 
 /// Check if a package name is valid.
-fn is_valid_package_name(name: &str) -> bool {
+///
+/// All packages MUST be namespaced: `@namespace/name`.
+/// Bare top-level names are not allowed — this prevents typosquatting,
+/// name squatting, and ensures every install explicitly identifies its source.
+pub fn is_valid_package_name(name: &str) -> bool {
     if name.is_empty() || name.len() > 64 {
         return false;
     }
 
-    // Handle namespaced names
-    let local_name = if let Some(idx) = name.find('/') {
-        let namespace = &name[..idx];
-        let local = &name[idx + 1..];
-
-        // Validate namespace
-        if !namespace.starts_with('@') || namespace.len() < 2 {
-            return false;
-        }
-        let namespace = &namespace[1..];
-        if !is_valid_name_part(namespace) {
-            return false;
-        }
-        local
-    } else {
-        name
+    // Namespace is REQUIRED — no bare top-level names allowed
+    let Some(idx) = name.find('/') else {
+        return false;
     };
 
-    is_valid_name_part(local_name)
+    let namespace = &name[..idx];
+    let local = &name[idx + 1..];
+
+    // Validate namespace: must start with '@', followed by valid name part
+    if !namespace.starts_with('@') || namespace.len() < 2 {
+        return false;
+    }
+    let ns_part = &namespace[1..];
+    if !is_valid_name_part(ns_part) {
+        return false;
+    }
+
+    is_valid_name_part(local)
 }
 
 fn is_valid_name_part(name: &str) -> bool {
@@ -1244,10 +1247,10 @@ mod tests {
     fn parse_minimal_config() {
         let toml = r#"
 [package]
-name = "test"
+name = "@test/my-pkg"
 "#;
         let cfg: LumenConfig = toml::from_str(toml).unwrap();
-        assert_eq!(cfg.package.unwrap().name, "test");
+        assert_eq!(cfg.package.unwrap().name, "@test/my-pkg");
     }
 
     #[test]
@@ -1349,12 +1352,20 @@ exclude = ["examples/*"]
 
     #[test]
     fn validate_package_name() {
-        assert!(is_valid_package_name("valid-name"));
+        // Namespaced names are required — no bare top-level names
+        assert!(!is_valid_package_name("valid-name")); // bare name: rejected
+        assert!(!is_valid_package_name("my-package")); // bare name: rejected
         assert!(is_valid_package_name("@namespace/name"));
+        assert!(is_valid_package_name("@alliecatowo/lumen-utils"));
+        assert!(is_valid_package_name("@acme/http-tools"));
         assert!(!is_valid_package_name("Invalid"));
-        assert!(!is_valid_package_name("invalid--name"));
-        assert!(!is_valid_package_name("-invalid"));
-        assert!(!is_valid_package_name("invalid-"));
+        assert!(!is_valid_package_name("@Invalid/Name")); // uppercase in namespace
+        assert!(!is_valid_package_name("@ns/invalid--name")); // double hyphen
+        assert!(!is_valid_package_name("@ns/-invalid")); // leading hyphen in local
+        assert!(!is_valid_package_name("@ns/invalid-")); // trailing hyphen in local
+        assert!(!is_valid_package_name("@/name")); // empty namespace
+        assert!(!is_valid_package_name("name")); // no namespace
+        assert!(!is_valid_package_name("")); // empty
     }
 
     #[test]
@@ -1370,9 +1381,20 @@ version = "1.0.0"
 
     #[test]
     fn validate_invalid_name() {
+        // Bare name (no namespace) should fail validation
         let toml = r#"
 [package]
-name = "InvalidName"
+name = "bare-name"
+"#;
+        let cfg: LumenConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_uppercase_name() {
+        let toml = r#"
+[package]
+name = "@Ns/InvalidName"
 "#;
         let cfg: LumenConfig = toml::from_str(toml).unwrap();
         assert!(cfg.validate().is_err());

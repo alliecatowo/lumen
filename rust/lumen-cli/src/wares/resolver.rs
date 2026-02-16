@@ -436,13 +436,34 @@ pub fn resolve_features(
 }
 
 fn parse_dep_spec(dep: &str) -> Option<(PackageId, DependencySpec)> {
-    // Parse "name@version" or just "name"
-    if let Some(idx) = dep.find('@') {
-        let name = dep[..idx].to_string();
-        let version = dep[idx + 1..].to_string();
-        Some((name, DependencySpec::Version(version)))
+    // Parse "@scope/name@version" or "@scope/name"
+    // The first '@' is the namespace prefix, so use rfind to find the version separator
+    if dep.starts_with('@') {
+        // Namespaced: @scope/name or @scope/name@version
+        // Find the version '@' — it's any '@' after the initial scope
+        if let Some(slash_idx) = dep.find('/') {
+            let after_slash = &dep[slash_idx + 1..];
+            if let Some(ver_offset) = after_slash.find('@') {
+                let ver_idx = slash_idx + 1 + ver_offset;
+                let name = dep[..ver_idx].to_string();
+                let version = dep[ver_idx + 1..].to_string();
+                Some((name, DependencySpec::Version(version)))
+            } else {
+                Some((dep.to_string(), DependencySpec::Version("*".to_string())))
+            }
+        } else {
+            // Invalid: @ but no slash — not a valid namespaced name
+            None
+        }
     } else {
-        Some((dep.to_string(), DependencySpec::Version("*".to_string())))
+        // Non-namespaced name — still parse but will fail validation elsewhere
+        if let Some(idx) = dep.find('@') {
+            let name = dep[..idx].to_string();
+            let version = dep[idx + 1..].to_string();
+            Some((name, DependencySpec::Version(version)))
+        } else {
+            Some((dep.to_string(), DependencySpec::Version("*".to_string())))
+        }
     }
 }
 

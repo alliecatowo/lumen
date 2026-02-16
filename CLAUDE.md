@@ -61,7 +61,7 @@ Other key paths:
 - `SPEC.md` — Implementation-accurate language specification (source of truth)
 - `docs/GRAMMAR.md` — Formal EBNF grammar specification
 - `examples/*.lm.md` — Example programs (30 total)
-- `docs/research/EXECUTION_TRACKER.md` — Outstanding implementation work
+- `docs/research/COMPETITIVE_ANALYSIS.md` — Completion status (§3), parity goals, implementation gaps (§7.3), execution backlog (§11)
 - `docs/GETTING_STARTED.md` — Installation and tutorial guide
 - `docs/ARCHITECTURE.md` — Component overview
 - `docs/RUNTIME.md` — Runtime semantics (futures, processes, tool dispatch, traces)

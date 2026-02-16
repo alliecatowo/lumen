@@ -203,7 +203,8 @@ pub enum TypeInfoKind {
 
 #[derive(Debug, Clone)]
 pub struct CellInfo {
-    pub params: Vec<(String, TypeExpr)>,
+    /// (name, type, variadic)
+    pub params: Vec<(String, TypeExpr, bool)>,
     pub return_type: Option<TypeExpr>,
     pub effects: Vec<String>,
 }
@@ -424,7 +425,7 @@ pub fn resolve_with_base(
                         params: c
                             .params
                             .iter()
-                            .map(|p| (p.name.clone(), p.ty.clone()))
+                            .map(|p| (p.name.clone(), p.ty.clone(), p.variadic))
                             .collect(),
                         return_type: c.return_type.clone(),
                         effects: c.effects.clone(),
@@ -513,7 +514,7 @@ pub fn resolve_with_base(
                                 params: cell
                                     .params
                                     .iter()
-                                    .map(|p| (p.name.clone(), p.ty.clone()))
+                                    .map(|p| (p.name.clone(), p.ty.clone(), p.variadic))
                                     .collect(),
                                 return_type: cell.return_type.clone(),
                                 effects: cell.effects.clone(),
@@ -624,7 +625,7 @@ pub fn resolve_with_base(
                         params: cell
                             .params
                             .iter()
-                            .map(|p| (p.name.clone(), p.ty.clone()))
+                            .map(|p| (p.name.clone(), p.ty.clone(), p.variadic))
                             .collect(),
                         return_type: cell.return_type.clone(),
                         effects: cell.effects.clone(),
@@ -658,7 +659,7 @@ pub fn resolve_with_base(
                         params: op
                             .params
                             .iter()
-                            .map(|p| (p.name.clone(), p.ty.clone()))
+                            .map(|p| (p.name.clone(), p.ty.clone(), p.variadic))
                             .collect(),
                         return_type: op.return_type.clone(),
                         effects: op.effects.clone(),
@@ -696,7 +697,7 @@ pub fn resolve_with_base(
                         params: handle
                             .params
                             .iter()
-                            .map(|p| (p.name.clone(), p.ty.clone()))
+                            .map(|p| (p.name.clone(), p.ty.clone(), p.variadic))
                             .collect(),
                         return_type: handle.return_type.clone(),
                         effects: handle.effects.clone(),
@@ -1629,10 +1630,10 @@ fn validate_pipeline_stages(
             continue;
         };
 
-        let non_self_params: Vec<&(String, TypeExpr)> = cell
+        let non_self_params: Vec<&(String, TypeExpr, bool)> = cell
             .params
             .iter()
-            .filter(|(name, _)| name != "self")
+            .filter(|(name, _, _)| name != "self")
             .collect();
         if non_self_params.len() != 1 {
             errors.push(ResolveError::PipelineStageArity {

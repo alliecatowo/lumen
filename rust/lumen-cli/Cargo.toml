@@ -22,15 +22,15 @@ path = "src/bin/wares.rs"
 
 
 [dependencies]
-lumen-compiler = { path = "../lumen-compiler", version = "0.1.1" }
-lumen-vm = { path = "../lumen-vm", version = "0.1.1" }
-lumen-runtime = { path = "../lumen-runtime", version = "0.1.1" }
-lumen-provider-http = { path = "../lumen-provider-http", version = "0.1.1", optional = true }
-lumen-provider-json = { path = "../lumen-provider-json", version = "0.1.1", optional = true }
-lumen-provider-fs = { path = "../lumen-provider-fs", version = "0.1.1", optional = true }
-lumen-provider-env = { path = "../lumen-provider-env", version = "0.1.1", optional = true }
-lumen-provider-crypto = { path = "../lumen-provider-crypto", version = "0.1.1", optional = true }
-lumen-provider-gemini = { path = "../lumen-provider-gemini", version = "0.1.1", optional = true }
+lumen-compiler = { path = "../lumen-compiler", version = "0.2.0" }
+lumen-vm = { path = "../lumen-vm", version = "0.2.0" }
+lumen-runtime = { path = "../lumen-runtime", version = "0.2.0" }
+lumen-provider-http = { path = "../lumen-provider-http", version = "0.2.0", optional = true }
+lumen-provider-json = { path = "../lumen-provider-json", version = "0.2.0", optional = true }
+lumen-provider-fs = { path = "../lumen-provider-fs", version = "0.2.0", optional = true }
+lumen-provider-env = { path = "../lumen-provider-env", version = "0.2.0", optional = true }
+lumen-provider-crypto = { path = "../lumen-provider-crypto", version = "0.2.0", optional = true }
+lumen-provider-gemini = { path = "../lumen-provider-gemini", version = "0.2.0", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }

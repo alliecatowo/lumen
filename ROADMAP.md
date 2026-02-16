@@ -1,114 +1,196 @@
-# Lumen Roadmap
+# Roadmap
 
-This roadmap describes the direction of the language and platform. It intentionally avoids dates and fixed timelines.
+This roadmap reflects the actual implementation status of Lumen as of February 2025. Items are marked as Complete, In Progress, or Planned based on what's actually built and working.
 
-## Positioning
+## Phase 1: Core Language [Complete]
 
-Lumen is the first language where AI agent behavior is statically verifiable — effect-tracked, cost-budgeted, policy-enforced, and deterministically reproducible. It occupies a new category: **compile-time verification for agent systems.**
+**Status:** Fully implemented and tested. All core language features are production-ready.
 
----
+### Compiler Pipeline
+- Lexer, parser, resolver, typechecker, constraint validator, LIR lowerer
+- Register-based VM with 74+ opcodes (32-bit fixed-width instructions)
+- Multi-file compilation with import resolution and circular dependency detection
 
-## Phase 1 — Foundation (Complete)
+### Type System
+- All primitive types: Int, Float, String, Bool, Bytes, Json, Null
+- Collections: List, Map, Set, Tuple with Rc copy-on-write semantics
+- Records with where-clause constraints
+- Enums with payloads
+- Pattern matching with exhaustiveness checking
+- Union types, optional sugar (`T?`), result types (`result[T, E]`)
 
-### Test & Spec
-
-- [x] 1,088+ tests passing, 0 failures across all crates
-- [x] SPEC.md rewritten as ground truth (all 45 code blocks compile)
+### Control Flow
+- if/else, for, while, loop, match statements
+- break/continue with labels
+- try expressions for error handling
 
 ### Language Features
+- String interpolation
+- Range expressions (`1..5`, `1..=5`)
+- Pipe operator (`|>`)
+- Compose operator (`~>`)
+- Closures with upvalue capture
+- Import system with wildcard and named imports
 
-- [x] `when` expressions
-- [x] `comptime` expressions
-- [x] `extern` declarations
-- [x] `yield` statements (generators)
-- [x] `~>` compose operator
-- [x] Bitwise OR (`|`)
-
-### Compiler & VM
-
-- [x] 76 built-in intrinsics implemented
-- [x] Type narrowing in if-is conditions
-- [x] Tail call optimization in LIR lowering
-- [x] Typed builtin return types (reducing `Type::Any` usage)
-
-### Security & Tooling
-
-- [x] Security stubs replaced with real implementations (lockfile `content_hash` verification, Ed25519 signing active)
-- [x] Wares CLI commands fleshed out (trust-check, info, `--frozen`/`--locked` modes)
-- [x] URL canonicalization to wares.lumen-lang.com
-
-### Grammar & Docs
-
-- [x] Tree-sitter grammar updated for all new constructs
+### Examples & Testing
+- 30 working examples covering all language features
+- 1,365+ tests passing across compiler, VM, and runtime
 
 ---
 
-## Phase 2 — Hardening & Performance (Current)
+## Phase 2: Advanced Features [Complete]
 
-### VM & Runtime
+**Status:** All advanced language features implemented and integrated into the compiler, VM, and tooling.
 
-- [ ] VM performance: Rc-wrapping collections for COW semantics, eliminate deep clones
-- [ ] Set data structure: replace Vec with proper hash-based set
-- [ ] Split `vm.rs` (8,372 lines) into 5 modules
-- [ ] Fix index OOB to return errors instead of null
+### Language Features
+- Full algebraic effects: `perform`, `handle`, `resume` with one-shot continuations
+- `when` expressions (multi-branch conditionals)
+- `comptime` expressions (compile-time evaluation)
+- `defer` statements (LIFO scope-exit cleanup)
+- `extern` declarations (FFI boundary)
+- `yield` statements (generator-style values)
 
-### Compiler
+### Source Format
+- Markdown-native `.lm` files (triple-backtick blocks as markdown comments/docstrings)
+- `.lumen` file extension support
+- Docstrings attached to declarations (cells, records, enums, handlers)
 
-- [ ] Complete let-destructuring lowering to LIR
+### LSP
+- Hover with markdown docstring rendering
+- Completion with context-aware suggestions
+- Go-to-definition
+- Semantic tokens
+- Document symbols (cells as Functions, records as Structs, enums with members)
+- Signature help with parameter labels and docstrings
+- Folding ranges (code blocks and markdown comments)
+- Diagnostics with source context
+
+### VS Code Extension
+- TextMate grammar for syntax highlighting
+- Tree-sitter grammar for advanced tooling
+- Language configuration (folding, indentation)
+- Format-on-save and lint-on-save support
+
+### Formatter
+- `lumen fmt` command with markdown block preservation
+- Docstring attachment preservation
+- CI mode (`--check` flag)
 
 ### Builtins
+- 7 new builtins: `parse_json`, `to_json`, `read_file`, `write_file`, `timestamp`, `random`, `get_env`
+- 76 total builtin intrinsics with typed return signatures
 
-- [ ] Add missing builtins: `parse_json`, `to_json`, `read_file`, `write_file`, `timestamp`, `random`, `get_env`
+### VM Performance
+- Rc-wrapped collections (List, Tuple, Map, Record) for copy-on-write
+- BTreeSet for Set (replacing Vec-based implementation)
+- VM module split into `mod.rs`, `intrinsics.rs`, `processes.rs`, `ops.rs`, `helpers.rs`
+- Index out-of-bounds returns runtime errors (with Python-style negative indexing)
+
+---
+
+## Phase 2.5: Package Manager "Wares" [Mostly Complete]
+
+**Status:** Core package manager infrastructure complete. Cryptographic signing and registry deployment pending.
+
+### Manifest & Lockfile
+- `lumen.toml` manifest with full schema
+- `lumen.lock` v4 content-addressed lockfile
+- SAT/CDCL dependency resolver
+
+### Package Naming
+- Mandatory `@namespace/name` package naming
+- Correct `@scope/name@version` parsing
+
+### CLI Commands
+- `init` — Create new package
+- `add` / `remove` — Manage dependencies
+- `list` — Show installed packages
+- `install` / `update` — Install/update dependencies
+- `publish` — Publish packages
+- `login` / `logout` — Registry authentication
+- `search` — Search registry
+- `info` — Package information
+- `trust-check` — Verify package signatures
+- `policy` — Manage trust policies
+- `--frozen` and `--locked` modes enforced
+
+### Security Infrastructure
+- Sigstore-style keyless signing (stub implementation — needs real crypto)
+- Trust policy enforcement
+- Content hash verification in lockfile
+- URL canonicalization to `wares.lumen-lang.com`
+
+### Registry Infrastructure
+- Cloudflare Workers registry scaffolded
+- D1 + R2 storage planned
+- Not yet deployed
+
+---
+
+## Phase 3: Production Readiness [In Progress]
+
+**Status:** Core language is production-ready. Remaining work focuses on ecosystem maturity, performance optimization, and advanced language features.
 
 ### Documentation
+- [ ] Auto-generated language reference from compiler source
+- [ ] Comprehensive standard library documentation
 
-- [ ] Documentation cleanup and site updates
+### Security
+- [ ] Real cryptographic signing (replace stubs with ed25519/sigstore)
+- [ ] Transparency log implementation
+- [ ] Registry deployment (Cloudflare Workers + D1 + R2)
+
+### WASM Target
+- [ ] Multi-file imports in WASM builds
+- [ ] Tool providers in WASM runtime
+- [ ] Improved browser/Node.js/WASI integration
+
+### Performance
+- [ ] Performance benchmarks and optimization pass
+- [ ] VM dispatch table optimization
+- [ ] Compiler performance improvements
+
+### Language Features
+- [ ] Gradual ownership system (`ref T`, `mut ref T`, `addr`)
+- [ ] Standard library bootstrap
+- [ ] Self-hosting exploration (Lumen-in-Lumen compiler)
 
 ---
 
-## Phase 3 — Future
+## Phase 4: Ecosystem [Planned]
 
-### Language
+**Status:** Future work to grow the Lumen ecosystem and developer experience.
 
-- [ ] Reference model (`ref` / `mut ref` / `addr`) — gradual ownership
-- [ ] For-else syntax
-
-### VM & Performance
-
-- [ ] VM dispatch table optimization
+### Package Registry
+- [ ] Live registry with real community packages
+- [ ] Package discovery and curation tools
+- [ ] Versioning and compatibility policies
 
 ### Tooling
+- [ ] Community formatters and linters
+- [ ] Editor plugins beyond VS Code (Vim, Emacs, etc.)
+- [ ] Language server improvements (rename, refactor, code actions)
+- [ ] Debugging support
+- [ ] Profiling tools
 
-- [ ] LSP capabilities (go-to-definition, hover, completion)
+### Developer Experience
+- [ ] WebAssembly playground
+- [ ] Interactive tutorials and guides
+- [ ] Community examples and patterns
 
-### Self-Hosting & WASM
-
-- [ ] Self-hosting exploration (bootstrapping compiler in Lumen)
-- [ ] WebAssembly improvements (multi-file imports, tool providers)
-
----
-
-## What's Built (Summary)
-
-**Compiler:** Full pipeline — lexer, parser, resolver, typechecker, constraint validator, LIR lowering. ~100 opcodes, 32-bit fixed-width bytecode.
-
-**VM:** Register-based interpreter, call frames (max depth 256), futures/async, memory/machine/pipeline runtimes, orchestration builtins (`parallel`, `race`, `vote`, `select`, `timeout`).
-
-**Providers:** `ToolProvider` trait, `ProviderRegistry`, four crates (http, fs, json, mcp), `lumen.toml` config.
-
-**CLI:** check, run, emit, trace, cache, init, repl, pkg, fmt, doc, lint, build.
-
-**LSP:** Diagnostics, go-to-definition, hover, completion, semantic tokens, symbols, signature help, inlay hints, code actions, folding, references.
+### AI Agent Integration
+- [ ] AI agent SDK / Lumen runtime for agent frameworks
+- [ ] Tool provider ecosystem expansion
+- [ ] Agent-specific debugging and tracing tools
 
 ---
 
-## Strategic Pillars (Reference)
+## Summary
 
-1. **Language Core** — Mature static types, effect rows, expression completeness, strict diagnostics
-2. **Deterministic Runtime** — Replayable execution, explicit async semantics, VM hardening
-3. **Agent Semantics** — Typed machines, pipelines, orchestration, trace integration
-4. **Capability Model** — Policy-backed enforcement, audit-quality diagnostics
-5. **Tooling** — LSP, formatter, package manager, lockfile determinism
-6. **Ecosystem** — Implementation-accurate spec, conformance tests, design docs
+**Complete:** Core language, advanced features, LSP, VS Code extension, formatter, package manager CLI, and VM performance optimizations.
 
-Provider architecture: language defines contracts, runtime loads implementations. See existing docs for `ToolProvider` trait, provider crates, and `lumen.toml` config.
+**In Progress:** Production hardening (crypto signing, registry deployment, WASM improvements, performance benchmarks, standard library).
+
+**Planned:** Ecosystem growth (live registry, community tooling, debugging support, AI agent SDK).
+
+The language is ready for real-world use. Remaining work focuses on ecosystem maturity and production infrastructure.

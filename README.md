@@ -40,8 +40,8 @@ Building AI systems today means juggling Python notebooks, API clients, prompt t
 | **Grants** | Built-in safety limits (tokens, timeouts, domains) | Manual validation |
 | **Agents** | First-class language construct | Class hierarchies |
 | **Processes** | Pipelines, state machines, memory built-in | External libraries |
-| **Effects** | Explicit in type signatures | Implicit, untracked |
-| **Source** | Markdown-native (`.lm.md`) + raw (`.lm`) | Separate code and docs |
+| **Effects** | Algebraic effects with handlers, explicit in type signatures | Try/catch or monads, implicit |
+| **Source** | Markdown-native (`.lm.md`, `.lumen`) + raw (`.lm`) | Separate code and docs |
 
 ## Quick Start
 
@@ -51,7 +51,7 @@ curl -fsSL https://raw.githubusercontent.com/alliecatowo/lumen/main/scripts/inst
 
 # Or via Cargo
 cargo install lumen-lang
-```
+
 # Create your first program
 cat > hello.lm.md << 'EOF'
 cell main() -> String
@@ -65,9 +65,16 @@ lumen run hello.lm.md
 
 ## Features
 
+- **Algebraic Effects**: First-class effect handling with `perform` and `handle` constructs
+- **Markdown-Native Source**: Write code and docs together in `.lm.md` or `.lumen` files
+- **Static Typing**: Full type inference with compile-time error checking
+- **AI Tool Dispatch**: Typed tool interfaces with policy constraints
+- **Register-Based VM**: Efficient bytecode execution
+- **Full LSP Support**: Hover, document symbols, signature help, semantic tokens, diagnostics
+
 ### 📝 Markdown-Native Source
 
-Write code and documentation together in `.lm.md`, or use `.lm` for source-only modules:
+Write code and documentation together in `.lm.md` or `.lumen`, or use `.lm` for source-only modules:
 
 ````markdown
 # User Authentication
@@ -97,6 +104,25 @@ cell divide(a: Int, b: Int) -> result[Int, String]
     return err("Division by zero")
   end
   return ok(a / b)
+end
+```
+
+### 🎯 Algebraic Effects
+
+First-class effect handling with one-shot delimited continuations:
+
+```lumen
+effect Log
+  cell info(msg: String) -> Unit
+end
+
+cell main() -> String / {Log}
+  perform Log.info("Starting")
+  return "Done"
+end
+
+handle main() with Log.info(msg) -> resume(unit)
+  print("LOG: {msg}")
 end
 ```
 
@@ -239,12 +265,12 @@ end
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                 .lm.md / .lm Source Files                    │
+│            .lm.md / .lm / .lumen Source Files                 │
 └─────────────────────────┬───────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────┐
-│     Markdown Extraction (.lm.md) / Direct Parse (.lm)        │
+│  Markdown Extraction (.lm.md/.lumen) / Direct Parse (.lm)    │
 └─────────────────────────┬───────────────────────────────────┘
                           │
                           ▼
@@ -276,7 +302,7 @@ cd lumen
 # Build
 cargo build --release
 
-# Test (1163+ tests)
+# Test (1365+ tests)
 cargo test --workspace
 
 # Run

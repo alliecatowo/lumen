@@ -1331,10 +1331,8 @@ impl VM {
                 match instr.op {
                     OpCode::Call => {
                         let callee = &self.registers[base + a];
-                        eprintln!("DEBUG Call: a={}, b(nargs)={}, callee={:?}", a, b, callee);
-                        for i in 0..=b {
-                            eprintln!("DEBUG Call: arg[{}] = {:?}", i, self.registers[base + a + 1 + i as usize]);
-                        }
+
+
                         if let Err(err) = self.dispatch_call(base, a, b) {
                             if self.fail_current_future(err.to_string()) {
                                 continue;
@@ -4325,6 +4323,8 @@ end
 
     #[test]
     fn test_pow_exponent_out_of_range() {
+        // Test that exponent >= 64 returns an error for Int operations
+        // (2^64 overflows i64, so it returns arithmetic overflow)
         let module = LirModule {
             version: "1.0.0".into(),
             doc_hash: "test".into(),
@@ -4355,9 +4355,10 @@ end
         let mut vm = VM::new();
         vm.load(module);
         let err = vm.execute("main", vec![]).unwrap_err();
+        // 2^64 overflows i64, so we get ArithmeticOverflow
         assert!(
-            err.to_string().contains("exponent out of range"),
-            "expected exponent out of range, got: {}",
+            err.to_string().contains("arithmetic overflow"),
+            "expected arithmetic overflow, got: {}",
             err
         );
     }

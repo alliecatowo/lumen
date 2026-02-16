@@ -789,14 +789,15 @@ impl<'a> Lowerer<'a> {
         ra: &mut RegAlloc,
         instrs: &mut Vec<Instruction>,
     ) -> u8 {
-        let base = ra.alloc_temp();
+        let base = ra.alloc_block(1 + arg_regs.len() as u8);
         if callee_reg != base {
             instrs.push(Instruction::abc(OpCode::Move, base, callee_reg, 0));
         }
 
-        for (i, &reg) in arg_regs.iter().enumerate() {
+        // Move arguments in reverse order to avoid overwriting source registers
+        // that might also be destinations (e.g., moving r3->r5 then r5->r6)
+        for (i, &reg) in arg_regs.iter().enumerate().rev() {
             let target = base + 1 + i as u8;
-            ra.alloc_temp();
             if reg != target {
                 instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
             }
@@ -824,14 +825,13 @@ impl<'a> Lowerer<'a> {
     ) {
         // Note: For tail calls we don't free temps - the call never returns
         // to this frame, so register cleanup happens naturally
-        let base = ra.alloc_temp();
+        let base = ra.alloc_block(1 + arg_regs.len() as u8);
         if callee_reg != base {
             instrs.push(Instruction::abc(OpCode::Move, base, callee_reg, 0));
         }
 
         for (i, &reg) in arg_regs.iter().enumerate() {
             let target = base + 1 + i as u8;
-            ra.alloc_temp();
             if reg != target {
                 instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
             }
@@ -2148,11 +2148,11 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Expr::ListLit(elems, _) => {
-                let dest = ra.alloc_temp();
                 // Check if any element is a spread - if so, use append-based lowering
                 let has_spread = elems.iter().any(|e| matches!(e, Expr::SpreadExpr(_, _)));
 
-                if has_spread {
+                let dest = if has_spread {
+                    let dest = ra.alloc_temp();
                     // Create empty list and append each element (or spread elements)
                     instrs.push(Instruction::abc(OpCode::NewList, dest, 0, 0));
                     for elem in elems {
@@ -2215,8 +2215,13 @@ impl<'a> Lowerer<'a> {
                             }
                         }
                     }
+                    dest
                 } else {
                     // No spread - use original efficient lowering
+                    // Allocate dest and contiguous slots in one block
+                    let block_start = ra.alloc_block(1 + elems.len() as u8);
+                    let dest = block_start;
+
                     let mut elem_regs = Vec::new();
                     for elem in elems {
                         let er = self.lower_expr(elem, ra, consts, instrs);
@@ -2235,11 +2240,14 @@ impl<'a> Lowerer<'a> {
                         elems.len() as u8,
                         0,
                     ));
-                }
+                    dest
+                };
                 dest
             }
             Expr::MapLit(pairs, _) => {
-                let dest = ra.alloc_temp();
+                let block_start = ra.alloc_block(1 + (pairs.len() * 2) as u8);
+                let dest = block_start;
+
                 let mut kv_regs = Vec::new();
                 for (k, v) in pairs {
                     kv_regs.push(self.lower_expr(k, ra, consts, instrs));
@@ -2607,11 +2615,7 @@ impl<'a> Lowerer<'a> {
                         }
 
                         // Move args to contiguous block
-                        let start_reg = ra.alloc_temp();
-                        // We need count registers
-                        for _ in 0..arg_regs.len().saturating_sub(1) {
-                            ra.alloc_temp();
-                        }
+                        let start_reg = ra.alloc_block(arg_regs.len() as u8);
 
                         for (i, &reg) in arg_regs.iter().enumerate() {
                             let target = start_reg + i as u8;
@@ -2635,13 +2639,17 @@ impl<'a> Lowerer<'a> {
                 let mut implicit_self_arg: Option<u8> = None;
                 let callee_reg = if let Expr::DotAccess(obj, field, _) = callee.as_ref() {
                     if let Expr::Ident(agent_name, _) = obj.as_ref() {
-                        let is_ctor_target = self.symbols.agents.contains_key(agent_name)
+                        // Check if this is a local variable (not a process/agent type constructor)
+                        let is_local_var = ra.lookup(agent_name).is_some();
+                        let is_ctor_target = !is_local_var && (self.symbols.agents.contains_key(agent_name)
                             || self
                                 .symbols
                                 .processes
                                 .values()
-                                .any(|p| p.name == *agent_name);
+                                .any(|p| p.name == *agent_name));
+                        
                         if is_ctor_target {
+                            // Constructor-style call: Pipeline.run(args) -> construct then call
                             let ctor_reg = ra.alloc_temp();
                             let ctor_idx = consts.len() as u16;
                             consts.push(Constant::String(agent_name.clone()));
@@ -2654,12 +2662,13 @@ impl<'a> Lowerer<'a> {
                             consts.push(Constant::String(format!("{}.{}", agent_name, field)));
                             instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
                             dest
-                        } else if let Some(id) = get_intrinsic_id(field) {
-                            // Dot access method call on intrinsic: list.len() -> len(list)
-                            // Lower obj as first arg
+                        } else if is_local_var {
+                            // Local variable method call: m.append(args) where m is a local
+                            // Skip intrinsic check for local variables (fixes process method calls)
                             let obj_reg = self.lower_expr(obj, ra, consts, instrs);
+                            let dest = ra.alloc_temp();
+                            self.emit_get_field(dest, obj_reg, field, ra, consts, instrs);
                             
-                            // Lower other args
                             let mut arg_regs = vec![obj_reg];
                             for arg in args {
                                 match arg {
@@ -2671,21 +2680,28 @@ impl<'a> Lowerer<'a> {
                                     }
                                 }
                             }
-
-                            // Move to contiguous block
-                            let start_reg = ra.alloc_temp();
-                            // Reserve slots
-                            for _ in 0..arg_regs.len().saturating_sub(1) {
-                                ra.alloc_temp();
+                            return self.emit_call_with_regs(dest, &arg_regs, ra, instrs);
+                        } else if let Some(id) = get_intrinsic_id(field) {
+                            // Intrinsic method call on non-local: list.len()
+                            let obj_reg = self.lower_expr(obj, ra, consts, instrs);
+                            let mut arg_regs = vec![obj_reg];
+                            for arg in args {
+                                match arg {
+                                    CallArg::Positional(e) | CallArg::Named(_, e, _) => {
+                                        arg_regs.push(self.lower_expr(e, ra, consts, instrs));
+                                    }
+                                    CallArg::Role(_, e, _) => {
+                                        arg_regs.push(self.lower_expr(e, ra, consts, instrs));
+                                    }
+                                }
                             }
-
+                            let start_reg = ra.alloc_block(arg_regs.len() as u8);
                             for (i, &reg) in arg_regs.iter().enumerate() {
                                 let target = start_reg + i as u8;
                                 if reg != target {
                                     instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
                                 }
                             }
-
                             let dest = ra.alloc_temp();
                             instrs.push(Instruction::abc(
                                 OpCode::Intrinsic,
@@ -2695,18 +2711,26 @@ impl<'a> Lowerer<'a> {
                             ));
                             return dest;
                         } else {
+                            // Process method call on non-local, non-intrinsic
                             let obj_reg = self.lower_expr(obj, ra, consts, instrs);
-                            implicit_self_arg = Some(obj_reg);
                             let dest = ra.alloc_temp();
                             self.emit_get_field(dest, obj_reg, field, ra, consts, instrs);
-                            dest
+                            let mut arg_regs = vec![obj_reg];
+                            for arg in args {
+                                match arg {
+                                    CallArg::Positional(e) | CallArg::Named(_, e, _) => {
+                                        arg_regs.push(self.lower_expr(e, ra, consts, instrs));
+                                    }
+                                    CallArg::Role(_, e, _) => {
+                                        arg_regs.push(self.lower_expr(e, ra, consts, instrs));
+                                    }
+                                }
+                            }
+                            return self.emit_call_with_regs(dest, &arg_regs, ra, instrs);
                         }
                     } else if let Some(id) = get_intrinsic_id(field) {
-                         // Dot access method call on intrinsic: list.len() -> len(list)
-                        // Lower obj as first arg
+                        // Non-ident object with intrinsic method: (get_obj()).len()
                         let obj_reg = self.lower_expr(obj, ra, consts, instrs);
-                        
-                        // Lower other args
                         let mut arg_regs = vec![obj_reg];
                         for arg in args {
                             match arg {
@@ -2718,21 +2742,13 @@ impl<'a> Lowerer<'a> {
                                 }
                             }
                         }
-
-                        // Move to contiguous block
-                        let start_reg = ra.alloc_temp();
-                        // Reserve slots
-                        for _ in 0..arg_regs.len().saturating_sub(1) {
-                            ra.alloc_temp();
-                        }
-
+                        let start_reg = ra.alloc_block(arg_regs.len() as u8);
                         for (i, &reg) in arg_regs.iter().enumerate() {
                             let target = start_reg + i as u8;
                             if reg != target {
                                 instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
                             }
                         }
-
                         let dest = ra.alloc_temp();
                         instrs.push(Instruction::abc(
                             OpCode::Intrinsic,
@@ -2742,11 +2758,22 @@ impl<'a> Lowerer<'a> {
                         ));
                         return dest;
                     } else {
+                        // Non-ident object with non-intrinsic method
                         let obj_reg = self.lower_expr(obj, ra, consts, instrs);
-                        implicit_self_arg = Some(obj_reg);
                         let dest = ra.alloc_temp();
                         self.emit_get_field(dest, obj_reg, field, ra, consts, instrs);
-                        dest
+                        let mut arg_regs = vec![obj_reg];
+                        for arg in args {
+                            match arg {
+                                CallArg::Positional(e) | CallArg::Named(_, e, _) => {
+                                    arg_regs.push(self.lower_expr(e, ra, consts, instrs));
+                                }
+                                CallArg::Role(_, e, _) => {
+                                    arg_regs.push(self.lower_expr(e, ra, consts, instrs));
+                                }
+                            }
+                        }
+                        return self.emit_call_with_regs(dest, &arg_regs, ra, instrs);
                     }
                 } else {
                     self.lower_expr(callee, ra, consts, instrs)
@@ -2945,7 +2972,9 @@ impl<'a> Lowerer<'a> {
                 dest
             }
             Expr::TupleLit(elems, _) => {
-                let dest = ra.alloc_temp();
+                let block_start = ra.alloc_block(1 + elems.len() as u8);
+                let dest = block_start;
+
                 let mut elem_regs = Vec::new();
                 for elem in elems {
                     let er = self.lower_expr(elem, ra, consts, instrs);
@@ -2966,7 +2995,9 @@ impl<'a> Lowerer<'a> {
                 dest
             }
             Expr::SetLit(elems, _) => {
-                let dest = ra.alloc_temp();
+                let block_start = ra.alloc_block(1 + elems.len() as u8);
+                let dest = block_start;
+
                 let mut elem_regs = Vec::new();
                 for elem in elems {
                     let er = self.lower_expr(elem, ra, consts, instrs);
@@ -3667,10 +3698,8 @@ impl<'a> Lowerer<'a> {
             kv_regs.push((key_reg, value_copy_reg));
         }
 
-        let dest = ra.alloc_temp();
-        for _ in 0..(kv_regs.len() * 2) {
-            ra.alloc_temp();
-        }
+        let block_start = ra.alloc_block(1 + (kv_regs.len() * 2) as u8);
+        let dest = block_start;
 
         for (i, (key_reg, value_reg)) in kv_regs.iter().enumerate() {
             let key_target = dest + 1 + (i as u8) * 2;

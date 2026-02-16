@@ -6,10 +6,13 @@
 mod cache;
 mod completion;
 mod diagnostics;
+mod document_symbols;
+mod folding_ranges;
 mod goto_definition;
 mod hover;
 mod inlay_hints;
 mod semantic_tokens;
+mod signature_help;
 
 use cache::CompilationCache;
 use lsp_server::{Connection, Message, Notification, Request, Response};
@@ -694,12 +697,41 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
                 let _ = connection.sender.send(Message::Response(response));
             }
         }
-        // Stub handlers for other features to avoid errors
         request::DocumentSymbolRequest::METHOD => {
-            send_empty_response(req, connection);
+            if let Ok(params) =
+                serde_json::from_value::<DocumentSymbolParams>(req.params.clone())
+            {
+                let uri = &params.text_document.uri;
+                let text = cache.get_text(uri).map(|s| s.as_str()).unwrap_or("");
+                let program = cache.get_program(uri);
+
+                let result = document_symbols::build_document_symbols(params, text, program);
+
+                let response = Response {
+                    id: req.id.clone(),
+                    result: serde_json::to_value(result).ok(),
+                    error: None,
+                };
+                let _ = connection.sender.send(Message::Response(response));
+            }
         }
         request::SignatureHelpRequest::METHOD => {
-            send_empty_response(req, connection);
+            if let Ok(params) =
+                serde_json::from_value::<SignatureHelpParams>(req.params.clone())
+            {
+                let uri = &params.text_document_position_params.text_document.uri;
+                let text = cache.get_text(uri).map(|s| s.as_str()).unwrap_or("");
+                let program = cache.get_program(uri);
+
+                let result = signature_help::build_signature_help(params, text, program);
+
+                let response = Response {
+                    id: req.id.clone(),
+                    result: serde_json::to_value(result).ok(),
+                    error: None,
+                };
+                let _ = connection.sender.send(Message::Response(response));
+            }
         }
         request::CodeActionRequest::METHOD => {
             let response = Response {
@@ -710,12 +742,22 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
             let _ = connection.sender.send(Message::Response(response));
         }
         request::FoldingRangeRequest::METHOD => {
-            let response = Response {
-                id: req.id.clone(),
-                result: Some(serde_json::to_value(Vec::<FoldingRange>::new()).unwrap()),
-                error: None,
-            };
-            let _ = connection.sender.send(Message::Response(response));
+            if let Ok(params) =
+                serde_json::from_value::<FoldingRangeParams>(req.params.clone())
+            {
+                let uri = &params.text_document.uri;
+                let text = cache.get_text(uri).map(|s| s.as_str()).unwrap_or("");
+                let program = cache.get_program(uri);
+
+                let result = folding_ranges::build_folding_ranges(params, text, program);
+
+                let response = Response {
+                    id: req.id.clone(),
+                    result: Some(serde_json::to_value(result).unwrap()),
+                    error: None,
+                };
+                let _ = connection.sender.send(Message::Response(response));
+            }
         }
         request::References::METHOD => {
             let response = Response {
@@ -735,15 +777,6 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
         }
         _ => {}
     }
-}
-
-fn send_empty_response(req: &Request, connection: &Connection) {
-    let response = Response {
-        id: req.id.clone(),
-        result: serde_json::to_value(()).ok(),
-        error: None,
-    };
-    let _ = connection.sender.send(Message::Response(response));
 }
 
 #[cfg(test)]

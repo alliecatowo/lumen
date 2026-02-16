@@ -157,6 +157,42 @@ pub fn build_semantic_tokens(text: &str, is_markdown: bool) -> Option<SemanticTo
             // Decorator (@)
             TokenKind::At => TOKEN_TYPE_DECORATOR,
 
+            // Markdown blocks map to comment tokens, with multi-line handling
+            TokenKind::MarkdownBlock(content) => {
+                let base_line = if token.span.line > 0 {
+                    (token.span.line - 1) as u32
+                } else {
+                    0
+                };
+                let base_char = token.span.start as u32;
+                let lines: Vec<&str> = content.split('\n').collect();
+
+                for (i, md_line) in lines.iter().enumerate() {
+                    let line = base_line + i as u32;
+                    let char_start = if i == 0 { base_char } else { 0 };
+                    let length = if md_line.is_empty() { 1 } else { md_line.len() as u32 };
+
+                    let delta_line = line.saturating_sub(prev_line);
+                    let delta_char = if delta_line == 0 && char_start >= prev_char {
+                        char_start - prev_char
+                    } else {
+                        char_start
+                    };
+
+                    semantic_tokens.push(SemanticToken {
+                        delta_line,
+                        delta_start: delta_char,
+                        length,
+                        token_type: TOKEN_TYPE_COMMENT,
+                        token_modifiers_bitset: 0,
+                    });
+
+                    prev_line = line;
+                    prev_char = char_start;
+                }
+                continue;
+            }
+
             // Skip other tokens (punctuation, newlines, etc.)
             _ => continue,
         };

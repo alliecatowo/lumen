@@ -188,6 +188,12 @@ pub enum IntrinsicId {
     Remove = 74,
     Entries = 75,
     Compose = 76,
+    Format = 77,
+    Partition = 78,
+    ReadDir = 79,
+    Exists = 80,
+    Mkdir = 81,
+    Exit = 82,
 }
 
 /// A 32-bit instruction

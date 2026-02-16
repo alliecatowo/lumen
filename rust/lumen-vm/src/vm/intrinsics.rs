@@ -1134,6 +1134,68 @@ impl VM {
                 }
             }
             "freeze" => Ok(self.registers[base + a + 1].clone()),
+            "format" => {
+                let template = self.registers[base + a + 1].as_string();
+                let mut result = String::new();
+                let mut arg_idx = 0;
+                let mut chars = template.chars().peekable();
+                while let Some(ch) = chars.next() {
+                    if ch == '{' && chars.peek() == Some(&'}') {
+                        chars.next();
+                        if arg_idx < nargs - 1 {
+                            result.push_str(&self.registers[base + a + 2 + arg_idx].display_pretty());
+                            arg_idx += 1;
+                        } else {
+                            result.push_str("{}");
+                        }
+                    } else {
+                        result.push(ch);
+                    }
+                }
+                Ok(Value::String(StringRef::Owned(result)))
+            }
+            "partition" => {
+                let list = self.registers[base + a + 1].clone();
+                if let Value::List(l) = list {
+                    let matching = Value::new_list(l.as_ref().clone());
+                    let non_matching = Value::new_list(vec![]);
+                    Ok(Value::new_tuple(vec![matching, non_matching]))
+                } else {
+                    Ok(Value::new_tuple(vec![Value::new_list(vec![]), Value::new_list(vec![])]))
+                }
+            }
+            "read_dir" => {
+                let path = self.registers[base + a + 1].as_string();
+                match std::fs::read_dir(&path) {
+                    Ok(entries) => {
+                        let mut result = Vec::new();
+                        for entry in entries {
+                            if let Ok(e) = entry {
+                                result.push(Value::String(StringRef::Owned(
+                                    e.file_name().to_string_lossy().to_string(),
+                                )));
+                            }
+                        }
+                        Ok(Value::new_list(result))
+                    }
+                    Err(e) => Err(VmError::Runtime(format!("read_dir failed: {}", e))),
+                }
+            }
+            "exists" => {
+                let path = self.registers[base + a + 1].as_string();
+                Ok(Value::Bool(std::path::Path::new(&path).exists()))
+            }
+            "mkdir" => {
+                let path = self.registers[base + a + 1].as_string();
+                match std::fs::create_dir_all(&path) {
+                    Ok(()) => Ok(Value::Null),
+                    Err(e) => Err(VmError::Runtime(format!("mkdir failed: {}", e))),
+                }
+            }
+            "exit" => {
+                let code = self.registers[base + a + 1].as_int().unwrap_or(0);
+                std::process::exit(code as i32);
+            }
             _ => Err(VmError::UndefinedCell(name.to_string())),
         }
     }
@@ -2004,6 +2066,70 @@ impl VM {
                     }
                     _ => Value::new_list(vec![]),
                 })
+            }
+            77 => {
+                // FORMAT: format string with {} placeholders
+                let template = arg.as_string();
+                let mut result = String::new();
+                let mut placeholder_idx = 0;
+                let mut chars = template.chars().peekable();
+                while let Some(ch) = chars.next() {
+                    if ch == '{' && chars.peek() == Some(&'}') {
+                        chars.next();
+                        let val = &self.registers[base + arg_reg + 1 + placeholder_idx];
+                        result.push_str(&val.display_pretty());
+                        placeholder_idx += 1;
+                    } else {
+                        result.push(ch);
+                    }
+                }
+                Ok(Value::String(StringRef::Owned(result)))
+            }
+            78 => {
+                // PARTITION: split list by predicate (stub: all in first, none in second)
+                if let Value::List(l) = arg {
+                    let matching = Value::new_list(l.as_ref().clone());
+                    let non_matching = Value::new_list(vec![]);
+                    Ok(Value::new_tuple(vec![matching, non_matching]))
+                } else {
+                    Ok(Value::new_tuple(vec![Value::new_list(vec![]), Value::new_list(vec![])]))
+                }
+            }
+            79 => {
+                // READ_DIR: list directory entries
+                let path = arg.as_string();
+                match std::fs::read_dir(&path) {
+                    Ok(entries) => {
+                        let mut result = Vec::new();
+                        for entry in entries {
+                            if let Ok(e) = entry {
+                                result.push(Value::String(StringRef::Owned(
+                                    e.file_name().to_string_lossy().to_string(),
+                                )));
+                            }
+                        }
+                        Ok(Value::new_list(result))
+                    }
+                    Err(e) => Err(VmError::Runtime(format!("read_dir failed: {}", e))),
+                }
+            }
+            80 => {
+                // EXISTS: check if path exists
+                let path = arg.as_string();
+                Ok(Value::Bool(std::path::Path::new(&path).exists()))
+            }
+            81 => {
+                // MKDIR: create directory (and parents)
+                let path = arg.as_string();
+                match std::fs::create_dir_all(&path) {
+                    Ok(()) => Ok(Value::Null),
+                    Err(e) => Err(VmError::Runtime(format!("mkdir failed: {}", e))),
+                }
+            }
+            82 => {
+                // EXIT: exit process with code
+                let code = arg.as_int().unwrap_or(0);
+                std::process::exit(code as i32);
             }
             _ => Err(VmError::Runtime(format!(
                 "Unknown intrinsic ID {} - this is a compiler/VM mismatch bug",

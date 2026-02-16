@@ -8,6 +8,20 @@ use crate::compiler::tokens::Span;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
+/// Return the LIR constant for a built-in math constant name, if any.
+fn builtin_math_constant_value(name: &str) -> Option<Constant> {
+    match name {
+        "PI" => Some(Constant::Float(std::f64::consts::PI)),
+        "E" => Some(Constant::Float(std::f64::consts::E)),
+        "TAU" => Some(Constant::Float(std::f64::consts::TAU)),
+        "INFINITY" => Some(Constant::Float(f64::INFINITY)),
+        "NAN" => Some(Constant::Float(f64::NAN)),
+        "MAX_INT" => Some(Constant::Int(i64::MAX)),
+        "MIN_INT" => Some(Constant::Int(i64::MIN)),
+        _ => None,
+    }
+}
+
 fn collect_effect_tool_bindings(program: &Program) -> HashMap<String, String> {
     let mut bindings = HashMap::new();
     for item in &program.items {
@@ -1964,6 +1978,12 @@ impl<'a> Lowerer<'a> {
                         instrs.push(Instruction::abc(OpCode::LoadNil, dest, 0, 0));
                         dest
                     }
+                } else if let Some(constant) = builtin_math_constant_value(name) {
+                    let dest = ra.alloc_temp();
+                    let kidx = consts.len() as u16;
+                    consts.push(constant);
+                    instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
+                    dest
                 } else if self.symbols.types.values().any(|t| matches!(&t.kind, crate::compiler::resolve::TypeInfoKind::Enum(e) if e.variants.iter().any(|v| v.name == *name))) {
                     // Enum Variant Constructor (Union with no payload)
                     let dest = ra.alloc_temp();
@@ -2505,6 +2525,13 @@ impl<'a> Lowerer<'a> {
                             "remove" => Some(IntrinsicId::Remove),
                             "entries" => Some(IntrinsicId::Entries),
                             "to_set" => Some(IntrinsicId::ToSet),
+                            // Formatting / filesystem / process
+                            "format" => Some(IntrinsicId::Format),
+                            "partition" => Some(IntrinsicId::Partition),
+                            "read_dir" => Some(IntrinsicId::ReadDir),
+                            "exists" => Some(IntrinsicId::Exists),
+                            "mkdir" => Some(IntrinsicId::Mkdir),
+                            "exit" => Some(IntrinsicId::Exit),
                             _ => None,
                         }
                     } else {
@@ -4543,5 +4570,80 @@ end"#;
             try_const_eval(&Expr::Ident("x".into(), s)).is_none(),
             "variable references should not const-eval"
         );
+    }
+
+    #[test]
+    fn test_builtin_math_constants_lower_to_loadk() {
+        let src = "cell main() -> Float\n  return PI\nend";
+        let module = lower_src(src);
+        let ops: Vec<_> = module.cells[0].instructions.iter().map(|i| i.op).collect();
+        assert!(
+            ops.contains(&OpCode::LoadK),
+            "PI should emit LoadK, got ops: {:?}",
+            ops
+        );
+        // The constant pool should contain PI's float value
+        assert!(
+            module.cells[0]
+                .constants
+                .iter()
+                .any(|c| matches!(c, Constant::Float(f) if (*f - std::f64::consts::PI).abs() < 1e-15)),
+            "constant pool should contain PI value"
+        );
+    }
+
+    #[test]
+    fn test_all_math_constants_produce_correct_values() {
+        let float_cases = [
+            ("PI", Constant::Float(std::f64::consts::PI)),
+            ("E", Constant::Float(std::f64::consts::E)),
+            ("TAU", Constant::Float(std::f64::consts::TAU)),
+        ];
+        for (name, expected) in &float_cases {
+            let src = format!("cell main() -> Float\n  return {}\nend", name);
+            let module = lower_src(&src);
+            let found = module.cells[0].constants.iter().any(|c| match (c, expected) {
+                (Constant::Float(a), Constant::Float(b)) => a.to_bits() == b.to_bits(),
+                _ => false,
+            });
+            assert!(
+                found,
+                "constant pool should contain {} value, got: {:?}",
+                name, module.cells[0].constants
+            );
+        }
+        let int_cases = [
+            ("MAX_INT", Constant::Int(i64::MAX)),
+            ("MIN_INT", Constant::Int(i64::MIN)),
+        ];
+        for (name, expected) in &int_cases {
+            let src = format!("cell main() -> Int\n  return {}\nend", name);
+            let module = lower_src(&src);
+            let found = module.cells[0].constants.iter().any(|c| match (c, expected) {
+                (Constant::Int(a), Constant::Int(b)) => a == b,
+                _ => false,
+            });
+            assert!(
+                found,
+                "constant pool should contain {} value, got: {:?}",
+                name, module.cells[0].constants
+            );
+        }
+    }
+
+    #[test]
+    fn test_infinity_and_nan_constants() {
+        let src = "cell main() -> Float\n  let a = INFINITY\n  let b = NAN\n  return a\nend";
+        let module = lower_src(src);
+        let has_inf = module.cells[0]
+            .constants
+            .iter()
+            .any(|c| matches!(c, Constant::Float(f) if f.is_infinite() && f.is_sign_positive()));
+        let has_nan = module.cells[0]
+            .constants
+            .iter()
+            .any(|c| matches!(c, Constant::Float(f) if f.is_nan()));
+        assert!(has_inf, "constant pool should contain INFINITY");
+        assert!(has_nan, "constant pool should contain NAN");
     }
 }

@@ -1,5 +1,6 @@
 //! Tagged value representation for the Lumen VM.
 
+use crate::strings::StringTable;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -376,6 +377,79 @@ impl PartialEq for Value {
 
 impl Eq for Value {}
 
+/// Compare two values for equality, resolving interned strings via the provided
+/// `StringTable`. This enables correct cross-representation string equality
+/// (interned vs owned) at all nesting depths (lists, maps, records, etc.).
+pub fn values_equal(a: &Value, b: &Value, strings: &StringTable) -> bool {
+    match (a, b) {
+        (Value::Null, Value::Null) => true,
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::Float(x), Value::Float(y)) => x.to_bits() == y.to_bits(),
+        (Value::String(sa), Value::String(sb)) => {
+            let left = match sa {
+                StringRef::Owned(s) => s.as_str(),
+                StringRef::Interned(id) => strings.resolve(*id).unwrap_or(""),
+            };
+            let right = match sb {
+                StringRef::Owned(s) => s.as_str(),
+                StringRef::Interned(id) => strings.resolve(*id).unwrap_or(""),
+            };
+            left == right
+        }
+        (Value::Int(x), Value::Float(y)) => (*x as f64) == *y,
+        (Value::Float(x), Value::Int(y)) => *x == (*y as f64),
+        (Value::List(x), Value::List(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .zip(y.iter())
+                    .all(|(a, b)| values_equal(a, b, strings))
+        }
+        (Value::Tuple(x), Value::Tuple(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .zip(y.iter())
+                    .all(|(a, b)| values_equal(a, b, strings))
+        }
+        (Value::Set(x), Value::Set(y)) => {
+            // For sets, element-wise comparison with string resolution.
+            // Since sets are BTreeSet<Value> ordered by Value::Ord (which doesn't
+            // resolve strings), we fall back to pairwise comparison.
+            x.len() == y.len()
+                && x.iter()
+                    .zip(y.iter())
+                    .all(|(a, b)| values_equal(a, b, strings))
+        }
+        (Value::Map(x), Value::Map(y)) => {
+            x.len() == y.len()
+                && x.iter().all(|(k, va)| {
+                    y.get(k)
+                        .map_or(false, |vb| values_equal(va, vb, strings))
+                })
+        }
+        (Value::Record(x), Value::Record(y)) => {
+            x.type_name == y.type_name
+                && x.fields.len() == y.fields.len()
+                && x.fields.iter().all(|(k, va)| {
+                    y.fields
+                        .get(k)
+                        .map_or(false, |vb| values_equal(va, vb, strings))
+                })
+        }
+        (Value::Union(x), Value::Union(y)) => {
+            x.tag == y.tag && values_equal(&x.payload, &y.payload, strings)
+        }
+        (Value::Closure(x), Value::Closure(y)) => {
+            x.cell_idx == y.cell_idx && x.captures == y.captures
+        }
+        (Value::TraceRef(x), Value::TraceRef(y)) => {
+            x.trace_id == y.trace_id && x.seq == y.seq
+        }
+        (Value::Future(x), Value::Future(y)) => x.id == y.id && x.state == y.state,
+        _ => false,
+    }
+}
+
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
@@ -648,5 +722,94 @@ mod tests {
         let owned_zzz = Value::String(StringRef::Owned("zzz".into()));
         assert!(interned < owned_aaa);
         assert!(interned < owned_zzz);
+    }
+
+    #[test]
+    fn test_values_equal_cross_representation_strings() {
+        let mut table = StringTable::new();
+        let id = table.intern("hello");
+
+        let interned = Value::String(StringRef::Interned(id));
+        let owned = Value::String(StringRef::Owned("hello".into()));
+
+        // Value::PartialEq returns false for cross-representation (no table access)
+        assert_ne!(interned, owned);
+
+        // values_equal resolves via StringTable and compares correctly
+        assert!(values_equal(&interned, &owned, &table));
+        assert!(values_equal(&owned, &interned, &table));
+    }
+
+    #[test]
+    fn test_values_equal_cross_representation_different_content() {
+        let mut table = StringTable::new();
+        let id = table.intern("hello");
+
+        let interned = Value::String(StringRef::Interned(id));
+        let owned = Value::String(StringRef::Owned("world".into()));
+
+        assert!(!values_equal(&interned, &owned, &table));
+    }
+
+    #[test]
+    fn test_values_equal_nested_lists_with_mixed_strings() {
+        let mut table = StringTable::new();
+        let id = table.intern("item");
+
+        let list_a = Value::new_list(vec![
+            Value::Int(1),
+            Value::String(StringRef::Interned(id)),
+        ]);
+        let list_b = Value::new_list(vec![
+            Value::Int(1),
+            Value::String(StringRef::Owned("item".into())),
+        ]);
+
+        // Value::PartialEq would fail for nested cross-representation strings
+        assert_ne!(list_a, list_b);
+
+        // values_equal handles nested comparisons correctly
+        assert!(values_equal(&list_a, &list_b, &table));
+    }
+
+    #[test]
+    fn test_values_equal_nested_maps_with_mixed_strings() {
+        let mut table = StringTable::new();
+        let id = table.intern("val");
+
+        let mut map_a = BTreeMap::new();
+        map_a.insert("key".to_string(), Value::String(StringRef::Interned(id)));
+        let mut map_b = BTreeMap::new();
+        map_b.insert(
+            "key".to_string(),
+            Value::String(StringRef::Owned("val".into())),
+        );
+
+        let va = Value::new_map(map_a);
+        let vb = Value::new_map(map_b);
+
+        assert!(values_equal(&va, &vb, &table));
+    }
+
+    #[test]
+    fn test_values_equal_same_representation() {
+        let table = StringTable::new();
+
+        // Same representation should still work
+        assert!(values_equal(
+            &Value::Int(42),
+            &Value::Int(42),
+            &table
+        ));
+        assert!(!values_equal(
+            &Value::Int(42),
+            &Value::Int(43),
+            &table
+        ));
+        assert!(values_equal(
+            &Value::String(StringRef::Owned("hi".into())),
+            &Value::String(StringRef::Owned("hi".into())),
+            &table
+        ));
     }
 }

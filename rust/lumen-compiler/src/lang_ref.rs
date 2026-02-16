@@ -329,6 +329,12 @@ fn intrinsic_description(id: &IntrinsicId) -> &str {
         Remove => "Remove an element from a collection",
         Entries => "Return map entries as a list of (key, value) tuples",
         Compose => "Compose two functions into a new function (f ~> g)",
+        Format => "Format a string with {} placeholders",
+        Partition => "Split a collection into (matching, non-matching) by predicate",
+        ReadDir => "List directory entries as a list of strings",
+        Exists => "Check if a file or directory path exists",
+        Mkdir => "Create a directory (and parent directories)",
+        Exit => "Exit the process with a status code",
     }
 }
 

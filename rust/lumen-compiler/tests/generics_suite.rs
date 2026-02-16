@@ -373,3 +373,166 @@ end
 ",
     );
 }
+
+#[test]
+fn test_generic_function_return_type_inferred_as_int() {
+    // identity(42) should infer T=Int, so return type is Int
+    // assigning to a: Int should work
+    compile_ok(
+        "
+cell identity[T](x: T) -> T
+  return x
+end
+
+cell main() -> Int
+  let a: Int = identity(42)
+  return a
+end
+",
+    );
+}
+
+#[test]
+fn test_generic_function_return_type_inferred_as_string() {
+    // identity(\"hello\") should infer T=String, so return type is String
+    compile_ok(
+        "
+cell identity[T](x: T) -> T
+  return x
+end
+
+cell main() -> String
+  let a: String = identity(\"hello\")
+  return a
+end
+",
+    );
+}
+
+#[test]
+fn test_generic_function_return_type_mismatch() {
+    // identity(42) should infer T=Int, but assigning to String should error
+    let err = compile_err(
+        "
+cell identity[T](x: T) -> T
+  return x
+end
+
+cell main() -> String
+  let a: String = identity(42)
+  return a
+end
+",
+    );
+    assert!(
+        err.contains("type mismatch") || err.contains("expected"),
+        "Should report type mismatch when generic return type doesn't match annotation. Got: {}",
+        err
+    );
+}
+
+#[test]
+fn test_generic_function_two_params_return_inference() {
+    // first(5, \"hello\") should infer A=Int, B=String, return type A=Int
+    compile_ok(
+        "
+cell first[A, B](a: A, b: B) -> A
+  return a
+end
+
+cell main() -> Int
+  let x: Int = first(5, \"hello\")
+  return x
+end
+",
+    );
+}
+
+#[test]
+fn test_generic_function_second_param_return() {
+    // second(5, \"hello\") should infer A=Int, B=String, return type B=String
+    compile_ok(
+        "
+cell second[A, B](a: A, b: B) -> B
+  return b
+end
+
+cell main() -> String
+  let x: String = second(5, \"hello\")
+  return x
+end
+",
+    );
+}
+
+#[test]
+fn test_generic_function_list_return_inference() {
+    // wrap(42) should infer T=Int, return type list[T]=list[Int]
+    compile_ok(
+        "
+cell wrap[T](x: T) -> list[T]
+  return [x]
+end
+
+cell main() -> list[Int]
+  return wrap(42)
+end
+",
+    );
+}
+
+#[test]
+fn test_generic_function_chained_calls() {
+    // Calling generic functions with results of other generic functions
+    compile_ok(
+        "
+cell identity[T](x: T) -> T
+  return x
+end
+
+cell main() -> Int
+  let a = identity(42)
+  let b = identity(a)
+  return b
+end
+",
+    );
+}
+
+#[test]
+fn test_generic_function_with_named_args() {
+    compile_ok(
+        "
+cell pick[T](value: T, flag: Bool) -> T
+  if flag
+    return value
+  end
+  return value
+end
+
+cell main() -> Int
+  return pick(value: 42, flag: true)
+end
+",
+    );
+}
+
+#[test]
+fn test_generic_cell_with_record_param() {
+    compile_ok(
+        "
+record Box[T]
+  value: T
+end
+
+cell unbox[T](b: Box[T]) -> T
+  return b.value
+end
+
+cell main() -> Int
+  let b = Box(value: 42)
+  return unbox(b)
+end
+",
+    );
+}

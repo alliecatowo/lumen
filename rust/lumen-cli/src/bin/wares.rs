@@ -1,13 +1,11 @@
 //! Wares CLI — package manager for the Lumen language.
 
 use lumen_cli::{
-    auth, cache, colors, config, git, lockfile, module_resolver,
-    registry_cmd, semver, wares, workspace,
+    registry_cmd, wares,
 };
 
-use colors::{bold, cyan, gray, green, red, status_label, yellow};
+
 use clap::{Parser as ClapParser, Subcommand};
-use std::path::{Path, PathBuf};
 
 #[derive(ClapParser)]
 #[command(
@@ -228,11 +226,11 @@ fn main() {
              // TODO: expose a cleaner API for info or support registry arg
              wares::ops::info(&target, None);
         }
-        Commands::TrustCheck { target, registry } => {
+        Commands::TrustCheck { target, registry: _ } => {
              // Placeholder for trust check
              println!("Trust check for {}", target);
         }
-        Commands::Policy { sub } => {
+        Commands::Policy { sub: _ } => {
              // Placeholder
              println!("Policy command");
         }

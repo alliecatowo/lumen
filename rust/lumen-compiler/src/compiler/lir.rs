@@ -1,6 +1,7 @@
 //! LIR (Lumen Intermediate Representation) data types.
 //! 32-bit fixed-width instructions, Lua-style register VM.
 
+use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 
 /// Opcodes for the Lumen register VM.
@@ -264,6 +265,7 @@ pub enum Constant {
     Null,
     Bool(bool),
     Int(i64),
+    BigInt(BigInt),
     Float(f64),
     String(String),
 }

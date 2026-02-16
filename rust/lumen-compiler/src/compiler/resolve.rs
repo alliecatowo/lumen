@@ -2308,6 +2308,7 @@ fn collect_expr_call_requirements(
         | Expr::NullLit(_)
         | Expr::Ident(_, _)
         | Expr::RawStringLit(_, _)
+        | Expr::BigIntLit(_, _)
         | Expr::BytesLit(_, _) => {}
     }
 }
@@ -2714,6 +2715,7 @@ fn collect_expr_effect_evidence(
         | Expr::NullLit(_)
         | Expr::Ident(_, _)
         | Expr::RawStringLit(_, _)
+        | Expr::BigIntLit(_, _)
         | Expr::BytesLit(_, _) => {}
     }
 }
@@ -3046,6 +3048,7 @@ fn infer_expr_effects(
         | Expr::Ident(_, _)
         | Expr::RawStringLit(_, _)
         | Expr::BytesLit(_, _)
+        | Expr::BigIntLit(_, _)
         | Expr::RangeExpr { .. } => {}
     }
 }

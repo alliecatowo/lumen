@@ -5,6 +5,7 @@ use crate::compiler::lir::*;
 use crate::compiler::regalloc::RegAlloc;
 use crate::compiler::resolve::SymbolTable;
 use crate::compiler::tokens::Span;
+use num_bigint::BigInt;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
@@ -264,6 +265,7 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                     let json_val = if let Some(cv) = try_const_eval(val) {
                         match cv {
                             ConstValue::Int(n) => n.to_string(),
+                            ConstValue::BigInt(n) => n.to_string(),
                             ConstValue::Float(f) => f.to_string(),
                             ConstValue::String(s) => serde_json::to_string(&s).unwrap_or_else(|_| format!("\"{}\"", s)),
                             ConstValue::Bool(b) => b.to_string(),
@@ -491,6 +493,7 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
 #[derive(Debug, Clone)]
 enum ConstValue {
     Int(i64),
+    BigInt(BigInt),
     Float(f64),
     String(String),
     Bool(bool),
@@ -505,6 +508,7 @@ fn try_const_eval(expr: &Expr) -> Option<ConstValue> {
     match expr {
         // Leaf literals
         Expr::IntLit(n, _) => Some(ConstValue::Int(*n)),
+        Expr::BigIntLit(n, _) => Some(ConstValue::BigInt(n.clone())),
         Expr::FloatLit(f, _) => Some(ConstValue::Float(*f)),
         Expr::StringLit(s, _) | Expr::RawStringLit(s, _) => Some(ConstValue::String(s.clone())),
         Expr::BoolLit(b, _) => Some(ConstValue::Bool(*b)),
@@ -558,10 +562,10 @@ fn try_const_eval(expr: &Expr) -> Option<ConstValue> {
                 (ConstValue::Int(a), BinOp::BitXor, ConstValue::Int(b)) => {
                     Some(ConstValue::Int(a ^ b))
                 }
-                (ConstValue::Int(a), BinOp::Shl, ConstValue::Int(b)) if b >= 0 && b < 64 => {
+                (ConstValue::Int(a), BinOp::Shl, ConstValue::Int(b)) if (0..64).contains(&b) => {
                     Some(ConstValue::Int(a.wrapping_shl(b as u32)))
                 }
-                (ConstValue::Int(a), BinOp::Shr, ConstValue::Int(b)) if b >= 0 && b < 64 => {
+                (ConstValue::Int(a), BinOp::Shr, ConstValue::Int(b)) if (0..64).contains(&b) => {
                     Some(ConstValue::Int(a.wrapping_shr(b as u32)))
                 }
 
@@ -1022,7 +1026,7 @@ impl<'a> Lowerer<'a> {
 
     fn lower_process_constructor(&mut self, p: &ProcessDecl) -> LirCell {
         self.intern_string(&p.name);
-        let mut ra = RegAlloc::new();
+        let mut ra = RegAlloc::new(&p.name);
         let mut constants: Vec<Constant> = Vec::new();
         let mut instructions: Vec<Instruction> = Vec::new();
 
@@ -1060,7 +1064,7 @@ impl<'a> Lowerer<'a> {
 
     fn lower_agent_constructor(&mut self, a: &AgentDecl) -> LirCell {
         self.intern_string(&a.name);
-        let mut ra = RegAlloc::new();
+        let mut ra = RegAlloc::new(&a.name);
         let mut constants: Vec<Constant> = Vec::new();
         let mut instructions: Vec<Instruction> = Vec::new();
 
@@ -1098,7 +1102,7 @@ impl<'a> Lowerer<'a> {
 
     fn lower_cell(&mut self, cell: &CellDef) -> LirCell {
         self.intern_string(&cell.name);
-        let mut ra = RegAlloc::new();
+        let mut ra = RegAlloc::new(&cell.name);
         let mut constants: Vec<Constant> = Vec::new();
         let mut instructions: Vec<Instruction> = Vec::new();
 
@@ -2003,6 +2007,13 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
                 dest
             }
+            Expr::BigIntLit(n, _) => {
+                 let dest = ra.alloc_temp();
+                 let kidx = consts.len() as u16;
+                 consts.push(Constant::BigInt(n.clone()));
+                 instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
+                 dest
+            }
             Expr::FloatLit(f, _) => {
                 let dest = ra.alloc_temp();
                 let kidx = consts.len() as u16;
@@ -2826,7 +2837,7 @@ impl<'a> Lowerer<'a> {
 
                 // Lower lambda body as a separate LirCell
                 let lambda_name = format!("<lambda/{}>", self.lambda_cells.len());
-                let mut lra = RegAlloc::new();
+                let mut lra = RegAlloc::new(&lambda_name);
                 let mut lconsts: Vec<Constant> = Vec::new();
                 let mut linstrs: Vec<Instruction> = Vec::new();
 
@@ -3464,6 +3475,11 @@ impl<'a> Lowerer<'a> {
                         ConstValue::Int(n) => {
                             let kidx = consts.len() as u16;
                             consts.push(Constant::Int(n));
+                            instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
+                        }
+                        ConstValue::BigInt(n) => {
+                            let kidx = consts.len() as u16;
+                            consts.push(Constant::BigInt(n));
                             instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
                         }
                         ConstValue::Float(f) => {

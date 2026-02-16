@@ -377,6 +377,7 @@ impl GitResolver {
         Ok(())
     }
 
+    #[allow(unused_variables)]
     fn fetch_ref_if_needed(
         &self,
         repo_dir: &Path,

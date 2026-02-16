@@ -21,10 +21,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+
 
 /// Final result of the resolution process.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -287,7 +287,7 @@ impl fmt::Display for ResolutionError {
 
 impl std::error::Error for ResolutionError {}
 
-use crate::lockfile::{LockFile, LockedPackage, ResolutionDecision, ResolutionProof};
+use crate::lockfile::{LockFile, ResolutionDecision, ResolutionProof};
 
 /// Information about a resolution conflict.
 #[derive(Debug, Clone)]
@@ -533,6 +533,7 @@ impl Clause {
 
 /// An implication graph node for CDCL.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct ImplicationNode {
     literal: Literal,
     level: u32,
@@ -875,6 +876,7 @@ struct ResolutionState {
 
 /// A dependency constraint between packages.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct DependencyConstraint {
     from: PackageId,
     to: PackageId,
@@ -1875,7 +1877,7 @@ impl Resolver {
         }
     }
 
-    fn select_decision(&self, solver: &SatSolver, state: &ResolutionState) -> Option<Literal> {
+    fn select_decision(&self, solver: &SatSolver, _state: &ResolutionState) -> Option<Literal> {
         let mut best_pkg = None;
         let mut best_count = usize::MAX;
         let mut best_has_locked = false;

@@ -51,7 +51,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::config::{DependencySpec, LumenConfig, WorkspacePackageDefaults};
-use crate::lockfile::{LockFile, LockedPackage};
+use crate::lockfile::LockFile;
 
 // =============================================================================
 // Workspace Configuration
@@ -568,7 +568,7 @@ impl Workspace {
         let content = std::fs::read_to_string(manifest_path)
             .map_err(|e| WorkspaceError::ManifestError(e.to_string()))?;
 
-        let mut config = LumenConfig::from_str(&content)
+        let config = LumenConfig::from_str(&content)
             .map_err(|e| WorkspaceError::ManifestError(e.to_string()))?;
 
         Ok((config.package.clone(), config))

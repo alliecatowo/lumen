@@ -1,3 +1,4 @@
+use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -52,6 +53,7 @@ impl Span {
 pub enum TokenKind {
     // Literals
     IntLit(i64),
+    BigIntLit(BigInt),
     FloatLit(f64),
     StringLit(String),
     /// Interpolated string segments: (is_expr, text). is_expr=true means {expr}, false means literal text.
@@ -222,6 +224,7 @@ impl fmt::Display for TokenKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TokenKind::IntLit(n) => write!(f, "{}", n),
+            TokenKind::BigIntLit(n) => write!(f, "{}", n),
             TokenKind::FloatLit(n) => write!(f, "{}", n),
             TokenKind::StringLit(s) => write!(f, "\"{}\"", s),
             TokenKind::StringInterpLit(_) => write!(f, "string-interp"),

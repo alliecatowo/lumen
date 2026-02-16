@@ -13,7 +13,7 @@ name = "lumen-lsp"
 path = "src/main.rs"
 
 [dependencies]
-lumen-compiler = { path = "../lumen-compiler", version = "0.2.0" }
+lumen-compiler = { path = "../lumen-compiler", version = "0.4.0" }
 lsp-server = "0.7"
 lsp-types = "0.97"
 serde = { workspace = true }

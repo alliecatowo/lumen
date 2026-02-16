@@ -3,30 +3,42 @@
 
 use std::collections::HashMap;
 
+/// Maximum number of registers available per cell (u8::MAX)
+pub const MAX_REGISTERS: u8 = 255;
+
 /// Register allocation state for a single cell
 #[derive(Debug)]
 pub struct RegAlloc {
     next_reg: u8,
     bindings: HashMap<String, u8>,
+    cell_name: String,
 }
 
 impl Default for RegAlloc {
     fn default() -> Self {
-        Self::new()
+        Self::new("<anonymous>")
     }
 }
 
 impl RegAlloc {
-    pub fn new() -> Self {
+    pub fn new(cell_name: &str) -> Self {
         Self {
             next_reg: 0,
             bindings: HashMap::new(),
+            cell_name: cell_name.to_string(),
         }
     }
 
     /// Allocate a named register for a parameter or let binding
     pub fn alloc_named(&mut self, name: &str) -> u8 {
         let reg = self.next_reg;
+        if reg == MAX_REGISTERS {
+            panic!(
+                "Register allocation error in cell '{}': exceeded maximum of {} registers. \
+                 This cell is too complex. Consider breaking it into smaller helper cells.",
+                self.cell_name, MAX_REGISTERS
+            );
+        }
         self.bindings.insert(name.to_string(), reg);
         self.next_reg += 1;
         reg
@@ -35,6 +47,13 @@ impl RegAlloc {
     /// Allocate a temporary register
     pub fn alloc_temp(&mut self) -> u8 {
         let reg = self.next_reg;
+        if reg == MAX_REGISTERS {
+            panic!(
+                "Register allocation error in cell '{}': exceeded maximum of {} registers. \
+                 This cell is too complex. Consider breaking it into smaller helper cells.",
+                self.cell_name, MAX_REGISTERS
+            );
+        }
         self.next_reg += 1;
         reg
     }
@@ -66,7 +85,7 @@ mod tests {
 
     #[test]
     fn test_regalloc_basic() {
-        let mut ra = RegAlloc::new();
+        let mut ra = RegAlloc::new("test");
         let r0 = ra.alloc_named("x");
         let r1 = ra.alloc_named("y");
         let r2 = ra.alloc_temp();

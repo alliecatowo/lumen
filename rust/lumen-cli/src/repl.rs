@@ -1192,6 +1192,7 @@ fn value_type_name(val: &Value) -> &'static str {
         Value::Null => "Null",
         Value::Bool(_) => "Bool",
         Value::Int(_) => "Int",
+        Value::BigInt(_) => "BigInt",
         Value::Float(_) => "Float",
         Value::String(_) => "String",
         Value::Bytes(_) => "Bytes",

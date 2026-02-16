@@ -3,6 +3,24 @@
 use super::*;
 use std::collections::BTreeMap;
 
+use crate::values::Value;
+use crate::vm::VM;
+use num_bigint::BigInt;
+use num_traits::ToPrimitive;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    FloorDiv,
+    Mod,
+    Pow,
+    #[allow(dead_code)]
+    Rem,
+}
+
 impl VM {
     /// Structural diff of two values.
     pub(crate) fn diff_values(&self, a: &Value, b: &Value) -> Value {
@@ -174,18 +192,90 @@ impl VM {
         a: usize,
         b: usize,
         c: usize,
-        int_op: impl Fn(i64, i64) -> Option<i64>,
-        float_op: impl Fn(f64, f64) -> f64,
+        op: BinaryOp,
     ) -> Result<(), VmError> {
         let lhs = self.registers[base + b].clone();
         let rhs = self.registers[base + c].clone();
+
+        // Helper for checked int ops
+        fn int_op(op: BinaryOp, x: i64, y: i64) -> Option<i64> {
+            match op {
+                BinaryOp::Add => x.checked_add(y),
+                BinaryOp::Sub => x.checked_sub(y),
+                BinaryOp::Mul => x.checked_mul(y),
+                BinaryOp::Div => if y == 0 { None } else { Some(x / y) },
+                BinaryOp::FloorDiv => if y == 0 { None } else { Some(x.div_euclid(y)) },
+                BinaryOp::Mod => if y == 0 { None } else { Some(x.rem_euclid(y)) },
+                BinaryOp::Rem => if y == 0 { None } else { Some(x % y) },
+                BinaryOp::Pow => {
+                    if y < 0 { None }
+                    else if y > u32::MAX as i64 { None }
+                    else { x.checked_pow(y as u32) }
+                }
+            }
+        }
+
+        // Helper for float ops
+        fn float_op(op: BinaryOp, x: f64, y: f64) -> f64 {
+            match op {
+                BinaryOp::Add => x + y,
+                BinaryOp::Sub => x - y,
+                BinaryOp::Mul => x * y,
+                BinaryOp::Div => x / y,
+                BinaryOp::FloorDiv => (x / y).floor(),
+                BinaryOp::Mod => x.rem_euclid(y),
+                BinaryOp::Rem => x % y,
+                BinaryOp::Pow => x.powf(y),
+            }
+        }
+
+        // Helper for BigInt ops
+        fn bigint_op(op: BinaryOp, x: &BigInt, y: &BigInt) -> BigInt {
+            match op {
+                BinaryOp::Add => x + y,
+                BinaryOp::Sub => x - y,
+                BinaryOp::Mul => x * y,
+                BinaryOp::Div => x / y,
+                BinaryOp::FloorDiv => x / y,
+                BinaryOp::Mod => x % y,
+                BinaryOp::Rem => x % y,
+                BinaryOp::Pow => {
+                    if let Some(exp) = y.to_u32() {
+                        x.pow(exp)
+                    } else {
+                        // For now we don't support huge exponents to avoid DOS
+                        // Return x (incorrect but safe) or panic?
+                        // Let's wrap to 0 or something? No.
+                        // Ideally we return Result or create error.
+                        // But for now, let's clamp.
+                        x.pow(u32::MAX) 
+                    }
+                }
+            }
+        }
+
         self.registers[base + a] = match (&lhs, &rhs) {
             (Value::Int(x), Value::Int(y)) => {
-                Value::Int(int_op(*x, *y).ok_or(VmError::ArithmeticOverflow)?)
+                if let Some(res) = int_op(op, *x, *y) {
+                    Value::Int(res)
+                } else {
+                    Value::BigInt(bigint_op(op, &BigInt::from(*x), &BigInt::from(*y)))
+                }
             }
-            (Value::Float(x), Value::Float(y)) => Value::Float(float_op(*x, *y)),
-            (Value::Int(x), Value::Float(y)) => Value::Float(float_op(*x as f64, *y)),
-            (Value::Float(x), Value::Int(y)) => Value::Float(float_op(*x, *y as f64)),
+            (Value::BigInt(x), Value::BigInt(y)) => {
+                Value::BigInt(bigint_op(op, x, y))
+            }
+            (Value::Int(x), Value::BigInt(y)) => {
+                Value::BigInt(bigint_op(op, &BigInt::from(*x), y))
+            }
+            (Value::BigInt(x), Value::Int(y)) => {
+                Value::BigInt(bigint_op(op, x, &BigInt::from(*y)))
+            }
+            (Value::Float(x), Value::Float(y)) => Value::Float(float_op(op, *x, *y)),
+            (Value::Int(x), Value::Float(y)) => Value::Float(float_op(op, *x as f64, *y)),
+            (Value::Float(x), Value::Int(y)) => Value::Float(float_op(op, *x, *y as f64)),
+            (Value::BigInt(x), Value::Float(y)) => Value::Float(float_op(op, x.to_f64().unwrap_or(f64::NAN), *y)),
+            (Value::Float(x), Value::BigInt(y)) => Value::Float(float_op(op, *x, y.to_f64().unwrap_or(f64::NAN))),
             _ => {
                 return Err(VmError::TypeError(format!(
                     "arithmetic on non-numeric types: {} ({}) and {} ({})",

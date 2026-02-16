@@ -907,6 +907,7 @@ impl Formatter {
     fn fmt_expr(&self, expr: &Expr) -> String {
         match expr {
             Expr::IntLit(n, _) => n.to_string(),
+            Expr::BigIntLit(n, _) => n.to_string(),
             Expr::FloatLit(f, _) => f.to_string(),
             Expr::StringLit(s, _) => format!("\"{}\"", escape_string(s)),
             Expr::StringInterp(segments, _) => {

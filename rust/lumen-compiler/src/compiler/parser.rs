@@ -4631,6 +4631,11 @@ impl Parser {
                 let s = self.advance().span;
                 Ok(Expr::IntLit(n, s))
             }
+            TokenKind::BigIntLit(ref n) => {
+                let n = n.clone();
+                let s = self.advance().span;
+                Ok(Expr::BigIntLit(n, s))
+            }
             TokenKind::FloatLit(n) => {
                 let s = self.advance().span;
                 Ok(Expr::FloatLit(n, s))

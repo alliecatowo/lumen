@@ -662,7 +662,7 @@ impl<'a> TypeChecker<'a> {
         line: usize,
     ) {
         // Check if the last parameter is variadic
-        let has_variadic = params.last().map_or(false, |(_, _, v)| *v);
+        let has_variadic = params.last().is_some_and(|(_, _, v)| *v);
         let fixed_count = if has_variadic { params.len() - 1 } else { params.len() };
 
         if !has_variadic && args.len() > params.len() {
@@ -714,7 +714,7 @@ impl<'a> TypeChecker<'a> {
         line: usize,
         subst: &TypeSubst,
     ) {
-        let has_variadic = params.last().map_or(false, |(_, _, v)| *v);
+        let has_variadic = params.last().is_some_and(|(_, _, v)| *v);
         let fixed_count = if has_variadic {
             params.len() - 1
         } else {
@@ -986,6 +986,7 @@ impl<'a> TypeChecker<'a> {
     /// Register variable bindings from an irrefutable destructuring pattern
     /// used in `let` position.  Walks the pattern tree and inserts each
     /// bound name into `self.locals` with the appropriate type.
+    #[allow(clippy::only_used_in_recursion)]
     fn bind_let_pattern(&mut self, pattern: &Pattern, subject_type: &Type, line: usize) {
         match pattern {
             Pattern::Ident(name, _) => {
@@ -1284,6 +1285,7 @@ impl<'a> TypeChecker<'a> {
     fn infer_expr(&mut self, expr: &Expr) -> Type {
         match expr {
             Expr::IntLit(_, _) => Type::Int,
+            Expr::BigIntLit(_, _) => Type::Int,
             Expr::FloatLit(_, _) => Type::Float,
             Expr::StringLit(_, _) => Type::String,
             Expr::StringInterp(_, _) => Type::String,
@@ -1688,9 +1690,9 @@ impl<'a> TypeChecker<'a> {
                     if is_builtin_function(name) {
                         let arg_types: Vec<Type> = checked_args
                             .iter()
-                            .filter_map(|a| match a {
-                                CheckedCallArg::Positional(ty, _) => Some(ty.clone()),
-                                CheckedCallArg::Named(_, ty, _) => Some(ty.clone()),
+                            .map(|a| match a {
+                                CheckedCallArg::Positional(ty, _) => ty.clone(),
+                                CheckedCallArg::Named(_, ty, _) => ty.clone(),
                             })
                             .collect();
                         if let Some(ret_ty) = builtin_return_type(name, &arg_types) {

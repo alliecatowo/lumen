@@ -69,7 +69,6 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::path::Path;
-use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Current lockfile format version.

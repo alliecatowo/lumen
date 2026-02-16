@@ -1,0 +1,39 @@
+
+print("Testing BigInt...")
+
+# Big multiplication (overflows i64)
+let x = 1000000000000 * 1000000000000
+print(x)
+print(type(x))
+assert(x > 0)
+
+# Factorial 25 (approx 1.55e25)
+let fact25 = 15511210043330985984000000
+print("Expected factorial 25:", fact25)
+print(type(fact25))
+
+let mut res = 1
+for i in range(1, 26)
+    res = res * i
+end
+
+print("Computed factorial 25:", res)
+print(type(res))
+assert(res == fact25)
+
+# Power
+let p = pow(2, 100)
+print("2^100:", p)
+print(type(p))
+
+# Division (BigInt / BigInt)
+let d = p / 2
+print("2^100 / 2:", d)
+assert(d == pow(2, 99))
+
+# Float coercion
+let huge = pow(10, 100)
+print("log(10^100):", log(huge))
+# log(10^100) = 100 * ln(10) ~= 100 * 2.302585 = 230.2585
+
+print("BigInt test passed!")

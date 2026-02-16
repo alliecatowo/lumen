@@ -1,6 +1,8 @@
 //! Tagged value representation for the Lumen VM.
 
 use crate::strings::StringTable;
+use num_bigint::BigInt;
+use num_traits::{ToPrimitive, Zero};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,6 +20,7 @@ pub enum Value {
     Null,
     Bool(bool),
     Int(i64),
+    BigInt(BigInt),
     Float(f64),
     String(StringRef),
     Bytes(Vec<u8>),
@@ -108,6 +111,7 @@ impl Value {
             Value::Null => false,
             Value::Bool(b) => *b,
             Value::Int(n) => *n != 0,
+            Value::BigInt(n) => !n.is_zero(),
             Value::Float(f) => *f != 0.0,
             Value::String(StringRef::Owned(s)) => !s.is_empty(),
             Value::String(StringRef::Interned(_)) => true,
@@ -124,6 +128,7 @@ impl Value {
             Value::Null => "null".to_string(),
             Value::Bool(b) => b.to_string(),
             Value::Int(n) => n.to_string(),
+            Value::BigInt(n) => n.to_string(),
             Value::Float(f) => format_float(*f),
             Value::String(StringRef::Owned(s)) => s.clone(),
             Value::String(StringRef::Interned(id)) => format!("<interned:{}>", id),
@@ -193,6 +198,7 @@ impl Value {
         match self {
             Value::Float(f) => Some(*f),
             Value::Int(n) => Some(*n as f64),
+            Value::BigInt(n) => n.to_f64(),
             _ => None,
         }
     }
@@ -224,9 +230,8 @@ impl Value {
         match self {
             Value::Null => 0,
             Value::Bool(_) => 1,
-            Value::Int(_) => 2,
-            Value::Float(_) => 3,
-            Value::String(_) => 4,
+            Value::Int(_) | Value::BigInt(_) | Value::Float(_) => 2,
+            Value::String(_) => 5,
             Value::Bytes(_) => 5,
             Value::List(_) => 6,
             Value::Tuple(_) => 7,
@@ -246,6 +251,7 @@ impl Value {
             Value::Null => "Null",
             Value::Bool(_) => "Bool",
             Value::Int(_) => "Int",
+            Value::BigInt(_) => "Int", // BigInt reports as "Int" to user
             Value::Float(_) => "Float",
             Value::String(_) => "String",
             Value::Bytes(_) => "Bytes",
@@ -269,6 +275,7 @@ impl Value {
             Value::Null => "null".to_string(),
             Value::Bool(b) => b.to_string(),
             Value::Int(n) => n.to_string(),
+            Value::BigInt(n) => n.to_string(),
             Value::Float(f) => format_float(*f),
             Value::List(l) => {
                 let items: Vec<String> = l.iter().map(|v| v.display_quoted()).collect();
@@ -344,9 +351,14 @@ impl PartialEq for Value {
             (Value::Null, Value::Null) => true,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a), Value::Int(b)) => a == b,
+            (Value::BigInt(a), Value::BigInt(b)) => a == b,
+            (Value::Int(a), Value::BigInt(b)) => BigInt::from(*a) == *b,
+            (Value::BigInt(a), Value::Int(b)) => *a == BigInt::from(*b),
             // Compare floats by bit pattern so Eq stays reflexive for NaN and
             // preserves sign/payload distinctions (e.g. -0.0 vs +0.0, NaN payloads).
             (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
+            (Value::BigInt(a), Value::Float(b)) => a.to_f64().map(|f| f.to_bits() == b.to_bits()).unwrap_or(false),
+            (Value::Float(a), Value::BigInt(b)) => b.to_f64().map(|f| f.to_bits() == a.to_bits()).unwrap_or(false),
             (Value::String(StringRef::Owned(a)), Value::String(StringRef::Owned(b))) => a == b,
             // At Value-layer (without StringTable), interned equality is by id only.
             (Value::String(StringRef::Interned(a)), Value::String(StringRef::Interned(b))) => {
@@ -385,7 +397,12 @@ pub fn values_equal(a: &Value, b: &Value, strings: &StringTable) -> bool {
         (Value::Null, Value::Null) => true,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::BigInt(x), Value::BigInt(y)) => x == y,
+        (Value::Int(x), Value::BigInt(y)) => BigInt::from(*x) == *y,
+        (Value::BigInt(x), Value::Int(y)) => *x == BigInt::from(*y),
         (Value::Float(x), Value::Float(y)) => x.to_bits() == y.to_bits(),
+        (Value::BigInt(x), Value::Float(y)) => x.to_f64().map(|f| f.to_bits() == y.to_bits()).unwrap_or(false),
+        (Value::Float(x), Value::BigInt(y)) => y.to_f64().map(|f| f.to_bits() == x.to_bits()).unwrap_or(false),
         (Value::String(sa), Value::String(sb)) => {
             let left = match sa {
                 StringRef::Owned(s) => s.as_str(),
@@ -468,7 +485,19 @@ impl Ord for Value {
             (Value::Null, Value::Null) => Ordering::Equal,
             (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
             (Value::Int(a), Value::Int(b)) => a.cmp(b),
-            // total_cmp gives a total order for all f64 values, including NaN.
+            (Value::BigInt(a), Value::BigInt(b)) => a.cmp(b),
+            (Value::Int(a), Value::Float(b)) => (*a as f64).total_cmp(b),
+            (Value::Float(a), Value::Int(b)) => a.total_cmp(&(*b as f64)),
+            (Value::BigInt(a), Value::Float(b)) => {
+                 let af = a.to_f64().unwrap_or_else(|| if a.sign() == num_bigint::Sign::Minus { f64::NEG_INFINITY } else { f64::INFINITY });
+                 af.total_cmp(b)
+            },
+            (Value::Float(a), Value::BigInt(b)) => {
+                 let bf = b.to_f64().unwrap_or_else(|| if b.sign() == num_bigint::Sign::Minus { f64::NEG_INFINITY } else { f64::INFINITY });
+                 a.total_cmp(&bf)
+            },
+            (Value::Int(a), Value::BigInt(b)) => BigInt::from(*a).cmp(b),
+            (Value::BigInt(a), Value::Int(b)) => a.cmp(&BigInt::from(*b)),
             (Value::Float(a), Value::Float(b)) => a.total_cmp(b),
             (Value::String(a), Value::String(b)) => match (a, b) {
                 (StringRef::Owned(sa), StringRef::Owned(sb)) => sa.cmp(sb),

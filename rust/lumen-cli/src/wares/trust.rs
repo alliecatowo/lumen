@@ -16,6 +16,7 @@ use std::os::unix::fs::OpenOptionsExt;
 
 use crate::colors;
 use super::types::*;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 // =============================================================================
 // Trust Config Implementation
@@ -319,7 +320,6 @@ impl TrustClient {
         use rand::RngCore;
         let mut key = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut key);
-        use base64::{Engine as _, engine::general_purpose::STANDARD};
         Ok(STANDARD.encode(&key))
     }
 
@@ -369,7 +369,7 @@ impl TrustClient {
             .json(&serde_json::json!({
                 "name": package_name,
                 "version": version,
-                "tarball": base64::encode(content),
+                "tarball": STANDARD.encode(content),
                 "shasum": shasum,
                 "signature": {
                     "identity": pkg_sig.certificate.identity_str(),
@@ -404,7 +404,6 @@ impl TrustClient {
         let mut hasher = Sha256::new();
         hasher.update(message.as_bytes());
         hasher.update(cert.cert_id.as_bytes());
-        use base64::{Engine as _, engine::general_purpose::STANDARD};
         Ok(STANDARD.encode(hasher.finalize()))
     }
 
@@ -673,6 +672,7 @@ use tokio::net::TcpListener;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Find a free port on localhost
+#[allow(dead_code)]
 async fn find_free_port() -> Result<u16, TrustError> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
@@ -681,6 +681,7 @@ async fn find_free_port() -> Result<u16, TrustError> {
 }
 
 /// Run a simple HTTP server to handle the OAuth callback
+#[allow(dead_code)]
 async fn run_callback_server(
     port: u16,
     session_id: &str,
@@ -763,6 +764,7 @@ async fn run_callback_server(
     Ok(token)
 }
 
+#[allow(dead_code)]
 fn extract_query_param(request: &str, name: &str) -> Option<String> {
     // Find request line (e.g., "GET /callback?code=xxx&state=yyy HTTP/1.1")
     let request_line = request.lines().next()?;

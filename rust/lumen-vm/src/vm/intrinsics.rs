@@ -5,6 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use lumen_compiler::compile_raw;
+use num_bigint::BigInt;
+use num_traits::{Signed, ToPrimitive};
 
 impl VM {
     /// Execute a built-in function by name.
@@ -60,9 +62,16 @@ impl VM {
                 let arg = &self.registers[base + a + 1];
                 Ok(match arg {
                     Value::Int(n) => Value::Int(*n),
+                    Value::BigInt(n) => Value::BigInt(n.clone()),
                     Value::Float(f) => Value::Int(*f as i64),
                     Value::String(StringRef::Owned(s)) => {
-                        s.parse::<i64>().map(Value::Int).unwrap_or(Value::Null)
+                        if let Ok(i) = s.parse::<i64>() {
+                            Value::Int(i)
+                        } else if let Ok(bi) = s.parse::<BigInt>() {
+                            Value::BigInt(bi)
+                        } else {
+                            Value::Null
+                        }
                     }
                     Value::Bool(b) => Value::Int(if *b { 1 } else { 0 }),
                     _ => Value::Null,
@@ -73,6 +82,7 @@ impl VM {
                 Ok(match arg {
                     Value::Float(f) => Value::Float(*f),
                     Value::Int(n) => Value::Float(*n as f64),
+                    Value::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::NAN)),
                     Value::String(StringRef::Owned(s)) => {
                         s.parse::<f64>().map(Value::Float).unwrap_or(Value::Null)
                     }
@@ -173,6 +183,7 @@ impl VM {
                 let arg = &self.registers[base + a + 1];
                 Ok(match arg {
                     Value::Int(n) => Value::Int(n.abs()),
+                    Value::BigInt(n) => Value::BigInt(n.abs()),
                     Value::Float(f) => Value::Float(f.abs()),
                     _ => arg.clone(),
                 })
@@ -538,6 +549,8 @@ impl VM {
                 let arg = &self.registers[base + a + 1];
                 Ok(match arg {
                     Value::Float(f) => Value::Float(f.round()),
+                    Value::BigInt(_) => arg.clone(), // Integers are already rounded
+                    Value::Int(_) => arg.clone(),
                     _ => arg.clone(),
                 })
             }
@@ -545,6 +558,8 @@ impl VM {
                 let arg = &self.registers[base + a + 1];
                 Ok(match arg {
                     Value::Float(f) => Value::Float(f.ceil()),
+                    Value::BigInt(_) => arg.clone(),
+                    Value::Int(_) => arg.clone(),
                     _ => arg.clone(),
                 })
             }
@@ -552,6 +567,8 @@ impl VM {
                 let arg = &self.registers[base + a + 1];
                 Ok(match arg {
                     Value::Float(f) => Value::Float(f.floor()),
+                    Value::BigInt(_) => arg.clone(),
+                    Value::Int(_) => arg.clone(),
                     _ => arg.clone(),
                 })
             }
@@ -560,6 +577,7 @@ impl VM {
                 Ok(match arg {
                     Value::Float(f) => Value::Float(f.sqrt()),
                     Value::Int(n) => Value::Float((*n as f64).sqrt()),
+                    Value::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::NAN).sqrt()),
                     _ => Value::Null,
                 })
             }
@@ -569,14 +587,45 @@ impl VM {
                 Ok(match (b_val, e_val) {
                     (Value::Int(x), Value::Int(y)) => {
                         if *y >= 0 {
-                            Value::Int(x.pow(*y as u32))
+                            if let Some(res) = x.checked_pow(*y as u32) {
+                                Value::Int(res)
+                            } else {
+                                Value::BigInt(BigInt::from(*x).pow(*y as u32))
+                            }
                         } else {
                             Value::Float((*x as f64).powf(*y as f64))
                         }
                     }
+                    (Value::BigInt(x), Value::Int(y)) => {
+                        if *y >= 0 {
+                            Value::BigInt(x.pow(*y as u32))
+                        } else {
+                            Value::Float(x.to_f64().unwrap_or(f64::NAN).powf(*y as f64))
+                        }
+                    }
+                    (Value::Int(x), Value::BigInt(y)) => {
+                         // Huge exponent?
+                         // If y fits in u32, we can pow. Else it's too big.
+                         if let Some(exp) = y.to_u32() {
+                             Value::BigInt(BigInt::from(*x).pow(exp))
+                         } else {
+                             // Too big. Infinity or zero?
+                             // x ^ huge
+                             Value::Float(f64::INFINITY) // Approximation
+                         }
+                    }
+                    (Value::BigInt(x), Value::BigInt(y)) => {
+                         if let Some(exp) = y.to_u32() {
+                             Value::BigInt(x.pow(exp))
+                         } else {
+                             Value::Float(f64::INFINITY)
+                         }
+                    }
                     (Value::Float(x), Value::Float(y)) => Value::Float(x.powf(*y)),
                     (Value::Int(x), Value::Float(y)) => Value::Float((*x as f64).powf(*y)),
                     (Value::Float(x), Value::Int(y)) => Value::Float(x.powf(*y as f64)),
+                    (Value::BigInt(x), Value::Float(y)) => Value::Float(x.to_f64().unwrap_or(f64::NAN).powf(*y)),
+                    (Value::Float(x), Value::BigInt(y)) => Value::Float(x.powf(y.to_f64().unwrap_or(f64::NAN))),
                     _ => Value::Null,
                 })
             }
@@ -585,6 +634,7 @@ impl VM {
                 Ok(match arg {
                     Value::Float(f) => Value::Float(f.ln()),
                     Value::Int(n) => Value::Float((*n as f64).ln()),
+                    Value::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::NAN).ln()),
                     _ => Value::Null,
                 })
             }
@@ -593,6 +643,7 @@ impl VM {
                 Ok(match arg {
                     Value::Float(f) => Value::Float(f.sin()),
                     Value::Int(n) => Value::Float((*n as f64).sin()),
+                    Value::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::NAN).sin()),
                     _ => Value::Null,
                 })
             }
@@ -601,6 +652,7 @@ impl VM {
                 Ok(match arg {
                     Value::Float(f) => Value::Float(f.cos()),
                     Value::Int(n) => Value::Float((*n as f64).cos()),
+                    Value::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::NAN).cos()),
                     _ => Value::Null,
                 })
             }
@@ -610,10 +662,11 @@ impl VM {
                 let hi = &self.registers[base + a + 3];
                 Ok(match (val, lo, hi) {
                     (Value::Int(v), Value::Int(l), Value::Int(h)) => Value::Int(*v.max(l).min(h)),
+                    (Value::BigInt(v), Value::BigInt(l), Value::BigInt(h)) => Value::BigInt(v.max(l).min(h).clone()),
                     (Value::Float(v), Value::Float(l), Value::Float(h)) => {
                         Value::Float(v.max(*l).min(*h))
                     }
-                    _ => val.clone(),
+                    _ => val.clone(), // Mixed types in clamp? For now ignore.
                 })
             }
             // Result type operations
@@ -1939,6 +1992,7 @@ impl VM {
             60 => Ok(match arg {
                 Value::Float(f) => Value::Float(f.sqrt()),
                 Value::Int(n) => Value::Float((*n as f64).sqrt()),
+                Value::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::INFINITY).sqrt()),
                 _ => Value::Null,
             }), // SQRT
             61 => {
@@ -1947,28 +2001,76 @@ impl VM {
                 Ok(match (arg, exp) {
                     (Value::Int(x), Value::Int(y)) => {
                         if *y >= 0 {
-                            Value::Int(x.pow(*y as u32))
+                            if let Ok(y_u32) = std::convert::TryFrom::try_from(*y) {
+                                if let Some(res) = x.checked_pow(y_u32) {
+                                    Value::Int(res)
+                                } else {
+                                    Value::BigInt(BigInt::from(*x).pow(y_u32))
+                                }
+                            } else {
+                                Value::Null // Exponent too large
+                            }
                         } else {
                             Value::Float((*x as f64).powf(*y as f64))
                         }
                     }
+                    (Value::BigInt(x), Value::Int(y)) => {
+                         if *y >= 0 {
+                             if let Ok(y_u32) = std::convert::TryFrom::try_from(*y) {
+                                 Value::BigInt(x.pow(y_u32))
+                             } else {
+                                 Value::Null
+                             }
+                        } else {
+                             Value::Float(x.to_f64().unwrap_or(f64::INFINITY).powf(*y as f64))
+                        }
+                    }
+                    (Value::Int(x), Value::BigInt(y)) => {
+                        if let Some(y_u32) = y.to_u32() {
+                            Value::BigInt(BigInt::from(*x).pow(y_u32))
+                        } else {
+                             if y.sign() == num_bigint::Sign::Minus {
+                                  Value::Float((*x as f64).powf(y.to_f64().unwrap_or(f64::NEG_INFINITY)))
+                             } else {
+                                  Value::Null
+                             }
+                        }
+                    }
+                    (Value::BigInt(x), Value::BigInt(y)) => {
+                         if let Some(y_u32) = y.to_u32() {
+                             Value::BigInt(x.pow(y_u32))
+                         } else {
+                             if y.sign() == num_bigint::Sign::Minus {
+                                  Value::Float(x.to_f64().unwrap_or(f64::INFINITY).powf(y.to_f64().unwrap_or(f64::NEG_INFINITY)))
+                             } else {
+                                  Value::Null
+                             }
+                         }
+                    }
                     (Value::Float(x), Value::Float(y)) => Value::Float(x.powf(*y)),
+                    (Value::Int(x), Value::Float(y)) => Value::Float((*x as f64).powf(*y)),
+                    (Value::Float(x), Value::Int(y)) => Value::Float(x.powf(*y as f64)),
+                    (Value::BigInt(x), Value::Float(y)) => Value::Float(x.to_f64().unwrap_or(f64::INFINITY).powf(*y)),
+                    (Value::Float(x), Value::BigInt(y)) => Value::Float(x.powf(y.to_f64().unwrap_or(f64::INFINITY))),
                     _ => Value::Null,
                 })
             }
             62 => Ok(match arg {
                 Value::Float(f) => Value::Float(f.ln()),
                 Value::Int(n) => Value::Float((*n as f64).ln()),
+                Value::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::INFINITY).ln()),
                 _ => Value::Null,
             }), // LOG
             63 => Ok(match arg {
                 Value::Float(f) => Value::Float(f.sin()),
                 Value::Int(n) => Value::Float((*n as f64).sin()),
+                Value::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::INFINITY).sin()),
                 _ => Value::Null,
             }), // SIN
             64 => Ok(match arg {
                 Value::Float(f) => Value::Float(f.cos()),
                 Value::Int(n) => Value::Float((*n as f64).cos()),
+                Value::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::INFINITY).cos()),
                 _ => Value::Null,
             }), // COS
             65 => {

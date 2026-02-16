@@ -1860,3 +1860,44 @@ end
     );
     assert_eq!(result, Value::Int(2));
 }
+
+#[test]
+fn e2e_regalloc_stress() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  let a = 1
+  let b = 2
+  let c = 3
+  let d = 4
+  let e = 5
+  
+  let list_one = [a + 1, b + 2, c + 3, d + 4, e + 5]
+  
+  let f = 6
+  let g = 7
+  let h = 8
+  
+  let complex_list = [
+    a + b + c + d + e,
+    f * g * h,
+    length([a, b, c]),
+    length({ "key": "val" }),
+    (a + b) * (c + d)
+  ]
+  
+  return complex_list
+end
+"#,
+    );
+    if let Value::List(items) = &result {
+        assert_eq!(items.len(), 5);
+        assert_eq!(items[0], Value::Int(15));
+        assert_eq!(items[1], Value::Int(336)); // 6 * 7 * 8
+        assert_eq!(items[2], Value::Int(3));
+        assert_eq!(items[3], Value::Int(1));
+        assert_eq!(items[4], Value::Int(21)); // (1+2) * (3+4)
+    } else {
+        panic!("expected list, got {:?}", result);
+    }
+}

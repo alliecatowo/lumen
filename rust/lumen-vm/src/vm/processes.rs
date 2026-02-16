@@ -267,14 +267,14 @@ impl VM {
         let args: Vec<Value> = (0..nargs)
             .map(|i| self.registers[base + a + 1 + i].clone())
             .collect();
-        eprintln!("DEBUG call_memory_method: method={}, nargs={}, args.len()={}, args={:?}", method, nargs, args.len(), args);
+
         let instance_id = helpers::process_instance_id(args.first()).ok_or_else(|| {
             VmError::TypeError(format!(
                 "{}.{} requires a process instance as the first argument",
                 owner, method
             ))
         })?;
-        eprintln!("DEBUG call_memory_method: instance_id={}", instance_id);
+
         let store = self.memory_runtime.entry(instance_id).or_default();
         match method {
             "append" | "remember" => {
@@ -303,16 +303,14 @@ impl VM {
             "upsert" | "store" => {
                 if let (Some(key), Some(value)) = (args.get(1), args.get(2)) {
                     let key_str = key.as_string_resolved(&self.strings);
-                    eprintln!("DEBUG UPSERT: key_str = {:?}", key_str);
+
                     store.kv.insert(key_str, value.clone());
-                    eprintln!("DEBUG UPSERT: store.kv = {:?}", store.kv);
+
                 }
                 Ok(Value::Null)
             }
             "get" => {
                 let key = args.get(1).map(|v| v.as_string_resolved(&self.strings)).unwrap_or_default();
-                eprintln!("DEBUG GET: key = {:?}", key);
-                eprintln!("DEBUG GET: store.kv = {:?}", store.kv);
                 Ok(store.kv.get(&key).cloned().unwrap_or(Value::Null))
             }
             "query" => {

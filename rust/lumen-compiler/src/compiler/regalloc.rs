@@ -90,6 +90,25 @@ impl RegAlloc {
         reg
     }
 
+    /// Allocate a contiguous block of temporary registers.
+    /// This bypasses the free pool to ensure contiguity, as required by
+    /// some VM opcodes (Call, NewList, etc).
+    pub fn alloc_block(&mut self, count: u8) -> u8 {
+        if count == 0 {
+            return self.next_reg;
+        }
+        let start = self.next_reg;
+        if start as u16 + count as u16 > MAX_REGISTERS as u16 {
+            panic!(
+                "Register allocation error in cell '{}': block of {} registers exceeds limit.",
+                self.cell_name, count
+            );
+        }
+        self.next_reg += count;
+        self.max_reg_ever_used = self.max_reg_ever_used.max(self.next_reg);
+        start
+    }
+
     /// Mark a temporary register as free for reuse.
     /// This should only be called for temporary registers, not named bindings.
     /// Safe to call multiple times on the same register - duplicates are ignored.

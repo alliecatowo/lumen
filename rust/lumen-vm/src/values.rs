@@ -256,6 +256,29 @@ impl Value {
         }
     }
 
+    /// Return the variant index for ordering different variants with the same type_order.
+    /// This follows the enum declaration order.
+    fn variant_index(&self) -> u8 {
+        match self {
+            Value::Null => 0,
+            Value::Bool(_) => 1,
+            Value::Int(_) => 2,
+            Value::BigInt(_) => 3,
+            Value::Float(_) => 4,
+            Value::String(_) => 5,
+            Value::Bytes(_) => 6,
+            Value::List(_) => 7,
+            Value::Tuple(_) => 8,
+            Value::Set(_) => 9,
+            Value::Map(_) => 10,
+            Value::Record(_) => 11,
+            Value::Union(_) => 12,
+            Value::Closure(_) => 13,
+            Value::TraceRef(_) => 14,
+            Value::Future(_) => 15,
+        }
+    }
+
     /// Return the type name as a string (for the `is` operator).
     pub fn type_name(&self) -> &str {
         match self {
@@ -497,18 +520,6 @@ impl Ord for Value {
             (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
             (Value::Int(a), Value::Int(b)) => a.cmp(b),
             (Value::BigInt(a), Value::BigInt(b)) => a.cmp(b),
-            (Value::Int(a), Value::Float(b)) => (*a as f64).total_cmp(b),
-            (Value::Float(a), Value::Int(b)) => a.total_cmp(&(*b as f64)),
-            (Value::BigInt(a), Value::Float(b)) => {
-                 let af = a.to_f64().unwrap_or_else(|| if a.sign() == num_bigint::Sign::Minus { f64::NEG_INFINITY } else { f64::INFINITY });
-                 af.total_cmp(b)
-            },
-            (Value::Float(a), Value::BigInt(b)) => {
-                 let bf = b.to_f64().unwrap_or_else(|| if b.sign() == num_bigint::Sign::Minus { f64::NEG_INFINITY } else { f64::INFINITY });
-                 a.total_cmp(&bf)
-            },
-            (Value::Int(a), Value::BigInt(b)) => BigInt::from(*a).cmp(b),
-            (Value::BigInt(a), Value::Int(b)) => a.cmp(&BigInt::from(*b)),
             (Value::Float(a), Value::Float(b)) => a.total_cmp(b),
             (Value::String(a), Value::String(b)) => match (a, b) {
                 (StringRef::Owned(sa), StringRef::Owned(sb)) => sa.cmp(sb),
@@ -565,7 +576,12 @@ impl Ord for Value {
                 a.id.cmp(&b.id)
                     .then_with(|| future_status_ord(a.state).cmp(&future_status_ord(b.state)))
             }
-            _ => Ordering::Equal,
+            _ => {
+                // Same type_order but different variants - order by variant index
+                // This ensures deterministic ordering for types like Int vs Float
+                // (both have type_order 2, but Int < Float by enum declaration order)
+                self.variant_index().cmp(&other.variant_index())
+            }
         }
     }
 }

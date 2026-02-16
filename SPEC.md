@@ -3,7 +3,7 @@
 This specification describes the Lumen programming language as implemented in the current
 compiler and runtime. It is the ground truth that tests are validated against.
 
-Planned work lives in `docs/research/EXECUTION_TRACKER.md` and `ROADMAP.md`.
+Planned work lives in `docs/research/COMPETITIVE_ANALYSIS.md` (§3, §11) and `ROADMAP.md`.
 
 ## 1. Overview
 

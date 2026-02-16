@@ -273,7 +273,7 @@ Lumen includes powerful features for AI-native systems:
 ### Contributing
 
 - Report issues at: https://github.com/alliecatowo/lumen/issues
-- See `docs/research/EXECUTION_TRACKER.md` and `ROADMAP.md` for implementation roadmap
+- See `docs/research/COMPETITIVE_ANALYSIS.md` (§3, §11) and `ROADMAP.md` for implementation roadmap
 - Run tests: `cargo test --workspace`
 
 ## Troubleshooting

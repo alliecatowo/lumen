@@ -481,6 +481,7 @@ pub fn resolve_with_base(
                                 fields: vec![],
                                 is_pub: true,
                                 span: a.span,
+                                doc: None,
                             }),
                             generic_params: vec![],
                         });
@@ -601,6 +602,7 @@ pub fn resolve_with_base(
                                 fields: vec![],
                                 is_pub: true,
                                 span: p.span,
+                                doc: None,
                             }),
                             generic_params: vec![],
                         });
@@ -3769,6 +3771,7 @@ mod tests {
                 is_extern: false,
                 where_clauses: vec![],
                 span: sp,
+                doc: None,
             })],
             span: sp,
         };
@@ -3807,6 +3810,7 @@ mod tests {
                 is_extern: false,
                 where_clauses: vec![],
                 span: sp,
+                doc: None,
             })],
             span: sp,
         };

@@ -59,6 +59,8 @@ pub enum TokenKind {
     BoolLit(bool),
     /// Raw string literal (no escapes, no interpolation)
     RawStringLit(String),
+    /// Markdown block: content between ``` fences in .lm files (used as comments/docstrings)
+    MarkdownBlock(String),
     /// Bytes literal: b"HEXHEX..."
     BytesLit(Vec<u8>),
     /// Null literal
@@ -222,6 +224,7 @@ impl fmt::Display for TokenKind {
             TokenKind::StringInterpLit(_) => write!(f, "string-interp"),
             TokenKind::BoolLit(b) => write!(f, "{}", b),
             TokenKind::RawStringLit(s) => write!(f, "r\"{}\"", s),
+            TokenKind::MarkdownBlock(_) => write!(f, "MARKDOWN_BLOCK"),
             TokenKind::BytesLit(_) => write!(f, "bytes-lit"),
             TokenKind::NullLit => write!(f, "null"),
             TokenKind::Ident(s) => write!(f, "{}", s),

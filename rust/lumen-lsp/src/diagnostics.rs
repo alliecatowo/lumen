@@ -172,6 +172,31 @@ fn lex_error_to_diagnostic(error: &LexError) -> Diagnostic {
                 data: None,
             }
         }
+        LexError::UnterminatedMarkdownBlock { line, col } => {
+            let line_zero = line.saturating_sub(1) as u32;
+            let col_zero = col.saturating_sub(1) as u32;
+
+            Diagnostic {
+                range: Range {
+                    start: Position {
+                        line: line_zero,
+                        character: col_zero,
+                    },
+                    end: Position {
+                        line: line_zero,
+                        character: col_zero + 3,
+                    },
+                },
+                severity: Some(DiagnosticSeverity::ERROR),
+                code: Some(lsp_types::NumberOrString::String("E007".to_string())),
+                source: Some("lumen".to_string()),
+                message: "unterminated markdown block (add closing ```)".to_string(),
+                related_information: None,
+                tags: None,
+                code_description: None,
+                data: None,
+            }
+        }
     }
 }
 

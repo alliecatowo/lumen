@@ -1,5 +1,15 @@
 //! Register VM dispatch loop for executing LIR bytecode.
 
+mod helpers;
+mod intrinsics;
+mod ops;
+pub(crate) mod processes;
+
+use helpers::*;
+pub(crate) use processes::{
+    MachineExpr, MachineGraphDef, MachineParamDef, MachineRuntime, MachineStateDef, MemoryRuntime,
+};
+
 use crate::strings::StringTable;
 use crate::types::{RuntimeField, RuntimeType, RuntimeTypeKind, RuntimeVariant, TypeTable};
 use crate::values::{
@@ -9,6 +19,7 @@ use crate::values::{
 use lumen_compiler::compiler::lir::*;
 use lumen_runtime::tools::{ProviderRegistry, ToolDispatcher, ToolRequest};
 use std::collections::{BTreeMap, VecDeque};
+use std::rc::Rc;
 use thiserror::Error;
 
 /// Type alias for debug callback to simplify type signatures
@@ -223,30 +234,30 @@ const MAX_CALL_DEPTH: usize = 256;
 
 /// Call frame on the VM stack.
 #[derive(Debug)]
-struct CallFrame {
-    cell_idx: usize,
-    base_register: usize,
-    ip: usize,
-    return_register: usize,
-    future_id: Option<u64>,
+pub(crate) struct CallFrame {
+    pub(crate) cell_idx: usize,
+    pub(crate) base_register: usize,
+    pub(crate) ip: usize,
+    pub(crate) return_register: usize,
+    pub(crate) future_id: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
-enum FutureState {
+pub(crate) enum FutureState {
     Pending,
     Completed(Value),
     Error(String),
 }
 
 #[derive(Debug, Clone)]
-struct FutureTask {
-    future_id: u64,
-    target: FutureTarget,
-    args: Vec<Value>,
+pub(crate) struct FutureTask {
+    pub(crate) future_id: u64,
+    pub(crate) target: FutureTarget,
+    pub(crate) args: Vec<Value>,
 }
 
 #[derive(Debug, Clone)]
-enum FutureTarget {
+pub(crate) enum FutureTarget {
     Cell(usize),
     Closure(ClosureValue),
 }
@@ -257,104 +268,38 @@ pub enum FutureSchedule {
     DeferredFifo,
 }
 
-#[derive(Debug, Default, Clone)]
-struct MemoryRuntime {
-    entries: Vec<Value>,
-    kv: BTreeMap<String, Value>,
-}
-
-#[derive(Debug, Clone)]
-struct MachineRuntime {
-    started: bool,
-    terminal: bool,
-    steps: u64,
-    current_state: String,
-    payload: BTreeMap<String, Value>,
-}
-
-#[derive(Debug, Default, Clone)]
-struct MachineGraphDef {
-    initial: String,
-    states: BTreeMap<String, MachineStateDef>,
-}
-
-#[derive(Debug, Clone)]
-struct MachineStateDef {
-    params: Vec<MachineParamDef>,
-    terminal: bool,
-    guard: Option<MachineExpr>,
-    transition_to: Option<String>,
-    transition_args: Vec<MachineExpr>,
-}
-
-#[derive(Debug, Clone)]
-struct MachineParamDef {
-    name: String,
-    ty: String,
-}
-
-#[derive(Debug, Clone)]
-enum MachineExpr {
-    Int(i64),
-    Float(f64),
-    String(String),
-    Bool(bool),
-    Null,
-    Ident(String),
-    Unary {
-        op: String,
-        expr: Box<MachineExpr>,
-    },
-    Bin {
-        op: String,
-        lhs: Box<MachineExpr>,
-        rhs: Box<MachineExpr>,
-    },
-}
-
-impl Default for MachineRuntime {
-    fn default() -> Self {
-        Self {
-            started: false,
-            terminal: false,
-            steps: 0,
-            current_state: "init".to_string(),
-            payload: BTreeMap::new(),
-        }
-    }
-}
 
 /// The Lumen register VM.
 pub struct VM {
     pub strings: StringTable,
     pub types: TypeTable,
-    registers: Vec<Value>,
-    frames: Vec<CallFrame>,
-    module: Option<LirModule>,
+    pub(crate) registers: Vec<Value>,
+    pub(crate) frames: Vec<CallFrame>,
+    pub(crate) module: Option<LirModule>,
     /// Captured stdout output (for testing and tracing)
     pub output: Vec<String>,
     /// Optional tool dispatcher
     pub tool_dispatcher: Option<Box<dyn ToolDispatcher>>,
     /// Optional debug callback for step-through debugging
     pub debug_callback: DebugCallback,
-    next_future_id: u64,
-    future_states: BTreeMap<u64, FutureState>,
-    scheduled_futures: VecDeque<FutureTask>,
-    future_schedule: FutureSchedule,
-    future_schedule_explicit: bool,
-    next_process_instance_id: u64,
-    process_kinds: BTreeMap<String, String>,
-    machine_graphs: BTreeMap<String, MachineGraphDef>,
-    memory_runtime: BTreeMap<u64, MemoryRuntime>,
-    machine_runtime: BTreeMap<u64, MachineRuntime>,
-    await_fuel: u32,
-    max_instructions: u64,
-    instruction_count: u64,
+    pub(crate) next_future_id: u64,
+    pub(crate) future_states: BTreeMap<u64, FutureState>,
+    pub(crate) scheduled_futures: VecDeque<FutureTask>,
+    pub(crate) future_schedule: FutureSchedule,
+    pub(crate) future_schedule_explicit: bool,
+    pub(crate) next_process_instance_id: u64,
+    pub(crate) process_kinds: BTreeMap<String, String>,
+    pub(crate) machine_graphs: BTreeMap<String, MachineGraphDef>,
+    pub(crate) memory_runtime: BTreeMap<u64, MemoryRuntime>,
+    pub(crate) machine_runtime: BTreeMap<u64, MachineRuntime>,
+    pub(crate) await_fuel: u32,
+    pub(crate) max_instructions: u64,
+    pub(crate) instruction_count: u64,
     /// Optional fuel counter. Each instruction decrements fuel by 1.
     /// When fuel hits 0, execution stops with a "fuel exhausted" error.
-    fuel: Option<u64>,
-    trace_id: Option<String>,
-    trace_seq: u64,
+    pub(crate) fuel: Option<u64>,
+    pub(crate) trace_id: Option<String>,
+    pub(crate) trace_seq: u64,
 }
 
 const MAX_AWAIT_RETRIES: u32 = 10_000;
@@ -673,7 +618,7 @@ impl VM {
                 .collect();
             let dst = params[vi].register as usize;
             self.check_register(dst, cell_registers)?;
-            self.registers[new_base + dst] = Value::List(variadic_args);
+            self.registers[new_base + dst] = Value::new_list(variadic_args);
         } else {
             // No variadic param — copy args 1:1 as before
             for i in 0..nargs {
@@ -812,11 +757,12 @@ impl VM {
         }
         let id = self.next_process_instance_id;
         self.next_process_instance_id += 1;
-        r.fields
+        let r_mut = Rc::make_mut(r);
+        r_mut.fields
             .insert("__instance_id".to_string(), Value::Int(id as i64));
-        r.fields.insert(
+        r_mut.fields.insert(
             "__process_name".to_string(),
-            Value::String(StringRef::Owned(r.type_name.clone())),
+            Value::String(StringRef::Owned(r_mut.type_name.clone())),
         );
     }
 
@@ -1016,49 +962,49 @@ impl VM {
             Value::Future(f) => self.await_future_value(&f),
             Value::List(items) => {
                 let mut out = Vec::with_capacity(items.len());
-                for item in items {
+                for item in items.iter().cloned() {
                     match self.await_value_recursive(item)? {
                         Some(v) => out.push(v),
                         None => return Ok(None),
                     }
                 }
-                Ok(Some(Value::List(out)))
+                Ok(Some(Value::new_list(out)))
             }
             Value::Tuple(items) => {
                 let mut out = Vec::with_capacity(items.len());
-                for item in items {
+                for item in items.iter().cloned() {
                     match self.await_value_recursive(item)? {
                         Some(v) => out.push(v),
                         None => return Ok(None),
                     }
                 }
-                Ok(Some(Value::Tuple(out)))
+                Ok(Some(Value::new_tuple(out)))
             }
             Value::Set(items) => {
                 let mut out = Vec::with_capacity(items.len());
-                for item in items {
+                for item in items.iter().cloned() {
                     match self.await_value_recursive(item)? {
                         Some(v) => out.push(v),
                         None => return Ok(None),
                     }
                 }
-                Ok(Some(Value::Set(out)))
+                Ok(Some(Value::new_set_from_vec(out)))
             }
             Value::Map(entries) => {
                 let mut out = BTreeMap::new();
-                for (k, v) in entries {
-                    match self.await_value_recursive(v)? {
+                for (k, v) in entries.iter() {
+                    match self.await_value_recursive(v.clone())? {
                         Some(resolved) => {
-                            out.insert(k, resolved);
+                            out.insert(k.clone(), resolved);
                         }
                         None => return Ok(None),
                     }
                 }
-                Ok(Some(Value::Map(out)))
+                Ok(Some(Value::new_map(out)))
             }
             Value::Record(mut record) => {
                 let mut out = BTreeMap::new();
-                for (k, v) in std::mem::take(&mut record.fields) {
+                for (k, v) in std::mem::take(&mut Rc::make_mut(&mut record).fields) {
                     match self.await_value_recursive(v)? {
                         Some(resolved) => {
                             out.insert(k, resolved);
@@ -1066,7 +1012,7 @@ impl VM {
                         None => return Ok(None),
                     }
                 }
-                record.fields = out;
+                Rc::make_mut(&mut record).fields = out;
                 Ok(Some(Value::Record(record)))
             }
             other => Ok(Some(other)),
@@ -1301,7 +1247,7 @@ impl VM {
                     for i in 1..=b {
                         list.push(self.registers[base + a + i].clone());
                     }
-                    self.registers[base + a] = Value::List(list);
+                    self.registers[base + a] = Value::new_list(list);
                 }
                 OpCode::NewMap => {
                     let mut map = BTreeMap::new();
@@ -1310,7 +1256,7 @@ impl VM {
                         let v = self.registers[base + a + 2 + i * 2].clone();
                         map.insert(k, v);
                     }
-                    self.registers[base + a] = Value::Map(map);
+                    self.registers[base + a] = Value::new_map(map);
                 }
                 OpCode::NewRecord => {
                     let bx = instr.bx() as usize;
@@ -1320,7 +1266,7 @@ impl VM {
                         "Unknown".to_string()
                     };
                     let fields = BTreeMap::new();
-                    self.registers[base + a] = Value::Record(RecordValue { type_name, fields });
+                    self.registers[base + a] = Value::new_record(RecordValue { type_name, fields });
                 }
                 OpCode::NewUnion => {
                     let tag = self.registers[base + b].as_string();
@@ -1332,7 +1278,7 @@ impl VM {
                     for i in 1..=b {
                         elems.push(self.registers[base + a + i].clone());
                     }
-                    self.registers[base + a] = Value::Tuple(elems);
+                    self.registers[base + a] = Value::new_tuple(elems);
                 }
                 OpCode::NewSet => {
                     let mut elems = Vec::with_capacity(b);
@@ -1342,7 +1288,7 @@ impl VM {
                             elems.push(v);
                         }
                     }
-                    self.registers[base + a] = Value::Set(elems);
+                    self.registers[base + a] = Value::new_set_from_vec(elems);
                 }
 
                 // Access
@@ -1370,7 +1316,7 @@ impl VM {
                         String::new()
                     };
                     if let Value::Record(ref mut r) = self.registers[base + a] {
-                        r.fields.insert(field_name, val);
+                        Rc::make_mut(r).fields.insert(field_name, val);
                     }
                 }
                 OpCode::GetIndex => {
@@ -1378,10 +1324,28 @@ impl VM {
                     let idx = &self.registers[base + c];
                     let val = match (obj, idx) {
                         (Value::List(l), Value::Int(i)) => {
-                            l.get(*i as usize).cloned().unwrap_or(Value::Null)
+                            let ii = *i;
+                            let len = l.len() as i64;
+                            let effective = if ii < 0 { ii + len } else { ii };
+                            if effective < 0 || effective >= len {
+                                return Err(VmError::Runtime(format!(
+                                    "index {} out of bounds for list of length {}",
+                                    ii, len
+                                )));
+                            }
+                            l[effective as usize].clone()
                         }
                         (Value::Tuple(t), Value::Int(i)) => {
-                            t.get(*i as usize).cloned().unwrap_or(Value::Null)
+                            let ii = *i;
+                            let len = t.len() as i64;
+                            let effective = if ii < 0 { ii + len } else { ii };
+                            if effective < 0 || effective >= len {
+                                return Err(VmError::Runtime(format!(
+                                    "index {} out of bounds for tuple of length {}",
+                                    ii, len
+                                )));
+                            }
+                            t[effective as usize].clone()
                         }
                         (Value::Map(m), _) => {
                             m.get(&idx.as_string()).cloned().unwrap_or(Value::Null)
@@ -1401,16 +1365,27 @@ impl VM {
                     match &mut self.registers[base + a] {
                         Value::List(l) => {
                             if let Some(i) = key.as_int() {
-                                if (i as usize) < l.len() {
-                                    l[i as usize] = val;
+                                let len = l.len() as i64;
+                                let effective = if i < 0 { i + len } else { i };
+                                if effective < 0 || effective >= len {
+                                    return Err(VmError::Runtime(format!(
+                                        "index {} out of bounds for list of length {}",
+                                        i, len
+                                    )));
                                 }
+                                Rc::make_mut(l)[effective as usize] = val;
+                            } else {
+                                return Err(VmError::TypeError(format!(
+                                    "list index must be an integer, got {}",
+                                    key.type_name()
+                                )));
                             }
                         }
                         Value::Map(m) => {
-                            m.insert(key.as_string(), val);
+                            Rc::make_mut(m).insert(key.as_string(), val);
                         }
                         Value::Record(r) => {
-                            r.fields.insert(key.as_string(), val);
+                            Rc::make_mut(r).fields.insert(key.as_string(), val);
                         }
                         target => {
                             return Err(VmError::TypeError(format!(
@@ -1423,8 +1398,26 @@ impl VM {
                 OpCode::GetTuple => {
                     let obj = &self.registers[base + b];
                     let val = match obj {
-                        Value::Tuple(t) => t.get(c).cloned().unwrap_or(Value::Null),
-                        Value::List(l) => l.get(c).cloned().unwrap_or(Value::Null),
+                        Value::Tuple(t) => {
+                            if c >= t.len() {
+                                return Err(VmError::Runtime(format!(
+                                    "index {} out of bounds for tuple of length {}",
+                                    c,
+                                    t.len()
+                                )));
+                            }
+                            t[c].clone()
+                        }
+                        Value::List(l) => {
+                            if c >= l.len() {
+                                return Err(VmError::Runtime(format!(
+                                    "index {} out of bounds for list of length {}",
+                                    c,
+                                    l.len()
+                                )));
+                            }
+                            l[c].clone()
+                        }
                         _ => Value::Null,
                     };
                     self.registers[base + a] = val;
@@ -1547,9 +1540,9 @@ impl VM {
                     let rhs = &self.registers[base + c];
                     let result = match (lhs, rhs) {
                         (Value::List(a), Value::List(b)) => {
-                            let mut combined = a.clone();
+                            let mut combined: Vec<Value> = (**a).clone();
                             combined.extend(b.iter().cloned());
-                            Value::List(combined)
+                            Value::new_list(combined)
                         }
                         _ => Value::String(StringRef::Owned(format!(
                             "{}{}",
@@ -1827,7 +1820,7 @@ impl VM {
                         let iter = &self.registers[base + a];
                         let elem = match iter {
                             Value::List(l) => l.get(idx as usize).cloned().unwrap_or(Value::Null),
-                            Value::Set(s) => s.get(idx as usize).cloned().unwrap_or(Value::Null),
+                            Value::Set(s) => s.iter().nth(idx as usize).cloned().unwrap_or(Value::Null),
                             Value::Tuple(t) => t.get(idx as usize).cloned().unwrap_or(Value::Null),
                             _ => Value::Null,
                         };
@@ -1857,7 +1850,7 @@ impl VM {
                                 let key = keys[idx as usize].clone();
                                 let val = m.get(&key).cloned().unwrap_or(Value::Null);
                                 (
-                                    Value::Tuple(vec![Value::String(StringRef::Owned(key)), val]),
+                                    Value::new_tuple(vec![Value::String(StringRef::Owned(key)), val]),
                                     true,
                                 )
                             } else {
@@ -1952,7 +1945,7 @@ impl VM {
                     };
                     if let Some(arg_map_reg) = arg_map_reg {
                         if let Some(Value::Map(m)) = self.registers.get(arg_map_reg) {
-                            for (k, v) in m {
+                            for (k, v) in m.iter() {
                                 args_map.insert(k.clone(), value_to_json(v));
                             }
                         }
@@ -2105,7 +2098,7 @@ impl VM {
                 OpCode::Append => {
                     let val = self.registers[base + b].clone();
                     if let Value::List(ref mut l) = self.registers[base + a] {
-                        l.push(val);
+                        Rc::make_mut(l).push(val);
                     }
                 }
 
@@ -2305,2939 +2298,8 @@ impl VM {
         }
         Ok(())
     }
-
-    fn try_call_process_builtin(
-        &mut self,
-        name: &str,
-        base: usize,
-        a: usize,
-        nargs: usize,
-    ) -> Option<Result<Value, VmError>> {
-        let (owner, method) = name.split_once('.')?;
-        let kind = self.process_kinds.get(owner)?.clone();
-        match kind.as_str() {
-            "memory" => Some(self.call_memory_method(owner, method, base, a, nargs)),
-            "machine" => Some(self.call_machine_method(owner, method, base, a, nargs)),
-            "pipeline" | "orchestration" | "eval" | "guardrail" | "pattern" if method == "run" => {
-                let args: Vec<Value> = (0..nargs)
-                    .map(|i| self.registers[base + a + 1 + i].clone())
-                    .collect();
-                Some(Ok(args.get(1).cloned().unwrap_or(Value::Null)))
-            }
-            _ => None,
-        }
-    }
-
-    fn call_memory_method(
-        &mut self,
-        owner: &str,
-        method: &str,
-        base: usize,
-        a: usize,
-        nargs: usize,
-    ) -> Result<Value, VmError> {
-        let args: Vec<Value> = (0..nargs)
-            .map(|i| self.registers[base + a + 1 + i].clone())
-            .collect();
-        let instance_id = process_instance_id(args.first()).ok_or_else(|| {
-            VmError::TypeError(format!(
-                "{}.{} requires a process instance as the first argument",
-                owner, method
-            ))
-        })?;
-        let store = self.memory_runtime.entry(instance_id).or_default();
-        match method {
-            "append" | "remember" => {
-                if let Some(val) = args.get(1) {
-                    store.entries.push(val.clone());
-                }
-                Ok(Value::Null)
-            }
-            "recent" => {
-                let n = args.get(1).and_then(|v| v.as_int()).unwrap_or(10).max(0) as usize;
-                let len = store.entries.len();
-                let start = len.saturating_sub(n);
-                Ok(Value::List(store.entries[start..].to_vec()))
-            }
-            "recall" => {
-                let n = args
-                    .get(2)
-                    .or_else(|| args.get(1))
-                    .and_then(|v| v.as_int())
-                    .unwrap_or(5)
-                    .max(0) as usize;
-                let len = store.entries.len();
-                let start = len.saturating_sub(n);
-                Ok(Value::List(store.entries[start..].to_vec()))
-            }
-            "upsert" | "store" => {
-                if let (Some(key), Some(value)) = (args.get(1), args.get(2)) {
-                    store.kv.insert(key.as_string(), value.clone());
-                }
-                Ok(Value::Null)
-            }
-            "get" => {
-                let key = args.get(1).map(|v| v.as_string()).unwrap_or_default();
-                Ok(store.kv.get(&key).cloned().unwrap_or(Value::Null))
-            }
-            "query" => {
-                let filter = args.get(1).map(|v| v.as_string());
-                let mut out = Vec::new();
-                for (k, v) in &store.kv {
-                    if let Some(ref f) = filter {
-                        if !k.contains(f) {
-                            continue;
-                        }
-                    }
-                    out.push(v.clone());
-                }
-                Ok(Value::List(out))
-            }
-            _ => Err(VmError::UndefinedCell(format!("{}.{}", owner, method))),
-        }
-    }
-
-    fn machine_state_value(owner: &str, state: &MachineRuntime) -> Value {
-        let mut fields = BTreeMap::new();
-        fields.insert(
-            "name".to_string(),
-            Value::String(StringRef::Owned(state.current_state.clone())),
-        );
-        fields.insert("steps".to_string(), Value::Int(state.steps as i64));
-        fields.insert("terminal".to_string(), Value::Bool(state.terminal));
-        fields.insert("payload".to_string(), Value::Map(state.payload.clone()));
-        Value::Record(RecordValue {
-            type_name: format!("{}.State", owner),
-            fields,
-        })
-    }
-
-    fn bind_machine_payload(
-        params: &[MachineParamDef],
-        values: &[Value],
-    ) -> BTreeMap<String, Value> {
-        let mut payload = BTreeMap::new();
-        for (idx, param) in params.iter().enumerate() {
-            let value = values.get(idx).cloned().unwrap_or(Value::Null);
-            let value = match param.ty.as_str() {
-                "Int" => value.as_int().map(Value::Int).unwrap_or(Value::Null),
-                "Float" => value.as_float().map(Value::Float).unwrap_or(Value::Null),
-                "Bool" => match value {
-                    Value::Bool(b) => Value::Bool(b),
-                    _ => Value::Null,
-                },
-                "String" => match value {
-                    Value::String(_) => value,
-                    _ => Value::Null,
-                },
-                "Null" => Value::Null,
-                _ => value,
-            };
-            payload.insert(param.name.clone(), value);
-        }
-        payload
-    }
-
-    fn eval_machine_expr(
-        expr: &MachineExpr,
-        payload: &BTreeMap<String, Value>,
-    ) -> Result<Value, VmError> {
-        match expr {
-            MachineExpr::Int(n) => Ok(Value::Int(*n)),
-            MachineExpr::Float(f) => Ok(Value::Float(*f)),
-            MachineExpr::String(s) => Ok(Value::String(StringRef::Owned(s.clone()))),
-            MachineExpr::Bool(b) => Ok(Value::Bool(*b)),
-            MachineExpr::Null => Ok(Value::Null),
-            MachineExpr::Ident(name) => Ok(payload.get(name).cloned().unwrap_or(Value::Null)),
-            MachineExpr::Unary { op, expr } => {
-                let value = Self::eval_machine_expr(expr, payload)?;
-                match op.as_str() {
-                    "-" => match value {
-                        Value::Int(n) => Ok(Value::Int(
-                            n.checked_neg().ok_or(VmError::ArithmeticOverflow)?,
-                        )),
-                        Value::Float(f) => Ok(Value::Float(-f)),
-                        _ => Ok(Value::Null),
-                    },
-                    "not" => Ok(Value::Bool(!value.is_truthy())),
-                    "~" => match value {
-                        Value::Int(n) => Ok(Value::Int(!n)),
-                        _ => Ok(Value::Null),
-                    },
-                    _ => Ok(Value::Null),
-                }
-            }
-            MachineExpr::Bin { op, lhs, rhs } => {
-                let left = Self::eval_machine_expr(lhs, payload)?;
-                let right = Self::eval_machine_expr(rhs, payload)?;
-                match op.as_str() {
-                    "+" => match (left, right) {
-                        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(
-                            a.checked_add(b).ok_or(VmError::ArithmeticOverflow)?,
-                        )),
-                        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
-                        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 + b)),
-                        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a + b as f64)),
-                        _ => Ok(Value::Null),
-                    },
-                    "-" => match (left, right) {
-                        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(
-                            a.checked_sub(b).ok_or(VmError::ArithmeticOverflow)?,
-                        )),
-                        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
-                        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 - b)),
-                        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a - b as f64)),
-                        _ => Ok(Value::Null),
-                    },
-                    "*" => match (left, right) {
-                        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(
-                            a.checked_mul(b).ok_or(VmError::ArithmeticOverflow)?,
-                        )),
-                        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
-                        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 * b)),
-                        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a * b as f64)),
-                        _ => Ok(Value::Null),
-                    },
-                    "/" => match (left, right) {
-                        (Value::Int(_), Value::Int(0)) => Err(VmError::DivisionByZero),
-                        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(
-                            a.checked_div(b).ok_or(VmError::ArithmeticOverflow)?,
-                        )),
-                        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
-                        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 / b)),
-                        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a / b as f64)),
-                        _ => Ok(Value::Null),
-                    },
-                    "%" => match (left, right) {
-                        (Value::Int(_), Value::Int(0)) => Err(VmError::DivisionByZero),
-                        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(
-                            a.checked_rem(b).ok_or(VmError::ArithmeticOverflow)?,
-                        )),
-                        _ => Ok(Value::Null),
-                    },
-                    "==" => Ok(Value::Bool(left == right)),
-                    "!=" => Ok(Value::Bool(left != right)),
-                    "<" => Ok(Value::Bool(left < right)),
-                    "<=" => Ok(Value::Bool(left <= right)),
-                    ">" => Ok(Value::Bool(left > right)),
-                    ">=" => Ok(Value::Bool(left >= right)),
-                    "and" => Ok(Value::Bool(left.is_truthy() && right.is_truthy())),
-                    "or" => Ok(Value::Bool(left.is_truthy() || right.is_truthy())),
-                    _ => Ok(Value::Null),
-                }
-            }
-        }
-    }
-
-    fn call_machine_method(
-        &mut self,
-        owner: &str,
-        method: &str,
-        base: usize,
-        a: usize,
-        nargs: usize,
-    ) -> Result<Value, VmError> {
-        let args: Vec<Value> = (0..nargs)
-            .map(|i| self.registers[base + a + 1 + i].clone())
-            .collect();
-        let instance_id = process_instance_id(args.first()).ok_or_else(|| {
-            VmError::TypeError(format!(
-                "{}.{} requires a process instance as the first argument",
-                owner, method
-            ))
-        })?;
-        let graph = self.machine_graphs.get(owner).cloned();
-        let state = self.machine_runtime.entry(instance_id).or_default();
-        match method {
-            "start" => {
-                state.started = true;
-                state.steps = 0;
-                if let Some(graph) = graph.as_ref() {
-                    state.current_state = if graph.initial.is_empty() {
-                        "started".to_string()
-                    } else {
-                        graph.initial.clone()
-                    };
-                    if let Some(state_def) = graph.states.get(&state.current_state) {
-                        state.payload = Self::bind_machine_payload(&state_def.params, &args[1..]);
-                    } else {
-                        state.payload.clear();
-                    }
-                    state.terminal = graph
-                        .states
-                        .get(&state.current_state)
-                        .map(|s| s.terminal)
-                        .unwrap_or(false);
-                } else {
-                    state.terminal = false;
-                    state.current_state = "started".to_string();
-                    state.payload.clear();
-                }
-                Ok(Value::Null)
-            }
-            "step" => {
-                if !state.started {
-                    state.started = true;
-                    if let Some(graph) = graph.as_ref() {
-                        state.current_state = if graph.initial.is_empty() {
-                            "started".to_string()
-                        } else {
-                            graph.initial.clone()
-                        };
-                        if let Some(state_def) = graph.states.get(&state.current_state) {
-                            state.payload =
-                                Self::bind_machine_payload(&state_def.params, &args[1..]);
-                        }
-                    }
-                }
-                state.steps += 1;
-                if let Some(graph) = graph.as_ref() {
-                    let current = state.current_state.clone();
-                    let mut next_payload = None;
-                    if let Some(def) = graph.states.get(&current) {
-                        let guard_ok = def
-                            .guard
-                            .as_ref()
-                            .map(|expr| {
-                                Self::eval_machine_expr(expr, &state.payload)
-                                    .map(|value| value.is_truthy())
-                            })
-                            .transpose()?
-                            .unwrap_or(true);
-                        if guard_ok {
-                            if let Some(next) = &def.transition_to {
-                                if let Some(next_def) = graph.states.get(next) {
-                                    let evaluated: Vec<Value> = def
-                                        .transition_args
-                                        .iter()
-                                        .map(|expr| Self::eval_machine_expr(expr, &state.payload))
-                                        .collect::<Result<Vec<_>, _>>()?;
-                                    next_payload = Some(Self::bind_machine_payload(
-                                        &next_def.params,
-                                        &evaluated,
-                                    ));
-                                }
-                                state.current_state = next.clone();
-                            }
-                        }
-                    }
-                    if let Some(payload) = next_payload {
-                        state.payload = payload;
-                    }
-                    state.terminal = graph
-                        .states
-                        .get(&state.current_state)
-                        .map(|s| s.terminal)
-                        .unwrap_or(false);
-                } else if state.steps >= 1 {
-                    state.terminal = true;
-                    state.current_state = "terminal".to_string();
-                } else {
-                    state.current_state = format!("step_{}", state.steps);
-                }
-                Ok(Self::machine_state_value(owner, state))
-            }
-            "is_terminal" => Ok(Value::Bool(state.terminal)),
-            "current_state" => Ok(Self::machine_state_value(owner, state)),
-            "run" => {
-                state.started = true;
-                if let Some(graph) = graph.as_ref() {
-                    if state.current_state.is_empty() {
-                        state.current_state = graph.initial.clone();
-                    }
-                    if state.current_state.is_empty() {
-                        state.current_state = "started".to_string();
-                    }
-                    if state.payload.is_empty() {
-                        if let Some(state_def) = graph.states.get(&state.current_state) {
-                            state.payload =
-                                Self::bind_machine_payload(&state_def.params, &args[1..]);
-                        }
-                    }
-                    let mut guard = 0usize;
-                    let max_steps = graph.states.len().saturating_mul(4).max(1);
-                    while guard < max_steps {
-                        guard += 1;
-                        state.steps += 1;
-                        let Some(def) = graph.states.get(&state.current_state).cloned() else {
-                            break;
-                        };
-                        let guard_ok = def
-                            .guard
-                            .as_ref()
-                            .map(|expr| {
-                                Self::eval_machine_expr(expr, &state.payload)
-                                    .map(|value| value.is_truthy())
-                            })
-                            .transpose()?
-                            .unwrap_or(true);
-                        if !guard_ok {
-                            break;
-                        }
-                        state.terminal = def.terminal;
-                        if state.terminal {
-                            break;
-                        }
-                        if let Some(next) = def.transition_to {
-                            if let Some(next_def) = graph.states.get(&next) {
-                                let evaluated: Vec<Value> = def
-                                    .transition_args
-                                    .iter()
-                                    .map(|expr| Self::eval_machine_expr(expr, &state.payload))
-                                    .collect::<Result<Vec<_>, _>>()?;
-                                state.payload =
-                                    Self::bind_machine_payload(&next_def.params, &evaluated);
-                            }
-                            state.current_state = next;
-                        } else {
-                            break;
-                        }
-                    }
-                    state.terminal = graph
-                        .states
-                        .get(&state.current_state)
-                        .map(|s| s.terminal)
-                        .unwrap_or(state.terminal);
-                } else {
-                    state.steps += 1;
-                    state.terminal = true;
-                    state.current_state = "terminal".to_string();
-                }
-                Ok(Self::machine_state_value(owner, state))
-            }
-            "resume_from" => {
-                state.started = true;
-                state.steps = 0;
-                let target = args
-                    .get(1)
-                    .map(|v| v.as_string())
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| graph.as_ref().map(|g| g.initial.clone()))
-                    .unwrap_or_else(|| "resumed".to_string());
-                state.current_state = target;
-                if let Some(graph) = graph.as_ref() {
-                    if let Some(state_def) = graph.states.get(&state.current_state) {
-                        state.payload = Self::bind_machine_payload(&state_def.params, &args[2..]);
-                    } else {
-                        state.payload.clear();
-                    }
-                    state.terminal = graph
-                        .states
-                        .get(&state.current_state)
-                        .map(|s| s.terminal)
-                        .unwrap_or(false);
-                } else {
-                    state.terminal = false;
-                }
-                Ok(Self::machine_state_value(owner, state))
-            }
-            _ => Err(VmError::UndefinedCell(format!("{}.{}", owner, method))),
-        }
-    }
-
-    fn orchestration_args(&self, base: usize, a: usize, nargs: usize) -> Vec<Value> {
-        if nargs == 1 {
-            let first = self.registers[base + a + 1].clone();
-            if let Value::List(items) = first {
-                return items;
-            }
-            return vec![first];
-        }
-        (0..nargs)
-            .map(|i| self.registers[base + a + 1 + i].clone())
-            .collect()
-    }
-
-    /// Execute a built-in function by name.
-    fn call_builtin(
-        &mut self,
-        name: &str,
-        base: usize,
-        a: usize,
-        nargs: usize,
-    ) -> Result<Value, VmError> {
-        if let Some(result) = self.try_call_process_builtin(name, base, a, nargs) {
-            return result;
-        }
-        match name {
-            "print" => {
-                let mut parts = Vec::new();
-                for i in 0..nargs {
-                    parts.push(self.registers[base + a + 1 + i].display_pretty());
-                }
-                let output = parts.join(" ");
-                println!("{}", output);
-                self.output.push(output);
-                Ok(Value::Null)
-            }
-            "len" | "length" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(match arg {
-                    Value::String(StringRef::Owned(s)) => Value::Int(s.len() as i64),
-                    Value::List(l) => Value::Int(l.len() as i64),
-                    Value::Map(m) => Value::Int(m.len() as i64),
-                    Value::Tuple(t) => Value::Int(t.len() as i64),
-                    Value::Set(s) => Value::Int(s.len() as i64),
-                    Value::Bytes(b) => Value::Int(b.len() as i64),
-                    _ => Value::Int(0),
-                })
-            }
-            "append" => {
-                let list = self.registers[base + a + 1].clone();
-                let elem = self.registers[base + a + 2].clone();
-                if let Value::List(mut l) = list {
-                    l.push(elem);
-                    Ok(Value::List(l))
-                } else {
-                    Ok(Value::List(vec![elem]))
-                }
-            }
-            "to_string" | "str" | "string" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(Value::String(StringRef::Owned(arg.display_pretty())))
-            }
-            "to_int" | "int" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(match arg {
-                    Value::Int(n) => Value::Int(*n),
-                    Value::Float(f) => Value::Int(*f as i64),
-                    Value::String(StringRef::Owned(s)) => {
-                        s.parse::<i64>().map(Value::Int).unwrap_or(Value::Null)
-                    }
-                    Value::Bool(b) => Value::Int(if *b { 1 } else { 0 }),
-                    _ => Value::Null,
-                })
-            }
-            "to_float" | "float" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(match arg {
-                    Value::Float(f) => Value::Float(*f),
-                    Value::Int(n) => Value::Float(*n as f64),
-                    Value::String(StringRef::Owned(s)) => {
-                        s.parse::<f64>().map(Value::Float).unwrap_or(Value::Null)
-                    }
-                    _ => Value::Null,
-                })
-            }
-            "type_of" | "type" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(Value::String(StringRef::Owned(arg.type_name().to_string())))
-            }
-            "keys" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(match arg {
-                    Value::Map(m) => Value::List(
-                        m.keys()
-                            .map(|k| Value::String(StringRef::Owned(k.clone())))
-                            .collect(),
-                    ),
-                    Value::Record(r) => Value::List(
-                        r.fields
-                            .keys()
-                            .map(|k| Value::String(StringRef::Owned(k.clone())))
-                            .collect(),
-                    ),
-                    _ => Value::List(vec![]),
-                })
-            }
-            "values" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(match arg {
-                    Value::Map(m) => Value::List(m.values().cloned().collect()),
-                    Value::Record(r) => Value::List(r.fields.values().cloned().collect()),
-                    _ => Value::List(vec![]),
-                })
-            }
-            "contains" | "has" => {
-                let collection = &self.registers[base + a + 1];
-                let needle = &self.registers[base + a + 2];
-                let result = match collection {
-                    Value::List(l) => l.iter().any(|v| v == needle),
-                    Value::Set(s) => s.iter().any(|v| v == needle),
-                    Value::Map(m) => m.contains_key(&needle.as_string()),
-                    Value::String(StringRef::Owned(s)) => s.contains(&needle.as_string()),
-                    _ => false,
-                };
-                Ok(Value::Bool(result))
-            }
-            "join" => {
-                let list = &self.registers[base + a + 1];
-                let sep = if nargs > 1 {
-                    self.registers[base + a + 2].as_string()
-                } else {
-                    ", ".to_string()
-                };
-                if let Value::List(l) = list {
-                    let joined = l
-                        .iter()
-                        .map(|v| v.display_pretty())
-                        .collect::<Vec<_>>()
-                        .join(&sep);
-                    Ok(Value::String(StringRef::Owned(joined)))
-                } else {
-                    Ok(Value::String(StringRef::Owned(list.display_pretty())))
-                }
-            }
-            "split" => {
-                let s = self.registers[base + a + 1].as_string();
-                let sep = if nargs > 1 {
-                    self.registers[base + a + 2].as_string()
-                } else {
-                    " ".to_string()
-                };
-                let parts: Vec<Value> = s
-                    .split(&sep)
-                    .map(|p| Value::String(StringRef::Owned(p.to_string())))
-                    .collect();
-                Ok(Value::List(parts))
-            }
-            "trim" => {
-                let s = self.registers[base + a + 1].as_string();
-                Ok(Value::String(StringRef::Owned(s.trim().to_string())))
-            }
-            "upper" => {
-                let s = self.registers[base + a + 1].as_string();
-                Ok(Value::String(StringRef::Owned(s.to_uppercase())))
-            }
-            "lower" => {
-                let s = self.registers[base + a + 1].as_string();
-                Ok(Value::String(StringRef::Owned(s.to_lowercase())))
-            }
-            "replace" => {
-                let s = self.registers[base + a + 1].as_string();
-                let from = self.registers[base + a + 2].as_string();
-                let to = self.registers[base + a + 3].as_string();
-                Ok(Value::String(StringRef::Owned(s.replace(&from, &to))))
-            }
-            "abs" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(match arg {
-                    Value::Int(n) => Value::Int(n.abs()),
-                    Value::Float(f) => Value::Float(f.abs()),
-                    _ => arg.clone(),
-                })
-            }
-            "min" => {
-                let lhs = &self.registers[base + a + 1];
-                let rhs = &self.registers[base + a + 2];
-                Ok(match (lhs, rhs) {
-                    (Value::Int(x), Value::Int(y)) => Value::Int(*x.min(y)),
-                    (Value::Float(x), Value::Float(y)) => Value::Float(x.min(*y)),
-                    _ => lhs.clone(),
-                })
-            }
-            "max" => {
-                let lhs = &self.registers[base + a + 1];
-                let rhs = &self.registers[base + a + 2];
-                Ok(match (lhs, rhs) {
-                    (Value::Int(x), Value::Int(y)) => Value::Int(*x.max(y)),
-                    (Value::Float(x), Value::Float(y)) => Value::Float(x.max(*y)),
-                    _ => lhs.clone(),
-                })
-            }
-            "range" => {
-                let start = self.registers[base + a + 1].as_int().unwrap_or(0);
-                let end = self.registers[base + a + 2].as_int().unwrap_or(0);
-                let list: Vec<Value> = (start..end).map(Value::Int).collect();
-                Ok(Value::List(list))
-            }
-            "spawn" => {
-                if nargs == 0 {
-                    return Err(VmError::TypeError(
-                        "spawn requires a callable argument".to_string(),
-                    ));
-                }
-                let callee = self.registers[base + a + 1].clone();
-                let args: Vec<Value> = (1..nargs)
-                    .map(|i| self.registers[base + a + 1 + i].clone())
-                    .collect();
-                match callee {
-                    Value::Closure(cv) => self.spawn_future(FutureTarget::Closure(cv), args),
-                    Value::String(sr) => {
-                        let name = match sr {
-                            StringRef::Owned(s) => s,
-                            StringRef::Interned(id) => self
-                                .strings
-                                .resolve(id)
-                                .ok_or_else(|| {
-                                    VmError::Runtime(format!(
-                                        "unknown interned string id {} for spawn target",
-                                        id
-                                    ))
-                                })?
-                                .to_string(),
-                        };
-                        let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                        let cell_idx = module
-                            .cells
-                            .iter()
-                            .position(|c| c.name == name)
-                            .ok_or_else(|| {
-                                VmError::TypeError(format!(
-                                    "spawn target '{}' is not a cell or closure",
-                                    name
-                                ))
-                            })?;
-                        self.spawn_future(FutureTarget::Cell(cell_idx), args)
-                    }
-                    other => Err(VmError::TypeError(format!(
-                        "spawn expects a callable, got {}",
-                        other
-                    ))),
-                }
-            }
-            "parallel" => {
-                let args = self.orchestration_args(base, a, nargs);
-                let mut out = Vec::with_capacity(args.len());
-                for arg in args {
-                    match arg {
-                        Value::Future(ref f) => match self.future_states.get(&f.id) {
-                            Some(FutureState::Completed(v)) => out.push(v.clone()),
-                            Some(FutureState::Pending) => out.push(arg.clone()),
-                            Some(FutureState::Error(_)) | None => {
-                                out.push(Value::Future(FutureValue {
-                                    id: f.id,
-                                    state: FutureStatus::Error,
-                                }));
-                            }
-                        },
-                        other => out.push(other),
-                    }
-                }
-                Ok(Value::List(out))
-            }
-            "race" => {
-                let mut first_pending: Option<Value> = None;
-                for arg in self.orchestration_args(base, a, nargs) {
-                    match arg {
-                        Value::Future(ref f) => match self.future_states.get(&f.id) {
-                            Some(FutureState::Completed(v)) => return Ok(v.clone()),
-                            Some(FutureState::Pending) => {
-                                if first_pending.is_none() {
-                                    first_pending = Some(arg.clone());
-                                }
-                            }
-                            Some(FutureState::Error(_)) | None => {}
-                        },
-                        other => return Ok(other),
-                    }
-                }
-                Ok(first_pending.unwrap_or(Value::Null))
-            }
-            "select" => {
-                let mut first_pending: Option<Value> = None;
-                for arg in self.orchestration_args(base, a, nargs) {
-                    let candidate = match arg {
-                        Value::Future(ref f) => match self.future_states.get(&f.id) {
-                            Some(FutureState::Completed(v)) => Some(v.clone()),
-                            Some(FutureState::Pending) => {
-                                if first_pending.is_none() {
-                                    first_pending = Some(Value::Future(FutureValue {
-                                        id: f.id,
-                                        state: FutureStatus::Pending,
-                                    }));
-                                }
-                                None
-                            }
-                            _ => None,
-                        },
-                        other => Some(other),
-                    };
-                    if let Some(value) = candidate {
-                        if !matches!(value, Value::Null) {
-                            return Ok(value);
-                        }
-                    }
-                }
-                Ok(first_pending.unwrap_or(Value::Null))
-            }
-            "vote" => {
-                let mut counts: BTreeMap<Value, (usize, usize)> = BTreeMap::new();
-                let mut first_pending: Option<Value> = None;
-                for (i, arg) in self
-                    .orchestration_args(base, a, nargs)
-                    .into_iter()
-                    .enumerate()
-                {
-                    let value = match arg {
-                        Value::Future(ref f) => match self.future_states.get(&f.id) {
-                            Some(FutureState::Completed(v)) => Some(v.clone()),
-                            Some(FutureState::Pending) => {
-                                if first_pending.is_none() {
-                                    first_pending = Some(Value::Future(FutureValue {
-                                        id: f.id,
-                                        state: FutureStatus::Pending,
-                                    }));
-                                }
-                                None
-                            }
-                            _ => None,
-                        },
-                        other => Some(other),
-                    };
-                    if let Some(value) = value {
-                        let entry = counts.entry(value).or_insert((0, i));
-                        entry.0 += 1;
-                    }
-                }
-                if counts.is_empty() {
-                    return Ok(first_pending.unwrap_or(Value::Null));
-                }
-                let mut best: Option<(Value, usize, usize)> = None;
-                for (value, (count, first_idx)) in counts {
-                    match &best {
-                        None => best = Some((value, count, first_idx)),
-                        Some((_, best_count, best_idx)) => {
-                            if count > *best_count
-                                || (count == *best_count && first_idx < *best_idx)
-                            {
-                                best = Some((value, count, first_idx));
-                            }
-                        }
-                    }
-                }
-                Ok(best.map(|(value, _, _)| value).unwrap_or(Value::Null))
-            }
-            "timeout" => {
-                if nargs == 0 {
-                    return Ok(Value::Null);
-                }
-                let arg = &self.registers[base + a + 1];
-                match arg {
-                    Value::Future(f) => match self.future_states.get(&f.id) {
-                        Some(FutureState::Completed(v)) => Ok(v.clone()),
-                        Some(FutureState::Pending) => Ok(Value::Null),
-                        Some(FutureState::Error(msg)) => {
-                            Err(VmError::Runtime(format!("timeout target failed: {}", msg)))
-                        }
-                        None => Ok(Value::Null),
-                    },
-                    other => Ok(other.clone()),
-                }
-            }
-            "hash" | "sha256" => {
-                use sha2::{Digest, Sha256};
-                let s = self.registers[base + a + 1].as_string();
-                let h = format!("sha256:{:x}", Sha256::digest(s.as_bytes()));
-                Ok(Value::String(StringRef::Owned(h)))
-            }
-            // Collection ops
-            "sort" => {
-                let arg = self.registers[base + a + 1].clone();
-                if let Value::List(mut l) = arg {
-                    l.sort();
-                    Ok(Value::List(l))
-                } else {
-                    Ok(arg)
-                }
-            }
-            "reverse" => {
-                let arg = self.registers[base + a + 1].clone();
-                if let Value::List(mut l) = arg {
-                    l.reverse();
-                    Ok(Value::List(l))
-                } else {
-                    Ok(arg)
-                }
-            }
-            "flatten" => {
-                let arg = &self.registers[base + a + 1];
-                if let Value::List(l) = arg {
-                    let mut result = Vec::new();
-                    for item in l {
-                        if let Value::List(inner) = item {
-                            result.extend(inner.iter().cloned());
-                        } else {
-                            result.push(item.clone());
-                        }
-                    }
-                    Ok(Value::List(result))
-                } else {
-                    Ok(arg.clone())
-                }
-            }
-            "unique" => {
-                let arg = &self.registers[base + a + 1];
-                if let Value::List(l) = arg {
-                    let mut result = Vec::new();
-                    for item in l {
-                        if !result.contains(item) {
-                            result.push(item.clone());
-                        }
-                    }
-                    Ok(Value::List(result))
-                } else {
-                    Ok(arg.clone())
-                }
-            }
-            "take" => {
-                let arg = &self.registers[base + a + 1];
-                let n = self.registers[base + a + 2].as_int().unwrap_or(0) as usize;
-                if let Value::List(l) = arg {
-                    Ok(Value::List(l.iter().take(n).cloned().collect()))
-                } else {
-                    Ok(arg.clone())
-                }
-            }
-            "drop" => {
-                let arg = &self.registers[base + a + 1];
-                let n = self.registers[base + a + 2].as_int().unwrap_or(0) as usize;
-                if let Value::List(l) = arg {
-                    Ok(Value::List(l.iter().skip(n).cloned().collect()))
-                } else {
-                    Ok(arg.clone())
-                }
-            }
-            "first" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(match arg {
-                    Value::List(l) => l.first().cloned().unwrap_or(Value::Null),
-                    Value::Tuple(t) => t.first().cloned().unwrap_or(Value::Null),
-                    _ => Value::Null,
-                })
-            }
-            "last" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(match arg {
-                    Value::List(l) => l.last().cloned().unwrap_or(Value::Null),
-                    Value::Tuple(t) => t.last().cloned().unwrap_or(Value::Null),
-                    _ => Value::Null,
-                })
-            }
-            "is_empty" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(Value::Bool(match arg {
-                    Value::List(l) => l.is_empty(),
-                    Value::Map(m) => m.is_empty(),
-                    Value::Set(s) => s.is_empty(),
-                    Value::String(StringRef::Owned(s)) => s.is_empty(),
-                    Value::Null => true,
-                    _ => false,
-                }))
-            }
-            "chars" => {
-                let s = self.registers[base + a + 1].as_string();
-                Ok(Value::List(
-                    s.chars()
-                        .map(|c| Value::String(StringRef::Owned(c.to_string())))
-                        .collect(),
-                ))
-            }
-            "starts_with" => {
-                let s = self.registers[base + a + 1].as_string();
-                let prefix = self.registers[base + a + 2].as_string();
-                Ok(Value::Bool(s.starts_with(&prefix)))
-            }
-            "ends_with" => {
-                let s = self.registers[base + a + 1].as_string();
-                let suffix = self.registers[base + a + 2].as_string();
-                Ok(Value::Bool(s.ends_with(&suffix)))
-            }
-            "index_of" => {
-                let s = self.registers[base + a + 1].as_string();
-                let needle = self.registers[base + a + 2].as_string();
-                Ok(match s.find(&needle) {
-                    Some(i) => Value::Int(i as i64),
-                    None => Value::Int(-1),
-                })
-            }
-            "pad_left" => {
-                let s = self.registers[base + a + 1].as_string();
-                let width = self.registers[base + a + 2].as_int().unwrap_or(0) as usize;
-                let pad = if nargs > 2 {
-                    self.registers[base + a + 3].as_string()
-                } else {
-                    " ".to_string()
-                };
-                let pad_char = pad.chars().next().unwrap_or(' ');
-                if s.len() < width {
-                    let padding: String = std::iter::repeat_n(pad_char, width - s.len()).collect();
-                    Ok(Value::String(StringRef::Owned(format!("{}{}", padding, s))))
-                } else {
-                    Ok(Value::String(StringRef::Owned(s)))
-                }
-            }
-            "pad_right" => {
-                let s = self.registers[base + a + 1].as_string();
-                let width = self.registers[base + a + 2].as_int().unwrap_or(0) as usize;
-                let pad = if nargs > 2 {
-                    self.registers[base + a + 3].as_string()
-                } else {
-                    " ".to_string()
-                };
-                let pad_char = pad.chars().next().unwrap_or(' ');
-                if s.len() < width {
-                    let padding: String = std::iter::repeat_n(pad_char, width - s.len()).collect();
-                    Ok(Value::String(StringRef::Owned(format!("{}{}", s, padding))))
-                } else {
-                    Ok(Value::String(StringRef::Owned(s)))
-                }
-            }
-            // Math
-            "round" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(match arg {
-                    Value::Float(f) => Value::Float(f.round()),
-                    _ => arg.clone(),
-                })
-            }
-            "ceil" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(match arg {
-                    Value::Float(f) => Value::Float(f.ceil()),
-                    _ => arg.clone(),
-                })
-            }
-            "floor" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(match arg {
-                    Value::Float(f) => Value::Float(f.floor()),
-                    _ => arg.clone(),
-                })
-            }
-            "sqrt" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(match arg {
-                    Value::Float(f) => Value::Float(f.sqrt()),
-                    Value::Int(n) => Value::Float((*n as f64).sqrt()),
-                    _ => Value::Null,
-                })
-            }
-            "pow" => {
-                let b_val = &self.registers[base + a + 1];
-                let e_val = &self.registers[base + a + 2];
-                Ok(match (b_val, e_val) {
-                    (Value::Int(x), Value::Int(y)) => {
-                        if *y >= 0 {
-                            Value::Int(x.pow(*y as u32))
-                        } else {
-                            Value::Float((*x as f64).powf(*y as f64))
-                        }
-                    }
-                    (Value::Float(x), Value::Float(y)) => Value::Float(x.powf(*y)),
-                    (Value::Int(x), Value::Float(y)) => Value::Float((*x as f64).powf(*y)),
-                    (Value::Float(x), Value::Int(y)) => Value::Float(x.powf(*y as f64)),
-                    _ => Value::Null,
-                })
-            }
-            "log" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(match arg {
-                    Value::Float(f) => Value::Float(f.ln()),
-                    Value::Int(n) => Value::Float((*n as f64).ln()),
-                    _ => Value::Null,
-                })
-            }
-            "sin" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(match arg {
-                    Value::Float(f) => Value::Float(f.sin()),
-                    Value::Int(n) => Value::Float((*n as f64).sin()),
-                    _ => Value::Null,
-                })
-            }
-            "cos" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(match arg {
-                    Value::Float(f) => Value::Float(f.cos()),
-                    Value::Int(n) => Value::Float((*n as f64).cos()),
-                    _ => Value::Null,
-                })
-            }
-            "clamp" => {
-                let val = &self.registers[base + a + 1];
-                let lo = &self.registers[base + a + 2];
-                let hi = &self.registers[base + a + 3];
-                Ok(match (val, lo, hi) {
-                    (Value::Int(v), Value::Int(l), Value::Int(h)) => Value::Int(*v.max(l).min(h)),
-                    (Value::Float(v), Value::Float(l), Value::Float(h)) => {
-                        Value::Float(v.max(*l).min(*h))
-                    }
-                    _ => val.clone(),
-                })
-            }
-            // Result type operations
-            "is_ok" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(Value::Bool(matches!(arg, Value::Union(u) if u.tag == "ok")))
-            }
-            "is_err" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(Value::Bool(
-                    matches!(arg, Value::Union(u) if u.tag == "err"),
-                ))
-            }
-            "unwrap" => {
-                let arg = &self.registers[base + a + 1];
-                match arg {
-                    Value::Union(u) if u.tag == "ok" => Ok(*u.payload.clone()),
-                    Value::Union(u) if u.tag == "err" => {
-                        Err(VmError::Runtime(format!("unwrap on err: {}", u.payload)))
-                    }
-                    _ => Ok(arg.clone()),
-                }
-            }
-            "unwrap_or" => {
-                let arg = &self.registers[base + a + 1];
-                let default = self.registers[base + a + 2].clone();
-                match arg {
-                    Value::Union(u) if u.tag == "ok" => Ok(*u.payload.clone()),
-                    _ => Ok(default),
-                }
-            }
-            // Crypto
-            "sha512" => {
-                use sha2::{Digest, Sha512};
-                let s = self.registers[base + a + 1].as_string();
-                let h = format!("sha512:{:x}", Sha512::digest(s.as_bytes()));
-                Ok(Value::String(StringRef::Owned(h)))
-            }
-            "uuid" | "uuid_v4" => {
-                let id = uuid::Uuid::new_v4().to_string();
-                Ok(Value::String(StringRef::Owned(id)))
-            }
-            "timestamp" => {
-                let now = chrono::Utc::now().timestamp_millis();
-                Ok(Value::Int(now))
-            }
-            // Encoding
-            "base64_encode" => {
-                // Simple base64 implementation
-                let s = self.registers[base + a + 1].as_string();
-                Ok(Value::String(StringRef::Owned(simple_base64_encode(
-                    s.as_bytes(),
-                ))))
-            }
-            "base64_decode" => {
-                let s = self.registers[base + a + 1].as_string();
-                match simple_base64_decode(&s) {
-                    Some(bytes) => Ok(Value::String(StringRef::Owned(
-                        String::from_utf8_lossy(&bytes).to_string(),
-                    ))),
-                    None => Ok(Value::Null),
-                }
-            }
-            "hex_encode" => {
-                let s = self.registers[base + a + 1].as_string();
-                let hex: String = s.bytes().map(|b| format!("{:02x}", b)).collect();
-                Ok(Value::String(StringRef::Owned(hex)))
-            }
-            "hex_decode" => {
-                let s = self.registers[base + a + 1].as_string();
-                if !s.is_ascii() || !s.len().is_multiple_of(2) {
-                    return Ok(Value::Null);
-                }
-                let mut bytes = Vec::with_capacity(s.len() / 2);
-                for chunk in s.as_bytes().chunks_exact(2) {
-                    let pair = match std::str::from_utf8(chunk) {
-                        Ok(pair) => pair,
-                        Err(_) => return Ok(Value::Null),
-                    };
-                    match u8::from_str_radix(pair, 16) {
-                        Ok(byte) => bytes.push(byte),
-                        Err(_) => return Ok(Value::Null),
-                    }
-                }
-                Ok(Value::String(StringRef::Owned(
-                    String::from_utf8_lossy(&bytes).to_string(),
-                )))
-            }
-            "url_encode" => {
-                let s = self.registers[base + a + 1].as_string();
-                let mut encoded = String::new();
-                for byte in s.bytes() {
-                    if byte.is_ascii_alphanumeric()
-                        || byte == b'-'
-                        || byte == b'_'
-                        || byte == b'.'
-                        || byte == b'~'
-                    {
-                        encoded.push(byte as char);
-                    } else {
-                        encoded.push_str(&format!("%{:02X}", byte));
-                    }
-                }
-                Ok(Value::String(StringRef::Owned(encoded)))
-            }
-            "url_decode" => {
-                let s = self.registers[base + a + 1].as_string();
-                let mut result = String::new();
-                let mut chars = s.chars();
-                while let Some(c) = chars.next() {
-                    if c == '%' {
-                        let hi = chars.next().unwrap_or('0');
-                        let lo = chars.next().unwrap_or('0');
-                        let hex = format!("{}{}", hi, lo);
-                        if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                            result.push(byte as char);
-                        }
-                    } else if c == '+' {
-                        result.push(' ');
-                    } else {
-                        result.push(c);
-                    }
-                }
-                Ok(Value::String(StringRef::Owned(result)))
-            }
-            // JSON
-            "json_parse" => {
-                let s = self.registers[base + a + 1].as_string();
-                match serde_json::from_str::<serde_json::Value>(&s) {
-                    Ok(v) => Ok(json_to_value(&v)),
-                    Err(_) => Ok(Value::Null),
-                }
-            }
-            "json_encode" => {
-                let val = &self.registers[base + a + 1];
-                let j = value_to_json(val);
-                Ok(Value::String(StringRef::Owned(j.to_string())))
-            }
-            "json_pretty" => {
-                let val = &self.registers[base + a + 1];
-                let j = value_to_json(val);
-                let pretty = serde_json::to_string_pretty(&j)
-                    .map_err(|e| VmError::Runtime(format!("json_pretty failed: {}", e)))?;
-                Ok(Value::String(StringRef::Owned(pretty)))
-            }
-            // String case transforms (std.string)
-            "capitalize" => {
-                let s = self.registers[base + a + 1].as_string();
-                let mut c = s.chars();
-                let result = match c.next() {
-                    None => String::new(),
-                    Some(f) => f.to_uppercase().to_string() + &c.as_str().to_lowercase(),
-                };
-                Ok(Value::String(StringRef::Owned(result)))
-            }
-            "title_case" => {
-                let s = self.registers[base + a + 1].as_string();
-                let result: String = s
-                    .split_whitespace()
-                    .map(|word| {
-                        let mut c = word.chars();
-                        match c.next() {
-                            None => String::new(),
-                            Some(f) => f.to_uppercase().to_string() + &c.as_str().to_lowercase(),
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                Ok(Value::String(StringRef::Owned(result)))
-            }
-            "snake_case" => {
-                let s = self.registers[base + a + 1].as_string();
-                let mut result = String::new();
-                for (i, ch) in s.chars().enumerate() {
-                    if ch.is_uppercase() && i > 0 {
-                        result.push('_');
-                    }
-                    result.push(ch.to_lowercase().next().unwrap_or(ch));
-                }
-                Ok(Value::String(StringRef::Owned(
-                    result.replace(' ', "_").replace("__", "_"),
-                )))
-            }
-            "camel_case" => {
-                let s = self.registers[base + a + 1].as_string();
-                let result: String = s
-                    .split(['_', ' ', '-'])
-                    .enumerate()
-                    .map(|(i, word)| {
-                        if i == 0 {
-                            word.to_lowercase()
-                        } else {
-                            let mut c = word.chars();
-                            match c.next() {
-                                None => String::new(),
-                                Some(f) => {
-                                    f.to_uppercase().to_string() + &c.as_str().to_lowercase()
-                                }
-                            }
-                        }
-                    })
-                    .collect();
-                Ok(Value::String(StringRef::Owned(result)))
-            }
-            // Test assertions
-            "assert" => {
-                let arg = &self.registers[base + a + 1];
-                if !arg.is_truthy() {
-                    let msg = if nargs > 1 {
-                        self.registers[base + a + 2].as_string()
-                    } else {
-                        "assertion failed".to_string()
-                    };
-                    return Err(VmError::Runtime(msg));
-                }
-                Ok(Value::Null)
-            }
-            "assert_eq" => {
-                let lhs = &self.registers[base + a + 1];
-                let rhs = &self.registers[base + a + 2];
-                if lhs != rhs {
-                    return Err(VmError::Runtime(format!(
-                        "assert_eq failed: {} != {}",
-                        lhs, rhs
-                    )));
-                }
-                Ok(Value::Null)
-            }
-            "assert_ne" => {
-                let lhs = &self.registers[base + a + 1];
-                let rhs = &self.registers[base + a + 2];
-                if lhs == rhs {
-                    return Err(VmError::Runtime(format!(
-                        "assert_ne failed: {} == {}",
-                        lhs, rhs
-                    )));
-                }
-                Ok(Value::Null)
-            }
-            "assert_contains" => {
-                let collection = &self.registers[base + a + 1];
-                let needle = &self.registers[base + a + 2];
-                let found = match collection {
-                    Value::List(l) => l.contains(needle),
-                    Value::String(StringRef::Owned(s)) => s.contains(&needle.as_string()),
-                    _ => false,
-                };
-                if !found {
-                    return Err(VmError::Runtime(format!(
-                        "assert_contains failed: {} not in {}",
-                        needle, collection
-                    )));
-                }
-                Ok(Value::Null)
-            }
-            // Emit/debug
-            "emit" => {
-                let val = self.registers[base + a + 1].display_pretty();
-                println!("{}", val);
-                self.output.push(val);
-                Ok(Value::Null)
-            }
-            "debug" => {
-                let val = &self.registers[base + a + 1];
-                let output = format!("[debug] {:?}", val);
-                eprintln!("{}", output);
-                self.output.push(output);
-                Ok(Value::Null)
-            }
-            "clone" => Ok(self.registers[base + a + 1].clone()),
-            "sizeof" => {
-                let val = &self.registers[base + a + 1];
-                Ok(Value::Int(std::mem::size_of_val(val) as i64))
-            }
-            "enumerate" => {
-                let arg = &self.registers[base + a + 1];
-                if let Value::List(l) = arg {
-                    let result: Vec<Value> = l
-                        .iter()
-                        .enumerate()
-                        .map(|(i, v)| Value::Tuple(vec![Value::Int(i as i64), v.clone()]))
-                        .collect();
-                    Ok(Value::List(result))
-                } else {
-                    Ok(Value::List(vec![]))
-                }
-            }
-            "zip" => {
-                let a_list = &self.registers[base + a + 1];
-                let b_list = &self.registers[base + a + 2];
-                if let (Value::List(la), Value::List(lb)) = (a_list, b_list) {
-                    let result: Vec<Value> = la
-                        .iter()
-                        .zip(lb.iter())
-                        .map(|(x, y)| Value::Tuple(vec![x.clone(), y.clone()]))
-                        .collect();
-                    Ok(Value::List(result))
-                } else {
-                    Ok(Value::List(vec![]))
-                }
-            }
-            "chunk" => {
-                let arg = &self.registers[base + a + 1];
-                let size = self.registers[base + a + 2].as_int().unwrap_or(1) as usize;
-                if let Value::List(l) = arg {
-                    let result: Vec<Value> = l
-                        .chunks(size.max(1))
-                        .map(|chunk| Value::List(chunk.to_vec()))
-                        .collect();
-                    Ok(Value::List(result))
-                } else {
-                    Ok(Value::List(vec![]))
-                }
-            }
-            "window" => {
-                let arg = &self.registers[base + a + 1];
-                let n = self.registers[base + a + 2].as_int().unwrap_or(1) as usize;
-                if let Value::List(l) = arg {
-                    if n == 0 || n > l.len() {
-                        Ok(Value::List(vec![]))
-                    } else {
-                        let result: Vec<Value> =
-                            l.windows(n).map(|w| Value::List(w.to_vec())).collect();
-                        Ok(Value::List(result))
-                    }
-                } else {
-                    Ok(Value::List(vec![]))
-                }
-            }
-            // Higher-order functions called by name
-            "map" => {
-                let list = self.registers[base + a + 1].clone();
-                let closure_val = self.registers[base + a + 2].clone();
-                if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
-                    let mut result = Vec::with_capacity(l.len());
-                    for item in &l {
-                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
-                        result.push(val);
-                    }
-                    Ok(Value::List(result))
-                } else {
-                    Ok(Value::List(vec![]))
-                }
-            }
-            "filter" => {
-                let list = self.registers[base + a + 1].clone();
-                let closure_val = self.registers[base + a + 2].clone();
-                if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
-                    let mut result = Vec::new();
-                    for item in &l {
-                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
-                        if val.is_truthy() {
-                            result.push(item.clone());
-                        }
-                    }
-                    Ok(Value::List(result))
-                } else {
-                    Ok(Value::List(vec![]))
-                }
-            }
-            "reduce" => {
-                let list = self.registers[base + a + 1].clone();
-                let closure_val = self.registers[base + a + 2].clone();
-                let init = self.registers[base + a + 3].clone();
-                if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
-                    let mut acc = init;
-                    for item in &l {
-                        acc = self.call_closure_sync(&cv, &[acc, item.clone()])?;
-                    }
-                    Ok(acc)
-                } else {
-                    Ok(init)
-                }
-            }
-            "flat_map" => {
-                let list = self.registers[base + a + 1].clone();
-                let closure_val = self.registers[base + a + 2].clone();
-                if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
-                    let mut result = Vec::new();
-                    for item in &l {
-                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
-                        if let Value::List(inner) = val {
-                            result.extend(inner);
-                        } else {
-                            result.push(val);
-                        }
-                    }
-                    Ok(Value::List(result))
-                } else {
-                    Ok(Value::List(vec![]))
-                }
-            }
-            "any" => {
-                let list = self.registers[base + a + 1].clone();
-                let closure_val = self.registers[base + a + 2].clone();
-                if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
-                    for item in &l {
-                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
-                        if val.is_truthy() {
-                            return Ok(Value::Bool(true));
-                        }
-                    }
-                    Ok(Value::Bool(false))
-                } else {
-                    Ok(Value::Bool(false))
-                }
-            }
-            "all" => {
-                let list = self.registers[base + a + 1].clone();
-                let closure_val = self.registers[base + a + 2].clone();
-                if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
-                    for item in &l {
-                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
-                        if !val.is_truthy() {
-                            return Ok(Value::Bool(false));
-                        }
-                    }
-                    Ok(Value::Bool(true))
-                } else {
-                    Ok(Value::Bool(true))
-                }
-            }
-            "find" => {
-                let list = self.registers[base + a + 1].clone();
-                let closure_val = self.registers[base + a + 2].clone();
-                if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
-                    for item in &l {
-                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
-                        if val.is_truthy() {
-                            return Ok(item.clone());
-                        }
-                    }
-                    Ok(Value::Null)
-                } else {
-                    Ok(Value::Null)
-                }
-            }
-            "position" => {
-                let list = self.registers[base + a + 1].clone();
-                let closure_val = self.registers[base + a + 2].clone();
-                if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
-                    for (i, item) in l.iter().enumerate() {
-                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
-                        if val.is_truthy() {
-                            return Ok(Value::Int(i as i64));
-                        }
-                    }
-                    Ok(Value::Int(-1))
-                } else {
-                    Ok(Value::Int(-1))
-                }
-            }
-            "group_by" => {
-                let list = self.registers[base + a + 1].clone();
-                let closure_val = self.registers[base + a + 2].clone();
-                if let (Value::List(l), Value::Closure(cv)) = (list, closure_val) {
-                    let mut groups: BTreeMap<String, Value> = BTreeMap::new();
-                    for item in &l {
-                        let key = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
-                        let key_str = key.as_string();
-                        match groups.get_mut(&key_str) {
-                            Some(Value::List(ref mut list)) => list.push(item.clone()),
-                            _ => {
-                                groups.insert(key_str, Value::List(vec![item.clone()]));
-                            }
-                        }
-                    }
-                    Ok(Value::Map(groups))
-                } else {
-                    Ok(Value::Map(BTreeMap::new()))
-                }
-            }
-            "freeze" => Ok(self.registers[base + a + 1].clone()),
-            _ => Err(VmError::UndefinedCell(name.to_string())),
-        }
-    }
-
-    /// Synchronously call a closure with the given arguments, returning its result.
-    /// Used by HOF intrinsics (map, filter, reduce, etc.).
-    fn call_closure_sync(
-        &mut self,
-        closure: &ClosureValue,
-        args: &[Value],
-    ) -> Result<Value, VmError> {
-        if self.frames.len() >= MAX_CALL_DEPTH {
-            return Err(VmError::StackOverflow(MAX_CALL_DEPTH));
-        }
-        let cv = closure.clone();
-        let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-        if cv.cell_idx >= module.cells.len() {
-            return Err(VmError::Runtime(format!(
-                "closure cell index {} out of bounds",
-                cv.cell_idx
-            )));
-        }
-        let callee_cell = module.cells.get(cv.cell_idx).ok_or_else(|| {
-            VmError::Runtime(format!("closure cell index {} out of bounds", cv.cell_idx))
-        })?;
-        let num_regs = callee_cell.registers as usize;
-        let params: Vec<LirParam> = callee_cell.params.clone();
-        let cell_regs = callee_cell.registers;
-        let new_base = self.registers.len();
-        self.registers
-            .resize(new_base + num_regs.max(256), Value::Null);
-        // Copy captures into frame registers
-        for (i, cap) in cv.captures.iter().enumerate() {
-            self.check_register(i, cell_regs)?;
-            self.registers[new_base + i] = cap.clone();
-        }
-        // Copy arguments into parameter registers (after captures)
-        let cap_count = cv.captures.len();
-        let variadic_idx = params[cap_count..]
-            .iter()
-            .position(|p| p.variadic)
-            .map(|i| i + cap_count);
-        if let Some(vi) = variadic_idx {
-            let fixed_count = vi - cap_count;
-            for (i, arg) in args.iter().enumerate().take(fixed_count) {
-                let dst = params[cap_count + i].register as usize;
-                self.check_register(dst, cell_regs)?;
-                self.registers[new_base + dst] = arg.clone();
-            }
-            let variadic_args: Vec<Value> = args[fixed_count..].to_vec();
-            let dst = params[vi].register as usize;
-            self.check_register(dst, cell_regs)?;
-            self.registers[new_base + dst] = Value::List(variadic_args);
-        } else {
-            for (i, arg) in args.iter().enumerate() {
-                if cap_count + i < params.len() {
-                    let dst = params[cap_count + i].register as usize;
-                    self.check_register(dst, cell_regs)?;
-                    self.registers[new_base + dst] = arg.clone();
-                }
-            }
-        }
-        // Push a call frame with a sentinel return_register
-        self.frames.push(CallFrame {
-            cell_idx: cv.cell_idx,
-            base_register: new_base,
-            ip: 0,
-            return_register: new_base, // result will be written here
-            future_id: None,
-        });
-        // Run the VM until this frame returns
-        self.run()
-    }
-
-    /// Execute an intrinsic function by ID.
-    fn exec_intrinsic(
-        &mut self,
-        base: usize,
-        _a: usize,
-        func_id: usize,
-        arg_reg: usize,
-    ) -> Result<Value, VmError> {
-        let arg = &self.registers[base + arg_reg];
-        match func_id {
-            0 => {
-                // LENGTH (Unicode-aware for strings)
-                Ok(match arg {
-                    Value::String(StringRef::Owned(s)) => Value::Int(s.chars().count() as i64),
-                    Value::String(StringRef::Interned(id)) => {
-                        let s = self.strings.resolve(*id).unwrap_or("");
-                        Value::Int(s.chars().count() as i64)
-                    }
-                    Value::List(l) => Value::Int(l.len() as i64),
-                    Value::Map(m) => Value::Int(m.len() as i64),
-                    Value::Tuple(t) => Value::Int(t.len() as i64),
-                    Value::Set(s) => Value::Int(s.len() as i64),
-                    Value::Bytes(b) => Value::Int(b.len() as i64),
-                    _ => Value::Int(0),
-                })
-            }
-            1 => {
-                // COUNT (Unicode-aware for strings)
-                Ok(match arg {
-                    Value::List(l) => Value::Int(l.len() as i64),
-                    Value::Map(m) => Value::Int(m.len() as i64),
-                    Value::String(StringRef::Owned(s)) => Value::Int(s.chars().count() as i64),
-                    _ => Value::Int(0),
-                })
-            }
-            2 => {
-                // MATCHES
-                Ok(match arg {
-                    Value::Bool(b) => Value::Bool(*b),
-                    Value::String(_) => Value::Bool(!arg.as_string().is_empty()),
-                    _ => Value::Bool(false),
-                })
-            }
-            3 => {
-                // HASH
-                use sha2::{Digest, Sha256};
-                let hash = format!("{:x}", Sha256::digest(arg.as_string().as_bytes()));
-                Ok(Value::String(StringRef::Owned(format!("sha256:{}", hash))))
-            }
-            4 => {
-                // DIFF
-                let other = &self.registers[base + arg_reg + 1];
-                Ok(self.diff_values(arg, other))
-            }
-            5 => {
-                // PATCH
-                let patches = &self.registers[base + arg_reg + 1];
-                Ok(self.patch_value(arg, patches))
-            }
-            6 => {
-                // REDACT
-                let fields = &self.registers[base + arg_reg + 1];
-                Ok(self.redact_value(arg, fields))
-            }
-            7 => {
-                // VALIDATE
-                Ok(Value::Bool(true)) // full validation deferred to schema opcode
-            }
-            8 => {
-                // TRACEREF
-                Ok(Value::TraceRef(self.next_trace_ref()))
-            }
-            9 => {
-                // PRINT
-                let output = arg.display_pretty();
-                println!("{}", output);
-                self.output.push(output);
-                Ok(Value::Null)
-            }
-            10 => Ok(Value::String(StringRef::Owned(arg.display_pretty()))), // TOSTRING
-            11 => {
-                // TOINT
-                Ok(match arg {
-                    Value::Int(n) => Value::Int(*n),
-                    Value::Float(f) => Value::Int(*f as i64),
-                    Value::String(StringRef::Owned(s)) => {
-                        s.parse::<i64>().map(Value::Int).unwrap_or(Value::Null)
-                    }
-                    Value::Bool(b) => Value::Int(if *b { 1 } else { 0 }),
-                    _ => Value::Null,
-                })
-            }
-            12 => {
-                // TOFLOAT
-                Ok(match arg {
-                    Value::Float(f) => Value::Float(*f),
-                    Value::Int(n) => Value::Float(*n as f64),
-                    Value::String(StringRef::Owned(s)) => {
-                        s.parse::<f64>().map(Value::Float).unwrap_or(Value::Null)
-                    }
-                    _ => Value::Null,
-                })
-            }
-            13 => Ok(Value::String(StringRef::Owned(arg.type_name().to_string()))), // TYPEOF
-            14 => {
-                // KEYS
-                Ok(match arg {
-                    Value::Map(m) => Value::List(
-                        m.keys()
-                            .map(|k| Value::String(StringRef::Owned(k.clone())))
-                            .collect(),
-                    ),
-                    Value::Record(r) => Value::List(
-                        r.fields
-                            .keys()
-                            .map(|k| Value::String(StringRef::Owned(k.clone())))
-                            .collect(),
-                    ),
-                    _ => Value::List(vec![]),
-                })
-            }
-            15 => {
-                // VALUES
-                Ok(match arg {
-                    Value::Map(m) => Value::List(m.values().cloned().collect()),
-                    Value::Record(r) => Value::List(r.fields.values().cloned().collect()),
-                    _ => Value::List(vec![]),
-                })
-            }
-            16 => {
-                // CONTAINS
-                let item = &self.registers[base + arg_reg + 1];
-                Ok(match arg {
-                    Value::List(l) => Value::Bool(l.contains(item)),
-                    Value::Set(s) => Value::Bool(s.contains(item)),
-                    Value::Map(m) => Value::Bool(m.contains_key(&item.as_string())),
-                    Value::String(StringRef::Owned(s)) => {
-                        Value::Bool(s.contains(&item.as_string()))
-                    }
-                    _ => Value::Bool(false),
-                })
-            }
-            17 => {
-                // JOIN
-                let sep = self.registers[base + arg_reg + 1].as_string();
-                Ok(match arg {
-                    Value::List(l) => {
-                        let s = l
-                            .iter()
-                            .map(|v| v.as_string())
-                            .collect::<Vec<_>>()
-                            .join(&sep);
-                        Value::String(StringRef::Owned(s))
-                    }
-                    _ => Value::String(StringRef::Owned("".into())),
-                })
-            }
-            18 => {
-                // SPLIT
-                let sep = self.registers[base + arg_reg + 1].as_string();
-                Ok(match arg {
-                    Value::String(StringRef::Owned(s)) => {
-                        let parts: Vec<Value> = s
-                            .split(&sep)
-                            .map(|p| Value::String(StringRef::Owned(p.to_string())))
-                            .collect();
-                        Value::List(parts)
-                    }
-                    _ => Value::List(vec![]),
-                })
-            }
-            19 => Ok(match arg {
-                Value::String(StringRef::Owned(s)) => {
-                    Value::String(StringRef::Owned(s.trim().to_string()))
-                }
-                _ => arg.clone(),
-            }), // TRIM
-            20 => Ok(match arg {
-                Value::String(StringRef::Owned(s)) => {
-                    Value::String(StringRef::Owned(s.to_uppercase()))
-                }
-                _ => arg.clone(),
-            }), // UPPER
-            21 => Ok(match arg {
-                Value::String(StringRef::Owned(s)) => {
-                    Value::String(StringRef::Owned(s.to_lowercase()))
-                }
-                _ => arg.clone(),
-            }), // LOWER
-            22 => {
-                // REPLACE
-                let pat = self.registers[base + arg_reg + 1].as_string();
-                let with = self.registers[base + arg_reg + 2].as_string();
-                Ok(match arg {
-                    Value::String(StringRef::Owned(s)) => {
-                        Value::String(StringRef::Owned(s.replace(&pat, &with)))
-                    }
-                    _ => arg.clone(),
-                })
-            }
-            23 => {
-                // SLICE
-                let start_val = &self.registers[base + arg_reg + 1];
-                let end_val = &self.registers[base + arg_reg + 2];
-                let start = start_val.as_int().unwrap_or(0);
-                let end = end_val.as_int().unwrap_or(0);
-                Ok(match arg {
-                    Value::List(l) => {
-                        let start = start.max(0) as usize;
-                        let end = if end <= 0 {
-                            l.len()
-                        } else {
-                            (end as usize).min(l.len())
-                        };
-                        if start < end {
-                            Value::List(l[start..end].to_vec())
-                        } else {
-                            Value::List(vec![])
-                        }
-                    }
-                    Value::String(StringRef::Owned(s)) => {
-                        let char_count = s.chars().count();
-                        let start = start.max(0) as usize;
-                        let end = if end <= 0 {
-                            char_count
-                        } else {
-                            (end as usize).min(char_count)
-                        };
-                        if start < end {
-                            Value::String(StringRef::Owned(
-                                s.chars().skip(start).take(end - start).collect::<String>(),
-                            ))
-                        } else {
-                            Value::String(StringRef::Owned("".into()))
-                        }
-                    }
-                    _ => Value::Null,
-                })
-            }
-            24 => {
-                // APPEND
-                let item = self.registers[base + arg_reg + 1].clone();
-                Ok(match arg {
-                    Value::List(l) => {
-                        let mut new_l = l.clone();
-                        new_l.push(item);
-                        Value::List(new_l)
-                    }
-                    _ => Value::Null,
-                })
-            }
-            25 => {
-                // RANGE
-                let end = self.registers[base + arg_reg + 1].as_int().unwrap_or(0);
-                let start = arg.as_int().unwrap_or(0);
-                let list: Vec<Value> = (start..end).map(Value::Int).collect();
-                Ok(Value::List(list))
-            }
-            26 => Ok(match arg {
-                Value::Int(n) => Value::Int(n.abs()),
-                Value::Float(f) => Value::Float(f.abs()),
-                _ => Value::Null,
-            }), // ABS
-            27 => {
-                // MIN
-                let other = &self.registers[base + arg_reg + 1];
-                Ok(match (arg, other) {
-                    (Value::Int(a), Value::Int(b)) => Value::Int(*a.min(b)),
-                    (Value::Float(a), Value::Float(b)) => Value::Float(a.min(*b)),
-                    _ => arg.clone(),
-                })
-            }
-            28 => {
-                // MAX
-                let other = &self.registers[base + arg_reg + 1];
-                Ok(match (arg, other) {
-                    (Value::Int(a), Value::Int(b)) => Value::Int(*a.max(b)),
-                    (Value::Float(a), Value::Float(b)) => Value::Float(a.max(*b)),
-                    _ => arg.clone(),
-                })
-            }
-            // Extended intrinsics (29+)
-            29 => {
-                // SORT
-                if let Value::List(l) = arg {
-                    let mut s = l.clone();
-                    s.sort();
-                    Ok(Value::List(s))
-                } else {
-                    Ok(arg.clone())
-                }
-            }
-            30 => {
-                // REVERSE
-                if let Value::List(l) = arg {
-                    let mut r = l.clone();
-                    r.reverse();
-                    Ok(Value::List(r))
-                } else {
-                    Ok(arg.clone())
-                }
-            }
-            31 => {
-                // MAP: apply closure to each element
-                let closure_val = self.registers[base + arg_reg + 1].clone();
-                if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
-                    let mut result = Vec::with_capacity(l.len());
-                    for item in &l {
-                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
-                        result.push(val);
-                    }
-                    Ok(Value::List(result))
-                } else {
-                    Ok(arg.clone())
-                }
-            }
-            32 => {
-                // FILTER: keep elements where closure returns truthy
-                let closure_val = self.registers[base + arg_reg + 1].clone();
-                if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
-                    let mut result = Vec::new();
-                    for item in &l {
-                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
-                        if val.is_truthy() {
-                            result.push(item.clone());
-                        }
-                    }
-                    Ok(Value::List(result))
-                } else {
-                    Ok(arg.clone())
-                }
-            }
-            33 => {
-                // REDUCE: fold with accumulator
-                let closure_val = self.registers[base + arg_reg + 1].clone();
-                let init = self.registers[base + arg_reg + 2].clone();
-                if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
-                    let mut acc = init;
-                    for item in &l {
-                        acc = self.call_closure_sync(&cv, &[acc, item.clone()])?;
-                    }
-                    Ok(acc)
-                } else {
-                    Ok(init)
-                }
-            }
-            34 => {
-                // FLAT_MAP: map then flatten one level
-                let closure_val = self.registers[base + arg_reg + 1].clone();
-                if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
-                    let mut result = Vec::new();
-                    for item in &l {
-                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
-                        if let Value::List(inner) = val {
-                            result.extend(inner);
-                        } else {
-                            result.push(val);
-                        }
-                    }
-                    Ok(Value::List(result))
-                } else {
-                    Ok(arg.clone())
-                }
-            }
-            35 => {
-                // ZIP: pair elements from two lists
-                let other = self.registers[base + arg_reg + 1].clone();
-                if let (Value::List(la), Value::List(lb)) = (arg, &other) {
-                    let result: Vec<Value> = la
-                        .iter()
-                        .zip(lb.iter())
-                        .map(|(x, y)| Value::Tuple(vec![x.clone(), y.clone()]))
-                        .collect();
-                    Ok(Value::List(result))
-                } else {
-                    Ok(Value::List(vec![]))
-                }
-            }
-            36 => {
-                // ENUMERATE: list of [index, element] tuples
-                if let Value::List(l) = arg {
-                    let result: Vec<Value> = l
-                        .iter()
-                        .enumerate()
-                        .map(|(i, v)| Value::Tuple(vec![Value::Int(i as i64), v.clone()]))
-                        .collect();
-                    Ok(Value::List(result))
-                } else {
-                    Ok(Value::List(vec![]))
-                }
-            }
-            37 => {
-                // ANY: true if any element satisfies closure
-                let closure_val = self.registers[base + arg_reg + 1].clone();
-                if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
-                    for item in &l {
-                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
-                        if val.is_truthy() {
-                            return Ok(Value::Bool(true));
-                        }
-                    }
-                    Ok(Value::Bool(false))
-                } else {
-                    Ok(Value::Bool(false))
-                }
-            }
-            38 => {
-                // ALL: true if all elements satisfy closure
-                let closure_val = self.registers[base + arg_reg + 1].clone();
-                if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
-                    for item in &l {
-                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
-                        if !val.is_truthy() {
-                            return Ok(Value::Bool(false));
-                        }
-                    }
-                    Ok(Value::Bool(true))
-                } else {
-                    Ok(Value::Bool(true))
-                }
-            }
-            39 => {
-                // FIND: first element satisfying closure, or Null
-                let closure_val = self.registers[base + arg_reg + 1].clone();
-                if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
-                    for item in &l {
-                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
-                        if val.is_truthy() {
-                            return Ok(item.clone());
-                        }
-                    }
-                    Ok(Value::Null)
-                } else {
-                    Ok(Value::Null)
-                }
-            }
-            40 => {
-                // POSITION: index of first element satisfying closure, or -1
-                let closure_val = self.registers[base + arg_reg + 1].clone();
-                if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
-                    for (i, item) in l.iter().enumerate() {
-                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
-                        if val.is_truthy() {
-                            return Ok(Value::Int(i as i64));
-                        }
-                    }
-                    Ok(Value::Int(-1))
-                } else {
-                    Ok(Value::Int(-1))
-                }
-            }
-            41 => {
-                // GROUP_BY: group elements by closure result into a map
-                let closure_val = self.registers[base + arg_reg + 1].clone();
-                if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
-                    let mut groups: BTreeMap<String, Value> = BTreeMap::new();
-                    for item in &l {
-                        let key = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
-                        let key_str = key.as_string();
-                        match groups.get_mut(&key_str) {
-                            Some(Value::List(ref mut list)) => list.push(item.clone()),
-                            _ => {
-                                groups.insert(key_str, Value::List(vec![item.clone()]));
-                            }
-                        }
-                    }
-                    Ok(Value::Map(groups))
-                } else {
-                    Ok(Value::Map(BTreeMap::new()))
-                }
-            }
-            42 => {
-                // CHUNK: split list into chunks of size N
-                let n = self.registers[base + arg_reg + 1].as_int().unwrap_or(1) as usize;
-                if let Value::List(l) = arg {
-                    let result: Vec<Value> = l
-                        .chunks(n.max(1))
-                        .map(|chunk| Value::List(chunk.to_vec()))
-                        .collect();
-                    Ok(Value::List(result))
-                } else {
-                    Ok(Value::List(vec![]))
-                }
-            }
-            43 => {
-                // WINDOW: sliding window of size N
-                let n = self.registers[base + arg_reg + 1].as_int().unwrap_or(1) as usize;
-                if let Value::List(l) = arg {
-                    if n == 0 || n > l.len() {
-                        Ok(Value::List(vec![]))
-                    } else {
-                        let result: Vec<Value> =
-                            l.windows(n).map(|w| Value::List(w.to_vec())).collect();
-                        Ok(Value::List(result))
-                    }
-                } else {
-                    Ok(Value::List(vec![]))
-                }
-            }
-            44 => {
-                // FLATTEN
-                if let Value::List(l) = arg {
-                    let mut result = Vec::new();
-                    for item in l {
-                        if let Value::List(inner) = item {
-                            result.extend(inner.iter().cloned());
-                        } else {
-                            result.push(item.clone());
-                        }
-                    }
-                    Ok(Value::List(result))
-                } else {
-                    Ok(arg.clone())
-                }
-            }
-            45 => {
-                // UNIQUE
-                if let Value::List(l) = arg {
-                    let mut result = Vec::new();
-                    for item in l {
-                        if !result.contains(item) {
-                            result.push(item.clone());
-                        }
-                    }
-                    Ok(Value::List(result))
-                } else {
-                    Ok(arg.clone())
-                }
-            }
-            46 => {
-                // TAKE
-                let n = self.registers[base + arg_reg + 1].as_int().unwrap_or(0) as usize;
-                if let Value::List(l) = arg {
-                    Ok(Value::List(l.iter().take(n).cloned().collect()))
-                } else {
-                    Ok(arg.clone())
-                }
-            }
-            47 => {
-                // DROP
-                let n = self.registers[base + arg_reg + 1].as_int().unwrap_or(0) as usize;
-                if let Value::List(l) = arg {
-                    Ok(Value::List(l.iter().skip(n).cloned().collect()))
-                } else {
-                    Ok(arg.clone())
-                }
-            }
-            48 => Ok(match arg {
-                Value::List(l) => l.first().cloned().unwrap_or(Value::Null),
-                _ => Value::Null,
-            }), // FIRST
-            49 => Ok(match arg {
-                Value::List(l) => l.last().cloned().unwrap_or(Value::Null),
-                _ => Value::Null,
-            }), // LAST
-            50 => Ok(Value::Bool(match arg {
-                Value::List(l) => l.is_empty(),
-                Value::Map(m) => m.is_empty(),
-                Value::String(StringRef::Owned(s)) => s.is_empty(),
-                _ => true,
-            })), // ISEMPTY
-            51 => {
-                // CHARS
-                let s = arg.as_string();
-                Ok(Value::List(
-                    s.chars()
-                        .map(|c| Value::String(StringRef::Owned(c.to_string())))
-                        .collect(),
-                ))
-            }
-            52 => {
-                // STARTSWITH
-                let prefix = self.registers[base + arg_reg + 1].as_string();
-                Ok(Value::Bool(arg.as_string().starts_with(&prefix)))
-            }
-            53 => {
-                // ENDSWITH
-                let suffix = self.registers[base + arg_reg + 1].as_string();
-                Ok(Value::Bool(arg.as_string().ends_with(&suffix)))
-            }
-            54 => {
-                // INDEXOF (Unicode-aware: returns character index, not byte index)
-                let needle = self.registers[base + arg_reg + 1].as_string();
-                let haystack = arg.as_string();
-                Ok(match haystack.find(&needle) {
-                    Some(byte_idx) => {
-                        // Convert byte index to character index
-                        let char_idx = haystack[..byte_idx].chars().count();
-                        Value::Int(char_idx as i64)
-                    }
-                    None => Value::Int(-1),
-                })
-            }
-            55 => {
-                // PADLEFT (Unicode-aware)
-                let width = self.registers[base + arg_reg + 1].as_int().unwrap_or(0) as usize;
-                let s = arg.as_string();
-                let char_count = s.chars().count();
-                if char_count < width {
-                    let padding = " ".repeat(width - char_count);
-                    Ok(Value::String(StringRef::Owned(format!("{}{}", padding, s))))
-                } else {
-                    Ok(Value::String(StringRef::Owned(s)))
-                }
-            }
-            56 => {
-                // PADRIGHT (Unicode-aware)
-                let width = self.registers[base + arg_reg + 1].as_int().unwrap_or(0) as usize;
-                let s = arg.as_string();
-                let char_count = s.chars().count();
-                if char_count < width {
-                    let padding = " ".repeat(width - char_count);
-                    Ok(Value::String(StringRef::Owned(format!("{}{}", s, padding))))
-                } else {
-                    Ok(Value::String(StringRef::Owned(s)))
-                }
-            }
-            57 => Ok(match arg {
-                Value::Float(f) => Value::Float(f.round()),
-                _ => arg.clone(),
-            }), // ROUND
-            58 => Ok(match arg {
-                Value::Float(f) => Value::Float(f.ceil()),
-                _ => arg.clone(),
-            }), // CEIL
-            59 => Ok(match arg {
-                Value::Float(f) => Value::Float(f.floor()),
-                _ => arg.clone(),
-            }), // FLOOR
-            60 => Ok(match arg {
-                Value::Float(f) => Value::Float(f.sqrt()),
-                Value::Int(n) => Value::Float((*n as f64).sqrt()),
-                _ => Value::Null,
-            }), // SQRT
-            61 => {
-                // POW
-                let exp = &self.registers[base + arg_reg + 1];
-                Ok(match (arg, exp) {
-                    (Value::Int(x), Value::Int(y)) => {
-                        if *y >= 0 {
-                            Value::Int(x.pow(*y as u32))
-                        } else {
-                            Value::Float((*x as f64).powf(*y as f64))
-                        }
-                    }
-                    (Value::Float(x), Value::Float(y)) => Value::Float(x.powf(*y)),
-                    _ => Value::Null,
-                })
-            }
-            62 => Ok(match arg {
-                Value::Float(f) => Value::Float(f.ln()),
-                Value::Int(n) => Value::Float((*n as f64).ln()),
-                _ => Value::Null,
-            }), // LOG
-            63 => Ok(match arg {
-                Value::Float(f) => Value::Float(f.sin()),
-                Value::Int(n) => Value::Float((*n as f64).sin()),
-                _ => Value::Null,
-            }), // SIN
-            64 => Ok(match arg {
-                Value::Float(f) => Value::Float(f.cos()),
-                Value::Int(n) => Value::Float((*n as f64).cos()),
-                _ => Value::Null,
-            }), // COS
-            65 => {
-                // CLAMP
-                let lo = &self.registers[base + arg_reg + 1];
-                let hi = &self.registers[base + arg_reg + 2];
-                Ok(match (arg, lo, hi) {
-                    (Value::Int(v), Value::Int(l), Value::Int(h)) => Value::Int(*v.max(l).min(h)),
-                    (Value::Float(v), Value::Float(l), Value::Float(h)) => {
-                        Value::Float(v.max(*l).min(*h))
-                    }
-                    _ => arg.clone(),
-                })
-            }
-            66 => Ok(arg.clone()),                                   // CLONE
-            67 => Ok(Value::Int(std::mem::size_of_val(arg) as i64)), // SIZEOF
-            68 => {
-                // DEBUG
-                let output = format!("[debug] {:?}", arg);
-                eprintln!("{}", output);
-                self.output.push(output);
-                Ok(Value::Null)
-            }
-            69 => {
-                // TOSET - convert list to set (deduplicating elements)
-                Ok(match arg {
-                    Value::List(l) => {
-                        let mut set_elems = Vec::with_capacity(l.len());
-                        for elem in l {
-                            if !set_elems.contains(elem) {
-                                set_elems.push(elem.clone());
-                            }
-                        }
-                        Value::Set(set_elems)
-                    }
-                    Value::Set(_) => arg.clone(), // already a set
-                    _ => Value::Set(vec![]),      // empty set for other types
-                })
-            }
-            70 => {
-                // HAS_KEY - check if map has a key
-                let key = self.registers[base + arg_reg + 1].as_string();
-                Ok(match arg {
-                    Value::Map(m) => Value::Bool(m.contains_key(&key)),
-                    Value::Record(r) => Value::Bool(r.fields.contains_key(&key)),
-                    _ => Value::Bool(false),
-                })
-            }
-            71 => {
-                // MERGE - merge two maps (second overwrites first)
-                let other = &self.registers[base + arg_reg + 1];
-                Ok(match (arg, other) {
-                    (Value::Map(m1), Value::Map(m2)) => {
-                        let mut result = m1.clone();
-                        result.extend(m2.iter().map(|(k, v)| (k.clone(), v.clone())));
-                        Value::Map(result)
-                    }
-                    _ => arg.clone(),
-                })
-            }
-            72 => {
-                // SIZE - alias for length/count
-                Ok(match arg {
-                    Value::String(StringRef::Owned(s)) => Value::Int(s.chars().count() as i64),
-                    Value::String(StringRef::Interned(id)) => {
-                        let s = self.strings.resolve(*id).unwrap_or("");
-                        Value::Int(s.chars().count() as i64)
-                    }
-                    Value::List(l) => Value::Int(l.len() as i64),
-                    Value::Map(m) => Value::Int(m.len() as i64),
-                    Value::Set(s) => Value::Int(s.len() as i64),
-                    Value::Tuple(t) => Value::Int(t.len() as i64),
-                    Value::Bytes(b) => Value::Int(b.len() as i64),
-                    _ => Value::Int(0),
-                })
-            }
-            73 => {
-                // ADD - add element to set (returns new set)
-                let item = self.registers[base + arg_reg + 1].clone();
-                Ok(match arg {
-                    Value::Set(s) => {
-                        let mut new_set = s.clone();
-                        if !new_set.contains(&item) {
-                            new_set.push(item);
-                        }
-                        Value::Set(new_set)
-                    }
-                    _ => Value::Set(vec![item]),
-                })
-            }
-            74 => {
-                // REMOVE - remove element from set or key from map (returns new collection)
-                let item = self.registers[base + arg_reg + 1].clone();
-                Ok(match arg {
-                    Value::Set(s) => {
-                        let new_set: Vec<Value> =
-                            s.iter().filter(|v| *v != &item).cloned().collect();
-                        Value::Set(new_set)
-                    }
-                    Value::Map(m) => {
-                        let key = item.as_string();
-                        let mut new_map = m.clone();
-                        new_map.remove(&key);
-                        Value::Map(new_map)
-                    }
-                    _ => arg.clone(),
-                })
-            }
-            75 => {
-                // ENTRIES - list of [key, value] tuples for maps
-                Ok(match arg {
-                    Value::Map(m) => {
-                        let entries: Vec<Value> = m
-                            .iter()
-                            .map(|(k, v)| {
-                                Value::Tuple(vec![
-                                    Value::String(StringRef::Owned(k.clone())),
-                                    v.clone(),
-                                ])
-                            })
-                            .collect();
-                        Value::List(entries)
-                    }
-                    Value::Record(r) => {
-                        let entries: Vec<Value> = r
-                            .fields
-                            .iter()
-                            .map(|(k, v)| {
-                                Value::Tuple(vec![
-                                    Value::String(StringRef::Owned(k.clone())),
-                                    v.clone(),
-                                ])
-                            })
-                            .collect();
-                        Value::List(entries)
-                    }
-                    _ => Value::List(vec![]),
-                })
-            }
-            _ => Err(VmError::Runtime(format!(
-                "Unknown intrinsic ID {} - this is a compiler/VM mismatch bug",
-                func_id
-            ))),
-        }
-    }
-
-    /// Structural diff of two values.
-    fn diff_values(&self, a: &Value, b: &Value) -> Value {
-        if a == b {
-            return Value::List(vec![]);
-        }
-        match (a, b) {
-            (Value::Record(ra), Value::Record(rb)) if ra.type_name == rb.type_name => {
-                let mut diffs = Vec::new();
-                for (key, va) in &ra.fields {
-                    match rb.fields.get(key) {
-                        Some(vb) if va != vb => {
-                            let mut change = BTreeMap::new();
-                            change.insert(
-                                "field".to_string(),
-                                Value::String(StringRef::Owned(key.clone())),
-                            );
-                            change.insert("from".to_string(), va.clone());
-                            change.insert("to".to_string(), vb.clone());
-                            diffs.push(Value::Map(change));
-                        }
-                        None => {
-                            let mut change = BTreeMap::new();
-                            change.insert(
-                                "field".to_string(),
-                                Value::String(StringRef::Owned(key.clone())),
-                            );
-                            change.insert("removed".to_string(), va.clone());
-                            diffs.push(Value::Map(change));
-                        }
-                        Some(_) => {}
-                    }
-                }
-                for (key, vb) in &rb.fields {
-                    if !ra.fields.contains_key(key) {
-                        let mut change = BTreeMap::new();
-                        change.insert(
-                            "field".to_string(),
-                            Value::String(StringRef::Owned(key.clone())),
-                        );
-                        change.insert("added".to_string(), vb.clone());
-                        diffs.push(Value::Map(change));
-                    }
-                }
-                Value::List(diffs)
-            }
-            (Value::Map(ma), Value::Map(mb)) => {
-                let mut diffs = Vec::new();
-                for (key, va) in ma {
-                    match mb.get(key) {
-                        Some(vb) if va != vb => {
-                            let mut change = BTreeMap::new();
-                            change.insert(
-                                "key".to_string(),
-                                Value::String(StringRef::Owned(key.clone())),
-                            );
-                            change.insert("from".to_string(), va.clone());
-                            change.insert("to".to_string(), vb.clone());
-                            diffs.push(Value::Map(change));
-                        }
-                        None => {
-                            let mut change = BTreeMap::new();
-                            change.insert(
-                                "key".to_string(),
-                                Value::String(StringRef::Owned(key.clone())),
-                            );
-                            change.insert("removed".to_string(), va.clone());
-                            diffs.push(Value::Map(change));
-                        }
-                        Some(_) => {}
-                    }
-                }
-                for (key, vb) in mb {
-                    if !ma.contains_key(key) {
-                        let mut change = BTreeMap::new();
-                        change.insert(
-                            "key".to_string(),
-                            Value::String(StringRef::Owned(key.clone())),
-                        );
-                        change.insert("added".to_string(), vb.clone());
-                        diffs.push(Value::Map(change));
-                    }
-                }
-                Value::List(diffs)
-            }
-            _ => {
-                let mut change = BTreeMap::new();
-                change.insert("from".to_string(), a.clone());
-                change.insert("to".to_string(), b.clone());
-                Value::List(vec![Value::Map(change)])
-            }
-        }
-    }
-
-    /// Apply patches to a value.
-    fn patch_value(&self, val: &Value, patches: &Value) -> Value {
-        match (val, patches) {
-            (Value::Record(r), Value::List(patch_list)) => {
-                let mut result = r.clone();
-                for patch in patch_list {
-                    if let Value::Map(m) = patch {
-                        if let Some(Value::String(StringRef::Owned(field))) = m.get("field") {
-                            if let Some(to) = m.get("to") {
-                                result.fields.insert(field.clone(), to.clone());
-                            } else if m.contains_key("removed") {
-                                result.fields.remove(field);
-                            } else if let Some(added) = m.get("added") {
-                                result.fields.insert(field.clone(), added.clone());
-                            }
-                        }
-                    }
-                }
-                Value::Record(result)
-            }
-            (Value::Map(map), Value::List(patch_list)) => {
-                let mut result = map.clone();
-                for patch in patch_list {
-                    if let Value::Map(m) = patch {
-                        if let Some(Value::String(StringRef::Owned(key))) = m.get("key") {
-                            if let Some(to) = m.get("to") {
-                                result.insert(key.clone(), to.clone());
-                            } else if m.contains_key("removed") {
-                                result.remove(key);
-                            } else if let Some(added) = m.get("added") {
-                                result.insert(key.clone(), added.clone());
-                            }
-                        }
-                    }
-                }
-                Value::Map(result)
-            }
-            _ => val.clone(),
-        }
-    }
-
-    /// Redact specified fields from a value (set to null).
-    fn redact_value(&self, val: &Value, field_list: &Value) -> Value {
-        let fields_to_redact: Vec<String> = match field_list {
-            Value::List(l) => l.iter().map(|v| v.as_string()).collect(),
-            Value::String(StringRef::Owned(s)) => vec![s.clone()],
-            _ => return val.clone(),
-        };
-        match val {
-            Value::Record(r) => {
-                let mut result = r.clone();
-                for field in &fields_to_redact {
-                    if result.fields.contains_key(field) {
-                        result.fields.insert(field.clone(), Value::Null);
-                    }
-                }
-                Value::Record(result)
-            }
-            Value::Map(m) => {
-                let mut result = m.clone();
-                for field in &fields_to_redact {
-                    if result.contains_key(field) {
-                        result.insert(field.clone(), Value::Null);
-                    }
-                }
-                Value::Map(result)
-            }
-            _ => val.clone(),
-        }
-    }
-
-    fn arith_op(
-        &mut self,
-        base: usize,
-        a: usize,
-        b: usize,
-        c: usize,
-        int_op: impl Fn(i64, i64) -> Option<i64>,
-        float_op: impl Fn(f64, f64) -> f64,
-    ) -> Result<(), VmError> {
-        let lhs = self.registers[base + b].clone();
-        let rhs = self.registers[base + c].clone();
-        self.registers[base + a] = match (&lhs, &rhs) {
-            (Value::Int(x), Value::Int(y)) => {
-                Value::Int(int_op(*x, *y).ok_or(VmError::ArithmeticOverflow)?)
-            }
-            (Value::Float(x), Value::Float(y)) => Value::Float(float_op(*x, *y)),
-            (Value::Int(x), Value::Float(y)) => Value::Float(float_op(*x as f64, *y)),
-            (Value::Float(x), Value::Int(y)) => Value::Float(float_op(*x, *y as f64)),
-            _ => {
-                return Err(VmError::TypeError(format!(
-                    "arithmetic on non-numeric types: {} ({}) and {} ({})",
-                    lhs.display_pretty(),
-                    lhs.type_name(),
-                    rhs.display_pretty(),
-                    rhs.type_name()
-                )))
-            }
-        };
-        Ok(())
-    }
 }
 
-fn process_instance_id(value: Option<&Value>) -> Option<u64> {
-    let Value::Record(r) = value? else {
-        return None;
-    };
-    let Value::Int(id) = r.fields.get("__instance_id")? else {
-        return None;
-    };
-    if *id < 0 {
-        return None;
-    }
-    Some(*id as u64)
-}
-
-fn merged_policy_for_tool(module: &LirModule, alias: &str) -> serde_json::Value {
-    let mut merged = serde_json::Map::new();
-    for policy in &module.policies {
-        if policy.tool_alias != alias {
-            continue;
-        }
-        if let serde_json::Value::Object(obj) = &policy.grants {
-            for (k, v) in obj {
-                merged.insert(k.clone(), v.clone());
-            }
-        }
-    }
-    serde_json::Value::Object(merged)
-}
-
-fn validate_tool_policy(
-    policy: &serde_json::Value,
-    args: &serde_json::Value,
-) -> Result<(), String> {
-    let serde_json::Value::Object(policy_obj) = policy else {
-        return Ok(());
-    };
-    let serde_json::Value::Object(args_obj) = args else {
-        return Ok(());
-    };
-
-    for (key, constraint) in policy_obj {
-        match key.as_str() {
-            "domain" => {
-                let pattern = constraint
-                    .as_str()
-                    .ok_or_else(|| "domain constraint must be a string".to_string())?;
-                let url = args_obj
-                    .get("url")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| "domain policy requires string 'url' argument".to_string())?;
-                if !domain_matches(pattern, url) {
-                    return Err(format!("domain '{}' does not allow '{}'", pattern, url));
-                }
-            }
-            "timeout_ms" => {
-                let max_timeout = constraint
-                    .as_i64()
-                    .ok_or_else(|| "timeout_ms constraint must be an integer".to_string())?;
-                if let Some(actual) = args_obj.get("timeout_ms").and_then(|v| v.as_i64()) {
-                    if actual > max_timeout {
-                        return Err(format!(
-                            "timeout_ms {} exceeds allowed {}",
-                            actual, max_timeout
-                        ));
-                    }
-                }
-            }
-            _ if key.starts_with("max_") => {
-                // Generic upper-bound constraint: any "max_<field>" policy key
-                // enforces that the corresponding argument does not exceed the limit.
-                let limit = constraint
-                    .as_i64()
-                    .ok_or_else(|| format!("{} constraint must be an integer", key))?;
-                if let Some(actual) = args_obj.get(key).and_then(|v| v.as_i64()) {
-                    if actual > limit {
-                        return Err(format!("{} {} exceeds allowed {}", key, actual, limit));
-                    }
-                }
-            }
-            _ => {
-                if let Some(actual) = args_obj.get(key) {
-                    if actual != constraint {
-                        return Err(format!(
-                            "argument '{}' value {} violates required {}",
-                            key, actual, constraint
-                        ));
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn domain_matches(pattern: &str, url: &str) -> bool {
-    let host = extract_host(url);
-    if host.is_empty() {
-        return false;
-    }
-
-    let pattern = pattern.to_ascii_lowercase();
-    let host = host.to_ascii_lowercase();
-    if let Some(suffix) = pattern.strip_prefix("*.") {
-        return host == suffix || host.ends_with(&format!(".{}", suffix));
-    }
-    host == pattern
-}
-
-fn extract_host(url: &str) -> String {
-    let without_scheme = if let Some((_, rest)) = url.split_once("://") {
-        rest
-    } else {
-        url
-    };
-    without_scheme
-        .split('/')
-        .next()
-        .unwrap_or_default()
-        .split(':')
-        .next()
-        .unwrap_or_default()
-        .to_string()
-}
-
-fn parse_machine_expr_json(value: &serde_json::Value) -> Option<MachineExpr> {
-    let kind = value.get("kind")?.as_str()?;
-    match kind {
-        "int" => Some(MachineExpr::Int(value.get("value")?.as_i64()?)),
-        "float" => Some(MachineExpr::Float(value.get("value")?.as_f64()?)),
-        "string" => Some(MachineExpr::String(
-            value.get("value")?.as_str()?.to_string(),
-        )),
-        "bool" => Some(MachineExpr::Bool(value.get("value")?.as_bool()?)),
-        "null" => Some(MachineExpr::Null),
-        "ident" => Some(MachineExpr::Ident(
-            value.get("value")?.as_str()?.to_string(),
-        )),
-        "unary" => Some(MachineExpr::Unary {
-            op: value.get("op")?.as_str()?.to_string(),
-            expr: Box::new(parse_machine_expr_json(value.get("expr")?)?),
-        }),
-        "bin" => Some(MachineExpr::Bin {
-            op: value.get("op")?.as_str()?.to_string(),
-            lhs: Box::new(parse_machine_expr_json(value.get("lhs")?)?),
-            rhs: Box::new(parse_machine_expr_json(value.get("rhs")?)?),
-        }),
-        _ => None,
-    }
-}
-
-fn future_schedule_from_addons(addons: &[LirAddon]) -> FutureSchedule {
-    for addon in addons {
-        if addon.kind != "directive" {
-            continue;
-        }
-        let Some(raw) = addon.name.as_deref() else {
-            continue;
-        };
-        let (name, raw_value) = match raw.split_once('=') {
-            Some((k, v)) => (k.trim(), Some(v.trim())),
-            None => (raw.trim(), None),
-        };
-        let key = name.trim_start_matches('@').to_ascii_lowercase();
-        if key != "deterministic" {
-            continue;
-        }
-        let parsed = raw_value
-            .map(strip_quote_wrappers)
-            .and_then(parse_bool_like)
-            .unwrap_or(true);
-        return if parsed {
-            FutureSchedule::DeferredFifo
-        } else {
-            FutureSchedule::Eager
-        };
-    }
-    FutureSchedule::Eager
-}
-
-fn strip_quote_wrappers(s: &str) -> &str {
-    let trimmed = s.trim();
-    if let Some(inner) = trimmed
-        .strip_prefix('"')
-        .and_then(|rest| rest.strip_suffix('"'))
-    {
-        return inner.trim();
-    }
-    if let Some(inner) = trimmed
-        .strip_prefix('\'')
-        .and_then(|rest| rest.strip_suffix('\''))
-    {
-        return inner.trim();
-    }
-    trimmed
-}
-
-fn parse_bool_like(raw: &str) -> Option<bool> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
-    }
-}
-
-/// Convert a Lumen Value to a serde_json Value.
-fn value_to_json(val: &Value) -> serde_json::Value {
-    match val {
-        Value::Null => serde_json::Value::Null,
-        Value::Bool(b) => serde_json::Value::Bool(*b),
-        Value::Int(n) => serde_json::json!(*n),
-        Value::Float(f) => serde_json::json!(*f),
-        Value::String(StringRef::Owned(s)) => serde_json::Value::String(s.clone()),
-        Value::String(StringRef::Interned(_)) => serde_json::Value::String(val.as_string()),
-        Value::List(l) => serde_json::Value::Array(l.iter().map(value_to_json).collect()),
-        Value::Tuple(t) => serde_json::Value::Array(t.iter().map(value_to_json).collect()),
-        Value::Set(s) => serde_json::Value::Array(s.iter().map(value_to_json).collect()),
-        Value::Map(m) => {
-            let obj: serde_json::Map<String, serde_json::Value> = m
-                .iter()
-                .map(|(k, v)| (k.clone(), value_to_json(v)))
-                .collect();
-            serde_json::Value::Object(obj)
-        }
-        Value::Record(r) => {
-            let mut obj = serde_json::Map::new();
-            obj.insert(
-                "__type".to_string(),
-                serde_json::Value::String(r.type_name.clone()),
-            );
-            for (k, v) in &r.fields {
-                obj.insert(k.clone(), value_to_json(v));
-            }
-            serde_json::Value::Object(obj)
-        }
-        Value::Union(u) => {
-            let mut obj = serde_json::Map::new();
-            obj.insert(
-                "__tag".to_string(),
-                serde_json::Value::String(u.tag.clone()),
-            );
-            obj.insert("__payload".to_string(), value_to_json(&u.payload));
-            serde_json::Value::Object(obj)
-        }
-        _ => serde_json::Value::Null,
-    }
-}
-
-/// Convert a serde_json Value to a Lumen Value.
-fn json_to_value(val: &serde_json::Value) -> Value {
-    match val {
-        serde_json::Value::Null => Value::Null,
-        serde_json::Value::Bool(b) => Value::Bool(*b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Value::Int(i)
-            } else if let Some(f) = n.as_f64() {
-                Value::Float(f)
-            } else {
-                Value::Null
-            }
-        }
-        serde_json::Value::String(s) => Value::String(StringRef::Owned(s.clone())),
-        serde_json::Value::Array(arr) => Value::List(arr.iter().map(json_to_value).collect()),
-        serde_json::Value::Object(obj) => {
-            let map: BTreeMap<String, Value> = obj
-                .iter()
-                .map(|(k, v)| (k.clone(), json_to_value(v)))
-                .collect();
-            Value::Map(map)
-        }
-    }
-}
-
-/// Simple base64 encode (no external dependency).
-fn simple_base64_encode(data: &[u8]) -> String {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::new();
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-        result.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
-        result.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 {
-            result.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-        if chunk.len() > 2 {
-            result.push(CHARS[(triple & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-    }
-    result
-}
-
-/// Simple base64 decode.
-fn simple_base64_decode(s: &str) -> Option<Vec<u8>> {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = Vec::new();
-    let bytes: Vec<u8> = s.bytes().filter(|&b| b != b'\n' && b != b'\r').collect();
-    for chunk in bytes.chunks(4) {
-        if chunk.len() < 4 {
-            break;
-        }
-        let vals: Vec<Option<usize>> = chunk
-            .iter()
-            .map(|&b| {
-                if b == b'=' {
-                    Some(0)
-                } else {
-                    CHARS.iter().position(|&c| c == b)
-                }
-            })
-            .collect();
-        if vals.iter().any(|v| v.is_none()) {
-            return None;
-        }
-        // Safe: we just verified none are None above
-        let v: Vec<usize> = vals.into_iter().flatten().collect();
-        let triple = (v[0] << 18) | (v[1] << 12) | (v[2] << 6) | v[3];
-        result.push(((triple >> 16) & 0xFF) as u8);
-        if chunk[2] != b'=' {
-            result.push(((triple >> 8) & 0xFF) as u8);
-        }
-        if chunk[3] != b'=' {
-            result.push((triple & 0xFF) as u8);
-        }
-    }
-    Some(result)
-}
 
 impl Default for VM {
     fn default() -> Self {
@@ -5704,7 +2766,7 @@ mod tests {
         let result = vm.execute("main", vec![]).unwrap();
         assert_eq!(
             result,
-            Value::Tuple(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+            Value::new_tuple(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
         );
     }
 
@@ -7458,7 +4520,7 @@ end
         );
         assert_eq!(
             result,
-            Value::List(vec![
+            Value::new_list(vec![
                 Value::Int(1),
                 Value::Int(1),
                 Value::Int(2),
@@ -7482,7 +4544,7 @@ end
         );
         assert_eq!(
             result,
-            Value::List(vec![Value::Int(3), Value::Int(2), Value::Int(1)])
+            Value::new_list(vec![Value::Int(3), Value::Int(2), Value::Int(1)])
         );
     }
 
@@ -7498,7 +4560,7 @@ end
         );
         assert_eq!(
             result,
-            Value::List(vec![
+            Value::new_list(vec![
                 Value::Int(1),
                 Value::Int(2),
                 Value::Int(3),
@@ -7520,7 +4582,7 @@ end
         );
         assert_eq!(
             result,
-            Value::List(vec![
+            Value::new_list(vec![
                 Value::Int(1),
                 Value::Int(2),
                 Value::Int(3),
@@ -7541,7 +4603,7 @@ end
         );
         assert_eq!(
             result,
-            Value::List(vec![Value::Int(10), Value::Int(20), Value::Int(30)])
+            Value::new_list(vec![Value::Int(10), Value::Int(20), Value::Int(30)])
         );
     }
 
@@ -7557,7 +4619,7 @@ end
         );
         assert_eq!(
             result,
-            Value::List(vec![Value::Int(30), Value::Int(40), Value::Int(50)])
+            Value::new_list(vec![Value::Int(30), Value::Int(40), Value::Int(50)])
         );
     }
 
@@ -7573,10 +4635,10 @@ end
         );
         assert_eq!(
             result,
-            Value::List(vec![
-                Value::List(vec![Value::Int(1), Value::Int(2)]),
-                Value::List(vec![Value::Int(3), Value::Int(4)]),
-                Value::List(vec![Value::Int(5)]),
+            Value::new_list(vec![
+                Value::new_list(vec![Value::Int(1), Value::Int(2)]),
+                Value::new_list(vec![Value::Int(3), Value::Int(4)]),
+                Value::new_list(vec![Value::Int(5)]),
             ])
         );
     }
@@ -7796,10 +4858,10 @@ end
         );
         assert_eq!(
             result,
-            Value::List(vec![
-                Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
-                Value::List(vec![Value::Int(2), Value::Int(3), Value::Int(4)]),
-                Value::List(vec![Value::Int(3), Value::Int(4), Value::Int(5)]),
+            Value::new_list(vec![
+                Value::new_list(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+                Value::new_list(vec![Value::Int(2), Value::Int(3), Value::Int(4)]),
+                Value::new_list(vec![Value::Int(3), Value::Int(4), Value::Int(5)]),
             ])
         );
     }

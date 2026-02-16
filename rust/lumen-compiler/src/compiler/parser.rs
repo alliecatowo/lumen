@@ -123,6 +123,7 @@ impl Parser {
                 | TokenKind::Macro
                 | TokenKind::Extern
                 | TokenKind::Comptime
+                | TokenKind::MarkdownBlock(_)
                 | TokenKind::Eof => break,
                 TokenKind::Ident(name) => {
                     if matches!(
@@ -422,6 +423,43 @@ impl Parser {
                 self.advance();
                 continue;
             }
+            // Handle markdown blocks: docstrings or comments
+            if matches!(self.peek_kind(), TokenKind::MarkdownBlock(_)) {
+                let doc_content = if let TokenKind::MarkdownBlock(content) = self.peek_kind().clone() {
+                    self.advance();
+                    Some(content)
+                } else {
+                    None
+                };
+                self.skip_newlines();
+                // If followed by a declaration keyword, parse item and attach docstring
+                if !self.at_end() && !self.is_top_level_stmt_start()
+                    && !matches!(self.peek_kind(), TokenKind::Eof | TokenKind::End)
+                {
+                    match self.parse_item() {
+                        Ok(mut item) => {
+                            // Attach doc to the item
+                            match &mut item {
+                                Item::Cell(c) => c.doc = doc_content,
+                                Item::Record(r) => r.doc = doc_content,
+                                Item::Enum(e) => e.doc = doc_content,
+                                Item::Handler(h) => h.doc = doc_content,
+                                Item::TypeAlias(t) => t.doc = doc_content,
+                                _ => {} // other items don't have doc fields
+                            }
+                            items.push(item);
+                        }
+                        Err(err) => {
+                            if self.record_error(err) {
+                                break;
+                            }
+                            self.synchronize();
+                        }
+                    }
+                }
+                // Otherwise it was just a comment, continue to next iteration
+                continue;
+            }
             if self.is_top_level_stmt_start() {
                 match self.parse_stmt() {
                     Ok(stmt) => top_level_stmts.push(stmt),
@@ -470,6 +508,7 @@ impl Parser {
                 is_extern: false,
                 where_clauses: vec![],
                 span: span_start.merge(end_span),
+                doc: None,
             }));
         }
         let span = if items.is_empty() {
@@ -704,6 +743,7 @@ impl Parser {
             fields,
             is_pub: false,
             span: start.merge(end_span),
+            doc: None,
         })
     }
 
@@ -875,6 +915,7 @@ impl Parser {
             methods,
             is_pub: false,
             span: start.merge(end_span),
+            doc: None,
         })
     }
 
@@ -948,6 +989,7 @@ impl Parser {
                 is_extern: false,
                 where_clauses: vec![],
                 span,
+                doc: None,
             });
         }
 
@@ -983,6 +1025,7 @@ impl Parser {
                     is_extern: false,
                     where_clauses: vec![],
                     span: start.merge(end_span),
+                    doc: None,
                 });
             }
         }
@@ -1002,6 +1045,7 @@ impl Parser {
             is_extern: false,
             where_clauses: vec![],
             span: start.merge(end_span),
+            doc: None,
         })
     }
 
@@ -2222,6 +2266,7 @@ impl Parser {
             type_expr,
             is_pub,
             span,
+            doc: None,
         })
     }
 
@@ -3264,6 +3309,7 @@ impl Parser {
             name,
             handles,
             span: start.merge(end_span),
+            doc: None,
         })
     }
 
@@ -3344,6 +3390,7 @@ impl Parser {
                 is_extern: false,
                 where_clauses: vec![],
                 span,
+                doc: None,
             });
         }
 
@@ -3375,6 +3422,7 @@ impl Parser {
                     is_extern: false,
                     where_clauses: vec![],
                     span: start.merge(end_span),
+                    doc: None,
                 });
             }
         }
@@ -3394,6 +3442,7 @@ impl Parser {
             is_extern: false,
             where_clauses: vec![],
             span: start.merge(end_span),
+            doc: None,
         })
     }
 

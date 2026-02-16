@@ -173,6 +173,42 @@ export default {
         return json({ error: 'Audit system unavailable' }, corsHeaders, 503);
       }
 
+      // Resolution proof
+      const proofMatch = path.match(/^\/v1\/wares\/([^/]+)\/resolve-proof$/);
+      const versionedProofMatch = path.match(/^\/v1\/wares\/([^/]+)\/([^/]+)\/resolve-proof$/);
+
+      if ((proofMatch || versionedProofMatch) && method === 'GET') {
+        const name = proofMatch ? proofMatch[1] : versionedProofMatch![1];
+        let version = versionedProofMatch ? versionedProofMatch[2] : null;
+
+        if (!version) {
+          const indexKey = `wares/${name}/index.json`;
+          const indexObj = await env.REGISTRY_BUCKET.get(indexKey);
+          if (indexObj) {
+            const index = await indexObj.json() as any;
+            version = index.latest;
+          }
+        }
+
+        if (!version) {
+          return json({ error: 'Package or version not found' }, corsHeaders, 404);
+        }
+
+        const proofKey = `wares/${name}/${version}.proof.json`;
+        const proofObj = await env.REGISTRY_BUCKET.get(proofKey);
+
+        if (!proofObj) {
+          return json({
+            error: 'Proof not found',
+            hint: 'Proofs are generated during publication. Older packages may not have proofs.'
+          }, corsHeaders, 404);
+        }
+
+        return new Response(proofObj.body, {
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+
       const waresMatch = path.match(/^\/v1\/wares\/([^/]+)$/);
       if (waresMatch && method === 'GET') {
         return getPackage(waresMatch[1], env, corsHeaders);
@@ -573,6 +609,10 @@ async function publishPackage(
   // Update index metadata
   index.description = description || index.description;
   index.author = author || (user ? user.identity.split('/').pop() : 'Anonymous');
+  if (user) {
+    index.authorAvatar = user.avatar;
+    index.authorIdentity = user.identity;
+  }
   index.isVerified = !!user;
   index.updatedAt = new Date().toISOString();
 
@@ -582,6 +622,14 @@ async function publishPackage(
   await env.REGISTRY_BUCKET.put(tarballKey, tarballData, {
     httpMetadata: { contentType: 'application/gzip' },
   });
+
+  // Save resolution proof if provided (Phase 2 hardening)
+  if (body.proof) {
+    const proofKey = `wares/${name}/${version}.proof.json`;
+    await env.REGISTRY_BUCKET.put(proofKey, JSON.stringify(body.proof), {
+      httpMetadata: { contentType: 'application/json' },
+    });
+  }
 
   // Submit to transparency log
   if (env.TRANSPARENCY_LOG_URL || (env as any).LOG_WORKER) {
@@ -612,9 +660,11 @@ async function publishPackage(
   // Finalize index
   if (!index.versions.includes(version)) {
     index.versions.push(version);
-    index.versions.sort((a: string, b: string) => compareVersions(b, a));
-    index.latest = index.versions[0];
   }
+
+  // Ensure uniqueness and correct sorting
+  index.versions = [...new Set(index.versions)].sort((a: any, b: any) => compareVersions(b, a));
+  index.latest = index.versions[0];
 
   await env.REGISTRY_BUCKET.put(indexKey, JSON.stringify(index), {
     httpMetadata: { contentType: 'application/json' },

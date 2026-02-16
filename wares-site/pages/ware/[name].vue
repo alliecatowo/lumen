@@ -85,10 +85,14 @@
             <div class="flex flex-col">
               <span class="text-xs font-semibold text-lumen-textMuted uppercase tracking-wider mb-1">Author / Owner</span>
               <div class="text-lg font-bold text-lumen-text flex items-center gap-2">
-                <div class="w-6 h-6 rounded-full bg-gradient-to-tr from-lumen-accent to-purple-500 flex items-center justify-center text-[10px] text-white font-bold">
+                <img v-if="ware.authorAvatar" :src="ware.authorAvatar" class="w-6 h-6 rounded-full border border-lumen-border shadow-sm" />
+                <div v-else class="w-6 h-6 rounded-full bg-gradient-to-tr from-lumen-accent to-purple-500 flex items-center justify-center text-[10px] text-white font-bold">
                   {{ (ware.author || 'A').charAt(0).toUpperCase() }}
                 </div>
-                {{ ware.author || 'Anonymous' }}
+                <div class="flex flex-col leading-none">
+                  <span>{{ ware.author || 'Anonymous' }}</span>
+                  <span v-if="ware.authorIdentity" class="text-[9px] text-lumen-textMuted font-mono mt-1 opacity-70">{{ ware.authorIdentity }}</span>
+                </div>
               </div>
             </div>
             <div v-if="ware.updatedAt" class="flex flex-col">
@@ -218,6 +222,61 @@
                 </div>
               </div>
             </div>
+
+            <!-- Resolution Proof -->
+            <div class="space-y-6">
+              <div class="flex items-center justify-between">
+                <h3 class="text-2xl font-bold text-lumen-text tracking-tight flex items-center gap-3">
+                  <svg class="w-6 h-6 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.675.337a4 4 0 01-2.58.344l-2.091-.418a2 2 0 01-1.256-2.512l.613-1.839a2 2 0 01.385-.682L15 4.382l4.428 11.046z" />
+                  </svg>
+                  Resolution Proof
+                </h3>
+                <span v-if="resolutionProof" class="px-3 py-1 bg-purple-500/10 text-purple-400 text-[10px] font-bold uppercase rounded-full border border-purple-500/20">
+                  {{ resolutionProof.resolver_type || 'SAT-v1' }} Verified
+                </span>
+              </div>
+
+              <div class="card p-0 overflow-hidden border-lumen-border/30">
+                <div v-if="proofLoading" class="p-8 space-y-4">
+                  <div class="h-20 bg-lumen-bg/50 animate-pulse rounded-xl border border-lumen-border/10"></div>
+                </div>
+                <div v-else-if="resolutionProof" class="p-6 space-y-6">
+                  <div class="bg-lumen-bg/50 rounded-xl p-4 border border-lumen-border/20">
+                    <p class="text-sm text-lumen-text leading-relaxed">
+                      {{ resolutionProof.explanation || 'Deterministic resolution path verified.' }}
+                    </p>
+                    <div class="mt-4 flex gap-6 text-[11px] font-mono text-lumen-textMuted">
+                      <span><span class="text-purple-400 opacity-70">timestamp:</span> {{ formatDate(resolutionProof.timestamp) }}</span>
+                      <span><span class="text-purple-400 opacity-70">conflicts:</span> {{ resolutionProof.conflicts_solved || 0 }}</span>
+                    </div>
+                  </div>
+
+                  <div class="space-y-3">
+                    <h4 class="text-xs font-bold text-lumen-textMuted uppercase tracking-widest opacity-60 ml-1">Decision Trail</h4>
+                    <div class="space-y-2">
+                      <div 
+                        v-for="decision in resolutionProof.decisions" 
+                        :key="decision.package"
+                        class="flex items-center justify-between p-3 bg-white/[0.02] rounded-lg border border-lumen-border/10 hover:border-purple-500/30 transition-colors group"
+                      >
+                        <div class="flex items-center gap-3">
+                          <div class="w-2 h-2 rounded-full bg-purple-500 shadow-[0_0_8px_rgba(168,85,247,0.4)]"></div>
+                          <span class="text-sm font-bold text-lumen-text">{{ decision.package }}</span>
+                          <span class="text-xs font-mono text-lumen-accent">v{{ decision.version }}</span>
+                        </div>
+                        <span class="text-[10px] text-lumen-textMuted italic opacity-60 group-hover:opacity-100 transition-opacity">
+                          {{ decision.reason }}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div v-else class="p-12 text-center text-lumen-textMuted italic">
+                  <p>No auditable resolution proof found for this version.</p>
+                </div>
+              </div>
+            </div>
           </div>
 
           <!-- Sidebar -->
@@ -274,13 +333,15 @@
 
 <script setup lang="ts">
 const route = useRoute()
-const { getWare, getAudit } = useWaresApi()
+const { getWare, getAudit, getProof } = useWaresApi()
 
 const ware = ref<any>(null)
 const auditEntries = ref<any[]>([])
 const logInfo = ref<any>(null)
+const resolutionProof = ref<any>(null)
 const loading = ref(true)
 const auditLoading = ref(true)
+const proofLoading = ref(true)
 const copied = ref(false)
 const expandedEntry = ref<number | null>(null)
 
@@ -290,13 +351,23 @@ async function loadData() {
   if (name.value) {
     loading.value = true
     auditLoading.value = true
+    proofLoading.value = true
+    
     ware.value = await getWare(name.value)
     loading.value = false
     
-    const auditData = await getAudit(name.value)
+    // Parallel fetch for secondary data
+    const [auditData, proofData] = await Promise.all([
+      getAudit(name.value),
+      getProof(name.value, ware.value?.version)
+    ])
+    
     auditEntries.value = auditData.entries || []
     logInfo.value = auditData.logInfo || null
     auditLoading.value = false
+    
+    resolutionProof.value = proofData
+    proofLoading.value = false
   }
 }
 

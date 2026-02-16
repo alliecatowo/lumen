@@ -873,6 +873,7 @@ impl AuthenticatedClient {
         body: Vec<u8>,
         package_name: &str,
         version: &str,
+        proof: Option<serde_json::Value>,
     ) -> Result<reqwest::blocking::Response, AuthError> {
         let url = format!("{}{}", self.registry_url.trim_end_matches('/'), path);
 
@@ -893,18 +894,34 @@ impl AuthenticatedClient {
             Utc::now(),
         )?;
 
+        // Build JSON payload (base64 encode tarball as worker expects JSON)
+        let tarball_b64 = base64_encode(&body);
+        let mut json_body = serde_json::json!({
+            "name": package_name,
+            "version": version,
+            "tarball": tarball_b64,
+            "shasum": content_hash.replace("sha256:", ""),
+            "signature": {
+                "signature": signature.signature,
+                "certificate": signature.certificate, // Placeholder or real cert if available
+                "identity": signature.identity,
+                "key_id": signature.key_id,
+                "timestamp": signature.timestamp.to_rfc3339(),
+            },
+            "proof": proof,
+        });
+
         let mut req = self
             .client
             .put(&url)
-            .body(body)
-            .header("Content-Type", "application/octet-stream")
-            .header("X-Lumen-Content-Hash", content_hash);
+            .json(&json_body);
 
         if let Some(token) = &self.token {
             req = req.header("Authorization", format!("Bearer {}", token));
         }
 
-        // Add signature headers
+        // Keep headers for compatibility with some worker versions or proxies
+        req = req.header("X-Lumen-Content-Hash", content_hash);
         for (key, value) in signature.to_headers() {
             req = req.header(&key, value);
         }

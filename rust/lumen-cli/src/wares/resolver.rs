@@ -18,11 +18,22 @@
 //! 3. Dependency constraints are minimal and monotonic
 //! 4. Conflicts are solved by explicit mechanisms, not magical installer tricks
 
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Final result of the resolution process.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolutionResult {
+    /// The resolved dependency graph.
+    pub packages: Vec<ResolvedPackage>,
+    /// The auditable proof of the resolution.
+    pub proof: ResolutionProof,
+}
 
 use crate::config::{DependencySpec, FeatureDef};
 use crate::lockfile::{LockFile, LockedPackage};
@@ -43,7 +54,7 @@ pub type VersionConstraint = Constraint;
 pub type FeatureName = String;
 
 /// Dependency kind for resolution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DependencyKind {
     /// Normal runtime dependency.
     Normal,
@@ -96,7 +107,7 @@ impl Default for ResolutionRequest {
 }
 
 /// A resolved package with its exact version and dependencies.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedPackage {
     /// Package name.
     pub name: PackageId,
@@ -119,7 +130,7 @@ impl fmt::Display for ResolvedPackage {
 }
 
 /// Source of a resolved package.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ResolvedSource {
     /// Registry package.
     Registry {
@@ -276,6 +287,8 @@ impl fmt::Display for ResolutionError {
 }
 
 impl std::error::Error for ResolutionError {}
+
+use crate::lockfile::{LockFile, LockedPackage, ResolutionDecision, ResolutionProof};
 
 /// Information about a resolution conflict.
 #[derive(Debug, Clone)]
@@ -1163,7 +1176,7 @@ impl Resolver {
     pub fn resolve(
         &self,
         request: &ResolutionRequest,
-    ) -> Result<Vec<ResolvedPackage>, ResolutionError> {
+    ) -> Result<ResolutionResult, ResolutionError> {
         // Phase 1: Build dependency graph with feature resolution
         let mut state = ResolutionState::new();
         let mut visited = HashSet::new();
@@ -1219,7 +1232,7 @@ impl Resolver {
         &self,
         request: &ResolutionRequest,
         features: &[FeatureName],
-    ) -> Result<Vec<ResolvedPackage>, ResolutionError> {
+    ) -> Result<ResolutionResult, ResolutionError> {
         let mut modified_request = request.clone();
         modified_request.features = features.to_vec();
         self.resolve(&modified_request)
@@ -1231,8 +1244,7 @@ impl Resolver {
         &self,
         request: &ResolutionRequest,
         lockfile: &LockFile,
-    ) -> Result<Vec<ResolvedPackage>, ResolutionError> {
-        // Check if lockfile is still valid for the request
+    ) -> Result<ResolutionResult, ResolutionError> {
         let mut needs_re_resolve = false;
 
         for (name, spec) in &request.root_deps {
@@ -1243,7 +1255,6 @@ impl Resolver {
                     ..
                 } => {
                     if let Some(locked_pkg) = lockfile.get_package(name) {
-                        // Check if locked version still satisfies constraint
                         if let Ok(constraint) = Constraint::parse(constraint) {
                             if let Ok(version) = Version::from_str(&locked_pkg.version) {
                                 if !constraint.matches(&version) {
@@ -1253,13 +1264,11 @@ impl Resolver {
                             }
                         }
                     } else {
-                        // New dependency not in lockfile
                         needs_re_resolve = true;
                         break;
                     }
                 }
                 _ => {
-                    // Path/git deps always need special handling
                     needs_re_resolve = true;
                     break;
                 }
@@ -1267,7 +1276,6 @@ impl Resolver {
         }
 
         if !needs_re_resolve {
-            // Lockfile is valid, use it
             let mut packages = Vec::new();
             for locked in &lockfile.packages {
                 let source = if locked.is_path_dependency() {
@@ -1289,7 +1297,6 @@ impl Resolver {
                     }
                 };
 
-                // Determine kind from lockfile or default to Normal
                 let kind = locked
                     .kind
                     .as_deref()
@@ -1303,16 +1310,29 @@ impl Resolver {
                 packages.push(ResolvedPackage {
                     name: locked.name.clone(),
                     version: locked.version.clone(),
-                    deps: Vec::new(), // Would need to parse from dependencies field
+                    deps: Vec::new(),
                     source,
                     enabled_features: locked.features.clone(),
                     kind,
                 });
             }
-            return Ok(packages);
+            
+            return Ok(ResolutionResult {
+                packages,
+                proof: ResolutionProof {
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs()
+                        .to_string(),
+                    resolver_type: "SAT-v1".to_string(),
+                    explanation: "Resolved using existing lockfile.".to_string(),
+                    decisions: vec![],
+                    conflicts_solved: 0,
+                },
+            });
         }
 
-        // Need to re-resolve
         self.resolve(request)
     }
 
@@ -1322,19 +1342,16 @@ impl Resolver {
         request: &ResolutionRequest,
         previous_lockfile: &LockFile,
         packages_to_update: Option<&[PackageId]>,
-    ) -> Result<Vec<ResolvedPackage>, ResolutionError> {
+    ) -> Result<ResolutionResult, ResolutionError> {
         let mut policy = self.policy.clone();
 
-        // When updating specific packages, we prefer to keep others locked
         if let Some(to_update) = packages_to_update {
-            // Mark packages not in the update list as "must keep"
             let mut new_locked = HashMap::new();
             for pkg in &previous_lockfile.packages {
                 if !to_update.contains(&pkg.name) {
                     new_locked.insert(pkg.name.clone(), pkg.version.clone());
                 }
             }
-            // Create a new resolver with the modified locked set
             let mut modified_resolver =
                 Self::new(self.registry.base_url(), Some(previous_lockfile));
             modified_resolver.policy = policy;
@@ -1342,7 +1359,6 @@ impl Resolver {
             return modified_resolver.resolve(request);
         }
 
-        // General update: prefer highest versions but minimize other changes
         policy.minimize_changes = true;
         policy.prefer_highest = true;
 
@@ -1350,6 +1366,7 @@ impl Resolver {
         resolver.git_cache_dir = self.git_cache_dir.clone();
         resolver.resolve(request)
     }
+
 
     fn collect_packages(
         &self,
@@ -1620,10 +1637,10 @@ impl Resolver {
     fn solve_sat(
         &self,
         state: ResolutionState,
-        registry_url: &str,
+        _registry_url: &str,
         pending_features: &HashMap<PackageId, Vec<FeatureName>>,
         request: &ResolutionRequest,
-    ) -> Result<Vec<ResolvedPackage>, ResolutionError> {
+    ) -> Result<ResolutionResult, ResolutionError> {
         let mut solver = SatSolver::new(state.pkg_names.clone(), state.all_versions.clone());
 
         // Add constraints:
@@ -1679,7 +1696,49 @@ impl Resolver {
         }
 
         // Run CDCL
-        let solution = self.run_cdcl(&mut solver, &state)?;
+        let (solution, conflicts_solved) = self.run_cdcl(&mut solver, &state)?;
+
+        // Build ResolutionProof from solver trail
+        let mut decisions = Vec::new();
+        for lit in &solver.trail {
+            if lit.is_positive() {
+                let pkg_name = &state.pkg_names[lit.package_idx()];
+                let (_, version_str) = &state.all_versions[lit.package_idx()][lit.version_idx()];
+                
+                let reason = if let Some(node) = solver.implications.get(lit) {
+                    if let Some(_clause_idx) = node.reason {
+                        format!("Implied by dependency constraints at level {}", node.level)
+                    } else {
+                        format!("Decision node at level {}", node.level)
+                    }
+                } else {
+                    "Initial assignment".to_string()
+                };
+
+                decisions.push(ResolutionDecision {
+                    package: pkg_name.clone(),
+                    version: version_str.clone(),
+                    reason,
+                    level: solver.implications.get(lit).map(|n| n.level).unwrap_or(0),
+                });
+            }
+        }
+
+        let proof = ResolutionProof {
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                .to_string(),
+            resolver_type: "SAT-v1".to_string(),
+            explanation: format!(
+                "Deterministic SAT resolution using CDCL with {} decisions and {} conflicts solved.",
+                decisions.len(),
+                conflicts_solved
+            ),
+            decisions,
+            conflicts_solved,
+        };
 
         // Build result with feature resolution
         let mut packages = Vec::new();
@@ -1693,8 +1752,7 @@ impl Resolver {
             // Resolve features if requested
             let enabled_features = if let Some(features) = pending_features.get(pkg_name) {
                 if let Some(metadata) = state.metadata.get(pkg_name) {
-                    // We need available features - this would come from a more complete metadata
-                    let available = HashMap::new(); // Simplified
+                    let available = HashMap::new(); // Simplified available features map
                     if let Ok(resolution) =
                         resolve_features(pkg_name, features, metadata, &available)
                     {
@@ -1721,7 +1779,7 @@ impl Resolver {
             packages.push(ResolvedPackage {
                 name: pkg_name.clone(),
                 version: version_str.clone(),
-                deps: Vec::new(), // Would be populated from metadata
+                deps: Vec::new(), // Would be populated from metadata in full impl
                 source,
                 enabled_features,
                 kind,
@@ -1729,14 +1787,14 @@ impl Resolver {
         }
 
         packages.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(packages)
+        Ok(ResolutionResult { packages, proof })
     }
 
     fn run_cdcl(
         &self,
         solver: &mut SatSolver,
         state: &ResolutionState,
-    ) -> Result<HashMap<PackageId, (Version, String)>, ResolutionError> {
+    ) -> Result<(HashMap<PackageId, (Version, String)>, usize), ResolutionError> {
         let max_conflicts = 10000;
         let mut conflicts = 0;
 
@@ -1782,7 +1840,7 @@ impl Resolver {
             }
 
             if solver.is_complete() {
-                return Ok(solver.get_solution());
+                return Ok((solver.get_solution(), conflicts));
             }
 
             // Make decision with policy-aware selection

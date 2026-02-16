@@ -771,6 +771,7 @@ pub fn publish_with_auth(
     package_name: &str,
     version: &str,
     archive_data: Vec<u8>,
+    proof: Option<serde_json::Value>,
 ) -> Result<(), String> {
     let client = AuthenticatedClient::new(registry_url.to_string())
         .map_err(|e| format!("Failed to create authenticated client: {}", e))?;
@@ -789,7 +790,7 @@ pub fn publish_with_auth(
 
     let path = "/v1/wares".to_string();
 
-    match client.put_signed(&path, archive_data, package_name, version) {
+    match client.put_signed(&path, archive_data, package_name, version, proof) {
         Ok(resp) => {
             if resp.status().is_success() {
                 println!(

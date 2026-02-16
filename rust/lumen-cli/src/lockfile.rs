@@ -143,6 +143,38 @@ pub struct LockMetadata {
     /// Lumen version that produced this lockfile.
     #[serde(default = "default_lumen_version")]
     pub lumen_version: String,
+
+    /// Auditable proof of the resolution process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof: Option<ResolutionProof>,
+}
+
+/// An auditable proof of why a specific resolution was chosen.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResolutionProof {
+    /// Timestamp of resolution.
+    pub timestamp: String,
+    /// Type of resolver used (e.g., "SAT-v1").
+    pub resolver_type: String,
+    /// Explanation of the resolution strategy.
+    pub explanation: String,
+    /// Sequential decisions made by the solver.
+    pub decisions: Vec<ResolutionDecision>,
+    /// Summary of conflicts encountered and solved.
+    pub conflicts_solved: usize,
+}
+
+/// A specific decision made for a package version.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResolutionDecision {
+    /// The package identifier.
+    pub package: String,
+    /// The version selected.
+    pub version: String,
+    /// Why this version was selected.
+    pub reason: String,
+    /// The satisfaction level.
+    pub level: u32,
 }
 
 fn default_resolver() -> String {
@@ -898,6 +930,19 @@ impl LockFile {
     fn compute_content_hash(&self) -> String {
         let mut hasher = Sha256::new();
 
+        // Include resolution policy and mode
+        hasher.update(self.metadata.resolution_mode.as_bytes());
+        hasher.update(self.metadata.resolver.as_bytes());
+
+        // Include proof if available
+        if let Some(ref proof) = self.metadata.proof {
+            hasher.update(proof.resolver_type.as_bytes());
+            for decision in &proof.decisions {
+                hasher.update(decision.package.as_bytes());
+                hasher.update(decision.version.as_bytes());
+            }
+        }
+
         // Include all packages in a deterministic order
         for pkg in &self.packages {
             hasher.update(pkg.name.as_bytes());
@@ -908,6 +953,10 @@ impl LockFile {
             }
             if let Some(ref integrity) = pkg.integrity {
                 hasher.update(integrity.as_bytes());
+            }
+            // Inclusion of manifest hash ensures that package metadata changes break the hash
+            if let Some(ref manifest_hash) = pkg.manifest_hash {
+                hasher.update(manifest_hash.as_bytes());
             }
             for dep in &pkg.dependencies {
                 hasher.update(dep.as_bytes());

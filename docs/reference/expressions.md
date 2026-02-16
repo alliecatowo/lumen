@@ -182,6 +182,25 @@ Forward value to function:
 "data" |> process() |> format()
 ```
 
+## Compose Operator
+
+Create a new function by composing two functions with `~>`. Unlike `|>` which eagerly evaluates, `~>` is lazy — it returns a closure that applies the left function then the right:
+
+```lumen
+let transform = double ~> add_one
+transform(5)   # add_one(double(5)) → 11
+
+let pipeline = parse ~> validate ~> normalize
+let result = pipeline(input)
+```
+
+The compose operator creates a new callable. No computation happens until the composed function is invoked:
+
+```lumen
+let process = trim ~> lower ~> split(",")
+let parts = process("  A, B, C  ")   # ["a", " b", " c"]
+```
+
 ## Function Calls
 
 ```lumen
@@ -242,6 +261,46 @@ let label = match status
   Pending -> "pending"
   _ -> "other"
 end
+```
+
+### When Expression
+
+Multi-branch conditional expression. Each arm has a condition and a result, evaluated top-to-bottom. Use `_` for the default arm:
+
+```lumen
+let grade = when
+  score >= 90 -> "A"
+  score >= 80 -> "B"
+  score >= 70 -> "C"
+  score >= 60 -> "D"
+  _ -> "F"
+end
+```
+
+Unlike chained `if`/`else if`, `when` is an expression that returns a value. All arms must produce the same type:
+
+```lumen
+let category = when
+  age < 13 -> "child"
+  age < 18 -> "teenager"
+  age < 65 -> "adult"
+  _ -> "senior"
+end
+```
+
+### Comptime Expression
+
+Evaluate an expression at compile time. The body must be a constant expression:
+
+```lumen
+let table = comptime build_lookup(256) end
+let mask = comptime (1 << 16) - 1 end
+```
+
+`comptime` is useful for precomputing lookup tables, bitmasks, or other values that don't change at runtime:
+
+```lumen
+let primes = comptime sieve(1000) end
 ```
 
 ## Await
@@ -306,7 +365,7 @@ From lowest to highest:
 
 | Precedence | Operators |
 |------------|-----------|
-| 1 | `\|>` |
+| 1 | `\|>` `~>` |
 | 2 | `??` |
 | 3 | `or` |
 | 4 | `and` |

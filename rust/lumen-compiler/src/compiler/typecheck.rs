@@ -84,6 +84,13 @@ fn builtin_return_type(name: &str, arg_types: &[Type]) -> Option<Type> {
         "error" => Some(Type::Null),
         "hash" => Some(Type::Int),
         "not" => Some(Type::Bool),
+        "parse_json" => Some(Type::Any),
+        "to_json" => Some(Type::String),
+        "read_file" => Some(Type::String),
+        "write_file" => Some(Type::Null),
+        "timestamp" => Some(Type::Float),
+        "random" => Some(Type::Float),
+        "get_env" => Some(Type::Any),
         _ => None,
     }
 }
@@ -587,10 +594,15 @@ impl<'a> TypeChecker<'a> {
                     let expected = resolve_type_expr(ann, self.symbols);
                     self.check_compat(&expected, &val_type, ls.span.line);
                 }
-                self.locals.insert(ls.name.clone(), val_type);
-                // In Lumen, all let bindings are reassignable by default
-                // `let mut` is just documentation; `const` is immutable
-                self.mutables.insert(ls.name.clone(), true);
+                if let Some(ref pattern) = ls.pattern {
+                    // Destructuring let — register all bound names from the pattern
+                    self.bind_let_pattern(pattern, &val_type, ls.span.line);
+                } else {
+                    self.locals.insert(ls.name.clone(), val_type);
+                    // In Lumen, all let bindings are reassignable by default
+                    // `let mut` is just documentation; `const` is immutable
+                    self.mutables.insert(ls.name.clone(), true);
+                }
             }
             Stmt::If(ifs) => {
                 let ct = self.infer_expr(&ifs.condition);
@@ -789,6 +801,74 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// Register variable bindings from an irrefutable destructuring pattern
+    /// used in `let` position.  Walks the pattern tree and inserts each
+    /// bound name into `self.locals` with the appropriate type.
+    fn bind_let_pattern(&mut self, pattern: &Pattern, subject_type: &Type, line: usize) {
+        match pattern {
+            Pattern::Ident(name, _) => {
+                self.locals.insert(name.clone(), subject_type.clone());
+                self.mutables.insert(name.clone(), true);
+            }
+            Pattern::Wildcard(_) => {}
+            Pattern::TupleDestructure { elements, .. } => {
+                let elem_types: Vec<Type> = match subject_type {
+                    Type::Tuple(types) => types.clone(),
+                    _ => vec![Type::Any; elements.len()],
+                };
+                for (idx, p) in elements.iter().enumerate() {
+                    let ty = elem_types.get(idx).cloned().unwrap_or(Type::Any);
+                    self.bind_let_pattern(p, &ty, line);
+                }
+            }
+            Pattern::RecordDestructure {
+                type_name,
+                fields,
+                ..
+            } => {
+                for (field_name, field_pat) in fields {
+                    let field_ty = if let Some(ti) = self.symbols.types.get(type_name) {
+                        if let crate::compiler::resolve::TypeInfoKind::Record(def) = &ti.kind {
+                            if let Some(field) = def.fields.iter().find(|f| f.name == *field_name) {
+                                resolve_type_expr(&field.ty, self.symbols)
+                            } else {
+                                Type::Any
+                            }
+                        } else {
+                            Type::Any
+                        }
+                    } else {
+                        Type::Any
+                    };
+                    if let Some(p) = field_pat {
+                        self.bind_let_pattern(p, &field_ty, line);
+                    } else {
+                        // Shorthand `field_name:` — bind to same name
+                        self.locals.insert(field_name.clone(), field_ty);
+                        self.mutables.insert(field_name.clone(), true);
+                    }
+                }
+            }
+            Pattern::ListDestructure { elements, rest, .. } => {
+                let elem_type = match subject_type {
+                    Type::List(inner) => *inner.clone(),
+                    _ => Type::Any,
+                };
+                for p in elements {
+                    self.bind_let_pattern(p, &elem_type, line);
+                }
+                if let Some(rest_name) = rest {
+                    self.locals
+                        .insert(rest_name.clone(), Type::List(Box::new(elem_type)));
+                    self.mutables.insert(rest_name.clone(), true);
+                }
+            }
+            _ => {
+                // Other patterns (Guard, Or, Variant, etc.) not valid in let position
             }
         }
     }

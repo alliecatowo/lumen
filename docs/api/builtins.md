@@ -261,12 +261,14 @@ cos(0)        # 1.0
 
 ### random
 
-Generate random number:
+Generate a pseudo-random float in [0.0, 1.0):
 
 ```lumen
-random()           # Float between 0 and 1
+random()           # Float in [0.0, 1.0)
 random_int(1, 10)  # Int between 1 and 10
 ```
+
+**Signature:** `random() -> Float`
 
 ## UUID and Time
 
@@ -281,12 +283,14 @@ uuid_v4()   # Random UUID v4
 
 ### timestamp
 
-Get current timestamp:
+Get current Unix timestamp with subsecond precision:
 
 ```lumen
-timestamp()         # Unix timestamp in seconds
+timestamp()         # Unix timestamp as Float (with subsecond precision)
 timestamp_ms()      # Unix timestamp in milliseconds
 ```
+
+**Signature:** `timestamp() -> Float`
 
 ## I/O
 
@@ -413,6 +417,67 @@ let data = json_parse('{"name": "Alice"}')
 json_get(data, "name")    # "Alice"
 ```
 
+### parse_json
+
+Parse a JSON string into a value:
+
+```lumen
+let data = parse_json('{"key": "value", "count": 42}')
+print(data["key"])    # "value"
+print(data["count"])  # 42
+```
+
+**Signature:** `parse_json(s: String) -> Any`
+
+### to_json
+
+Serialize a value to a JSON string:
+
+```lumen
+let obj = {"name": "Alice", "age": 30}
+let json_str = to_json(obj)
+print(json_str)   # '{"name":"Alice","age":30}'
+```
+
+**Signature:** `to_json(val: Any) -> String`
+
+## File I/O
+
+### read_file
+
+Read the contents of a file as a string:
+
+```lumen
+let content = read_file("config.toml")
+print(content)
+```
+
+**Signature:** `read_file(path: String) -> String`
+
+### write_file
+
+Write a string to a file:
+
+```lumen
+write_file("output.txt", "Hello, World!")
+write_file("data.json", to_json(records))
+```
+
+**Signature:** `write_file(path: String, content: String) -> Null`
+
+## System
+
+### get_env
+
+Get the value of an environment variable, or `null` if not set:
+
+```lumen
+let api_key = get_env("API_KEY")
+let home = get_env("HOME") ?? "/tmp"
+```
+
+**Signature:** `get_env(name: String) -> String | Null`
+
 ## Encoding
 
 ### base64_encode / base64_decode
@@ -453,9 +518,11 @@ sha256("hello")            # SHA-256 hex string
 | Math | `abs`, `floor`, `ceil`, `round`, `sqrt`, `pow`, `sin`, `cos`, `tan`, `random`, `random_int` |
 | UUID/Time | `uuid`, `uuid_v4`, `timestamp`, `timestamp_ms` |
 | I/O | `print`, `format` |
+| File I/O | `read_file`, `write_file` |
+| System | `get_env` |
 | Result | `ok`, `err`, `is_ok`, `is_err`, `unwrap`, `unwrap_or` |
 | Async | `spawn`, `await`, `parallel`, `race`, `timeout`, `select`, `vote` |
-| JSON | `json_parse`, `json_stringify`, `json_get` |
+| JSON | `json_parse`, `json_stringify`, `json_get`, `parse_json`, `to_json` |
 | Encoding | `base64_encode`, `base64_decode`, `hex_encode`, `hex_decode` |
 | Hashing | `hash`, `sha256` |
 

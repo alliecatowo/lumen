@@ -177,6 +177,35 @@ Short form for simple functions:
 cell double(x: Int) -> Int = x * 2
 ```
 
+## Extern Declarations
+
+Declare foreign functions provided by the host environment. An `extern` cell has a signature but no body — the implementation is supplied externally at link time or by the runtime:
+
+```lumen
+extern cell malloc(size: Int) -> addr[Byte]
+extern cell free(ptr: addr[Byte]) -> Null
+extern cell syscall(num: Int, args: list[Int]) -> Int
+```
+
+Extern declarations participate in type checking like regular cells. The compiler verifies that call sites match the declared signature:
+
+```lumen
+extern cell c_strlen(s: addr[Byte]) -> Int
+
+cell example() -> Int
+  let ptr = malloc(256)
+  let len = c_strlen(ptr)
+  free(ptr)
+  return len
+end
+```
+
+Extern cells can declare effects:
+
+```lumen
+extern cell fetch_url(url: String) -> String / {http}
+```
+
 ## Agents
 
 Encapsulate AI behavior:
@@ -408,6 +437,7 @@ end
 | `record` | Structured data |
 | `enum` | Sum types |
 | `cell` | Functions |
+| `extern` | Foreign function declarations |
 | `agent` | AI agents |
 | `effect` | Effect interfaces |
 | `handler` | Effect implementations |

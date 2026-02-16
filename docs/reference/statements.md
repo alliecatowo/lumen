@@ -239,7 +239,7 @@ continue @outer
 
 ## defer
 
-`defer` schedules statements to run when the current scope exits.
+`defer` schedules statements to run when the current scope exits. This is useful for cleanup tasks like closing handles or releasing resources.
 
 ```lumen
 cell run() -> Int
@@ -249,6 +249,73 @@ cell run() -> Int
 
   print("work")
   return 1
+end
+```
+
+Multiple `defer` blocks in the same scope execute in **LIFO (reverse) order** — the last `defer` registered runs first:
+
+```lumen
+cell example() -> Null
+  defer
+    print("first registered, runs last")
+  end
+  defer
+    print("second registered, runs first")
+  end
+  print("body")
+  return null
+end
+# Output: body → second registered, runs first → first registered, runs last
+```
+
+`defer` runs regardless of how the scope exits (normal return, early return, or error):
+
+```lumen
+cell read_data(path: String) -> String
+  let handle = open(path)
+  defer
+    close(handle)
+  end
+
+  if not valid(handle)
+    return ""   # defer still runs
+  end
+
+  return read(handle)
+end
+```
+
+## yield
+
+`yield` produces a value from a generator cell without terminating the cell. The cell suspends and can be resumed to produce additional values.
+
+A generator cell declares `yield T` as its return type:
+
+```lumen
+cell counting(n: Int) -> yield Int
+  for i in 0..n
+    yield i
+  end
+end
+```
+
+Consumers iterate over yielded values:
+
+```lumen
+for value in counting(5)
+  print(value)   # prints 0, 1, 2, 3, 4
+end
+```
+
+`yield` can be used conditionally:
+
+```lumen
+cell evens(items: list[Int]) -> yield Int
+  for item in items
+    if item % 2 == 0
+      yield item
+    end
+  end
 end
 ```
 
@@ -372,7 +439,8 @@ end
 | `return` | Exit function with value |
 | `break` | Exit loop |
 | `continue` | Skip to next iteration |
-| `defer` | Run cleanup code on scope exit |
+| `defer` | Run cleanup code on scope exit (LIFO order) |
+| `yield` | Produce a value from a generator cell |
 | `halt` | Stop program |
 
 ## Next Steps

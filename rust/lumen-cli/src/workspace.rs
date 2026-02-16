@@ -14,7 +14,7 @@
 //!
 //! ## Workspace Layout
 //!
-//! ```
+//! ```text
 //! my-workspace/
 //! ├── lumen.toml           # Virtual manifest (workspace config)
 //! ├── lumen.lock           # Shared lockfile for all members

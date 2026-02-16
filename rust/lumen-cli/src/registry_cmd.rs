@@ -851,7 +851,7 @@ mod tests {
 
     #[test]
     fn test_mask_token() {
-        assert_eq!(mask_token("lm_abc123xyz789"), "lm_abc...9789");
+        assert_eq!(mask_token("lm_abc123xyz789"), "lm_abc...z789");
         assert_eq!(mask_token("short"), "***");
     }
 

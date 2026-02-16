@@ -14,7 +14,7 @@
 //!
 //! ## Registry Structure
 //!
-//! ```
+//! ```text
 //! registry/
 //! ├── index.json                    # Global package index
 //! ├── packages/
@@ -478,7 +478,7 @@ impl R2Client {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```rust,ignore
     /// let artifact_data = std::fs::read("package.tar.gz")?;
     /// let cid = client.upload_artifact(&artifact_data, None)?;
     /// println!("Uploaded to: {}", cid); // e.g., "sha256:abc123..."
@@ -512,7 +512,7 @@ impl R2Client {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```rust,ignore
     /// let data = client.download_artifact("sha256:abc123...", true)?;
     /// std::fs::write("package.tar.gz", data)?;
     /// ```

@@ -402,7 +402,6 @@ fn extract_symbol_name(input: &str) -> Option<String> {
                 next
             }
         }
-        "let" => words.next()?,
         _ if ITEM_KEYWORDS.contains(&keyword) => words.next()?,
         _ => return None,
     };

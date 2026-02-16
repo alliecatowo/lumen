@@ -482,3 +482,93 @@ end"#;
     // double(5) = 10, add_one(10) = 11
     assert_eq!(result.to_string(), "11");
 }
+
+// ============================================================================
+// Variadic parameter tests
+// ============================================================================
+
+#[test]
+fn variadic_param_compiles() {
+    let src = r#"cell sum_all(...nums: Int) -> Int
+  let total = 0
+  for n in nums
+    total = total + n
+  end
+  return total
+end
+
+cell main() -> Int
+  return sum_all(1, 2, 3, 4, 5)
+end"#;
+    // Should compile without errors
+    compile_to_lir(src);
+}
+
+#[test]
+fn variadic_param_e2e() {
+    use lumen_vm::vm::VM;
+    let src = r#"cell sum_all(...nums: Int) -> Int
+  let total = 0
+  for n in nums
+    total = total + n
+  end
+  return total
+end
+
+cell main() -> Int
+  return sum_all(1, 2, 3, 4, 5)
+end"#;
+    let module = compile_to_lir(src);
+    let mut vm = VM::new();
+    vm.load(module);
+    let result = vm.execute("main", vec![]).expect("vm run failed");
+    assert_eq!(result.to_string(), "15");
+}
+
+#[test]
+fn variadic_param_empty_args() {
+    use lumen_vm::vm::VM;
+    let src = r#"cell count(...items: String) -> Int
+  let n = 0
+  for _ in items
+    n = n + 1
+  end
+  return n
+end
+
+cell main() -> Int
+  return count()
+end"#;
+    let module = compile_to_lir(src);
+    let mut vm = VM::new();
+    vm.load(module);
+    let result = vm.execute("main", vec![]).expect("vm run failed");
+    assert_eq!(result.to_string(), "0");
+}
+
+#[test]
+fn variadic_with_fixed_params() {
+    use lumen_vm::vm::VM;
+    let src = r#"cell format_list(sep: String, ...items: String) -> String
+  let result = ""
+  let first = true
+  for item in items
+    if first
+      result = item
+      first = false
+    else
+      result = result + sep + item
+    end
+  end
+  return result
+end
+
+cell main() -> String
+  return format_list(", ", "a", "b", "c")
+end"#;
+    let module = compile_to_lir(src);
+    let mut vm = VM::new();
+    vm.load(module);
+    let result = vm.execute("main", vec![]).expect("vm run failed");
+    assert_eq!(result.to_string(), "a, b, c");
+}

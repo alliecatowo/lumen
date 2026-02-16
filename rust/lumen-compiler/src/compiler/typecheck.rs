@@ -509,6 +509,12 @@ impl<'a> TypeChecker<'a> {
         self.mutables.clear();
         for p in &cell.params {
             let ty = resolve_type_expr(&p.ty, self.symbols);
+            // Variadic params are seen as List[T] inside the function body
+            let ty = if p.variadic {
+                Type::List(Box::new(ty))
+            } else {
+                ty
+            };
             self.locals.insert(p.name.clone(), ty);
             self.mutables.insert(p.name.clone(), true); // params are mutable by default
         }
@@ -533,6 +539,11 @@ impl<'a> TypeChecker<'a> {
                 continue;
             }
             let ty = resolve_type_expr(&p.ty, self.symbols);
+            let ty = if p.variadic {
+                Type::List(Box::new(ty))
+            } else {
+                ty
+            };
             self.locals.insert(p.name.clone(), ty);
             self.mutables.insert(p.name.clone(), true);
         }
@@ -548,11 +559,15 @@ impl<'a> TypeChecker<'a> {
 
     fn check_call_against_signature(
         &mut self,
-        params: &[(String, TypeExpr)],
+        params: &[(String, TypeExpr, bool)],
         args: &[CheckedCallArg],
         line: usize,
     ) {
-        if args.len() > params.len() {
+        // Check if the last parameter is variadic
+        let has_variadic = params.last().map_or(false, |(_, _, v)| *v);
+        let fixed_count = if has_variadic { params.len() - 1 } else { params.len() };
+
+        if !has_variadic && args.len() > params.len() {
             self.errors.push(TypeError::ArgCount {
                 expected: params.len(),
                 actual: args.len(),
@@ -564,14 +579,20 @@ impl<'a> TypeChecker<'a> {
         for arg in args {
             match arg {
                 CheckedCallArg::Positional(actual_ty, arg_line) => {
-                    if let Some((_, expected_expr)) = params.get(positional_idx) {
-                        let expected_ty = resolve_type_expr(expected_expr, self.symbols);
-                        self.check_compat(&expected_ty, actual_ty, *arg_line);
+                    if positional_idx < fixed_count {
+                        if let Some((_, expected_expr, _)) = params.get(positional_idx) {
+                            let expected_ty = resolve_type_expr(expected_expr, self.symbols);
+                            self.check_compat(&expected_ty, actual_ty, *arg_line);
+                        }
+                    } else if has_variadic {
+                        let (_, variadic_expr, _) = &params[params.len() - 1];
+                        let elem_ty = resolve_type_expr(variadic_expr, self.symbols);
+                        self.check_compat(&elem_ty, actual_ty, *arg_line);
                     }
                     positional_idx += 1;
                 }
                 CheckedCallArg::Named(name, actual_ty, arg_line) => {
-                    if let Some((_, expected_expr)) = params.iter().find(|(p, _)| p == name) {
+                    if let Some((_, expected_expr, _)) = params.iter().find(|(p, _, _)| p == name) {
                         let expected_ty = resolve_type_expr(expected_expr, self.symbols);
                         self.check_compat(&expected_ty, actual_ty, *arg_line);
                     } else {

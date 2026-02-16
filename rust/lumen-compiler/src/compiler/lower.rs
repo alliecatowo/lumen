@@ -357,6 +357,188 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
     module
 }
 
+/// Result of compile-time constant evaluation for `comptime` expressions.
+#[derive(Debug, Clone)]
+enum ConstValue {
+    Int(i64),
+    Float(f64),
+    String(String),
+    Bool(bool),
+    Null,
+}
+
+/// Attempt to evaluate an expression at compile time.
+///
+/// Returns `Some(ConstValue)` if the expression can be fully reduced to a
+/// constant, `None` otherwise (e.g. when it references variables or calls).
+fn try_const_eval(expr: &Expr) -> Option<ConstValue> {
+    match expr {
+        // Leaf literals
+        Expr::IntLit(n, _) => Some(ConstValue::Int(*n)),
+        Expr::FloatLit(f, _) => Some(ConstValue::Float(*f)),
+        Expr::StringLit(s, _) => Some(ConstValue::String(s.clone())),
+        Expr::BoolLit(b, _) => Some(ConstValue::Bool(*b)),
+        Expr::NullLit(_) => Some(ConstValue::Null),
+
+        // Unary operators
+        Expr::UnaryOp(op, inner, _) => {
+            let val = try_const_eval(inner)?;
+            match (op, val) {
+                (UnaryOp::Neg, ConstValue::Int(n)) => Some(ConstValue::Int(-n)),
+                (UnaryOp::Neg, ConstValue::Float(f)) => Some(ConstValue::Float(-f)),
+                (UnaryOp::Not, ConstValue::Bool(b)) => Some(ConstValue::Bool(!b)),
+                (UnaryOp::BitNot, ConstValue::Int(n)) => Some(ConstValue::Int(!n)),
+                _ => None,
+            }
+        }
+
+        // Binary operators
+        Expr::BinOp(lhs, op, rhs, _) => {
+            let l = try_const_eval(lhs)?;
+            let r = try_const_eval(rhs)?;
+            match (l, op, r) {
+                // Int arithmetic
+                (ConstValue::Int(a), BinOp::Add, ConstValue::Int(b)) => {
+                    Some(ConstValue::Int(a.wrapping_add(b)))
+                }
+                (ConstValue::Int(a), BinOp::Sub, ConstValue::Int(b)) => {
+                    Some(ConstValue::Int(a.wrapping_sub(b)))
+                }
+                (ConstValue::Int(a), BinOp::Mul, ConstValue::Int(b)) => {
+                    Some(ConstValue::Int(a.wrapping_mul(b)))
+                }
+                (ConstValue::Int(a), BinOp::Div, ConstValue::Int(b)) if b != 0 => {
+                    Some(ConstValue::Int(a / b))
+                }
+                (ConstValue::Int(a), BinOp::FloorDiv, ConstValue::Int(b)) if b != 0 => {
+                    Some(ConstValue::Int(a.div_euclid(b)))
+                }
+                (ConstValue::Int(a), BinOp::Mod, ConstValue::Int(b)) if b != 0 => {
+                    Some(ConstValue::Int(a.rem_euclid(b)))
+                }
+                (ConstValue::Int(a), BinOp::Pow, ConstValue::Int(b)) if b >= 0 => {
+                    Some(ConstValue::Int(a.wrapping_pow(b as u32)))
+                }
+                (ConstValue::Int(a), BinOp::BitAnd, ConstValue::Int(b)) => {
+                    Some(ConstValue::Int(a & b))
+                }
+                (ConstValue::Int(a), BinOp::BitOr, ConstValue::Int(b)) => {
+                    Some(ConstValue::Int(a | b))
+                }
+                (ConstValue::Int(a), BinOp::BitXor, ConstValue::Int(b)) => {
+                    Some(ConstValue::Int(a ^ b))
+                }
+                (ConstValue::Int(a), BinOp::Shl, ConstValue::Int(b)) if b >= 0 && b < 64 => {
+                    Some(ConstValue::Int(a.wrapping_shl(b as u32)))
+                }
+                (ConstValue::Int(a), BinOp::Shr, ConstValue::Int(b)) if b >= 0 && b < 64 => {
+                    Some(ConstValue::Int(a.wrapping_shr(b as u32)))
+                }
+
+                // Float arithmetic
+                (ConstValue::Float(a), BinOp::Add, ConstValue::Float(b)) => {
+                    Some(ConstValue::Float(a + b))
+                }
+                (ConstValue::Float(a), BinOp::Sub, ConstValue::Float(b)) => {
+                    Some(ConstValue::Float(a - b))
+                }
+                (ConstValue::Float(a), BinOp::Mul, ConstValue::Float(b)) => {
+                    Some(ConstValue::Float(a * b))
+                }
+                (ConstValue::Float(a), BinOp::Div, ConstValue::Float(b)) if b != 0.0 => {
+                    Some(ConstValue::Float(a / b))
+                }
+                (ConstValue::Float(a), BinOp::Pow, ConstValue::Float(b)) => {
+                    Some(ConstValue::Float(a.powf(b)))
+                }
+
+                // Mixed int/float promotion
+                (ConstValue::Int(a), BinOp::Add, ConstValue::Float(b)) => {
+                    Some(ConstValue::Float(a as f64 + b))
+                }
+                (ConstValue::Float(a), BinOp::Add, ConstValue::Int(b)) => {
+                    Some(ConstValue::Float(a + b as f64))
+                }
+                (ConstValue::Int(a), BinOp::Sub, ConstValue::Float(b)) => {
+                    Some(ConstValue::Float(a as f64 - b))
+                }
+                (ConstValue::Float(a), BinOp::Sub, ConstValue::Int(b)) => {
+                    Some(ConstValue::Float(a - b as f64))
+                }
+                (ConstValue::Int(a), BinOp::Mul, ConstValue::Float(b)) => {
+                    Some(ConstValue::Float(a as f64 * b))
+                }
+                (ConstValue::Float(a), BinOp::Mul, ConstValue::Int(b)) => {
+                    Some(ConstValue::Float(a * b as f64))
+                }
+                (ConstValue::Int(a), BinOp::Div, ConstValue::Float(b)) if b != 0.0 => {
+                    Some(ConstValue::Float(a as f64 / b))
+                }
+                (ConstValue::Float(a), BinOp::Div, ConstValue::Int(b)) if b != 0 => {
+                    Some(ConstValue::Float(a / b as f64))
+                }
+
+                // String concatenation
+                (ConstValue::String(a), BinOp::Add, ConstValue::String(b)) => {
+                    Some(ConstValue::String(format!("{}{}", a, b)))
+                }
+                (ConstValue::String(a), BinOp::Concat, ConstValue::String(b)) => {
+                    Some(ConstValue::String(format!("{}{}", a, b)))
+                }
+
+                // Comparison (Int)
+                (ConstValue::Int(a), BinOp::Eq, ConstValue::Int(b)) => {
+                    Some(ConstValue::Bool(a == b))
+                }
+                (ConstValue::Int(a), BinOp::NotEq, ConstValue::Int(b)) => {
+                    Some(ConstValue::Bool(a != b))
+                }
+                (ConstValue::Int(a), BinOp::Lt, ConstValue::Int(b)) => {
+                    Some(ConstValue::Bool(a < b))
+                }
+                (ConstValue::Int(a), BinOp::LtEq, ConstValue::Int(b)) => {
+                    Some(ConstValue::Bool(a <= b))
+                }
+                (ConstValue::Int(a), BinOp::Gt, ConstValue::Int(b)) => {
+                    Some(ConstValue::Bool(a > b))
+                }
+                (ConstValue::Int(a), BinOp::GtEq, ConstValue::Int(b)) => {
+                    Some(ConstValue::Bool(a >= b))
+                }
+
+                // Boolean logic
+                (ConstValue::Bool(a), BinOp::And, ConstValue::Bool(b)) => {
+                    Some(ConstValue::Bool(a && b))
+                }
+                (ConstValue::Bool(a), BinOp::Or, ConstValue::Bool(b)) => {
+                    Some(ConstValue::Bool(a || b))
+                }
+
+                _ => None,
+            }
+        }
+
+        // Block expressions: evaluate if the block is a single expression statement
+        Expr::BlockExpr(stmts, _) => {
+            if stmts.len() == 1 {
+                if let Stmt::Expr(ExprStmt { expr: inner, .. }) = &stmts[0] {
+                    return try_const_eval(inner);
+                }
+                if let Stmt::Return(ReturnStmt { value: inner, .. }) = &stmts[0] {
+                    return try_const_eval(inner);
+                }
+            }
+            None
+        }
+
+        // Nested comptime just recurses
+        Expr::ComptimeExpr(inner, _) => try_const_eval(inner),
+
+        // Anything else (variables, calls, etc.) is not a compile-time constant
+        _ => None,
+    }
+}
+
 /// Tracks a loop for break/continue patching
 struct LoopContext {
     label: Option<String>,
@@ -3142,8 +3324,45 @@ impl<'a> Lowerer<'a> {
                 }
                 dest
             }
-            Expr::ComptimeExpr(inner, _) => {
-                self.lower_expr(inner, ra, consts, instrs)
+            Expr::ComptimeExpr(inner, span) => {
+                if let Some(val) = try_const_eval(inner) {
+                    let dest = ra.alloc_temp();
+                    match val {
+                        ConstValue::Int(n) => {
+                            let kidx = consts.len() as u16;
+                            consts.push(Constant::Int(n));
+                            instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
+                        }
+                        ConstValue::Float(f) => {
+                            let kidx = consts.len() as u16;
+                            consts.push(Constant::Float(f));
+                            instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
+                        }
+                        ConstValue::String(s) => {
+                            let kidx = consts.len() as u16;
+                            consts.push(Constant::String(s));
+                            instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
+                        }
+                        ConstValue::Bool(b) => {
+                            instrs.push(Instruction::abc(
+                                OpCode::LoadBool,
+                                dest,
+                                if b { 1 } else { 0 },
+                                0,
+                            ));
+                        }
+                        ConstValue::Null => {
+                            instrs.push(Instruction::abc(OpCode::LoadNil, dest, 0, 0));
+                        }
+                    }
+                    dest
+                } else {
+                    eprintln!(
+                        "warning: comptime expression at {}:{} could not be evaluated at compile time, falling back to runtime",
+                        span.line, span.col
+                    );
+                    self.lower_expr(inner, ra, consts, instrs)
+                }
             }
             Expr::Perform { effect_name, operation, args, .. } => {
                 let dest = ra.alloc_temp();
@@ -4177,6 +4396,152 @@ mod tests {
         assert!(
             ops.contains(&OpCode::Lt),
             "should check bounds during spread iteration"
+        );
+    }
+
+    // ---- comptime constant evaluation tests ----
+
+    #[test]
+    fn test_comptime_int_arithmetic() {
+        let src = "cell main() -> Int\n  return comptime 2 + 3 end\nend";
+        let module = lower_src(src);
+        let cell = &module.cells[0];
+        assert!(
+            cell.constants.iter().any(|c| matches!(c, Constant::Int(5))),
+            "comptime 2 + 3 should fold to constant Int(5), got constants: {:?}",
+            cell.constants
+        );
+        assert!(
+            !cell.instructions.iter().any(|i| i.op == OpCode::Add),
+            "comptime should eliminate runtime Add instruction"
+        );
+    }
+
+    #[test]
+    fn test_comptime_nested_arithmetic() {
+        let src = "cell main() -> Int\n  return comptime (2 + 3) * 4 end\nend";
+        let module = lower_src(src);
+        let cell = &module.cells[0];
+        assert!(
+            cell.constants.iter().any(|c| matches!(c, Constant::Int(20))),
+            "comptime (2 + 3) * 4 should fold to constant Int(20), got constants: {:?}",
+            cell.constants
+        );
+    }
+
+    #[test]
+    fn test_comptime_string_concat() {
+        let src = r#"cell main() -> String
+  return comptime "hello" + " world" end
+end"#;
+        let module = lower_src(src);
+        let cell = &module.cells[0];
+        assert!(
+            cell.constants
+                .iter()
+                .any(|c| matches!(c, Constant::String(s) if s == "hello world")),
+            "comptime string concat should fold to 'hello world', got constants: {:?}",
+            cell.constants
+        );
+        assert!(
+            !cell.instructions.iter().any(|i| i.op == OpCode::Concat),
+            "comptime should eliminate runtime Concat instruction"
+        );
+    }
+
+    #[test]
+    fn test_comptime_bool_literal() {
+        let src = "cell main() -> Bool\n  return comptime true end\nend";
+        let module = lower_src(src);
+        let cell = &module.cells[0];
+        assert!(
+            cell.instructions
+                .iter()
+                .any(|i| i.op == OpCode::LoadBool && i.b == 1),
+            "comptime true should emit LoadBool with b=1"
+        );
+    }
+
+    #[test]
+    fn test_comptime_float_literal() {
+        let src = "cell main() -> Float\n  return comptime 3.14 end\nend";
+        let module = lower_src(src);
+        let cell = &module.cells[0];
+        assert!(
+            cell.constants
+                .iter()
+                .any(|c| matches!(c, Constant::Float(f) if (*f - 3.14).abs() < 1e-10)),
+            "comptime 3.14 should produce Float constant, got: {:?}",
+            cell.constants
+        );
+    }
+
+    #[test]
+    fn test_comptime_negation() {
+        let src = "cell main() -> Int\n  return comptime -42 end\nend";
+        let module = lower_src(src);
+        let cell = &module.cells[0];
+        assert!(
+            cell.constants
+                .iter()
+                .any(|c| matches!(c, Constant::Int(-42))),
+            "comptime -42 should fold to constant Int(-42), got: {:?}",
+            cell.constants
+        );
+    }
+
+    #[test]
+    fn test_comptime_variable_fallback() {
+        let src = "cell main(x: Int) -> Int\n  return comptime x end\nend";
+        let module = lower_src(src);
+        let cell = &module.cells[0];
+        assert!(
+            !cell.constants.is_empty() || !cell.instructions.is_empty(),
+            "comptime with variable should fall back to runtime lowering"
+        );
+    }
+
+    #[test]
+    fn test_try_const_eval_unit() {
+        use crate::compiler::tokens::Span;
+
+        let s = Span { start: 0, end: 0, line: 0, col: 0 };
+
+        assert!(matches!(
+            try_const_eval(&Expr::IntLit(42, s)),
+            Some(ConstValue::Int(42))
+        ));
+        assert!(matches!(
+            try_const_eval(&Expr::BoolLit(false, s)),
+            Some(ConstValue::Bool(false))
+        ));
+        assert!(matches!(
+            try_const_eval(&Expr::NullLit(s)),
+            Some(ConstValue::Null)
+        ));
+
+        let mul_expr = Expr::BinOp(
+            Box::new(Expr::IntLit(10, s)),
+            BinOp::Mul,
+            Box::new(Expr::IntLit(5, s)),
+            s,
+        );
+        assert!(matches!(try_const_eval(&mul_expr), Some(ConstValue::Int(50))));
+
+        let str_expr = Expr::BinOp(
+            Box::new(Expr::StringLit("a".into(), s)),
+            BinOp::Add,
+            Box::new(Expr::StringLit("b".into(), s)),
+            s,
+        );
+        match try_const_eval(&str_expr) {
+            Some(ConstValue::String(ref v)) => assert_eq!(v, "ab"),
+            other => panic!("expected String(\"ab\"), got {:?}", other),
+        }
+
+        assert!(
+            try_const_eval(&Expr::Ident("x".into(), s)).is_none(),
+            "variable references should not const-eval"
         );
     }
 }

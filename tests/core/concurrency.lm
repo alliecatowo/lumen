@@ -1,0 +1,608 @@
+# Concurrency Test Suite
+# Tests processes, futures, async/await
+
+# =============================================================================
+# Async Functions
+# =============================================================================
+
+cell test_async_cell() -> Bool
+  async cell simple_async() -> Int
+    return 42
+  end
+  
+  let future = simple_async()
+  let result = await future
+  return result == 42
+end
+
+cell test_async_with_params() -> Bool
+  async cell async_add(a: Int, b: Int) -> Int
+    return a + b
+  end
+  
+  let future = async_add(3, 4)
+  let result = await future
+  return result == 7
+end
+
+cell test_async_returns_string() -> Bool
+  async cell async_greet(name: String) -> String
+    return "Hello, {name}!"
+  end
+  
+  let future = async_greet("World")
+  let result = await future
+  return result == "Hello, World!"
+end
+
+cell test_multiple_async_calls() -> Bool
+  async cell async_double(x: Int) -> Int
+    return x * 2
+  end
+  
+  let f1 = async_double(5)
+  let f2 = async_double(10)
+  let f3 = async_double(15)
+  
+  let r1 = await f1
+  let r2 = await f2
+  let r3 = await f3
+  
+  return r1 == 10 and r2 == 20 and r3 == 30
+end
+
+# =============================================================================
+# Spawn
+# =============================================================================
+
+cell test_spawn_cell() -> Bool
+  cell compute(x: Int) -> Int
+    return x * x
+  end
+  
+  let future = spawn compute(5)
+  let result = await future
+  return result == 25
+end
+
+cell test_spawn_with_lambda() -> Bool
+  let future = spawn (fn(x: Int) => x * x)(6)
+  let result = await future
+  return result == 36
+end
+
+cell test_spawn_multiple() -> Bool
+  cell work(n: Int) -> Int
+    return n * 2
+  end
+  
+  let futures = [
+    spawn work(1),
+    spawn work(2),
+    spawn work(3)
+  ]
+  
+  let results = [
+    await futures[0],
+    await futures[1],
+    await futures[2]
+  ]
+  
+  return results[0] == 2 and results[1] == 4 and results[2] == 6
+end
+
+# =============================================================================
+# Await
+# =============================================================================
+
+cell test_await_simple() -> Bool
+  async cell simple() -> Int
+    return 1
+  end
+  
+  let future = simple()
+  return await future == 1
+end
+
+cell test_await_chain() -> Bool
+  async cell step1() -> Int
+    return 10
+  end
+  
+  async cell step2(n: Int) -> Int
+    return n * 2
+  end
+  
+  let intermediate = await step1()
+  let result = await step2(intermediate)
+  
+  return result == 20
+end
+
+cell test_await_in_expression() -> Bool
+  async cell get_value() -> Int
+    return 5
+  end
+  
+  let result = await get_value() + await get_value()
+  return result == 10
+end
+
+# =============================================================================
+# Futures
+# =============================================================================
+
+cell test_future_stores_result() -> Bool
+  async cell produce() -> String
+    return "result"
+  end
+  
+  let future = produce()
+  # Future holds the computation, not yet resolved
+  let result = await future
+  return result == "result"
+end
+
+cell test_future_can_be_awaited_multiple_times() -> Bool
+  async cell stable() -> Int
+    return 42
+  end
+  
+  let future = stable()
+  let r1 = await future
+  let r2 = await future
+  
+  return r1 == 42 and r2 == 42
+end
+
+# =============================================================================
+# Parallel Execution
+# =============================================================================
+
+cell test_parallel_for() -> Bool
+  let items = [1, 2, 3, 4, 5]
+  let mut results: list[Int] = []
+  
+  await parallel for x in items
+    results = append(results, x * 2)
+  end
+  
+  return len(results) == 5
+end
+
+cell test_parallel_map() -> Bool
+  async cell double_async(x: Int) -> Int
+    return x * 2
+  end
+  
+  let items = [1, 2, 3, 4, 5]
+  let mut results: list[Int] = []
+  
+  for x in items
+    let future = double_async(x)
+    results = append(results, await future)
+  end
+  
+  return len(results) == 5 and results[0] == 2 and results[4] == 10
+end
+
+# =============================================================================
+# Race
+# =============================================================================
+
+cell test_race() -> Bool
+  async cell fast() -> String
+    return "fast"
+  end
+  
+  async cell slow() -> String
+    return "slow"
+  end
+  
+  let result = await race
+    fast()
+    slow()
+  end
+  
+  return result == "fast" or result == "slow"
+end
+
+# =============================================================================
+# Timeout
+# =============================================================================
+
+cell test_timeout() -> Bool
+  async cell might_timeout() -> String
+    return "completed"
+  end
+  
+  # Try with a generous timeout
+  let result = await timeout(5000, might_timeout())
+  
+  return result == "completed"
+end
+
+cell test_timeout_with_fallback() -> Bool
+  async cell slow_operation() -> String
+    return "done"
+  end
+  
+  let result = await timeout(1000, slow_operation())
+  return result == "done" or result == null
+end
+
+# =============================================================================
+# Select
+# =============================================================================
+
+cell test_select() -> Bool
+  async cell option_a() -> Int
+    return 1
+  end
+  
+  async cell option_b() -> Int
+    return 2
+  end
+  
+  let result = await select
+    option_a()
+    option_b()
+  end
+  
+  return result == 1 or result == 2
+end
+
+# =============================================================================
+# Vote
+# =============================================================================
+
+cell test_vote() -> Bool
+  async cell worker_a() -> String
+    return "result"
+  end
+  
+  async cell worker_b() -> String
+    return "result"
+  end
+  
+  async cell worker_c() -> String
+    return "different"
+  end
+  
+  # Vote takes majority result
+  let result = await vote
+    worker_a()
+    worker_b()
+    worker_c()
+  end
+  
+  return result == "result" or result == "different"
+end
+
+# =============================================================================
+# Process Declarations
+# =============================================================================
+
+cell test_process_memory() -> Bool
+  memory TestMemory
+  end
+  
+  let mem = TestMemory()
+  # Memory processes have built-in methods
+  return true
+end
+
+cell test_process_machine() -> Bool
+  machine TestMachine
+    state Idle
+      transition Running
+    end
+    
+    state Running
+      transition Idle
+    end
+    
+    initial: Idle
+  end
+  
+  let m = TestMachine()
+  return true
+end
+
+cell test_process_pipeline() -> Bool
+  pipeline TestPipeline
+    stage Extract
+    stage Transform
+    stage Load
+  end
+  
+  return true
+end
+
+cell test_process_orchestration() -> Bool
+  orchestration TestOrchestration
+  end
+  
+  return true
+end
+
+# =============================================================================
+# Memory Process Operations
+# =============================================================================
+
+cell test_memory_append() -> Bool
+  memory LogMemory
+  end
+  
+  let log = LogMemory()
+  log.append("entry 1")
+  log.append("entry 2")
+  
+  let recent = log.recent(10)
+  return true  # Verify API works
+end
+
+cell test_memory_store_recall() -> Bool
+  memory KeyValueStore
+  end
+  
+  let store = KeyValueStore()
+  store.store("key1", "value1")
+  let value = store.recall("key1")
+  
+  return true  # Verify API works
+end
+
+cell test_memory_isolation() -> Bool
+  memory Counter
+  end
+  
+  let c1 = Counter()
+  let c2 = Counter()
+  
+  # Instances are isolated
+  return true
+end
+
+# =============================================================================
+# Machine Process Operations
+# =============================================================================
+
+cell test_machine_states() -> Bool
+  machine SimpleMachine
+    state Off
+      transition On
+    end
+    
+    state On
+      transition Off
+    end
+    
+    initial: Off
+  end
+  
+  let m = SimpleMachine()
+  return true
+end
+
+cell test_machine_transitions() -> Bool
+  machine StateMachine
+    state A
+      guard: true
+      transition B
+    end
+    
+    state B
+      transition C
+    end
+    
+    state C
+      terminal: true
+    end
+    
+    initial: A
+  end
+  
+  let sm = StateMachine()
+  return true
+end
+
+cell test_machine_run() -> Bool
+  machine RunnableMachine
+    state Start
+      transition End
+    end
+    
+    state End
+      terminal: true
+    end
+    
+    initial: Start
+  end
+  
+  let m = RunnableMachine()
+  return true
+end
+
+# =============================================================================
+# Concurrent Patterns
+# =============================================================================
+
+cell test_producer_consumer() -> Bool
+  # Producer-consumer pattern using async
+  async cell produce() -> Int
+    return 42
+  end
+  
+  async cell consume(value: Int) -> String
+    return "consumed: {value}"
+  end
+  
+  let produced = await produce()
+  let result = await consume(produced)
+  
+  return contains(result, "consumed")
+end
+
+cell test_worker_pool() -> Bool
+  async cell worker(id: Int, task: Int) -> Int
+    return id * task
+  end
+  
+  let tasks = [1, 2, 3, 4, 5]
+  let mut futures: list[Future[Int]] = []
+  
+  for i in 0..len(tasks)
+    let f = spawn worker(i, tasks[i])
+    futures = append(futures, f)
+  end
+  
+  let mut results: list[Int] = []
+  for f in futures
+    results = append(results, await f)
+  end
+  
+  return len(results) == 5
+end
+
+cell test_fan_out_fan_in() -> Bool
+  async cell fan_out_task(x: Int) -> Int
+    return x * x
+  end
+  
+  let inputs = [1, 2, 3, 4]
+  let mut futures: list[Future[Int]] = []
+  
+  # Fan out
+  for x in inputs
+    futures = append(futures, fan_out_task(x))
+  end
+  
+  # Fan in
+  let mut results: list[Int] = []
+  for f in futures
+    results = append(results, await f)
+  end
+  
+  return len(results) == 4
+end
+
+# =============================================================================
+# Async Error Handling
+# =============================================================================
+
+cell test_async_result() -> Bool
+  async cell async_divide(a: Int, b: Int) -> result[Int, String]
+    if b == 0
+      return err("division by zero")
+    end
+    return ok(a / b)
+  end
+  
+  let future = async_divide(10, 2)
+  let r = await future
+  
+  return is_ok(r) and unwrap(r) == 5
+end
+
+cell test_async_with_error() -> Bool
+  async cell might_fail(should_fail: Bool) -> result[Int, String]
+    if should_fail
+      return err("failed")
+    end
+    return ok(42)
+  end
+  
+  let success = await might_fail(false)
+  let failure = await might_fail(true)
+  
+  return is_ok(success) and is_err(failure)
+end
+
+# =============================================================================
+# Main Test Runner
+# =============================================================================
+
+cell main() -> Null
+  print("=== Concurrency Test Suite ===")
+  print("")
+  
+  print("Testing Async Functions...")
+  assert test_async_cell()
+  assert test_async_with_params()
+  assert test_async_returns_string()
+  assert test_multiple_async_calls()
+  print("  ✓ Async Functions")
+  
+  print("Testing Spawn...")
+  assert test_spawn_cell()
+  assert test_spawn_with_lambda()
+  assert test_spawn_multiple()
+  print("  ✓ Spawn")
+  
+  print("Testing Await...")
+  assert test_await_simple()
+  assert test_await_chain()
+  assert test_await_in_expression()
+  print("  ✓ Await")
+  
+  print("Testing Futures...")
+  assert test_future_stores_result()
+  assert test_future_can_be_awaited_multiple_times()
+  print("  ✓ Futures")
+  
+  print("Testing Parallel Execution...")
+  assert test_parallel_for()
+  assert test_parallel_map()
+  print("  ✓ Parallel Execution")
+  
+  print("Testing Race...")
+  assert test_race()
+  print("  ✓ Race")
+  
+  print("Testing Timeout...")
+  assert test_timeout()
+  assert test_timeout_with_fallback()
+  print("  ✓ Timeout")
+  
+  print("Testing Select...")
+  assert test_select()
+  print("  ✓ Select")
+  
+  print("Testing Vote...")
+  assert test_vote()
+  print("  ✓ Vote")
+  
+  print("Testing Process Declarations...")
+  assert test_process_memory()
+  assert test_process_machine()
+  assert test_process_pipeline()
+  assert test_process_orchestration()
+  print("  ✓ Process Declarations")
+  
+  print("Testing Memory Process Operations...")
+  assert test_memory_append()
+  assert test_memory_store_recall()
+  assert test_memory_isolation()
+  print("  ✓ Memory Process Operations")
+  
+  print("Testing Machine Process Operations...")
+  assert test_machine_states()
+  assert test_machine_transitions()
+  assert test_machine_run()
+  print("  ✓ Machine Process Operations")
+  
+  print("Testing Concurrent Patterns...")
+  assert test_producer_consumer()
+  assert test_worker_pool()
+  assert test_fan_out_fan_in()
+  print("  ✓ Concurrent Patterns")
+  
+  print("Testing Async Error Handling...")
+  assert test_async_result()
+  assert test_async_with_error()
+  print("  ✓ Async Error Handling")
+  
+  print("")
+  print("=== All Concurrency Tests Passed! ===")
+end

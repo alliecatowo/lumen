@@ -1,0 +1,450 @@
+# Error Handling Test Suite
+# Tests Result types, try/catch, guard expressions
+
+# =============================================================================
+# Result Type Basics
+# =============================================================================
+
+cell test_ok_constructor() -> Bool
+  let r = ok(42)
+  return is_ok(r)
+end
+
+cell test_err_constructor() -> Bool
+  let r = err("something went wrong")
+  return is_err(r)
+end
+
+cell test_result_type_annotation() -> Bool
+  let r: result[Int, String] = ok(100)
+  return is_ok(r) and unwrap(r) == 100
+end
+
+cell test_result_with_different_types() -> Bool
+  let r1: result[String, Int] = ok("success")
+  let r2: result[Float, String] = err("error")
+  
+  return unwrap(r1) == "success" and is_err(r2)
+end
+
+# =============================================================================
+# Result Predicates
+# =============================================================================
+
+cell test_is_ok_predicate() -> Bool
+  let success = ok(42)
+  let failure = err("oops")
+  
+  return is_ok(success) and not is_ok(failure)
+end
+
+cell test_is_err_predicate() -> Bool
+  let success = ok(42)
+  let failure = err("oops")
+  
+  return is_err(failure) and not is_err(success)
+end
+
+# =============================================================================
+# Result Unwrap
+# =============================================================================
+
+cell test_unwrap_ok() -> Bool
+  let r = ok(42)
+  return unwrap(r) == 42
+end
+
+cell test_unwrap_or_ok() -> Bool
+  let r = ok(42)
+  return unwrap_or(r, 0) == 42
+end
+
+cell test_unwrap_or_err() -> Bool
+  let r = err("error")
+  return unwrap_or(r, 0) == 0
+end
+
+# =============================================================================
+# Result with Pattern Matching
+# =============================================================================
+
+cell test_match_ok() -> Bool
+  let r = ok(42)
+  let value = match r
+    ok(v) -> v
+    err(_) -> 0
+  end
+  return value == 42
+end
+
+cell test_match_err() -> Bool
+  let r = err("not found")
+  let message = match r
+    ok(_) -> "success"
+    err(e) -> e
+  end
+  return message == "not found"
+end
+
+cell test_match_result_with_guard() -> Bool
+  let r = ok(15)
+  let result = match r
+    ok(v) if v > 10 -> "large"
+    ok(_) -> "small"
+    err(_) -> "error"
+  end
+  return result == "large"
+end
+
+# =============================================================================
+# Safe Division
+# =============================================================================
+
+cell test_safe_divide_success() -> Bool
+  cell safe_divide(a: Int, b: Int) -> result[Int, String]
+    if b == 0
+      return err("division by zero")
+    end
+    return ok(a / b)
+  end
+  
+  let r = safe_divide(10, 2)
+  return is_ok(r) and unwrap(r) == 5
+end
+
+cell test_safe_divide_error() -> Bool
+  cell safe_divide(a: Int, b: Int) -> result[Int, String]
+    if b == 0
+      return err("division by zero")
+    end
+    return ok(a / b)
+  end
+  
+  let r = safe_divide(10, 0)
+  return is_err(r)
+end
+
+cell test_safe_divide_chain() -> Bool
+  cell safe_divide(a: Int, b: Int) -> result[Int, String]
+    if b == 0
+      return err("division by zero")
+    end
+    return ok(a / b)
+  end
+  
+  cell divide_chain(a: Int, b: Int, c: Int) -> result[Int, String]
+    let r1 = safe_divide(a, b)
+    match r1
+      ok(v) -> 
+        return safe_divide(v, c)
+      err(e) -> 
+        return err(e)
+    end
+  end
+  
+  let r1 = divide_chain(100, 2, 5)
+  let r2 = divide_chain(100, 0, 5)
+  
+  return is_ok(r1) and unwrap(r1) == 10 and is_err(r2)
+end
+
+# =============================================================================
+# Option Type as Result Alternative
+# =============================================================================
+
+cell test_option_some() -> Bool
+  enum Option[T]
+    Some(T)
+    None
+  end
+  
+  let opt = Option[Int].Some(42)
+  match opt
+    Option.Some(v) -> return v == 42
+    Option.None -> return false
+  end
+end
+
+cell test_option_none() -> Bool
+  enum Option[T]
+    Some(T)
+    None
+  end
+  
+  let opt = Option[Int].None
+  match opt
+    Option.Some(_) -> return false
+    Option.None -> return true
+  end
+end
+
+cell test_find_in_list() -> Bool
+  enum Option[T]
+    Some(T)
+    None
+  end
+  
+  cell find(items: list[Int], target: Int) -> Option[Int]
+    for item in items
+      if item == target
+        return Option.Some(item)
+      end
+    end
+    return Option.None
+  end
+  
+  let found = find([1, 2, 3, 4, 5], 3)
+  let not_found = find([1, 2, 3], 10)
+  
+  match found
+    Option.Some(v) -> 
+      match not_found
+        Option.None -> return v == 3
+        _ -> return false
+      end
+    _ -> return false
+  end
+end
+
+# =============================================================================
+# Validation Functions
+# =============================================================================
+
+cell test_validate_positive() -> Bool
+  cell validate_positive(n: Int) -> result[Int, String]
+    if n <= 0
+      return err("must be positive, got {n}")
+    end
+    return ok(n)
+  end
+  
+  let r1 = validate_positive(5)
+  let r2 = validate_positive(-3)
+  
+  return is_ok(r1) and is_err(r2)
+end
+
+cell test_validate_not_empty() -> Bool
+  cell validate_not_empty(s: String) -> result[String, String]
+    if len(s) == 0
+      return err("string cannot be empty")
+    end
+    return ok(s)
+  end
+  
+  let r1 = validate_not_empty("hello")
+  let r2 = validate_not_empty("")
+  
+  return is_ok(r1) and is_err(r2)
+end
+
+cell test_validate_range() -> Bool
+  cell validate_in_range(n: Int, min: Int, max: Int) -> result[Int, String]
+    if n < min or n > max
+      return err("{n} is not in range [{min}, {max}]")
+    end
+    return ok(n)
+  end
+  
+  let r1 = validate_in_range(5, 1, 10)
+  let r2 = validate_in_range(15, 1, 10)
+  
+  return is_ok(r1) and is_err(r2)
+end
+
+# =============================================================================
+# Multiple Error Accumulation
+# =============================================================================
+
+cell test_collect_results() -> Bool
+  cell validate_field(name: String, value: String) -> result[String, String]
+    if len(value) == 0
+      return err("{name} cannot be empty")
+    end
+    return ok(value)
+  end
+  
+  let r1 = validate_field("username", "alice")
+  let r2 = validate_field("email", "")
+  let r3 = validate_field("password", "secret")
+  
+  return is_ok(r1) and is_err(r2) and is_ok(r3)
+end
+
+# =============================================================================
+# Halt
+# =============================================================================
+
+cell test_halt_execution() -> Bool
+  # halt terminates execution with an error
+  # We can't test this directly without crashing, but we verify the syntax
+  
+  cell might_halt(should_halt: Bool) -> Int
+    if should_halt
+      # halt "critical error"  # Uncomment to test actual halting
+      return -1
+    end
+    return 42
+  end
+  
+  return might_halt(false) == 42
+end
+
+# =============================================================================
+# Try/Catch Style with Result
+# =============================================================================
+
+cell test_try_block_style() -> Bool
+  cell risky_operation(n: Int) -> result[Int, String]
+    if n < 0
+      return err("negative number")
+    end
+    if n == 0
+      return err("zero not allowed")
+    end
+    return ok(100 / n)
+  end
+  
+  cell safe_compute(n: Int) -> Int
+    let r = risky_operation(n)
+    match r
+      ok(v) -> return v
+      err(_) -> return 0
+    end
+  end
+  
+  return safe_compute(2) == 50 and safe_compute(-1) == 0
+end
+
+# =============================================================================
+# Null Coalescing
+# =============================================================================
+
+cell test_null_coalescing() -> Bool
+  let x: Int | Null = null
+  let y: Int | Null = 42
+  
+  let result1 = x ?? 0
+  let result2 = y ?? 0
+  
+  return result1 == 0 and result2 == 42
+end
+
+cell test_null_coalescing_chain() -> Bool
+  let a: String | Null = null
+  let b: String | Null = null
+  let c: String | Null = "found"
+  
+  let result = a ?? b ?? c ?? "default"
+  
+  return result == "found"
+end
+
+# =============================================================================
+# Guard Expressions
+# =============================================================================
+
+cell test_guard_expression() -> Bool
+  cell process_positive(n: Int) -> result[Int, String]
+    # Guard: early return if condition not met
+    if n <= 0
+      return err("expected positive number")
+    end
+    return ok(n * 2)
+  end
+  
+  let r1 = process_positive(5)
+  let r2 = process_positive(-3)
+  
+  return is_ok(r1) and unwrap(r1) == 10 and is_err(r2)
+end
+
+cell test_guard_with_early_return() -> Bool
+  cell compute_with_guards(a: Int, b: Int) -> result[Int, String]
+    if a == 0
+      return err("a cannot be zero")
+    end
+    if b == 0
+      return err("b cannot be zero")
+    end
+    return ok(a / b)
+  end
+  
+  return is_err(compute_with_guards(0, 5)) and is_err(compute_with_guards(5, 0))
+end
+
+# =============================================================================
+# Main Test Runner
+# =============================================================================
+
+cell main() -> Null
+  print("=== Error Handling Test Suite ===")
+  print("")
+  
+  print("Testing Result Type Basics...")
+  assert test_ok_constructor()
+  assert test_err_constructor()
+  assert test_result_type_annotation()
+  assert test_result_with_different_types()
+  print("  ✓ Result Type Basics")
+  
+  print("Testing Result Predicates...")
+  assert test_is_ok_predicate()
+  assert test_is_err_predicate()
+  print("  ✓ Result Predicates")
+  
+  print("Testing Result Unwrap...")
+  assert test_unwrap_ok()
+  assert test_unwrap_or_ok()
+  assert test_unwrap_or_err()
+  print("  ✓ Result Unwrap")
+  
+  print("Testing Result with Pattern Matching...")
+  assert test_match_ok()
+  assert test_match_err()
+  assert test_match_result_with_guard()
+  print("  ✓ Result with Pattern Matching")
+  
+  print("Testing Safe Division...")
+  assert test_safe_divide_success()
+  assert test_safe_divide_error()
+  assert test_safe_divide_chain()
+  print("  ✓ Safe Division")
+  
+  print("Testing Option Type...")
+  assert test_option_some()
+  assert test_option_none()
+  assert test_find_in_list()
+  print("  ✓ Option Type")
+  
+  print("Testing Validation Functions...")
+  assert test_validate_positive()
+  assert test_validate_not_empty()
+  assert test_validate_range()
+  print("  ✓ Validation Functions")
+  
+  print("Testing Multiple Error Accumulation...")
+  assert test_collect_results()
+  print("  ✓ Multiple Error Accumulation")
+  
+  print("Testing Halt...")
+  assert test_halt_execution()
+  print("  ✓ Halt")
+  
+  print("Testing Try/Catch Style...")
+  assert test_try_block_style()
+  print("  ✓ Try/Catch Style")
+  
+  print("Testing Null Coalescing...")
+  assert test_null_coalescing()
+  assert test_null_coalescing_chain()
+  print("  ✓ Null Coalescing")
+  
+  print("Testing Guard Expressions...")
+  assert test_guard_expression()
+  assert test_guard_with_early_return()
+  print("  ✓ Guard Expressions")
+  
+  print("")
+  print("=== All Error Handling Tests Passed! ===")
+end

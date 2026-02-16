@@ -1,0 +1,538 @@
+# Functions Test Suite
+# Tests cell definitions, parameters, recursion, closures, higher-order functions
+
+# =============================================================================
+# Cell Definitions
+# =============================================================================
+
+cell test_basic_cell() -> Bool
+  cell add(a: Int, b: Int) -> Int
+    return a + b
+  end
+  return add(2, 3) == 5
+end
+
+cell test_cell_no_params() -> Bool
+  cell get_constant() -> Int
+    return 42
+  end
+  return get_constant() == 42
+end
+
+cell test_cell_no_return_type() -> Bool
+  cell say_hello()
+    print("hello")
+  end
+  say_hello()
+  return true
+end
+
+cell test_cell_multiple_params() -> Bool
+  cell concat_four(a: String, b: String, c: String, d: String) -> String
+    return a + b + c + d
+  end
+  return concat_four("a", "b", "c", "d") == "abcd"
+end
+
+cell test_cell_default_params() -> Bool
+  cell greet(name: String, greeting: String = "Hello") -> String
+    return "{greeting}, {name}!"
+  end
+  let result1 = greet("World")
+  let result2 = greet("World", "Hi")
+  return contains(result1, "Hello") and contains(result2, "Hi")
+end
+
+cell test_cell_named_args() -> Bool
+  cell divide(dividend: Int, divisor: Int) -> Int
+    return dividend / divisor
+  end
+  let result = divide(divisor: 2, dividend: 10)
+  return result == 5
+end
+
+cell test_cell_mixed_args() -> Bool
+  cell func(a: Int, b: Int, c: Int) -> Int
+    return a + b + c
+  end
+  let result = func(1, c: 3, b: 2)
+  return result == 6
+end
+
+# =============================================================================
+# Return Values
+# =============================================================================
+
+cell test_return_values() -> Bool
+  cell identity(x: Int) -> Int
+    return x
+  end
+  cell negate(x: Bool) -> Bool
+    return not x
+  end
+  return identity(42) == 42 and negate(true) == false
+end
+
+cell test_return_expression() -> Bool
+  cell double(x: Int) -> Int
+    x * 2
+  end
+  return double(5) == 10
+end
+
+cell test_return_early() -> Bool
+  cell absolute_value(x: Int) -> Int
+    if x < 0
+      return -x
+    end
+    return x
+  end
+  return absolute_value(-5) == 5 and absolute_value(5) == 5
+end
+
+# =============================================================================
+# Recursion
+# =============================================================================
+
+cell test_recursive_factorial() -> Bool
+  cell factorial(n: Int) -> Int
+    if n <= 1
+      return 1
+    end
+    return n * factorial(n - 1)
+  end
+  return factorial(0) == 1 and factorial(5) == 120
+end
+
+cell test_recursive_fibonacci() -> Bool
+  cell fib(n: Int) -> Int
+    if n < 2
+      return n
+    end
+    return fib(n - 1) + fib(n - 2)
+  end
+  return fib(0) == 0 and fib(1) == 1 and fib(10) == 55
+end
+
+cell test_recursive_sum_list() -> Bool
+  cell sum_list(items: list[Int]) -> Int
+    match items
+      [] -> return 0
+      [first, ...rest] -> return first + sum_list(rest)
+    end
+  end
+  return sum_list([]) == 0 and sum_list([1, 2, 3, 4, 5]) == 15
+end
+
+cell test_recursive_reverse() -> Bool
+  cell reverse_helper(items: list[Int], acc: list[Int]) -> list[Int]
+    match items
+      [] -> return acc
+      [first, ...rest] -> return reverse_helper(rest, append(acc, first))
+    end
+  end
+  
+  cell reverse(items: list[Int]) -> list[Int]
+    return reverse_helper(items, [])
+  end
+  
+  let result = reverse([1, 2, 3])
+  return result[0] == 3 and result[1] == 2 and result[2] == 1
+end
+
+cell test_mutual_recursion() -> Bool
+  cell is_even(n: Int) -> Bool
+    if n == 0
+      return true
+    end
+    return is_odd(n - 1)
+  end
+  
+  cell is_odd(n: Int) -> Bool
+    if n == 0
+      return false
+    end
+    return is_even(n - 1)
+  end
+  
+  return is_even(4) and not is_even(5) and is_odd(5) and not is_odd(4)
+end
+
+cell test_tail_recursive() -> Bool
+  cell sum_range(n: Int, acc: Int) -> Int
+    if n <= 0
+      return acc
+    end
+    return sum_range(n - 1, acc + n)
+  end
+  
+  return sum_range(100, 0) == 5050
+end
+
+# =============================================================================
+# Closures and Lambdas
+# =============================================================================
+
+cell test_basic_lambda() -> Bool
+  let double = fn(x: Int) -> Int => x * 2
+  return double(5) == 10 and double(3) == 6
+end
+
+cell test_lambda_block_body() -> Bool
+  let max = fn(a: Int, b: Int) -> Int
+    if a > b
+      return a
+    else
+      return b
+    end
+  end
+  return max(5, 3) == 5 and max(2, 7) == 7
+end
+
+cell test_closure_capture() -> Bool
+  let x = 10
+  let add_x = fn(y: Int) -> Int => x + y
+  return add_x(5) == 15 and add_x(3) == 13
+end
+
+cell test_closure_capture_multiple() -> Bool
+  let a = 5
+  let b = 3
+  let compute = fn(x: Int) -> Int => a * x + b
+  return compute(2) == 13  # 5*2 + 3
+end
+
+cell test_closure_mutable_capture() -> Bool
+  let mut counter = 0
+  let increment = fn() -> Int
+    counter = counter + 1
+    return counter
+  end
+  let v1 = increment()
+  let v2 = increment()
+  let v3 = increment()
+  return v1 == 1 and v2 == 2 and v3 == 3
+end
+
+cell test_nested_closure() -> Bool
+  let x = 1
+  let outer = fn() -> Int
+    let y = 2
+    let inner = fn() -> Int => x + y
+    return inner()
+  end
+  return outer() == 3
+end
+
+cell test_closure_as_return() -> Bool
+  cell make_adder(n: Int) -> fn(Int) -> Int
+    return fn(x: Int) -> Int => x + n
+  end
+  
+  let add5 = make_adder(5)
+  let add10 = make_adder(10)
+  return add5(3) == 8 and add10(3) == 13
+end
+
+cell test_closure_in_loop() -> Bool
+  let mut funcs: list[fn() -> Int] = []
+  for i in 1..4
+    let captured = i
+    funcs = append(funcs, fn() -> Int => captured * 2)
+  end
+  
+  let results = [funcs[0](), funcs[1](), funcs[2]()]
+  return results[0] == 2 and results[1] == 4 and results[2] == 6
+end
+
+# =============================================================================
+# Higher-Order Functions
+# =============================================================================
+
+cell test_hof_map() -> Bool
+  cell my_map(items: list[Int], f: fn(Int) -> Int) -> list[Int]
+    let mut result: list[Int] = []
+    for x in items
+      result = append(result, f(x))
+    end
+    return result
+  end
+  
+  let doubled = my_map([1, 2, 3], fn(x) => x * 2)
+  return doubled[0] == 2 and doubled[1] == 4 and doubled[2] == 6
+end
+
+cell test_hof_filter() -> Bool
+  cell my_filter(items: list[Int], pred: fn(Int) -> Bool) -> list[Int]
+    let mut result: list[Int] = []
+    for x in items
+      if pred(x)
+        result = append(result, x)
+      end
+    end
+    return result
+  end
+  
+  let evens = my_filter([1, 2, 3, 4, 5, 6], fn(x) => x % 2 == 0)
+  return len(evens) == 3 and evens[0] == 2
+end
+
+cell test_hof_reduce() -> Bool
+  cell my_reduce(items: list[Int], f: fn(Int, Int) -> Int, init: Int) -> Int
+    let mut acc = init
+    for x in items
+      acc = f(acc, x)
+    end
+    return acc
+  end
+  
+  let sum = my_reduce([1, 2, 3, 4, 5], fn(a, b) => a + b, 0)
+  let product = my_reduce([1, 2, 3, 4], fn(a, b) => a * b, 1)
+  return sum == 15 and product == 24
+end
+
+cell test_hof_compose() -> Bool
+  cell compose[A, B, C](f: fn(B) -> C, g: fn(A) -> B) -> fn(A) -> C
+    return fn(x: A) -> C => f(g(x))
+  end
+  
+  let double = fn(x: Int) => x * 2
+  let add_one = fn(x: Int) => x + 1
+  let double_then_add = compose(add_one, double)
+  
+  return double_then_add(5) == 11  # (5*2)+1
+end
+
+cell test_hof_callback() -> Bool
+  cell with_callback(value: Int, callback: fn(Int) -> Null) -> Null
+    callback(value)
+  end
+  
+  let mut captured = 0
+  with_callback(42, fn(x) => { captured = x; })
+  return captured == 42
+end
+
+cell test_hof_returning_function() -> Bool
+  cell multiplier(factor: Int) -> fn(Int) -> Int
+    return fn(x: Int) => x * factor
+  end
+  
+  let triple = multiplier(3)
+  let quadruple = multiplier(4)
+  
+  return triple(5) == 15 and quadruple(5) == 20
+end
+
+# =============================================================================
+# Generic Functions
+# =============================================================================
+
+cell test_generic_identity() -> Bool
+  cell identity[T](x: T) -> T
+    return x
+  end
+  
+  let i = identity(42)
+  let s = identity("hello")
+  return i == 42 and s == "hello"
+end
+
+cell test_generic_pair() -> Bool
+  record Pair[A, B]
+    first: A
+    second: B
+  end
+  
+  cell make_pair[A, B](a: A, b: B) -> Pair[A, B]
+    return Pair(first: a, second: b)
+  end
+  
+  let p1 = make_pair(1, "one")
+  let p2 = make_pair(true, 3.14)
+  
+  return p1.first == 1 and p1.second == "one" and p2.first == true
+end
+
+cell test_generic_swap() -> Bool
+  cell swap[A, B](a: A, b: B) -> tuple[B, A]
+    return (b, a)
+  end
+  
+  let result = swap(1, "one")
+  return result[0] == "one" and result[1] == 1
+end
+
+# =============================================================================
+# Pipe Operator
+# =============================================================================
+
+cell test_pipe_operator() -> Bool
+  cell double(x: Int) -> Int
+    return x * 2
+  end
+  
+  cell add(a: Int, b: Int) -> Int
+    return a + b
+  end
+  
+  let result = 5 |> double() |> add(3)
+  return result == 13  # (5*2)+3
+end
+
+cell test_pipe_chain() -> Bool
+  cell add_one(x: Int) -> Int
+    return x + 1
+  end
+  
+  cell multiply_by_two(x: Int) -> Int
+    return x * 2
+  end
+  
+  let result = 5 |> add_one() |> multiply_by_two() |> add_one()
+  return result == 13  # ((5+1)*2)+1
+end
+
+# =============================================================================
+# Compose Operator
+# =============================================================================
+
+cell test_compose_operator() -> Bool
+  cell double(x: Int) -> Int
+    return x * 2
+  end
+  
+  cell add_one(x: Int) -> Int
+    return x + 1
+  end
+  
+  let transform = double ~> add_one
+  return transform(5) == 11  # (5*2)+1
+end
+
+# =============================================================================
+# Async Functions
+# =============================================================================
+
+cell test_async_function() -> Bool
+  async cell fetch_value() -> Int
+    return 42
+  end
+  
+  let future = fetch_value()
+  let result = await future
+  return result == 42
+end
+
+cell test_async_with_params() -> Bool
+  async cell async_add(a: Int, b: Int) -> Int
+    return a + b
+  end
+  
+  let result = await async_add(3, 4)
+  return result == 7
+end
+
+cell test_spawn_function() -> Bool
+  cell compute(x: Int) -> Int
+    return x * x
+  end
+  
+  let future = spawn compute(5)
+  let result = await future
+  return result == 25
+end
+
+# =============================================================================
+# Extern Functions
+# =============================================================================
+
+cell test_extern_declaration() -> Bool
+  # Extern declarations are parsed but not executed
+  extern cell external_func(x: Int) -> Int
+  
+  # Just verify the declaration compiles
+  return true
+end
+
+# =============================================================================
+# Main Test Runner
+# =============================================================================
+
+cell main() -> Null
+  print("=== Functions Test Suite ===")
+  print("")
+  
+  print("Testing Cell Definitions...")
+  assert test_basic_cell()
+  assert test_cell_no_params()
+  assert test_cell_no_return_type()
+  assert test_cell_multiple_params()
+  assert test_cell_default_params()
+  assert test_cell_named_args()
+  assert test_cell_mixed_args()
+  print("  ✓ Cell Definitions")
+  
+  print("Testing Return Values...")
+  assert test_return_values()
+  assert test_return_expression()
+  assert test_return_early()
+  print("  ✓ Return Values")
+  
+  print("Testing Recursion...")
+  assert test_recursive_factorial()
+  assert test_recursive_fibonacci()
+  assert test_recursive_sum_list()
+  assert test_recursive_reverse()
+  assert test_mutual_recursion()
+  assert test_tail_recursive()
+  print("  ✓ Recursion")
+  
+  print("Testing Closures and Lambdas...")
+  assert test_basic_lambda()
+  assert test_lambda_block_body()
+  assert test_closure_capture()
+  assert test_closure_capture_multiple()
+  assert test_closure_mutable_capture()
+  assert test_nested_closure()
+  assert test_closure_as_return()
+  assert test_closure_in_loop()
+  print("  ✓ Closures and Lambdas")
+  
+  print("Testing Higher-Order Functions...")
+  assert test_hof_map()
+  assert test_hof_filter()
+  assert test_hof_reduce()
+  assert test_hof_compose()
+  assert test_hof_callback()
+  assert test_hof_returning_function()
+  print("  ✓ Higher-Order Functions")
+  
+  print("Testing Generic Functions...")
+  assert test_generic_identity()
+  assert test_generic_pair()
+  assert test_generic_swap()
+  print("  ✓ Generic Functions")
+  
+  print("Testing Pipe Operator...")
+  assert test_pipe_operator()
+  assert test_pipe_chain()
+  print("  ✓ Pipe Operator")
+  
+  print("Testing Compose Operator...")
+  assert test_compose_operator()
+  print("  ✓ Compose Operator")
+  
+  print("Testing Async Functions...")
+  assert test_async_function()
+  assert test_async_with_params()
+  assert test_spawn_function()
+  print("  ✓ Async Functions")
+  
+  print("Testing Extern Functions...")
+  assert test_extern_declaration()
+  print("  ✓ Extern Functions")
+  
+  print("")
+  print("=== All Functions Tests Passed! ===")
+end

@@ -1,0 +1,576 @@
+# Pattern Matching Test Suite
+# Tests let destructuring, match arms, guards, exhaustiveness
+
+# =============================================================================
+# Let Destructuring
+# =============================================================================
+
+cell test_tuple_destructure() -> Bool
+  let (a, b) = (1, 2)
+  return a == 1 and b == 2
+end
+
+cell test_tuple_destructure_three() -> Bool
+  let (x, y, z) = (10, 20, 30)
+  return x == 10 and y == 20 and z == 30
+end
+
+cell test_nested_tuple_destructure() -> Bool
+  let ((a, b), c) = ((1, 2), 3)
+  return a == 1 and b == 2 and c == 3
+end
+
+cell test_list_destructure() -> Bool
+  let [first, second, ...rest] = [1, 2, 3, 4, 5]
+  return first == 1 and second == 2 and len(rest) == 3
+end
+
+cell test_list_destructure_head_tail() -> Bool
+  let [head, ...tail] = [10, 20, 30]
+  return head == 10 and len(tail) == 2 and tail[0] == 20
+end
+
+cell test_list_destructure_empty_rest() -> Bool
+  let [only, ...rest] = [42]
+  return only == 42 and len(rest) == 0
+end
+
+cell test_record_destructure() -> Bool
+  record Point
+    x: Int
+    y: Int
+  end
+  
+  let Point(x: px, y: py) = Point(x: 3, y: 4)
+  return px == 3 and py == 4
+end
+
+cell test_enum_destructure() -> Bool
+  enum Option[T]
+    Some(T)
+    None
+  end
+  
+  let opt = Option[Int].Some(42)
+  match opt
+    Option.Some(value) -> return value == 42
+    Option.None -> return false
+  end
+end
+
+cell test_destructure_with_type() -> Bool
+  let (n: Int, s: String) = (42, "hello")
+  return n == 42 and s == "hello"
+end
+
+cell test_wildcard_pattern() -> Bool
+  let (a, _, c) = (1, 2, 3)
+  return a == 1 and c == 3
+end
+
+cell test_ignored_binding() -> Bool
+  let [first, _, third] = [10, 20, 30]
+  return first == 10 and third == 30
+end
+
+# =============================================================================
+# Match Literal Patterns
+# =============================================================================
+
+cell test_match_int_literal() -> Bool
+  let x = 5
+  let result = match x
+    1 -> "one"
+    5 -> "five"
+    10 -> "ten"
+    _ -> "other"
+  end
+  return result == "five"
+end
+
+cell test_match_string_literal() -> Bool
+  let s = "hello"
+  let result = match s
+    "world" -> "greeting"
+    "hello" -> "salutation"
+    _ -> "unknown"
+  end
+  return result == "salutation"
+end
+
+cell test_match_bool_literal() -> Bool
+  let b = true
+  let result = match b
+    true -> "yes"
+    false -> "no"
+  end
+  return result == "yes"
+end
+
+# =============================================================================
+# Match Enum Patterns
+# =============================================================================
+
+cell test_match_enum_simple() -> Bool
+  enum Color
+    Red
+    Green
+    Blue
+  end
+  
+  let c = Color.Green
+  let result = match c
+    Color.Red -> "red"
+    Color.Green -> "green"
+    Color.Blue -> "blue"
+  end
+  return result == "green"
+end
+
+cell test_match_enum_payload() -> Bool
+  enum Shape
+    Circle(radius: Float)
+    Rectangle(width: Float, height: Float)
+    Point
+  end
+  
+  let s = Shape.Circle(radius: 5.0)
+  let result = match s
+    Shape.Circle(r) -> "circle with r={r}"
+    Shape.Rectangle(w, h) -> "rect {w}x{h}"
+    Shape.Point -> "point"
+  end
+  return contains(result, "circle")
+end
+
+cell test_match_enum_nested_payload() -> Bool
+  enum Wrapper[T]
+    Value(T)
+    Empty
+  end
+  
+  enum Inner
+    Data(x: Int)
+    Void
+  end
+  
+  let w = Wrapper[Inner].Value(Inner.Data(x: 42))
+  let result = match w
+    Wrapper.Value(Inner.Data(x)) -> "data:{x}"
+    Wrapper.Value(Inner.Void) -> "void"
+    Wrapper.Empty -> "empty"
+  end
+  return result == "data:42"
+end
+
+# =============================================================================
+# Match List Patterns
+# =============================================================================
+
+cell test_match_empty_list() -> Bool
+  let items: list[Int] = []
+  let result = match items
+    [] -> "empty"
+    _ -> "not empty"
+  end
+  return result == "empty"
+end
+
+cell test_match_list_single() -> Bool
+  let items = [42]
+  let result = match items
+    [x] -> "single:{x}"
+    _ -> "other"
+  end
+  return result == "single:42"
+end
+
+cell test_match_list_head_tail() -> Bool
+  let items = [1, 2, 3, 4]
+  let result = match items
+    [head, ...tail] -> "head={head}, tail_len={len(tail)}"
+    [] -> "empty"
+  end
+  return contains(result, "head=1") and contains(result, "tail_len=3")
+end
+
+cell test_match_list_fixed_length() -> Bool
+  let items = [1, 2, 3]
+  let result = match items
+    [a, b, c] -> "three:{a},{b},{c}"
+    _ -> "other"
+  end
+  return result == "three:1,2,3"
+end
+
+cell test_match_list_with_wildcard() -> Bool
+  let items = [1, 2, 3]
+  let result = match items
+    [_, 2, _] -> "middle is 2"
+    _ -> "other"
+  end
+  return result == "middle is 2"
+end
+
+# =============================================================================
+# Match Tuple Patterns
+# =============================================================================
+
+cell test_match_tuple() -> Bool
+  let t = (1, "hello")
+  let result = match t
+    (0, _) -> "zero"
+    (1, s) -> "one with {s}"
+    (_, _) -> "other"
+  end
+  return result == "one with hello"
+end
+
+cell test_match_tuple_three() -> Bool
+  let t = (1, 2, 3)
+  let result = match t
+    (a, b, c) -> "sum={a+b+c}"
+  end
+  return result == "sum=6"
+end
+
+cell test_match_nested_tuple() -> Bool
+  let t = ((1, 2), (3, 4))
+  let result = match t
+    ((a, b), (c, d)) -> "sum={a+b+c+d}"
+  end
+  return result == "sum=10"
+end
+
+# =============================================================================
+# Match Record Patterns
+# =============================================================================
+
+cell test_match_record() -> Bool
+  record Person
+    name: String
+    age: Int
+  end
+  
+  let p = Person(name: "Alice", age: 30)
+  let result = match p
+    Person(name: n, age: a) -> "{n} is {a}"
+  end
+  return result == "Alice is 30"
+end
+
+cell test_match_record_partial() -> Bool
+  record Point
+    x: Int
+    y: Int
+  end
+  
+  let p = Point(x: 3, y: 4)
+  let result = match p
+    Point(x: 0, y: _) -> "on y-axis"
+    Point(x: _, y: 0) -> "on x-axis"
+    Point(x: _, y: _) -> "somewhere"
+  end
+  return result == "somewhere"
+end
+
+cell test_match_record_nested() -> Bool
+  record Address
+    city: String
+    country: String
+  end
+  
+  record Contact
+    name: String
+    address: Address
+  end
+  
+  let c = Contact(name: "Bob", address: Address(city: "NYC", country: "USA"))
+  let result = match c
+    Contact(name: n, address: Address(city: ct, country: _)) -> "{n} in {ct}"
+  end
+  return result == "Bob in NYC"
+end
+
+# =============================================================================
+# Match Guards
+# =============================================================================
+
+cell test_match_guard_simple() -> Bool
+  let x = 15
+  let result = match x
+    n if n < 10 -> "small"
+    n if n < 20 -> "medium"
+    n if n < 100 -> "large"
+    _ -> "huge"
+  end
+  return result == "medium"
+end
+
+cell test_match_guard_on_enum() -> Bool
+  enum Value
+    Number(n: Int)
+    Text(s: String)
+  end
+  
+  let v = Value.Number(n: 15)
+  let result = match v
+    Value.Number(n) if n < 10 -> "small number"
+    Value.Number(n) if n < 20 -> "medium number"
+    Value.Number(_) -> "large number"
+    Value.Text(_) -> "text"
+  end
+  return result == "medium number"
+end
+
+cell test_match_guard_multiple_conditions() -> Bool
+  let p = (10, 20)
+  let result = match p
+    (x, y) if x > 0 and y > 0 -> "positive"
+    (x, y) if x < 0 or y < 0 -> "negative"
+    _ -> "zero"
+  end
+  return result == "positive"
+end
+
+# =============================================================================
+# Or Patterns
+# =============================================================================
+
+cell test_or_pattern() -> Bool
+  enum Color
+    Red
+    Green
+    Blue
+    Yellow
+  end
+  
+  let c = Color.Green
+  let result = match c
+    Color.Red | Color.Green -> "primary"
+    Color.Blue | Color.Yellow -> "other"
+  end
+  return result == "primary"
+end
+
+cell test_or_pattern_with_binding() -> Bool
+  enum Result
+    Success(code: Int)
+    Error(code: Int)
+  end
+  
+  let r = Result.Error(code: 404)
+  let result = match r
+    Result.Success(c) | Result.Error(c) if c == 200 -> "ok"
+    Result.Success(_) | Result.Error(_) -> "other"
+  end
+  return result == "other"
+end
+
+# =============================================================================
+# Match Exhaustiveness
+# =============================================================================
+
+cell test_exhaustive_enum() -> Bool
+  enum Status
+    Pending
+    Running
+    Complete
+  end
+  
+  let s = Status.Running
+  let result = match s
+    Status.Pending -> "wait"
+    Status.Running -> "work"
+    Status.Complete -> "done"
+  end
+  return result == "work"
+end
+
+cell test_exhaustive_with_wildcard() -> Bool
+  enum Color
+    Red
+    Green
+    Blue
+  end
+  
+  let c = Color.Yellow  # This won't compile if Color doesn't have Yellow
+  # Using wildcard makes it exhaustive
+  let result = match Color.Red
+    Color.Red -> "red"
+    _ -> "not red"
+  end
+  return result == "red"
+end
+
+# =============================================================================
+# As Patterns
+# =============================================================================
+
+cell test_as_pattern() -> Bool
+  let x: Int | String = 42
+  let result = match x
+    n: Int -> "integer"
+    s: String -> "string"
+  end
+  return result == "integer"
+end
+
+# =============================================================================
+# Range Patterns
+# =============================================================================
+
+cell test_range_pattern() -> Bool
+  let x = 15
+  let result = match x
+    0..10 -> "small"
+    10..20 -> "medium"
+    _ -> "large"
+  end
+  return result == "medium"
+end
+
+cell test_inclusive_range_pattern() -> Bool
+  let x = 10
+  let result = match x
+    1..=10 -> "ten or less"
+    _ -> "more than ten"
+  end
+  return result == "ten or less"
+end
+
+# =============================================================================
+# Complex Nested Patterns
+# =============================================================================
+
+cell test_complex_nested() -> Bool
+  enum Result[T]
+    Ok(T)
+    Err(String)
+  end
+  
+  enum Option[T]
+    Some(T)
+    None
+  end
+  
+  let r = Result[Option[Int]].Ok(Option[Int].Some(42))
+  
+  let value = match r
+    Result.Ok(Option.Some(n)) -> n
+    Result.Ok(Option.None) -> 0
+    Result.Err(_) -> -1
+  end
+  
+  return value == 42
+end
+
+cell test_deeply_nested() -> Bool
+  record A
+    b: B
+  end
+  
+  record B
+    c: C
+  end
+  
+  record C
+    value: Int
+  end
+  
+  let a = A(b: B(c: C(value: 100)))
+  
+  let result = match a
+    A(b: B(c: C(value: v))) -> v * 2
+  end
+  
+  return result == 200
+end
+
+# =============================================================================
+# Main Test Runner
+# =============================================================================
+
+cell main() -> Null
+  print("=== Pattern Matching Test Suite ===")
+  print("")
+  
+  print("Testing Let Destructuring...")
+  assert test_tuple_destructure()
+  assert test_tuple_destructure_three()
+  assert test_nested_tuple_destructure()
+  assert test_list_destructure()
+  assert test_list_destructure_head_tail()
+  assert test_list_destructure_empty_rest()
+  assert test_record_destructure()
+  assert test_enum_destructure()
+  assert test_destructure_with_type()
+  assert test_wildcard_pattern()
+  assert test_ignored_binding()
+  print("  ✓ Let Destructuring")
+  
+  print("Testing Match Literal Patterns...")
+  assert test_match_int_literal()
+  assert test_match_string_literal()
+  assert test_match_bool_literal()
+  print("  ✓ Match Literal Patterns")
+  
+  print("Testing Match Enum Patterns...")
+  assert test_match_enum_simple()
+  assert test_match_enum_payload()
+  assert test_match_enum_nested_payload()
+  print("  ✓ Match Enum Patterns")
+  
+  print("Testing Match List Patterns...")
+  assert test_match_empty_list()
+  assert test_match_list_single()
+  assert test_match_list_head_tail()
+  assert test_match_list_fixed_length()
+  assert test_match_list_with_wildcard()
+  print("  ✓ Match List Patterns")
+  
+  print("Testing Match Tuple Patterns...")
+  assert test_match_tuple()
+  assert test_match_tuple_three()
+  assert test_match_nested_tuple()
+  print("  ✓ Match Tuple Patterns")
+  
+  print("Testing Match Record Patterns...")
+  assert test_match_record()
+  assert test_match_record_partial()
+  assert test_match_record_nested()
+  print("  ✓ Match Record Patterns")
+  
+  print("Testing Match Guards...")
+  assert test_match_guard_simple()
+  assert test_match_guard_on_enum()
+  assert test_match_guard_multiple_conditions()
+  print("  ✓ Match Guards")
+  
+  print("Testing Or Patterns...")
+  assert test_or_pattern()
+  assert test_or_pattern_with_binding()
+  print("  ✓ Or Patterns")
+  
+  print("Testing Exhaustiveness...")
+  assert test_exhaustive_enum()
+  assert test_exhaustive_with_wildcard()
+  print("  ✓ Exhaustiveness")
+  
+  print("Testing As Patterns...")
+  assert test_as_pattern()
+  print("  ✓ As Patterns")
+  
+  print("Testing Range Patterns...")
+  assert test_range_pattern()
+  assert test_inclusive_range_pattern()
+  print("  ✓ Range Patterns")
+  
+  print("Testing Complex Nested Patterns...")
+  assert test_complex_nested()
+  assert test_deeply_nested()
+  print("  ✓ Complex Nested Patterns")
+  
+  print("")
+  print("=== All Pattern Matching Tests Passed! ===")
+end

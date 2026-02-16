@@ -1,0 +1,548 @@
+# Control Flow Test Suite
+# Tests if/else, for loops, while loops, break/continue, match expressions
+
+# =============================================================================
+# If/Else Expressions
+# =============================================================================
+
+cell test_simple_if() -> Bool
+  let x = 10
+  if x > 5
+    return true
+  end
+  return false
+end
+
+cell test_if_else() -> Bool
+  let x = 3
+  if x > 5
+    return false
+  else
+    return true
+  end
+end
+
+cell test_if_elseif_else() -> Bool
+  let score = 75
+  let grade = ""
+  if score >= 90
+    grade = "A"
+  else
+    if score >= 80
+      grade = "B"
+    else
+      if score >= 70
+        grade = "C"
+      else
+        if score >= 60
+          grade = "D"
+        else
+          grade = "F"
+        end
+      end
+    end
+  end
+  return grade == "C"
+end
+
+cell test_nested_if() -> Bool
+  let a = 5
+  let b = 10
+  if a > 0
+    if b > 0
+      return true
+    end
+  end
+  return false
+end
+
+cell test_if_with_expressions() -> Bool
+  let x = 10
+  let y = 20
+  let result = if x < y then x else y
+  return result == 10
+end
+
+cell test_if_truthiness() -> Bool
+  if 1
+    if "hello"
+      if [1, 2, 3]
+        return true
+      end
+    end
+  end
+  return false
+end
+
+cell test_if_falsy_values() -> Bool
+  let result = 0
+  if 0
+    result = 1
+  else
+    result = 2
+  end
+  if ""
+    result = 3
+  else
+    result = 4
+  end
+  return result == 4
+end
+
+# =============================================================================
+# For Loops
+# =============================================================================
+
+cell test_for_over_list() -> Bool
+  let items = [1, 2, 3, 4, 5]
+  let mut sum = 0
+  for x in items
+    sum += x
+  end
+  return sum == 15
+end
+
+cell test_for_over_range() -> Bool
+  let mut sum = 0
+  for i in 1..10  # exclusive end
+    sum += i
+  end
+  return sum == 45  # 1+2+...+9
+end
+
+cell test_for_over_inclusive_range() -> Bool
+  let mut sum = 0
+  for i in 1..=10  # inclusive end
+    sum += i
+  end
+  return sum == 55  # 1+2+...+10
+end
+
+cell test_for_with_filter() -> Bool
+  let items = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+  let mut sum = 0
+  for x in items if x % 2 == 0
+    sum += x
+  end
+  return sum == 30  # 2+4+6+8+10
+end
+
+cell test_for_with_string_list() -> Bool
+  let words = ["hello", "world", "test"]
+  let mut result = ""
+  for word in words
+    result = result + word
+  end
+  return result == "helloworldtest"
+end
+
+cell test_nested_for() -> Bool
+  let mut sum = 0
+  for i in 1..3
+    for j in 1..3
+      sum += i * j
+    end
+  end
+  return sum == 9  # (1*1 + 1*2) + (2*1 + 2*2) = 3 + 6 = 9 (wait, 1..3 is exclusive, so 1,2)
+end
+
+cell test_empty_for() -> Bool
+  let items: list[Int] = []
+  let mut count = 0
+  for x in items
+    count += 1
+  end
+  return count == 0
+end
+
+cell test_for_with_break() -> Bool
+  let mut sum = 0
+  for i in 1..100
+    if i > 5
+      break
+    end
+    sum += i
+  end
+  return sum == 15  # 1+2+3+4+5
+end
+
+cell test_for_with_continue() -> Bool
+  let mut sum = 0
+  for i in 1..10
+    if i % 2 == 0
+      continue
+    end
+    sum += i
+  end
+  return sum == 25  # 1+3+5+7+9
+end
+
+cell test_labeled_for_break() -> Bool
+  let mut count = 0
+  for @outer i in 1..10
+    for j in 1..10
+      count += 1
+      if count >= 5
+        break @outer
+      end
+    end
+  end
+  return count == 5
+end
+
+cell test_labeled_for_continue() -> Bool
+  let mut outer_count = 0
+  let mut inner_count = 0
+  for @outer i in 1..3
+    outer_count += 1
+    for j in 1..3
+      inner_count += 1
+      if j == 2
+        continue @outer
+      end
+    end
+  end
+  return outer_count == 3 and inner_count == 5  # outer: 3 iterations, inner: 1+1+3=5
+end
+
+# =============================================================================
+# While Loops
+# =============================================================================
+
+cell test_simple_while() -> Bool
+  let mut i = 0
+  let mut sum = 0
+  while i < 10
+    sum += i
+    i += 1
+  end
+  return sum == 45
+end
+
+cell test_while_condition() -> Bool
+  let mut count = 5
+  while count > 0
+    count -= 1
+  end
+  return count == 0
+end
+
+cell test_while_with_break() -> Bool
+  let mut i = 0
+  let mut sum = 0
+  while i < 100
+    if i > 5
+      break
+    end
+    sum += i
+    i += 1
+  end
+  return sum == 15  # 0+1+2+3+4+5
+end
+
+cell test_while_with_continue() -> Bool
+  let mut i = 0
+  let mut sum = 0
+  while i < 10
+    i += 1
+    if i % 2 == 0
+      continue
+    end
+    sum += i
+  end
+  return sum == 25  # 1+3+5+7+9
+end
+
+cell test_while_never_executes() -> Bool
+  let mut count = 0
+  while false
+    count += 1
+  end
+  return count == 0
+end
+
+# =============================================================================
+# Loop (Infinite) with Break
+# =============================================================================
+
+cell test_loop_with_break() -> Bool
+  let mut count = 0
+  loop
+    count += 1
+    if count >= 5
+      break
+    end
+  end
+  return count == 5
+end
+
+cell test_loop_with_break_value() -> Bool
+  let mut i = 0
+  let result = loop
+    i += 1
+    if i >= 5
+      break i * 2
+    end
+  end
+  return result == 10
+end
+
+cell test_nested_loop() -> Bool
+  let mut outer = 0
+  let mut inner = 0
+  loop
+    outer += 1
+    if outer > 3
+      break
+    end
+    loop
+      inner += 1
+      if inner >= 5
+        break
+      end
+    end
+  end
+  return outer == 4 and inner == 5
+end
+
+# =============================================================================
+# Match Expressions
+# =============================================================================
+
+cell test_match_literal() -> Bool
+  let x = 3
+  let result = match x
+    1 -> "one"
+    2 -> "two"
+    3 -> "three"
+    _ -> "other"
+  end
+  return result == "three"
+end
+
+cell test_match_enum() -> Bool
+  enum Color
+    Red
+    Green
+    Blue
+  end
+  
+  let c = Color.Green
+  let result = match c
+    Color.Red -> "red"
+    Color.Green -> "green"
+    Color.Blue -> "blue"
+  end
+  return result == "green"
+end
+
+cell test_match_with_payload() -> Bool
+  enum Shape
+    Circle(radius: Float)
+    Rectangle(width: Float, height: Float)
+    Point
+  end
+  
+  let s = Shape.Circle(radius: 5.0)
+  let result = match s
+    Shape.Circle(r) -> "circle:{r}"
+    Shape.Rectangle(w, h) -> "rect:{w}x{h}"
+    Shape.Point -> "point"
+  end
+  return contains(result, "circle")
+end
+
+cell test_match_list() -> Bool
+  let items = [1, 2, 3]
+  let result = match items
+    [] -> "empty"
+    [a] -> "one:{a}"
+    [a, b] -> "two:{a},{b}"
+    [a, ...rest] -> "many:{a},{len(rest)}"
+  end
+  return result == "many:1,2"
+end
+
+cell test_match_tuple() -> Bool
+  let t = (1, "hello")
+  let result = match t
+    (0, _) -> "zero"
+    (1, s) -> "one:{s}"
+    (_, _) -> "other"
+  end
+  return result == "one:hello"
+end
+
+cell test_match_with_guard() -> Bool
+  let x = 15
+  let result = match x
+    n if n < 10 -> "small"
+    n if n < 20 -> "medium"
+    _ -> "large"
+  end
+  return result == "medium"
+end
+
+cell test_match_wildcard() -> Bool
+  let x = 100
+  let result = match x
+    1 -> "one"
+    _ -> "not one"
+  end
+  return result == "not one"
+end
+
+cell test_nested_match() -> Bool
+  enum Option[T]
+    Some(T)
+    None
+  end
+  
+  let opt = Option.Some(42)
+  let result = match opt
+    Option.Some(v) -> match v
+      42 -> "forty-two"
+      _ -> "other"
+    end
+    Option.None -> "none"
+  end
+  return result == "forty-two"
+end
+
+# =============================================================================
+# When Expression
+# =============================================================================
+
+cell test_when_expression() -> Bool
+  let score = 85
+  let grade = when
+    score >= 90 -> "A"
+    score >= 80 -> "B"
+    score >= 70 -> "C"
+    score >= 60 -> "D"
+    _ -> "F"
+  end
+  return grade == "B"
+end
+
+cell test_when_with_conditions() -> Bool
+  let x = 15
+  let result = when
+    x < 0 -> "negative"
+    x == 0 -> "zero"
+    x < 10 -> "single digit"
+    x < 100 -> "double digit"
+    _ -> "big"
+  end
+  return result == "double digit"
+end
+
+# =============================================================================
+# Return and Halt
+# =============================================================================
+
+cell test_early_return() -> Bool
+  let x = 5
+  if x > 3
+    return true
+  end
+  return false
+end
+
+cell test_return_in_loop() -> Bool
+  for i in 1..100
+    if i == 5
+      return true
+    end
+  end
+  return false
+end
+
+cell test_multiple_return_paths() -> Bool
+  cell helper(n: Int) -> String
+    if n < 0
+      return "negative"
+    end
+    if n == 0
+      return "zero"
+    end
+    if n > 0
+      return "positive"
+    end
+    return "unreachable"
+  end
+  
+  return helper(-1) == "negative" and helper(0) == "zero" and helper(1) == "positive"
+end
+
+# =============================================================================
+# Main Test Runner
+# =============================================================================
+
+cell main() -> Null
+  print("=== Control Flow Test Suite ===")
+  print("")
+  
+  print("Testing If/Else Expressions...")
+  assert test_simple_if()
+  assert test_if_else()
+  assert test_if_elseif_else()
+  assert test_nested_if()
+  assert test_if_with_expressions()
+  assert test_if_truthiness()
+  assert test_if_falsy_values()
+  print("  ✓ If/Else Expressions")
+  
+  print("Testing For Loops...")
+  assert test_for_over_list()
+  assert test_for_over_range()
+  assert test_for_over_inclusive_range()
+  assert test_for_with_filter()
+  assert test_for_with_string_list()
+  assert test_nested_for()
+  assert test_empty_for()
+  assert test_for_with_break()
+  assert test_for_with_continue()
+  assert test_labeled_for_break()
+  assert test_labeled_for_continue()
+  print("  ✓ For Loops")
+  
+  print("Testing While Loops...")
+  assert test_simple_while()
+  assert test_while_condition()
+  assert test_while_with_break()
+  assert test_while_with_continue()
+  assert test_while_never_executes()
+  print("  ✓ While Loops")
+  
+  print("Testing Loop (Infinite)...")
+  assert test_loop_with_break()
+  assert test_loop_with_break_value()
+  assert test_nested_loop()
+  print("  ✓ Loop Expressions")
+  
+  print("Testing Match Expressions...")
+  assert test_match_literal()
+  assert test_match_enum()
+  assert test_match_with_payload()
+  assert test_match_list()
+  assert test_match_tuple()
+  assert test_match_with_guard()
+  assert test_match_wildcard()
+  assert test_nested_match()
+  print("  ✓ Match Expressions")
+  
+  print("Testing When Expression...")
+  assert test_when_expression()
+  assert test_when_with_conditions()
+  print("  ✓ When Expressions")
+  
+  print("Testing Return and Control Transfer...")
+  assert test_early_return()
+  assert test_return_in_loop()
+  assert test_multiple_return_paths()
+  print("  ✓ Return and Control Transfer")
+  
+  print("")
+  print("=== All Control Flow Tests Passed! ===")
+end

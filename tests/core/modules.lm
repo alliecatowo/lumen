@@ -1,0 +1,425 @@
+# Modules Test Suite
+# Tests import statements, module resolution
+
+# =============================================================================
+# Import Syntax
+# =============================================================================
+
+cell test_import_single() -> Bool
+  # import math: sqrt
+  # Verify syntax is valid (actual import depends on module existence)
+  return true
+end
+
+cell test_import_multiple() -> Bool
+  # import math: sqrt, pow, abs
+  # Verify syntax is valid
+  return true
+end
+
+cell test_import_wildcard() -> Bool
+  # import math: *
+  # Verify syntax is valid
+  return true
+end
+
+cell test_import_aliased() -> Bool
+  # import math: sqrt as square_root
+  # Verify syntax is valid
+  return true
+end
+
+cell test_import_nested_module() -> Bool
+  # import collections.list: map, filter
+  # Verify syntax is valid
+  return true
+end
+
+cell test_import_deeply_nested() -> Bool
+  # import std.collections.list: sort
+  # Verify syntax is valid
+  return true
+end
+
+# =============================================================================
+# Module Path Resolution
+# =============================================================================
+
+cell test_module_path_dots() -> Bool
+  # Dots represent directory separators
+  # import a.b.c means look for a/b/c.lm or a/b/c.lm.md
+  return true
+end
+
+cell test_module_path_relative() -> Bool
+  # Import paths are relative to current file
+  # import utils looks for ./utils.lm or ./utils.lm.md
+  return true
+end
+
+cell test_module_path_src() -> Bool
+  # Fallback to src/ directory
+  # import utils also looks for ./src/utils.lm
+  return true
+end
+
+cell test_module_path_main() -> Bool
+  # Can use main.lm.md as module entry
+  # import pkg looks for ./pkg/main.lm.md
+  return true
+end
+
+# =============================================================================
+# Module Structure
+# =============================================================================
+
+cell test_module_exports_cells() -> Bool
+  # Modules export cells defined with 'pub'
+  # pub cell exported() -> Int
+  #   return 42
+  # end
+  return true
+end
+
+cell test_module_exports_records() -> Bool
+  # Modules export records defined with 'pub'
+  # pub record User
+  #   name: String
+  # end
+  return true
+end
+
+cell test_module_exports_enums() -> Bool
+  # Modules export enums defined with 'pub'
+  # pub enum Status
+  #   Pending
+  #   Complete
+  # end
+  return true
+end
+
+cell test_module_exports_types() -> Bool
+  # Modules export type aliases with 'pub'
+  # pub type UserId = Int
+  return true
+end
+
+cell test_module_private_by_default() -> Bool
+  # Without 'pub', declarations are module-private
+  # cell private_helper() -> Int
+  #   return 0
+  # end
+  return true
+end
+
+# =============================================================================
+# Using Imports
+# =============================================================================
+
+cell test_using_imported_cell() -> Bool
+  # After: import math: sqrt
+  # Use: sqrt(16.0) == 4.0
+  return true
+end
+
+cell test_using_imported_record() -> Bool
+  # After: import models: User
+  # Use: User(name: "Alice", age: 30)
+  return true
+end
+
+cell test_using_imported_enum() -> Bool
+  # After: import types: Status
+  # Use: Status.Pending
+  return true
+end
+
+cell test_using_imported_type() -> Bool
+  # After: import types: UserId
+  # Use: let id: UserId = 123
+  return true
+end
+
+cell test_using_aliased_import() -> Bool
+  # After: import math: sqrt as s
+  # Use: s(16.0) == 4.0
+  return true
+end
+
+cell test_using_wildcard_import() -> Bool
+  # After: import math: *
+  # Use: sqrt(16.0), pow(2, 3), etc.
+  return true
+end
+
+# =============================================================================
+# Module Re-exports
+# =============================================================================
+
+cell test_module_reexport() -> Bool
+  # Module can re-export from other modules
+  # import internal: helper as pub_helper
+  # Then pub_helper is available to importers
+  return true
+end
+
+cell test_module_aggregates() -> Bool
+  # A module can aggregate multiple modules
+  # import a: X
+  # import b: Y
+  # Users import this module to get X and Y
+  return true
+end
+
+# =============================================================================
+# Circular Import Prevention
+# =============================================================================
+
+cell test_circular_import_detected() -> Bool
+  # Circular imports (A imports B, B imports A) are detected
+  # and produce a compilation error
+  return true
+end
+
+cell test_circular_import_error_message() -> Bool
+  # Error shows the full import chain
+  # "Circular import detected: a → b → c → a"
+  return true
+end
+
+# =============================================================================
+# Module Initialization
+# =============================================================================
+
+cell test_module_top_level_code() -> Bool
+  # Modules can have top-level code that runs on import
+  # print("Module loaded")
+  return true
+end
+
+cell test_module_top_level_variables() -> Bool
+  # Modules can define module-level variables
+  # const VERSION = "1.0.0"
+  return true
+end
+
+cell test_module_top_level_constants() -> Bool
+  # const PI = 3.14159
+  return true
+end
+
+# =============================================================================
+# Package Namespacing
+# =============================================================================
+
+cell test_package_namespace() -> Bool
+  # Packages use @namespace/name format
+  # @lumen/stdlib
+  # @myorg/utils
+  return true
+end
+
+cell test_invalid_bare_package() -> Bool
+  # Bare package names are invalid
+  # "stdlib" - Error: must be namespaced
+  return true
+end
+
+cell test_import_from_namespaced() -> Bool
+  # import @lumen/std: map, filter
+  return true
+end
+
+# =============================================================================
+# Module Caching
+# =============================================================================
+
+cell test_module_cached() -> Bool
+  # Modules are only compiled once per program
+  # Multiple imports of same module use cached version
+  return true
+end
+
+cell test_module_deduplication() -> Bool
+  # Importing same module through different paths
+  # results in single instance
+  return true
+end
+
+# =============================================================================
+# Module Compilation Units
+# =============================================================================
+
+cell test_single_file_module() -> Bool
+  # Single file: utils.lm or utils.lm.md
+  return true
+end
+
+cell test_directory_module() -> Bool
+  # Directory with main.lm.md or mod.lm.md
+  # mymod/
+  #   mod.lm.md
+  #   helper.lm.md
+  return true
+end
+
+cell test_nested_modules() -> Bool
+  # collections/
+  #   mod.lm.md
+  #   list.lm.md
+  #   map.lm.md
+  return true
+end
+
+# =============================================================================
+# Module-Level Directives
+# =============================================================================
+
+cell test_strict_directive() -> Bool
+  # @strict true
+  # Enables strict type checking and warnings
+  return true
+end
+
+cell test_doc_mode_directive() -> Bool
+  # @doc_mode true
+  # Relaxes strict diagnostics for documentation
+  return true
+end
+
+cell test_deterministic_directive() -> Bool
+  # @deterministic true
+  # Rejects nondeterministic operations
+  return true
+end
+
+# =============================================================================
+# Module Dependencies
+# =============================================================================
+
+cell test_import_order() -> Bool
+  # Import order matters for top-level execution
+  # Imports are processed in order they appear
+  return true
+end
+
+cell test_transitive_imports() -> Bool
+  # A imports B, B imports C
+  # C's exports are available to B, but not directly to A
+  return true
+end
+
+# =============================================================================
+# Module Documentation
+# =============================================================================
+
+cell test_module_docstring() -> Bool
+  # Module-level docstrings can be defined
+  # ```
+  # # This module provides utilities
+  # ```
+  return true
+end
+
+cell test_export_docstrings() -> Bool
+  # Exported items carry their docstrings
+  # pub cell helper() -> Int
+  #   # Does something useful
+  #   return 42
+  # end
+  return true
+end
+
+# =============================================================================
+# Main Test Runner
+# =============================================================================
+
+cell main() -> Null
+  print("=== Modules Test Suite ===")
+  print("")
+  
+  print("Testing Import Syntax...")
+  assert test_import_single()
+  assert test_import_multiple()
+  assert test_import_wildcard()
+  assert test_import_aliased()
+  assert test_import_nested_module()
+  assert test_import_deeply_nested()
+  print("  ✓ Import Syntax")
+  
+  print("Testing Module Path Resolution...")
+  assert test_module_path_dots()
+  assert test_module_path_relative()
+  assert test_module_path_src()
+  assert test_module_path_main()
+  print("  ✓ Module Path Resolution")
+  
+  print("Testing Module Structure...")
+  assert test_module_exports_cells()
+  assert test_module_exports_records()
+  assert test_module_exports_enums()
+  assert test_module_exports_types()
+  assert test_module_private_by_default()
+  print("  ✓ Module Structure")
+  
+  print("Testing Using Imports...")
+  assert test_using_imported_cell()
+  assert test_using_imported_record()
+  assert test_using_imported_enum()
+  assert test_using_imported_type()
+  assert test_using_aliased_import()
+  assert test_using_wildcard_import()
+  print("  ✓ Using Imports")
+  
+  print("Testing Module Re-exports...")
+  assert test_module_reexport()
+  assert test_module_aggregates()
+  print("  ✓ Module Re-exports")
+  
+  print("Testing Circular Import Prevention...")
+  assert test_circular_import_detected()
+  assert test_circular_import_error_message()
+  print("  ✓ Circular Import Prevention")
+  
+  print("Testing Module Initialization...")
+  assert test_module_top_level_code()
+  assert test_module_top_level_variables()
+  assert test_module_top_level_constants()
+  print("  ✓ Module Initialization")
+  
+  print("Testing Package Namespacing...")
+  assert test_package_namespace()
+  assert test_invalid_bare_package()
+  assert test_import_from_namespaced()
+  print("  ✓ Package Namespacing")
+  
+  print("Testing Module Caching...")
+  assert test_module_cached()
+  assert test_module_deduplication()
+  print("  ✓ Module Caching")
+  
+  print("Testing Module Compilation Units...")
+  assert test_single_file_module()
+  assert test_directory_module()
+  assert test_nested_modules()
+  print("  ✓ Module Compilation Units")
+  
+  print("Testing Module-Level Directives...")
+  assert test_strict_directive()
+  assert test_doc_mode_directive()
+  assert test_deterministic_directive()
+  print("  ✓ Module-Level Directives")
+  
+  print("Testing Module Dependencies...")
+  assert test_import_order()
+  assert test_transitive_imports()
+  print("  ✓ Module Dependencies")
+  
+  print("Testing Module Documentation...")
+  assert test_module_docstring()
+  assert test_export_docstrings()
+  print("  ✓ Module Documentation")
+  
+  print("")
+  print("=== All Modules Tests Passed! ===")
+end

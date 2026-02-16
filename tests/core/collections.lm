@@ -1,0 +1,525 @@
+# Collections Test Suite
+# Tests lists, maps, sets, tuples, indexing, and slicing
+
+# =============================================================================
+# Lists
+# =============================================================================
+
+cell test_list_literal() -> Bool
+  let empty: list[Int] = []
+  let numbers = [1, 2, 3, 4, 5]
+  let strings = ["a", "b", "c"]
+  let mixed: list[Int | String] = [1, "two", 3]
+  
+  return len(empty) == 0 and len(numbers) == 5 and len(strings) == 3
+end
+
+cell test_list_indexing() -> Bool
+  let items = [10, 20, 30, 40, 50]
+  
+  assert items[0] == 10
+  assert items[4] == 50
+  assert items[len(items) - 1] == 50  # Last element
+  
+  return true
+end
+
+cell test_list_append() -> Bool
+  let items: list[Int] = []
+  items = append(items, 1)
+  items = append(items, 2)
+  items = append(items, 3)
+  
+  return len(items) == 3 and items[0] == 1 and items[2] == 3
+end
+
+cell test_list_push() -> Bool
+  let items = [1, 2]
+  items = push(items, 3)
+  
+  return len(items) == 3 and items[2] == 3
+end
+
+cell test_list_prepend() -> Bool
+  let items = [2, 3, 4]
+  items = [1, ...items]
+  
+  return items[0] == 1 and len(items) == 4
+end
+
+cell test_list_concatenation() -> Bool
+  let a = [1, 2]
+  let b = [3, 4]
+  let c = a ++ b
+  
+  return len(c) == 4 and c[0] == 1 and c[3] == 4
+end
+
+cell test_list_slicing() -> Bool
+  let items = [0, 1, 2, 3, 4, 5]
+  
+  let slice1 = slice(items, 1, 4)  # [1, 2, 3]
+  let slice2 = slice(items, 0, 3)  # [0, 1, 2]
+  let slice3 = slice(items, 3, 6)  # [3, 4, 5]
+  
+  return len(slice1) == 3 and slice1[0] == 1 and slice3[2] == 5
+end
+
+cell test_list_reverse() -> Bool
+  let items = [1, 2, 3, 4, 5]
+  let reversed = reverse(items)
+  
+  return reversed[0] == 5 and reversed[4] == 1
+end
+
+cell test_list_sort() -> Bool
+  let unsorted = [3, 1, 4, 1, 5, 9, 2, 6]
+  let sorted = sort(unsorted)
+  
+  return sorted[0] == 1 and sorted[1] == 1 and sorted[len(sorted) - 1] == 9
+end
+
+cell test_list_contains() -> Bool
+  let items = [1, 2, 3, 4, 5]
+  
+  return contains(items, 3) and not contains(items, 10)
+end
+
+cell test_list_length() -> Bool
+  let empty: list[Int] = []
+  let items = [1, 2, 3]
+  
+  return len(empty) == 0 and len(items) == 3
+end
+
+cell test_list_first_last() -> Bool
+  let items = [10, 20, 30]
+  
+  return first(items) == 10 and last(items) == 30
+end
+
+cell test_list_is_empty() -> Bool
+  let empty: list[Int] = []
+  let items = [1]
+  
+  return is_empty(empty) and not is_empty(items)
+end
+
+cell test_list_take_drop() -> Bool
+  let items = [1, 2, 3, 4, 5]
+  
+  let taken = take(items, 3)
+  let dropped = drop(items, 2)
+  
+  return len(taken) == 3 and taken[2] == 3 and len(dropped) == 3 and dropped[0] == 3
+end
+
+cell test_list_unique() -> Bool
+  let items = [1, 2, 2, 3, 3, 3, 4]
+  let uniques = unique(items)
+  
+  return len(uniques) == 4 and contains(uniques, 3)
+end
+
+cell test_list_flatten() -> Bool
+  let nested = [[1, 2], [3, 4], [5]]
+  let flat = flatten(nested)
+  
+  return len(flat) == 5 and flat[0] == 1 and flat[4] == 5
+end
+
+cell test_list_enumerate() -> Bool
+  let items = ["a", "b", "c"]
+  let indexed = enumerate(items)
+  
+  return len(indexed) == 3 and indexed[0][0] == 0 and indexed[0][1] == "a"
+end
+
+cell test_list_zip() -> Bool
+  let a = [1, 2, 3]
+  let b = ["a", "b", "c"]
+  let zipped = zip(a, b)
+  
+  return len(zipped) == 3 and zipped[0][0] == 1 and zipped[0][1] == "a"
+end
+
+cell test_list_chunk() -> Bool
+  let items = [1, 2, 3, 4, 5, 6, 7]
+  let chunks = chunk(items, 3)
+  
+  return len(chunks) == 3 and len(chunks[0]) == 3 and len(chunks[2]) == 1
+end
+
+cell test_list_window() -> Bool
+  let items = [1, 2, 3, 4, 5]
+  let windows = window(items, 3)
+  
+  return len(windows) == 3 and len(windows[0]) == 3 and windows[0][0] == 1
+end
+
+cell test_list_range() -> Bool
+  let r1 = range(0, 5)
+  let r2 = range(10, 15)
+  
+  return len(r1) == 5 and r1[0] == 0 and r1[4] == 4 and r2[0] == 10
+end
+
+# =============================================================================
+# Higher-Order List Operations
+# =============================================================================
+
+cell test_list_map() -> Bool
+  let items = [1, 2, 3, 4, 5]
+  let doubled = map(items, fn(x) => x * 2)
+  
+  return doubled[0] == 2 and doubled[4] == 10
+end
+
+cell test_list_filter() -> Bool
+  let items = [1, 2, 3, 4, 5, 6]
+  let evens = filter(items, fn(x) => x % 2 == 0)
+  
+  return len(evens) == 3 and evens[0] == 2 and evens[1] == 4
+end
+
+cell test_list_reduce() -> Bool
+  let items = [1, 2, 3, 4, 5]
+  let sum = reduce(items, fn(a, b) => a + b, 0)
+  let product = reduce(items, fn(a, b) => a * b, 1)
+  
+  return sum == 15 and product == 120
+end
+
+cell test_list_any_all() -> Bool
+  let items = [2, 4, 6, 8, 10]
+  
+  let all_even = all(items, fn(x) => x % 2 == 0)
+  let any_odd = any(items, fn(x) => x % 2 == 1)
+  
+  return all_even and not any_odd
+end
+
+cell test_list_find() -> Bool
+  let items = [1, 2, 3, 4, 5]
+  
+  let found = find(items, fn(x) => x > 3)
+  let not_found = find(items, fn(x) => x > 10)
+  
+  return found == 4 and not_found == null
+end
+
+cell test_list_position() -> Bool
+  let items = [10, 20, 30, 40, 50]
+  
+  let pos1 = position(items, fn(x) => x == 30)
+  let pos2 = position(items, fn(x) => x == 100)
+  
+  return pos1 == 2 and pos2 == -1
+end
+
+cell test_list_flat_map() -> Bool
+  let items = [1, 2, 3]
+  let result = flat_map(items, fn(x) => [x, x * 2])
+  
+  return len(result) == 6 and result[0] == 1 and result[1] == 2
+end
+
+cell test_list_group_by() -> Bool
+  let items = [1, 2, 3, 4, 5, 6]
+  let grouped = group_by(items, fn(x) => if x % 2 == 0 then "even" else "odd")
+  
+  return has_key(grouped, "even") and has_key(grouped, "odd")
+end
+
+# =============================================================================
+# Maps
+# =============================================================================
+
+cell test_map_literal() -> Bool
+  let empty: map[String, Int] = {}
+  let numbers = {"a": 1, "b": 2, "c": 3}
+  let strings = {"key": "value"}
+  
+  return len(empty) == 0 and len(numbers) == 3
+end
+
+cell test_map_access() -> Bool
+  let m = {"name": "Alice", "age": "30"}
+  
+  return m["name"] == "Alice" and m["age"] == "30"
+end
+
+cell test_map_keys_values() -> Bool
+  let m = {"a": 1, "b": 2, "c": 3}
+  let k = keys(m)
+  let v = values(m)
+  
+  return len(k) == 3 and len(v) == 3 and contains(k, "b")
+end
+
+cell test_map_entries() -> Bool
+  let m = {"x": 10, "y": 20}
+  let e = entries(m)
+  
+  return len(e) == 2
+end
+
+cell test_map_has_key() -> Bool
+  let m = {"a": 1, "b": 2}
+  
+  return has_key(m, "a") and not has_key(m, "c")
+end
+
+cell test_map_merge() -> Bool
+  let m1 = {"a": 1, "b": 2}
+  let m2 = {"b": 3, "c": 4}
+  let merged = merge(m1, m2)
+  
+  return merged["a"] == 1 and merged["b"] == 3 and merged["c"] == 4
+end
+
+cell test_map_remove() -> Bool
+  let m = {"a": 1, "b": 2, "c": 3}
+  let removed = remove(m, "b")
+  
+  return len(removed) == 2 and not has_key(removed, "b")
+end
+
+cell test_map_update() -> Bool
+  let m = {"x": 1, "y": 2}
+  let updated = {"x": 10, "y": m["y"]}
+  
+  return updated["x"] == 10 and updated["y"] == 2
+end
+
+# =============================================================================
+# Sets
+# =============================================================================
+
+cell test_set_literal() -> Bool
+  let empty: set[Int] = {}
+  let numbers = {1, 2, 3, 4, 5}
+  
+  return len(empty) == 0 and len(numbers) == 5
+end
+
+cell test_set_add() -> Bool
+  let s: set[Int] = {}
+  s = add(s, 1)
+  s = add(s, 2)
+  s = add(s, 1)  # duplicate should be ignored
+  
+  return len(s) == 2
+end
+
+cell test_set_remove() -> Bool
+  let s = {1, 2, 3, 4}
+  s = remove(s, 2)
+  
+  return len(s) == 3 and not contains(s, 2)
+end
+
+cell test_set_contains() -> Bool
+  let s = {1, 2, 3}
+  
+  return contains(s, 2) and not contains(s, 10)
+end
+
+cell test_set_union() -> Bool
+  let a = {1, 2, 3}
+  let b = {3, 4, 5}
+  let u = to_set(append(to_list(a), to_list(b)))
+  
+  return len(u) == 5 and contains(u, 1) and contains(u, 5)
+end
+
+cell test_set_intersection() -> Bool
+  let a = {1, 2, 3}
+  let b = {2, 3, 4}
+  # intersection = filter(a, x -> contains(b, x))
+  let intersection = to_set(filter(to_list(a), fn(x) => contains(b, x)))
+  
+  return len(intersection) == 2 and contains(intersection, 2)
+end
+
+cell test_set_difference() -> Bool
+  let a = {1, 2, 3, 4}
+  let b = {3, 4, 5}
+  # difference = filter(a, x -> not contains(b, x))
+  let difference = to_set(filter(to_list(a), fn(x) => not contains(b, x)))
+  
+  return len(difference) == 2 and contains(difference, 1)
+end
+
+cell test_set_to_list() -> Bool
+  let s = {3, 1, 2}
+  let lst = to_list(s)
+  
+  return len(lst) == 3
+end
+
+cell test_set_comprehension() -> Bool
+  let s = {x * 2 for x in [1, 2, 3, 4, 5] if x > 2}
+  
+  return len(s) == 3 and contains(s, 8) and contains(s, 10)
+end
+
+# =============================================================================
+# Tuples
+# =============================================================================
+
+cell test_tuple_literal() -> Bool
+  let empty = ()
+  let pair = (1, "hello")
+  let triple = (1, "two", 3.0)
+  let quad = (true, 1, "a", 3.14)
+  
+  return len(pair) == 2 and len(triple) == 3
+end
+
+cell test_tuple_indexing() -> Bool
+  let t = (10, "hello", true)
+  
+  assert t[0] == 10
+  assert t[1] == "hello"
+  assert t[2] == true
+  
+  return true
+end
+
+cell test_tuple_equality() -> Bool
+  let t1 = (1, "a", true)
+  let t2 = (1, "a", true)
+  let t3 = (1, "b", true)
+  
+  return t1[0] == t2[0] and t1[1] == t2[1] and t1[2] == t2[2] and t1[1] != t3[1]
+end
+
+cell test_tuple_unpacking() -> Bool
+  let (a, b, c) = (1, "two", 3.0)
+  
+  return a == 1 and b == "two" and c == 3.0
+end
+
+cell test_tuple_return() -> Bool
+  cell make_tuple(x: Int, y: String) -> tuple[Int, String]
+    return (x, y)
+  end
+  
+  let t = make_tuple(42, "hello")
+  return t[0] == 42 and t[1] == "hello"
+end
+
+cell test_tuple_in_list() -> Bool
+  let items = [(1, "a"), (2, "b"), (3, "c")]
+  
+  return len(items) == 3 and items[0][0] == 1 and items[1][1] == "b"
+end
+
+# =============================================================================
+# List Comprehensions
+# =============================================================================
+
+cell test_list_comprehension() -> Bool
+  let doubled = [x * 2 for x in [1, 2, 3, 4, 5]]
+  let evens = [x for x in [1, 2, 3, 4, 5] if x % 2 == 0]
+  
+  return len(doubled) == 5 and doubled[0] == 2 and evens[0] == 2 and len(evens) == 2
+end
+
+cell test_nested_comprehension() -> Bool
+  let pairs = [(x, y) for x in [1, 2] for y in ["a", "b"]]
+  
+  return len(pairs) == 4
+end
+
+cell test_map_comprehension() -> Bool
+  let m = {(to_string(x), x * x) for x in [1, 2, 3]}
+  
+  return len(m) == 3 and m["2"] == 4
+end
+
+# =============================================================================
+# Main Test Runner
+# =============================================================================
+
+cell main() -> Null
+  print("=== Collections Test Suite ===")
+  print("")
+  
+  print("Testing Lists...")
+  assert test_list_literal()
+  assert test_list_indexing()
+  assert test_list_append()
+  assert test_list_push()
+  assert test_list_prepend()
+  assert test_list_concatenation()
+  assert test_list_slicing()
+  assert test_list_reverse()
+  assert test_list_sort()
+  assert test_list_contains()
+  assert test_list_length()
+  assert test_list_first_last()
+  assert test_list_is_empty()
+  assert test_list_take_drop()
+  assert test_list_unique()
+  assert test_list_flatten()
+  assert test_list_enumerate()
+  assert test_list_zip()
+  assert test_list_chunk()
+  assert test_list_window()
+  assert test_list_range()
+  print("  ✓ Lists")
+  
+  print("Testing Higher-Order List Operations...")
+  assert test_list_map()
+  assert test_list_filter()
+  assert test_list_reduce()
+  assert test_list_any_all()
+  assert test_list_find()
+  assert test_list_position()
+  assert test_list_flat_map()
+  assert test_list_group_by()
+  print("  ✓ Higher-Order List Operations")
+  
+  print("Testing Maps...")
+  assert test_map_literal()
+  assert test_map_access()
+  assert test_map_keys_values()
+  assert test_map_entries()
+  assert test_map_has_key()
+  assert test_map_merge()
+  assert test_map_remove()
+  assert test_map_update()
+  print("  ✓ Maps")
+  
+  print("Testing Sets...")
+  assert test_set_literal()
+  assert test_set_add()
+  assert test_set_remove()
+  assert test_set_contains()
+  assert test_set_union()
+  assert test_set_intersection()
+  assert test_set_difference()
+  assert test_set_to_list()
+  assert test_set_comprehension()
+  print("  ✓ Sets")
+  
+  print("Testing Tuples...")
+  assert test_tuple_literal()
+  assert test_tuple_indexing()
+  assert test_tuple_equality()
+  assert test_tuple_unpacking()
+  assert test_tuple_return()
+  assert test_tuple_in_list()
+  print("  ✓ Tuples")
+  
+  print("Testing Comprehensions...")
+  assert test_list_comprehension()
+  assert test_nested_comprehension()
+  assert test_map_comprehension()
+  print("  ✓ Comprehensions")
+  
+  print("")
+  print("=== All Collections Tests Passed! ===")
+end

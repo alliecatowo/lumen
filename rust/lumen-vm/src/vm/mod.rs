@@ -914,6 +914,14 @@ impl VM {
         );
     }
 
+    #[cfg(test)]
+    pub(crate) fn debug_state(&self) -> String {
+        format!(
+            "process_kinds: {:?}, memory_runtime: {:?}",
+            self.process_kinds, self.memory_runtime
+        )
+    }
+
     fn current_future_id(&self) -> Option<u64> {
         self.frames.last().and_then(|f| f.future_id)
     }
@@ -1322,6 +1330,11 @@ impl VM {
             ) {
                 match instr.op {
                     OpCode::Call => {
+                        let callee = &self.registers[base + a];
+                        eprintln!("DEBUG Call: a={}, b(nargs)={}, callee={:?}", a, b, callee);
+                        for i in 0..=b {
+                            eprintln!("DEBUG Call: arg[{}] = {:?}", i, self.registers[base + a + 1 + i as usize]);
+                        }
                         if let Err(err) = self.dispatch_call(base, a, b) {
                             if self.fail_current_future(err.to_string()) {
                                 continue;
@@ -1501,11 +1514,11 @@ impl VM {
                             t[effective as usize].clone()
                         }
                         (Value::Map(m), _) => {
-                            m.get(&idx.as_string()).cloned().unwrap_or(Value::Null)
+                            m.get(&idx.as_string_resolved(&self.strings)).cloned().unwrap_or(Value::Null)
                         }
                         (Value::Record(r), _) => r
                             .fields
-                            .get(&idx.as_string())
+                            .get(&idx.as_string_resolved(&self.strings))
                             .cloned()
                             .unwrap_or(Value::Null),
                         _ => Value::Null,
@@ -1535,10 +1548,10 @@ impl VM {
                             }
                         }
                         Value::Map(m) => {
-                            Rc::make_mut(m).insert(key.as_string(), val);
+                            Rc::make_mut(m).insert(key.as_string_resolved(&self.strings), val);
                         }
                         Value::Record(r) => {
-                            Rc::make_mut(r).fields.insert(key.as_string(), val);
+                            Rc::make_mut(r).fields.insert(key.as_string_resolved(&self.strings), val);
                         }
                         target => {
                             return Err(VmError::TypeError(format!(

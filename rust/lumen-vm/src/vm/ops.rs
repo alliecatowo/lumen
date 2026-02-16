@@ -215,9 +215,9 @@ impl VM {
             }
         }
 
-        // Helper for float ops
-        fn float_op(op: BinaryOp, x: f64, y: f64) -> f64 {
-            match op {
+        // Helper for float ops that checks for overflow (infinite results)
+        fn float_op_checked(op: BinaryOp, x: f64, y: f64) -> Option<f64> {
+            let result = match op {
                 BinaryOp::Add => x + y,
                 BinaryOp::Sub => x - y,
                 BinaryOp::Mul => x * y,
@@ -226,29 +226,31 @@ impl VM {
                 BinaryOp::Mod => x.rem_euclid(y),
                 BinaryOp::Rem => x % y,
                 BinaryOp::Pow => x.powf(y),
+            };
+            // Check for overflow - if result is infinite but inputs were finite, it's overflow
+            if result.is_infinite() && x.is_finite() && y.is_finite() {
+                None
+            } else {
+                Some(result)
             }
         }
 
         // Helper for BigInt ops
-        fn bigint_op(op: BinaryOp, x: &BigInt, y: &BigInt) -> BigInt {
+        fn bigint_op(op: BinaryOp, x: &BigInt, y: &BigInt) -> Result<BigInt, VmError> {
             match op {
-                BinaryOp::Add => x + y,
-                BinaryOp::Sub => x - y,
-                BinaryOp::Mul => x * y,
-                BinaryOp::Div => x / y,
-                BinaryOp::FloorDiv => x / y,
-                BinaryOp::Mod => x % y,
-                BinaryOp::Rem => x % y,
+                BinaryOp::Add => Ok(x + y),
+                BinaryOp::Sub => Ok(x - y),
+                BinaryOp::Mul => Ok(x * y),
+                BinaryOp::Div => Ok(x / y),
+                BinaryOp::FloorDiv => Ok(x / y),
+                BinaryOp::Mod => Ok(x % y),
+                BinaryOp::Rem => Ok(x % y),
                 BinaryOp::Pow => {
                     if let Some(exp) = y.to_u32() {
-                        x.pow(exp)
+                        Ok(x.pow(exp))
                     } else {
-                        // For now we don't support huge exponents to avoid DOS
-                        // Return x (incorrect but safe) or panic?
-                        // Let's wrap to 0 or something? No.
-                        // Ideally we return Result or create error.
-                        // But for now, let's clamp.
-                        x.pow(u32::MAX) 
+                        // Exponent too large - return error for out of range
+                        Err(VmError::Runtime("exponent out of range".to_string()))
                     }
                 }
             }
@@ -259,23 +261,58 @@ impl VM {
                 if let Some(res) = int_op(op, *x, *y) {
                     Value::Int(res)
                 } else {
-                    Value::BigInt(bigint_op(op, &BigInt::from(*x), &BigInt::from(*y)))
+                    // Integer overflow - return ArithmeticOverflow error
+                    return Err(VmError::ArithmeticOverflow);
                 }
             }
             (Value::BigInt(x), Value::BigInt(y)) => {
-                Value::BigInt(bigint_op(op, x, y))
+                Value::BigInt(bigint_op(op, x, y)?)
             }
             (Value::Int(x), Value::BigInt(y)) => {
-                Value::BigInt(bigint_op(op, &BigInt::from(*x), y))
+                Value::BigInt(bigint_op(op, &BigInt::from(*x), y)?)
             }
             (Value::BigInt(x), Value::Int(y)) => {
-                Value::BigInt(bigint_op(op, x, &BigInt::from(*y)))
+                Value::BigInt(bigint_op(op, x, &BigInt::from(*y))?)
             }
-            (Value::Float(x), Value::Float(y)) => Value::Float(float_op(op, *x, *y)),
-            (Value::Int(x), Value::Float(y)) => Value::Float(float_op(op, *x as f64, *y)),
-            (Value::Float(x), Value::Int(y)) => Value::Float(float_op(op, *x, *y as f64)),
-            (Value::BigInt(x), Value::Float(y)) => Value::Float(float_op(op, x.to_f64().unwrap_or(f64::NAN), *y)),
-            (Value::Float(x), Value::BigInt(y)) => Value::Float(float_op(op, *x, y.to_f64().unwrap_or(f64::NAN))),
+            (Value::Float(x), Value::Float(y)) => {
+                if let Some(res) = float_op_checked(op, *x, *y) {
+                    Value::Float(res)
+                } else {
+                    return Err(VmError::ArithmeticOverflow);
+                }
+            }
+            (Value::Int(x), Value::Float(y)) => {
+                let xf = *x as f64;
+                if let Some(res) = float_op_checked(op, xf, *y) {
+                    Value::Float(res)
+                } else {
+                    return Err(VmError::ArithmeticOverflow);
+                }
+            }
+            (Value::Float(x), Value::Int(y)) => {
+                let yf = *y as f64;
+                if let Some(res) = float_op_checked(op, *x, yf) {
+                    Value::Float(res)
+                } else {
+                    return Err(VmError::ArithmeticOverflow);
+                }
+            }
+            (Value::BigInt(x), Value::Float(y)) => {
+                let xf = x.to_f64().unwrap_or(f64::NAN);
+                if let Some(res) = float_op_checked(op, xf, *y) {
+                    Value::Float(res)
+                } else {
+                    return Err(VmError::ArithmeticOverflow);
+                }
+            }
+            (Value::Float(x), Value::BigInt(y)) => {
+                let yf = y.to_f64().unwrap_or(f64::NAN);
+                if let Some(res) = float_op_checked(op, *x, yf) {
+                    Value::Float(res)
+                } else {
+                    return Err(VmError::ArithmeticOverflow);
+                }
+            }
             _ => {
                 return Err(VmError::TypeError(format!(
                     "arithmetic on non-numeric types: {} ({}) and {} ({})",

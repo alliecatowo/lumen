@@ -9,8 +9,8 @@
 //! - `lumen registry owner list <package>` - List owners
 
 use crate::auth::{
-    lumen_home_dir, mask_token, validate_token_format, AuthError, AuthenticatedClient,
-    CredentialManager, OwnerRole, PackageOwner, TokenScope,
+    mask_token, validate_token_format, AuthError, AuthenticatedClient,
+    CredentialManager, OwnerRole, PackageOwner,
 };
 use crate::config::LumenConfig;
 use std::collections::HashMap;
@@ -744,6 +744,7 @@ fn get_effective_registry(provided: Option<String>) -> String {
 }
 
 /// Mask a token for display.
+#[allow(dead_code)]
 fn mask_token_display(token: &str) -> String {
     if token.len() < 12 {
         "***".to_string()

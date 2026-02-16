@@ -1,6 +1,9 @@
 //! Indentation-aware lexer for Lumen source code.
 
 use crate::compiler::tokens::{Span, Token, TokenKind};
+use num_bigint::BigInt;
+use num_traits::Num;
+use std::str::FromStr;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -691,12 +694,20 @@ impl Lexer {
                     col: sc,
                 })
         } else {
-            ns.parse::<i64>()
-                .map(|n| Token::new(TokenKind::IntLit(n), span))
-                .map_err(|_| LexError::InvalidNumber {
-                    line: self.base_line + sl - 1,
-                    col: sc,
-                })
+            // Try i64 first
+            if let Ok(n) = ns.parse::<i64>() {
+                Ok(Token::new(TokenKind::IntLit(n), span))
+            } else {
+                // Try BigInt
+                if let Ok(n) = BigInt::from_str(&ns) {
+                    Ok(Token::new(TokenKind::BigIntLit(n), span))
+                } else {
+                    Err(LexError::InvalidNumber {
+                        line: self.base_line + sl - 1,
+                        col: sc,
+                    })
+                }
+            }
         }
     }
 
@@ -720,13 +731,23 @@ impl Lexer {
                 col: sc,
             });
         }
-        let span = self.span_from(so, sl, sc);
-        i64::from_str_radix(&hex, 16)
-            .map(|n| Token::new(TokenKind::IntLit(n), span))
-            .map_err(|_| LexError::InvalidNumber {
+        if hex.is_empty() {
+            return Err(LexError::InvalidNumber {
                 line: self.base_line + sl - 1,
                 col: sc,
-            })
+            });
+        }
+        let span = self.span_from(so, sl, sc);
+        if let Ok(n) = i64::from_str_radix(&hex, 16) {
+             Ok(Token::new(TokenKind::IntLit(n), span))
+        } else if let Ok(n) = BigInt::from_str_radix(&hex, 16) {
+             Ok(Token::new(TokenKind::BigIntLit(n), span))
+        } else {
+             Err(LexError::InvalidNumber {
+                line: self.base_line + sl - 1,
+                col: sc,
+             })
+        }
     }
 
     fn read_bin_number(&mut self, so: usize, sl: usize, sc: usize) -> Result<Token, LexError> {
@@ -750,12 +771,16 @@ impl Lexer {
             });
         }
         let span = self.span_from(so, sl, sc);
-        i64::from_str_radix(&bin, 2)
-            .map(|n| Token::new(TokenKind::IntLit(n), span))
-            .map_err(|_| LexError::InvalidNumber {
+        if let Ok(n) = i64::from_str_radix(&bin, 2) {
+             Ok(Token::new(TokenKind::IntLit(n), span))
+        } else if let Ok(n) = BigInt::from_str_radix(&bin, 2) {
+             Ok(Token::new(TokenKind::BigIntLit(n), span))
+        } else {
+             Err(LexError::InvalidNumber {
                 line: self.base_line + sl - 1,
                 col: sc,
-            })
+             })
+        }
     }
 
     fn read_oct_number(&mut self, so: usize, sl: usize, sc: usize) -> Result<Token, LexError> {
@@ -779,12 +804,16 @@ impl Lexer {
             });
         }
         let span = self.span_from(so, sl, sc);
-        i64::from_str_radix(&oct, 8)
-            .map(|n| Token::new(TokenKind::IntLit(n), span))
-            .map_err(|_| LexError::InvalidNumber {
+        if let Ok(n) = i64::from_str_radix(&oct, 8) {
+             Ok(Token::new(TokenKind::IntLit(n), span))
+        } else if let Ok(n) = BigInt::from_str_radix(&oct, 8) {
+             Ok(Token::new(TokenKind::BigIntLit(n), span))
+        } else {
+             Err(LexError::InvalidNumber {
                 line: self.base_line + sl - 1,
                 col: sc,
-            })
+             })
+        }
     }
 
     fn read_ident(&mut self) -> Token {

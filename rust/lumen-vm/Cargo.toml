@@ -9,11 +9,13 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-lumen-compiler = { path = "../lumen-compiler", version = "0.2.0" }
-lumen-runtime = { path = "../lumen-runtime", version = "0.2.0" }
+lumen-compiler = { path = "../lumen-compiler", version = "0.4.0" }
+lumen-runtime = { path = "../lumen-runtime", version = "0.4.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
+num-bigint = { workspace = true, features = ["serde"] }
+num-traits = { workspace = true }

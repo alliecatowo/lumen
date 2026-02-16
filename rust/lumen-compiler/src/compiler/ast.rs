@@ -1,4 +1,5 @@
 use crate::compiler::tokens::Span;
+use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -573,6 +574,8 @@ pub enum ComprehensionKind {
 pub enum Expr {
     /// Integer literal
     IntLit(i64, Span),
+    /// Big integer literal
+    BigIntLit(BigInt, Span),
     /// Float literal
     FloatLit(f64, Span),
     /// String literal (may contain interpolation)
@@ -715,6 +718,7 @@ impl Expr {
     pub fn span(&self) -> Span {
         match self {
             Expr::IntLit(_, s)
+            | Expr::BigIntLit(_, s)
             | Expr::FloatLit(_, s)
             | Expr::StringLit(_, s)
             | Expr::StringInterp(_, s)

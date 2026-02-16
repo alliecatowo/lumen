@@ -894,7 +894,7 @@ impl AuthenticatedClient {
 
         // Build JSON payload (base64 encode tarball as worker expects JSON)
         let tarball_b64 = base64_encode(&body);
-        let mut json_body = serde_json::json!({
+        let json_body = serde_json::json!({
             "name": package_name,
             "version": version,
             "tarball": tarball_b64,

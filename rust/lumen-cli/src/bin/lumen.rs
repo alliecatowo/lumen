@@ -1,9 +1,8 @@
 //! Lumen CLI — command-line interface for the Lumen language.
 
 use lumen_cli::{
-    auth, build_script, cache, colors, config, doc, fmt, git, lang_ref,
-    lint, lockfile, module_resolver, registry_cmd, repl, semver, test_cmd,
-    wares, workspace,
+    colors, config, doc, fmt, lang_ref,
+    lint, module_resolver, repl, test_cmd,
 };
 
 use colors::{bold, cyan, gray, green, red, status_label, yellow};
@@ -11,7 +10,6 @@ use clap::{Parser as ClapParser, Subcommand, ValueEnum};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
 
 #[derive(ClapParser)]
 #[command(

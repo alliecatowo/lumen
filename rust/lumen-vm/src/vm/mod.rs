@@ -12,6 +12,7 @@ pub(crate) use processes::{
 
 use crate::strings::StringTable;
 use crate::types::{RuntimeField, RuntimeType, RuntimeTypeKind, RuntimeVariant, TypeTable};
+use crate::vm::ops::BinaryOp;
 use crate::values::{
     values_equal, ClosureValue, FutureStatus, FutureValue, RecordValue, StringRef, TraceRefValue,
     UnionValue, Value,
@@ -22,6 +23,8 @@ use lumen_runtime::tools::{ProviderRegistry, ToolDispatcher, ToolRequest};
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 use thiserror::Error;
+use num_bigint::BigInt;
+use num_traits::ToPrimitive;
 
 /// Type alias for debug callback to simplify type signatures
 pub type DebugCallback = Option<Box<dyn FnMut(&DebugEvent)>>;
@@ -275,7 +278,9 @@ pub enum FutureSchedule {
 pub(crate) struct EffectScope {
     pub handler_ip: usize,
     pub frame_idx: usize,
+    #[allow(dead_code)]
     pub base_register: usize,
+    #[allow(dead_code)]
     pub cell_idx: usize,
     /// The effect name this handler matches (e.g. "Console")
     pub effect_name: String,
@@ -288,7 +293,9 @@ pub(crate) struct EffectScope {
 pub(crate) struct SuspendedContinuation {
     pub frames: Vec<CallFrame>,
     pub registers: Vec<Value>,
+    #[allow(dead_code)]
     pub resume_ip: usize,
+    #[allow(dead_code)]
     pub resume_frame_count: usize,
     pub result_reg: usize,
 }
@@ -1246,7 +1253,7 @@ impl VM {
         }
     }
 
-    pub(crate) fn run_until(&mut self, limit: usize) -> Result<Value, VmError> {
+    pub fn run_until(&mut self, limit: usize) -> Result<Value, VmError> {
         loop {
             if self.frames.len() <= limit {
                 return Ok(Value::Null);
@@ -1361,6 +1368,7 @@ impl VM {
                         Constant::Null => Value::Null,
                         Constant::Bool(v) => Value::Bool(*v),
                         Constant::Int(v) => Value::Int(*v),
+                        Constant::BigInt(v) => Value::BigInt(v.clone()),
                         Constant::Float(v) => Value::Float(*v),
                         Constant::String(v) => Value::String(StringRef::Owned(v.clone())),
                     };
@@ -1572,35 +1580,23 @@ impl VM {
                 OpCode::Add => {
                     let lhs = &self.registers[base + b];
                     let rhs = &self.registers[base + c];
-                    let result = match (lhs, rhs) {
-                        (Value::Int(x), Value::Int(y)) => {
-                            Value::Int(x.checked_add(*y).ok_or(VmError::ArithmeticOverflow)?)
-                        }
-                        (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
-                        (Value::Int(a), Value::Float(b)) => Value::Float(*a as f64 + b),
-                        (Value::Float(a), Value::Int(b)) => Value::Float(a + *b as f64),
-                        (Value::String(_), _) | (_, Value::String(_)) => Value::String(
-                            StringRef::Owned(format!("{}{}", lhs.as_string(), rhs.as_string())),
-                        ),
-                        _ => {
-                            let lhs_clone = lhs.clone();
-                            let rhs_clone = rhs.clone();
-                            return Err(VmError::TypeError(format!(
-                                "cannot add {} ({}) to {} ({})",
-                                lhs_clone.display_pretty(),
-                                lhs_clone.type_name(),
-                                rhs_clone.display_pretty(),
-                                rhs_clone.type_name()
-                            )));
-                        }
-                    };
-                    self.registers[base + a] = result;
+                    // Check for strings first for concatenation
+                    if matches!(lhs, Value::String(_)) || matches!(rhs, Value::String(_)) {
+                         self.registers[base + a] = Value::String(StringRef::Owned(format!(
+                            "{}{}",
+                            lhs.as_string(),
+                            rhs.as_string()
+                        )));
+                    } else {
+                        // Numeric addition with promotion
+                        self.arith_op(base, a, b, c, BinaryOp::Add)?;
+                    }
                 }
                 OpCode::Sub => {
-                    self.arith_op(base, a, b, c, |x, y| x.checked_sub(y), |x, y| x - y)?;
+                    self.arith_op(base, a, b, c, BinaryOp::Sub)?;
                 }
                 OpCode::Mul => {
-                    self.arith_op(base, a, b, c, |x, y| x.checked_mul(y), |x, y| x * y)?;
+                    self.arith_op(base, a, b, c, BinaryOp::Mul)?;
                 }
                 OpCode::Div => {
                     // Pre-check for integer division by zero
@@ -1610,28 +1606,10 @@ impl VM {
                     ) {
                         return Err(VmError::DivisionByZero);
                     }
-                    self.arith_op(base, a, b, c, |x, y| x.checked_div(y), |x, y| x / y)?;
+                    self.arith_op(base, a, b, c, BinaryOp::Div)?;
                 }
                 OpCode::FloorDiv => {
-                    // Floor division: integer division for ints, floor(a/b) for floats
-                    let is_zero = matches!(
-                        (&self.registers[base + b], &self.registers[base + c]),
-                        (Value::Int(_), Value::Int(0))
-                    ) || matches!(
-                        &self.registers[base + c],
-                        Value::Float(f) if *f == 0.0
-                    );
-                    if is_zero {
-                        return Err(VmError::DivisionByZero);
-                    }
-                    let result = match (&self.registers[base + b], &self.registers[base + c]) {
-                        (Value::Int(x), Value::Int(y)) => Value::Int(x.div_euclid(*y)),
-                        (Value::Float(x), Value::Float(y)) => Value::Float((*x / *y).floor()),
-                        (Value::Int(x), Value::Float(y)) => Value::Float((*x as f64 / *y).floor()),
-                        (Value::Float(x), Value::Int(y)) => Value::Float((*x / *y as f64).floor()),
-                        _ => Value::Null,
-                    };
-                    self.registers[base + a] = result;
+                   self.arith_op(base, a, b, c, BinaryOp::FloorDiv)?;
                 }
                 OpCode::Mod => {
                     // Pre-check for integer modulo by zero
@@ -1641,36 +1619,10 @@ impl VM {
                     ) {
                         return Err(VmError::DivisionByZero);
                     }
-                    self.arith_op(base, a, b, c, |x, y| x.checked_rem(y), |x, y| x % y)?;
+                    self.arith_op(base, a, b, c, BinaryOp::Mod)?;
                 }
                 OpCode::Pow => {
-                    let lhs = &self.registers[base + b];
-                    let rhs = &self.registers[base + c];
-                    self.registers[base + a] =
-                        match (lhs, rhs) {
-                            (Value::Int(x), Value::Int(y)) => {
-                                if *y < 0 {
-                                    Value::Float((*x as f64).powf(*y as f64))
-                                } else if *y >= 64 {
-                                    return Err(VmError::Runtime(
-                                        "exponent out of range (must be 0..63 for integers)".into(),
-                                    ));
-                                } else {
-                                    Value::Int(x.checked_pow(*y as u32).ok_or_else(|| {
-                                        VmError::Runtime("integer overflow".into())
-                                    })?)
-                                }
-                            }
-                            (Value::Float(x), Value::Float(y)) => Value::Float(x.powf(*y)),
-                            (Value::Int(x), Value::Float(y)) => Value::Float((*x as f64).powf(*y)),
-                            (Value::Float(x), Value::Int(y)) => Value::Float(x.powf(*y as f64)),
-                            _ => {
-                                return Err(VmError::TypeError(format!(
-                                    "cannot pow {} and {}",
-                                    lhs, rhs
-                                )))
-                            }
-                        };
+                    self.arith_op(base, a, b, c, BinaryOp::Pow)?;
                 }
                 OpCode::Neg => {
                     let val = &self.registers[base + b];
@@ -1793,6 +1745,17 @@ impl VM {
                             };
                             s1 < s2
                         }
+                        (Value::Int(x), Value::BigInt(y)) => BigInt::from(*x) < *y,
+                        (Value::BigInt(x), Value::Int(y)) => *x < BigInt::from(*y),
+                        (Value::BigInt(x), Value::BigInt(y)) => x < y,
+                        (Value::BigInt(x), Value::Float(y)) => {
+                             let af = x.to_f64().unwrap_or_else(|| if x.sign() == num_bigint::Sign::Minus { f64::NEG_INFINITY } else { f64::INFINITY });
+                             af < *y
+                        },
+                        (Value::Float(x), Value::BigInt(y)) => {
+                             let bf = y.to_f64().unwrap_or_else(|| if y.sign() == num_bigint::Sign::Minus { f64::NEG_INFINITY } else { f64::INFINITY });
+                             *x < bf
+                        },
                         _ => false,
                     };
                     self.registers[base + a] = Value::Bool(result);
@@ -1816,6 +1779,17 @@ impl VM {
                             };
                             s1 <= s2
                         }
+                        (Value::Int(x), Value::BigInt(y)) => BigInt::from(*x) <= *y,
+                        (Value::BigInt(x), Value::Int(y)) => *x <= BigInt::from(*y),
+                        (Value::BigInt(x), Value::BigInt(y)) => x <= y,
+                        (Value::BigInt(x), Value::Float(y)) => {
+                             let af = x.to_f64().unwrap_or_else(|| if x.sign() == num_bigint::Sign::Minus { f64::NEG_INFINITY } else { f64::INFINITY });
+                             af <= *y
+                        },
+                        (Value::Float(x), Value::BigInt(y)) => {
+                             let bf = y.to_f64().unwrap_or_else(|| if y.sign() == num_bigint::Sign::Minus { f64::NEG_INFINITY } else { f64::INFINITY });
+                             *x <= bf
+                        },
                         _ => false,
                     };
                     self.registers[base + a] = Value::Bool(result);
@@ -4694,7 +4668,7 @@ end
             future_id: None,
         });
 
-        let result = vm.run().unwrap();
+        let result = vm.run_until(0).unwrap();
         assert_eq!(
             result,
             Value::Bool(true),

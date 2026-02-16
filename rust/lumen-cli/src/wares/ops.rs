@@ -3,26 +3,20 @@
 //! Provides `init`, `build`, `check`, etc.
 //! Moved from `pkg.rs`.
 
-use crate::config::{DependencySpec, FeatureDef, LumenConfig};
+use crate::config::{DependencySpec, LumenConfig};
 use crate::git::{
-    self, checkout_git_commit, dep_spec_to_git_ref, fetch_git_repo, resolve_git_ref, GitRef,
-    GitResolver,
+    checkout_git_commit, fetch_git_repo, GitRef,
 };
-use crate::lockfile::{LockFile, LockedArtifact, LockedPackage};
+use crate::lockfile::{LockFile, LockedPackage};
 use crate::wares::{
-    ArtifactInfo, IntegrityInfo, RegistryClient, RegistryPackageIndex,
-    RegistryVersionMetadata, R2Client,
-    ResolutionError, ResolutionPolicy, ResolutionRequest, ResolvedPackage, ResolvedSource, Resolver,
+    RegistryClient, R2Client,
+    ResolutionPolicy, ResolutionRequest, ResolvedPackage, ResolvedSource, Resolver,
 };
 use crate::registry_cmd::{is_authenticated, publish_with_auth};
-use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::io::Read;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 // ANSI color helpers
 fn green(s: &str) -> String {
@@ -75,12 +69,14 @@ enum LockSyncOutcome {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct PackageEntry {
     archive_path: String,
     bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct PackageBundle {
     name: String,
     version: String,
@@ -88,6 +84,7 @@ struct PackageBundle {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct PackReport {
     archive_path: PathBuf,
     package_name: String,
@@ -99,6 +96,7 @@ struct PackReport {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct PublishDryRunReport {
     archive_path: PathBuf,
     package_name: String,
@@ -767,6 +765,7 @@ fn unpack_tarball(tar_path: &Path, dst: &Path) -> Result<(), String> {
 
 // Legacy function stub or remove
 #[allow(unused_variables)]
+#[allow(dead_code)]
 fn resolve_dep(
     name: &str,
     spec: &DependencySpec,
@@ -897,6 +896,7 @@ fn collect_lm_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+#[allow(dead_code)]
 fn has_lumen_sources(dir: &Path) -> bool {
     !find_lumen_sources(dir).is_empty()
 }
@@ -2305,7 +2305,7 @@ pub fn install_with_kind(kind: DependencyKind, frozen: bool) {
         }
     };
 
-    let project_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+    let _project_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
     println!("{} {} dependencies", status_label("Resolving"), kind);
 
     // Select the appropriate dependency set based on kind

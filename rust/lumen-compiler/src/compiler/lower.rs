@@ -849,36 +849,8 @@ impl<'a> Lowerer<'a> {
         match stmt {
             Stmt::Let(ls) => {
                 let val_reg = self.lower_expr(&ls.value, ra, consts, instrs);
-                if let Some(Pattern::TupleDestructure { elements, .. }) = &ls.pattern {
-                    // Destructuring let: let (a, b, c) = expr
-                    // Evaluate RHS into val_reg, then extract each element
-                    for (i, pat) in elements.iter().enumerate() {
-                        match pat {
-                            Pattern::Ident(name, _) => {
-                                let dest = ra.alloc_named(name);
-                                instrs.push(Instruction::abc(
-                                    OpCode::GetTuple,
-                                    dest,
-                                    val_reg,
-                                    i as u8,
-                                ));
-                            }
-                            Pattern::Wildcard(_) => {
-                                // Skip extraction for wildcard patterns
-                            }
-                            _ => {
-                                // For other patterns (nested destructuring etc.),
-                                // extract to a temp and ignore for now
-                                let temp = ra.alloc_temp();
-                                instrs.push(Instruction::abc(
-                                    OpCode::GetTuple,
-                                    temp,
-                                    val_reg,
-                                    i as u8,
-                                ));
-                            }
-                        }
-                    }
+                if let Some(ref pattern) = ls.pattern {
+                    self.lower_let_pattern(pattern, val_reg, ra, consts, instrs);
                 } else {
                     let dest = ra.alloc_named(&ls.name);
                     if dest != val_reg {
@@ -1324,6 +1296,127 @@ impl<'a> Lowerer<'a> {
             key_reg,
             value_reg,
         ));
+    }
+
+    /// Lower an irrefutable destructuring pattern in `let` position.
+    ///
+    /// Unlike match patterns, let-destructure patterns do not emit type
+    /// checks or fail jumps — the typechecker has already verified the
+    /// pattern is compatible with the RHS type.
+    fn lower_let_pattern(
+        &mut self,
+        pattern: &Pattern,
+        value_reg: u8,
+        ra: &mut RegAlloc,
+        consts: &mut Vec<Constant>,
+        instrs: &mut Vec<Instruction>,
+    ) {
+        match pattern {
+            Pattern::Ident(name, _) => {
+                let dest = ra.alloc_named(name);
+                if dest != value_reg {
+                    instrs.push(Instruction::abc(OpCode::Move, dest, value_reg, 0));
+                }
+            }
+            Pattern::Wildcard(_) => {
+                // Nothing to bind
+            }
+            Pattern::TupleDestructure { elements, .. } => {
+                for (i, elem_pat) in elements.iter().enumerate() {
+                    match elem_pat {
+                        Pattern::Wildcard(_) => {
+                            // Skip extraction for wildcard elements
+                        }
+                        Pattern::Ident(name, _) => {
+                            // Direct extraction into named register (avoids extra Move)
+                            let dest = ra.alloc_named(name);
+                            instrs.push(Instruction::abc(
+                                OpCode::GetTuple,
+                                dest,
+                                value_reg,
+                                i as u8,
+                            ));
+                        }
+                        _ => {
+                            // Nested pattern — extract to temp, then recurse
+                            let temp = ra.alloc_temp();
+                            instrs.push(Instruction::abc(
+                                OpCode::GetTuple,
+                                temp,
+                                value_reg,
+                                i as u8,
+                            ));
+                            self.lower_let_pattern(elem_pat, temp, ra, consts, instrs);
+                        }
+                    }
+                }
+            }
+            Pattern::RecordDestructure { fields, .. } => {
+                for (field_name, field_pat) in fields {
+                    let field_reg = ra.alloc_temp();
+                    self.emit_get_field(field_reg, value_reg, field_name, ra, consts, instrs);
+                    if let Some(pat) = field_pat {
+                        // Field has a sub-pattern — recurse
+                        self.lower_let_pattern(pat, field_reg, ra, consts, instrs);
+                    } else {
+                        // Shorthand `field_name:` — bind field value to the same name
+                        let bind_reg = ra.alloc_named(field_name);
+                        instrs.push(Instruction::abc(OpCode::Move, bind_reg, field_reg, 0));
+                    }
+                }
+            }
+            Pattern::ListDestructure { elements, rest, .. } => {
+                for (i, elem_pat) in elements.iter().enumerate() {
+                    match elem_pat {
+                        Pattern::Wildcard(_) => {
+                            // Skip extraction for wildcard elements
+                        }
+                        Pattern::Ident(name, _) => {
+                            let idx_reg = self.push_const_int(i as i64, ra, consts, instrs);
+                            let dest = ra.alloc_named(name);
+                            instrs.push(Instruction::abc(
+                                OpCode::GetIndex,
+                                dest,
+                                value_reg,
+                                idx_reg,
+                            ));
+                        }
+                        _ => {
+                            let idx_reg = self.push_const_int(i as i64, ra, consts, instrs);
+                            let temp = ra.alloc_temp();
+                            instrs.push(Instruction::abc(
+                                OpCode::GetIndex,
+                                temp,
+                                value_reg,
+                                idx_reg,
+                            ));
+                            self.lower_let_pattern(elem_pat, temp, ra, consts, instrs);
+                        }
+                    }
+                }
+                if let Some(rest_name) = rest {
+                    // rest = list.drop(elements.len())
+                    let list_arg = ra.alloc_temp();
+                    instrs.push(Instruction::abc(OpCode::Move, list_arg, value_reg, 0));
+                    let n_kidx = consts.len() as u16;
+                    consts.push(Constant::Int(elements.len() as i64));
+                    let n_reg = ra.alloc_temp();
+                    instrs.push(Instruction::abx(OpCode::LoadK, n_reg, n_kidx));
+                    debug_assert_eq!(n_reg, list_arg + 1);
+                    let rest_reg = ra.alloc_named(rest_name);
+                    instrs.push(Instruction::abc(
+                        OpCode::Intrinsic,
+                        rest_reg,
+                        IntrinsicId::Drop as u8,
+                        list_arg,
+                    ));
+                }
+            }
+            _ => {
+                // Unsupported patterns in let position (Guard, Or, Variant, etc.)
+                // are not valid irrefutable patterns — silently ignored.
+            }
+        }
     }
 
     fn lower_match_pattern(

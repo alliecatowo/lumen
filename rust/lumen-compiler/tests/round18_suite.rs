@@ -138,84 +138,82 @@ end
 
 // ============================================================================
 // 2. Destructuring let — let (a, b) = expr
-// NOTE: Destructuring let is parsed but lowering is in progress (task #2).
-// Tests are commented out until lowering is wired.
 // ============================================================================
 
-// #[test]
-// fn destructure_let_tuple_basic() {
-//     assert_ok(
-//         "destructure_tuple_basic",
-//         r#"
-// cell main() -> Int
-//   let pair = (1, 2)
-//   let (a, b) = pair
-//   return a + b
-// end
-// "#,
-//     );
-// }
+#[test]
+fn destructure_let_tuple_basic() {
+    assert_ok(
+        "destructure_tuple_basic",
+        r#"
+cell main() -> Int
+  let pair = (1, 2)
+  let (a, b) = pair
+  return a + b
+end
+"#,
+    );
+}
 
-// #[test]
-// fn destructure_let_tuple_three() {
-//     assert_ok(
-//         "destructure_tuple_three",
-//         r#"
-// cell main() -> Int
-//   let triple = (10, 20, 30)
-//   let (a, b, c) = triple
-//   return a + b + c
-// end
-// "#,
-//     );
-// }
+#[test]
+fn destructure_let_tuple_three() {
+    assert_ok(
+        "destructure_tuple_three",
+        r#"
+cell main() -> Int
+  let triple = (10, 20, 30)
+  let (a, b, c) = triple
+  return a + b + c
+end
+"#,
+    );
+}
 
-// #[test]
-// fn destructure_let_with_wildcard() {
-//     assert_ok(
-//         "destructure_wildcard",
-//         r#"
-// cell main() -> Int
-//   let pair = (1, 2)
-//   let (_, b) = pair
-//   return b
-// end
-// "#,
-//     );
-// }
+#[test]
+fn destructure_let_with_wildcard() {
+    assert_ok(
+        "destructure_wildcard",
+        r#"
+cell main() -> Int
+  let pair = (1, 2)
+  let (_, b) = pair
+  return b
+end
+"#,
+    );
+}
 
-// #[test]
-// fn destructure_let_record() {
-//     assert_ok(
-//         "destructure_record",
-//         r#"
-// record Point
-//   x: Int
-//   y: Int
-// end
-//
-// cell main() -> Int
-//   let p = Point(x: 3, y: 4)
-//   let Point(x:, y:) = p
-//   return x + y
-// end
-// "#,
-//     );
-// }
+#[test]
+fn destructure_let_record() {
+    assert_ok(
+        "destructure_record",
+        r#"
+record Point
+  x: Int
+  y: Int
+end
 
-// #[test]
-// fn destructure_nested() {
-//     assert_ok(
-//         "destructure_nested",
-//         r#"
-// cell main() -> Int
-//   let nested = ((1, 2), 3)
-//   let ((a, b), c) = nested
-//   return a + b + c
-// end
-// "#,
-//     );
-// }
+cell main() -> Int
+  let p = Point(x: 3, y: 4)
+  let Point(x:, y:) = p
+  return x + y
+end
+"#,
+    );
+}
+
+#[test]
+fn destructure_nested() {
+    assert_ok(
+        "destructure_nested",
+        r#"
+cell main() -> Int
+  let nested = ((1, 2), 3)
+  let ((a, b), c) = nested
+  return a + b + c
+end
+"#,
+    );
+}
 
 // ============================================================================
 // 3. Defer blocks — defer ... end compiles

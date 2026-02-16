@@ -317,12 +317,74 @@ end
 
 A wildcard `_` or catch-all identifier pattern makes any match exhaustive. Guard patterns do not contribute to exhaustiveness coverage.
 
+## Let-Destructuring
+
+Patterns can be used in `let` bindings to extract values directly, without a `match` statement.
+
+### Tuple Destructuring
+
+```lumen
+cell get_point() -> tuple[Int, Int]
+  return (3, 7)
+end
+
+cell main() -> String
+  let (x, y) = get_point()
+  return "x={x}, y={y}"
+end
+```
+
+### Record Destructuring
+
+Use field punning (shorthand) when the binding name matches the field name:
+
+```lumen
+record Point
+  x: Int
+  y: Int
+end
+
+let origin = Point(x: 0, y: 0)
+let Point(x:, y:) = origin     # binds x = 0, y = 0
+print("({x}, {y})")           # "(0, 0)"
+```
+
+Rename fields during destructuring:
+
+```lumen
+let Point(x: px, y: py) = origin
+print("px={px}, py={py}")
+```
+
+### Practical Example
+
+Destructuring is useful for working with functions that return structured data:
+
+```lumen
+record ParseResult
+  tokens: list[String]
+  errors: list[String]
+  ok: Bool
+end
+
+cell process(input: String) -> String
+  let ParseResult(tokens:, errors:, ok:) = parse(input)
+  
+  if not ok
+    return "Parse failed: {join(errors, ", ")}"
+  end
+  
+  return "Got {length(tokens)} tokens"
+end
+```
+
 ## Best Practices
 
 1. **Be exhaustive** — Cover all cases or use `_` as fallback; the compiler checks enum coverage
 2. **Order matters** — First matching pattern wins
 3. **Use guards for complex conditions** — Keep patterns simple
 4. **Destructure in the pattern** — Don't extract then check
+5. **Use let-destructuring for known shapes** — When the structure is guaranteed, destructure in `let` instead of `match`
 
 ## Next Steps
 

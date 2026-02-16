@@ -2,10 +2,16 @@
 
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::rc::Rc;
 
 /// Runtime values in the Lumen VM.
+///
+/// Collection variants (List, Tuple, Set, Map, Record) are wrapped in `Rc` for
+/// cheap cloning via reference counting. Mutation uses `Rc::make_mut()` which
+/// provides copy-on-write semantics — the inner data is only cloned when the
+/// reference count is greater than one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Value {
     Null,
@@ -14,11 +20,11 @@ pub enum Value {
     Float(f64),
     String(StringRef),
     Bytes(Vec<u8>),
-    List(Vec<Value>),
-    Tuple(Vec<Value>),
-    Set(Vec<Value>),
-    Map(BTreeMap<String, Value>),
-    Record(RecordValue),
+    List(Rc<Vec<Value>>),
+    Tuple(Rc<Vec<Value>>),
+    Set(Rc<BTreeSet<Value>>),
+    Map(Rc<BTreeMap<String, Value>>),
+    Record(Rc<RecordValue>),
     Union(UnionValue),
     Closure(ClosureValue),
     TraceRef(TraceRefValue),
@@ -70,6 +76,32 @@ pub enum FutureStatus {
 }
 
 impl Value {
+    // -- Constructors (wrap inner data in Rc) --
+
+    pub fn new_list(v: Vec<Value>) -> Self {
+        Value::List(Rc::new(v))
+    }
+
+    pub fn new_tuple(v: Vec<Value>) -> Self {
+        Value::Tuple(Rc::new(v))
+    }
+
+    pub fn new_set(s: BTreeSet<Value>) -> Self {
+        Value::Set(Rc::new(s))
+    }
+
+    pub fn new_set_from_vec(v: Vec<Value>) -> Self {
+        Value::Set(Rc::new(v.into_iter().collect()))
+    }
+
+    pub fn new_map(m: BTreeMap<String, Value>) -> Self {
+        Value::Map(Rc::new(m))
+    }
+
+    pub fn new_record(r: RecordValue) -> Self {
+        Value::Record(Rc::new(r))
+    }
+
     pub fn is_truthy(&self) -> bool {
         match self {
             Value::Null => false,
@@ -324,16 +356,10 @@ impl PartialEq for Value {
             (Value::String(StringRef::Interned(_)), Value::String(StringRef::Owned(_))) => false,
             (Value::Int(a), Value::Float(b)) => (*a as f64) == *b,
             (Value::Float(a), Value::Int(b)) => *a == (*b as f64),
-            (Value::List(a), Value::List(b)) => a == b,
-            (Value::Tuple(a), Value::Tuple(b)) => a == b,
-            (Value::Set(a), Value::Set(b)) => {
-                // Sets are equal if they contain the same elements (order-independent)
-                if a.len() != b.len() {
-                    return false;
-                }
-                a.iter().all(|v| b.contains(v))
-            }
-            (Value::Map(a), Value::Map(b)) => a == b,
+            (Value::List(a), Value::List(b)) => **a == **b,
+            (Value::Tuple(a), Value::Tuple(b)) => **a == **b,
+            (Value::Set(a), Value::Set(b)) => **a == **b,
+            (Value::Map(a), Value::Map(b)) => **a == **b,
             (Value::Record(a), Value::Record(b)) => {
                 a.type_name == b.type_name && a.fields == b.fields
             }
@@ -378,9 +404,9 @@ impl Ord for Value {
                 (StringRef::Owned(_), StringRef::Interned(_)) => Ordering::Greater,
             },
             (Value::Bytes(a), Value::Bytes(b)) => a.cmp(b),
-            (Value::List(a), Value::List(b)) => a.cmp(b),
-            (Value::Tuple(a), Value::Tuple(b)) => a.cmp(b),
-            (Value::Set(a), Value::Set(b)) => a.len().cmp(&b.len()).then_with(|| a.cmp(b)),
+            (Value::List(a), Value::List(b)) => (**a).cmp(&**b),
+            (Value::Tuple(a), Value::Tuple(b)) => (**a).cmp(&**b),
+            (Value::Set(a), Value::Set(b)) => a.len().cmp(&b.len()).then_with(|| (**a).cmp(&**b)),
             (Value::Map(a), Value::Map(b)) => {
                 let ak: Vec<_> = a.keys().collect();
                 let bk: Vec<_> = b.keys().collect();
@@ -458,13 +484,13 @@ mod tests {
 
     #[test]
     fn test_display_pretty_list() {
-        let v = Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        let v = Value::new_list(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
         assert_eq!(v.display_pretty(), "[1, 2, 3]");
     }
 
     #[test]
     fn test_display_pretty_tuple() {
-        let v = Value::Tuple(vec![
+        let v = Value::new_tuple(vec![
             Value::Int(1),
             Value::String(StringRef::Owned("a".into())),
         ]);
@@ -473,7 +499,7 @@ mod tests {
 
     #[test]
     fn test_display_pretty_set() {
-        let v = Value::Set(vec![Value::Int(1), Value::Int(2)]);
+        let v = Value::new_set_from_vec(vec![Value::Int(1), Value::Int(2)]);
         assert_eq!(v.display_pretty(), "set[1, 2]");
     }
 
@@ -485,7 +511,7 @@ mod tests {
             Value::String(StringRef::Owned("Alice".into())),
         );
         fields.insert("age".to_string(), Value::Int(30));
-        let v = Value::Record(RecordValue {
+        let v = Value::new_record(RecordValue {
             type_name: "Person".into(),
             fields,
         });
@@ -508,7 +534,7 @@ mod tests {
         assert_eq!(Value::Int(42).as_int(), Some(42));
         assert_eq!(Value::Float(2.5).as_float(), Some(2.5));
         assert_eq!(Value::Int(42).as_float(), Some(42.0));
-        assert!(Value::List(vec![]).as_list().is_some());
+        assert!(Value::new_list(vec![]).as_list().is_some());
         assert!(Value::Null.as_list().is_none());
     }
 
@@ -523,8 +549,8 @@ mod tests {
 
     #[test]
     fn test_set_equality() {
-        let a = Value::Set(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
-        let b = Value::Set(vec![Value::Int(3), Value::Int(1), Value::Int(2)]);
+        let a = Value::new_set_from_vec(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        let b = Value::new_set_from_vec(vec![Value::Int(3), Value::Int(1), Value::Int(2)]);
         assert_eq!(a, b);
     }
 
@@ -589,14 +615,14 @@ mod tests {
         assert!(!Value::String(StringRef::Owned("".into())).is_truthy());
         assert!(Value::String(StringRef::Owned("hello".into())).is_truthy());
         // List
-        assert!(!Value::List(vec![]).is_truthy());
-        assert!(Value::List(vec![Value::Null]).is_truthy());
+        assert!(!Value::new_list(vec![]).is_truthy());
+        assert!(Value::new_list(vec![Value::Null]).is_truthy());
         // Tuple
-        assert!(!Value::Tuple(vec![]).is_truthy());
-        assert!(Value::Tuple(vec![Value::Int(1)]).is_truthy());
+        assert!(!Value::new_tuple(vec![]).is_truthy());
+        assert!(Value::new_tuple(vec![Value::Int(1)]).is_truthy());
         // Set
-        assert!(!Value::Set(vec![]).is_truthy());
-        assert!(Value::Set(vec![Value::Int(1)]).is_truthy());
+        assert!(!Value::new_set_from_vec(vec![]).is_truthy());
+        assert!(Value::new_set_from_vec(vec![Value::Int(1)]).is_truthy());
     }
 
     #[test]

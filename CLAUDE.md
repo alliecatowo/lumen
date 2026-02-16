@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build --release                    # Build all crates
-cargo test --workspace                   # Run all tests (~1090 passing, 20 ignored)
+cargo test --workspace                   # Run all tests (~1100+ passing, 20 ignored; 1,328 as of Phase 2)
 cargo test -p lumen-compiler             # Tests for compiler only
 cargo test -p lumen-vm                   # Tests for VM only
 cargo test -p lumen-runtime              # Tests for runtime only
@@ -131,7 +131,20 @@ LIR uses 32-bit fixed-width instructions (Lua-style encoding) defined in `compil
 - Instruction fields: `op` (8-bit opcode), `a`/`b`/`c` (8-bit registers), `Bx` (16-bit constant index), `Ax` (24-bit jump offset)
 - ~100 opcodes across families: load/move, data construction, field/index access, arithmetic, comparison, control flow, intrinsics, closures, effects
 
-The VM (`vm/vm.rs`) is a register-based interpreter with a call-frame stack (max depth 256). Runtime values include scalars, collections, records, unions, closures, futures, and trace refs.
+The VM has been split into modules under `vm/`:
+- `vm/mod.rs` — core dispatch loop
+- `vm/intrinsics.rs` — builtin dispatch
+- `vm/processes.rs` — memory/machine/pipeline runtimes
+- `vm/ops.rs` — arithmetic operations
+- `vm/helpers.rs` — utility functions
+
+The VM is a register-based interpreter with a call-frame stack (max depth 256). Runtime values include scalars, collections, records, unions, closures, futures, and trace refs.
+
+### Value Representation
+
+Collection variants (List, Tuple, Set, Map, Record) are wrapped in `Rc<T>` for cheap reference-counted cloning. Set uses `BTreeSet<Value>` instead of `Vec<Value>` for O(log n) membership. Mutation uses `Rc::make_mut()` for copy-on-write semantics. Value constructors: `Value::new_list(vec)`, `Value::new_tuple(vec)`, `Value::new_set_from_vec(vec)`, `Value::new_map(map)`, `Value::new_record(rv)`.
+
+There are 83 builtins, including `parse_json`, `to_json`, `read_file`, `write_file`, `timestamp` (Float), `random`, `get_env`.
 
 ### Process Runtimes
 
@@ -219,6 +232,10 @@ Providers implement `capabilities()` method to advertise supported features. The
 
 **Defer execution order**: Multiple `defer` blocks in a scope execute in LIFO (reverse) order when the scope exits. The last `defer` registered runs first.
 
+**Let-destructuring**: Fully implemented. `let (a, b) = tuple_expr` — tuple destructuring. `let Point(x:, y:) = record_expr` — record destructuring.
+
+**Index out-of-bounds**: List/tuple index out-of-bounds returns a runtime error instead of `Value::Null`. Supports Python-style negative indices.
+
 ## Tooling and Editor Support
 
 **Tree-sitter grammar**: Located at `tree-sitter-lumen/grammar.js`. Comprehensive coverage of all language constructs for building LSPs, formatters, and analysis tools.
@@ -255,7 +272,7 @@ Providers implement `capabilities()` method to advertise supported features. The
 - `rust/lumen-compiler/tests/spec_markdown_sweep.rs` — Compiles every code block in `SPEC.md` (auto-stubs undefined types)
 - `rust/lumen-compiler/tests/spec_suite.rs` — Semantic compiler tests (compile-ok and compile-err cases)
 - Unit tests inline in source files across all crates
-- **Test counts**: ~1090 tests passing, 20 ignored (ignored tests are integration tests requiring external services: Gemini API, MCP servers, provider registry)
+- **Test counts**: ~1100+ passing (1,328 as of Phase 2), 20 ignored (ignored tests are integration tests requiring external services: Gemini API, MCP servers, provider registry)
 - All 30 examples type-check successfully; most run end-to-end
 
 ## Language Essentials
@@ -274,6 +291,11 @@ Providers implement `capabilities()` method to advertise supported features. The
 **Syntactic Sugar**:
 - **Pipe operator** `|>`: `data |> transform() |> format()` — value becomes first argument
 - **Compose operator** `~>`: `parse ~> validate ~> transform` — creates a new composed function (lazy, creates closure)
+- **`when` expression**: multi-branch conditional — `when score >= 90 -> "A" ... _ -> "F" end`
+- **`comptime` expression**: compile-time constant evaluation — `comptime build_lookup(256) end`
+- **`extern` declaration**: FFI — `extern cell malloc(size: Int) -> addr[Byte]`
+- **`yield` statement**: generator/lazy iterator — `yield value` in cells returning `yield T`
+- **`defer` statement**: scope-exit cleanup — `defer close(handle) end` (executes in LIFO order)
 - **String interpolation**: `"Hello, {name}!"` — embed expressions in strings
 - **Range expressions**: `1..5` (exclusive), `1..=5` (inclusive) — concise iteration
 - **Optional type sugar**: `T?` is shorthand for `T | Null`
@@ -287,10 +309,6 @@ Providers implement `capabilities()` method to advertise supported features. The
 - **Null-safe index**: `collection?[index]` — returns `null` if collection is null
 - **Variadic parameters**: `...param` syntax is parsed in cell signatures (type system wiring pending)
 - **Match exhaustiveness**: compiler checks all enum variants are covered in match statements
-- **`when` expression**: multi-branch conditional — `when score >= 90 -> "A" ... _ -> "F" end`
-- **`comptime` expression**: compile-time constant evaluation — `comptime build_lookup(256) end`
-- **`defer` statement**: scope-exit cleanup — `defer close(handle) end` (executes in LIFO order)
-- **`yield` statement**: generator/lazy iterator — `yield value` in cells returning `yield T`
 - See `examples/syntax_sugar.lm.md` for comprehensive examples
 
 

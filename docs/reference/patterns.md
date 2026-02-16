@@ -177,13 +177,54 @@ end
 
 ## Destructuring in let
 
-Patterns work in let bindings:
+Patterns work in `let` bindings to extract values from structured data in a single declaration.
+
+### Tuple Destructuring
+
+Bind each element of a tuple to a variable:
 
 ```lumen
 let (a, b) = (1, 2)
+let (x, y, z) = get_coordinates()
+```
+
+Nested tuple destructuring:
+
+```lumen
+let (name, (lat, lon)) = ("Office", (37.7749, -122.4194))
+```
+
+### List Destructuring
+
+Bind list elements, optionally capturing the rest:
+
+```lumen
 let [first, ...rest] = [1, 2, 3, 4]
+let [head, second, ...tail] = items
+```
+
+### Record Destructuring
+
+Extract fields from a record by name. Use field punning (shorthand) when the binding name matches the field name:
+
+```lumen
+let Point(x:, y:) = origin        # field punning: binds x and y
+let Point(x: px, y: py) = point   # rename: binds px and py
+let User(name: n, ..) = user      # partial: binds n, ignores other fields
+```
+
+Record destructuring with positional syntax:
+
+```lumen
 let Point(x, y) = point
-let User(name: n, ..) = user
+```
+
+### Type Annotations
+
+Destructured bindings can include type annotations:
+
+```lumen
+let (a: Int, b: String) = (42, "hello")
 ```
 
 ## Destructuring in for

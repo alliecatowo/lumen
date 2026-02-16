@@ -83,7 +83,19 @@ impl VM {
         match kind.as_str() {
             "memory" => Some(self.call_memory_method(owner, method, base, a, nargs)),
             "machine" => Some(self.call_machine_method(owner, method, base, a, nargs)),
-            "pipeline" | "orchestration" | "eval" | "guardrail" | "pattern" if method == "run" => {
+            "pipeline" if method == "run" => {
+                let args: Vec<Value> = (0..nargs)
+                    .map(|i| self.registers[base + a + 1 + i].clone())
+                    .collect();
+                Some(self.call_pipeline_run(owner, &args))
+            }
+            "orchestration" if method == "run" => {
+                let args: Vec<Value> = (0..nargs)
+                    .map(|i| self.registers[base + a + 1 + i].clone())
+                    .collect();
+                Some(self.call_orchestration_run(owner, &args))
+            }
+            "eval" | "guardrail" | "pattern" if method == "run" => {
                 let args: Vec<Value> = (0..nargs)
                     .map(|i| self.registers[base + a + 1 + i].clone())
                     .collect();
@@ -91,6 +103,89 @@ impl VM {
             }
             _ => None,
         }
+    }
+
+    /// Execute a named cell synchronously with the given arguments, saving and
+    /// restoring the current frame/register state so this can be called from
+    /// within a process builtin handler.
+    fn call_cell_sync(&mut self, cell_name: &str, args: Vec<Value>) -> Result<Value, VmError> {
+        let module = self.module.as_ref().ok_or(VmError::NoModule)?;
+        let cell_idx = module
+            .cells
+            .iter()
+            .position(|c| c.name == cell_name)
+            .ok_or_else(|| VmError::UndefinedCell(cell_name.into()))?;
+
+        let cell = &module.cells[cell_idx];
+        let num_regs = cell.registers as usize;
+        let params = cell.params.clone();
+
+        // Save current execution state
+        let saved_frames = std::mem::take(&mut self.frames);
+        let saved_registers = std::mem::take(&mut self.registers);
+
+        // Set up a fresh execution context for the target cell
+        self.registers
+            .resize(num_regs.max(256), Value::Null);
+        for (i, arg) in args.into_iter().enumerate() {
+            if i < params.len() {
+                let dst = params[i].register as usize;
+                if dst < self.registers.len() {
+                    self.registers[dst] = arg;
+                }
+            }
+        }
+        self.frames.push(CallFrame {
+            cell_idx,
+            base_register: 0,
+            ip: 0,
+            return_register: 0,
+            future_id: None,
+        });
+
+        let result = self.run();
+
+        // Restore execution state
+        self.frames = saved_frames;
+        self.registers = saved_registers;
+
+        result
+    }
+
+    /// Execute a pipeline's `run` method by chaining stage calls.
+    /// Each stage cell is called with the output of the previous stage,
+    /// starting from the provided input argument.
+    pub(crate) fn call_pipeline_run(&mut self, owner: &str, args: &[Value]) -> Result<Value, VmError> {
+        let input = args.get(1).cloned().unwrap_or(Value::Null);
+        let stages = self.pipeline_stages.get(owner).cloned().unwrap_or_default();
+        if stages.is_empty() {
+            return Ok(input);
+        }
+        let mut value = input;
+        for stage in &stages {
+            value = self.call_cell_sync(stage, vec![value])?;
+        }
+        Ok(value)
+    }
+
+    /// Execute an orchestration's `run` method by running all stage cells
+    /// with the same input and collecting results into a list.
+    pub(crate) fn call_orchestration_run(
+        &mut self,
+        owner: &str,
+        args: &[Value],
+    ) -> Result<Value, VmError> {
+        let input = args.get(1).cloned().unwrap_or(Value::Null);
+        let stages = self.pipeline_stages.get(owner).cloned().unwrap_or_default();
+        if stages.is_empty() {
+            return Ok(input);
+        }
+        let mut results = Vec::with_capacity(stages.len());
+        for stage in &stages {
+            let result = self.call_cell_sync(stage, vec![input.clone()])?;
+            results.push(result);
+        }
+        Ok(Value::new_list(results))
     }
 
     fn call_memory_method(

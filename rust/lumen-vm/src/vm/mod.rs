@@ -276,6 +276,10 @@ pub(crate) struct EffectScope {
     pub frame_idx: usize,
     pub base_register: usize,
     pub cell_idx: usize,
+    /// The effect name this handler matches (e.g. "Console")
+    pub effect_name: String,
+    /// The operation name this handler matches (e.g. "log")
+    pub operation: String,
 }
 
 /// A suspended continuation for algebraic effects (one-shot).
@@ -308,6 +312,7 @@ pub struct VM {
     pub(crate) future_schedule_explicit: bool,
     pub(crate) next_process_instance_id: u64,
     pub(crate) process_kinds: BTreeMap<String, String>,
+    pub(crate) pipeline_stages: BTreeMap<String, Vec<String>>,
     pub(crate) machine_graphs: BTreeMap<String, MachineGraphDef>,
     pub(crate) memory_runtime: BTreeMap<u64, MemoryRuntime>,
     pub(crate) machine_runtime: BTreeMap<u64, MachineRuntime>,
@@ -344,6 +349,7 @@ impl VM {
             future_schedule_explicit: false,
             next_process_instance_id: 1,
             process_kinds: BTreeMap::new(),
+            pipeline_stages: BTreeMap::new(),
             machine_graphs: BTreeMap::new(),
             memory_runtime: BTreeMap::new(),
             machine_runtime: BTreeMap::new(),
@@ -383,6 +389,7 @@ impl VM {
         }
         self.next_process_instance_id = 1;
         self.process_kinds.clear();
+        self.pipeline_stages.clear();
         self.next_future_id = 1;
         self.future_states.clear();
         self.scheduled_futures.clear();
@@ -411,6 +418,16 @@ impl VM {
                 if addon.kind == "machine.initial" {
                     if let Some((machine, initial)) = name.split_once('=') {
                         machine_initials.insert(machine.to_string(), initial.to_string());
+                    }
+                }
+                if addon.kind == "pipeline.stages" {
+                    if let Some((pipeline_name, stages_json)) = name.split_once('=') {
+                        if let Ok(stages) =
+                            serde_json::from_str::<Vec<String>>(stages_json)
+                        {
+                            self.pipeline_stages
+                                .insert(pipeline_name.to_string(), stages);
+                        }
                     }
                 }
                 if addon.kind == "machine.state" {
@@ -2158,14 +2175,26 @@ impl VM {
 
                 // Algebraic effects
                 OpCode::HandlePush => {
-                    let offset = instr.ax_val() as usize;
+                    let meta_idx = a as usize;
+                    let offset = instr.bx() as usize;
                     let frame = self.frames.last().unwrap();
                     let handler_ip = frame.ip.saturating_sub(1) + offset;
+
+                    let (eff_name, op_name) = if meta_idx < cell.effect_handler_metas.len() {
+                        let meta = &cell.effect_handler_metas[meta_idx];
+                        (meta.effect_name.clone(), meta.operation.clone())
+                    } else {
+                        // Fallback for legacy modules without handler metadata
+                        (String::new(), String::new())
+                    };
+
                     self.effect_handlers.push(EffectScope {
                         handler_ip,
                         frame_idx: self.frames.len() - 1,
                         base_register: base,
                         cell_idx,
+                        effect_name: eff_name,
+                        operation: op_name,
                     });
                 }
                 OpCode::HandlePop => {
@@ -2185,8 +2214,7 @@ impl VM {
 
                     // Search effect_handlers stack (top to bottom) for matching handler
                     let handler_scope = self.effect_handlers.iter().rev().find(|scope| {
-                        // We match by looking at handler metadata stored alongside the module
-                        true // For now, accept any handler scope as matching
+                        scope.effect_name == eff_name && scope.operation == op_name
                     }).cloned();
 
                     if let Some(scope) = handler_scope {
@@ -2457,6 +2485,7 @@ mod tests {
                     Instruction::abx(OpCode::LoadK, 0, 0),
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -2505,6 +2534,7 @@ mod tests {
                     Instruction::abc(OpCode::Add, 2, 0, 1),
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -2535,6 +2565,7 @@ mod tests {
                     Instruction::abc(OpCode::SetIndex, 0, 1, 2),
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -2586,6 +2617,7 @@ mod tests {
                     Instruction::abc(OpCode::TraceRef, 0, 0, 0),
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -2644,6 +2676,7 @@ mod tests {
                     Instruction::abc(OpCode::NewList, 2, 2, 0),
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -2704,6 +2737,7 @@ mod tests {
                     Instruction::abc(OpCode::LoadNil, 0, 0, 0),
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -2742,6 +2776,7 @@ mod tests {
                     Instruction::abc(OpCode::Append, 0, 1, 0),
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -2783,6 +2818,7 @@ mod tests {
                     Instruction::abc(OpCode::Lt, 2, 0, 1),
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -2820,6 +2856,7 @@ mod tests {
                     Instruction::abc(OpCode::Concat, 2, 0, 1),
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -2858,6 +2895,7 @@ mod tests {
                     Instruction::abc(OpCode::NewTuple, 0, 3, 0),
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -2896,6 +2934,7 @@ mod tests {
                     Instruction::abc(OpCode::NewSet, 0, 3, 0),
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -2948,6 +2987,7 @@ mod tests {
                     Instruction::abc(OpCode::Intrinsic, 2, 69, 0),
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -2994,6 +3034,7 @@ mod tests {
                     Instruction::abc(OpCode::Add, 2, 0, 1), // r2 = r0 + r1
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -3046,6 +3087,7 @@ mod tests {
                     Instruction::abx(OpCode::LoadK, 0, 0), // r0 = 42
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -3094,6 +3136,7 @@ mod tests {
                     Instruction::abx(OpCode::Schema, 0, 0),
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![LirTool {
                 alias: "HttpGet".into(),
@@ -3178,6 +3221,7 @@ mod tests {
                     Instruction::abc(OpCode::BitAnd, 2, 0, 1), // 0b1000 = 8
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -3337,6 +3381,127 @@ end
 "#,
         );
         assert_eq!(result, Value::Int(8));
+    }
+
+    #[test]
+    fn test_pipeline_three_stages() {
+        let result = run_main(
+            r#"
+cell add_one(x: Int) -> Int
+  return x + 1
+end
+
+cell double(x: Int) -> Int
+  return x * 2
+end
+
+cell square(x: Int) -> Int
+  return x * x
+end
+
+pipeline ThreeStage
+  stages:
+    add_one
+      -> double
+      -> square
+  end
+end
+
+cell main() -> Int
+  let p = ThreeStage()
+  return p.run(4)
+end
+"#,
+        );
+        // 4 -> add_one -> 5 -> double -> 10 -> square -> 100
+        assert_eq!(result, Value::Int(100));
+    }
+
+    #[test]
+    fn test_pipeline_vm_level_stage_chaining() {
+        // Test the VM-level pipeline stage chaining directly by compiling
+        // stage cells, then manually registering a pipeline in the VM
+        // without a generated `run` cell.
+        let md = "# test\n\n```lumen\ncell inc(x: Int) -> Int\n  return x + 1\nend\n\ncell dbl(x: Int) -> Int\n  return x * 2\nend\n\ncell main() -> Int\n  return 0\nend\n```\n";
+        let mut module = compile_lumen(md).expect("should compile");
+
+        // Inject pipeline addon metadata (as if a pipeline process were declared)
+        module.addons.push(LirAddon {
+            kind: "pipeline".to_string(),
+            name: Some("TestPipe".to_string()),
+        });
+        module.addons.push(LirAddon {
+            kind: "pipeline.stages".to_string(),
+            name: Some(r#"TestPipe=["inc","dbl"]"#.to_string()),
+        });
+
+        let mut vm = VM::new();
+        vm.load(module);
+
+        // Verify stage metadata was loaded
+        assert_eq!(
+            vm.pipeline_stages.get("TestPipe"),
+            Some(&vec!["inc".to_string(), "dbl".to_string()])
+        );
+
+        // Directly test pipeline stage chaining via the VM
+        // Input: 3 -> inc -> 4 -> dbl -> 8
+        let result = vm
+            .call_pipeline_run("TestPipe", &[Value::Null, Value::Int(3)])
+            .expect("pipeline run should succeed");
+        assert_eq!(result, Value::Int(8));
+    }
+
+    #[test]
+    fn test_pipeline_vm_level_empty_stages() {
+        // Pipeline with no stages should return the input unchanged
+        let md = "# test\n\n```lumen\ncell main() -> Int\n  return 0\nend\n```\n";
+        let mut module = compile_lumen(md).expect("should compile");
+
+        module.addons.push(LirAddon {
+            kind: "pipeline".to_string(),
+            name: Some("EmptyPipe".to_string()),
+        });
+
+        let mut vm = VM::new();
+        vm.load(module);
+
+        let result = vm
+            .call_pipeline_run("EmptyPipe", &[Value::Null, Value::Int(42)])
+            .expect("empty pipeline should succeed");
+        assert_eq!(result, Value::Int(42));
+    }
+
+    #[test]
+    fn test_orchestration_vm_level_fan_out() {
+        // Orchestration runs all stages with the same input and collects results
+        let md = "# test\n\n```lumen\ncell inc(x: Int) -> Int\n  return x + 1\nend\n\ncell dbl(x: Int) -> Int\n  return x * 2\nend\n\ncell main() -> Int\n  return 0\nend\n```\n";
+        let mut module = compile_lumen(md).expect("should compile");
+
+        module.addons.push(LirAddon {
+            kind: "orchestration".to_string(),
+            name: Some("FanOut".to_string()),
+        });
+        module.addons.push(LirAddon {
+            kind: "pipeline.stages".to_string(),
+            name: Some(r#"FanOut=["inc","dbl"]"#.to_string()),
+        });
+
+        let mut vm = VM::new();
+        vm.load(module);
+
+        // Orchestration: input 5 -> [inc(5)=6, dbl(5)=10]
+        let result = vm
+            .call_orchestration_run("FanOut", &[Value::Null, Value::Int(5)])
+            .expect("orchestration should succeed");
+        match result {
+            Value::List(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0], Value::Int(6));
+                assert_eq!(items[1], Value::Int(10));
+            }
+            other => panic!("expected list, got {:?}", other),
+        }
     }
 
     #[test]
@@ -3620,6 +3785,7 @@ end
                         Instruction::abc(OpCode::Await, 1, 0, 0),
                         Instruction::abc(OpCode::Return, 1, 1, 0),
                     ],
+                    effect_handler_metas: vec![],
                 },
                 LirCell {
                     name: "worker".into(),
@@ -3628,6 +3794,7 @@ end
                     registers: 4,
                     constants: worker_consts,
                     instructions: worker_instrs,
+                    effect_handler_metas: vec![],
                 },
             ],
             tools: vec![],
@@ -3905,6 +4072,7 @@ end
                     Instruction::abc(OpCode::Add, 2, 0, 1),
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -3943,6 +4111,7 @@ end
                     Instruction::abc(OpCode::Sub, 2, 0, 1),
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -3981,6 +4150,7 @@ end
                     Instruction::abc(OpCode::Mul, 2, 0, 1),
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -4019,6 +4189,7 @@ end
                     Instruction::abc(OpCode::Div, 2, 0, 1),
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -4053,6 +4224,7 @@ end
                     Instruction::abc(OpCode::Mod, 2, 0, 1),
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -4087,6 +4259,7 @@ end
                     Instruction::abc(OpCode::Pow, 2, 0, 1),
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -4125,6 +4298,7 @@ end
                     Instruction::abc(OpCode::Shl, 2, 0, 1),
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -4163,6 +4337,7 @@ end
                     Instruction::abc(OpCode::Shr, 2, 0, 1),
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -4235,6 +4410,7 @@ end
                         Instruction::abc(OpCode::Call, 1, 0, 0),     // call r1 with 0 args
                         Instruction::abc(OpCode::Return, 1, 1, 0),   // return result
                     ],
+                    effect_handler_metas: vec![],
                 },
                 LirCell {
                     name: "__closure_0".into(),
@@ -4246,6 +4422,7 @@ end
                         Instruction::abc(OpCode::GetUpval, 0, 0, 0), // r0 = capture[0]
                         Instruction::abc(OpCode::Return, 0, 1, 0),   // return r0
                     ],
+                    effect_handler_metas: vec![],
                 },
             ],
             tools: vec![],
@@ -4288,6 +4465,7 @@ end
                         Instruction::abc(OpCode::Call, 2, 0, 0),      // call closure
                         Instruction::abc(OpCode::Return, 2, 1, 0),    // return result
                     ],
+                    effect_handler_metas: vec![],
                 },
                 LirCell {
                     name: "__closure_1".into(),
@@ -4301,6 +4479,7 @@ end
                         Instruction::abc(OpCode::Add, 2, 0, 1),      // r2 = r0 + r1
                         Instruction::abc(OpCode::Return, 2, 1, 0),   // return 30
                     ],
+                    effect_handler_metas: vec![],
                 },
             ],
             tools: vec![],
@@ -4388,6 +4567,7 @@ end
                     Instruction::abc(OpCode::Eq, 2, 0, 1),
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -4989,6 +5169,7 @@ end
                     Instruction::abc(OpCode::LoadInt, 1, 0, 0),
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5025,6 +5206,7 @@ end
                     Instruction::abc(OpCode::Call, 0, 2, 0),
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5065,6 +5247,7 @@ end
                     Instruction::abc(OpCode::Call, 0, 0, 0),
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5108,6 +5291,7 @@ end
                     Instruction::abc(OpCode::Add, 2, 0, 1),
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5144,6 +5328,7 @@ end
                     Instruction::abc(OpCode::Sub, 2, 0, 1),
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5180,6 +5365,7 @@ end
                     Instruction::abc(OpCode::Mul, 2, 0, 1),
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5216,6 +5402,7 @@ end
                     Instruction::abc(OpCode::Div, 2, 0, 1),
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5252,6 +5439,7 @@ end
                     Instruction::abc(OpCode::Mod, 2, 0, 1),
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5305,6 +5493,7 @@ end
                     Instruction::abc(OpCode::Call, 0, 1, 0),
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5345,6 +5534,7 @@ end
                     Instruction::abc(OpCode::Call, 0, 1, 0),
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5377,6 +5567,7 @@ end
                 registers: 1,
                 constants: vec![],
                 instructions: vec![Instruction::sax(OpCode::Jmp, -1)],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5447,6 +5638,7 @@ end
                 registers: 1,
                 constants: vec![],
                 instructions: vec![Instruction::sax(OpCode::Jmp, -1)],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5484,6 +5676,7 @@ end
                     Instruction::abx(OpCode::LoadK, 0, 0),
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5519,6 +5712,7 @@ end
                     Instruction::abx(OpCode::LoadK, 0, 0),
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
+                effect_handler_metas: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5571,11 +5765,17 @@ end
                 registers: 4,
                 constants: vec![Constant::Int(42)],
                 instructions: vec![
-                    Instruction::ax(OpCode::HandlePush, 4), // handler code at offset +4
+                    Instruction::abx(OpCode::HandlePush, 0, 4), // meta_idx=0, handler code at offset +4
                     Instruction::abx(OpCode::LoadK, 0, 0),  // load 42
                     Instruction::ax(OpCode::HandlePop, 0),   // pop handler
                     Instruction::abc(OpCode::Return, 0, 1, 0), // return 42
                 ],
+                effect_handler_metas: vec![LirEffectHandlerMeta {
+                    effect_name: "TestEffect".into(),
+                    operation: "test_op".into(),
+                    param_count: 0,
+                    handler_ip: 4,
+                }],
             }],
             tools: vec![],
             policies: vec![],
@@ -5602,9 +5802,217 @@ end
             frame_idx: 0,
             base_register: 0,
             cell_idx: 0,
+            effect_name: "TestEffect".into(),
+            operation: "test_op".into(),
         });
         assert_eq!(vm.effect_handlers.len(), 1);
         vm.effect_handlers.pop();
         assert!(vm.effect_handlers.is_empty());
+    }
+
+    #[test]
+    fn test_perform_matches_correct_handler() {
+        // Test that Perform finds the handler that matches effect_name + operation.
+        //
+        // Program structure:
+        //   HandlePush meta=0 (Console.log), offset to handler code
+        //   Perform Console.log("hello") -> result in r0
+        //   HandlePop
+        //   Return r0
+        //   --- handler code ---
+        //   Resume(r1) where r1 = 42
+        //
+        // The handler for Console.log should match the perform Console.log call.
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("Int".into()),
+                registers: 8,
+                constants: vec![
+                    Constant::String("Console".into()),  // 0: effect name for Perform
+                    Constant::String("log".into()),       // 1: operation for Perform
+                    Constant::String("hello".into()),     // 2: arg
+                    Constant::Int(42),                    // 3: resume value
+                ],
+                instructions: vec![
+                    // 0: HandlePush meta_idx=0, offset=5 (handler code at ip 0+5=5)
+                    Instruction::abx(OpCode::HandlePush, 0, 5),
+                    // 1: Perform Console.log -> result to r0, eff_name=const[0], op=const[1]
+                    Instruction::abc(OpCode::Perform, 0, 0, 1),
+                    // 2: HandlePop
+                    Instruction::ax(OpCode::HandlePop, 0),
+                    // 3: Return r0 (the resumed value)
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                    // 4: Jmp past handler (never reached in this test)
+                    Instruction::sax(OpCode::Jmp, 2),
+                    // 5: Handler code: load 42 into r1
+                    Instruction::abx(OpCode::LoadK, 1, 3),
+                    // 6: Resume with r1
+                    Instruction::abc(OpCode::Resume, 1, 1, 0),
+                ],
+                effect_handler_metas: vec![LirEffectHandlerMeta {
+                    effect_name: "Console".into(),
+                    operation: "log".into(),
+                    param_count: 1,
+                    handler_ip: 5,
+                }],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        vm.load(module);
+        let result = vm.execute("main", vec![]).expect("should execute with matching handler");
+        assert_eq!(result, Value::Int(42));
+    }
+
+    #[test]
+    fn test_perform_unhandled_effect_error() {
+        // Test that performing an effect with no matching handler produces an error.
+        //
+        // We push a handler for Console.log but perform Console.read_line.
+        // This should fail with "unhandled effect: Console.read_line".
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("String".into()),
+                registers: 8,
+                constants: vec![
+                    Constant::String("Console".into()),      // 0: effect name
+                    Constant::String("read_line".into()),     // 1: operation (not handled!)
+                ],
+                instructions: vec![
+                    // 0: HandlePush for Console.log (meta_idx=0), offset=4
+                    Instruction::abx(OpCode::HandlePush, 0, 4),
+                    // 1: Perform Console.read_line (NOT Console.log)
+                    Instruction::abc(OpCode::Perform, 0, 0, 1),
+                    // 2: HandlePop
+                    Instruction::ax(OpCode::HandlePop, 0),
+                    // 3: Return
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                    // 4: Handler code (unreachable — wrong effect)
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                ],
+                effect_handler_metas: vec![LirEffectHandlerMeta {
+                    effect_name: "Console".into(),
+                    operation: "log".into(), // handler is for "log", not "read_line"
+                    param_count: 1,
+                    handler_ip: 4,
+                }],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        vm.load(module);
+        let err = vm.execute("main", vec![]).expect_err("should fail with unhandled effect");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("unhandled effect: Console.read_line"),
+            "error should mention the unhandled effect, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_perform_matches_among_multiple_handlers() {
+        // Test that the correct handler is selected when multiple handlers are installed.
+        //
+        // We push handlers for Console.log (meta 0) and Console.read_line (meta 1).
+        // Then perform Console.read_line. The second handler should match.
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("Int".into()),
+                registers: 8,
+                constants: vec![
+                    Constant::String("Console".into()),       // 0
+                    Constant::String("read_line".into()),     // 1
+                    Constant::Int(99),                        // 2: wrong handler value
+                    Constant::Int(7),                         // 3: correct handler value
+                ],
+                instructions: vec![
+                    // 0: HandlePush meta=0 (Console.log), offset to handler at 8
+                    Instruction::abx(OpCode::HandlePush, 0, 8),
+                    // 1: HandlePush meta=1 (Console.read_line), offset to handler at 9
+                    Instruction::abx(OpCode::HandlePush, 1, 9),
+                    // 2: Perform Console.read_line -> r0
+                    Instruction::abc(OpCode::Perform, 0, 0, 1),
+                    // 3: HandlePop (read_line)
+                    Instruction::ax(OpCode::HandlePop, 0),
+                    // 4: HandlePop (log)
+                    Instruction::ax(OpCode::HandlePop, 0),
+                    // 5: Return r0
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                    // 6: Jmp past both handlers
+                    Instruction::sax(OpCode::Jmp, 4),
+                    // 7: (padding — ensures offsets work)
+                    Instruction::abc(OpCode::Nop, 0, 0, 0),
+                    // 8: Handler for Console.log: load 99 and resume
+                    Instruction::abx(OpCode::LoadK, 1, 2),
+                    // 9: (would be resume for log handler — but we also use this as start of read_line handler)
+                    //    Actually, let's restructure: each handler gets separate code
+                    Instruction::abc(OpCode::Resume, 1, 1, 0),
+                    // 10: Handler for Console.read_line: load 7 and resume
+                    Instruction::abx(OpCode::LoadK, 2, 3),
+                    // 11: Resume with 7
+                    Instruction::abc(OpCode::Resume, 2, 2, 0),
+                ],
+                effect_handler_metas: vec![
+                    LirEffectHandlerMeta {
+                        effect_name: "Console".into(),
+                        operation: "log".into(),
+                        param_count: 1,
+                        handler_ip: 8,
+                    },
+                    LirEffectHandlerMeta {
+                        effect_name: "Console".into(),
+                        operation: "read_line".into(),
+                        param_count: 0,
+                        handler_ip: 10,
+                    },
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        vm.load(module);
+        let result = vm.execute("main", vec![]).expect("should match read_line handler");
+        // The read_line handler resumes with 7, so result should be 7
+        assert_eq!(result, Value::Int(7));
     }
 }

@@ -49,12 +49,11 @@ impl TrustConfig {
         let content = toml::to_string_pretty(self)?;
         
         // Write with restricted permissions
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)?;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        opts.mode(0o600);
+        let mut file = opts.open(&path)?;
         file.write_all(content.as_bytes())?;
         
         #[cfg(unix)]

@@ -187,6 +187,7 @@ pub enum IntrinsicId {
     Add = 73,
     Remove = 74,
     Entries = 75,
+    Compose = 76,
 }
 
 /// A 32-bit instruction
@@ -290,6 +291,11 @@ pub struct LirCell {
     pub registers: u8,
     pub constants: Vec<Constant>,
     pub instructions: Vec<Instruction>,
+    /// Metadata for effect handler scopes pushed by HandlePush instructions in this cell.
+    /// Each entry maps a HandlePush's `a` field (meta index) to the effect name and operation
+    /// that the handler scope matches against.
+    #[serde(default)]
+    pub effect_handler_metas: Vec<LirEffectHandlerMeta>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

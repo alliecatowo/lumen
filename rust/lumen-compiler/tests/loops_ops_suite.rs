@@ -459,3 +459,26 @@ end"#;
     // Skips i==3, so count increments for i=1,2,4,5 = 4
     assert_eq!(result.to_string(), "4");
 }
+
+#[test]
+fn vm_compose_operator() {
+    use lumen_vm::vm::VM;
+    let src = r#"cell double(x: Int) -> Int
+  return x * 2
+end
+
+cell add_one(x: Int) -> Int
+  return x + 1
+end
+
+cell main() -> Int
+  let f = double ~> add_one
+  return f(5)
+end"#;
+    let module = compile_to_lir(src);
+    let mut vm = VM::new();
+    vm.load(module);
+    let result = vm.execute("main", vec![]).expect("vm run failed");
+    // double(5) = 10, add_one(10) = 11
+    assert_eq!(result.to_string(), "11");
+}

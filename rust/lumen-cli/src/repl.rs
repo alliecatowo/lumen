@@ -402,12 +402,13 @@ fn extract_symbol_name(input: &str) -> Option<String> {
                 next
             }
         }
+        "let" => words.next()?,
         _ if ITEM_KEYWORDS.contains(&keyword) => words.next()?,
         _ => return None,
     };
 
     let cleaned = raw_name
-        .split(&['(', '<', '[', '{', ':', '=', ','][..])
+        .split(&['(', '<', '[', '{', ':', '=', ',', ';'][..])
         .next()
         .unwrap_or("");
     if cleaned.is_empty() {
@@ -783,9 +784,15 @@ fn eval_input(input: &str, session_state: &mut SessionState) {
         }
     };
 
-    // If this is a definition, add to session state
-    if is_item_definition(input) {
+    // If this is a definition or a persistent statement (like let), add to session state
+    let is_definition = is_item_definition(input);
+    let is_persistent_stmt = input.trim_start().starts_with("let ");
+
+    if is_definition || is_persistent_stmt {
         session_state.add_definition(input);
+    }
+
+    if is_definition {
         println!("{}", gray("(defined)"));
         return;
     }

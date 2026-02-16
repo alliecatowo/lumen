@@ -1941,8 +1941,31 @@ pub fn publish(dry_run: bool) {
         }
     }
 
+    // Generate resolution proof
+    println!("{} generating resolution proof...", status_label("Auditing"));
+    let resolver = Resolver::new(&registry_url, None);
+    let request = ResolutionRequest {
+        root_deps: config.dependencies.clone(),
+        dev_deps: config.dev_dependencies.clone(),
+        build_deps: config.build_dependencies.clone(),
+        features: vec![],
+        registry_url: registry_url.clone(),
+    };
+    
+    let proof_val = match resolver.resolve(&request) {
+        Ok(result) => {
+            println!("  {} resolution verified (trail of {} decisions)", green("✓"), result.proof.decisions.len());
+            Some(serde_json::to_value(result.proof).unwrap_or(serde_json::Value::Null))
+        },
+        Err(e) => {
+            eprintln!("{} resolution failed: {}", red("error:"), e);
+            eprintln!("  Publication requires a valid resolution trail.");
+            std::process::exit(1);
+        }
+    };
+
     // Publish with authentication via REST API
-    match publish_with_auth(&registry_url, package_name, version, archive_data) {
+    match publish_with_auth(&registry_url, package_name, version, archive_data, proof_val) {
         Ok(()) => {
             println!(
                 "{} published {}@{}",

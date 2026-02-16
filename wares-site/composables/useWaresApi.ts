@@ -35,6 +35,20 @@ export const useWaresApi = () => {
     }
   }
 
+  const getProof = async (name: string, version?: string) => {
+    try {
+      const url = version
+        ? `${baseUrl}/wares/${name}/${version}/resolve-proof`
+        : `${baseUrl}/wares/${name}/resolve-proof`
+      const res = await fetch(url)
+      if (!res.ok) throw new Error('Failed to fetch resolution proof')
+      return await res.json()
+    } catch (e) {
+      console.error('API Error:', e)
+      return null
+    }
+  }
+
   const getWare = async (name: string) => {
     try {
       const res = await fetch(`${baseUrl}/wares/${name}`)
@@ -104,6 +118,7 @@ export const useWaresApi = () => {
     searchWares,
     getWare,
     getAudit,
+    getProof,
     fetchUser,
     login,
     logout,

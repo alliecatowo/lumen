@@ -328,6 +328,7 @@ fn intrinsic_description(id: &IntrinsicId) -> &str {
         Add => "Add an element to a set",
         Remove => "Remove an element from a collection",
         Entries => "Return map entries as a list of (key, value) tuples",
+        Compose => "Compose two functions into a new function (f ~> g)",
     }
 }
 

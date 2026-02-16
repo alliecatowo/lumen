@@ -445,12 +445,11 @@ impl CredentialManager {
         let content = toml::to_string_pretty(creds).map_err(|e| AuthError::Parse(e.to_string()))?;
 
         // Write with restricted permissions (0o600)
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&self.credentials_path)
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        opts.mode(0o600);
+        let mut file = opts.open(&self.credentials_path)
             .map_err(|e| AuthError::Io(e))?;
 
         file.write_all(content.as_bytes())
@@ -609,12 +608,11 @@ impl CredentialManager {
             serde_json::to_string_pretty(keypair).map_err(|e| AuthError::Parse(e.to_string()))?;
 
         // Write with restricted permissions
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&key_path)
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        opts.mode(0o600);
+        let mut file = opts.open(&key_path)
             .map_err(|e| AuthError::Io(e))?;
 
         file.write_all(content.as_bytes())

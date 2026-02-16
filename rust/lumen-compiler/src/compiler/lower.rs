@@ -147,6 +147,14 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                     kind: p.kind.clone(),
                     name: Some(p.name.clone()),
                 });
+                if !p.pipeline_stages.is_empty() {
+                    let stages_json =
+                        serde_json::to_string(&p.pipeline_stages).unwrap_or_default();
+                    module.addons.push(LirAddon {
+                        kind: "pipeline.stages".to_string(),
+                        name: Some(format!("{}={}", p.name, stages_json)),
+                    });
+                }
                 if p.kind == "machine" && !p.machine_states.is_empty() {
                     let initial = p
                         .machine_initial
@@ -366,6 +374,9 @@ struct Lowerer<'a> {
     lambda_cells: Vec<LirCell>,
     /// Accumulated defer blocks for the current function scope (emitted in LIFO order before returns)
     defer_stack: Vec<Vec<Stmt>>,
+    /// Accumulated effect handler metadata for the current cell being lowered.
+    /// Each entry corresponds to one HandlePush instruction emitted.
+    effect_handler_metas: Vec<LirEffectHandlerMeta>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -390,6 +401,7 @@ impl<'a> Lowerer<'a> {
             loop_stack: Vec::new(),
             lambda_cells: Vec::new(),
             defer_stack: Vec::new(),
+            effect_handler_metas: Vec::new(),
         }
     }
 
@@ -730,6 +742,7 @@ impl<'a> Lowerer<'a> {
             registers: ra.max_regs(),
             constants,
             instructions,
+            effect_handler_metas: vec![],
         }
     }
 
@@ -767,6 +780,7 @@ impl<'a> Lowerer<'a> {
             registers: ra.max_regs(),
             constants,
             instructions,
+            effect_handler_metas: vec![],
         }
     }
 
@@ -778,6 +792,8 @@ impl<'a> Lowerer<'a> {
 
         // Save and reset defer stack for this cell scope
         let saved_defers = std::mem::take(&mut self.defer_stack);
+        // Save and reset effect handler metas for this cell scope
+        let saved_metas = std::mem::take(&mut self.effect_handler_metas);
 
         // Allocate param registers
         let params: Vec<LirParam> = cell
@@ -827,8 +843,9 @@ impl<'a> Lowerer<'a> {
             instructions.push(Instruction::abc(OpCode::Return, r, 1, 0));
         }
 
-        // Restore defer stack
+        // Restore defer stack and collect effect handler metas
         self.defer_stack = saved_defers;
+        let effect_handler_metas = std::mem::replace(&mut self.effect_handler_metas, saved_metas);
 
         LirCell {
             name: cell.name.clone(),
@@ -837,6 +854,7 @@ impl<'a> Lowerer<'a> {
             registers: ra.max_regs(),
             constants,
             instructions,
+            effect_handler_metas,
         }
     }
 
@@ -1938,6 +1956,52 @@ impl<'a> Lowerer<'a> {
                     return self.emit_call_with_regs(fn_reg, &[piped_val], ra, instrs);
                 }
 
+                // Compose operator f ~> g creates a closure: fn(x) => g(f(x))
+                if *op == BinOp::Compose {
+                    let lr = self.lower_expr(lhs, ra, consts, instrs);
+                    let rr = self.lower_expr(rhs, ra, consts, instrs);
+
+                    // Build a synthetic lambda cell: fn(x) => g(f(x))
+                    // Register layout: r0 = capture f, r1 = capture g, r2 = param x
+                    let lambda_name = format!("<compose/{}>", self.lambda_cells.len());
+                    let lparams = vec![
+                        LirParam { name: "__capture_f".into(), ty: "Any".into(), register: 0, variadic: false },
+                        LirParam { name: "__capture_g".into(), ty: "Any".into(), register: 1, variadic: false },
+                        LirParam { name: "__compose_x".into(), ty: "Any".into(), register: 2, variadic: false },
+                    ];
+                    let linstrs = vec![
+                        Instruction::abc(OpCode::GetUpval, 0, 0, 0), // r0 = capture f
+                        Instruction::abc(OpCode::GetUpval, 1, 1, 0), // r1 = capture g
+                        // Call f(x): callee at r3, arg at r4
+                        Instruction::abc(OpCode::Move, 3, 0, 0),    // r3 = f
+                        Instruction::abc(OpCode::Move, 4, 2, 0),    // r4 = x
+                        Instruction::abc(OpCode::Call, 3, 1, 1),     // r3 = f(x)
+                        // Call g(f(x)): callee at r5, arg at r6
+                        Instruction::abc(OpCode::Move, 5, 1, 0),    // r5 = g
+                        Instruction::abc(OpCode::Move, 6, 3, 0),    // r6 = f(x) result
+                        Instruction::abc(OpCode::Call, 5, 1, 1),     // r5 = g(f(x))
+                        Instruction::abc(OpCode::Return, 5, 1, 0),   // return g(f(x))
+                    ];
+
+                    let proto_idx = self.lambda_cells.len() as u16;
+                    self.lambda_cells.push(LirCell {
+                        name: lambda_name,
+                        params: lparams,
+                        returns: None,
+                        registers: 7,
+                        constants: vec![],
+                        instructions: linstrs,
+                        effect_handler_metas: vec![],
+                    });
+
+                    // Create closure and capture f and g
+                    let dest = ra.alloc_temp();
+                    instrs.push(Instruction::abx(OpCode::Closure, dest, proto_idx));
+                    instrs.push(Instruction::abc(OpCode::SetUpval, lr, 0, dest));
+                    instrs.push(Instruction::abc(OpCode::SetUpval, rr, 1, dest));
+                    return dest;
+                }
+
                 let lr = self.lower_expr(lhs, ra, consts, instrs);
                 let rr = self.lower_expr(rhs, ra, consts, instrs);
                 let dest = ra.alloc_temp();
@@ -1965,7 +2029,7 @@ impl<'a> Lowerer<'a> {
                     BinOp::Shl => OpCode::Shl,
                     BinOp::Shr => OpCode::Shr,
                     BinOp::PipeForward => unreachable!(), // handled above
-                    BinOp::Compose => OpCode::Concat, // compose ~> treated as concat at VM level for now
+                    BinOp::Compose => unreachable!(),     // handled above
                 };
                 match op {
                     BinOp::Gt => instrs.push(Instruction::abc(opcode, dest, rr, lr)),
@@ -2521,6 +2585,7 @@ impl<'a> Lowerer<'a> {
                     registers: lra.max_regs(),
                     constants: lconsts,
                     instructions: linstrs,
+                    effect_handler_metas: vec![],
                 });
 
                 let dest = ra.alloc_temp();
@@ -3102,31 +3167,55 @@ impl<'a> Lowerer<'a> {
             }
             Expr::HandleExpr { body, handlers, .. } => {
                 let dest = ra.alloc_temp();
-                // Emit HandlePush — the offset will be patched
-                let handle_push_idx = instrs.len();
-                instrs.push(Instruction::ax(OpCode::HandlePush, 0));
+
+                // Emit one HandlePush per handler clause (each with its own metadata).
+                // HandlePush uses abx encoding: a = meta_index, bx = offset to handler code.
+                // Offsets are patched after handler code is emitted.
+                let mut handle_push_indices: Vec<usize> = Vec::new();
+                for handler in handlers {
+                    let meta_idx = self.effect_handler_metas.len();
+                    self.effect_handler_metas.push(LirEffectHandlerMeta {
+                        effect_name: handler.effect_name.clone(),
+                        operation: handler.operation.clone(),
+                        param_count: handler.params.len() as u8,
+                        handler_ip: 0, // patched later
+                    });
+                    let push_idx = instrs.len();
+                    // Placeholder: a=meta_idx, bx=0 (patched later)
+                    instrs.push(Instruction::abx(OpCode::HandlePush, meta_idx as u8, 0));
+                    handle_push_indices.push(push_idx);
+                }
 
                 // Emit body code
                 for stmt in body {
                     self.lower_stmt(stmt, ra, consts, instrs);
                 }
 
-                // Emit HandlePop
-                instrs.push(Instruction::ax(OpCode::HandlePop, 0));
+                // Emit HandlePop for each handler (in reverse order — LIFO)
+                for _ in handlers {
+                    instrs.push(Instruction::ax(OpCode::HandlePop, 0));
+                }
+
                 // Jump past all handler code
                 let jmp_past_handlers_idx = instrs.len();
                 instrs.push(Instruction::sax(OpCode::Jmp, 0)); // patched later
 
-                // Record start of handler code area
-                let handler_code_start = instrs.len();
+                // Emit handler code blocks, one per handler clause.
+                // Record the start IP for each handler and patch the HandlePush offset.
+                let first_meta_idx = self.effect_handler_metas.len() - handlers.len();
+                for (i, handler) in handlers.iter().enumerate() {
+                    let handler_code_start = instrs.len();
+                    let push_idx = handle_push_indices[i];
+                    let offset = handler_code_start - push_idx;
+                    let meta_idx = first_meta_idx + i;
 
-                // Patch HandlePush offset to point to handler code start
-                let handler_offset = handler_code_start - handle_push_idx;
-                instrs[handle_push_idx] = Instruction::ax(OpCode::HandlePush, handler_offset as u32);
+                    // Patch the HandlePush instruction with the correct offset
+                    instrs[push_idx] = Instruction::abx(OpCode::HandlePush, meta_idx as u8, offset as u16);
 
-                // Emit handler code blocks
-                for handler in handlers {
-                    // Handler body
+                    // Update handler_ip in the metadata (for debugging/serialization)
+                    self.effect_handler_metas[meta_idx].handler_ip = handler_code_start;
+
+                    // Emit handler body
                     for stmt in &handler.body {
                         self.lower_stmt(stmt, ra, consts, instrs);
                     }

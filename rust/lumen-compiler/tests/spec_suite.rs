@@ -2631,3 +2631,142 @@ end
     };
     assert_compile_ok(&case);
 }
+
+// ── Algebraic Effects Tests ──
+
+#[test]
+fn perform_expression_parses() {
+    let case = CompileCase {
+        id: "perform_expression_parses",
+        source: r#"
+effect Console
+  cell log(message: String) -> Null
+end
+
+cell main() -> Null / {Console}
+  perform Console.log("hello")
+  return null
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn perform_with_return_value() {
+    let case = CompileCase {
+        id: "perform_with_return_value",
+        source: r#"
+effect Console
+  cell read_line() -> String
+end
+
+cell main() -> String / {Console}
+  let line = perform Console.read_line()
+  return line
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn handle_with_resume() {
+    let case = CompileCase {
+        id: "handle_with_resume",
+        source: r#"
+effect Console
+  cell log(message: String) -> Null
+  cell read_line() -> String
+end
+
+cell do_stuff() -> String / {Console}
+  perform Console.log("hello")
+  let line = perform Console.read_line()
+  return line
+end
+
+cell main() -> String / {Console}
+  let result = handle
+    do_stuff()
+  with
+    Console.log(message) =>
+      resume(null)
+    Console.read_line() =>
+      resume("test input")
+  end
+  return result
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn resume_expression_parses() {
+    let case = CompileCase {
+        id: "resume_expression_parses",
+        source: r#"
+effect Ask
+  cell ask(prompt: String) -> String
+end
+
+cell main() -> String / {Ask}
+  let result = handle
+    perform Ask.ask("name?")
+  with
+    Ask.ask(prompt) =>
+      resume("Alice")
+  end
+  return result
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn perform_multiple_args() {
+    let case = CompileCase {
+        id: "perform_multiple_args",
+        source: r#"
+effect Logger
+  cell write(level: String, msg: String) -> Null
+end
+
+cell main() -> Null / {Logger}
+  perform Logger.write("info", "hello world")
+  return null
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn handle_multiple_handlers() {
+    let case = CompileCase {
+        id: "handle_multiple_handlers",
+        source: r#"
+effect IO
+  cell read() -> String
+  cell write(msg: String) -> Null
+end
+
+cell main() -> Null / {IO}
+  let result = handle
+    perform IO.write("hello")
+    let input = perform IO.read()
+    return null
+  with
+    IO.read() =>
+      resume("input")
+    IO.write(msg) =>
+      resume(null)
+  end
+  return result
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}

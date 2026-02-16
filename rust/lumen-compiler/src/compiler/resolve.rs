@@ -1240,6 +1240,15 @@ fn check_effect_grants_for(
             continue;
         }
 
+        // Effects that correspond to a declared `effect` block are algebraic effects
+        // and don't need tool grants (they are handled by handle...with...end blocks)
+        let is_declared_effect = table.effects.keys().any(|name| {
+            name.to_lowercase() == effect.to_lowercase()
+        });
+        if is_declared_effect {
+            continue;
+        }
+
         let satisfied =
             is_effect_satisfied_by_policies(&effect, table, &policies, &effect_bind_map);
 
@@ -2263,6 +2272,24 @@ fn collect_expr_call_requirements(
         Expr::ComptimeExpr(inner, _) => {
             collect_expr_call_requirements(inner, table, out);
         }
+        Expr::Perform { args, .. } => {
+            for arg in args {
+                collect_expr_call_requirements(arg, table, out);
+            }
+        }
+        Expr::HandleExpr { body, handlers, .. } => {
+            for stmt in body {
+                collect_stmt_call_requirements(stmt, table, out);
+            }
+            for handler in handlers {
+                for stmt in &handler.body {
+                    collect_stmt_call_requirements(stmt, table, out);
+                }
+            }
+        }
+        Expr::ResumeExpr(inner, _) => {
+            collect_expr_call_requirements(inner, table, out);
+        }
         Expr::IntLit(_, _)
         | Expr::FloatLit(_, _)
         | Expr::StringLit(_, _)
@@ -2645,6 +2672,30 @@ fn collect_expr_effect_evidence(
         Expr::ComptimeExpr(inner, _) => {
             collect_expr_effect_evidence(inner, table, current, out);
         }
+        Expr::Perform { effect_name, args, span, .. } => {
+            for arg in args {
+                collect_expr_effect_evidence(arg, table, current, out);
+            }
+            push_effect_evidence(
+                out,
+                &effect_name.to_ascii_lowercase(),
+                span.line,
+                format!("perform {}", effect_name),
+            );
+        }
+        Expr::HandleExpr { body, handlers, .. } => {
+            for stmt in body {
+                collect_stmt_effect_evidence(stmt, table, current, out);
+            }
+            for handler in handlers {
+                for stmt in &handler.body {
+                    collect_stmt_effect_evidence(stmt, table, current, out);
+                }
+            }
+        }
+        Expr::ResumeExpr(inner, _) => {
+            collect_expr_effect_evidence(inner, table, current, out);
+        }
         Expr::IntLit(_, _)
         | Expr::FloatLit(_, _)
         | Expr::StringLit(_, _)
@@ -2955,6 +3006,25 @@ fn infer_expr_effects(
             }
         }
         Expr::ComptimeExpr(inner, _) => {
+            infer_expr_effects(inner, table, current, out);
+        }
+        Expr::Perform { effect_name, args, .. } => {
+            for arg in args {
+                infer_expr_effects(arg, table, current, out);
+            }
+            out.insert(effect_name.to_ascii_lowercase());
+        }
+        Expr::HandleExpr { body, handlers, .. } => {
+            for stmt in body {
+                infer_stmt_effects(stmt, table, current, out);
+            }
+            for handler in handlers {
+                for stmt in &handler.body {
+                    infer_stmt_effects(stmt, table, current, out);
+                }
+            }
+        }
+        Expr::ResumeExpr(inner, _) => {
             infer_expr_effects(inner, table, current, out);
         }
         Expr::IntLit(_, _)

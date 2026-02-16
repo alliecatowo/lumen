@@ -228,6 +228,16 @@ pub struct HandlerDecl {
     pub doc: Option<String>,
 }
 
+/// A single handler arm in a handle...with...end expression
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectHandler {
+    pub effect_name: String,
+    pub operation: String,
+    pub params: Vec<Param>,
+    pub body: Vec<Stmt>,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddonDecl {
     pub kind: String,
@@ -682,6 +692,21 @@ pub enum Expr {
     },
     /// Compile-time evaluated expression
     ComptimeExpr(Box<Expr>, Span),
+    /// Perform an effect: perform Effect.operation(args)
+    Perform {
+        effect_name: String,
+        operation: String,
+        args: Vec<Expr>,
+        span: Span,
+    },
+    /// Handle effects: handle body with handlers end
+    HandleExpr {
+        body: Vec<Stmt>,
+        handlers: Vec<EffectHandler>,
+        span: Span,
+    },
+    /// Resume a suspended computation (only valid inside a handler)
+    ResumeExpr(Box<Expr>, Span),
 }
 
 impl Expr {
@@ -727,6 +752,9 @@ impl Expr {
             Expr::TypeCast { span, .. } => *span,
             Expr::WhenExpr { span, .. } => *span,
             Expr::ComptimeExpr(_, s) => *s,
+            Expr::Perform { span, .. } => *span,
+            Expr::HandleExpr { span, .. } => *span,
+            Expr::ResumeExpr(_, s) => *s,
         }
     }
 }

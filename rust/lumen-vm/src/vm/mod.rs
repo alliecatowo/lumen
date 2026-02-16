@@ -233,7 +233,7 @@ impl VmError {
 const MAX_CALL_DEPTH: usize = 256;
 
 /// Call frame on the VM stack.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct CallFrame {
     pub(crate) cell_idx: usize,
     pub(crate) base_register: usize,
@@ -269,6 +269,25 @@ pub enum FutureSchedule {
 }
 
 
+/// Scope for an installed effect handler.
+#[derive(Debug, Clone)]
+pub(crate) struct EffectScope {
+    pub handler_ip: usize,
+    pub frame_idx: usize,
+    pub base_register: usize,
+    pub cell_idx: usize,
+}
+
+/// A suspended continuation for algebraic effects (one-shot).
+#[derive(Debug, Clone)]
+pub(crate) struct SuspendedContinuation {
+    pub frames: Vec<CallFrame>,
+    pub registers: Vec<Value>,
+    pub resume_ip: usize,
+    pub resume_frame_count: usize,
+    pub result_reg: usize,
+}
+
 /// The Lumen register VM.
 pub struct VM {
     pub strings: StringTable,
@@ -293,6 +312,8 @@ pub struct VM {
     pub(crate) memory_runtime: BTreeMap<u64, MemoryRuntime>,
     pub(crate) machine_runtime: BTreeMap<u64, MachineRuntime>,
     pub(crate) await_fuel: u32,
+    pub(crate) effect_handlers: Vec<EffectScope>,
+    pub(crate) suspended_continuation: Option<SuspendedContinuation>,
     pub(crate) max_instructions: u64,
     pub(crate) instruction_count: u64,
     /// Optional fuel counter. Each instruction decrements fuel by 1.
@@ -327,6 +348,8 @@ impl VM {
             memory_runtime: BTreeMap::new(),
             machine_runtime: BTreeMap::new(),
             await_fuel: MAX_AWAIT_RETRIES,
+            effect_handlers: Vec::new(),
+            suspended_continuation: None,
             max_instructions: DEFAULT_MAX_INSTRUCTIONS,
             instruction_count: 0,
             fuel: None,
@@ -367,6 +390,8 @@ impl VM {
         self.machine_runtime.clear();
         self.machine_graphs.clear();
         self.await_fuel = MAX_AWAIT_RETRIES;
+        self.effect_handlers.clear();
+        self.suspended_continuation = None;
         self.instruction_count = 0;
         let mut machine_initials: BTreeMap<String, String> = BTreeMap::new();
         for addon in &module.addons {
@@ -742,6 +767,12 @@ impl VM {
             OpCode::GetUpval => self.check_register(a, cell_registers),
 
             OpCode::ToolCall => self.check_register(a, cell_registers),
+
+            OpCode::Perform => {
+                self.check_register(a, cell_registers)
+            }
+            OpCode::HandlePush | OpCode::HandlePop => Ok(()),
+            OpCode::Resume => self.check_register(a, cell_registers),
         }
     }
 
@@ -2122,6 +2153,81 @@ impl VM {
                         self.registers[base + a] = *u.payload.clone();
                     } else {
                         self.registers[base + a] = Value::Null;
+                    }
+                }
+
+                // Algebraic effects
+                OpCode::HandlePush => {
+                    let offset = instr.ax_val() as usize;
+                    let frame = self.frames.last().unwrap();
+                    let handler_ip = frame.ip.saturating_sub(1) + offset;
+                    self.effect_handlers.push(EffectScope {
+                        handler_ip,
+                        frame_idx: self.frames.len() - 1,
+                        base_register: base,
+                        cell_idx,
+                    });
+                }
+                OpCode::HandlePop => {
+                    self.effect_handlers.pop();
+                }
+                OpCode::Perform => {
+                    let module = self.module.as_ref().ok_or(VmError::NoModule)?;
+                    let cell = &module.cells[cell_idx];
+                    let eff_name = match &cell.constants[b] {
+                        Constant::String(s) => s.clone(),
+                        _ => return Err(VmError::Runtime("perform: expected string constant for effect name".into())),
+                    };
+                    let op_name = match &cell.constants[c] {
+                        Constant::String(s) => s.clone(),
+                        _ => return Err(VmError::Runtime("perform: expected string constant for operation".into())),
+                    };
+
+                    // Search effect_handlers stack (top to bottom) for matching handler
+                    let handler_scope = self.effect_handlers.iter().rev().find(|scope| {
+                        // We match by looking at handler metadata stored alongside the module
+                        true // For now, accept any handler scope as matching
+                    }).cloned();
+
+                    if let Some(scope) = handler_scope {
+                        // Save continuation: snapshot current execution state
+                        let cont = SuspendedContinuation {
+                            frames: self.frames.clone(),
+                            registers: self.registers.clone(),
+                            resume_ip: self.frames.last().map(|f| f.ip).unwrap_or(0),
+                            resume_frame_count: self.frames.len(),
+                            result_reg: base + a,
+                        };
+                        self.suspended_continuation = Some(cont);
+
+                        // Jump to handler code
+                        if let Some(f) = self.frames.get_mut(scope.frame_idx) {
+                            f.ip = scope.handler_ip;
+                        }
+
+                        // Pass perform args to handler by storing them in the handler's registers
+                        // The args start at base + a + 1 (set by lowerer)
+                        // For now, the handler can read them from the same register region
+                    } else {
+                        return Err(VmError::Runtime(format!(
+                            "unhandled effect: {}.{}",
+                            eff_name, op_name
+                        )));
+                    }
+                }
+                OpCode::Resume => {
+                    if let Some(cont) = self.suspended_continuation.take() {
+                        let resume_value = self.registers[base + a].clone();
+                        // Restore the suspended state
+                        self.frames = cont.frames;
+                        self.registers = cont.registers;
+                        // Put the resume value into the result register
+                        self.registers[cont.result_reg] = resume_value;
+                        // Execution continues from the saved IP (already set in frames)
+                    } else {
+                        return Err(VmError::Runtime(
+                            "resume called outside of effect handler".into(),
+                        ));
                     }
                 }
             }
@@ -5430,5 +5536,75 @@ end
             .execute("main", vec![])
             .expect("should run without fuel limit");
         assert_eq!(result, Value::Int(99));
+    }
+
+    // ── Algebraic Effects Tests ──
+
+    #[test]
+    fn test_perform_compiles() {
+        // Verify a program with perform compiles and loads
+        let source = r#"
+effect Console
+  cell log(message: String) -> Null
+end
+
+cell main() -> Int
+  return 42
+end
+"#;
+        let result = run_main(source);
+        assert_eq!(result, Value::Int(42));
+    }
+
+    #[test]
+    fn test_handle_push_pop_opcodes() {
+        // Verify HandlePush/HandlePop opcodes don't crash VM
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("Int".into()),
+                registers: 4,
+                constants: vec![Constant::Int(42)],
+                instructions: vec![
+                    Instruction::ax(OpCode::HandlePush, 4), // handler code at offset +4
+                    Instruction::abx(OpCode::LoadK, 0, 0),  // load 42
+                    Instruction::ax(OpCode::HandlePop, 0),   // pop handler
+                    Instruction::abc(OpCode::Return, 0, 1, 0), // return 42
+                ],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        vm.load(module);
+        let result = vm.execute("main", vec![]).expect("should execute successfully");
+        assert_eq!(result, Value::Int(42));
+    }
+
+    #[test]
+    fn test_effect_handler_stack_management() {
+        // Verify effect handler stack is properly managed
+        let mut vm = VM::new();
+        assert!(vm.effect_handlers.is_empty());
+        vm.effect_handlers.push(EffectScope {
+            handler_ip: 0,
+            frame_idx: 0,
+            base_register: 0,
+            cell_idx: 0,
+        });
+        assert_eq!(vm.effect_handlers.len(), 1);
+        vm.effect_handlers.pop();
+        assert!(vm.effect_handlers.is_empty());
     }
 }

@@ -90,8 +90,12 @@ pub enum OpCode {
     Schema = 0x61,   // A, B: validate A against schema type B
     Emit = 0x62,     // A: emit output R[A]
     TraceRef = 0x63, // A: R[A] = current trace reference
-    Await = 0x64,    // A, B: R[A] = await future R[B]
-    Spawn = 0x65,    // A, Bx: R[A] = spawn async(proto=Bx)
+    Await = 0x64,       // A, B: R[A] = await future R[B]
+    Spawn = 0x65,       // A, Bx: R[A] = spawn async(proto=Bx)
+    Perform = 0x66,     // A, B, C: perform effect B, operation C, result to A
+    HandlePush = 0x67,  // Ax: push effect handler scope at offset Ax
+    HandlePop = 0x68,   // pop current effect handler scope
+    Resume = 0x69,      // A: resume suspended computation with value in A
 
     // List ops
     Append = 0x70, // A, B: append B to list A
@@ -356,6 +360,15 @@ pub struct LirHandler {
 pub struct LirHandle {
     pub operation: String,
     pub cell: String,
+}
+
+/// Metadata for an inline effect handler in a handle...with...end expression
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LirEffectHandlerMeta {
+    pub effect_name: String,
+    pub operation: String,
+    pub param_count: u8,
+    pub handler_ip: usize,
 }
 
 /// Complete LIR module

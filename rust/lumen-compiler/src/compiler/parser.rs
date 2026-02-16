@@ -3446,6 +3446,99 @@ impl Parser {
         })
     }
 
+    /// Parse a single effect handler arm: `Effect.operation(params) => body`
+    fn parse_effect_handler_arm(&mut self) -> Result<EffectHandler, ParseError> {
+        let start = self.current().span;
+        let effect_name = self.expect_ident()?;
+        self.expect(&TokenKind::Dot)?;
+        let operation = self.expect_ident()?;
+        self.expect(&TokenKind::LParen)?;
+        self.bracket_depth += 1;
+        let mut params = Vec::new();
+        self.skip_whitespace_tokens();
+        while !matches!(self.peek_kind(), TokenKind::RParen | TokenKind::Eof) {
+            if !params.is_empty() {
+                self.expect(&TokenKind::Comma)?;
+                self.skip_whitespace_tokens();
+            }
+            let ps = self.current().span;
+            let pname = self.expect_ident()?;
+            let pty = if matches!(self.peek_kind(), TokenKind::Colon) {
+                self.advance();
+                self.parse_type()?
+            } else {
+                TypeExpr::Named("Any".into(), ps)
+            };
+            params.push(Param {
+                name: pname,
+                ty: pty,
+                default_value: None,
+                variadic: false,
+                span: ps,
+            });
+            self.skip_whitespace_tokens();
+        }
+        self.bracket_depth -= 1;
+        self.expect(&TokenKind::RParen)?;
+        self.expect(&TokenKind::FatArrow)?;
+        self.skip_newlines();
+        let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
+        if has_indent {
+            self.advance();
+        }
+        self.skip_newlines();
+        // Parse handler body until we hit the next handler pattern or end
+        let mut body = Vec::new();
+        while !matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
+            if matches!(self.peek_kind(), TokenKind::Dedent) {
+                self.advance();
+                continue;
+            }
+            // Check if next tokens look like a new handler: Ident . Ident (
+            if self.is_effect_handler_start() {
+                break;
+            }
+            if matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
+                break;
+            }
+            body.push(self.parse_stmt()?);
+            self.skip_newlines();
+        }
+        let span = start.merge(self.current().span);
+        Ok(EffectHandler { effect_name, operation, params, body, span })
+    }
+
+    /// Check if the current position looks like the start of an effect handler arm:
+    /// Ident . Ident (
+    fn is_effect_handler_start(&self) -> bool {
+        if !matches!(self.peek_kind(), TokenKind::Ident(_)) {
+            return false;
+        }
+        // Lookahead: Ident . Ident (
+        let mut look = self.pos + 1;
+        // Skip any newlines
+        while matches!(self.tokens.get(look).map(|t| &t.kind), Some(TokenKind::Newline)) {
+            look += 1;
+        }
+        if !matches!(self.tokens.get(look).map(|t| &t.kind), Some(TokenKind::Dot)) {
+            return false;
+        }
+        look += 1;
+        // Skip newlines after dot
+        while matches!(self.tokens.get(look).map(|t| &t.kind), Some(TokenKind::Newline)) {
+            look += 1;
+        }
+        if !matches!(self.tokens.get(look).map(|t| &t.kind), Some(TokenKind::Ident(_))) {
+            return false;
+        }
+        look += 1;
+        // Skip newlines after ident
+        while matches!(self.tokens.get(look).map(|t| &t.kind), Some(TokenKind::Newline)) {
+            look += 1;
+        }
+        matches!(self.tokens.get(look).map(|t| &t.kind), Some(TokenKind::LParen))
+    }
+
     fn consume_parenthesized(&mut self) {
         if !matches!(self.peek_kind(), TokenKind::LParen) {
             return;
@@ -4655,6 +4748,81 @@ impl Parser {
                 let span = s.merge(expr.span());
                 Ok(Expr::AwaitExpr(Box::new(expr), span))
             }
+            TokenKind::Perform => {
+                let s = self.advance().span;
+                let effect_name = self.expect_ident()?;
+                self.expect(&TokenKind::Dot)?;
+                let operation = self.expect_ident()?;
+                self.expect(&TokenKind::LParen)?;
+                self.bracket_depth += 1;
+                let mut args = Vec::new();
+                self.skip_whitespace_tokens();
+                while !matches!(self.peek_kind(), TokenKind::RParen | TokenKind::Eof) {
+                    if !args.is_empty() {
+                        self.expect(&TokenKind::Comma)?;
+                        self.skip_whitespace_tokens();
+                    }
+                    args.push(self.parse_expr(0)?);
+                    self.skip_whitespace_tokens();
+                }
+                self.bracket_depth -= 1;
+                self.expect(&TokenKind::RParen)?;
+                let span = s.merge(self.current().span);
+                Ok(Expr::Perform { effect_name, operation, args, span })
+            }
+            TokenKind::Handle => {
+                let s = self.advance().span;
+                self.skip_newlines();
+                let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
+                if has_indent {
+                    self.advance();
+                }
+                self.skip_newlines();
+                // Parse body statements until 'with'
+                let mut body = Vec::new();
+                while !matches!(self.peek_kind(), TokenKind::With | TokenKind::Eof) {
+                    if matches!(self.peek_kind(), TokenKind::Dedent) {
+                        self.advance();
+                        continue;
+                    }
+                    body.push(self.parse_stmt()?);
+                    self.skip_newlines();
+                }
+                self.expect(&TokenKind::With)?;
+                self.skip_newlines();
+                if matches!(self.peek_kind(), TokenKind::Indent) {
+                    self.advance();
+                }
+                self.skip_newlines();
+                // Parse handlers until 'end'
+                let mut handlers = Vec::new();
+                while !matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
+                    if matches!(self.peek_kind(), TokenKind::Dedent) {
+                        self.advance();
+                        continue;
+                    }
+                    if matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
+                        break;
+                    }
+                    let handler = self.parse_effect_handler_arm()?;
+                    handlers.push(handler);
+                    self.skip_newlines();
+                }
+                if matches!(self.peek_kind(), TokenKind::Dedent) {
+                    self.advance();
+                }
+                self.expect(&TokenKind::End)?;
+                let span = s.merge(self.current().span);
+                Ok(Expr::HandleExpr { body, handlers, span })
+            }
+            TokenKind::Resume => {
+                let s = self.advance().span;
+                self.expect(&TokenKind::LParen)?;
+                let value = self.parse_expr(0)?;
+                self.expect(&TokenKind::RParen)?;
+                let span = s.merge(self.current().span);
+                Ok(Expr::ResumeExpr(Box::new(value), span))
+            }
             TokenKind::Fn => self.parse_lambda(),
             TokenKind::Parallel => {
                 let s = self.advance().span;
@@ -5783,6 +5951,18 @@ impl Parser {
             TokenKind::With => {
                 self.advance();
                 Ok("with".into())
+            }
+            TokenKind::Perform => {
+                self.advance();
+                Ok("perform".into())
+            }
+            TokenKind::Handle => {
+                self.advance();
+                Ok("handle".into())
+            }
+            TokenKind::Resume => {
+                self.advance();
+                Ok("resume".into())
             }
             TokenKind::Tool => {
                 self.advance();
@@ -7311,6 +7491,93 @@ end
             assert_eq!(c.doc, None);
         } else {
             panic!("expected cell");
+        }
+    }
+
+    // ── Algebraic Effects Parser Tests ──
+
+    #[test]
+    fn test_parse_perform() {
+        let src = "cell main() -> Null\n  perform Console.log(\"hello\")\n  return null\nend";
+        let prog = parse_src(src).unwrap();
+        assert_eq!(prog.items.len(), 1);
+        if let Item::Cell(c) = &prog.items[0] {
+            assert_eq!(c.name, "main");
+            // The body should contain an Expr statement with a Perform expression
+            assert!(c.body.len() >= 1);
+            if let Stmt::Expr(es) = &c.body[0] {
+                match &es.expr {
+                    Expr::Perform { effect_name, operation, args, .. } => {
+                        assert_eq!(effect_name, "Console");
+                        assert_eq!(operation, "log");
+                        assert_eq!(args.len(), 1);
+                    }
+                    other => panic!("expected Perform, got {:?}", other),
+                }
+            } else {
+                panic!("expected Expr statement");
+            }
+        } else {
+            panic!("expected cell");
+        }
+    }
+
+    #[test]
+    fn test_parse_perform_no_args() {
+        let src = "cell main() -> String\n  let x = perform IO.read_line()\n  return x\nend";
+        let prog = parse_src(src).unwrap();
+        if let Item::Cell(c) = &prog.items[0] {
+            if let Stmt::Let(ls) = &c.body[0] {
+                match &ls.value {
+                    Expr::Perform { effect_name, operation, args, .. } => {
+                        assert_eq!(effect_name, "IO");
+                        assert_eq!(operation, "read_line");
+                        assert_eq!(args.len(), 0);
+                    }
+                    other => panic!("expected Perform, got {:?}", other),
+                }
+            } else {
+                panic!("expected Let statement");
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_resume() {
+        let src = "cell main() -> Null\n  resume(42)\n  return null\nend";
+        let prog = parse_src(src).unwrap();
+        if let Item::Cell(c) = &prog.items[0] {
+            if let Stmt::Expr(es) = &c.body[0] {
+                match &es.expr {
+                    Expr::ResumeExpr(inner, _) => {
+                        assert!(matches!(inner.as_ref(), Expr::IntLit(42, _)));
+                    }
+                    other => panic!("expected ResumeExpr, got {:?}", other),
+                }
+            } else {
+                panic!("expected Expr statement");
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_handle_expr() {
+        let src = "cell main() -> Int\n  let x = handle\n    42\n  with\n    IO.read() =>\n      resume(\"hello\")\n  end\n  return x\nend";
+        let prog = parse_src(src).unwrap();
+        if let Item::Cell(c) = &prog.items[0] {
+            if let Stmt::Let(ls) = &c.body[0] {
+                match &ls.value {
+                    Expr::HandleExpr { body, handlers, .. } => {
+                        assert!(!body.is_empty(), "handle body should not be empty");
+                        assert_eq!(handlers.len(), 1);
+                        assert_eq!(handlers[0].effect_name, "IO");
+                        assert_eq!(handlers[0].operation, "read");
+                    }
+                    other => panic!("expected HandleExpr, got {:?}", other),
+                }
+            } else {
+                panic!("expected Let statement");
+            }
         }
     }
 }

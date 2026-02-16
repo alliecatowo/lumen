@@ -3,6 +3,8 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
+use std::time::{SystemTime, UNIX_EPOCH};
+use lumen_compiler::compile_raw;
 
 impl VM {
     /// Execute a built-in function by name.
@@ -20,7 +22,8 @@ impl VM {
             "print" => {
                 let mut parts = Vec::new();
                 for i in 0..nargs {
-                    parts.push(self.registers[base + a + 1 + i].display_pretty());
+                    let val = &self.registers[base + a + 1 + i];
+                    parts.push(val.display_pretty());
                 }
                 let output = parts.join(" ");
                 println!("{}", output);
@@ -1155,17 +1158,50 @@ impl VM {
                 Ok(Value::String(StringRef::Owned(result)))
             }
             "partition" => {
-                let list = self.registers[base + a + 1].clone();
-                if let Value::List(l) = list {
-                    let matching = Value::new_list(l.as_ref().clone());
-                    let non_matching = Value::new_list(vec![]);
-                    Ok(Value::new_tuple(vec![matching, non_matching]))
+                let list = self.registers[base + a].clone();
+                let predicate = self.registers[base + a + 1].clone();
+                
+                let closure_opt = match predicate {
+                    Value::Closure(cv) => Some(cv),
+                    Value::String(ref s) => {
+                         let name_str = match s {
+                             StringRef::Owned(s) => s.as_str(),
+                             StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                         };
+                         let module = self.module.as_ref().ok_or(VmError::NoModule)?;
+                         if let Some(idx) = module.cells.iter().position(|c| c.name == name_str) {
+                             Some(ClosureValue {
+                                 cell_idx: idx,
+                                 captures: vec![],
+                             })
+                         } else {
+                             None
+                         }
+                    }
+                    _ => None,
+                };
+
+                if let (Value::List(l), Some(cv)) = (list, closure_opt) {
+                    let mut matching = Vec::new();
+                    let mut non_matching = Vec::new();
+                    for item in l.iter() {
+                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
+                        if val.is_truthy() {
+                            matching.push(item.clone());
+                        } else {
+                            non_matching.push(item.clone());
+                        }
+                    }
+                    Ok(Value::new_tuple(vec![
+                        Value::new_list(matching),
+                        Value::new_list(non_matching),
+                    ]))
                 } else {
                     Ok(Value::new_tuple(vec![Value::new_list(vec![]), Value::new_list(vec![])]))
                 }
             }
             "read_dir" => {
-                let path = self.registers[base + a + 1].as_string();
+                let path = self.registers[base + a].as_string();
                 match std::fs::read_dir(&path) {
                     Ok(entries) => {
                         let mut result = Vec::new();
@@ -1182,18 +1218,18 @@ impl VM {
                 }
             }
             "exists" => {
-                let path = self.registers[base + a + 1].as_string();
+                let path = self.registers[base + a].as_string();
                 Ok(Value::Bool(std::path::Path::new(&path).exists()))
             }
             "mkdir" => {
-                let path = self.registers[base + a + 1].as_string();
+                let path = self.registers[base + a].as_string();
                 match std::fs::create_dir_all(&path) {
                     Ok(()) => Ok(Value::Null),
                     Err(e) => Err(VmError::Runtime(format!("mkdir failed: {}", e))),
                 }
             }
             "exit" => {
-                let code = self.registers[base + a + 1].as_int().unwrap_or(0);
+                let code = self.registers[base + a].as_int().unwrap_or(0);
                 std::process::exit(code as i32);
             }
             _ => Err(VmError::UndefinedCell(name.to_string())),
@@ -1267,7 +1303,8 @@ impl VM {
             future_id: None,
         });
         // Run the VM until this frame returns
-        self.run()
+        self.run_until(self.frames.len().saturating_sub(1))?;
+        Ok(self.registers[new_base].clone())
     }
 
     /// Execute an intrinsic function by ID.
@@ -2086,11 +2123,49 @@ impl VM {
                 Ok(Value::String(StringRef::Owned(result)))
             }
             78 => {
-                // PARTITION: split list by predicate (stub: all in first, none in second)
-                if let Value::List(l) = arg {
-                    let matching = Value::new_list(l.as_ref().clone());
-                    let non_matching = Value::new_list(vec![]);
-                    Ok(Value::new_tuple(vec![matching, non_matching]))
+                // PARTITION: split list by predicate into (matching, non_matching)
+                let closure_val = self.registers[base + arg_reg + 1].clone();
+                println!("DEBUG: exec_intrinsic partition. arg_reg={}, closure_val={:?}", arg_reg, closure_val);
+                
+                let closure_opt = match closure_val {
+                    Value::Closure(cv) => Some(cv),
+                    Value::String(ref s) => {
+                         let name_str = match s {
+                             StringRef::Owned(s) => s.as_str(),
+                             StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                         };
+
+                         let module = self.module.as_ref().ok_or(VmError::NoModule)?;
+                         
+
+
+                         if let Some(idx) = module.cells.iter().position(|c| c.name == name_str) {
+                             Some(ClosureValue {
+                                 cell_idx: idx,
+                                 captures: vec![],
+                             })
+                         } else {
+                             None
+                         }
+                    }
+                    _ => None
+                };
+
+                if let (Value::List(l), Some(cv)) = (arg.clone(), closure_opt) {
+                    let mut matching = Vec::new();
+                    let mut non_matching = Vec::new();
+                    for item in l.iter() {
+                        let val = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
+                        if val.is_truthy() {
+                            matching.push(item.clone());
+                        } else {
+                            non_matching.push(item.clone());
+                        }
+                    }
+                    Ok(Value::new_tuple(vec![
+                        Value::new_list(matching),
+                        Value::new_list(non_matching),
+                    ]))
                 } else {
                     Ok(Value::new_tuple(vec![Value::new_list(vec![]), Value::new_list(vec![])]))
                 }
@@ -2127,6 +2202,42 @@ impl VM {
                 }
             }
             82 => {
+                // EVAL: compile and execute string code
+                let source = arg.as_string();
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos();
+                let cell_name = format!("__eval_{}", now);
+                let wrapped_src = format!("cell {}() -> Any\n  {}\nend", cell_name, source);
+                
+                match compile_raw(&wrapped_src) {
+                    Ok(new_module) => {
+                        if let Some(current_mod) = self.module.as_mut() {
+                            current_mod.merge(&new_module);
+                            self.call_cell_sync(&cell_name, vec![])
+                        } else {
+                            Err(VmError::Runtime("VM has no module loaded for eval".into()))
+                        }
+                    }
+                    Err(e) => Err(VmError::Runtime(format!("eval compilation failed: {}", e))),
+                }
+            }
+            83 => {
+                // GUARDRAIL: value, schema
+                let _val = &self.registers[base + arg_reg];
+                let _schema = &self.registers[base + arg_reg + 1];
+                // semantic placeholder for now
+                Ok(Value::Bool(true))
+            }
+            84 => {
+                // PATTERN: value, pattern_def
+                let _val = &self.registers[base + arg_reg];
+                let _pattern = &self.registers[base + arg_reg + 1];
+                // semantic placeholder for now
+                Ok(Value::Null)
+            }
+            85 => {
                 // EXIT: exit process with code
                 let code = arg.as_int().unwrap_or(0);
                 std::process::exit(code as i32);

@@ -100,22 +100,55 @@ fn builtin_return_type(name: &str, arg_types: &[Type]) -> Option<Type> {
         "sort" | "sorted" | "filter" | "zip" | "slice" => {
             arg_types.first().cloned().or(Some(Type::Any))
         }
-        "map" | "flat_map" => Some(Type::Any),
+        "map" => {
+            if let Some(Type::Fn(_, ret)) = arg_types.get(1) {
+                Some(Type::List(ret.clone()))
+            } else {
+                Some(Type::List(Box::new(Type::Any)))
+            }
+        }
+        "flat_map" => {
+            if let Some(Type::Fn(_, ret)) = arg_types.get(1) {
+                // If closure returns List(T), flat_map returns List(T)
+                // If closure returns T (not list), flat_map returns List(T)
+                match &**ret {
+                    Type::List(inner) => Some(Type::List(inner.clone())),
+                    _ => Some(Type::List(ret.clone())),
+                }
+            } else {
+                Some(Type::List(Box::new(Type::Any)))
+            }
+        }
         "reduce" => Some(Type::Any),
         "type_of" | "type_name" => Some(Type::String),
         "assert" | "assert_eq" => Some(Type::Null),
         "error" => Some(Type::Null),
         "hash" => Some(Type::Int),
         "not" => Some(Type::Bool),
-        "parse_json" => Some(Type::Any),
+        "parse_json" => Some(Type::Json),
         "to_json" => Some(Type::String),
         "read_file" => Some(Type::String),
         "write_file" => Some(Type::Null),
         "timestamp" => Some(Type::Float),
         "random" => Some(Type::Float),
-        "get_env" => Some(Type::Any),
+        "get_env" => Some(Type::Union(vec![Type::String, Type::Null])),
         "format" => Some(Type::String),
-        "partition" => Some(Type::Tuple(vec![Type::Any, Type::Any])),
+        "partition" => {
+            let elem = arg_types
+                .first()
+                .and_then(|t| {
+                    if let Type::List(e) = t {
+                        Some(*e.clone())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(Type::Any);
+            Some(Type::Tuple(vec![
+                Type::List(Box::new(elem.clone())),
+                Type::List(Box::new(elem)),
+            ]))
+        }
         "read_dir" => Some(Type::List(Box::new(Type::String))),
         "exists" => Some(Type::Bool),
         "mkdir" => Some(Type::Null),
@@ -461,6 +494,8 @@ fn resolve_type_expr_with_subst(ty: &TypeExpr, symbols: &SymbolTable, subst: &Ty
                 "Bool" => Type::Bool,
                 "Bytes" => Type::Bytes,
                 "Json" => Type::Json,
+                "Any" => Type::Any,
+                "Null" => Type::Null,
                 _ => {
                     if symbols.types.contains_key(name) {
                         use crate::compiler::resolve::TypeInfoKind;

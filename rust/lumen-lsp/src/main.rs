@@ -4,6 +4,7 @@
 //! semantic tokens, inlay hints, and more.
 
 mod cache;
+mod code_actions;
 mod completion;
 mod diagnostics;
 mod document_symbols;
@@ -734,9 +735,20 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
             }
         }
         request::CodeActionRequest::METHOD => {
+            let result = if let Ok(params) =
+                serde_json::from_value::<CodeActionParams>(req.params.clone())
+            {
+                let uri = params.text_document.uri;
+                let text = cache.get_text(&uri).cloned().unwrap_or_default();
+                let actions =
+                    code_actions::build_code_actions(&uri, &text, &params.context.diagnostics);
+                Some(serde_json::to_value(actions).unwrap())
+            } else {
+                Some(serde_json::to_value(Vec::<CodeAction>::new()).unwrap())
+            };
             let response = Response {
                 id: req.id.clone(),
-                result: Some(serde_json::to_value(Vec::<CodeAction>::new()).unwrap()),
+                result,
                 error: None,
             };
             let _ = connection.sender.send(Message::Response(response));

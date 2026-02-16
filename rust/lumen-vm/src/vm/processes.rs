@@ -2,6 +2,7 @@
 
 use super::*;
 use std::collections::BTreeMap;
+use lumen_compiler::compile_raw;
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct MemoryRuntime {
@@ -95,11 +96,78 @@ impl VM {
                     .collect();
                 Some(self.call_orchestration_run(owner, &args))
             }
-            "eval" | "guardrail" | "pattern" if method == "run" => {
-                let args: Vec<Value> = (0..nargs)
-                    .map(|i| self.registers[base + a + 1 + i].clone())
-                    .collect();
-                Some(Ok(args.get(1).cloned().unwrap_or(Value::Null)))
+            "eval" if method == "run" => {
+                let config = self.process_configs.get(owner);
+                if let Some(source) = config.and_then(|c| c.get("source")).map(|v| v.as_string()) {
+                    // Source-based eval: compile and execute
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos();
+                    let cell_name = format!("__eval_{}", now);
+                    let wrapped_src = format!("cell {}(input) -> Any\n  {}\nend", cell_name, source);
+                    
+                    match compile_raw(&wrapped_src) {
+                        Ok(new_module) => {
+                            if let Some(current_mod) = self.module.as_mut() {
+                                current_mod.merge(&new_module);
+                                let input_val = self.registers[base + a + 2].clone();
+                                Some(self.call_cell_sync(&cell_name, vec![input_val]))
+                            } else {
+                                Some(Err(VmError::Runtime("VM has no module loaded for eval".into())))
+                            }
+                        }
+                        Err(e) => Some(Err(VmError::Runtime(format!("eval compilation failed: {}", e)))),
+                    }
+                } else {
+                    // Argument-based eval: run specific cell by name
+                    let cell_name_val = self.registers[base + a + 2].clone();
+                    let cell_name = cell_name_val.as_string();
+                    if cell_name.is_empty() {
+                        return Some(Err(VmError::Runtime("eval requires a cell name argument or 'source' config".to_string())));
+                    }
+                    
+                    // Collect remaining arguments
+                    let start_arg = base + a + 3;
+                    let end_arg = base + a + 1 + nargs;
+                    let call_args: Vec<Value> = (start_arg..end_arg)
+                        .map(|i| self.registers[i].clone())
+                        .collect();
+                    
+                    Some(self.call_cell_sync(&cell_name, call_args))
+                }
+            }
+            "guardrail" if method == "run" => {
+                let value = self.registers[base + a + 2].clone();
+                let config = self.process_configs.get(owner);
+                if let Some(schema_name) = config.and_then(|c| c.get("schema")).map(|v| v.as_string()) {
+                    // Perform schema validation
+                    if self.validate_schema(&value, &schema_name) {
+                        Some(Ok(value))
+                    } else {
+                        Some(Err(VmError::Runtime(format!(
+                            "Guardrail violation: value does not match schema '{}'",
+                            schema_name
+                        ))))
+                    }
+                } else {
+                    // Passthrough if no schema configured
+                    Some(Ok(value))
+                }
+            }
+            "pattern" if method == "run" => {
+                let value = self.registers[base + a + 2].as_string();
+                let config = self.process_configs.get(owner);
+                if let Some(pattern_def) = config.and_then(|c| c.get("pattern")).map(|v| v.as_string()) {
+                    // Extract captures if pattern matches
+                    if let Some(captures) = self.extract_pattern_captures(&pattern_def, &value) {
+                        Some(Ok(Value::new_map(captures)))
+                    } else {
+                        Some(Ok(Value::Null))
+                    }
+                } else {
+                    Some(Ok(Value::Null))
+                }
             }
             _ => None,
         }
@@ -108,7 +176,7 @@ impl VM {
     /// Execute a named cell synchronously with the given arguments, saving and
     /// restoring the current frame/register state so this can be called from
     /// within a process builtin handler.
-    fn call_cell_sync(&mut self, cell_name: &str, args: Vec<Value>) -> Result<Value, VmError> {
+    pub(crate) fn call_cell_sync(&mut self, cell_name: &str, args: Vec<Value>) -> Result<Value, VmError> {
         let module = self.module.as_ref().ok_or(VmError::NoModule)?;
         let cell_idx = module
             .cells
@@ -143,7 +211,7 @@ impl VM {
             future_id: None,
         });
 
-        let result = self.run();
+        let result = self.run_until(0);
 
         // Restore execution state
         self.frames = saved_frames;

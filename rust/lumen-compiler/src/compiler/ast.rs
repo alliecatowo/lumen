@@ -1,5 +1,6 @@
 use crate::compiler::tokens::Span;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// A complete Lumen program (one `.lm.md` file)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,6 +188,7 @@ pub struct AgentDecl {
 pub struct ProcessDecl {
     pub kind: String,
     pub name: String,
+    pub configs: BTreeMap<String, Expr>,
     pub cells: Vec<CellDef>,
     pub grants: Vec<GrantDecl>,
     pub pipeline_stages: Vec<String>,

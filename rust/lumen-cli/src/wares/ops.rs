@@ -397,10 +397,17 @@ fn resolve_dependencies_with_registry(
     let mut root_deps = config.dependencies.clone();
 
     // Resolve relative path dependencies to absolute paths relative to project root
-    for spec in root_deps.values_mut() {
+    for (name, spec) in root_deps.iter_mut() {
         if let DependencySpec::Path { path } = spec {
             let p = project_dir.join(&path);
             let abs = canonicalize_or_clean(&p);
+            if !abs.exists() {
+                return Err(format!(
+                    "path dependency '{}' does not exist at {}",
+                    name,
+                    abs.display()
+                ));
+            }
             *path = abs.to_string_lossy().to_string();
         }
     }
@@ -725,10 +732,9 @@ fn materialize_package(
 
 /// Sanitize a URL to create a valid directory name.
 fn sanitize_filename(url: &str) -> String {
-    url.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_")
+    url.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '@', "_")
         .replace("https___", "")
         .replace("http___", "")
-        .replace("git@", "")
         .replace(".", "_")
 }
 

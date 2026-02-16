@@ -1,60 +1,283 @@
-# Lumen Specification (Current Implementation)
+# Lumen Language Specification
 
-This specification describes behavior implemented in the current compiler/runtime.
-It intentionally excludes planned work that is not fully implemented.
+This specification describes the Lumen programming language as implemented in the current
+compiler and runtime. It is the ground truth that tests are validated against.
 
-Planned and outstanding work lives in:
+Planned work lives in `docs/research/EXECUTION_TRACKER.md` and `ROADMAP.md`.
 
-- `docs/research/EXECUTION_TRACKER.md`
-- `ROADMAP.md`
+## 1. Overview
 
-## 1. Source Model
+Lumen is a statically typed programming language for AI-native systems. It compiles to
+LIR bytecode and executes on a register-based virtual machine.
 
-Lumen source is typically authored in markdown (`.lm.md`), with raw `.lm` files also supported as first-class input.
-For markdown files, compiler input may contain fenced Lumen blocks.
+**Source formats.** Lumen source may be authored in markdown (`.lm.md`) with fenced
+`lumen` code blocks, or as raw source (`.lm`). The compiler extracts and concatenates
+all fenced lumen blocks from markdown files.
 
-```lumen
-cell main() -> Int
-  return 42
-end
-```
+**Design philosophy.** Minimal syntax, light on tokens (indentation-based blocks terminated
+by `end`), high-level defaults with low-level escape hatches when needed.
 
-Top-level directives are supported.
+**Top-level directives** configure compiler behavior:
 
 ```lumen
 @strict true
-@doc_mode false
+@doc_mode true
 @deterministic true
 ```
 
-## 2. Top-Level Declarations
+- `@strict` (default `true`) — report unresolved symbols and type mismatches.
+- `@doc_mode` — relax strict diagnostics for documentation snippets.
+- `@deterministic` — reject nondeterministic operations (`uuid`, `timestamp`, unknown externals).
 
-## 2.1 Records
+## 2. Lexical Elements
+
+### 2.1 Comments
+
+Line comments begin with `#` and extend to end of line:
+
+```lumen
+# This is a comment
+let x = 42  # inline comment
+```
+
+There are no block comments.
+
+### 2.2 Identifiers
+
+Identifiers start with a letter or underscore, followed by letters, digits, or underscores.
+Type names are conventionally `PascalCase`. Variables and functions are `snake_case`.
+
+### 2.3 Keywords
+
+All reserved keywords in the language:
+
+| Category | Keywords |
+|---|---|
+| Declarations | `record`, `enum`, `cell`, `type`, `const`, `trait`, `impl`, `import`, `pub`, `extern`, `macro` |
+| Modifiers | `async`, `mut`, `fn` |
+| Control flow | `if`, `else`, `for`, `in`, `while`, `loop`, `match`, `return`, `halt`, `break`, `continue`, `when`, `then` |
+| Expressions | `and`, `or`, `not`, `is`, `as`, `try`, `await`, `comptime`, `yield`, `defer` |
+| Literals | `true`, `false`, `null`, `ok`, `err` |
+| Types | `Int`, `Float`, `String`, `Bool`, `Bytes`, `Json`, `Null`, `list`, `map`, `set`, `tuple`, `result`, `union` |
+| AI-native | `use`, `tool`, `grant`, `role`, `schema`, `expect`, `emit`, `step`, `parallel`, `with`, `from` |
+| Other | `end`, `where`, `self`, `mod` |
+
+### 2.4 Literals
+
+**Integers.** Decimal integer literals: `0`, `42`, `-17`.
+
+**Floats.** Decimal with fractional or exponent part: `3.14`, `1.0`, `-0.5`.
+
+**Strings.** Double-quoted with escape sequences and interpolation:
+
+```lumen
+let plain = "hello world"
+let escaped = "line1\nline2"
+let name = "Alice"
+let greeting = "Hello, {name}!"
+let expr = "sum is {1 + 2}"
+```
+
+Interpolation uses `{expression}` inside double-quoted strings.
+
+**Raw strings.** Prefixed with `r`, no escape processing or interpolation:
+
+```lumen
+let raw = r"no \n escapes here"
+```
+
+**Bytes.** Prefixed with `b`, hex-encoded: `b"48656C6C6F"`.
+
+**Booleans.** `true` and `false`.
+
+**Null.** The literal `null`.
+
+### 2.5 Operators
+
+#### Operator Precedence (highest to lowest)
+
+| Precedence | Operators | Associativity | Description |
+|---|---|---|---|
+| 15 | `.` `()` `[]` `?.` `?[]` `!` `?` | left / postfix | Access, call, index, null-safe, try |
+| 14 | `-` `not` `~` | prefix | Negation, logical not, bitwise not |
+| 13 | `**` | right | Exponentiation |
+| 12 | `*` `/` `//` `%` | left | Multiply, divide, floor-divide, modulo |
+| 11 | `+` `-` | left | Add, subtract |
+| 10 | `<<` `>>` | left | Bitwise shift |
+| 9 | `..` `..=` | left | Range (exclusive, inclusive) |
+| 8 | `++` | left | Concatenation |
+| 7 | `\|>` `~>` | left | Pipe, compose |
+| 7 | `&` | left | Bitwise AND |
+| 6 | `^` | left | Bitwise XOR |
+| 5 | `==` `!=` `<` `<=` `>` `>=` `in` `is` `as` `\|` | left | Comparison, membership, type ops, bitwise OR |
+| 4 | `and` | left | Logical AND |
+| 3 | `or` | left | Logical OR |
+| 2 | `??` | left | Null coalescing |
+
+#### Compound Assignment Operators
+
+`+=`, `-=`, `*=`, `/=`, `//=`, `%=`, `**=`, `&=`, `|=`, `^=`
+
+## 3. Types
+
+### 3.1 Primitive Types
+
+| Type | Description |
+|---|---|
+| `Int` | 64-bit signed integer |
+| `Float` | 64-bit IEEE 754 float |
+| `String` | UTF-8 string (interned or owned) |
+| `Bool` | `true` or `false` |
+| `Bytes` | Byte sequence |
+| `Json` | Opaque JSON value |
+| `Null` | The null type with single value `null` |
+
+### 3.2 Collection Types
+
+```lumen
+cell collections() -> Int
+  let xs: list[Int] = [1, 2, 3]
+  let m: map[String, Int] = {"a": 1, "b": 2}
+  let s: set[Int] = {10, 20, 30}
+  let t: tuple[Int, String, Bool] = (1, "hi", true)
+  return length(xs)
+end
+```
+
+- `list[T]` — ordered, variable-length sequence
+- `map[K, V]` — key-value mapping (keys are strings at runtime)
+- `set[T]` — unordered collection of unique elements
+- `tuple[T1, T2, ...]` — fixed-length, heterogeneous sequence
+
+### 3.3 Result Type
+
+```lumen
+cell safe_div(a: Int, b: Int) -> result[Int, String]
+  if b == 0
+    return err("division by zero")
+  end
+  return ok(a / b)
+end
+```
+
+`result[T, E]` is a built-in union with `ok(T)` and `err(E)` variants.
+
+### 3.4 Union Types
+
+```lumen
+cell example(v: Int | String) -> String
+  if v is Int
+    return "integer"
+  end
+  return "string"
+end
+```
+
+`A | B | C` declares a union of types.
+
+### 3.5 Optional Type Sugar
+
+`T?` is syntactic sugar for `T | Null`:
+
+```lumen
+cell find(name: String) -> Int?
+  if name == "alice"
+    return 42
+  end
+  return null
+end
+```
+
+### 3.6 Function Types
+
+`fn(T1, T2) -> R` denotes a function type, optionally with an effect row:
+`fn(String) -> Int / {http}`.
+
+### 3.7 Generic Type Parameters
+
+Type definitions and cells accept generic parameters in square brackets:
+
+```lumen
+record Pair[A, B]
+  first: A
+  second: B
+end
+```
+
+### 3.8 Type Aliases
+
+```lumen
+type UserId = String
+type Callback = fn(Int) -> Bool
+```
+
+## 4. Declarations
+
+### 4.1 Records
+
+Records are typed structs with named fields:
 
 ```lumen
 record User
   name: String
   age: Int where age >= 0
+  role: String = "viewer"
 end
 ```
 
-Supported field features:
+Fields support:
+- Type annotations (required)
+- Default values (`= expr`)
+- Constraint clauses (`where expr`) validated at construction
 
-- type annotations
-- default values
-- `where` constraints
-
-## 2.2 Enums
+Records may be generic and marked `pub`:
 
 ```lumen
-enum Status
-  Pending
-  Done
-  Failed(String)
+pub record Box[T]
+  value: T
 end
 ```
 
-## 2.3 Cells
+Construction uses parenthesized named fields:
+
+```lumen
+cell main() -> String
+  let u = User(name: "Alice", age: 30)
+  return u.name
+end
+```
+
+### 4.2 Enums
+
+Enums define a closed set of variants, optionally with payloads:
+
+```lumen
+enum Shape
+  Circle(Float)
+  Rect(Float)
+  Point
+end
+```
+
+Enums may be generic and contain methods:
+
+```lumen
+enum Option[T]
+  Some(T)
+  None
+
+  cell is_some(self: Option[T]) -> Bool
+    match self
+      Some(_) -> return true
+      None -> return false
+    end
+  end
+end
+```
+
+### 4.3 Cells (Functions)
+
+Cells are the primary function construct:
 
 ```lumen
 cell add(a: Int, b: Int) -> Int
@@ -62,12 +285,15 @@ cell add(a: Int, b: Int) -> Int
 end
 ```
 
-Supported:
-
-- parameters, defaults, named arguments
-- optional return type
-- optional effect row
-- `async cell` parsing
+Features:
+- Parameters with types: `name: Type`
+- Default parameter values: `name: Type = default`
+- Named arguments at call site: `f(name: value)`
+- Optional return type (inferred if omitted)
+- Effect row: `-> ReturnType / {effect1, effect2}`
+- Modifiers: `pub`, `async`, `extern`
+- Generic parameters: `cell swap[T](a: T, b: T) -> tuple[T, T]`
+- Where clauses on the cell itself
 
 ```lumen
 async cell fetch_value() -> Int
@@ -75,7 +301,43 @@ async cell fetch_value() -> Int
 end
 ```
 
-## 2.4 Agent Declarations
+```lumen
+extern cell malloc(size: Int) -> Int
+extern cell free(ptr: Int) -> Null
+```
+
+Extern cells have no body; the runtime supplies the implementation.
+
+### 4.4 Constants
+
+```lumen
+const MAX_RETRIES: Int = 3
+
+cell main() -> Int
+  return MAX_RETRIES
+end
+```
+
+### 4.5 Traits and Implementations
+
+```lumen
+trait Printable
+  cell to_display(self: Self) -> String
+end
+
+impl Printable for Int
+  cell to_display(self: Self) -> String
+    return to_string(self)
+  end
+end
+```
+
+Traits define method signatures. `impl` blocks provide implementations for specific types.
+Traits may extend other traits (parent traits).
+
+### 4.6 Agent Declarations
+
+Agents group cells and grants into a named entity:
 
 ```lumen
 agent Assistant
@@ -85,19 +347,12 @@ agent Assistant
 end
 ```
 
-Agents compile to constructor-backed runtime records plus method cells.
+Agents compile to constructor-backed runtime records with method cells.
 
-## 2.5 Process-Family Declarations
+### 4.7 Process Declarations
 
-Supported process kinds:
-
-- `pipeline`
-- `orchestration`
-- `machine`
-- `memory`
-- `guardrail`
-- `eval`
-- `pattern`
+Processes are runtime objects with built-in behavior. Supported kinds:
+`pipeline`, `machine`, `memory`, `orchestration`, `guardrail`, `eval`, `pattern`.
 
 ```lumen
 memory ConversationBuffer
@@ -107,16 +362,32 @@ machine TicketHandler
 end
 ```
 
-These declarations compile to constructor-backed runtime records.
-`memory` and `machine` have implemented runtime method behavior (see runtime sections below).
+See Section 10 for process runtime semantics.
 
-## 2.6 Effects and Handlers
+### 4.8 Effect Declarations
+
+Effects declare typed operation interfaces:
 
 ```lumen
 effect database
   cell query(sql: String) -> list[Json]
 end
+```
 
+### 4.9 Effect Bindings
+
+`bind effect` explicitly maps an effect to a tool alias:
+
+```lumen
+use tool postgres.query as DbQuery
+bind effect database.query to DbQuery
+```
+
+### 4.10 Handlers
+
+Handlers provide implementations for effect operations:
+
+```lumen
 handler MockDb
   handle database.query(sql: String) -> list[Json]
     return []
@@ -124,322 +395,76 @@ handler MockDb
 end
 ```
 
-`bind effect` declarations explicitly associate an effect with a tool alias.
-This is the only supported mechanism for mapping effects to tool implementations — the compiler does not infer effect-to-tool bindings heuristically.
+### 4.11 Tool Declarations and Grants
 
-```lumen
-use tool postgres.query as DbQuery
-bind effect database.query to DbQuery
-```
-
-## 2.7 Additional Declaration Forms
-
-The parser/resolver supports:
-
-- `use tool` — declares a tool by name; the language treats tools as abstract typed interfaces (see Section 10)
-- `grant` — attaches policy constraints to a tool alias; constraints are provider-agnostic (see Section 10.3)
-- `type` alias
-- `trait`
-- `impl`
-- `import`
-- `const`
-- `macro`
-- `extern`
+`use tool` introduces a tool by qualified name with an alias.
+`grant` attaches policy constraints:
 
 ```lumen
 use tool llm.chat as Chat
 grant Chat timeout_ms 30000
-
-type UserId = String
-
-const MAX_RETRIES: Int = 3
-
-cell main() -> Int
-  return MAX_RETRIES
-end
+grant Chat max_tokens 4096
 ```
 
-## 2.8 Extern Declarations
+Supported constraint keys: `domain` (URL pattern), `timeout_ms`, `max_tokens`, and
+custom keys matched against provider schemas.
 
-`extern` declares a foreign function interface (FFI) cell whose implementation is provided externally (e.g., by a host runtime or linked library). The compiler records the signature but does not require a body.
+### 4.12 Imports
 
 ```lumen
-extern cell malloc(size: Int) -> addr[Byte]
-extern cell free(ptr: addr[Byte]) -> Null
+import utils: helpers
 ```
 
-Extern cells participate in the type system like regular cells — they can be called, passed as values, and their signatures are checked at call sites. However, the compiler does not generate LIR bytecode for them; the runtime must supply an implementation at load time.
+Import forms:
+- Named: `import module.path: Name1, Name2`
+- Aliased: `import module.path: Name1 as Alias`
+- Wildcard: `import module_name: *`
+
+Module resolution searches for `.lm.md` then `.lm` files, converting dot paths to
+directory separators. See Section 12.
+
+### 4.13 Macro Declarations
 
 ```lumen
-extern cell rand_int(lo: Int, hi: Int) -> Int
-
-cell roll_dice() -> Int
-  return rand_int(1, 6)
-end
-```
-
-## 3. Type System
-
-Built-in scalar types:
-
-- `Int`, `Float`, `Bool`, `String`, `Bytes`, `Json`, `Null`
-
-Composite and functional forms:
-
-- `list[T]`
-- `map[K, V]`
-- `set[T]`
-- `tuple[T1, T2, ...]`
-- `result[Ok, Err]`
-- unions: `A | B`
-- optional sugar: `T?` (shorthand for `T | Null`)
-- function types: `fn(A, B) -> C`
-
-### Optional Type Sugar (`T?`)
-
-`T?` is syntactic sugar for `T | Null`. It can be used anywhere a type expression is expected:
-
-```lumen
-cell find(name: String) -> Int?
-  if name == "alice"
-    return 42
+macro assert_eq(a, b)
+  if a != b
+    halt "assertion failed"
   end
-  return null
 end
+```
 
+Macros are parsed but have limited compile-time expansion support.
+
+## 5. Statements
+
+### 5.1 Let Bindings
+
+```lumen
 cell main() -> Int
-  let x: Int? = find("alice")
-  return x ?? 0
+  let x = 42
+  let y: Float = 3.14
+  let mut counter = 0
+  counter = counter + 1
+  return x + counter
 end
 ```
 
-### Type Test and Cast Expressions
-
-- `expr is Type` — returns `Bool`, testing whether the value is of the given type
-- `expr as Type` — casts the value to the target type
+`let` introduces a binding. `let mut` allows reassignment. Optional type annotation
+with `: Type`. Pattern destructuring is supported:
 
 ```lumen
-cell main() -> Bool
-  let v: Int | String = 42
-  return v is Int
-end
-```
-
-```lumen
-cell main() -> tuple[list[Int], map[String, Int], set[Int], Null]
-  return ([1, 2], {"x": 1}, {1, 2}, null)
-end
-```
-
-## 4. Expressions
-
-Implemented expression families include:
-
-- literals (`Int`, `Float`, `Bool`, `String`, raw strings, bytes, null)
-- records, maps, lists, tuples, sets
-- unary and binary operators
-- **pipe operator** (`|>`) for function chaining
-- calls and named args
-- tool calls
-- field/index access
-- lambdas
-- comprehensions
-- **range expressions** (`..`, `..=`)
-- **string interpolation** (`{expr}`)
-- null operators (`?.`, `??`, `!`, `?[]`)
-- **floor division** (`//`) — integer division truncating toward negative infinity
-- **shift operators** (`<<`, `>>`) — bitwise left and right shift (both operands must be `Int`)
-- **bitwise operators** (`&`, `|`, `^`, `~`) — AND, OR, XOR, NOT
-- **is/as expressions** — `expr is Type` (type test), `expr as Type` (type cast)
-- **compose operator** (`~>`) for function composition
-- `when` multi-branch conditional expression
-- `comptime` compile-time constant evaluation
-- `await`
-- orchestration await block forms:
-  - `await parallel for ... end`
-  - `await parallel ... end`
-  - `await race ... end`
-  - `await vote ... end`
-  - `await select ... end`
-- `spawn` builtin for async closure/cell scheduling
-- `try` operator for `result`
-
-### Syntactic Sugar
-
-**Pipe operator** `|>` — The value on the left becomes the first argument to the function call on the right:
-```lumen
-cell double(x: Int) -> Int
-  return x * 2
-end
-
-cell add(a: Int, b: Int) -> Int
+cell main() -> Int
+  let (a, b) = (1, 2)
   return a + b
 end
-
-cell main() -> Int
-  # a |> f(b) desugars to f(a, b)
-  let result = 5 |> double() |> add(3)  # add(double(5), 3) = 13
-  return result
-end
 ```
 
-**String interpolation** — Embed expressions in strings with `{expr}`:
-```lumen
-cell main() -> String
-  let name = "Alice"
-  let age = 30
-  return "Hello, {name}! You are {age} years old."
-end
-```
-
-**Range expressions** — Concise numeric ranges for loops:
-```lumen
-cell main() -> Int
-  let sum = 0
-  for i in 1..5      # exclusive: [1, 2, 3, 4]
-    sum = sum + i
-  end
-  for i in 1..=5     # inclusive: [1, 2, 3, 4, 5]
-    sum = sum + i
-  end
-  return sum
-end
-```
-
-### Null Safety
-
-Null-safe operators propagate `null` without crashing:
-
-- `?.` — null-safe field access: `x?.field` returns `null` if `x` is null
-- `?[]` — null-safe index access: `x?[i]` returns `null` if `x` is null
-- `??` — null coalescing: `x ?? default` returns `default` if `x` is null
-- `!` — null assert: `x!` unwraps or errors if `x` is null
-
-```lumen
-record Box
-  value: Int
-end
-
-cell main() -> Int
-  let b: Box | Null = Box(value: 7)
-  return b?.value ?? 0
-end
-```
-
-### Compose Operator (`~>`)
-
-The compose operator `~>` creates a new function by composing two or more functions. Unlike `|>` which pipes a value eagerly, `~>` produces a closure that applies the functions in sequence when called.
-
-```lumen
-cell double(x: Int) -> Int
-  return x * 2
-end
-
-cell add_one(x: Int) -> Int
-  return x + 1
-end
-
-cell main() -> Int
-  let transform = double ~> add_one
-  # transform(5) is equivalent to add_one(double(5)) = 11
-  return transform(5)
-end
-```
-
-Multiple compositions chain left-to-right:
-
-```lumen
-let process = parse ~> validate ~> transform
-# process(x) is equivalent to transform(validate(parse(x)))
-```
-
-### `when` Expression
-
-`when` is a multi-branch conditional expression. Each branch has a condition and a result value, separated by `->`. The branches are evaluated top-to-bottom; the first matching condition's value is returned. A wildcard `_` serves as the default branch.
-
-```lumen
-cell grade(score: Int) -> String
-  let letter = when
-    score >= 90 -> "A"
-    score >= 80 -> "B"
-    score >= 70 -> "C"
-    score >= 60 -> "D"
-    _ -> "F"
-  end
-  return letter
-end
-```
-
-`when` is an expression and can appear anywhere a value is expected:
-
-```lumen
-cell classify(x: Int) -> String
-  return when
-    x > 0 -> "positive"
-    x < 0 -> "negative"
-    _ -> "zero"
-  end
-end
-```
-
-### `comptime` Expression
-
-`comptime` evaluates an expression at compile time. The body must consist of pure, deterministic operations that the compiler can fully evaluate. The result is embedded as a constant in the compiled output.
-
-```lumen
-let table = comptime
-  build_lookup(256)
-end
-```
-
-```lumen
-const MAX = comptime
-  1024 * 1024
-end
-```
-
-This is useful for precomputing lookup tables, configuration constants, or any value that does not depend on runtime state.
-
-## 5. Statements and Control Flow
-
-Implemented statement families include:
-
-- `let` / assignment / compound assignment
-- `if` / `else`
-- `for` loops (with optional filter)
-- `while` loops
-- `loop`
-- `break` / `continue` (with optional label)
-- `match`
-- `return`
-- `halt`
-- `emit`
-- `defer`
-- `yield`
-
-```lumen
-cell main() -> Int
-  let mut sum = 0
-  for x in [1, 2, 3]
-    sum += x
-  end
-  return sum
-end
-```
-
-### Compound Assignment Operators
-
-All compound assignment forms:
-
-- `+=`, `-=`, `*=`, `/=` — arithmetic
-- `//=` — floor division assign
-- `%=` — modulo assign
-- `**=` — power assign
-- `&=`, `|=`, `^=` — bitwise assign
+### 5.2 Assignment and Compound Assignment
 
 ```lumen
 cell main() -> Int
   let mut x = 10
+  x = 20
   x += 5
   x -= 2
   x *= 3
@@ -449,9 +474,51 @@ cell main() -> Int
 end
 ```
 
-### Labeled Loops
+All compound forms: `+=`, `-=`, `*=`, `/=`, `//=`, `%=`, `**=`, `&=`, `|=`, `^=`.
 
-Loops (`for`, `while`, `loop`) can be labeled with `@name`. `break` and `continue` can target a label to control nested loops:
+### 5.3 If / Else
+
+```lumen
+cell classify(x: Int) -> String
+  if x > 0
+    return "positive"
+  else
+    if x < 0
+      return "negative"
+    else
+      return "zero"
+    end
+  end
+end
+```
+
+Lumen uses `if`/`else` with nested `if` for chaining. There is no `elif` keyword.
+
+### 5.4 For Loops
+
+```lumen
+cell main() -> Int
+  let mut sum = 0
+  for x in [1, 2, 3, 4, 5]
+    sum += x
+  end
+  return sum
+end
+```
+
+**Filters.** An optional `if` clause skips non-matching iterations:
+
+```lumen
+cell main() -> Int
+  let mut sum = 0
+  for x in 1..=10 if x % 2 == 0
+    sum += x
+  end
+  return sum
+end
+```
+
+**Labeled loops.** Use `@label` for `break`/`continue` targeting:
 
 ```lumen
 cell main() -> Int
@@ -468,127 +535,44 @@ cell main() -> Int
 end
 ```
 
-### For-Loop Filters
-
-`for` loops support an optional `if` filter clause that skips iterations where the condition is false:
+### 5.5 While Loops
 
 ```lumen
 cell main() -> Int
   let mut sum = 0
-  for x in 1..=10 if x % 2 == 0
-    sum += x
+  let mut i = 0
+  while i < 10
+    sum += i
+    i += 1
   end
   return sum
 end
 ```
 
-### Variadic Parameters (Syntax)
-
-Cell parameters support the `...` prefix syntax for variadic parameters. The parser accepts this syntax and records it in the AST:
-
-```
-cell sum(...nums: list[Int]) -> Int
-```
-
-Note: Variadic parameter expansion is parsed but not yet fully wired through the type system. The parameter is stored with a `variadic: true` flag in the AST.
-
-### `defer` Statement
-
-`defer` schedules a block of code to run when the enclosing scope exits, regardless of how it exits (normal return, early return, or error). Multiple `defer` blocks execute in reverse order of declaration (LIFO — last deferred, first executed).
+### 5.6 Loop (Infinite)
 
 ```lumen
-cell process_file(path: String) -> String
-  let handle = open(path)
-  defer
-    close(handle)
-  end
-  return read(handle)
-end
-```
-
-`defer` is useful for resource cleanup, releasing locks, or restoring state:
-
-```lumen
-cell with_logging(name: String) -> Int
-  print("entering {name}")
-  defer
-    print("exiting {name}")
-  end
-  defer
-    flush_logs()
-  end
-  return compute(name)
-end
-```
-
-In the example above, `flush_logs()` runs first, then `print("exiting {name}")` — reverse order of declaration.
-
-### `yield` Statement
-
-`yield` produces a value from a generator cell without terminating it. The cell's execution suspends and can be resumed to produce the next value. Generator cells declare their return type as `yield T`.
-
-```lumen
-cell fibonacci() -> yield Int
-  let a = 0
-  let b = 1
+cell main() -> Int
+  let mut count = 0
   loop
-    yield a
-    let temp = b
-    b = a + b
-    a = temp
-  end
-end
-```
-
-Generator cells produce lazy iterators that can be consumed with `for` loops or collected into lists:
-
-```lumen
-cell main() -> list[Int]
-  let mut result = []
-  for n in fibonacci()
-    if n > 100
+    count += 1
+    if count >= 5
       break
     end
-    result = append(result, n)
   end
-  return result
+  return count
 end
 ```
 
-## 6. Pattern Matching
+`loop` runs indefinitely until `break` or `return`.
 
-Implemented pattern forms:
+### 5.7 Break and Continue
 
-- literal patterns
-- variant patterns (`ok(v)`, `err(e)`, enum variants)
-- wildcard (`_`)
-- identifier binding
-- guard patterns (`p if cond`)
-- OR patterns (`p1 | p2`)
-- list destructuring (`[a, b, ...rest]`)
-- tuple destructuring (`(a, b)`)
-- record destructuring (`Type(field: p, ...)`)
-- type-check patterns (`x: Int`)
+`break` exits the innermost loop. `continue` skips to the next iteration. Both accept
+an optional label: `break @label`, `continue @label`. `break` may carry a value:
+`break value`.
 
-```lumen
-record Point
-  x: Int
-  y: Int
-end
-
-cell main() -> Int
-  let v: Int | String = 9
-  match (v, Point(x: 3, y: 4), [1, 2, 3])
-    (n: Int, Point(x: px, y: py), [a, ...rest]) if n > 0 ->
-      return n + px + py + length(rest)
-    _ -> return 0
-  end
-end
-```
-
-### Match Exhaustiveness Checking
-
-The compiler checks that `match` statements on enum types cover all variants. If a match is non-exhaustive, the compiler reports an `IncompleteMatch` error listing the missing variants:
+### 5.8 Match
 
 ```lumen
 enum Color
@@ -606,111 +590,593 @@ cell describe(c: Color) -> String
 end
 ```
 
-A wildcard (`_`) or catch-all identifier pattern makes any match exhaustive. Guard patterns are treated conservatively and do not contribute to exhaustiveness coverage (since the guard may fail at runtime).
+Match arms consist of a pattern, `->`, and a body. See Section 7 for all pattern forms.
 
-## 7. Effect Rows, Strictness, and Determinism
+**Exhaustiveness.** The compiler checks that match on an enum covers all variants.
+Missing variants produce `IncompleteMatch` errors. A wildcard `_` or catch-all identifier
+makes any match exhaustive. Guard patterns do not contribute to exhaustiveness.
 
-## 7.1 Strict Mode
+### 5.9 Return and Halt
 
-- `@strict` defaults to `true`.
-- strict mode reports unresolved symbols/type mismatches as diagnostics.
+`return expr` exits the current cell with a value. `halt expr` terminates execution
+with an error message:
 
-## 7.2 Doc Mode
+```lumen
+cell checked_div(a: Int, b: Int) -> Int
+  if b == 0
+    halt("division by zero")
+  end
+  return a / b
+end
+```
 
-- `@doc_mode true` relaxes some strict diagnostics for documentation/spec snippets.
+### 5.10 Emit
 
-## 7.3 Effect Rows
+`emit expr` outputs a value as a side-effect (for streaming/logging):
 
-- cells may declare effect rows (`/ {http, trace}`)
-- resolver infers effects for cells that omit explicit rows
-- strict mode reports inferred-but-undeclared effects for explicitly declared rows
-- strict mode enforces call-boundary effect compatibility for statically resolved cell/tool calls
-- undeclared-effect diagnostics include source-level cause hints (for example, specific call sites/tool calls)
-- effectful external capabilities require matching grants in scope
-- runtime tool calls apply merged grant-policy constraints (for example `domain`, `timeout_ms`, `max_tokens`) and reject violations
+```lumen
+cell process() -> Int / {emit}
+  emit "step 1 complete"
+  return 42
+end
+```
+
+### 5.11 Defer
+
+`defer` schedules code to run when the enclosing scope exits. Multiple defers execute
+in LIFO order (last deferred, first executed):
+
+```lumen
+cell example() -> String
+  let result = "start"
+  defer
+    print("cleanup 1")
+  end
+  defer
+    print("cleanup 2")
+  end
+  return result
+end
+```
+
+In the above, `"cleanup 2"` prints first, then `"cleanup 1"`.
+
+### 5.12 Yield
+
+`yield` produces a value from a generator cell without terminating it:
+
+```lumen
+cell fibonacci() -> yield Int
+  let mut a = 0
+  let mut b = 1
+  loop
+    yield a
+    let temp = b
+    b = a + b
+    a = temp
+  end
+end
+```
+
+## 6. Expressions
+
+### 6.1 Literals
+
+All literal forms described in Section 2.4 are expressions: integers, floats, strings
+(with interpolation), raw strings, bytes, booleans, and null.
+
+### 6.2 Collection Constructors
+
+```lumen
+cell main() -> Int
+  let xs = [1, 2, 3]           # list
+  let m = {"key": "value"}     # map
+  let s = {10, 20, 30}         # set
+  let t = (1, "hello", true)   # tuple
+  return length(xs)
+end
+```
+
+Record construction: `TypeName(field: value, ...)`.
+
+### 6.3 Binary Operators
+
+Arithmetic: `+`, `-`, `*`, `/`, `//` (floor division), `%`, `**` (power).
+
+Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`.
+
+Logical: `and`, `or`.
+
+Bitwise: `&` (AND), `|` (OR), `^` (XOR), `<<` (left shift), `>>` (right shift).
+
+Membership: `in` — tests whether a value is contained in a collection.
+
+Concatenation: `++` — concatenates two lists or strings.
+
+See Section 2.5 for the full precedence table.
+
+### 6.4 Unary Operators
+
+- `-expr` — numeric negation
+- `not expr` — logical negation
+- `~expr` — bitwise NOT
+
+### 6.5 Pipe Operator (`|>`)
+
+The pipe operator passes the left value as the first argument to the right function:
+
+```lumen
+cell double(x: Int) -> Int
+  return x * 2
+end
+
+cell add(a: Int, b: Int) -> Int
+  return a + b
+end
+
+cell main() -> Int
+  let result = 5 |> double() |> add(3)
+  return result
+end
+```
+
+`a |> f()` desugars to `f(a)`. `a |> f(b)` desugars to `f(a, b)`.
+
+### 6.6 Compose Operator (`~>`)
+
+The compose operator creates a new function by chaining two functions. Unlike `|>` which
+evaluates eagerly, `~>` produces a closure:
+
+```lumen
+cell double(x: Int) -> Int
+  return x * 2
+end
+
+cell add_one(x: Int) -> Int
+  return x + 1
+end
+
+cell main() -> Int
+  let transform = double ~> add_one
+  return transform(5)
+end
+```
+
+`transform(5)` evaluates as `add_one(double(5))` = `11`.
+
+### 6.7 Null Safety Operators
+
+- `expr?.field` — null-safe field access (returns `null` if `expr` is null)
+- `expr?[index]` — null-safe index access
+- `expr ?? default` — null coalescing (returns `default` if `expr` is null)
+- `expr!` — null assert (unwraps or errors if null)
+
+```lumen
+record Box
+  value: Int
+end
+
+cell main() -> Int
+  let b: Box | Null = Box(value: 7)
+  return b?.value ?? 0
+end
+```
+
+### 6.8 Range Expressions
+
+```lumen
+cell main() -> Int
+  let mut sum = 0
+  for i in 1..5
+    sum += i
+  end
+  for j in 1..=5
+    sum += j
+  end
+  return sum
+end
+```
+
+`start..end` is exclusive. `start..=end` is inclusive.
+
+### 6.9 String Interpolation
+
+```lumen
+cell main() -> String
+  let name = "Alice"
+  let age = 30
+  return "Hello, {name}! You are {age} years old."
+end
+```
+
+Expressions inside `{...}` in double-quoted strings are evaluated and converted to strings.
+
+### 6.10 When Expression
+
+`when` is a multi-branch conditional expression:
+
+```lumen
+cell grade(score: Int) -> String
+  return when
+    score >= 90 -> "A"
+    score >= 80 -> "B"
+    score >= 70 -> "C"
+    _ -> "F"
+  end
+end
+```
+
+Branches are evaluated top-to-bottom. `_` is the default. `when` is an expression and
+can appear anywhere a value is expected.
+
+### 6.11 Comptime Expression
+
+`comptime` evaluates an expression at compile time:
+
+```lumen
+const MAX = comptime
+  1024 * 1024
+end
+```
+
+The body must be pure and deterministic. The result is embedded as a constant.
+
+### 6.12 Lambda / Closure
+
+```lumen
+cell main() -> Int
+  let double = fn(x: Int) -> Int => x * 2
+  return double(5)
+end
+```
+
+Lambda syntax: `fn(params) -> ReturnType => expr` for single expressions,
+or `fn(params) ... end` for block bodies.
+
+### 6.13 Comprehensions
+
+```lumen
+cell main() -> list[Int]
+  let doubled = [x * 2 for x in [1, 2, 3, 4, 5] if x > 2]
+  return doubled
+end
+```
+
+List comprehension: `[expr for var in iter if condition]`.
+Map comprehension: `{key: val for var in iter}`.
+Set comprehension: `{expr for var in iter}`.
+
+### 6.14 Is / As (Type Test and Cast)
+
+```lumen
+cell main() -> Bool
+  let v: Int | String = 42
+  return v is Int
+end
+```
+
+- `expr is Type` — returns `Bool`, tests runtime type
+- `expr as Type` — casts value to target type
+
+### 6.15 If Expression
+
+```lumen
+cell main() -> Int
+  let x = if true then 1 else 2
+  return x
+end
+```
+
+When used as an expression, `if cond then a else b` produces a value.
+
+### 6.16 Match Expression
+
+`match` can be used in expression position:
+
+```lumen
+cell main() -> String
+  let x = 42
+  let label = match x
+    0 -> "zero"
+    _ -> "nonzero"
+  end
+  return label
+end
+```
+
+### 6.17 Await
+
+`await expr` resolves a future value:
+
+```lumen
+async cell fetch() -> Int
+  return 42
+end
+
+cell main() -> Int
+  let f = fetch()
+  return await f
+end
+```
+
+### 6.18 Try Expression
+
+`expr?` (postfix `?`) unwraps a `result`, propagating errors.
+
+### 6.19 Spread
+
+`...expr` spreads an iterable into a collection constructor or function call.
+
+### 6.20 Block Expressions
+
+A block `do ... end` evaluates statements and returns the last expression's value.
+
+## 7. Patterns
+
+Patterns are used in `match` arms, `let` destructuring, and `for` loops.
+
+### 7.1 Pattern Forms
+
+| Pattern | Syntax | Example |
+|---|---|---|
+| Literal | value | `42`, `"hello"`, `true` |
+| Wildcard | `_` | `_` |
+| Identifier | name | `x` |
+| Variant | `Name(pattern)` | `Some(x)`, `None` |
+| Guard | `pattern if expr` | `x if x > 0` |
+| Or | `p1 \| p2` | `Red \| Blue` |
+| List | `[p1, p2, ...rest]` | `[first, ...tail]` |
+| Tuple | `(p1, p2)` | `(a, b)` |
+| Record | `Type(field: pat)` | `Point(x: px, y: py)` |
+| Type check | `name: Type` | `n: Int` |
+| Range | `start..end` / `start..=end` | `1..10` |
+
+### 7.2 Nested Patterns
+
+Patterns nest arbitrarily:
+
+```lumen
+enum Result
+  Ok(Int)
+  Err(String)
+end
+
+enum Wrapper
+  Some(Result)
+  None
+end
+
+cell unwrap(w: Wrapper) -> Int
+  match w
+    Some(Ok(n)) -> return n
+    Some(Err(_)) -> return -1
+    None -> return 0
+  end
+end
+```
+
+### 7.3 Example: Combined Patterns
+
+```lumen
+record Point
+  x: Int
+  y: Int
+end
+
+cell main() -> Int
+  let v: Int | String = 9
+  match (v, Point(x: 3, y: 4), [1, 2, 3])
+    (n: Int, Point(x: px, y: py), [a, ...rest]) if n > 0 ->
+      return n + px + py + length(rest)
+    _ -> return 0
+  end
+end
+```
+
+## 8. Builtin Functions
+
+Lumen provides 76 intrinsic functions compiled directly to VM opcodes. They are always
+available without imports.
+
+### 8.1 Core / I/O
+
+| Function | Signature | Description |
+|---|---|---|
+| `print` | `(Any) -> Null` | Print to stdout with newline |
+| `debug` | `(Any) -> Null` | Print debug representation to stderr |
+| `to_string` / `string` | `(Any) -> String` | Convert to string |
+| `to_int` / `int` | `(Any) -> Int?` | Convert to integer |
+| `to_float` / `float` | `(Any) -> Float?` | Convert to float |
+| `type_of` | `(Any) -> String` | Runtime type name |
+| `clone` | `(Any) -> Any` | Deep copy a value |
+| `sizeof` | `(Any) -> Int` | In-memory size in bytes |
+
+### 8.2 String Functions
+
+| Function | Signature | Description |
+|---|---|---|
+| `length` / `len` | `(String) -> Int` | Character count (Unicode-aware) |
+| `upper` | `(String) -> String` | Uppercase |
+| `lower` | `(String) -> String` | Lowercase |
+| `trim` | `(String) -> String` | Strip leading/trailing whitespace |
+| `split` | `(String, String) -> list[String]` | Split by separator |
+| `join` | `(list[String], String) -> String` | Join with separator |
+| `replace` | `(String, String, String) -> String` | Replace all occurrences |
+| `contains` | `(String, String) -> Bool` | Substring test |
+| `starts_with` | `(String, String) -> Bool` | Prefix test |
+| `ends_with` | `(String, String) -> Bool` | Suffix test |
+| `chars` | `(String) -> list[String]` | Split into characters |
+| `index_of` | `(String, String) -> Int` | First index of substring, or -1 |
+| `slice` | `(String, Int, Int) -> String` | Substring by character indices |
+| `pad_left` | `(String, Int) -> String` | Left-pad with spaces |
+| `pad_right` | `(String, Int) -> String` | Right-pad with spaces |
+
+### 8.3 Math Functions
+
+| Function | Signature | Description |
+|---|---|---|
+| `abs` | `(Num) -> Num` | Absolute value |
+| `min` | `(Num, Num) -> Num` | Smaller of two values |
+| `max` | `(Num, Num) -> Num` | Larger of two values |
+| `round` | `(Float) -> Float` | Round to nearest (ties to even) |
+| `ceil` | `(Float) -> Float` | Ceiling |
+| `floor` | `(Float) -> Float` | Floor |
+| `sqrt` | `(Num) -> Float` | Square root |
+| `pow` | `(Num, Num) -> Num` | Raise to power |
+| `log` | `(Num) -> Float` | Natural logarithm |
+| `sin` | `(Num) -> Float` | Sine (radians) |
+| `cos` | `(Num) -> Float` | Cosine (radians) |
+| `clamp` | `(Num, Num, Num) -> Num` | Clamp to range `[lo, hi]` |
+
+(`Num` means `Int | Float` — both are accepted.)
+
+### 8.4 Collection Functions
+
+| Function | Signature | Description |
+|---|---|---|
+| `length` / `count` / `size` | `(Collection) -> Int` | Element count |
+| `append` | `(list[T], T) -> list[T]` | Add element to end |
+| `sort` | `(list[T]) -> list[T]` | Sort in natural order |
+| `reverse` | `(list[T]) -> list[T]` | Reverse order |
+| `flatten` | `(list[list[T]]) -> list[T]` | Flatten one level |
+| `unique` | `(list[T]) -> list[T]` | Remove duplicates (first-occurrence order) |
+| `zip` | `(list[T], list[U]) -> list[tuple[T,U]]` | Pair elements |
+| `enumerate` | `(list[T]) -> list[tuple[Int,T]]` | Index-element pairs |
+| `take` | `(list[T], Int) -> list[T]` | First n elements |
+| `drop` | `(list[T], Int) -> list[T]` | Remove first n elements |
+| `first` | `(list[T]) -> T?` | First element or null |
+| `last` | `(list[T]) -> T?` | Last element or null |
+| `is_empty` | `(Collection) -> Bool` | True if empty |
+| `contains` | `(Collection, T) -> Bool` | Membership test |
+| `slice` | `(list[T], Int, Int) -> list[T]` | Sub-list by index |
+| `chunk` | `(list[T], Int) -> list[list[T]]` | Split into fixed-size chunks |
+| `window` | `(list[T], Int) -> list[list[T]]` | Sliding windows |
+| `range` | `(Int, Int) -> list[Int]` | Generate integer sequence |
+
+### 8.5 Higher-Order Functions
+
+| Function | Signature | Description |
+|---|---|---|
+| `map` | `(list[T], fn(T)->U) -> list[U]` | Transform each element |
+| `filter` | `(list[T], fn(T)->Bool) -> list[T]` | Keep matching elements |
+| `reduce` | `(list[T], fn(T,T)->T, T) -> T` | Fold from the left |
+| `flat_map` | `(list[T], fn(T)->list[U]) -> list[U]` | Map then flatten |
+| `any` | `(list[T], fn(T)->Bool) -> Bool` | True if any match |
+| `all` | `(list[T], fn(T)->Bool) -> Bool` | True if all match |
+| `find` | `(list[T], fn(T)->Bool) -> T?` | First matching element |
+| `position` | `(list[T], fn(T)->Bool) -> Int` | Index of first match, or -1 |
+| `group_by` | `(list[T], fn(T)->String) -> map[String,list[T]]` | Group by key |
+
+```lumen
+cell main() -> list[Int]
+  let doubled = map([1, 2, 3], fn(x: Int) -> Int => x * 2)
+  let evens = filter(doubled, fn(x: Int) -> Bool => x % 2 == 0)
+  let sum = reduce(evens, fn(a: Int, b: Int) -> Int => a + b, 0)
+  return doubled
+end
+```
+
+### 8.6 Map and Record Functions
+
+| Function | Signature | Description |
+|---|---|---|
+| `keys` | `(map[K,V]) -> list[K]` | All keys |
+| `values` | `(map[K,V]) -> list[V]` | All values |
+| `entries` | `(map[K,V]) -> list[tuple[K,V]]` | Key-value tuples |
+| `has_key` | `(map[K,V], K) -> Bool` | Key exists |
+| `merge` | `(map[K,V], map[K,V]) -> map[K,V]` | Merge maps (right wins) |
+| `remove` | `(map[K,V], K) -> map[K,V]` | Remove key |
+
+### 8.7 Set Functions
+
+| Function | Signature | Description |
+|---|---|---|
+| `to_set` | `(list[T]) -> set[T]` | List to set |
+| `add` | `(set[T], T) -> set[T]` | Add element |
+| `remove` | `(set[T], T) -> set[T]` | Remove element |
+
+### 8.8 Data Integrity
+
+| Function | Signature | Description |
+|---|---|---|
+| `hash` | `(String) -> String` | SHA-256 hash (prefixed `"sha256:"`) |
+| `diff` | `(Any, Any) -> Any` | Structural diff |
+| `patch` | `(Any, Any) -> Any` | Apply diff patches |
+| `redact` | `(Any, Any) -> Any` | Redact fields |
+| `validate` | `(Any) -> Bool` | Schema validation (stub) |
+| `matches` | `(Any) -> Bool` | Truthiness test |
+| `trace_ref` | `() -> TraceRef` | Generate trace reference |
+
+## 9. Effects and Tool System
+
+### 9.1 Effect Rows
+
+Cells may declare effects they perform:
 
 ```lumen
 cell a() -> Int / {emit}
-  emit("x")
+  emit "event"
   return 1
 end
-
-cell b() -> Int
-  return a()
-end
 ```
 
-`b` inherits inferred `emit` effect.
+The resolver infers effects for cells that omit explicit rows. Strict mode reports
+inferred-but-undeclared effects. Effect diagnostics include cause hints tracing the source.
 
-Capability checks use grant scope:
+### 9.2 Tool Abstraction
 
-- top-level cells use top-level `grant` declarations
-- agent/process methods use top-level grants plus local grants declared in that agent/process
-- effect bindings (`bind effect ... to <ToolAlias>`) are the explicit mechanism for mapping effects to tools (no heuristic inference)
-- grant policies may restrict allowed effects via `effect`/`effects` constraints; resolver enforces these restrictions
-- tool calls automatically produce trace events recording input, output, duration, and provider identity
-
-## 7.4 Deterministic Profile
-
-`@deterministic` enables nondeterminism checks.
-
-Examples currently treated as nondeterministic:
-
-- `uuid` / `uuid_v4` (`random`)
-- `timestamp` (`time`)
-- external/unknown tool effects (`external`)
+A `use tool` declaration introduces a tool as a typed interface. At the language level,
+the compiler validates tool usage without knowing which provider handles the call:
 
 ```lumen
-@deterministic true
+use tool llm.chat as Chat
+grant Chat timeout_ms 30000
+bind effect llm to Chat
 
-cell main() -> String
-  return uuid()
+cell ask(prompt: String) -> String / {llm}
+  return Chat(prompt: prompt)
 end
 ```
 
-This is rejected under deterministic mode.
+### 9.3 Grant Policies
 
-Runtime scheduling behavior under deterministic profile:
+Grants attach constraints to tool aliases. At runtime, `validate_tool_policy()` merges
+all grants and checks them before dispatch. Violations produce errors.
 
-- compiler lowers directives into module metadata
-- VM defaults future scheduling to deferred FIFO when `@deterministic true` is present
-- explicit VM scheduler overrides still take precedence
+Constraint keys: `domain` (URL pattern), `timeout_ms`, `max_tokens`, and custom keys.
 
-## 8. Runtime Semantics (Current)
+### 9.4 Tool Call Semantics
 
-## 8.1 Futures
+When a tool is called:
+1. Look up tool alias in the provider registry
+2. Merge and validate grant policies
+3. Execute via the provider's `call()` method
+4. Record trace event (tool name, input, output, duration, provider)
+5. Return result
 
-- `spawn` produces `Future` handles.
-- `spawn(...)` builtin creates futures for callable cells/closures.
-- futures have explicit runtime states: `pending`, `completed`, `error`.
-- `await` resolves completed futures, reports failed futures as runtime errors.
-- `await` recursively resolves futures nested inside collection/record values.
-- VM supports deterministic future scheduling modes (`eager`, `deferred FIFO`) for spawn execution.
-- runtime orchestration builtins `parallel`, `race`, `vote`, `select`, and `timeout` are implemented with deterministic argument-order behavior.
+### 9.5 MCP Server Bridge
 
-## 8.2 Process Runtime Objects
+MCP servers are exposed as Lumen tool providers. Each tool from an MCP server becomes
+available as `server.tool_name` with the `"mcp"` effect kind:
 
-Process declarations compile to constructor-backed records.
+```lumen
+use tool github.create_issue as CreateIssue
+grant CreateIssue timeout_ms 10000
 
-For `pipeline` declarations:
+cell file_bug(title: String, body: String) -> Json / {mcp}
+  return CreateIssue(title: title, body: body)
+end
+```
 
-- declarative `stages:` chains are parsed and validated against known stage cells
-- stage interfaces are type-checked end-to-end (single data-argument pipeline shape)
-- compiler generates executable `<Pipeline>.run` semantics from the stage chain when not user-defined
+## 10. Process Runtimes
 
-### `memory` runtime methods
+Process declarations compile to constructor-backed records with typed methods.
 
-- `append`, `recent`, `remember`, `recall`, `upsert`, `get`, `query`, `store`
+### 10.1 Memory
 
-### `machine` runtime methods
+Memory processes provide key-value and entry-based storage:
 
-- `run`, `start`, `step`, `is_terminal`, `current_state`, `resume_from`
-- machine declarations parse typed state payloads (`state S(x: Int, ...)`), optional guards (`guard: <expr>`), and transition args (`transition T(expr, ...)`)
-- resolver validates machine graph consistency and typing (unknown initial/transition targets, unreachable states, missing terminal states, transition arg count/type compatibility, guard bool compatibility)
-- VM machine runtime uses compiled graph metadata for deterministic transitions and carries typed payload bindings per state
-
-Process runtime state is instance-scoped.
-Two constructed objects do not share memory/machine state unless explicitly passed/shared.
+Methods: `append`, `recent`, `remember`, `recall`, `upsert`, `get`, `query`, `store`.
 
 ```lumen
 memory Buf
@@ -724,850 +1190,154 @@ cell main() -> Int
 end
 ```
 
-`main` returns `0` because instances are isolated.
+Instances are isolated — `main` returns `0` because `a` and `b` are separate.
 
-## 9. Tooling Interface
+### 10.2 Machine
 
-CLI commands currently implemented:
-
-- `lumen check <file>`
-- `lumen run <file> [--cell main] [--trace-dir ...]`
-- `lumen emit <file> [--output ...]`
-- `lumen trace show <run_id> [--trace-dir ...]`
-- `lumen cache clear [--cache-dir ...]`
-
-## 10. Tool Providers
-
-Lumen separates tool contracts (declared in source) from tool implementations (loaded at runtime).
-The language defines what a tool looks like; the runtime decides how to call it.
-
-### 10.1 Tools Are Abstract
-
-A `use tool` declaration introduces a tool by name.
-At the language level, a tool is a typed interface with:
-
-- a qualified name (e.g. `llm.chat`, `http.get`, `github.search_repos`)
-- typed input (record of named arguments)
-- typed output
-- declared effects
-- automatic trace events on every call
-
-The compiler validates tool usage (argument types, effect compatibility, grant policy constraints) without knowing which provider will handle the call.
+Machine processes model typed state graphs with transitions and guards:
 
 ```lumen
-use tool llm.chat as Chat
-grant Chat timeout_ms 30000
-bind effect llm to Chat
-
-cell ask(prompt: String) -> String / {llm}
-  return Chat(prompt: prompt)
-end
-```
-
-This code is valid regardless of whether `llm.chat` is backed by OpenAI, Anthropic, Ollama, or any custom provider.
-The provider is determined by runtime configuration (see Section 11).
-
-### 10.2 ToolProvider Interface
-
-At runtime, every tool name resolves to a `ToolProvider` implementation.
-The ToolProvider trait exposes:
-
-- `name() -> String` — canonical tool name
-- `version() -> String` — provider version string
-- `schema() -> ToolSchema` — input/output JSON schemas and declared effect kinds
-- `call(input) -> result` — execute the tool with validated input
-- `effects() -> list of effect kinds` — effects this provider may produce
-
-`ToolSchema` contains:
-
-- `input_schema` — JSON schema describing accepted input fields
-- `output_schema` — JSON schema describing the return value
-- `effect_kinds` — set of effect kind strings the tool may trigger (e.g. `"http"`, `"llm"`, `"mcp"`)
-
-Provider implementations live in separate crates (e.g. `lumen-provider-openai`, `lumen-provider-http`).
-The runtime loads and registers providers at startup based on configuration.
-
-### 10.3 Grants and Policy Constraints
-
-`grant` declarations attach policy constraints to tool aliases.
-Constraints are provider-agnostic — they restrict how any provider may be used.
-
-Supported constraint keys:
-
-- `domain` — URL pattern matching (e.g. `"*.example.com"`)
-- `timeout_ms` — maximum execution time in milliseconds
-- `max_tokens` — maximum token budget (for LLM providers)
-- custom keys — matched exactly against provider schema
-
-```lumen
-use tool http.get as Fetch
-grant Fetch domain "*.trusted.com"
-grant Fetch timeout_ms 5000
-
-use tool llm.chat as Chat
-grant Chat max_tokens 4096
-grant Chat timeout_ms 30000
-```
-
-At runtime, `validate_tool_policy()` merges all grants for a tool alias and checks them before dispatch.
-Policy violations produce tool-policy errors.
-
-### 10.4 Effect Bindings
-
-`bind effect` explicitly maps an effect to a tool alias.
-This is the only mechanism for associating effects with tool implementations.
-
-```lumen
-use tool postgres.query as DbQuery
-bind effect database.query to DbQuery
-```
-
-The compiler uses these bindings for effect provenance diagnostics (e.g. `UndeclaredEffect` errors include a `cause` field tracing the binding).
-
-### 10.5 Tool Call Semantics
-
-When a tool is called at runtime:
-
-1. The VM looks up the tool alias in the provider registry.
-2. Grant policies are merged and validated via `validate_tool_policy()`.
-3. The provider's `call()` method executes with the validated input.
-4. A trace event is recorded with: tool name, input, output, duration, provider identity, and status.
-5. The result is returned to the calling cell.
-
-Tool results can be validated against expected schemas (feature planned).
-
-### 10.6 MCP Server Bridge
-
-MCP (Model Context Protocol) servers are automatically exposed as Lumen tool providers.
-An MCP server registered in configuration becomes a set of tools following the `server.tool_name` naming convention.
-
-Semantics:
-
-- Each tool exposed by the MCP server becomes a Lumen tool (e.g. `github.create_issue`, `github.search_repos`)
-- MCP tools carry the `"mcp"` effect kind by default
-- MCP tool schemas (input/output) are derived from the MCP server's tool descriptions
-- MCP tools participate in grant policies and effect bindings like any other tool
-
-```lumen
-use tool github.create_issue as CreateIssue
-grant CreateIssue timeout_ms 10000
-bind effect mcp to CreateIssue
-
-cell file_bug(title: String, body: String) -> Json / {mcp}
-  return CreateIssue(title: title, body: body)
-end
-```
-
-## 11. Standard Library (Intrinsic Functions)
-
-Lumen provides a set of built-in intrinsic functions that are always available without imports. These functions are compiled directly to VM opcodes and execute within the runtime. They can be called as free functions or via method-call syntax on values (e.g., `list.len()` or `len(list)`).
-
-### 11.1 String Functions
-
-#### `len(s: String) -> Int`
-
-Returns the number of Unicode characters in the string.
-
-```lumen
-let n = len("hello")       # 5
-let n = "café".len()       # 4 (Unicode-aware)
-```
-
-Aliases: `length`, `size`, `count`
-
-#### `upper(s: String) -> String`
-
-Returns the string converted to uppercase.
-
-```lumen
-let s = upper("hello")  # "HELLO"
-```
-
-#### `lower(s: String) -> String`
-
-Returns the string converted to lowercase.
-
-```lumen
-let s = lower("HELLO")  # "hello"
-```
-
-#### `trim(s: String) -> String`
-
-Returns the string with leading and trailing whitespace removed.
-
-```lumen
-let s = trim("  hello  ")  # "hello"
-```
-
-#### `split(s: String, sep: String) -> list[String]`
-
-Splits the string by the separator and returns a list of substrings.
-
-```lumen
-let parts = split("a,b,c", ",")  # ["a", "b", "c"]
-```
-
-#### `join(items: list[String], sep: String) -> String`
-
-Joins a list of strings with the given separator.
-
-```lumen
-let s = join(["a", "b", "c"], ", ")  # "a, b, c"
-```
-
-#### `replace(s: String, pattern: String, replacement: String) -> String`
-
-Replaces all occurrences of `pattern` with `replacement`.
-
-```lumen
-let s = replace("hello world", "world", "lumen")  # "hello lumen"
-```
-
-#### `contains(s: String, sub: String) -> Bool`
-
-Returns `true` if the string contains the substring.
-
-```lumen
-let b = contains("hello", "ell")  # true
-```
-
-Alias: `has`
-
-#### `starts_with(s: String, prefix: String) -> Bool`
-
-Returns `true` if the string starts with the given prefix.
-
-```lumen
-let b = starts_with("hello", "hel")  # true
-```
-
-#### `ends_with(s: String, suffix: String) -> Bool`
-
-Returns `true` if the string ends with the given suffix.
-
-```lumen
-let b = ends_with("hello", "llo")  # true
-```
-
-#### `chars(s: String) -> list[String]`
-
-Returns a list of single-character strings from the input.
-
-```lumen
-let cs = chars("abc")  # ["a", "b", "c"]
-```
-
-#### `index_of(s: String, needle: String) -> Int`
-
-Returns the character index of the first occurrence of `needle`, or `-1` if not found. Unicode-aware (returns character index, not byte index).
-
-```lumen
-let i = index_of("hello", "ll")  # 2
-let j = index_of("hello", "xyz") # -1
-```
-
-#### `slice(s: String, start: Int, end: Int) -> String`
-
-Returns a substring from `start` (inclusive) to `end` (exclusive) by character index. If `end` is 0 or negative, slices to the end of the string.
-
-```lumen
-let s = slice("hello", 1, 4)  # "ell"
-```
-
-#### `pad_left(s: String, width: Int) -> String`
-
-Pads the string with spaces on the left to reach the given width. Unicode-aware.
-
-```lumen
-let s = pad_left("42", 5)  # "   42"
-```
-
-#### `pad_right(s: String, width: Int) -> String`
-
-Pads the string with spaces on the right to reach the given width. Unicode-aware.
-
-```lumen
-let s = pad_right("42", 5)  # "42   "
-```
-
-### 11.2 Math Functions
-
-#### `abs(x: Int | Float) -> Int | Float`
-
-Returns the absolute value.
-
-```lumen
-let n = abs(-5)    # 5
-let f = abs(-3.14) # 3.14
-```
-
-#### `min(a: Int | Float, b: Int | Float) -> Int | Float`
-
-Returns the smaller of two values. Both arguments must be the same numeric type.
-
-```lumen
-let n = min(3, 7)      # 3
-let f = min(1.5, 2.5)  # 1.5
-```
-
-#### `max(a: Int | Float, b: Int | Float) -> Int | Float`
-
-Returns the larger of two values. Both arguments must be the same numeric type.
-
-```lumen
-let n = max(3, 7)      # 7
-let f = max(1.5, 2.5)  # 2.5
-```
-
-#### `floor(x: Float) -> Float`
-
-Returns the largest integer less than or equal to `x` (as a Float).
-
-```lumen
-let f = floor(3.7)  # 3.0
-```
-
-#### `ceil(x: Float) -> Float`
-
-Returns the smallest integer greater than or equal to `x` (as a Float).
-
-```lumen
-let f = ceil(3.2)  # 4.0
-```
-
-#### `round(x: Float) -> Float`
-
-Rounds to the nearest integer (as a Float). Ties round to even.
-
-```lumen
-let f = round(3.5)  # 4.0
-let g = round(2.5)  # 2.0
-```
-
-#### `sqrt(x: Int | Float) -> Float`
-
-Returns the square root.
-
-```lumen
-let f = sqrt(16)    # 4.0
-let g = sqrt(2.0)   # 1.4142135623730951
-```
-
-#### `pow(base: Int | Float, exp: Int | Float) -> Int | Float`
-
-Returns `base` raised to the power `exp`. Integer base with non-negative integer exponent returns `Int`; otherwise returns `Float`.
-
-```lumen
-let n = pow(2, 10)     # 1024
-let f = pow(2.0, 0.5)  # 1.4142135623730951
-```
-
-#### `log(x: Int | Float) -> Float`
-
-Returns the natural logarithm (base *e*).
-
-```lumen
-let f = log(1.0)    # 0.0
-let g = log(2.718)  # ~1.0
-```
-
-#### `sin(x: Int | Float) -> Float`
-
-Returns the sine of `x` (in radians).
-
-```lumen
-let f = sin(0.0)  # 0.0
-```
-
-#### `cos(x: Int | Float) -> Float`
-
-Returns the cosine of `x` (in radians).
-
-```lumen
-let f = cos(0.0)  # 1.0
-```
-
-#### `clamp(x: Int | Float, lo: Int | Float, hi: Int | Float) -> Int | Float`
-
-Clamps `x` to the range `[lo, hi]`. All arguments must be the same numeric type.
-
-```lumen
-let n = clamp(15, 0, 10)  # 10
-let m = clamp(-5, 0, 10)  # 0
-```
-
-### 11.3 Collection Functions (Lists)
-
-#### `len(collection) -> Int`
-
-Returns the number of elements. Works on lists, maps, sets, tuples, bytes, and strings.
-
-```lumen
-let n = len([1, 2, 3])  # 3
-```
-
-Aliases: `length`, `size`, `count`
-
-#### `append(list: list[T], item: T) -> list[T]`
-
-Returns a new list with `item` added at the end.
-
-```lumen
-let xs = append([1, 2], 3)  # [1, 2, 3]
-```
-
-#### `sort(list: list[T]) -> list[T]`
-
-Returns a new list with elements in sorted order.
-
-```lumen
-let xs = sort([3, 1, 2])  # [1, 2, 3]
-```
-
-#### `reverse(list: list[T]) -> list[T]`
-
-Returns a new list with elements in reverse order.
-
-```lumen
-let xs = reverse([1, 2, 3])  # [3, 2, 1]
-```
-
-#### `flatten(list: list[list[T]]) -> list[T]`
-
-Flattens one level of nesting. Non-list elements are kept as-is.
-
-```lumen
-let xs = flatten([[1, 2], [3, 4]])  # [1, 2, 3, 4]
-```
-
-#### `unique(list: list[T]) -> list[T]`
-
-Returns a new list with duplicate elements removed, preserving first-occurrence order.
-
-```lumen
-let xs = unique([1, 2, 2, 3, 1])  # [1, 2, 3]
-```
-
-#### `zip(a: list[T], b: list[U]) -> list[(T, U)]`
-
-Pairs elements from two lists into a list of tuples. Stops at the shorter list.
-
-```lumen
-let pairs = zip([1, 2, 3], ["a", "b", "c"])  # [(1, "a"), (2, "b"), (3, "c")]
-```
-
-#### `enumerate(list: list[T]) -> list[(Int, T)]`
-
-Returns a list of `(index, element)` tuples.
-
-```lumen
-let indexed = enumerate(["a", "b", "c"])  # [(0, "a"), (1, "b"), (2, "c")]
-```
-
-#### `take(list: list[T], n: Int) -> list[T]`
-
-Returns the first `n` elements of the list.
-
-```lumen
-let xs = take([1, 2, 3, 4, 5], 3)  # [1, 2, 3]
-```
-
-#### `drop(list: list[T], n: Int) -> list[T]`
-
-Returns the list with the first `n` elements removed.
-
-```lumen
-let xs = drop([1, 2, 3, 4, 5], 2)  # [3, 4, 5]
-```
-
-#### `first(list: list[T]) -> T?`
-
-Returns the first element, or `null` if the list is empty.
-
-```lumen
-let x = first([10, 20, 30])  # 10
-let y = first([])             # null
-```
-
-#### `last(list: list[T]) -> T?`
-
-Returns the last element, or `null` if the list is empty.
-
-```lumen
-let x = last([10, 20, 30])  # 30
-```
-
-#### `is_empty(collection) -> Bool`
-
-Returns `true` if the collection has no elements. Works on lists, maps, and strings.
-
-```lumen
-let b = is_empty([])      # true
-let c = is_empty([1, 2])  # false
-```
-
-#### `contains(collection, item) -> Bool`
-
-Returns `true` if the collection contains the item. Works on lists (element membership), sets (element membership), maps (key lookup), and strings (substring search).
-
-```lumen
-let b = contains([1, 2, 3], 2)  # true
-```
-
-Alias: `has`
-
-#### `slice(list: list[T], start: Int, end: Int) -> list[T]`
-
-Returns a sub-list from `start` (inclusive) to `end` (exclusive). If `end` is 0 or negative, slices to the end.
-
-```lumen
-let xs = slice([10, 20, 30, 40, 50], 1, 4)  # [20, 30, 40]
-```
-
-#### `chunk(list: list[T], n: Int) -> list[list[T]]`
-
-Splits the list into chunks of size `n`. The last chunk may be smaller.
-
-```lumen
-let chunks = chunk([1, 2, 3, 4, 5], 2)  # [[1, 2], [3, 4], [5]]
-```
-
-#### `window(list: list[T], n: Int) -> list[list[T]]`
-
-Returns sliding windows of size `n` over the list.
-
-```lumen
-let wins = window([1, 2, 3, 4], 3)  # [[1, 2, 3], [2, 3, 4]]
-```
-
-#### `range(start: Int, end: Int) -> list[Int]`
-
-Generates a list of integers from `start` (inclusive) to `end` (exclusive).
-
-```lumen
-let xs = range(0, 5)  # [0, 1, 2, 3, 4]
-```
-
-### 11.4 Higher-Order Collection Functions
-
-These functions take a closure argument and operate on lists.
-
-#### `map(list: list[T], f: fn(T) -> U) -> list[U]`
-
-Applies `f` to each element and returns the list of results.
-
-```lumen
-let doubled = map([1, 2, 3], fn(x: Int) -> Int => x * 2)  # [2, 4, 6]
-```
-
-#### `filter(list: list[T], f: fn(T) -> Bool) -> list[T]`
-
-Returns a new list containing only elements for which `f` returns `true`.
-
-```lumen
-let evens = filter([1, 2, 3, 4], fn(x: Int) -> Bool => x % 2 == 0)  # [2, 4]
-```
-
-#### `reduce(list: list[T], f: fn(T, T) -> T, init: T) -> T`
-
-Folds the list from the left using `f` with initial accumulator `init`.
-
-```lumen
-let sum = reduce([1, 2, 3], fn(acc: Int, x: Int) -> Int => acc + x, 0)  # 6
-```
-
-#### `flat_map(list: list[T], f: fn(T) -> list[U]) -> list[U]`
-
-Applies `f` to each element and flattens the resulting lists by one level.
-
-```lumen
-let xs = flat_map([1, 2, 3], fn(x: Int) -> list[Int] => [x, x * 10])  # [1, 10, 2, 20, 3, 30]
-```
-
-#### `any(list: list[T], f: fn(T) -> Bool) -> Bool`
-
-Returns `true` if `f` returns `true` for any element.
-
-```lumen
-let b = any([1, 2, 3], fn(x: Int) -> Bool => x > 2)  # true
-```
-
-#### `all(list: list[T], f: fn(T) -> Bool) -> Bool`
-
-Returns `true` if `f` returns `true` for every element.
-
-```lumen
-let b = all([2, 4, 6], fn(x: Int) -> Bool => x % 2 == 0)  # true
-```
-
-#### `find(list: list[T], f: fn(T) -> Bool) -> T?`
-
-Returns the first element for which `f` returns `true`, or `null` if none found.
-
-```lumen
-let x = find([1, 2, 3, 4], fn(x: Int) -> Bool => x > 2)  # 3
-```
-
-#### `position(list: list[T], f: fn(T) -> Bool) -> Int`
-
-Returns the index of the first element for which `f` returns `true`, or `-1` if none found.
-
-```lumen
-let i = position([10, 20, 30], fn(x: Int) -> Bool => x == 20)  # 1
-```
-
-#### `group_by(list: list[T], f: fn(T) -> String) -> map[String, list[T]]`
-
-Groups elements by the string key returned by `f`.
-
-```lumen
-let classifier = fn(x: Int) -> String
-  if x % 2 == 0
-    return "even"
+machine TicketFSM
+  state Open(desc: String)
+    guard: true
+    transition InProgress(desc)
   end
-  return "odd"
+
+  state InProgress(desc: String)
+    transition Done(desc)
+  end
+
+  state Done(desc: String)
+    terminal: true
+  end
+
+  initial: Open
 end
-let groups = group_by([1, 2, 3, 4], classifier)
-# {"even": [2, 4], "odd": [1, 3]}
 ```
 
-### 11.5 Map and Record Functions
+Methods: `run`, `start`, `step`, `is_terminal`, `current_state`, `resume_from`.
 
-#### `keys(m: map[K, V]) -> list[K]`
+The resolver validates: unknown initial/transition targets, unreachable states, missing
+terminal states, transition argument count and type compatibility, guard boolean type.
 
-Returns a list of all keys in the map. Also works on records (returns field names).
+### 10.3 Pipeline
+
+Pipeline processes declare ordered stages with type-checked data flow:
+
+Stages auto-chain if no explicit `run` cell is defined. Stage interfaces enforce
+single data-argument shape.
+
+### 10.4 Orchestration
+
+Orchestration processes coordinate async work. Built-in patterns:
+
+- `parallel` — run tasks concurrently, collect all results
+- `race` — run tasks concurrently, take first result
+- `vote` — run tasks concurrently, take majority result
+- `select` — run tasks concurrently, pick by criteria
+- `timeout` — wrap with time limit
+
+All orchestration builtins use deterministic argument-order semantics.
+
+## 11. Runtime Semantics
+
+### 11.1 Value Types
+
+The VM operates on 15 runtime value types:
+
+| Value | Description |
+|---|---|
+| `Null` | The null value |
+| `Bool` | Boolean |
+| `Int` | 64-bit signed integer |
+| `Float` | 64-bit float |
+| `String` | Interned or owned UTF-8 string |
+| `Bytes` | Byte sequence |
+| `List` | Ordered value sequence |
+| `Tuple` | Fixed-length value sequence |
+| `Set` | Unordered unique values |
+| `Map` | String-keyed value map |
+| `Record` | Named type with field map |
+| `Union` | Tagged variant with payload |
+| `Closure` | Function with captured environment |
+| `TraceRef` | Trace/span reference |
+| `Future` | Async computation handle |
+
+### 11.2 Truthiness
+
+| Value | Truthy when |
+|---|---|
+| `Null` | never |
+| `Bool` | `true` |
+| `Int` | nonzero |
+| `Float` | nonzero |
+| `String` | non-empty |
+| `List`, `Tuple`, `Set` | non-empty |
+| `Map`, `Record`, `Union`, `Closure`, `Future` | always |
+
+### 11.3 Futures and Async
+
+- `spawn` creates futures for callable cells or closures
+- Futures have states: `Pending`, `Completed`, `Error`
+- `await` resolves futures (recursively through nested collections)
+- Deterministic mode (`@deterministic true`) defaults to deferred FIFO scheduling
+
+### 11.4 Deterministic Mode
+
+When `@deterministic true` is set:
+- `uuid` / `timestamp` calls are rejected at compile time
+- Unknown external tool effects are rejected
+- Future scheduling defaults to deferred FIFO
+
+### 11.5 Defer Execution Order
+
+Multiple `defer` blocks execute in LIFO order when the scope exits.
+
+### 11.6 Trace System
+
+Tool calls automatically produce trace events recording: input, output, duration,
+provider identity, and status. Use `--trace-dir` to enable trace recording.
+
+## 12. Module System
+
+### 12.1 Import Syntax
 
 ```lumen
-let ks = keys({"a": 1, "b": 2})  # ["a", "b"]
+import utils: helper_fn
+import models.user: User, Role
+import std.collections: *
+import io.file: read_file as read
 ```
 
-#### `values(m: map[K, V]) -> list[V]`
+### 12.2 Resolution Rules
 
-Returns a list of all values in the map. Also works on records.
+The module resolver converts import paths to file paths:
+- `import foo` → searches for `foo.lm.md`, then `foo.lm`
+- `import foo.bar` → searches for `foo/bar.lm.md`, then `foo/bar.lm`
+- Directory modules: checks `mod.lm.md`, `mod.lm`, `main.lm.md`, `main.lm`
 
-```lumen
-let vs = values({"a": 1, "b": 2})  # [1, 2]
-```
+Search locations (in order):
+1. Source file's directory
+2. Project `src/` directory
+3. Project root directory
 
-#### `entries(m: map[K, V]) -> list[(K, V)]`
+### 12.3 Circular Import Detection
 
-Returns a list of `(key, value)` tuples. Also works on records.
+The compiler tracks the import stack. Circular imports produce an error showing the
+full chain (e.g., `a → b → c → a`).
 
-```lumen
-let es = entries({"x": 1, "y": 2})  # [("x", 1), ("y", 2)]
-```
+### 12.4 Multi-File Compilation
 
-#### `has_key(m: map[K, V], key: K) -> Bool`
+`compile_with_imports(source, imports)` compiles with import resolution.
+Imported modules are compiled to LIR and merged via `LirModule::merge()`, which
+deduplicates string tables and prevents duplicate definitions.
 
-Returns `true` if the map contains the given key. Also works on records.
+## 13. Configuration
 
-```lumen
-let b = has_key({"name": "Alice"}, "name")  # true
-```
+Runtime configuration is specified in `lumen.toml`, searched in order:
+`./lumen.toml`, parent directories, then `~/.config/lumen/lumen.toml`.
 
-#### `merge(a: map[K, V], b: map[K, V]) -> map[K, V]`
-
-Returns a new map with all entries from both maps. Keys in `b` overwrite keys in `a`.
-
-```lumen
-let m = merge({"a": 1}, {"b": 2, "a": 10})  # {"a": 10, "b": 2}
-```
-
-#### `remove(m: map[K, V], key: K) -> map[K, V]`
-
-Returns a new map with the given key removed.
-
-```lumen
-let m = remove({"a": 1, "b": 2}, "a")  # {"b": 2}
-```
-
-### 11.6 Set Functions
-
-#### `to_set(list: list[T]) -> set[T]`
-
-Converts a list to a set, removing duplicates.
-
-```lumen
-let s = to_set([1, 2, 2, 3])  # {1, 2, 3}
-```
-
-#### `add(s: set[T], item: T) -> set[T]`
-
-Returns a new set with `item` added. If the item already exists, the set is unchanged.
-
-```lumen
-let s = add({1, 2}, 3)  # {1, 2, 3}
-```
-
-#### `remove(s: set[T], item: T) -> set[T]`
-
-Returns a new set with `item` removed.
-
-```lumen
-let s = remove({1, 2, 3}, 2)  # {1, 3}
-```
-
-### 11.7 Type Conversion Functions
-
-#### `string(x: Any) -> String`
-
-Converts any value to its string representation.
-
-```lumen
-let s = string(42)     # "42"
-let t = string(true)   # "true"
-```
-
-Also available via `Int("42")` / `Float("3.14")` / `String(42)` cast syntax.
-
-#### `int(x: Any) -> Int?`
-
-Converts to integer. Supports `Int`, `Float` (truncates), `String` (parses), and `Bool` (0/1). Returns `null` on failure.
-
-```lumen
-let n = int("42")    # 42
-let m = int(3.14)    # 3
-let b = int(true)    # 1
-```
-
-#### `float(x: Any) -> Float?`
-
-Converts to float. Supports `Float`, `Int`, and `String` (parses). Returns `null` on failure.
-
-```lumen
-let f = float("3.14")  # 3.14
-let g = float(42)      # 42.0
-```
-
-#### `type_of(x: Any) -> String`
-
-Returns a string describing the runtime type of the value.
-
-```lumen
-let t = type_of(42)       # "Int"
-let u = type_of("hello")  # "String"
-let v = type_of([1, 2])   # "List"
-```
-
-Alias: `type`
-
-### 11.8 I/O and Debugging Functions
-
-#### `print(x: Any) -> Null`
-
-Prints the value to standard output with a newline. Returns `null`.
-
-```lumen
-print("Hello, world!")
-print(42)
-```
-
-#### `debug(x: Any) -> Null`
-
-Prints a debug representation to standard error (including internal type information). Returns `null`.
-
-```lumen
-debug([1, 2, 3])  # [debug] List([Int(1), Int(2), Int(3)])
-```
-
-#### `sizeof(x: Any) -> Int`
-
-Returns the in-memory size (in bytes) of the value's Rust representation.
-
-```lumen
-let n = sizeof(42)
-```
-
-#### `clone(x: Any) -> Any`
-
-Returns a deep copy of the value.
-
-```lumen
-let copy = clone(original)
-```
-
-### 11.9 Data Integrity Functions
-
-#### `hash(s: String) -> String`
-
-Computes a SHA-256 hash of the string and returns it prefixed with `"sha256:"`.
-
-```lumen
-let h = hash("hello")  # "sha256:2cf24dba5fb0a30e..."
-```
-
-#### `diff(a: Any, b: Any) -> Any`
-
-Computes a structural diff between two values. Returns a representation of the differences.
-
-```lumen
-let d = diff(old_data, new_data)
-```
-
-#### `patch(value: Any, patches: Any) -> Any`
-
-Applies patches (as produced by `diff`) to a value.
-
-```lumen
-let updated = patch(original, changes)
-```
-
-#### `redact(value: Any, fields: Any) -> Any`
-
-Redacts specified fields from a value, replacing their contents.
-
-```lumen
-let safe = redact(user_data, ["password", "ssn"])
-```
-
-#### `validate(value: Any) -> Bool`
-
-Returns `true` if the value passes schema validation. (Full validation is deferred to the schema opcode; this intrinsic currently always returns `true`.)
-
-```lumen
-let ok = validate(data)
-```
-
-#### `matches(value: Any) -> Bool`
-
-Returns `true` if the value is truthy (booleans pass through, non-empty strings are truthy).
-
-```lumen
-let b = matches(true)     # true
-let c = matches("hello")  # true
-let d = matches("")        # false
-```
-
-Alias: `confirm`
-
-### 11.10 Trace Functions
-
-#### `trace_ref() -> TraceRef`
-
-Generates a unique trace reference for use with the trace/span system.
-
-```lumen
-let ref = trace_ref()
-```
-
-## 12. Configuration
-
-Runtime configuration is specified in `lumen.toml`.
-This file maps tool names to provider implementations and supplies provider-specific settings.
-
-### 12.1 Config File Resolution
-
-The runtime searches for `lumen.toml` in the following order:
-
-1. `./lumen.toml` — current working directory
-2. Parent directories — walk up the filesystem tree
-3. `~/.config/lumen/lumen.toml` — global default
-
-The first file found is used. Files are not merged across locations.
-
-### 12.2 Provider Mapping
-
-The `[providers]` table maps tool names to provider types:
+### 13.1 Provider Mapping
 
 ```toml
 [providers]
@@ -1575,119 +1345,23 @@ llm.chat = "openai-compatible"
 http.get = "builtin-http"
 ```
 
-Each key is a tool name as used in `use tool` declarations.
-Each value is a provider type identifier that the runtime resolves to a `ToolProvider` implementation.
-
-### 12.3 Provider Configuration
-
-Provider-specific settings go under `[providers.config.<provider_type>]`:
+### 13.2 Provider Settings
 
 ```toml
 [providers.config.openai-compatible]
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
 default_model = "gpt-4"
-
-[providers.config.builtin-http]
-max_redirects = 5
 ```
 
-The `api_key_env` field names an environment variable — secrets are never stored directly in config files.
+Secrets use `api_key_env` to reference environment variables — never stored in config.
 
-### 12.4 MCP Server Configuration
-
-MCP servers are registered under `[providers.mcp.<server_name>]`:
+### 13.3 MCP Servers
 
 ```toml
 [providers.mcp.github]
 uri = "npx -y @modelcontextprotocol/server-github"
 tools = ["github.create_issue", "github.search_repos"]
-
-[providers.mcp.filesystem]
-uri = "npx -y @modelcontextprotocol/server-filesystem /tmp"
-tools = ["filesystem.read_file", "filesystem.write_file"]
 ```
 
-- `uri` — command or URL to launch/connect to the MCP server
-- `tools` — list of tool names this server exposes (following `server.tool_name` convention)
-
-### 12.5 Example: Same Code, Different Providers
-
-The same Lumen source works with different providers by changing only `lumen.toml`:
-
-```lumen
-use tool llm.chat as Chat
-grant Chat timeout_ms 30000
-bind effect llm to Chat
-
-cell summarize(text: String) -> String / {llm}
-  return Chat(prompt: "Summarize: " + text)
-end
-```
-
-With OpenAI:
-```toml
-[providers]
-llm.chat = "openai-compatible"
-
-[providers.config.openai-compatible]
-base_url = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
-default_model = "gpt-4"
-```
-
-With Ollama (local):
-```toml
-[providers]
-llm.chat = "openai-compatible"
-
-[providers.config.openai-compatible]
-base_url = "http://localhost:11434/v1"
-default_model = "llama3"
-```
-
-The Lumen code is identical. Only the configuration changes.
-
-## 13. Boundaries of This Spec
-
-This spec covers implemented behavior only.
-
-Not-yet-complete language areas are intentionally excluded and tracked in `docs/research/EXECUTION_TRACKER.md` / `ROADMAP.md`.
-
-### Nested Pattern Matching
-
-Patterns can be nested arbitrarily deep, allowing complex destructuring in a single match arm:
-
-```lumen
-enum Result
-  Ok(val: Int)
-  Err(msg: String)
-end
-
-enum Option
-  Some(result: Result)
-  None
-end
-
-cell unwrap_or_zero(opt: Option) -> Int
-  match opt
-    Some(Ok(val)) -> val              # 2-level nesting
-    Some(Err(msg)) -> 0
-    None -> 0
-  end
-end
-
-# Deeper nesting also works
-match deeply_nested
-  Wrapper(Some(Ok(value))) -> value   # 3-level nesting
-  _ -> default
-end
-
-# Nested patterns work with guards and OR patterns
-match result
-  Some(Ok(n)) | Some(Err(_)) if n > 0 -> "positive success"
-  _ -> "other"
-end
-```
-
-Nested patterns are compiled to efficient sequential checks with early exit on mismatch.
+The same Lumen source works with different providers by changing only `lumen.toml`.

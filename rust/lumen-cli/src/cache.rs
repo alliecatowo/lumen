@@ -15,7 +15,7 @@
 //!
 //! ## Cache Structure
 //!
-//! ```
+//! ```text
 //! ~/.cache/lumen/
 //! ├── index.json              # Cache index (metadata)
 //! ├── content/

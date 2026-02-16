@@ -4004,6 +4004,10 @@ impl Parser {
                 self.expect(&TokenKind::RParen)?;
                 Ok(TypeExpr::Tuple(types, s))
             }
+            TokenKind::Yield => {
+                self.advance();
+                self.parse_base_type()
+            }
             TokenKind::Ident(_) => {
                 let name = self.expect_ident()?;
                 let span = self.current().span;
@@ -4631,10 +4635,19 @@ impl Parser {
             TokenKind::When => {
                 let s = self.advance().span;
                 self.skip_newlines();
+                let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
+                if has_indent {
+                    self.advance();
+                }
+                self.skip_newlines();
                 let mut arms = Vec::new();
                 let mut else_body = None;
                 while !matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
                     self.skip_newlines();
+                    if matches!(self.peek_kind(), TokenKind::Dedent) {
+                        self.advance();
+                        continue;
+                    }
                     if matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
                         break;
                     }
@@ -4676,6 +4689,10 @@ impl Parser {
                     arms.push(WhenArm { condition: cond, body, span });
                     self.skip_newlines();
                 }
+                if has_indent && matches!(self.peek_kind(), TokenKind::Dedent) {
+                    self.advance();
+                }
+                self.skip_newlines();
                 let end_span = if matches!(self.peek_kind(), TokenKind::End) {
                     self.advance().span
                 } else {
@@ -4781,9 +4798,36 @@ impl Parser {
                         }
                     }
                 } else {
-                    let expr = self.parse_expr(0)?;
-                    let span = s.merge(expr.span());
-                    Ok(Expr::ComptimeExpr(Box::new(expr), span))
+                    self.skip_newlines();
+                    let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
+                    if has_indent {
+                        self.advance();
+                    }
+                    self.skip_newlines();
+                    let mut stmts = Vec::new();
+                    while !matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
+                        self.skip_newlines();
+                        if matches!(self.peek_kind(), TokenKind::Dedent) {
+                            self.advance();
+                            continue;
+                        }
+                        if matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
+                            break;
+                        }
+                        stmts.push(self.parse_stmt()?);
+                        self.skip_newlines();
+                    }
+                    if has_indent && matches!(self.peek_kind(), TokenKind::Dedent) {
+                        self.advance();
+                    }
+                    self.skip_newlines();
+                    let end_span = if matches!(self.peek_kind(), TokenKind::End) {
+                        self.advance().span
+                    } else {
+                        s
+                    };
+                    let block = Expr::BlockExpr(stmts, s.merge(end_span));
+                    Ok(Expr::ComptimeExpr(Box::new(block), s.merge(end_span)))
                 }
             }
             TokenKind::Use => {

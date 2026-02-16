@@ -202,6 +202,7 @@ impl Default for LockMetadata {
             content_hash: None,
             generated_at: None,
             lumen_version: default_lumen_version(),
+            proof: None,
         }
     }
 }
@@ -682,6 +683,21 @@ impl LockFile {
         // Migrate older versions
         if lock.version < CURRENT_LOCKFILE_VERSION {
             lock = lock.migrate_to_current()?;
+        }
+
+        // Verify content hash integrity if present.
+        // Old lockfiles without a content_hash are allowed through (skip verification).
+        if let Some(ref expected_hash) = lock.metadata.content_hash {
+            let normalized = lock.normalized();
+            let actual_hash = normalized.compute_content_hash();
+            if actual_hash != *expected_hash {
+                return Err(format!(
+                    "Lockfile integrity check failed: content hash mismatch \
+                     (expected {}, got {}). The lockfile may have been tampered with. \
+                     Run `lumen install` to regenerate.",
+                    expected_hash, actual_hash
+                ));
+            }
         }
 
         Ok(lock)
@@ -1184,6 +1200,7 @@ mod tests {
             dependencies: vec!["@acme/json-parser@0.3.2".to_string()],
             features: vec![],
             target: None,
+            kind: None,
         });
 
         lock.add_package(LockedPackage::from_path(
@@ -1284,6 +1301,7 @@ checksum = "sha256:abc123"
             dependencies: vec!["b@1.0.0".to_string()],
             features: vec![],
             target: None,
+            kind: None,
         });
 
         lock.add_package(LockedPackage {
@@ -1301,6 +1319,7 @@ checksum = "sha256:abc123"
             dependencies: vec![],
             features: vec![],
             target: None,
+            kind: None,
         });
 
         let order = lock.topological_order().unwrap();
@@ -1379,8 +1398,67 @@ checksum = "sha256:abc123"
             dependencies: vec![],
             features: vec![],
             target: None,
+            kind: None,
         };
         assert!(invalid_pkg.verify_integrity().is_err());
+    }
+
+    #[test]
+    fn content_hash_verification_on_load() {
+        // Save a lockfile with a content hash, then load and verify
+        let tmp = unique_tmp_lock_path("hash_verify");
+        let mut lock = LockFile::default();
+        lock.add_package(LockedPackage::from_path(
+            "pkg-a".to_string(),
+            "../pkg-a".to_string(),
+        ));
+        lock.save(&tmp).unwrap();
+
+        // Load should succeed (hash matches)
+        let loaded = LockFile::load(&tmp).unwrap();
+        assert!(loaded.metadata.content_hash.is_some());
+
+        // Now tamper: change a package name in the file
+        let mut raw = std::fs::read_to_string(&tmp).unwrap();
+        raw = raw.replace("pkg-a", "pkg-z");
+        std::fs::write(&tmp, &raw).unwrap();
+
+        // Load should fail with hash mismatch
+        let result = LockFile::load(&tmp);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("integrity check failed"),
+            "expected integrity error, got: {}",
+            err
+        );
+
+        // Clean up
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn content_hash_skipped_for_old_lockfiles() {
+        // A lockfile without content_hash should load fine
+        let tmp = unique_tmp_lock_path("hash_skip");
+        let toml = r#"
+version = 4
+
+[metadata]
+resolver = "lumen-sat-v1"
+
+[[package]]
+name = "test-pkg"
+version = "1.0.0"
+source = "path+../test"
+"#;
+        std::fs::write(&tmp, toml).unwrap();
+
+        let result = LockFile::load(&tmp);
+        assert!(result.is_ok());
+        assert!(result.unwrap().metadata.content_hash.is_none());
+
+        let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]

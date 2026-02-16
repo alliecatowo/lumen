@@ -54,6 +54,40 @@ fn is_builtin_function(name: &str) -> bool {
     )
 }
 
+/// Return the known return type for a builtin function, if available.
+/// This enables stronger type inference for calls to well-known builtins
+/// instead of falling back to Type::Any.
+fn builtin_return_type(name: &str, arg_types: &[Type]) -> Option<Type> {
+    match name {
+        "length" | "len" | "count" => Some(Type::Int),
+        "string" | "to_string" | "str" | "repr" => Some(Type::String),
+        "int" | "to_int" => Some(Type::Int),
+        "float" | "to_float" => Some(Type::Float),
+        "bool" => Some(Type::Bool),
+        "print" | "println" => Some(Type::Null),
+        "append" => arg_types.first().cloned(),
+        "keys" => Some(Type::List(Box::new(Type::String))),
+        "values" => Some(Type::List(Box::new(Type::Any))),
+        "contains" | "starts_with" | "ends_with" | "is_empty" | "matches" => Some(Type::Bool),
+        "upper" | "lower" | "trim" | "strip" | "join" | "replace" => Some(Type::String),
+        "reverse" => arg_types.first().cloned().or(Some(Type::Any)),
+        "split" => Some(Type::List(Box::new(Type::String))),
+        "abs" | "min" | "max" | "sum" => arg_types.first().cloned().or(Some(Type::Any)),
+        "range" => Some(Type::List(Box::new(Type::Int))),
+        "sort" | "sorted" | "filter" | "zip" | "slice" => {
+            arg_types.first().cloned().or(Some(Type::Any))
+        }
+        "map" | "flat_map" => Some(Type::Any),
+        "reduce" => Some(Type::Any),
+        "type_of" | "type_name" => Some(Type::String),
+        "assert" | "assert_eq" => Some(Type::Null),
+        "error" => Some(Type::Null),
+        "hash" => Some(Type::Int),
+        "not" => Some(Type::Bool),
+        _ => None,
+    }
+}
+
 /// In doc_mode / non-strict mode, allow undefined variable names that look like
 /// plausible identifiers (e.g. doc snippet references). Returns false for names
 /// that are likely typos or real errors even in non-strict mode.
@@ -561,9 +595,43 @@ impl<'a> TypeChecker<'a> {
             Stmt::If(ifs) => {
                 let ct = self.infer_expr(&ifs.condition);
                 self.check_compat(&Type::Bool, &ct, ifs.span.line);
+
+                // Type narrowing: if condition is `x is SomeType`, narrow x in
+                // the then-branch to SomeType and restore afterward.
+                let narrowed = if let Expr::IsType {
+                    expr: ref inner,
+                    ref type_name,
+                    ..
+                } = ifs.condition
+                {
+                    if let Expr::Ident(ref var_name, _) = **inner {
+                        let original = self.locals.get(var_name).cloned();
+                        let narrow_ty = resolve_type_expr(
+                            &TypeExpr::Named(type_name.clone(), ifs.span),
+                            self.symbols,
+                        );
+                        self.locals.insert(var_name.clone(), narrow_ty);
+                        Some((var_name.clone(), original))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
                 for s in &ifs.then_body {
                     self.check_stmt(s, expected_return);
                 }
+
+                // Restore original type after then-branch
+                if let Some((ref var_name, ref original)) = narrowed {
+                    if let Some(orig_ty) = original {
+                        self.locals.insert(var_name.clone(), orig_ty.clone());
+                    } else {
+                        self.locals.remove(var_name);
+                    }
+                }
+
                 if let Some(ref eb) = ifs.else_body {
                     for s in eb {
                         self.check_stmt(s, expected_return);
@@ -680,6 +748,9 @@ impl<'a> TypeChecker<'a> {
             }
             Stmt::Emit(es) => {
                 self.infer_expr(&es.value);
+            }
+            Stmt::Yield(ys) => {
+                self.infer_expr(&ys.value);
             }
             Stmt::CompoundAssign(ca) => {
                 let val_type = self.infer_expr(&ca.value);
@@ -1154,7 +1225,7 @@ impl<'a> TypeChecker<'a> {
                             Type::Int
                         }
                     }
-                    BinOp::PipeForward => rt,
+                    BinOp::PipeForward | BinOp::Compose => rt,
                     BinOp::Concat => lt,
                     BinOp::In => Type::Bool,
                     BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => Type::Int,
@@ -1282,6 +1353,20 @@ impl<'a> TypeChecker<'a> {
                             } else {
                                 Type::Record(name.clone())
                             };
+                        }
+                    }
+
+                    // Check for builtin function with known return type
+                    if is_builtin_function(name) {
+                        let arg_types: Vec<Type> = checked_args
+                            .iter()
+                            .filter_map(|a| match a {
+                                CheckedCallArg::Positional(ty, _) => Some(ty.clone()),
+                                CheckedCallArg::Named(_, ty, _) => Some(ty.clone()),
+                            })
+                            .collect();
+                        if let Some(ret_ty) = builtin_return_type(name, &arg_types) {
+                            return ret_ty;
                         }
                     }
                 }
@@ -1660,6 +1745,20 @@ impl<'a> TypeChecker<'a> {
                     Type::Any
                 }
             }
+            Expr::WhenExpr {
+                arms, else_body, ..
+            } => {
+                let mut result_type = Type::Any;
+                for arm in arms {
+                    self.infer_expr(&arm.condition);
+                    result_type = self.infer_expr(&arm.body);
+                }
+                if let Some(eb) = else_body {
+                    result_type = self.infer_expr(eb);
+                }
+                result_type
+            }
+            Expr::ComptimeExpr(inner, _) => self.infer_expr(inner),
         }
     }
 

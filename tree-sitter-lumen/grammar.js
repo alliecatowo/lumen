@@ -45,6 +45,7 @@ module.exports = grammar({
     // Top-level declarations
     _declaration: $ => choice(
       $.cell_declaration,
+      $.extern_declaration,
       $.record_declaration,
       $.enum_declaration,
       $.type_alias,
@@ -309,6 +310,16 @@ module.exports = grammar({
       'end'
     ),
 
+    // Extern cell declaration (FFI)
+    extern_declaration: $ => seq(
+      'extern',
+      'cell',
+      field('name', $.identifier),
+      field('parameters', $.parameter_list),
+      optional(seq('->', field('return_type', $.type_annotation))),
+      optional(field('effects', $.effect_row))
+    ),
+
     // Macro declaration
     macro_declaration: $ => seq(
       'macro',
@@ -334,8 +345,9 @@ module.exports = grammar({
       $.continue_statement,
       $.halt_statement,
       $.emit_statement,
-      $.try_statement,
+      $.try_prefix_statement,
       $.defer_statement,
+      $.yield_statement,
       $.expression_statement,
     ),
 
@@ -395,18 +407,11 @@ module.exports = grammar({
       'if',
       field('condition', $.expression),
       repeat($._statement),
-      repeat($.elif_clause),
       optional(seq(
         'else',
         repeat($._statement)
       )),
       'end'
-    ),
-
-    elif_clause: $ => seq(
-      'elif',
-      field('condition', $.expression),
-      repeat($._statement)
     ),
 
     match_statement: $ => seq(
@@ -492,17 +497,12 @@ module.exports = grammar({
       field('value', $.expression)
     ),
 
-    try_statement: $ => seq(
+    // try is expression-level only in Lumen (try expr), not a block statement.
+    // The try_expression rule handles postfix `?` on expressions.
+    // This rule is kept as a statement form for `try expr` prefix usage.
+    try_prefix_statement: $ => seq(
       'try',
-      repeat($._statement),
-      'catch',
-      field('error', $.identifier),
-      repeat($._statement),
-      optional(seq(
-        'finally',
-        repeat($._statement)
-      )),
-      'end'
+      field('expression', $.expression)
     ),
 
     // Defer block: defer ... end
@@ -510,6 +510,12 @@ module.exports = grammar({
       'defer',
       repeat($._statement),
       'end'
+    ),
+
+    // Yield statement: yield expr (for generator cells)
+    yield_statement: $ => seq(
+      'yield',
+      field('value', $.expression)
     ),
 
     expression_statement: $ => $.expression,
@@ -612,6 +618,9 @@ module.exports = grammar({
       $.record_expression,
       $.lambda_expression,
       $.pipe_expression,
+      $.compose_expression,
+      $.when_expression,
+      $.comptime_expression,
       $.null_coalesce_expression,
       $.null_safe_expression,
       $.try_expression,
@@ -638,13 +647,14 @@ module.exports = grammar({
 
     binary_expression: $ => {
       const table = [
-        [12, choice('*', '/', '//', '%')],
-        [11, choice('+', '-', '++')],
-        [10, choice('<<', '>>')],
-        [9, choice('<', '<=', '>', '>=')],
-        [8, choice('==', '!=')],
-        [7, '&'],
-        [6, '^'],
+        [13, choice('*', '/', '//', '%')],
+        [12, choice('+', '-', '++')],
+        [11, choice('<<', '>>')],
+        [10, choice('<', '<=', '>', '>=')],
+        [9, choice('==', '!=')],
+        [8, '&'],
+        [7, '^'],
+        [6, '|'],
         [5, 'in'],
         [4, 'and'],
         [3, 'or'],
@@ -659,12 +669,12 @@ module.exports = grammar({
       ));
     },
 
-    unary_expression: $ => prec(13, seq(
+    unary_expression: $ => prec(14, seq(
       field('operator', choice('not', '-', '~')),
       field('operand', $.expression)
     )),
 
-    call_expression: $ => prec(15, seq(
+    call_expression: $ => prec(16, seq(
       field('function', choice(
         $.identifier,
         $.member_expression,
@@ -685,13 +695,13 @@ module.exports = grammar({
       field('value', $.expression)
     ),
 
-    member_expression: $ => prec(16, seq(
+    member_expression: $ => prec(17, seq(
       field('object', $.expression),
       '.',
       field('property', choice($.identifier, $.integer))
     )),
 
-    index_expression: $ => prec(16, seq(
+    index_expression: $ => prec(17, seq(
       field('object', $.expression),
       '[',
       field('index', $.expression),
@@ -699,7 +709,7 @@ module.exports = grammar({
     )),
 
     // Null-safe index: expr?[index]
-    null_safe_index_expression: $ => prec(16, seq(
+    null_safe_index_expression: $ => prec(17, seq(
       field('object', $.expression),
       '?[',
       field('index', $.expression),
@@ -789,38 +799,45 @@ module.exports = grammar({
       field('function', $.expression)
     )),
 
+    // Function composition: f ~> g creates a new composed function
+    compose_expression: $ => prec.left(0, seq(
+      field('left', $.expression),
+      '~>',
+      field('right', $.expression)
+    )),
+
     null_coalesce_expression: $ => prec.left(2, seq(
       field('value', $.expression),
       '??',
       field('default', $.expression)
     )),
 
-    null_safe_expression: $ => prec(16, seq(
+    null_safe_expression: $ => prec(17, seq(
       field('object', $.expression),
       '?.',
       field('property', $.identifier)
     )),
 
-    try_expression: $ => prec(17, seq(
+    try_expression: $ => prec(18, seq(
       field('expression', $.expression),
       '?'
     )),
 
     // Null assert: expr!
-    null_assert_expression: $ => prec(17, seq(
+    null_assert_expression: $ => prec(18, seq(
       field('expression', $.expression),
       '!'
     )),
 
     // Type test: expr is Type
-    is_expression: $ => prec.left(9, seq(
+    is_expression: $ => prec.left(10, seq(
       field('expression', $.expression),
       'is',
       field('type', $.type_annotation)
     )),
 
     // Type cast: expr as Type
-    as_expression: $ => prec.left(9, seq(
+    as_expression: $ => prec.left(10, seq(
       field('expression', $.expression),
       'as',
       field('type', $.type_annotation)
@@ -883,6 +900,26 @@ module.exports = grammar({
       'match',
       field('value', $.expression),
       repeat1($.match_arm),
+      'end'
+    ),
+
+    // When expression: multi-branch conditional
+    when_expression: $ => seq(
+      'when',
+      repeat1($.when_arm),
+      'end'
+    ),
+
+    when_arm: $ => seq(
+      field('condition', choice($.expression, '_')),
+      '->',
+      field('value', $.expression)
+    ),
+
+    // Comptime expression: compile-time evaluation
+    comptime_expression: $ => seq(
+      'comptime',
+      repeat($._statement),
       'end'
     ),
 

@@ -20,7 +20,7 @@ bucket_name = "wares-registry"
 binding = "LOG_WORKER"
 service = "wares-transparency-log"
 
-# Custom domain - api.wares.lumen-lang.com
+# Custom domain - path-based routing under wares.lumen-lang.com
 routes = [
-  { pattern = "api.wares.lumen-lang.com/*", custom_domain = true }
+  { pattern = "wares.lumen-lang.com/api/*", custom_domain = true }
 ]

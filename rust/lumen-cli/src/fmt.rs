@@ -811,6 +811,9 @@ impl Formatter {
                 self.indent -= 1;
                 self.writeln("end");
             }
+            Stmt::Yield(s) => {
+                self.writeln(&format!("yield {}", self.fmt_expr(&s.value)));
+            }
         }
     }
 
@@ -1103,6 +1106,20 @@ impl Formatter {
                 expr, target_type, ..
             } => {
                 format!("{} as {}", self.fmt_expr(expr), target_type)
+            }
+            Expr::WhenExpr { arms, else_body, .. } => {
+                let mut parts = vec!["when".to_string()];
+                for arm in arms {
+                    parts.push(format!("  {} -> {}", self.fmt_expr(&arm.condition), self.fmt_expr(&arm.body)));
+                }
+                if let Some(eb) = else_body {
+                    parts.push(format!("  _ -> {}", self.fmt_expr(eb)));
+                }
+                parts.push("end".to_string());
+                parts.join("\n")
+            }
+            Expr::ComptimeExpr(inner, _) => {
+                format!("comptime {}", self.fmt_expr(inner))
             }
         }
     }

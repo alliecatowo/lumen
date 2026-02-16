@@ -36,8 +36,16 @@ keyword = "record" | "enum" | "cell" | "let" | "if" | "else" | "for" | "in"
         | "import" | "from" | "async" | "await" | "parallel" | "fn"
         | "trait" | "impl" | "type" | "set" | "tuple" | "emit" | "yield"
         | "mod" | "self" | "with" | "try" | "union" | "step" | "comptime"
-        | "macro" | "extern" | "then" | "when" | "bool" | "int" | "float"
-        | "string" | "bytes" | "json" | "is" ;
+        | "macro" | "extern" | "then" | "when" | "defer" | "bool" | "int"
+        | "float" | "string" | "bytes" | "json" | "is" ;
+
+(* Implemented keywords: record, enum, cell, let, if, else, for, in, match,
+   return, halt, end, use, tool, as, grant, expect, schema, role, where,
+   and, or, not, null, result, ok, err, list, map, while, loop, break,
+   continue, mut, const, pub, import, from, async, await, parallel, fn,
+   trait, impl, type, set, tuple, emit, yield, mod, self, with, try,
+   union, step, comptime, macro, extern, then, when, defer, bool, int,
+   float, string, bytes, json, is *)
 ```
 
 ### 1.3 Identifiers
@@ -90,7 +98,7 @@ operator = "+" | "-" | "*" | "/" | "//" | "%" | "**"
          | "+=" | "-=" | "*=" | "/=" | "//="
          | "%=" | "**=" | "&=" | "|=" | "^="
          | "<<" | ">>"
-         | "|>" | "??" | "?." | "?[" | "!" | "?"
+         | "|>" | "~>" | "??" | "?." | "?[" | "!" | "?"
          | ".." | "..=" | "..."
          | "++" | "&" | "~" | "^" | "|"
          | "is" | "as" ;
@@ -117,6 +125,7 @@ directive = "@" identifier [ value ] NEWLINE ;
 declaration = record_declaration
             | enum_declaration
             | cell_declaration
+            | extern_declaration
             | agent_declaration
             | process_declaration
             | effect_declaration
@@ -342,7 +351,14 @@ macro_declaration = "macro" [ identifier ] [ "!" ] [ "(" { identifier } ")" ] NE
                     { ANY } "end" ;
 ```
 
-### 4.11 Addon Declarations
+### 4.11 Extern Declaration
+
+```ebnf
+extern_declaration = "extern" "cell" identifier [ generic_params ]
+                     "(" [ parameter_list ] ")" [ "->" type_expr ] [ effect_row ] NEWLINE ;
+```
+
+### 4.12 Addon Declarations
 
 ```ebnf
 addon_declaration = identifier [ identifier ] { ANY } ( NEWLINE | "end" ) ;
@@ -369,6 +385,8 @@ statement = let_statement
           | break_statement
           | continue_statement
           | emit_statement
+          | defer_statement
+          | yield_statement
           | assignment_statement
           | compound_assignment_statement
           | expression_statement ;
@@ -412,6 +430,10 @@ break_statement = "break" [ "@" identifier | expression ] NEWLINE ;
 continue_statement = "continue" [ "@" identifier ] NEWLINE ;
 
 emit_statement = "emit" expression NEWLINE ;
+
+defer_statement = "defer" NEWLINE statement_block "end" ;
+
+yield_statement = "yield" expression NEWLINE ;
 
 assignment_statement = assignment_target "=" expression NEWLINE ;
 
@@ -469,7 +491,9 @@ or_pattern = pattern "|" pattern { "|" pattern } ;
 ### 7.1 Expression Precedence (Lowest to Highest)
 
 ```ebnf
-expression = pipe_forward_expr ;
+expression = compose_expr ;
+
+compose_expr = pipe_forward_expr { "~>" pipe_forward_expr } ;
 
 pipe_forward_expr = null_coalesce_expr { "|>" null_coalesce_expr } ;
 
@@ -483,7 +507,7 @@ comparison_expr = concat_expr { comparison_op concat_expr } ;
 
 comparison_op = "==" | "!=" | "<" | "<=" | ">" | ">="
               | "in" | "is" | "as"
-              | "&" | "^" | "<<" | ">>" ;
+              | "&" | "|" | "^" | "<<" | ">>" ;
 
 concat_expr = range_expr { "++" range_expr } ;
 
@@ -528,6 +552,8 @@ primary_expr = literal
              | lambda_expr
              | if_expr
              | match_expr
+             | when_expr
+             | comptime_expr
              | block_expr
              | comprehension
              | role_block
@@ -567,6 +593,16 @@ match_expr = "match" expression NEWLINE
              [ INDENT ] { match_arm } [ DEDENT ]
              "end" ;
 
+when_expr = "when" NEWLINE
+            [ INDENT ] { when_arm } [ DEDENT ]
+            "end" ;
+
+when_arm = ( expression | "_" ) "->" expression NEWLINE ;
+
+comptime_expr = "comptime" NEWLINE
+                [ INDENT ] expression [ DEDENT ]
+                "end" ;
+
 block_expr = NEWLINE [ INDENT ] { statement } [ DEDENT ] "end" ;
 
 comprehension = "[" expression "for" identifier "in" expression
@@ -581,11 +617,12 @@ expect_schema = "expect" "schema" identifier ;
 
 | Precedence | Operators | Associativity | Description |
 |------------|-----------|---------------|-------------|
-| 1 (lowest) | `\|>` | Left | Pipe forward |
+| 0 (lowest) | `~>` | Left | Function composition |
+| 1 | `\|>` | Left | Pipe forward |
 | 2 | `??` | Left | Null coalescing |
 | 3 | `or` | Left | Logical OR |
 | 4 | `and` | Left | Logical AND |
-| 5 | `==` `!=` `<` `<=` `>` `>=` `in` `is` `as` `&` `^` `<<` `>>` | Left | Comparison, membership, type test/cast, bitwise |
+| 5 | `==` `!=` `<` `<=` `>` `>=` `in` `is` `as` `&` `\|` `^` `<<` `>>` | Left | Comparison, membership, type test/cast, bitwise |
 | 6 | `++` | Left | String/list concatenation |
 | 7 | `..` `..=` | Left | Range operators |
 | 8 | `+` `-` | Left | Addition, subtraction |
@@ -690,16 +727,18 @@ For implementation details, see:
 ## 11. Grammar Coverage
 
 This grammar covers:
-- All declaration types (records, enums, cells, agents, processes, effects, handlers, etc.)
-- All statement types (let, if, for, while, loop, match, return, halt, break, continue, emit, assignment, compound assignment)
-- All expression types (literals, operators, calls, lambdas, comprehensions, is/as, etc.)
+- All declaration types (records, enums, cells, agents, processes, effects, handlers, extern, etc.)
+- All statement types (let, if, for, while, loop, match, return, halt, break, continue, emit, defer, yield, assignment, compound assignment)
+- All expression types (literals, operators, calls, lambdas, comprehensions, is/as, when, comptime, etc.)
 - All pattern types (literals, variants, destructuring, guards, or-patterns)
 - Type expressions (named, list, map, set, tuple, result, union, optional `T?`, function, generic)
-- Operator precedence and associativity (including `//`, `<<`, `>>`, `is`, `as`)
+- Operator precedence and associativity (including `//`, `<<`, `>>`, `is`, `as`, `~>`, `|>`, `++`, `?[`)
 - Compound assignment operators (`+=`, `-=`, `*=`, `/=`, `//=`, `%=`, `**=`, `&=`, `|=`, `^=`)
 - Labeled loops (`@label`) with targeted `break`/`continue`
 - For-loop filters (`for x in items if cond`)
 - Null-safe indexing (`?[]`)
+- Concatenation operator (`++`)
+- Function composition (`~>`)
 - Variadic parameters (`...param`)
 - Match exhaustiveness checking for enum types
 - Indentation-based scoping

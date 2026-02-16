@@ -49,6 +49,24 @@ Current runtime support:
 
 Process runtime state is instance-scoped, not globally shared by type name.
 
+## Defer Execution
+
+`defer` blocks execute cleanup code when the enclosing scope exits.
+
+- Deferred blocks are registered at runtime as the `defer` statement is encountered.
+- When a scope exits (via normal flow, `return`, or error), all deferred blocks for that scope execute in **reverse order of registration** (LIFO — last in, first out).
+- Each deferred block runs exactly once per scope exit.
+- If a deferred block itself raises an error, the remaining deferred blocks still execute and the first error is propagated.
+
+This guarantees resource cleanup regardless of exit path:
+
+```
+defer A registered
+defer B registered
+defer C registered
+# On scope exit: C runs, then B, then A
+```
+
 ## Tool Dispatch and Policy
 
 - Tool aliases lower to VM `ToolCall` operations.

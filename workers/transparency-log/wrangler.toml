@@ -5,8 +5,8 @@ compatibility_date = "2024-01-01"
 # Enable workers.dev subdomain for testing
 workers_dev = true
 
-# Custom domain - user added via dashboard: logs.wares.lumen-lang.com
-# No additional config needed if added via dashboard
+# Path-based routing: wares.lumen-lang.com/log/*
+# The transparency log is served under the main wares domain, not a separate subdomain.
 
 # D1 Database for storing log entries
 [[d1_databases]]
@@ -19,12 +19,9 @@ database_id = "222b303b-3e32-43a0-be42-24b480d78201"
 # Set via wrangler secret put REGISTRY_API_KEY
 # REGISTRY_API_KEY = "your-secret-api-key"
 
-# Custom domain - use flat structure to avoid TLS issues with sub-subdomains
-# The domain will be: wares-log.lumen-lang.com (not log.wares.lumen-lang.com)
-# This attaches directly to the worker without needing a route
+# Path-based routing under wares.lumen-lang.com/log/*
+# This avoids TLS issues with sub-subdomains and keeps all APIs under one domain.
 
 # Deploy with: wrangler deploy
-# Then in dashboard: Workers & Pages → wares-transparency-log → Settings → Triggers 
-# → Add Custom Domain → wares-log.lumen-lang.com
-
-# Or use wrangler triggers command (see DEPLOY.md)
+# Then configure route: wares.lumen-lang.com/log/* → this worker
+# The WARES_LOG_URL env var can override: defaults to https://wares.lumen-lang.com/log

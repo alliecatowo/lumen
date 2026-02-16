@@ -36,7 +36,6 @@ pub struct ResolutionResult {
 }
 
 use crate::config::{DependencySpec, FeatureDef};
-use crate::lockfile::{LockFile, LockedPackage};
 use crate::wares::{RegistryClient, RegistryPackageIndex, RegistryVersionMetadata};
 use crate::semver::{Constraint, Version};
 
@@ -1701,9 +1700,9 @@ impl Resolver {
         // Build ResolutionProof from solver trail
         let mut decisions = Vec::new();
         for lit in &solver.trail {
-            if lit.is_positive() {
-                let pkg_name = &state.pkg_names[lit.package_idx()];
-                let (_, version_str) = &state.all_versions[lit.package_idx()][lit.version_idx()];
+            if lit.positive {
+                let pkg_name = &state.pkg_names[lit.pkg];
+                let (_, version_str) = &state.all_versions[lit.pkg][lit.ver];
                 
                 let reason = if let Some(node) = solver.implications.get(lit) {
                     if let Some(_clause_idx) = node.reason {
@@ -1717,7 +1716,7 @@ impl Resolver {
 
                 decisions.push(ResolutionDecision {
                     package: pkg_name.clone(),
-                    version: version_str.clone(),
+                    version: version_str.to_string(),
                     reason,
                     level: solver.implications.get(lit).map(|n| n.level).unwrap_or(0),
                 });
@@ -2086,6 +2085,10 @@ mod tests {
             registry_url: "https://example.com/registry".to_string(),
             features: vec!["default".to_string()],
             include_dev: false,
+            include_build: false,
+            include_yanked: false,
+            dev_deps: HashMap::new(),
+            build_deps: HashMap::new(),
         };
 
         assert_eq!(request.root_deps.len(), 1);

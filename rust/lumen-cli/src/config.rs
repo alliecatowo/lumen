@@ -140,8 +140,8 @@ pub struct RegistryToken {
 }
 
 fn default_registry_url() -> String {
-    // Default production registry
-    "https://api.wares.lumen-lang.com".to_string()
+    // Default production registry — canonical path-based URL under wares.lumen-lang.com
+    "https://wares.lumen-lang.com/api/v1".to_string()
 }
 
 fn default_true() -> bool {
@@ -933,8 +933,8 @@ impl LumenConfig {
                 return url;
             }
         }
-        // Default
-        "https://wares.lumen-lang.com".to_string()
+        // Default — canonical path-based URL
+        "https://wares.lumen-lang.com/api/v1".to_string()
     }
 
     /// Load config from `lumen.toml`, searching current dir then parents.
@@ -989,7 +989,7 @@ impl LumenConfig {
     /// Generate a default template.
     pub fn default_template() -> &'static str {
         r#"# Lumen Package Manifest
-# See https://lumen-lang.org/docs/manifest for details
+# See https://lumen-lang.com/docs/manifest for details
 
 [package]
 name = "my-package"

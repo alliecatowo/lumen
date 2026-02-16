@@ -249,6 +249,7 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                         body,
                         is_pub: false,
                         is_async: false,
+                        is_extern: false,
                         where_clauses: vec![],
                         span,
                     };
@@ -481,6 +482,36 @@ impl<'a> Lowerer<'a> {
         ));
         instrs.push(Instruction::abc(OpCode::Move, result_reg, base, 0));
         result_reg
+    }
+
+    /// Emit a tail call: sets up callee and args in consecutive registers,
+    /// then emits TailCall instead of Call+Return.
+    fn emit_tail_call_with_regs(
+        &mut self,
+        callee_reg: u8,
+        arg_regs: &[u8],
+        ra: &mut RegAlloc,
+        instrs: &mut Vec<Instruction>,
+    ) {
+        let base = ra.alloc_temp();
+        if callee_reg != base {
+            instrs.push(Instruction::abc(OpCode::Move, base, callee_reg, 0));
+        }
+
+        for (i, &reg) in arg_regs.iter().enumerate() {
+            let target = base + 1 + i as u8;
+            ra.alloc_temp();
+            if reg != target {
+                instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
+            }
+        }
+
+        instrs.push(Instruction::abc(
+            OpCode::TailCall,
+            base,
+            arg_regs.len() as u8,
+            0,
+        ));
     }
 
     fn lower_named_call_target(
@@ -1029,6 +1060,44 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Stmt::Return(rs) => {
+                // Tail call optimization: if returning a direct call to a
+                // user-defined cell with no pending defers, emit TailCall
+                // instead of Call+Return.  Only applies to plain cell calls —
+                // intrinsics, tool calls, record/enum constructors are excluded
+                // because they lower to different opcodes.
+                if self.defer_stack.is_empty() {
+                    if let Expr::Call(ref callee, ref args, _) = rs.value {
+                        if let Expr::Ident(ref name, _) = **callee {
+                            let is_user_cell = self.symbols.cells.contains_key(name);
+                            let is_tool = self.tool_indices.contains_key(name);
+                            let is_type = self.symbols.types.contains_key(name);
+                            let is_agent = self.symbols.agents.contains_key(name);
+                            let is_process =
+                                self.symbols.processes.values().any(|p| p.name == *name);
+                            let is_result = name == "ok" || name == "err";
+
+                            if is_user_cell
+                                && !is_tool
+                                && !is_type
+                                && !is_agent
+                                && !is_process
+                                && !is_result
+                            {
+                                let callee_reg = ra.alloc_temp();
+                                let callee_idx = consts.len() as u16;
+                                consts.push(Constant::String(name.to_string()));
+                                instrs
+                                    .push(Instruction::abx(OpCode::LoadK, callee_reg, callee_idx));
+                                let arg_regs =
+                                    self.lower_call_arg_regs(args, None, ra, consts, instrs);
+                                self.emit_tail_call_with_regs(
+                                    callee_reg, &arg_regs, ra, instrs,
+                                );
+                                return;
+                            }
+                        }
+                    }
+                }
                 let val_reg = self.lower_expr(&rs.value, ra, consts, instrs);
                 // Emit accumulated defer blocks in LIFO order before return
                 self.emit_defers(ra, consts, instrs);
@@ -1166,6 +1235,10 @@ impl<'a> Lowerer<'a> {
             Stmt::Defer(ds) => {
                 // Collect defer block body for emission before returns (LIFO order)
                 self.defer_stack.push(ds.body.clone());
+            }
+            Stmt::Yield(ys) => {
+                let val_reg = self.lower_expr(&ys.value, ra, consts, instrs);
+                instrs.push(Instruction::abc(OpCode::Emit, val_reg, 0, 0));
             }
         }
     }
@@ -1798,6 +1871,7 @@ impl<'a> Lowerer<'a> {
                     BinOp::Shl => OpCode::Shl,
                     BinOp::Shr => OpCode::Shr,
                     BinOp::PipeForward => unreachable!(), // handled above
+                    BinOp::Compose => OpCode::Concat, // compose ~> treated as concat at VM level for now
                 };
                 match op {
                     BinOp::Gt => instrs.push(Instruction::abc(opcode, dest, rr, lr)),
@@ -2880,6 +2954,38 @@ impl<'a> Lowerer<'a> {
                 }
                 dest
             }
+            Expr::WhenExpr {
+                arms, else_body, ..
+            } => {
+                let dest = ra.alloc_temp();
+                let mut end_jumps = Vec::new();
+                for arm in arms {
+                    let cond_reg = self.lower_expr(&arm.condition, ra, consts, instrs);
+                    instrs.push(Instruction::abc(OpCode::Test, cond_reg, 0, 0));
+                    let jmp_idx = instrs.len();
+                    instrs.push(Instruction::sax(OpCode::Jmp, 0));
+                    let val = self.lower_expr(&arm.body, ra, consts, instrs);
+                    instrs.push(Instruction::abc(OpCode::Move, dest, val, 0));
+                    end_jumps.push(instrs.len());
+                    instrs.push(Instruction::sax(OpCode::Jmp, 0));
+                    let target = instrs.len() as i32 - jmp_idx as i32;
+                    instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, target);
+                }
+                if let Some(eb) = else_body {
+                    let val = self.lower_expr(eb, ra, consts, instrs);
+                    instrs.push(Instruction::abc(OpCode::Move, dest, val, 0));
+                } else {
+                    instrs.push(Instruction::abc(OpCode::LoadNil, dest, 0, 0));
+                }
+                for idx in end_jumps {
+                    let target = instrs.len() as i32 - idx as i32;
+                    instrs[idx] = Instruction::sax(OpCode::Jmp, target);
+                }
+                dest
+            }
+            Expr::ComptimeExpr(inner, _) => {
+                self.lower_expr(inner, ra, consts, instrs)
+            }
         }
     }
 
@@ -3085,6 +3191,20 @@ fn collect_free_idents_expr(expr: &Expr, out: &mut Vec<String>) {
                 collect_free_idents_stmt(s, out);
             }
         }
+        Expr::WhenExpr {
+            arms, else_body, ..
+        } => {
+            for arm in arms {
+                collect_free_idents_expr(&arm.condition, out);
+                collect_free_idents_expr(&arm.body, out);
+            }
+            if let Some(eb) = else_body {
+                collect_free_idents_expr(eb, out);
+            }
+        }
+        Expr::ComptimeExpr(inner, _) => {
+            collect_free_idents_expr(inner, out);
+        }
         _ => {
             // Leaf expressions (literals, range bounds, etc.) contain no free identifiers.
         }
@@ -3144,6 +3264,7 @@ fn collect_free_idents_stmt(stmt: &Stmt, out: &mut Vec<String>) {
                 collect_free_idents_stmt(s, out);
             }
         }
+        Stmt::Yield(ys) => collect_free_idents_expr(&ys.value, out),
         Stmt::Break(_) | Stmt::Continue(_) => {
             // Control flow statements with no sub-expressions to scan.
         }
@@ -3235,6 +3356,7 @@ fn encode_machine_expr(expr: &Expr) -> Option<serde_json::Value> {
                 BinOp::Shl => "<<",
                 BinOp::Shr => ">>",
                 BinOp::PipeForward => "|>",
+                BinOp::Compose => "~>",
             };
             Some(serde_json::json!({
                 "kind": "bin",

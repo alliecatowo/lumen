@@ -865,7 +865,7 @@ mod tests {
     fn test_get_effective_registry() {
         // This test may fail if no config exists, so we just test the provided case
         assert_eq!(
-            get_effective_registry(Some("https://example.com".to_string())).unwrap(),
+            get_effective_registry(Some("https://example.com".to_string())),
             "https://example.com"
         );
     }

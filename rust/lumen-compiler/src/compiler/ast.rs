@@ -125,6 +125,7 @@ pub struct RecordDef {
     pub fields: Vec<FieldDef>,
     pub is_pub: bool,
     pub span: Span,
+    pub doc: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +147,7 @@ pub struct EnumDef {
     pub methods: Vec<CellDef>,
     pub is_pub: bool,
     pub span: Span,
+    pub doc: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,6 +172,7 @@ pub struct CellDef {
     pub is_extern: bool,
     pub where_clauses: Vec<Expr>,
     pub span: Span,
+    pub doc: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,6 +225,7 @@ pub struct HandlerDecl {
     pub name: String,
     pub handles: Vec<CellDef>,
     pub span: Span,
+    pub doc: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -249,6 +253,7 @@ pub struct TypeAliasDef {
     pub type_expr: TypeExpr,
     pub is_pub: bool,
     pub span: Span,
+    pub doc: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

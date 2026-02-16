@@ -252,6 +252,7 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                         is_extern: false,
                         where_clauses: vec![],
                         span,
+                        doc: None,
                     };
                     module.cells.push(lowerer.lower_cell(&generated));
                 }

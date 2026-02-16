@@ -507,6 +507,22 @@ fn format_lex_error(error: &LexError, source: &str, filename: &str) -> Diagnosti
                 suggestions: vec!["use \\u{XXXX} format for unicode escapes".to_string()],
             }
         }
+        LexError::UnterminatedMarkdownBlock { line, col } => {
+            let source_line = get_source_line(source, *line);
+            let underline = source_line.as_ref().map(|_| make_underline(*col, 3));
+
+            Diagnostic {
+                severity: Severity::Error,
+                code: Some("E007".to_string()),
+                message: "unterminated markdown block".to_string(),
+                file: Some(filename.to_string()),
+                line: Some(*line),
+                col: Some(*col),
+                source_line,
+                underline,
+                suggestions: vec!["add a closing ``` fence".to_string()],
+            }
+        }
     }
 }
 

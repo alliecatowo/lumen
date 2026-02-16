@@ -17,6 +17,8 @@ pub enum LexError {
     InvalidBytesLiteral { line: usize, col: usize },
     #[error("invalid unicode escape at line {line}, col {col}")]
     InvalidUnicodeEscape { line: usize, col: usize },
+    #[error("unterminated markdown block at line {line}, col {col}")]
+    UnterminatedMarkdownBlock { line: usize, col: usize },
 }
 
 pub struct Lexer {
@@ -876,6 +878,54 @@ impl Lexer {
         Token::new(kind, span)
     }
 
+    fn read_markdown_block(&mut self) -> Result<Token, LexError> {
+        let (so, sl, sc) = (self.byte_offset, self.line, self.col);
+        // Consume opening ```
+        self.advance(); // first `
+        self.advance(); // second `
+        self.advance(); // third `
+        // Consume any language tag on the same line (e.g., ```markdown)
+        while matches!(self.current(), Some(c) if c != '\n') {
+            self.advance();
+        }
+        // Consume the newline after the opening fence
+        if self.current() == Some('\n') {
+            self.advance();
+        }
+        // Collect content lines until closing ```
+        let mut content = String::new();
+        loop {
+            match self.current() {
+                None => {
+                    return Err(LexError::UnterminatedMarkdownBlock { line: sl, col: sc });
+                }
+                Some('`') if self.peek() == Some('`') && self.peek2() == Some('`') => {
+                    // Consume the closing ```
+                    self.advance(); // `
+                    self.advance(); // `
+                    self.advance(); // `
+                    // Consume rest of closing fence line
+                    while matches!(self.current(), Some(c) if c != '\n') {
+                        self.advance();
+                    }
+                    break;
+                }
+                Some(ch) => {
+                    content.push(ch);
+                    self.advance();
+                }
+            }
+        }
+        // Trim trailing newline from content
+        if content.ends_with('\n') {
+            content.pop();
+        }
+        Ok(Token::new(
+            TokenKind::MarkdownBlock(content),
+            self.span_from(so, sl, sc),
+        ))
+    }
+
     fn single(&mut self, kind: TokenKind) -> Token {
         let span = self.span_here();
         self.advance();
@@ -1235,6 +1285,9 @@ impl Lexer {
                     while matches!(self.current(), Some(' ' | '\t')) {
                         self.advance();
                     }
+                }
+                '`' if self.peek() == Some('`') && self.peek2() == Some('`') => {
+                    tokens.push(self.read_markdown_block()?);
                 }
                 c => tokens.push(self.single(TokenKind::Symbol(c))),
             }

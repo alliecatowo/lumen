@@ -1,0 +1,336 @@
+//! Free helper functions used by the VM (not methods on VM).
+
+use super::*;
+use std::collections::BTreeMap;
+
+pub(crate) fn process_instance_id(value: Option<&Value>) -> Option<u64> {
+    let Value::Record(r) = value? else {
+        return None;
+    };
+    let Value::Int(id) = r.fields.get("__instance_id")? else {
+        return None;
+    };
+    if *id < 0 {
+        return None;
+    }
+    Some(*id as u64)
+}
+
+pub(crate) fn merged_policy_for_tool(module: &LirModule, alias: &str) -> serde_json::Value {
+    let mut merged = serde_json::Map::new();
+    for policy in &module.policies {
+        if policy.tool_alias != alias {
+            continue;
+        }
+        if let serde_json::Value::Object(obj) = &policy.grants {
+            for (k, v) in obj {
+                merged.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    serde_json::Value::Object(merged)
+}
+
+pub(crate) fn validate_tool_policy(
+    policy: &serde_json::Value,
+    args: &serde_json::Value,
+) -> Result<(), String> {
+    let serde_json::Value::Object(policy_obj) = policy else {
+        return Ok(());
+    };
+    let serde_json::Value::Object(args_obj) = args else {
+        return Ok(());
+    };
+
+    for (key, constraint) in policy_obj {
+        match key.as_str() {
+            "domain" => {
+                let pattern = constraint
+                    .as_str()
+                    .ok_or_else(|| "domain constraint must be a string".to_string())?;
+                let url = args_obj
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "domain policy requires string 'url' argument".to_string())?;
+                if !domain_matches(pattern, url) {
+                    return Err(format!("domain '{}' does not allow '{}'", pattern, url));
+                }
+            }
+            "timeout_ms" => {
+                let max_timeout = constraint
+                    .as_i64()
+                    .ok_or_else(|| "timeout_ms constraint must be an integer".to_string())?;
+                if let Some(actual) = args_obj.get("timeout_ms").and_then(|v| v.as_i64()) {
+                    if actual > max_timeout {
+                        return Err(format!(
+                            "timeout_ms {} exceeds allowed {}",
+                            actual, max_timeout
+                        ));
+                    }
+                }
+            }
+            _ if key.starts_with("max_") => {
+                let limit = constraint
+                    .as_i64()
+                    .ok_or_else(|| format!("{} constraint must be an integer", key))?;
+                if let Some(actual) = args_obj.get(key).and_then(|v| v.as_i64()) {
+                    if actual > limit {
+                        return Err(format!("{} {} exceeds allowed {}", key, actual, limit));
+                    }
+                }
+            }
+            _ => {
+                if let Some(actual) = args_obj.get(key) {
+                    if actual != constraint {
+                        return Err(format!(
+                            "argument '{}' value {} violates required {}",
+                            key, actual, constraint
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn domain_matches(pattern: &str, url: &str) -> bool {
+    let host = extract_host(url);
+    if host.is_empty() {
+        return false;
+    }
+
+    let pattern = pattern.to_ascii_lowercase();
+    let host = host.to_ascii_lowercase();
+    if let Some(suffix) = pattern.strip_prefix("*.") {
+        return host == suffix || host.ends_with(&format!(".{}", suffix));
+    }
+    host == pattern
+}
+
+pub(crate) fn extract_host(url: &str) -> String {
+    let without_scheme = if let Some((_, rest)) = url.split_once("://") {
+        rest
+    } else {
+        url
+    };
+    without_scheme
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+pub(crate) fn parse_machine_expr_json(value: &serde_json::Value) -> Option<MachineExpr> {
+    let kind = value.get("kind")?.as_str()?;
+    match kind {
+        "int" => Some(MachineExpr::Int(value.get("value")?.as_i64()?)),
+        "float" => Some(MachineExpr::Float(value.get("value")?.as_f64()?)),
+        "string" => Some(MachineExpr::String(
+            value.get("value")?.as_str()?.to_string(),
+        )),
+        "bool" => Some(MachineExpr::Bool(value.get("value")?.as_bool()?)),
+        "null" => Some(MachineExpr::Null),
+        "ident" => Some(MachineExpr::Ident(
+            value.get("value")?.as_str()?.to_string(),
+        )),
+        "unary" => Some(MachineExpr::Unary {
+            op: value.get("op")?.as_str()?.to_string(),
+            expr: Box::new(parse_machine_expr_json(value.get("expr")?)?),
+        }),
+        "bin" => Some(MachineExpr::Bin {
+            op: value.get("op")?.as_str()?.to_string(),
+            lhs: Box::new(parse_machine_expr_json(value.get("lhs")?)?),
+            rhs: Box::new(parse_machine_expr_json(value.get("rhs")?)?),
+        }),
+        _ => None,
+    }
+}
+
+pub(crate) fn future_schedule_from_addons(addons: &[LirAddon]) -> FutureSchedule {
+    for addon in addons {
+        if addon.kind != "directive" {
+            continue;
+        }
+        let Some(raw) = addon.name.as_deref() else {
+            continue;
+        };
+        let (name, raw_value) = match raw.split_once('=') {
+            Some((k, v)) => (k.trim(), Some(v.trim())),
+            None => (raw.trim(), None),
+        };
+        let key = name.trim_start_matches('@').to_ascii_lowercase();
+        if key != "deterministic" {
+            continue;
+        }
+        let parsed = raw_value
+            .map(strip_quote_wrappers)
+            .and_then(parse_bool_like)
+            .unwrap_or(true);
+        return if parsed {
+            FutureSchedule::DeferredFifo
+        } else {
+            FutureSchedule::Eager
+        };
+    }
+    FutureSchedule::Eager
+}
+
+pub(crate) fn strip_quote_wrappers(s: &str) -> &str {
+    let trimmed = s.trim();
+    if let Some(inner) = trimmed
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+    {
+        return inner.trim();
+    }
+    if let Some(inner) = trimmed
+        .strip_prefix('\'')
+        .and_then(|rest| rest.strip_suffix('\''))
+    {
+        return inner.trim();
+    }
+    trimmed
+}
+
+pub(crate) fn parse_bool_like(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// Convert a Lumen Value to a serde_json Value.
+pub(crate) fn value_to_json(val: &Value) -> serde_json::Value {
+    match val {
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::Value::Bool(*b),
+        Value::Int(n) => serde_json::json!(*n),
+        Value::Float(f) => serde_json::json!(*f),
+        Value::String(StringRef::Owned(s)) => serde_json::Value::String(s.clone()),
+        Value::String(StringRef::Interned(_)) => serde_json::Value::String(val.as_string()),
+        Value::List(l) => serde_json::Value::Array(l.iter().map(value_to_json).collect()),
+        Value::Tuple(t) => serde_json::Value::Array(t.iter().map(value_to_json).collect()),
+        Value::Set(s) => serde_json::Value::Array(s.iter().map(value_to_json).collect()),
+        Value::Map(m) => {
+            let obj: serde_json::Map<String, serde_json::Value> = m
+                .iter()
+                .map(|(k, v)| (k.clone(), value_to_json(v)))
+                .collect();
+            serde_json::Value::Object(obj)
+        }
+        Value::Record(r) => {
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "__type".to_string(),
+                serde_json::Value::String(r.type_name.clone()),
+            );
+            for (k, v) in &r.fields {
+                obj.insert(k.clone(), value_to_json(v));
+            }
+            serde_json::Value::Object(obj)
+        }
+        Value::Union(u) => {
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "__tag".to_string(),
+                serde_json::Value::String(u.tag.clone()),
+            );
+            obj.insert("__payload".to_string(), value_to_json(&u.payload));
+            serde_json::Value::Object(obj)
+        }
+        _ => serde_json::Value::Null,
+    }
+}
+
+/// Convert a serde_json Value to a Lumen Value.
+pub(crate) fn json_to_value(val: &serde_json::Value) -> Value {
+    match val {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(b) => Value::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else if let Some(f) = n.as_f64() {
+                Value::Float(f)
+            } else {
+                Value::Null
+            }
+        }
+        serde_json::Value::String(s) => Value::String(StringRef::Owned(s.clone())),
+        serde_json::Value::Array(arr) => Value::new_list(arr.iter().map(json_to_value).collect()),
+        serde_json::Value::Object(obj) => {
+            let map: BTreeMap<String, Value> = obj
+                .iter()
+                .map(|(k, v)| (k.clone(), json_to_value(v)))
+                .collect();
+            Value::new_map(map)
+        }
+    }
+}
+
+/// Simple base64 encode (no external dependency).
+pub(crate) fn simple_base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::new();
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        result.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
+        result.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            result.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+        if chunk.len() > 2 {
+            result.push(CHARS[(triple & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+    }
+    result
+}
+
+/// Simple base64 decode.
+pub(crate) fn simple_base64_decode(s: &str) -> Option<Vec<u8>> {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = Vec::new();
+    let bytes: Vec<u8> = s.bytes().filter(|&b| b != b'\n' && b != b'\r').collect();
+    for chunk in bytes.chunks(4) {
+        if chunk.len() < 4 {
+            break;
+        }
+        let vals: Vec<Option<usize>> = chunk
+            .iter()
+            .map(|&b| {
+                if b == b'=' {
+                    Some(0)
+                } else {
+                    CHARS.iter().position(|&c| c == b)
+                }
+            })
+            .collect();
+        if vals.iter().any(|v| v.is_none()) {
+            return None;
+        }
+        // Safe: we just verified none are None above
+        let v: Vec<usize> = vals.into_iter().flatten().collect();
+        let triple = (v[0] << 18) | (v[1] << 12) | (v[2] << 6) | v[3];
+        result.push(((triple >> 16) & 0xFF) as u8);
+        if chunk[2] != b'=' {
+            result.push(((triple >> 8) & 0xFF) as u8);
+        }
+        if chunk[3] != b'=' {
+            result.push((triple & 0xFF) as u8);
+        }
+    }
+    Some(result)
+}

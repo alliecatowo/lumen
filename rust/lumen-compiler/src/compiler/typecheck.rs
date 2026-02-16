@@ -1839,6 +1839,27 @@ impl<'a> TypeChecker<'a> {
                 result_type
             }
             Expr::ComptimeExpr(inner, _) => self.infer_expr(inner),
+            Expr::Perform { args, .. } => {
+                for arg in args {
+                    self.infer_expr(arg);
+                }
+                Type::Any
+            }
+            Expr::HandleExpr { body, handlers, .. } => {
+                for stmt in body {
+                    self.check_stmt(stmt, None);
+                }
+                for handler in handlers {
+                    for stmt in &handler.body {
+                        self.check_stmt(stmt, None);
+                    }
+                }
+                Type::Any
+            }
+            Expr::ResumeExpr(inner, _) => {
+                self.infer_expr(inner);
+                Type::Any
+            }
         }
     }
 

@@ -866,6 +866,9 @@ impl Lexer {
             "when" => TokenKind::When,
             "is" => TokenKind::Is,
             "defer" => TokenKind::Defer,
+            "perform" => TokenKind::Perform,
+            "handle" => TokenKind::Handle,
+            "resume" => TokenKind::Resume,
             // Type keywords
             "bool" => TokenKind::Bool,
             "int" => TokenKind::Int_,
@@ -1516,6 +1519,15 @@ mod tests {
         // Next meaningful token after newline should be Cell
         let cell_tok = tokens.iter().find(|t| matches!(t.kind, TokenKind::Cell));
         assert!(cell_tok.is_some());
+    }
+
+    #[test]
+    fn test_lex_perform_handle_resume() {
+        let mut lexer = Lexer::new("perform handle resume", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::Perform));
+        assert!(matches!(&tokens[1].kind, TokenKind::Handle));
+        assert!(matches!(&tokens[2].kind, TokenKind::Resume));
     }
 
     #[test]

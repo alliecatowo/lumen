@@ -1208,6 +1208,41 @@ impl Formatter {
             Expr::ComptimeExpr(inner, _) => {
                 format!("comptime {}", self.fmt_expr(inner))
             }
+            Expr::Perform { effect_name, operation, args, .. } => {
+                let arg_strs: Vec<String> = args.iter().map(|a| self.fmt_expr(a)).collect();
+                format!("perform {}.{}({})", effect_name, operation, arg_strs.join(", "))
+            }
+            Expr::HandleExpr { body, handlers, .. } => {
+                let mut parts = Vec::new();
+                parts.push("handle".to_string());
+                for stmt in body {
+                    let expr_str = match stmt {
+                        Stmt::Expr(es) => format!("  {}", self.fmt_expr(&es.expr)),
+                        Stmt::Return(r) => format!("  return {}", self.fmt_expr(&r.value)),
+                        Stmt::Let(ls) => format!("  let {} = {}", ls.name, self.fmt_expr(&ls.value)),
+                        _ => "  ...".to_string(),
+                    };
+                    parts.push(expr_str);
+                }
+                parts.push("with".to_string());
+                for handler in handlers {
+                    let params: Vec<String> = handler.params.iter().map(|p| p.name.clone()).collect();
+                    parts.push(format!("  {}.{}({}) =>", handler.effect_name, handler.operation, params.join(", ")));
+                    for stmt in &handler.body {
+                        let expr_str = match stmt {
+                            Stmt::Expr(es) => format!("    {}", self.fmt_expr(&es.expr)),
+                            Stmt::Return(r) => format!("    return {}", self.fmt_expr(&r.value)),
+                            _ => "    ...".to_string(),
+                        };
+                        parts.push(expr_str);
+                    }
+                }
+                parts.push("end".to_string());
+                parts.join("\n")
+            }
+            Expr::ResumeExpr(inner, _) => {
+                format!("resume({})", self.fmt_expr(inner))
+            }
         }
     }
 

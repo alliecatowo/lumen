@@ -3080,6 +3080,71 @@ impl<'a> Lowerer<'a> {
             Expr::ComptimeExpr(inner, _) => {
                 self.lower_expr(inner, ra, consts, instrs)
             }
+            Expr::Perform { effect_name, operation, args, .. } => {
+                let dest = ra.alloc_temp();
+                // Emit args to consecutive registers starting at dest+1
+                for (i, arg) in args.iter().enumerate() {
+                    let ar = self.lower_expr(arg, ra, consts, instrs);
+                    let target = dest + 1 + i as u8;
+                    if ar != target {
+                        instrs.push(Instruction::abc(OpCode::Move, target, ar, 0));
+                    }
+                }
+                // Load effect_name and operation as constants
+                let eff_kidx = consts.len() as u16;
+                consts.push(Constant::String(effect_name.clone()));
+                let op_kidx = consts.len() as u16;
+                consts.push(Constant::String(operation.clone()));
+                // Perform opcode: A=dest, B=effect_name const, C=operation const
+                // We use bx to pack both indices: effect in b, operation in c
+                instrs.push(Instruction::abc(OpCode::Perform, dest, eff_kidx as u8, op_kidx as u8));
+                dest
+            }
+            Expr::HandleExpr { body, handlers, .. } => {
+                let dest = ra.alloc_temp();
+                // Emit HandlePush — the offset will be patched
+                let handle_push_idx = instrs.len();
+                instrs.push(Instruction::ax(OpCode::HandlePush, 0));
+
+                // Emit body code
+                for stmt in body {
+                    self.lower_stmt(stmt, ra, consts, instrs);
+                }
+
+                // Emit HandlePop
+                instrs.push(Instruction::ax(OpCode::HandlePop, 0));
+                // Jump past all handler code
+                let jmp_past_handlers_idx = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // patched later
+
+                // Record start of handler code area
+                let handler_code_start = instrs.len();
+
+                // Patch HandlePush offset to point to handler code start
+                let handler_offset = handler_code_start - handle_push_idx;
+                instrs[handle_push_idx] = Instruction::ax(OpCode::HandlePush, handler_offset as u32);
+
+                // Emit handler code blocks
+                for handler in handlers {
+                    // Handler body
+                    for stmt in &handler.body {
+                        self.lower_stmt(stmt, ra, consts, instrs);
+                    }
+                }
+
+                // Patch jump past handlers
+                let after_handlers = instrs.len();
+                let jmp_offset = after_handlers as i32 - jmp_past_handlers_idx as i32 - 1;
+                instrs[jmp_past_handlers_idx] = Instruction::sax(OpCode::Jmp, jmp_offset);
+
+                dest
+            }
+            Expr::ResumeExpr(inner, _) => {
+                let val_reg = self.lower_expr(inner, ra, consts, instrs);
+                let dest = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::Resume, dest, val_reg, 0));
+                dest
+            }
         }
     }
 

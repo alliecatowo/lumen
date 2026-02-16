@@ -2770,3 +2770,114 @@ end
     };
     assert_compile_ok(&case);
 }
+
+#[test]
+fn math_constant_pi() {
+    let case = CompileCase {
+        id: "math_constant_pi",
+        source: r#"
+cell main() -> Float
+  let x = PI
+  return x
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn math_constant_e() {
+    let case = CompileCase {
+        id: "math_constant_e",
+        source: r#"
+cell main() -> Float
+  let x = E
+  return x
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn math_constant_tau() {
+    let case = CompileCase {
+        id: "math_constant_tau",
+        source: r#"
+cell main() -> Float
+  let x = TAU
+  return x
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn math_constant_infinity() {
+    let case = CompileCase {
+        id: "math_constant_infinity",
+        source: r#"
+cell main() -> Float
+  return INFINITY
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn math_constant_nan() {
+    let case = CompileCase {
+        id: "math_constant_nan",
+        source: r#"
+cell main() -> Float
+  return NAN
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn math_constant_max_int() {
+    let case = CompileCase {
+        id: "math_constant_max_int",
+        source: r#"
+cell main() -> Int
+  return MAX_INT
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn math_constant_min_int() {
+    let case = CompileCase {
+        id: "math_constant_min_int",
+        source: r#"
+cell main() -> Int
+  return MIN_INT
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}
+
+#[test]
+fn math_constants_in_expressions() {
+    let case = CompileCase {
+        id: "math_constants_in_expressions",
+        source: r#"
+cell circumference(r: Float) -> Float
+  return 2.0 * PI * r
+end
+
+cell main() -> Float
+  return circumference(1.0)
+end
+"#,
+    };
+    assert_compile_ok(&case);
+}

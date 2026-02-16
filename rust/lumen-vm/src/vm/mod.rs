@@ -13,8 +13,8 @@ pub(crate) use processes::{
 use crate::strings::StringTable;
 use crate::types::{RuntimeField, RuntimeType, RuntimeTypeKind, RuntimeVariant, TypeTable};
 use crate::values::{
-    ClosureValue, FutureStatus, FutureValue, RecordValue, StringRef, TraceRefValue, UnionValue,
-    Value,
+    values_equal, ClosureValue, FutureStatus, FutureValue, RecordValue, StringRef, TraceRefValue,
+    UnionValue, Value,
 };
 use lumen_compiler::compiler::lir::*;
 use lumen_runtime::tools::{ProviderRegistry, ToolDispatcher, ToolRequest};
@@ -1674,21 +1674,7 @@ impl VM {
                 OpCode::Eq => {
                     let lhs = &self.registers[base + b];
                     let rhs = &self.registers[base + c];
-                    // Resolve interned strings for cross-representation equality
-                    let eq = match (lhs, rhs) {
-                        (Value::String(a), Value::String(b)) => {
-                            let sa = match a {
-                                StringRef::Owned(s) => s.as_str(),
-                                StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
-                            };
-                            let sb = match b {
-                                StringRef::Owned(s) => s.as_str(),
-                                StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
-                            };
-                            sa == sb
-                        }
-                        _ => lhs == rhs,
-                    };
+                    let eq = values_equal(lhs, rhs, &self.strings);
                     self.registers[base + a] = Value::Bool(eq);
                 }
                 OpCode::Lt => {

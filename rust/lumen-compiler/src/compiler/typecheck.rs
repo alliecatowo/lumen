@@ -51,7 +51,30 @@ fn is_builtin_function(name: &str) -> bool {
             | "timeout"
             | "spawn"
             | "resume"
+            | "format"
+            | "partition"
+            | "read_dir"
+            | "exists"
+            | "mkdir"
+            | "exit"
     )
+}
+
+/// Check if a name is a built-in math constant.
+pub fn is_builtin_math_constant(name: &str) -> bool {
+    matches!(
+        name,
+        "PI" | "E" | "TAU" | "INFINITY" | "NAN" | "MAX_INT" | "MIN_INT"
+    )
+}
+
+/// Return the type for a built-in math constant.
+fn builtin_math_constant_type(name: &str) -> Type {
+    match name {
+        "PI" | "E" | "TAU" | "INFINITY" | "NAN" => Type::Float,
+        "MAX_INT" | "MIN_INT" => Type::Int,
+        _ => Type::Any,
+    }
 }
 
 /// Return the known return type for a builtin function, if available.
@@ -91,6 +114,12 @@ fn builtin_return_type(name: &str, arg_types: &[Type]) -> Option<Type> {
         "timestamp" => Some(Type::Float),
         "random" => Some(Type::Float),
         "get_env" => Some(Type::Any),
+        "format" => Some(Type::String),
+        "partition" => Some(Type::Tuple(vec![Type::Any, Type::Any])),
+        "read_dir" => Some(Type::List(Box::new(Type::String))),
+        "exists" => Some(Type::Bool),
+        "mkdir" => Some(Type::Null),
+        "exit" => Some(Type::Null),
         _ => None,
     }
 }
@@ -338,38 +367,72 @@ fn infer_generic_args_from_fields(
         .collect()
 }
 
-/// Attempt to unify a type expression with a concrete type to infer generic parameters
+/// Attempt to unify a type expression with a concrete type to infer generic parameters.
+/// Uses a heuristic: single uppercase letter names are treated as type variables.
 fn unify_for_inference(
     type_expr: &TypeExpr,
     concrete: &Type,
     _symbols: &SymbolTable,
     inferred: &mut HashMap<String, Type>,
 ) {
+    let empty_set: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    unify_for_inference_inner(type_expr, concrete, _symbols, inferred, &empty_set);
+}
+
+/// Attempt to unify a type expression with a concrete type to infer generic parameters.
+/// Accepts an explicit set of known generic parameter names in addition to the
+/// single-uppercase-letter heuristic.
+fn unify_for_inference_with_params(
+    type_expr: &TypeExpr,
+    concrete: &Type,
+    symbols: &SymbolTable,
+    inferred: &mut HashMap<String, Type>,
+    generic_param_names: &std::collections::HashSet<&str>,
+) {
+    unify_for_inference_inner(type_expr, concrete, symbols, inferred, generic_param_names);
+}
+
+fn unify_for_inference_inner(
+    type_expr: &TypeExpr,
+    concrete: &Type,
+    _symbols: &SymbolTable,
+    inferred: &mut HashMap<String, Type>,
+    generic_param_names: &std::collections::HashSet<&str>,
+) {
     match (type_expr, concrete) {
         (TypeExpr::Named(name, _), ty) => {
-            // If this is a type parameter (single uppercase letter or explicitly generic),
+            // If this is a known generic type parameter or a single uppercase letter,
             // record the inference
-            if name.len() == 1 && name.chars().next().unwrap().is_uppercase() {
+            let is_generic = generic_param_names.contains(name.as_str())
+                || (name.len() == 1 && name.chars().next().unwrap().is_uppercase());
+            if is_generic {
                 inferred.entry(name.clone()).or_insert_with(|| ty.clone());
             }
         }
         (TypeExpr::List(inner, _), Type::List(inner_ty)) => {
-            unify_for_inference(inner, inner_ty, _symbols, inferred);
+            unify_for_inference_inner(inner, inner_ty, _symbols, inferred, generic_param_names);
         }
         (TypeExpr::Map(k, v, _), Type::Map(kt, vt)) => {
-            unify_for_inference(k, kt, _symbols, inferred);
-            unify_for_inference(v, vt, _symbols, inferred);
+            unify_for_inference_inner(k, kt, _symbols, inferred, generic_param_names);
+            unify_for_inference_inner(v, vt, _symbols, inferred, generic_param_names);
         }
         (TypeExpr::Set(inner, _), Type::Set(inner_ty)) => {
-            unify_for_inference(inner, inner_ty, _symbols, inferred);
+            unify_for_inference_inner(inner, inner_ty, _symbols, inferred, generic_param_names);
         }
         (TypeExpr::Result(ok, err, _), Type::Result(ok_ty, err_ty)) => {
-            unify_for_inference(ok, ok_ty, _symbols, inferred);
-            unify_for_inference(err, err_ty, _symbols, inferred);
+            unify_for_inference_inner(ok, ok_ty, _symbols, inferred, generic_param_names);
+            unify_for_inference_inner(err, err_ty, _symbols, inferred, generic_param_names);
         }
         (TypeExpr::Tuple(exprs, _), Type::Tuple(types)) => {
             for (expr, ty) in exprs.iter().zip(types.iter()) {
-                unify_for_inference(expr, ty, _symbols, inferred);
+                unify_for_inference_inner(expr, ty, _symbols, inferred, generic_param_names);
+            }
+        }
+        (TypeExpr::Generic(name, type_args, _), Type::TypeRef(ref_name, ref_args)) => {
+            if name == ref_name && type_args.len() == ref_args.len() {
+                for (texpr, ty) in type_args.iter().zip(ref_args.iter()) {
+                    unify_for_inference_inner(texpr, ty, _symbols, inferred, generic_param_names);
+                }
             }
         }
         _ => {
@@ -594,6 +657,65 @@ impl<'a> TypeChecker<'a> {
                 CheckedCallArg::Named(name, actual_ty, arg_line) => {
                     if let Some((_, expected_expr, _)) = params.iter().find(|(p, _, _)| p == name) {
                         let expected_ty = resolve_type_expr(expected_expr, self.symbols);
+                        self.check_compat(&expected_ty, actual_ty, *arg_line);
+                    } else {
+                        self.errors.push(TypeError::Mismatch {
+                            expected: format!("parameter '{}'", name),
+                            actual: "unknown named argument".to_string(),
+                            line: *arg_line,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    /// Like check_call_against_signature but resolves parameter types with a
+    /// generic substitution map, so that e.g. T is resolved to Int.
+    fn check_call_against_signature_with_subst(
+        &mut self,
+        params: &[(String, TypeExpr, bool)],
+        args: &[CheckedCallArg],
+        line: usize,
+        subst: &TypeSubst,
+    ) {
+        let has_variadic = params.last().map_or(false, |(_, _, v)| *v);
+        let fixed_count = if has_variadic {
+            params.len() - 1
+        } else {
+            params.len()
+        };
+
+        if !has_variadic && args.len() > params.len() {
+            self.errors.push(TypeError::ArgCount {
+                expected: params.len(),
+                actual: args.len(),
+                line,
+            });
+        }
+
+        let mut positional_idx = 0usize;
+        for arg in args {
+            match arg {
+                CheckedCallArg::Positional(actual_ty, arg_line) => {
+                    if positional_idx < fixed_count {
+                        if let Some((_, expected_expr, _)) = params.get(positional_idx) {
+                            let expected_ty =
+                                resolve_type_expr_with_subst(expected_expr, self.symbols, subst);
+                            self.check_compat(&expected_ty, actual_ty, *arg_line);
+                        }
+                    } else if has_variadic {
+                        let (_, variadic_expr, _) = &params[params.len() - 1];
+                        let elem_ty =
+                            resolve_type_expr_with_subst(variadic_expr, self.symbols, subst);
+                        self.check_compat(&elem_ty, actual_ty, *arg_line);
+                    }
+                    positional_idx += 1;
+                }
+                CheckedCallArg::Named(name, actual_ty, arg_line) => {
+                    if let Some((_, expected_expr, _)) = params.iter().find(|(p, _, _)| p == name) {
+                        let expected_ty =
+                            resolve_type_expr_with_subst(expected_expr, self.symbols, subst);
                         self.check_compat(&expected_ty, actual_ty, *arg_line);
                     } else {
                         self.errors.push(TypeError::Mismatch {
@@ -1155,6 +1277,10 @@ impl<'a> TypeChecker<'a> {
                         Type::Any
                     }
                 }
+                // Built-in math constants
+                else if is_builtin_math_constant(name) {
+                    builtin_math_constant_type(name)
+                }
                 // cell ref, tool ref, agent constructor ref, addendum decl refs, type/value references, built-in
                 else if self.symbols.cells.contains_key(name)
                     || self.symbols.tools.contains_key(name)
@@ -1383,10 +1509,76 @@ impl<'a> TypeChecker<'a> {
                 // Try to resolve the return type
                 if let Expr::Ident(name, _) = callee.as_ref() {
                     // Check if it's a cell/function call
-                    if let Some(ci) = self.symbols.cells.get(name) {
-                        self.check_call_against_signature(&ci.params, &checked_args, span.line);
-                        if let Some(ref rt) = ci.return_type {
-                            return resolve_type_expr(rt, self.symbols);
+                    if let Some(ci) = self.symbols.cells.get(name).cloned() {
+                        if !ci.generic_params.is_empty() {
+                            // Generic cell: infer type arguments from actual arguments
+                            let generic_set: std::collections::HashSet<&str> =
+                                ci.generic_params.iter().map(|s| s.as_str()).collect();
+                            let mut inferred: HashMap<String, Type> = HashMap::new();
+
+                            // Unify positional args with parameter types
+                            let mut positional_idx = 0usize;
+                            for checked_arg in &checked_args {
+                                match checked_arg {
+                                    CheckedCallArg::Positional(arg_ty, _) => {
+                                        if let Some((_, param_ty_expr, _)) =
+                                            ci.params.get(positional_idx)
+                                        {
+                                            unify_for_inference_with_params(
+                                                param_ty_expr,
+                                                arg_ty,
+                                                self.symbols,
+                                                &mut inferred,
+                                                &generic_set,
+                                            );
+                                        }
+                                        positional_idx += 1;
+                                    }
+                                    CheckedCallArg::Named(pname, arg_ty, _) => {
+                                        if let Some((_, param_ty_expr, _)) =
+                                            ci.params.iter().find(|(n, _, _)| n == pname)
+                                        {
+                                            unify_for_inference_with_params(
+                                                param_ty_expr,
+                                                arg_ty,
+                                                self.symbols,
+                                                &mut inferred,
+                                                &generic_set,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
+                            let generic_args: Vec<Type> = ci
+                                .generic_params
+                                .iter()
+                                .map(|p| inferred.get(p).cloned().unwrap_or(Type::Any))
+                                .collect();
+                            let subst = build_subst(&ci.generic_params, &generic_args);
+
+                            // Check call with substituted param types
+                            let substituted_params: Vec<(String, TypeExpr, bool)> = ci.params.clone();
+                            self.check_call_against_signature_with_subst(
+                                &substituted_params,
+                                &checked_args,
+                                span.line,
+                                &subst,
+                            );
+
+                            if let Some(ref rt) = ci.return_type {
+                                return resolve_type_expr_with_subst(rt, self.symbols, &subst);
+                            }
+                        } else {
+                            // Non-generic cell: use standard checking
+                            self.check_call_against_signature(
+                                &ci.params,
+                                &checked_args,
+                                span.line,
+                            );
+                            if let Some(ref rt) = ci.return_type {
+                                return resolve_type_expr(rt, self.symbols);
+                            }
                         }
                     }
                     // Check if it's a record construction

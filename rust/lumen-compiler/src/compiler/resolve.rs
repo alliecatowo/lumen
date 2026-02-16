@@ -207,6 +207,8 @@ pub struct CellInfo {
     pub params: Vec<(String, TypeExpr, bool)>,
     pub return_type: Option<TypeExpr>,
     pub effects: Vec<String>,
+    /// Generic type parameter names (e.g. ["T", "U"])
+    pub generic_params: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -429,6 +431,7 @@ pub fn resolve_with_base(
                             .collect(),
                         return_type: c.return_type.clone(),
                         effects: c.effects.clone(),
+                        generic_params: c.generic_params.iter().map(|gp| gp.name.clone()).collect(),
                     });
                 }
             },
@@ -496,6 +499,7 @@ pub fn resolve_with_base(
                             params: vec![],
                             return_type: Some(TypeExpr::Named(a.name.clone(), a.span)),
                             effects: vec![],
+                            generic_params: vec![],
                         },
                     );
                 }
@@ -518,6 +522,7 @@ pub fn resolve_with_base(
                                     .collect(),
                                 return_type: cell.return_type.clone(),
                                 effects: cell.effects.clone(),
+                                generic_params: cell.generic_params.iter().map(|gp| gp.name.clone()).collect(),
                             });
                         }
                     }
@@ -616,6 +621,7 @@ pub fn resolve_with_base(
                             params: vec![],
                             return_type: Some(TypeExpr::Named(p.name.clone(), p.span)),
                             effects: vec![],
+                            generic_params: vec![],
                         },
                     );
                 }
@@ -629,6 +635,7 @@ pub fn resolve_with_base(
                             .collect(),
                         return_type: cell.return_type.clone(),
                         effects: cell.effects.clone(),
+                        generic_params: cell.generic_params.iter().map(|gp| gp.name.clone()).collect(),
                     });
                 }
                 for g in &p.grants {
@@ -663,6 +670,7 @@ pub fn resolve_with_base(
                             .collect(),
                         return_type: op.return_type.clone(),
                         effects: op.effects.clone(),
+                        generic_params: op.generic_params.iter().map(|gp| gp.name.clone()).collect(),
                     });
                 }
             }
@@ -701,6 +709,7 @@ pub fn resolve_with_base(
                             .collect(),
                         return_type: handle.return_type.clone(),
                         effects: handle.effects.clone(),
+                        generic_params: handle.generic_params.iter().map(|gp| gp.name.clone()).collect(),
                     });
                 }
             }

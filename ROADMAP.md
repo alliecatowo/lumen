@@ -42,7 +42,7 @@ This roadmap reflects implementation status as of February 2026. **Current statu
 - Security: real crypto signing, transparency log, registry deployment.
 - WASM: multi-file imports, tool providers, browser/Node/WASI.
 - Performance: benchmarks, VM dispatch and compiler optimizations.
-- Language: gradual ownership (`ref T`, `mut ref T`), stdlib bootstrap, self-hosting exploration.
+- Language: gradual ownership (`ref T`, `mut ref T`), stdlib bootstrap, self-hosting exploration; **result/optional syntactic sugar** (e.g. propagation operator or optional chaining) to reduce `unwrap`/match boilerplate—see TASKS.md T209, COMPETITIVE_ANALYSIS §6.3.
 
 ### Phase 4: Ecosystem [Planned]
 

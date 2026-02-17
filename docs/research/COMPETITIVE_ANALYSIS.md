@@ -154,6 +154,8 @@ Comparison dimensions and Lumen baseline (v0.4):
 
 **Leapfrog:** Refinement + effects + grants: prove “no path exceeds N network calls” or “tool only called with valid schema.” Effect budgets (T048). Rare in mainstream languages.
 
+**Error/optional ergonomics:** Rust's `?` operator unwraps `Result`/`Option` or returns early, replacing repetitive `match`/`unwrap` (Rust By Example, Try trait). Swift uses optional binding (`if let`) and optional chaining; JavaScript has `?.` for null-safe access. Lumen today uses explicit `unwrap`, `unwrap_or`, `is_ok`/`is_err`, and `match` on `result[T,E]`—heavily in tests and error-handling code. Syntactic sugar for propagation (e.g. postfix `?` in cells that return `result`/optional) or optional chaining would improve DX and align with best-in-class type-safe error handling. TASKS.md T209; ROADMAP Phase 3.
+
 ---
 
 ### 6.4 Concurrency and reliability
@@ -305,6 +307,7 @@ These are concrete defects or incomplete features; closing them supports parity 
 18. IDE quick-fix for effect/type violations (add effect, grant, import) (T101).
 19. AI-focused lints: unsafe prompt interpolation, unconstrained outputs, non-replayable APIs.
 20. Execution graph visualizer from trace events for debugging and audit.
+21. **Result/optional syntactic sugar:** propagation operator (`?`) or optional chaining to reduce `unwrap`/match boilerplate (Rust/Swift/JS-style); see §6.3, T209.
 
 ---
 

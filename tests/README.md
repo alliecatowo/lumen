@@ -38,6 +38,7 @@ All issues below are in **TASKS.md** § Language / spec alignment and test suite
 | T206 | Missing/renamed builtins | builtins | trim_start/trim_end, exp, tan, random_int, timestamp_ms, json_stringify; use type_of, to_json, to_int/to_float, timestamp. |
 | T207 | Effect handler resume | effects | "resume called outside of effect handler"; handle/perform tests stubbed. |
 | T208 | Record method scoping / generic T | end_to_end | Duplicate method names (is_empty, size); T undefined in record methods; stub to calculator-only. |
+| T209 | Result/optional syntactic sugar | Language/spec | Reduce unwrap/match boilerplate (e.g. `?` propagation, optional chaining); see TASKS.md T209, COMPETITIVE_ANALYSIS §6.3. |
 
 ## Test Suite Structure
 

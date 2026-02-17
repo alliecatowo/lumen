@@ -1,8 +1,8 @@
-//! Wave 16 test suite.
+//! Spec suite: error propagation tests.
 //!
 //! Tests for:
-//! - T121: Error propagation operator `?` (already implemented, verify it works)
-//! - T122: Try/else expression (`try expr else |err| fallback`)
+//! - Error propagation operator `?`
+//! - Try/else expression (`try expr else |err| fallback`)
 
 use lumen_compiler::compile;
 

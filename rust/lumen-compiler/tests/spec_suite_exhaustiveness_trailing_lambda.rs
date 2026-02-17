@@ -1,9 +1,9 @@
-//! Wave 18 test suite.
+//! Spec suite: exhaustiveness checking, trailing lambda, and result sugar tests.
 //!
 //! Tests for:
-//! - T049: Exhaustiveness checking for integer refinement ranges
-//! - T120: Trailing lambda / DSL blocks (`do...end` after calls)
-//! - T209: Result/optional syntactic sugar (`expr!` and `??` on results)
+//! - Exhaustiveness checking for integer refinement ranges
+//! - Trailing lambda / DSL blocks (`do...end` after calls)
+//! - Result/optional syntactic sugar (`expr!` and `??` on results)
 
 use lumen_compiler::compile;
 

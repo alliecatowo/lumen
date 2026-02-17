@@ -1,4 +1,4 @@
-//! Wave 19 Agent C test suite.
+//! Agent feature test suite.
 //!
 //! Tests for three falsely-completed compiler features:
 //! - T201: Nested list comprehension scoping

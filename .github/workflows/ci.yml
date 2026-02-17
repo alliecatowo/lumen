@@ -43,9 +43,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace
-      - run: cargo check -p lumen-wasm --target wasm32-unknown-unknown
+      - run: cargo check --manifest-path rust/lumen-wasm/Cargo.toml --target wasm32-unknown-unknown
 
   # ---------------------------------------------------------------------------
   # Test suite (cross-platform)
@@ -101,10 +103,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release
       - run: |
+          failed=0
           for f in examples/*.lm.md; do
             echo "Checking $f..."
-            cargo run --release --bin lumen -- check "$f" || true
+            cargo run --release --bin lumen -- check "$f" || failed=1
           done
+          exit $failed
 
   # ---------------------------------------------------------------------------
   # Language reference generation

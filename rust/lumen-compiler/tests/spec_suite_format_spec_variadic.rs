@@ -1,8 +1,8 @@
-//! Wave 15 test suite.
+//! Spec suite: format specifiers and variadic parameter tests.
 //!
 //! Tests for:
-//! - T119: String interpolation with format specifiers
-//! - T163: Complete variadic parameters
+//! - String interpolation with format specifiers
+//! - Complete variadic parameters
 
 use lumen_compiler::compile;
 

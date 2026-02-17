@@ -2359,7 +2359,9 @@ impl VM {
                 }
                 OpCode::Resume => {
                     if let Some(cont) = self.suspended_continuation.take() {
-                        let resume_value = self.registers[base + a].clone();
+                        // The lowerer emits: Resume dest, val_reg, 0
+                        // The resume value is in register B (val_reg), not A (dest).
+                        let resume_value = self.registers[base + b].clone();
                         // Restore the suspended state
                         self.frames = cont.frames;
                         self.registers = cont.registers;

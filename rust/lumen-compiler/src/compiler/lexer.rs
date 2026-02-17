@@ -671,8 +671,17 @@ impl Lexer {
                 }
             } else if ch == '_' {
                 self.advance();
-            } else if (ch == 'e' || ch == 'E') && !is_float {
-                // Scientific notation
+            } else if ch == 'e' || ch == 'E' {
+                // Scientific notation: e.g. 1e10, 1.5e10, 2e-3, 3.14E+2
+                // Peek ahead to validate: must be followed by optional +/- then digit(s)
+                let mut lookahead = self.pos + 1;
+                if matches!(self.source.get(lookahead).copied(), Some('+') | Some('-')) {
+                    lookahead += 1;
+                }
+                if !matches!(self.source.get(lookahead).copied(), Some(d) if d.is_ascii_digit()) {
+                    // Not a valid exponent — stop here; `e`/`E` will be lexed as an identifier
+                    break;
+                }
                 is_float = true;
                 ns.push(ch);
                 self.advance();
@@ -1404,10 +1413,112 @@ mod tests {
     }
 
     #[test]
-    fn test_lex_scientific() {
+    fn test_lex_scientific_basic() {
+        // Integer base with exponent
         let mut lexer = Lexer::new("1e10", 1, 0);
         let tokens = lexer.tokenize().unwrap();
         assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(f) if *f == 1e10));
+    }
+
+    #[test]
+    fn test_lex_scientific_with_decimal() {
+        // Float base with exponent: 1.5e10
+        let mut lexer = Lexer::new("1.5e10", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(f) if *f == 1.5e10));
+    }
+
+    #[test]
+    fn test_lex_scientific_negative_exponent() {
+        // Negative exponent: 2e-3 == 0.002
+        let mut lexer = Lexer::new("2e-3", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(f) if *f == 2e-3));
+    }
+
+    #[test]
+    fn test_lex_scientific_positive_exponent() {
+        // Explicit positive exponent: 3.14E+2 == 314.0
+        let mut lexer = Lexer::new("3.14E+2", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(f) if *f == 3.14E+2));
+    }
+
+    #[test]
+    fn test_lex_scientific_uppercase_e() {
+        // Uppercase E: 1E5 == 100000.0
+        let mut lexer = Lexer::new("1E5", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(f) if *f == 1E5));
+    }
+
+    #[test]
+    fn test_lex_scientific_no_decimal_large() {
+        // 1e5 == 100000.0
+        let mut lexer = Lexer::new("1e5", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(f) if *f == 1e5));
+    }
+
+    #[test]
+    fn test_lex_scientific_decimal_negative_exp() {
+        // 6.022e-23 (Avogadro-ish)
+        let mut lexer = Lexer::new("6.022e-23", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(f) if *f == 6.022e-23));
+    }
+
+    #[test]
+    fn test_lex_scientific_invalid_no_digits_after_e() {
+        // `1e` should NOT be a valid float — `1` is Int, `e` is an identifier
+        let mut lexer = Lexer::new("1e", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::IntLit(1)));
+        assert!(matches!(&tokens[1].kind, TokenKind::Ident(ref s) if s == "e"));
+    }
+
+    #[test]
+    fn test_lex_scientific_invalid_e_plus_no_digits() {
+        // `1e+` should NOT be a valid float — `1` is Int, `e` is ident, `+` is Plus
+        let mut lexer = Lexer::new("1e+", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::IntLit(1)));
+        assert!(matches!(&tokens[1].kind, TokenKind::Ident(ref s) if s == "e"));
+        assert!(matches!(&tokens[2].kind, TokenKind::Plus));
+    }
+
+    #[test]
+    fn test_lex_plain_int_unchanged() {
+        // Regular int is unaffected
+        let mut lexer = Lexer::new("42", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::IntLit(42)));
+    }
+
+    #[test]
+    fn test_lex_plain_float_unchanged() {
+        // Regular float is unaffected
+        let mut lexer = Lexer::new("3.14", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(f) if (*f - 3.14).abs() < 1e-15));
+    }
+
+    #[test]
+    fn test_lex_scientific_zero_exponent() {
+        // 5e0 == 5.0
+        let mut lexer = Lexer::new("5e0", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(f) if *f == 5.0));
+    }
+
+    #[test]
+    fn test_lex_scientific_in_expression() {
+        // Scientific notation in an expression context: `1.5e10 + 2e-3`
+        let mut lexer = Lexer::new("1.5e10 + 2e-3", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(f) if *f == 1.5e10));
+        assert!(matches!(&tokens[1].kind, TokenKind::Plus));
+        assert!(matches!(&tokens[2].kind, TokenKind::FloatLit(f) if *f == 2e-3));
     }
 
     #[test]

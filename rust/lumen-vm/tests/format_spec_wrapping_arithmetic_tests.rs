@@ -1,4 +1,4 @@
-//! Wave-19 tests: T216 (__format_spec), T123 (wrapping arithmetic), T225 (clippy).
+//! Format specifier, wrapping arithmetic, and clippy compliance tests.
 
 use lumen_compiler::compile;
 use lumen_vm::values::{StringRef, Value};

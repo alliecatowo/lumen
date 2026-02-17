@@ -1,8 +1,8 @@
-//! Wave 14 test suite.
+//! Spec suite: comprehension and destructuring tests.
 //!
 //! Tests for:
-//! - T201: Nested list comprehension (multiple for-clauses)
-//! - T205: Let destructuring with type patterns
+//! - Nested list comprehension (multiple for-clauses)
+//! - Let destructuring with type patterns
 
 use lumen_compiler::compile;
 

@@ -1,9 +1,0 @@
-[package]
-name = "lumen-test-project"
-version = "0.1.0"
-
-[dependencies]
-# mathlib = { path = "../mathlib" }
-
-[providers]
-# "llm.chat" = "openai-compatible"

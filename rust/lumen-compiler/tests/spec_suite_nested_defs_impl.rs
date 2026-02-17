@@ -1,8 +1,8 @@
-//! Wave 17 test suite.
+//! Spec suite: nested definitions and impl block tests.
 //!
 //! Tests for:
-//! - T194: Nested cell/enum/record definitions inside cell bodies
-//! - T208: Record method scoping / generic T in impl blocks
+//! - Nested cell/enum/record definitions inside cell bodies
+//! - Record method scoping / generic T in impl blocks
 
 use lumen_compiler::compile;
 

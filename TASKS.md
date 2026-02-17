@@ -223,9 +223,9 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T113 | Spaceship operator — **DONE** | Three-way comparison `<=>` returning Less/Equal/Greater. |
 | T114 | Inclusive/exclusive range — **DONE** | `..=` and `..` already present; ensure full coverage in parser and lowering. |
 | T115 | Membership operator — **DONE** | `in` for collection membership; typecheck and lower. |
-| T116 | Active patterns (F#-style) | Match on result of a function (e.g. `ValidEmail(user, domain)`) with compiler support. |
-| T117 | GADTs | Generalized algebraic data types with type parameters in variant return types. |
-| T118 | Hygienic macro system | Macro expansion without variable capture; define syntax and scope rules. |
+| T116 | Active patterns (F#-style) — **DONE** | Match on result of a function (e.g. `ValidEmail(user, domain)`) with compiler support. |
+| T117 | GADTs — **DONE** | Generalized algebraic data types with type parameters in variant return types. |
+| T118 | Hygienic macro system — **DONE** | Macro expansion without variable capture; define syntax and scope rules. |
 | T119 | String interpolation with format spec — **DONE** | e.g. `f"Value: {x:.2f}"` with typed formatting. |
 | T120 | Trailing lambda / DSL blocks — **DONE** | Allow block or lambda at end of call for DSLs (e.g. `html div { ... }`). |
 | T121 | Error propagation operator — **DONE** | Postfix `?` that unwraps `result[T,E]` or returns early with error. |
@@ -320,7 +320,7 @@ The following tasks add depth and explicit competitive parity. Problem statement
 
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
-| T156 | Probabilistic type (Prob&lt;T&gt;) (design) | Value representing a distribution; “if x” on Prob&lt;Bool&gt; could weight both branches. Enables Bayesian agents. Ref: roadmap “probabilistic type system.” |
+| T156 | Probabilistic type (Prob&lt;T&gt;) (design) — **DONE** | Value representing a distribution; “if x” on Prob&lt;Bool&gt; could weight both branches. Enables Bayesian agents. Ref: roadmap “probabilistic type system.” |
 | T157 | Schema drift detector | Fail build or test when tool/API response schema diverges from declared Lumen types. Closes “silent breakage” gap vs ad-hoc SDKs. |
 | T158 | Effect-budget enforcement at runtime — **DONE** | If effect row says `network(max_calls: 5)`, runtime (or compiled check) enforces the bound and fails fast. Complements T048 (compile-time proof). |
 
@@ -336,7 +336,7 @@ The following tasks add depth and explicit competitive parity. Problem statement
 
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
-| T162 | Multi-shot continuations (design) | Allow `resume` to be called multiple times for backtracking/search. Currently one-shot; design semantics and VM support. Ref: roadmap “effect handlers deep.” |
+| T162 | Multi-shot continuations (design) — **DONE** | Allow `resume` to be called multiple times for backtracking/search. Currently one-shot; design semantics and VM support. Ref: roadmap “effect handlers deep.” |
 | T163 | Variadic parameters (complete) — **DONE** | Complete variadic `...param` in typecheck and lowering so stdlib and user code can define variadic cells. Ref: SPEC.md; COMPETITIVE_ANALYSIS §3. |
 | T164 | Must-use result attribute — **DONE** | `@must_use` for cells returning `result[T,E]` so ignoring the result is a warning or error. Ref: Rust must_use; COMPETITIVE_ANALYSIS “leapfrog.” |
 

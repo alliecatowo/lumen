@@ -1470,6 +1470,131 @@ impl VM {
                 }
             }
 
+            // ── T202: push as alias for append ──
+            "push" => {
+                let list = self.registers[base + a + 1].clone();
+                let elem = self.registers[base + a + 2].clone();
+                if let Value::List(mut l) = list {
+                    Arc::make_mut(&mut l).push(elem);
+                    Ok(Value::List(l))
+                } else {
+                    Ok(Value::new_list(vec![elem]))
+                }
+            }
+
+            // ── T196: parse_int / parse_float builtins ──
+            "parse_int" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::String(StringRef::Owned(s)) => {
+                        let trimmed = s.trim();
+                        if let Ok(i) = trimmed.parse::<i64>() {
+                            Value::Int(i)
+                        } else if let Ok(bi) = trimmed.parse::<BigInt>() {
+                            Value::BigInt(bi)
+                        } else {
+                            Value::Null
+                        }
+                    }
+                    Value::Int(n) => Value::Int(*n),
+                    Value::BigInt(n) => Value::BigInt(n.clone()),
+                    Value::Float(f) => Value::Int(*f as i64),
+                    _ => Value::Null,
+                })
+            }
+            "parse_float" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::String(StringRef::Owned(s)) => {
+                        let trimmed = s.trim();
+                        if let Ok(f) = trimmed.parse::<f64>() {
+                            Value::Float(f)
+                        } else {
+                            Value::Null
+                        }
+                    }
+                    Value::Float(f) => Value::Float(*f),
+                    Value::Int(n) => Value::Float(*n as f64),
+                    _ => Value::Null,
+                })
+            }
+
+            // ── T195: Bytes builtins ──
+            "bytes_from_ascii" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::String(StringRef::Owned(s)) => Value::Bytes(s.as_bytes().to_vec()),
+                    _ => Value::Null,
+                })
+            }
+            "bytes_to_ascii" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::Bytes(b) => {
+                        Value::String(StringRef::Owned(String::from_utf8_lossy(b).to_string()))
+                    }
+                    _ => Value::Null,
+                })
+            }
+            "bytes_len" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::Bytes(b) => Value::Int(b.len() as i64),
+                    _ => Value::Int(0),
+                })
+            }
+            "bytes_slice" => {
+                let arg = &self.registers[base + a + 1];
+                let start = self.registers[base + a + 2].as_int().unwrap_or(0);
+                let end = self.registers[base + a + 3].as_int().unwrap_or(0);
+                Ok(match arg {
+                    Value::Bytes(b) => {
+                        let start = (start.max(0) as usize).min(b.len());
+                        let end = if end <= 0 {
+                            b.len()
+                        } else {
+                            (end as usize).min(b.len())
+                        };
+                        if start <= end {
+                            Value::Bytes(b[start..end].to_vec())
+                        } else {
+                            Value::Bytes(vec![])
+                        }
+                    }
+                    _ => Value::Null,
+                })
+            }
+            "bytes_concat" => {
+                let arg1 = &self.registers[base + a + 1];
+                let arg2 = &self.registers[base + a + 2];
+                Ok(match (arg1, arg2) {
+                    (Value::Bytes(a_bytes), Value::Bytes(b_bytes)) => {
+                        let mut result = a_bytes.clone();
+                        result.extend_from_slice(b_bytes);
+                        Value::Bytes(result)
+                    }
+                    _ => Value::Null,
+                })
+            }
+
+            // ── T186: validate builtin ──
+            "validate" => {
+                if nargs < 2 {
+                    // Single arg: just check it's not null
+                    let val = &self.registers[base + a + 1];
+                    Ok(Value::Bool(!matches!(val, Value::Null)))
+                } else {
+                    // Two args: validate value against a schema/type descriptor
+                    let val = &self.registers[base + a + 1];
+                    let schema = &self.registers[base + a + 2];
+                    Ok(Value::Bool(validate_value_against_schema(
+                        val,
+                        schema,
+                        &self.strings,
+                    )))
+                }
+            }
+
             _ => Err(VmError::UndefinedCell(name.to_string())),
         }
     }
@@ -1611,7 +1736,20 @@ impl VM {
             }
             7 => {
                 // VALIDATE
-                Ok(Value::Bool(true)) // full validation deferred to schema opcode
+                // Infer arg count from register layout: dest_reg (_a) is right after the arg block
+                let nargs = _a - arg_reg;
+                if nargs < 2 {
+                    // Single arg: just check it's not null
+                    Ok(Value::Bool(!matches!(arg, Value::Null)))
+                } else {
+                    // Two args: validate value against a schema/type descriptor
+                    let schema = &self.registers[base + arg_reg + 1];
+                    Ok(Value::Bool(validate_value_against_schema(
+                        arg,
+                        schema,
+                        &self.strings,
+                    )))
+                }
             }
             8 => {
                 // TRACEREF
@@ -2715,4 +2853,101 @@ fn format_value_with_spec(value: &Value, spec: &str) -> Result<String, VmError> 
     }
 
     Ok(formatted)
+}
+
+/// Validate a value against a schema descriptor.
+///
+/// Schema descriptors are strings naming types (e.g., "Int", "String", "Bool", "Float",
+/// "List", "Map", "Null", "Any") or maps describing record-like shapes.
+/// Returns true if the value matches the schema.
+fn validate_value_against_schema(
+    val: &Value,
+    schema: &Value,
+    strings: &crate::strings::StringTable,
+) -> bool {
+    match schema {
+        Value::String(sref) => {
+            let s = match sref {
+                StringRef::Owned(s) => s.as_str().to_string(),
+                StringRef::Interned(id) => strings.resolve(*id).unwrap_or("").to_string(),
+            };
+            validate_value_against_type_name(val, &s)
+        }
+        // Map schema: each key must be present and match the sub-schema
+        Value::Map(m) => {
+            // val must be a Map or Record
+            match val {
+                Value::Map(vm) => {
+                    for (key, sub_schema) in m.iter() {
+                        match vm.get(key) {
+                            Some(field_val) => {
+                                if !validate_value_against_schema(field_val, sub_schema, strings) {
+                                    return false;
+                                }
+                            }
+                            None => return false,
+                        }
+                    }
+                    true
+                }
+                Value::Record(rv) => {
+                    for (key, sub_schema) in m.iter() {
+                        match rv.fields.get(key) {
+                            Some(field_val) => {
+                                if !validate_value_against_schema(field_val, sub_schema, strings) {
+                                    return false;
+                                }
+                            }
+                            None => return false,
+                        }
+                    }
+                    true
+                }
+                _ => false,
+            }
+        }
+        // List schema: first element is the element type schema
+        Value::List(l) => {
+            if l.is_empty() {
+                // Empty schema list means accept any list
+                matches!(val, Value::List(_))
+            } else {
+                // Validate each element against the first schema item
+                let elem_schema = &l[0];
+                match val {
+                    Value::List(vl) => vl
+                        .iter()
+                        .all(|item| validate_value_against_schema(item, elem_schema, strings)),
+                    _ => false,
+                }
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Check if a value matches a type name string.
+fn validate_value_against_type_name(val: &Value, type_name: &str) -> bool {
+    match type_name {
+        "Any" => true,
+        "Null" | "null" => matches!(val, Value::Null),
+        "Bool" | "bool" => matches!(val, Value::Bool(_)),
+        "Int" | "int" => matches!(val, Value::Int(_) | Value::BigInt(_)),
+        "Float" | "float" => matches!(val, Value::Float(_)),
+        "String" | "string" => matches!(val, Value::String(_)),
+        "Bytes" | "bytes" => matches!(val, Value::Bytes(_)),
+        "List" | "list" => matches!(val, Value::List(_)),
+        "Map" | "map" => matches!(val, Value::Map(_)),
+        "Set" | "set" => matches!(val, Value::Set(_)),
+        "Tuple" | "tuple" => matches!(val, Value::Tuple(_)),
+        "Record" | "record" => matches!(val, Value::Record(_)),
+        "Closure" | "closure" => matches!(val, Value::Closure(_)),
+        "Future" | "future" => matches!(val, Value::Future(_)),
+        // Match specific record type name
+        other => match val {
+            Value::Record(r) => r.type_name == other,
+            Value::Union(u) => u.tag == other,
+            _ => val.type_name() == other,
+        },
+    }
 }

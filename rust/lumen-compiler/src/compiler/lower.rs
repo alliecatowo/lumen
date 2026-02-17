@@ -3330,8 +3330,15 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::abc(OpCode::NewSet, dest, elems.len() as u8, 0));
                 dest
             }
-            Expr::RangeExpr { start, end, .. } => {
-                // Lower as range(start, end) intrinsic call
+            Expr::RangeExpr {
+                start,
+                end,
+                inclusive,
+                ..
+            } => {
+                // Lower as range(start, end) intrinsic call.
+                // For inclusive ranges (..=), we emit range(start, end + 1)
+                // since the Range intrinsic produces an exclusive range.
                 let sr = if let Some(s) = start {
                     self.lower_expr(s, ra, consts, instrs)
                 } else {
@@ -3342,7 +3349,19 @@ impl<'a> Lowerer<'a> {
                     r
                 };
                 let er = if let Some(e) = end {
-                    self.lower_expr(e, ra, consts, instrs)
+                    let raw_end = self.lower_expr(e, ra, consts, instrs);
+                    if *inclusive {
+                        // For inclusive range, add 1 to the end value
+                        let one_reg = ra.alloc_temp();
+                        let one_idx = consts.len() as u16;
+                        consts.push(Constant::Int(1));
+                        instrs.push(Instruction::abx(OpCode::LoadK, one_reg, one_idx));
+                        let inc_end = ra.alloc_temp();
+                        instrs.push(Instruction::abc(OpCode::Add, inc_end, raw_end, one_reg));
+                        inc_end
+                    } else {
+                        raw_end
+                    }
                 } else {
                     let r = ra.alloc_temp();
                     let kidx = consts.len() as u16;

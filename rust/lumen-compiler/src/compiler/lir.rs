@@ -279,6 +279,178 @@ impl Instruction {
     }
 }
 
+// ============================================================================
+// 64-bit Instruction Encoding (Experimental / Additive)
+// ============================================================================
+
+/// A 64-bit wide instruction for future use when 32-bit encoding limits
+/// are exceeded.
+///
+/// ## Motivation
+///
+/// The current 32-bit `Instruction` has hard limits:
+/// - 256 registers (8-bit `a` field) — sufficient for most cells but limits
+///   very large generated cells
+/// - 65,536 constants (16-bit `Bx`) — could be exceeded by data-heavy programs
+/// - ±8M jump offset (24-bit signed `Ax`) — effectively unlimited for jumps
+///
+/// The 64-bit encoding lifts these limits while remaining fixed-width for
+/// O(1) decode:
+///
+/// ## Encoding Formats
+///
+/// **ABC format** (three-register):
+/// ```text
+/// [op: 8][a: 16][b: 16][c: 16][_pad: 8]  = 64 bits
+/// ```
+/// - 65,536 registers per field
+/// - Used by: Add, Sub, Mul, Eq, Lt, GetField, SetField, etc.
+///
+/// **ABx format** (register + wide constant index):
+/// ```text
+/// [op: 8][a: 16][bx: 32][_pad: 8]  = 64 bits
+/// ```
+/// - 16-bit register, 32-bit constant index (4B+ constants)
+/// - Used by: LoadK, NewRecord, Closure, ToolCall, Spawn, etc.
+///
+/// **Ax format** (wide immediate / jump offset):
+/// ```text
+/// [op: 8][ax: 48][_pad: 8]  = 64 bits
+/// ```
+/// - 48-bit unsigned (281 trillion) or signed (±140 trillion) immediate
+/// - Used by: Jmp, HandlePush, Break, Continue
+///
+/// ## Design Decisions
+///
+/// 1. **Additive only**: The existing `Instruction` (32-bit) is untouched.
+///    No existing codepaths change.
+/// 2. **Same OpCode enum**: Both instruction widths share the same `OpCode`,
+///    so the VM dispatch table doesn't need to change — only the decode path.
+/// 3. **Padding byte**: The trailing 8-bit pad keeps the struct at exactly
+///    8 bytes and could be used for future flags (e.g., type hints, debug info).
+/// 4. **Conversion functions**: `Instruction::widen()` → `Instruction64` and
+///    `Instruction64::narrow()` → `Option<Instruction>` for incremental migration.
+/// 5. **No ABI break**: `LirCell.instructions` stays `Vec<Instruction>`. A future
+///    `LirCell64` or mixed-width cell would be added separately.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Instruction64 {
+    pub op: OpCode,
+    pub a: u16,
+    pub b: u16,
+    pub c: u16,
+    /// Reserved padding byte. Currently unused; could hold flags in future.
+    pub pad: u8,
+}
+
+impl Instruction64 {
+    /// ABC format: three 16-bit register operands.
+    pub fn abc(op: OpCode, a: u16, b: u16, c: u16) -> Self {
+        Self {
+            op,
+            a,
+            b,
+            c,
+            pad: 0,
+        }
+    }
+
+    /// ABx format: one 16-bit register + one 32-bit constant/offset index.
+    /// The 32-bit value is split across `b` (high 16) and `c` (low 16).
+    pub fn abx(op: OpCode, a: u16, bx: u32) -> Self {
+        Self {
+            op,
+            a,
+            b: (bx >> 16) as u16,
+            c: (bx & 0xFFFF) as u16,
+            pad: 0,
+        }
+    }
+
+    /// Ax format: 48-bit unsigned immediate packed across `a`, `b`, `c`.
+    pub fn ax(op: OpCode, ax: u64) -> Self {
+        debug_assert!(ax <= 0xFFFF_FFFF_FFFF, "ax must fit in 48 bits");
+        Self {
+            op,
+            a: ((ax >> 32) & 0xFFFF) as u16,
+            b: ((ax >> 16) & 0xFFFF) as u16,
+            c: (ax & 0xFFFF) as u16,
+            pad: 0,
+        }
+    }
+
+    /// Signed Ax constructor for 48-bit jump offsets.
+    pub fn sax(op: OpCode, offset: i64) -> Self {
+        let bits = (offset as u64) & 0xFFFF_FFFF_FFFF;
+        Self {
+            op,
+            a: ((bits >> 32) & 0xFFFF) as u16,
+            b: ((bits >> 16) & 0xFFFF) as u16,
+            c: (bits & 0xFFFF) as u16,
+            pad: 0,
+        }
+    }
+
+    /// Extract the 32-bit Bx value from b (high) and c (low).
+    pub fn bx(&self) -> u32 {
+        ((self.b as u32) << 16) | (self.c as u32)
+    }
+
+    /// Extract the 48-bit unsigned Ax value.
+    pub fn ax_val(&self) -> u64 {
+        ((self.a as u64) << 32) | ((self.b as u64) << 16) | (self.c as u64)
+    }
+
+    /// Extract the 48-bit signed Ax value with sign extension.
+    pub fn sax_val(&self) -> i64 {
+        let raw = self.ax_val();
+        if raw & 0x0000_8000_0000_0000 != 0 {
+            // Sign-extend from bit 47
+            (raw | 0xFFFF_0000_0000_0000) as i64
+        } else {
+            raw as i64
+        }
+    }
+
+    /// Extract signed 16-bit Bx (for small signed offsets in ABx mode).
+    pub fn sbx(&self) -> i32 {
+        // Treat the full 32-bit bx as signed
+        self.bx() as i32
+    }
+
+    /// Try to narrow this 64-bit instruction back to a 32-bit `Instruction`.
+    /// Returns `None` if any operand exceeds the 8-bit limits of the 32-bit
+    /// encoding.
+    pub fn narrow(&self) -> Option<Instruction> {
+        if self.a > 255 || self.b > 255 || self.c > 255 {
+            return None;
+        }
+        Some(Instruction {
+            op: self.op,
+            a: self.a as u8,
+            b: self.b as u8,
+            c: self.c as u8,
+        })
+    }
+
+    /// Size in bytes of this instruction encoding.
+    pub const fn size_bytes() -> usize {
+        8
+    }
+}
+
+impl Instruction {
+    /// Widen a 32-bit instruction to the 64-bit encoding (lossless).
+    pub fn widen(&self) -> Instruction64 {
+        Instruction64 {
+            op: self.op,
+            a: self.a as u16,
+            b: self.b as u16,
+            c: self.c as u16,
+            pad: 0,
+        }
+    }
+}
+
 /// Constant value in the constant pool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Constant {

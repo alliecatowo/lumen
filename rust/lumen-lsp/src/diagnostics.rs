@@ -7,6 +7,7 @@ use lumen_compiler::compiler::ownership::OwnershipError;
 use lumen_compiler::compiler::parser::ParseError;
 use lumen_compiler::compiler::resolve::ResolveError;
 use lumen_compiler::compiler::typecheck::TypeError;
+use lumen_compiler::diagnostics as diag;
 use lumen_compiler::CompileError;
 
 /// Convert a compile error into LSP diagnostics
@@ -581,6 +582,7 @@ fn type_error_to_diagnostic(error: &TypeError) -> Diagnostic {
             line,
         } => {
             let line_zero = line.saturating_sub(1) as u32;
+            let diff_msg = diag::type_diff(expected, actual);
 
             Diagnostic {
                 range: Range {
@@ -596,7 +598,7 @@ fn type_error_to_diagnostic(error: &TypeError) -> Diagnostic {
                 severity: Some(DiagnosticSeverity::ERROR),
                 code: Some(lsp_types::NumberOrString::String("E040".to_string())),
                 source: Some("lumen".to_string()),
-                message: format!("type mismatch: expected {}, got {}", expected, actual),
+                message: format!("type mismatch: {}", diff_msg),
                 related_information: None,
                 tags: None,
                 code_description: None,
@@ -605,6 +607,13 @@ fn type_error_to_diagnostic(error: &TypeError) -> Diagnostic {
         }
         TypeError::UndefinedVar { name, line } => {
             let line_zero = line.saturating_sub(1) as u32;
+            let mut message = format!("undefined variable '{}'", name);
+
+            // Use the public suggest_similar_names for LSP hover/diagnostics
+            let empty: Vec<&str> = Vec::new();
+            if let Some(hint) = diag::format_suggestions(name, &empty) {
+                message.push_str(&format!(" ({})", hint));
+            }
 
             Diagnostic {
                 range: Range {
@@ -620,7 +629,7 @@ fn type_error_to_diagnostic(error: &TypeError) -> Diagnostic {
                 severity: Some(DiagnosticSeverity::ERROR),
                 code: Some(lsp_types::NumberOrString::String("E041".to_string())),
                 source: Some("lumen".to_string()),
-                message: format!("undefined variable '{}'", name),
+                message,
                 related_information: None,
                 tags: None,
                 code_description: None,

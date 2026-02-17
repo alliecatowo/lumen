@@ -9,6 +9,7 @@ pub mod channel;
 pub mod checkpoint;
 pub mod debugger;
 pub mod durability;
+pub mod idempotency;
 pub mod injection;
 pub mod mailbox;
 pub mod nursery;

@@ -1932,6 +1932,31 @@ impl<'a> TypeChecker<'a> {
                     t
                 }
             }
+            Expr::TryElse {
+                expr,
+                error_binding,
+                handler,
+                ..
+            } => {
+                let t = self.infer_expr(expr);
+                // If expr is Result[Ok, Err], bind error and evaluate handler
+                if let Type::Result(ok, err) = t {
+                    // Temporarily register error binding type for handler inference
+                    self.locals.insert(error_binding.clone(), *err);
+                    let handler_ty = self.infer_expr(handler);
+                    // The result type is the Ok type (both branches should produce T)
+                    // If handler type matches ok type, return ok type; otherwise use handler
+                    if handler_ty == *ok || handler_ty == Type::Any || *ok == Type::Any {
+                        *ok
+                    } else {
+                        handler_ty
+                    }
+                } else {
+                    // Not a result type — handler is unused, just return expr type
+                    self.infer_expr(handler);
+                    t
+                }
+            }
             Expr::NullCoalesce(lhs, rhs, _) => {
                 let lt = self.infer_expr(lhs);
                 let rt = self.infer_expr(rhs);

@@ -5,6 +5,10 @@
 //! timeout-based receives. Designed to integrate with the existing [`Actor`]
 //! trait in [`crate::actor`].
 //!
+//! Supports Erlang-style **selective receive**: [`recv_selective`] scans the
+//! mailbox for the first message matching a predicate, leaving non-matching
+//! messages in order via an internal save queue.
+//!
 //! # Example
 //!
 //! ```rust
@@ -17,6 +21,7 @@
 //! ```
 
 use crossbeam_channel::{self as cb};
+use std::collections::VecDeque;
 use std::fmt;
 use std::time::Duration;
 
@@ -101,19 +106,31 @@ impl<T> MailboxSender<T> {
 // Mailbox
 // ---------------------------------------------------------------------------
 
-/// A receive-side mailbox wrapping an MPSC channel.
+/// A receive-side mailbox wrapping an MPSC channel with an Erlang-style
+/// save queue for selective receive.
 ///
 /// Provides non-blocking (`recv`), blocking (`recv_blocking`), and
-/// timeout-based (`recv_timeout`) receive operations. Integrates with
-/// the actor system — an actor's message loop can be driven by a `Mailbox`.
+/// timeout-based (`recv_timeout`) receive operations. Supports selective
+/// receive via [`recv_selective`](Mailbox::recv_selective) which scans for
+/// matching messages while preserving non-matching ones in order.
+///
+/// Integrates with the actor system — an actor's message loop can be driven
+/// by a `Mailbox`.
 pub struct Mailbox<T> {
     inner: cb::Receiver<T>,
+    /// Erlang-style save queue: messages that were inspected during selective
+    /// receive but did not match the predicate are stored here and drained
+    /// first on subsequent receive calls.
+    save_queue: std::cell::RefCell<VecDeque<T>>,
 }
 
 impl<T> fmt::Debug for Mailbox<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Mailbox")
-            .field("pending", &self.inner.len())
+            .field(
+                "pending",
+                &(self.save_queue.borrow().len() + self.inner.len()),
+            )
             .finish()
     }
 }
@@ -124,7 +141,13 @@ impl<T> Mailbox<T> {
     /// The sender never blocks; memory is the only limit on buffering.
     pub fn unbounded() -> (MailboxSender<T>, Self) {
         let (tx, rx) = cb::unbounded();
-        (MailboxSender { inner: tx }, Self { inner: rx })
+        (
+            MailboxSender { inner: tx },
+            Self {
+                inner: rx,
+                save_queue: std::cell::RefCell::new(VecDeque::new()),
+            },
+        )
     }
 
     /// Create a bounded mailbox with the given capacity.
@@ -132,52 +155,168 @@ impl<T> Mailbox<T> {
     /// Senders block when the buffer is full (back-pressure).
     pub fn bounded(capacity: usize) -> (MailboxSender<T>, Self) {
         let (tx, rx) = cb::bounded(capacity);
-        (MailboxSender { inner: tx }, Self { inner: rx })
+        (
+            MailboxSender { inner: tx },
+            Self {
+                inner: rx,
+                save_queue: std::cell::RefCell::new(VecDeque::new()),
+            },
+        )
     }
 
     /// Non-blocking receive. Returns `None` if no message is available.
     ///
+    /// Messages in the save queue (from prior selective receives) are
+    /// drained first, in order.
+    ///
     /// This returns `None` both when the channel is empty-but-open and when
     /// it is closed-and-drained. Use `is_disconnected` to distinguish.
     pub fn recv(&self) -> Option<T> {
+        // First check the save queue
+        {
+            let mut sq = self.save_queue.borrow_mut();
+            if let Some(msg) = sq.pop_front() {
+                return Some(msg);
+            }
+        }
         self.inner.try_recv().ok()
     }
 
     /// Blocking receive. Waits until a message arrives.
     ///
+    /// Messages in the save queue are drained first.
+    ///
     /// Returns `Err(MailboxRecvError)` only when all senders have been dropped
     /// and the queue is empty.
     pub fn recv_blocking(&self) -> Result<T, MailboxRecvError> {
+        {
+            let mut sq = self.save_queue.borrow_mut();
+            if let Some(msg) = sq.pop_front() {
+                return Ok(msg);
+            }
+        }
         self.inner.recv().map_err(|_| MailboxRecvError)
     }
 
     /// Receive with a timeout. Returns `None` if no message arrives within
     /// `duration`, or if all senders have been dropped.
+    ///
+    /// Messages in the save queue are drained first.
     pub fn recv_timeout(&self, duration: Duration) -> Option<T> {
+        {
+            let mut sq = self.save_queue.borrow_mut();
+            if let Some(msg) = sq.pop_front() {
+                return Some(msg);
+            }
+        }
         self.inner.recv_timeout(duration).ok()
     }
 
-    /// Number of messages currently buffered.
-    pub fn len(&self) -> usize {
-        self.inner.len()
+    /// Selective receive (Erlang-style). Scans the mailbox for the first
+    /// message matching `predicate`, leaving non-matching messages in order.
+    ///
+    /// The scan order is: save queue first (front to back), then the
+    /// underlying channel. Messages inspected but not matching are placed
+    /// back in the save queue so that a subsequent `recv()` or
+    /// `recv_selective()` sees them in the original order.
+    ///
+    /// Returns `None` if no matching message is currently available (i.e. the
+    /// save queue and channel have been fully scanned without a match).
+    pub fn recv_selective<F>(&self, predicate: F) -> Option<T>
+    where
+        F: Fn(&T) -> bool,
+    {
+        let mut sq = self.save_queue.borrow_mut();
+
+        // Phase 1: scan the save queue by index — remove the first match
+        for i in 0..sq.len() {
+            if predicate(&sq[i]) {
+                return sq.remove(i);
+            }
+        }
+
+        // Phase 2: drain the channel, testing each message
+        while let Ok(msg) = self.inner.try_recv() {
+            if predicate(&msg) {
+                return Some(msg);
+            }
+            sq.push_back(msg);
+        }
+
+        None
     }
 
-    /// Whether the mailbox is currently empty.
+    /// Selective receive with timeout. Same as [`recv_selective`](Mailbox::recv_selective)
+    /// but waits up to `timeout` for a matching message to arrive.
+    ///
+    /// Returns `None` if no matching message arrives within the timeout.
+    pub fn recv_selective_timeout<F>(&self, predicate: F, timeout: Duration) -> Option<T>
+    where
+        F: Fn(&T) -> bool,
+    {
+        use std::time::Instant;
+
+        let deadline = Instant::now() + timeout;
+
+        // First, do a non-blocking selective scan of everything already buffered
+        {
+            let mut sq = self.save_queue.borrow_mut();
+
+            // Phase 1: scan save queue by index
+            for i in 0..sq.len() {
+                if predicate(&sq[i]) {
+                    return sq.remove(i);
+                }
+            }
+
+            // Phase 2: drain channel (non-blocking)
+            while let Ok(msg) = self.inner.try_recv() {
+                if predicate(&msg) {
+                    return Some(msg);
+                }
+                sq.push_back(msg);
+            }
+        }
+
+        // Phase 3: wait for new messages until deadline
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            match self.inner.recv_timeout(remaining) {
+                Ok(msg) => {
+                    if predicate(&msg) {
+                        return Some(msg);
+                    }
+                    self.save_queue.borrow_mut().push_back(msg);
+                }
+                Err(_) => return None,
+            }
+        }
+    }
+
+    /// Number of messages currently buffered (save queue + channel).
+    pub fn len(&self) -> usize {
+        self.save_queue.borrow().len() + self.inner.len()
+    }
+
+    /// Whether the mailbox is currently empty (save queue + channel).
     pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
+        self.save_queue.borrow().is_empty() && self.inner.is_empty()
     }
 
     /// Returns `true` if all senders have been dropped.
     ///
     /// Note: even if disconnected, there may still be buffered messages
-    /// retrievable via `recv` / `recv_blocking`.
+    /// retrievable via `recv` / `recv_blocking` (including in the save queue).
     pub fn is_disconnected(&self) -> bool {
+        // If there are messages in the save queue, we're not fully disconnected
+        // in a meaningful sense — there's still data to read.
+        if !self.save_queue.borrow().is_empty() {
+            return false;
+        }
         // crossbeam doesn't expose a direct "is_disconnected" method.
-        // We peek via try_recv: if Disconnected AND empty, it's disconnected.
-        // But we must not consume messages. Use the internal receiver's
-        // is_empty + a zero-timeout recv to test.
-        //
-        // Actually, crossbeam's Receiver doesn't have is_disconnected either.
         // The simplest approach: attempt a zero-duration recv.
         match self.inner.recv_timeout(Duration::ZERO) {
             Err(cb::RecvTimeoutError::Disconnected) => self.inner.is_empty(),
@@ -186,12 +325,26 @@ impl<T> Mailbox<T> {
     }
 
     /// Drain all currently-buffered messages into a `Vec`.
+    ///
+    /// Save-queue messages come first (in order), then channel messages.
     pub fn drain(&self) -> Vec<T> {
         let mut msgs = Vec::new();
+        {
+            let mut sq = self.save_queue.borrow_mut();
+            while let Some(msg) = sq.pop_front() {
+                msgs.push(msg);
+            }
+        }
         while let Ok(msg) = self.inner.try_recv() {
             msgs.push(msg);
         }
         msgs
+    }
+
+    /// Number of messages currently in the save queue (skipped by
+    /// selective receive but not yet consumed).
+    pub fn save_queue_len(&self) -> usize {
+        self.save_queue.borrow().len()
     }
 
     /// Provide access to the underlying crossbeam `Receiver` for use in
@@ -558,5 +711,245 @@ mod tests {
 
         let collected = result.lock().unwrap();
         assert_eq!(*collected, vec!["hello".to_string(), "world".to_string()]);
+    }
+
+    // =====================================================================
+    // 21. Selective receive finds matching message
+    // =====================================================================
+    #[test]
+    fn selective_recv_finds_match() {
+        let (tx, mb) = Mailbox::<i32>::unbounded();
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        tx.send(3).unwrap();
+
+        // Select only the even number
+        let result = mb.recv_selective(|msg| msg % 2 == 0);
+        assert_eq!(result, Some(2));
+
+        // Non-matching messages (1, 3) are preserved
+        assert_eq!(mb.len(), 2);
+        assert_eq!(mb.recv(), Some(1));
+        assert_eq!(mb.recv(), Some(3));
+        assert_eq!(mb.recv(), None);
+    }
+
+    // =====================================================================
+    // 22. Selective receive preserves non-matching message order
+    // =====================================================================
+    #[test]
+    fn selective_recv_preserves_order() {
+        let (tx, mb) = Mailbox::<String>::unbounded();
+        tx.send("a".into()).unwrap();
+        tx.send("b".into()).unwrap();
+        tx.send("TARGET".into()).unwrap();
+        tx.send("c".into()).unwrap();
+        tx.send("d".into()).unwrap();
+
+        let result = mb.recv_selective(|msg| msg == "TARGET");
+        assert_eq!(result, Some("TARGET".to_string()));
+
+        // Remaining messages should be in original order: a, b, c, d
+        let remaining = mb.drain();
+        assert_eq!(
+            remaining,
+            vec![
+                "a".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+                "d".to_string()
+            ]
+        );
+    }
+
+    // =====================================================================
+    // 23. Selective receive returns None when no match
+    // =====================================================================
+    #[test]
+    fn selective_recv_no_match() {
+        let (tx, mb) = Mailbox::<i32>::unbounded();
+        tx.send(1).unwrap();
+        tx.send(3).unwrap();
+        tx.send(5).unwrap();
+
+        let result = mb.recv_selective(|msg| msg % 2 == 0);
+        assert_eq!(result, None);
+
+        // All messages should still be in the save queue, retrievable in order
+        assert_eq!(mb.len(), 3);
+        assert_eq!(mb.recv(), Some(1));
+        assert_eq!(mb.recv(), Some(3));
+        assert_eq!(mb.recv(), Some(5));
+    }
+
+    // =====================================================================
+    // 24. Selective receive on empty mailbox
+    // =====================================================================
+    #[test]
+    fn selective_recv_empty() {
+        let (_tx, mb) = Mailbox::<i32>::unbounded();
+        let result = mb.recv_selective(|_| true);
+        assert_eq!(result, None);
+    }
+
+    // =====================================================================
+    // 25. Selective receive all messages match — returns first
+    // =====================================================================
+    #[test]
+    fn selective_recv_all_match_returns_first() {
+        let (tx, mb) = Mailbox::<i32>::unbounded();
+        tx.send(2).unwrap();
+        tx.send(4).unwrap();
+        tx.send(6).unwrap();
+
+        let result = mb.recv_selective(|msg| msg % 2 == 0);
+        assert_eq!(result, Some(2));
+
+        // Remaining: 4, 6
+        assert_eq!(mb.recv(), Some(4));
+        assert_eq!(mb.recv(), Some(6));
+    }
+
+    // =====================================================================
+    // 26. Selective receive with timeout — finds match before timeout
+    // =====================================================================
+    #[test]
+    fn selective_recv_timeout_finds_match() {
+        let (tx, mb) = Mailbox::<i32>::unbounded();
+        tx.send(1).unwrap();
+        tx.send(42).unwrap();
+        tx.send(3).unwrap();
+
+        let result = mb.recv_selective_timeout(|msg| *msg == 42, Duration::from_millis(100));
+        assert_eq!(result, Some(42));
+
+        // Non-matching messages preserved in order
+        assert_eq!(mb.recv(), Some(1));
+        assert_eq!(mb.recv(), Some(3));
+    }
+
+    // =====================================================================
+    // 27. Selective receive with timeout — times out
+    // =====================================================================
+    #[test]
+    fn selective_recv_timeout_expires() {
+        let (_tx, mb) = Mailbox::<i32>::unbounded();
+        let result = mb.recv_selective_timeout(|_| true, Duration::from_millis(10));
+        assert_eq!(result, None);
+    }
+
+    // =====================================================================
+    // 28. Selective receive with timeout — message arrives during wait
+    // =====================================================================
+    #[test]
+    fn selective_recv_timeout_waits_for_new_message() {
+        let (tx, mb) = Mailbox::<i32>::unbounded();
+
+        let handle = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            tx.send(99).unwrap();
+        });
+
+        let result = mb.recv_selective_timeout(|msg| *msg == 99, Duration::from_millis(500));
+        assert_eq!(result, Some(99));
+
+        handle.join().unwrap();
+    }
+
+    // =====================================================================
+    // 29. Multiple selective receives in sequence
+    // =====================================================================
+    #[test]
+    fn multiple_selective_receives() {
+        let (tx, mb) = Mailbox::<i32>::unbounded();
+        for i in 1..=10 {
+            tx.send(i).unwrap();
+        }
+
+        // Pick out 5, then 3, then 7
+        assert_eq!(mb.recv_selective(|m| *m == 5), Some(5));
+        assert_eq!(mb.recv_selective(|m| *m == 3), Some(3));
+        assert_eq!(mb.recv_selective(|m| *m == 7), Some(7));
+
+        // Remaining should be 1, 2, 4, 6, 8, 9, 10 in order
+        let remaining = mb.drain();
+        assert_eq!(remaining, vec![1, 2, 4, 6, 8, 9, 10]);
+    }
+
+    // =====================================================================
+    // 30. Save queue length tracking
+    // =====================================================================
+    #[test]
+    fn save_queue_len() {
+        let (tx, mb) = Mailbox::<i32>::unbounded();
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        tx.send(3).unwrap();
+
+        assert_eq!(mb.save_queue_len(), 0);
+
+        // No match — all go to save queue
+        mb.recv_selective(|m| *m == 99);
+        assert_eq!(mb.save_queue_len(), 3);
+
+        // recv drains from save queue first
+        mb.recv();
+        assert_eq!(mb.save_queue_len(), 2);
+    }
+
+    // =====================================================================
+    // 31. Selective receive from save queue (previously skipped messages)
+    // =====================================================================
+    #[test]
+    fn selective_recv_from_save_queue() {
+        let (tx, mb) = Mailbox::<i32>::unbounded();
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        tx.send(3).unwrap();
+
+        // First selective: look for 99 (no match) — puts 1, 2, 3 in save queue
+        assert_eq!(mb.recv_selective(|m| *m == 99), None);
+        assert_eq!(mb.save_queue_len(), 3);
+
+        // Second selective: look for 2 — should find it in the save queue
+        assert_eq!(mb.recv_selective(|m| *m == 2), Some(2));
+        assert_eq!(mb.save_queue_len(), 2);
+
+        // Remaining: 1, 3
+        assert_eq!(mb.recv(), Some(1));
+        assert_eq!(mb.recv(), Some(3));
+    }
+
+    // =====================================================================
+    // 32. recv_blocking drains save queue first
+    // =====================================================================
+    #[test]
+    fn recv_blocking_drains_save_queue() {
+        let (tx, mb) = Mailbox::<i32>::unbounded();
+        tx.send(10).unwrap();
+        tx.send(20).unwrap();
+
+        // Miss — both go to save queue
+        mb.recv_selective(|m| *m == 99);
+        assert_eq!(mb.save_queue_len(), 2);
+
+        // recv_blocking should get from save queue first
+        assert_eq!(mb.recv_blocking().unwrap(), 10);
+        assert_eq!(mb.recv_blocking().unwrap(), 20);
+    }
+
+    // =====================================================================
+    // 33. recv_timeout drains save queue first
+    // =====================================================================
+    #[test]
+    fn recv_timeout_drains_save_queue() {
+        let (tx, mb) = Mailbox::<i32>::unbounded();
+        tx.send(5).unwrap();
+
+        // Miss — goes to save queue
+        mb.recv_selective(|m| *m == 99);
+
+        let result = mb.recv_timeout(Duration::from_millis(10));
+        assert_eq!(result, Some(5));
     }
 }

@@ -14,7 +14,7 @@ This roadmap reflects implementation status as of February 2026. **Current statu
 - **Types:** Int, Float, String, Bool, Bytes, Json, Null; List, Map, Set, Tuple (Rc copy-on-write); records with where-clause constraints; enums with payloads; pattern matching with exhaustiveness; union types, `T?`, `result[T, E]`.
 - **Control flow:** if/else, for, while, loop, match; break/continue with labels; try expressions.
 - **Features:** String interpolation; ranges `1..5`, `1..=5`; pipe `|>`; compose `~>`; closures; import system.
-- **Testing:** 30 examples; 1,365+ tests across compiler, VM, runtime.
+- **Testing:** 30 examples; 2,900+ tests across compiler, VM, runtime, CLI.
 
 ### Phase 2: Advanced Features [Complete]
 
@@ -29,17 +29,17 @@ This roadmap reflects implementation status as of February 2026. **Current statu
 
 ### Phase 2.5: Package Manager "Wares" [Mostly Complete]
 
-**Status:** CLI and lockfile complete; real signing and registry deployment pending.
+**Status:** CLI and lockfile complete; registry deployment pending.
 
 - **Manifest/lockfile:** `lumen.toml`, `lumen.lock` v4, SAT/CDCL resolver; `@namespace/name` naming.
 - **CLI:** init, add, remove, install, update, publish, search, info, trust-check, policy; frozen/locked modes.
-- **Security:** Sigstore-style signing (stub); trust policy; content hash in lockfile. Real Ed25519/Sigstore and transparency log not yet implemented.
+- **Security:** Real Ed25519 signing (`auth.rs`); OIDC authentication (`oidc.rs`); TUF metadata verification (`tuf.rs`) with threshold signing, rollback detection, expiration enforcement, root rotation, and target hash/size verification; trust policy; content hash in lockfile; audit logging (`audit.rs`).
 - **Registry:** Cloudflare Workers scaffolded; D1 + R2 not deployed.
 
 ### Phase 3: Production Readiness [In Progress]
 
 - Documentation: lang-ref from compiler; stdlib docs.
-- Security: real crypto signing, transparency log, registry deployment.
+- Security: transparency log, registry deployment (Ed25519 signing and TUF verification complete).
 - WASM: multi-file imports, tool providers, browser/Node/WASI.
 - Performance: benchmarks, VM dispatch and compiler optimizations.
 - Language: gradual ownership (`ref T`, `mut ref T`), stdlib bootstrap, self-hosting exploration; **result/optional syntactic sugar** (e.g. propagation operator or optional chaining) to reduce `unwrap`/match boilerplate—see TASKS.md T209, COMPETITIVE_ANALYSIS §6.3.
@@ -142,8 +142,8 @@ Long-term direction: move from interpreted scripting to **verified, durable, sys
 
 ## Summary
 
-- **Done:** Core language, advanced features, LSP, VS Code, formatter, Wares CLI, VM improvements (Phases 1–2.5).
-- **In progress:** Production hardening (crypto, registry, WASM, performance, ownership, stdlib).
+- **Done:** Core language, advanced features, LSP, VS Code, formatter, Wares CLI, VM improvements, Ed25519 signing, OIDC auth, TUF metadata verification (Phases 1–2.5).
+- **In progress:** Production hardening (transparency log, registry deployment, WASM, performance, ownership, stdlib).
 - **Planned:** Full strategic trajectory in TASKS.md: memory model, AOT/JIT, verification, scheduler, durability, tensors/AD, ecosystem, syntax, stdlib, self-hosting, release gates. Extended tasks T148–T180 add session types, structured concurrency, parity checklists, diagnostics, testing, IDE, CI, and service templates.
 
 The granular task list (T001–T192), deficiency checklist (D01–D18), protocol, and competitive rationale are in **TASKS.md**. The 50-language comparison and gap matrix are in **docs/research/COMPETITIVE_ANALYSIS.md**.

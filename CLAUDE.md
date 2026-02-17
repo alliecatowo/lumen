@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build --release                    # Build all crates
-cargo test --workspace                   # Run all tests (~1365 passing, 22 ignored)
+cargo test --workspace                   # Run all tests (~2,900 passing)
 cargo test -p lumen-compiler             # Tests for compiler only
 cargo test -p lumen-vm                   # Tests for VM only
 cargo test -p lumen-runtime              # Tests for runtime only
@@ -49,7 +49,7 @@ The Cargo workspace root is `/Cargo.toml` with members under `rust/`:
 - **lumen-compiler** — Front-end pipeline: markdown extraction → lexer → parser → resolver → typechecker → constraint validation → LIR lowering
 - **lumen-vm** — Register VM that executes LIR bytecode (values, string interning, type tables, process runtimes)
 - **lumen-runtime** — Infrastructure: tool dispatch trait, result caching, trace event storage
-- **lumen-cli** — Clap-based CLI (`main.rs`) orchestrating compiler → VM
+- **lumen-cli** — Clap-based CLI (`main.rs`) orchestrating compiler → VM; includes package manager, OIDC auth, TUF metadata verification, audit logging
 - **lumen-lsp** — Language Server Protocol implementation
 - **lumen-wasm** — WebAssembly bindings (excluded from workspace, built via wasm-pack)
 - **lumen-provider-http** — HTTP provider for tool calls
@@ -296,8 +296,29 @@ Providers implement `capabilities()` method to advertise supported features. The
 - `rust/lumen-compiler/tests/spec_markdown_sweep.rs` — Compiles every code block in `SPEC.md` (auto-stubs undefined types)
 - `rust/lumen-compiler/tests/spec_suite.rs` — Semantic compiler tests (compile-ok and compile-err cases)
 - Unit tests inline in source files across all crates
-- **Test counts**: ~1365 passing, 22 ignored (ignored tests are integration tests requiring external services: Gemini API, MCP servers, provider registry)
+- **Test counts**: ~2,900 passing, 22 ignored (ignored tests are integration tests requiring external services: Gemini API, MCP servers, provider registry)
 - All 30 examples type-check successfully; most run end-to-end
+
+## Security Infrastructure
+
+The CLI includes supply-chain security features for the package manager:
+
+**Ed25519 signing** (`rust/lumen-cli/src/auth.rs`): Real Ed25519 key generation and signing via `ed25519-dalek`. Used for package publishing, registry authentication, and TUF metadata.
+
+**OIDC authentication** (`rust/lumen-cli/src/oidc.rs`): OpenID Connect token verification for registry authentication. Supports standard OIDC flows with ID token validation.
+
+**TUF metadata verification** (`rust/lumen-cli/src/tuf.rs`): Full implementation of The Update Framework for secure package metadata:
+- Four TUF roles: Root, Targets, Snapshot, Timestamp
+- Ed25519 signature verification (HMAC-SHA256 fallback when ed25519 feature disabled)
+- Threshold signing: configurable number of required signatures per role
+- Rollback detection: version numbers must be monotonically increasing
+- Expiration enforcement: stale metadata is rejected
+- Root rotation: trusted root can be updated via cross-signed new root
+- Target verification: package content hash and size checked against signed metadata
+
+**Audit logging** (`rust/lumen-cli/src/audit.rs`): Structured audit log for security-relevant operations.
+
+**Error chains** (`rust/lumen-cli/src/error_chain.rs`): Structured error chain formatting for CLI diagnostics.
 
 ## Language Essentials
 

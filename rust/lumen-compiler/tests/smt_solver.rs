@@ -8,20 +8,20 @@ use lumen_compiler::compiler::verification::smt_solver::*;
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave23_smt_expr_int_const_display() {
+fn smt_expr_int_const_display() {
     assert_eq!(SmtExpr::IntConst(42).to_smtlib2(), "42");
     assert_eq!(SmtExpr::IntConst(0).to_smtlib2(), "0");
     assert_eq!(SmtExpr::IntConst(-7).to_smtlib2(), "(- 7)");
 }
 
 #[test]
-fn wave23_smt_expr_bool_const_display() {
+fn smt_expr_bool_const_display() {
     assert_eq!(SmtExpr::BoolConst(true).to_smtlib2(), "true");
     assert_eq!(SmtExpr::BoolConst(false).to_smtlib2(), "false");
 }
 
 #[test]
-fn wave23_smt_expr_float_const_display() {
+fn smt_expr_float_const_display() {
     let s = SmtExpr::FloatConst(3.14).to_smtlib2();
     assert!(s.contains("3.14"), "got: {}", s);
     let neg = SmtExpr::FloatConst(-2.5).to_smtlib2();
@@ -29,19 +29,19 @@ fn wave23_smt_expr_float_const_display() {
 }
 
 #[test]
-fn wave23_smt_expr_string_const_display() {
+fn smt_expr_string_const_display() {
     let s = SmtExpr::StringConst("hello".to_string()).to_smtlib2();
     assert_eq!(s, "\"hello\"");
 }
 
 #[test]
-fn wave23_smt_expr_var_display() {
+fn smt_expr_var_display() {
     let v = SmtExpr::Var("x".to_string(), SmtSort::Int);
     assert_eq!(v.to_smtlib2(), "x");
 }
 
 #[test]
-fn wave23_smt_expr_arithmetic_display() {
+fn smt_expr_arithmetic_display() {
     let x = || Box::new(SmtExpr::Var("x".to_string(), SmtSort::Int));
     let one = || Box::new(SmtExpr::IntConst(1));
 
@@ -54,7 +54,7 @@ fn wave23_smt_expr_arithmetic_display() {
 }
 
 #[test]
-fn wave23_smt_expr_comparison_display() {
+fn smt_expr_comparison_display() {
     let x = || Box::new(SmtExpr::Var("x".to_string(), SmtSort::Int));
     let five = || Box::new(SmtExpr::IntConst(5));
 
@@ -67,7 +67,7 @@ fn wave23_smt_expr_comparison_display() {
 }
 
 #[test]
-fn wave23_smt_expr_logical_display() {
+fn smt_expr_logical_display() {
     let t = SmtExpr::BoolConst(true);
     let f = SmtExpr::BoolConst(false);
 
@@ -91,20 +91,20 @@ fn wave23_smt_expr_logical_display() {
 }
 
 #[test]
-fn wave23_smt_expr_empty_and_or() {
+fn smt_expr_empty_and_or() {
     assert_eq!(SmtExpr::And(vec![]).to_smtlib2(), "true");
     assert_eq!(SmtExpr::Or(vec![]).to_smtlib2(), "false");
 }
 
 #[test]
-fn wave23_smt_expr_singleton_and_or() {
+fn smt_expr_singleton_and_or() {
     let x = SmtExpr::Var("x".to_string(), SmtSort::Bool);
     assert_eq!(SmtExpr::And(vec![x.clone()]).to_smtlib2(), "x");
     assert_eq!(SmtExpr::Or(vec![x.clone()]).to_smtlib2(), "x");
 }
 
 #[test]
-fn wave23_smt_expr_quantifier_display() {
+fn smt_expr_quantifier_display() {
     let body = SmtExpr::Gt(
         Box::new(SmtExpr::Var("x".to_string(), SmtSort::Int)),
         Box::new(SmtExpr::IntConst(0)),
@@ -120,7 +120,7 @@ fn wave23_smt_expr_quantifier_display() {
 }
 
 #[test]
-fn wave23_smt_expr_array_display() {
+fn smt_expr_array_display() {
     let arr = SmtExpr::Var(
         "a".to_string(),
         SmtSort::Array(Box::new(SmtSort::Int), Box::new(SmtSort::Int)),
@@ -136,7 +136,7 @@ fn wave23_smt_expr_array_display() {
 }
 
 #[test]
-fn wave23_smt_expr_bv_display() {
+fn smt_expr_bv_display() {
     let a = Box::new(SmtExpr::Var("a".to_string(), SmtSort::BitVec(8)));
     let b = Box::new(SmtExpr::Var("b".to_string(), SmtSort::BitVec(8)));
 
@@ -159,7 +159,7 @@ fn wave23_smt_expr_bv_display() {
 }
 
 #[test]
-fn wave23_smt_expr_ite_display() {
+fn smt_expr_ite_display() {
     let ite = SmtExpr::Ite(
         Box::new(SmtExpr::BoolConst(true)),
         Box::new(SmtExpr::IntConst(1)),
@@ -169,7 +169,7 @@ fn wave23_smt_expr_ite_display() {
 }
 
 #[test]
-fn wave23_smt_expr_apply_display() {
+fn smt_expr_apply_display() {
     let app = SmtExpr::Apply(
         "f".to_string(),
         vec![SmtExpr::IntConst(1), SmtExpr::IntConst(2)],
@@ -185,7 +185,7 @@ fn wave23_smt_expr_apply_display() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave23_smt_sort_display() {
+fn smt_sort_display() {
     assert_eq!(format!("{}", SmtSort::Bool), "Bool");
     assert_eq!(format!("{}", SmtSort::Int), "Int");
     assert_eq!(format!("{}", SmtSort::Float), "Real");
@@ -209,7 +209,7 @@ fn wave23_smt_sort_display() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave23_smt_theory_display() {
+fn smt_theory_display() {
     assert_eq!(format!("{}", SmtTheory::QfLia), "QF_LIA");
     assert_eq!(format!("{}", SmtTheory::QfBv), "QF_BV");
     assert_eq!(format!("{}", SmtTheory::Strings), "STRINGS");
@@ -220,19 +220,19 @@ fn wave23_smt_theory_display() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave23_smt_builtin_empty_is_sat() {
+fn smt_builtin_empty_is_sat() {
     let solver = BuiltinSmtSolver::new();
     assert!(solver.check_sat(&[]).is_sat());
 }
 
 #[test]
-fn wave23_smt_builtin_true_is_sat() {
+fn smt_builtin_true_is_sat() {
     let solver = BuiltinSmtSolver::new();
     assert!(solver.check_sat(&[SmtExpr::BoolConst(true)]).is_sat());
 }
 
 #[test]
-fn wave23_smt_builtin_simple_comparison_sat() {
+fn smt_builtin_simple_comparison_sat() {
     let solver = BuiltinSmtSolver::new();
     let assertions = vec![SmtExpr::Gt(
         Box::new(SmtExpr::Var("x".to_string(), SmtSort::Int)),
@@ -242,7 +242,7 @@ fn wave23_smt_builtin_simple_comparison_sat() {
 }
 
 #[test]
-fn wave23_smt_builtin_satisfiable_range() {
+fn smt_builtin_satisfiable_range() {
     let solver = BuiltinSmtSolver::new();
     let assertions = vec![
         SmtExpr::Gt(
@@ -258,7 +258,7 @@ fn wave23_smt_builtin_satisfiable_range() {
 }
 
 #[test]
-fn wave23_smt_builtin_equality_sat() {
+fn smt_builtin_equality_sat() {
     let solver = BuiltinSmtSolver::new();
     let assertions = vec![
         SmtExpr::Eq(
@@ -278,13 +278,13 @@ fn wave23_smt_builtin_equality_sat() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave23_smt_builtin_false_is_unsat() {
+fn smt_builtin_false_is_unsat() {
     let solver = BuiltinSmtSolver::new();
     assert!(solver.check_sat(&[SmtExpr::BoolConst(false)]).is_unsat());
 }
 
 #[test]
-fn wave23_smt_builtin_contradictory_range_unsat() {
+fn smt_builtin_contradictory_range_unsat() {
     let solver = BuiltinSmtSolver::new();
     let assertions = vec![
         SmtExpr::Gt(
@@ -300,7 +300,7 @@ fn wave23_smt_builtin_contradictory_range_unsat() {
 }
 
 #[test]
-fn wave23_smt_builtin_no_integer_in_gap_unsat() {
+fn smt_builtin_no_integer_in_gap_unsat() {
     // x > 5 and x < 6 — no integer in (5,6)
     let solver = BuiltinSmtSolver::new();
     let assertions = vec![
@@ -317,7 +317,7 @@ fn wave23_smt_builtin_no_integer_in_gap_unsat() {
 }
 
 #[test]
-fn wave23_smt_builtin_equality_out_of_range_unsat() {
+fn smt_builtin_equality_out_of_range_unsat() {
     let solver = BuiltinSmtSolver::new();
     let assertions = vec![
         SmtExpr::Eq(
@@ -333,7 +333,7 @@ fn wave23_smt_builtin_equality_out_of_range_unsat() {
 }
 
 #[test]
-fn wave23_smt_builtin_neq_eliminates_only_option() {
+fn smt_builtin_neq_eliminates_only_option() {
     // x >= 5, x <= 5, x != 5 → Unsat
     let solver = BuiltinSmtSolver::new();
     let assertions = vec![
@@ -354,7 +354,7 @@ fn wave23_smt_builtin_neq_eliminates_only_option() {
 }
 
 #[test]
-fn wave23_smt_builtin_not_true_unsat() {
+fn smt_builtin_not_true_unsat() {
     let solver = BuiltinSmtSolver::new();
     let assertions = vec![SmtExpr::Not(Box::new(SmtExpr::BoolConst(true)))];
     assert!(solver.check_sat(&assertions).is_unsat());
@@ -365,7 +365,7 @@ fn wave23_smt_builtin_not_true_unsat() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave23_smt_builtin_model_for_equality() {
+fn smt_builtin_model_for_equality() {
     let solver = BuiltinSmtSolver::new();
     let assertions = vec![SmtExpr::Eq(
         Box::new(SmtExpr::Var("x".to_string(), SmtSort::Int)),
@@ -381,7 +381,7 @@ fn wave23_smt_builtin_model_for_equality() {
 }
 
 #[test]
-fn wave23_smt_builtin_model_for_range() {
+fn smt_builtin_model_for_range() {
     let solver = BuiltinSmtSolver::new();
     let assertions = vec![
         SmtExpr::Gt(
@@ -404,7 +404,7 @@ fn wave23_smt_builtin_model_for_range() {
 }
 
 #[test]
-fn wave23_smt_builtin_no_model_for_unsat() {
+fn smt_builtin_no_model_for_unsat() {
     let solver = BuiltinSmtSolver::new();
     let assertions = vec![SmtExpr::BoolConst(false)];
     let (result, model) = solver.check_sat_with_model(&assertions);
@@ -417,7 +417,7 @@ fn wave23_smt_builtin_no_model_for_unsat() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave23_smt_builtin_push_pop_basic() {
+fn smt_builtin_push_pop_basic() {
     let mut solver = BuiltinSmtSolver::new();
     // Add a contradictory assertion behind a push
     solver.push();
@@ -430,7 +430,7 @@ fn wave23_smt_builtin_push_pop_basic() {
 }
 
 #[test]
-fn wave23_smt_builtin_nested_push_pop() {
+fn smt_builtin_nested_push_pop() {
     let mut solver = BuiltinSmtSolver::new();
     solver.push();
     solver.push();
@@ -441,7 +441,7 @@ fn wave23_smt_builtin_nested_push_pop() {
 }
 
 #[test]
-fn wave23_smt_builtin_reset_clears() {
+fn smt_builtin_reset_clears() {
     let mut solver = BuiltinSmtSolver::new();
     solver.push();
     solver.reset();
@@ -454,19 +454,19 @@ fn wave23_smt_builtin_reset_clears() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave23_smt_factory_create_builtin_works() {
+fn smt_factory_create_builtin_works() {
     let solver = SmtSolverFactory::create_builtin();
     assert_eq!(solver.solver_name(), "builtin");
 }
 
 #[test]
-fn wave23_smt_factory_available_includes_builtin() {
+fn smt_factory_available_includes_builtin() {
     let available = SmtSolverFactory::available_solvers();
     assert!(available.contains(&"builtin".to_string()));
 }
 
 #[test]
-fn wave23_smt_factory_best_available_exists() {
+fn smt_factory_best_available_exists() {
     let solver = SmtSolverFactory::create_best_available();
     // Should always return something (at minimum, builtin)
     let name = solver.solver_name();
@@ -482,14 +482,14 @@ fn wave23_smt_factory_best_available_exists() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave23_smt_translate_bool_const() {
+fn smt_translate_bool_const() {
     let c = Constraint::BoolConst(true);
     let expr = ConstraintTranslator::translate(&c);
     assert_eq!(expr, SmtExpr::BoolConst(true));
 }
 
 #[test]
-fn wave23_smt_translate_int_comparison() {
+fn smt_translate_int_comparison() {
     let c = Constraint::IntComparison {
         var: "x".to_string(),
         op: CmpOp::Gt,
@@ -506,7 +506,7 @@ fn wave23_smt_translate_int_comparison() {
 }
 
 #[test]
-fn wave23_smt_translate_float_comparison() {
+fn smt_translate_float_comparison() {
     let c = Constraint::FloatComparison {
         var: "score".to_string(),
         op: CmpOp::GtEq,
@@ -523,7 +523,7 @@ fn wave23_smt_translate_float_comparison() {
 }
 
 #[test]
-fn wave23_smt_translate_var_comparison() {
+fn smt_translate_var_comparison() {
     let c = Constraint::VarComparison {
         left: "x".to_string(),
         op: CmpOp::Lt,
@@ -540,7 +540,7 @@ fn wave23_smt_translate_var_comparison() {
 }
 
 #[test]
-fn wave23_smt_translate_and() {
+fn smt_translate_and() {
     let c = Constraint::And(vec![
         Constraint::BoolConst(true),
         Constraint::BoolConst(false),
@@ -553,7 +553,7 @@ fn wave23_smt_translate_and() {
 }
 
 #[test]
-fn wave23_smt_translate_or() {
+fn smt_translate_or() {
     let c = Constraint::Or(vec![
         Constraint::BoolConst(true),
         Constraint::BoolConst(false),
@@ -566,14 +566,14 @@ fn wave23_smt_translate_or() {
 }
 
 #[test]
-fn wave23_smt_translate_not() {
+fn smt_translate_not() {
     let c = Constraint::Not(Box::new(Constraint::BoolConst(true)));
     let expr = ConstraintTranslator::translate(&c);
     assert_eq!(expr, SmtExpr::Not(Box::new(SmtExpr::BoolConst(true))));
 }
 
 #[test]
-fn wave23_smt_translate_arithmetic() {
+fn smt_translate_arithmetic() {
     let c = Constraint::Arithmetic {
         var: "x".to_string(),
         arith_op: ArithOp::Add,
@@ -595,7 +595,7 @@ fn wave23_smt_translate_arithmetic() {
 }
 
 #[test]
-fn wave23_smt_translate_effect_budget() {
+fn smt_translate_effect_budget() {
     let c = Constraint::EffectBudget {
         effect_name: "network".to_string(),
         max_calls: 3,
@@ -613,14 +613,14 @@ fn wave23_smt_translate_effect_budget() {
 }
 
 #[test]
-fn wave23_smt_translate_bool_var() {
+fn smt_translate_bool_var() {
     let c = Constraint::BoolVar("is_valid".to_string());
     let expr = ConstraintTranslator::translate(&c);
     assert_eq!(expr, SmtExpr::Var("is_valid".to_string(), SmtSort::Bool));
 }
 
 #[test]
-fn wave23_smt_translate_all() {
+fn smt_translate_all() {
     let constraints = vec![
         Constraint::BoolConst(true),
         Constraint::IntComparison {
@@ -639,7 +639,7 @@ fn wave23_smt_translate_all() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave23_smt_smtlib2_script_generation() {
+fn smt_smtlib2_script_generation() {
     let assertions = vec![
         SmtExpr::Gt(
             Box::new(SmtExpr::Var("x".to_string(), SmtSort::Int)),
@@ -659,7 +659,7 @@ fn wave23_smt_smtlib2_script_generation() {
 }
 
 #[test]
-fn wave23_smt_smtlib2_multiple_vars() {
+fn smt_smtlib2_multiple_vars() {
     let assertions = vec![SmtExpr::And(vec![
         SmtExpr::Gt(
             Box::new(SmtExpr::Var("x".to_string(), SmtSort::Int)),
@@ -680,7 +680,7 @@ fn wave23_smt_smtlib2_multiple_vars() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave23_smt_builtin_nested_and_sat() {
+fn smt_builtin_nested_and_sat() {
     let solver = BuiltinSmtSolver::new();
     let inner_and = SmtExpr::And(vec![
         SmtExpr::Gt(
@@ -697,7 +697,7 @@ fn wave23_smt_builtin_nested_and_sat() {
 }
 
 #[test]
-fn wave23_smt_builtin_or_with_one_sat_branch() {
+fn smt_builtin_or_with_one_sat_branch() {
     let solver = BuiltinSmtSolver::new();
     let assertions = vec![SmtExpr::Or(vec![
         SmtExpr::BoolConst(false),
@@ -707,7 +707,7 @@ fn wave23_smt_builtin_or_with_one_sat_branch() {
 }
 
 #[test]
-fn wave23_smt_builtin_or_all_unsat() {
+fn smt_builtin_or_all_unsat() {
     let solver = BuiltinSmtSolver::new();
     let assertions = vec![SmtExpr::Or(vec![
         SmtExpr::BoolConst(false),
@@ -717,14 +717,14 @@ fn wave23_smt_builtin_or_all_unsat() {
 }
 
 #[test]
-fn wave23_smt_builtin_not_false_is_sat() {
+fn smt_builtin_not_false_is_sat() {
     let solver = BuiltinSmtSolver::new();
     let assertions = vec![SmtExpr::Not(Box::new(SmtExpr::BoolConst(false)))];
     assert!(solver.check_sat(&assertions).is_sat());
 }
 
 #[test]
-fn wave23_smt_builtin_negated_comparison_in_conjunction() {
+fn smt_builtin_negated_comparison_in_conjunction() {
     // not(x > 5) and x >= 0 → x <= 5 and x >= 0 → Sat
     let solver = BuiltinSmtSolver::new();
     let assertions = vec![
@@ -741,7 +741,7 @@ fn wave23_smt_builtin_negated_comparison_in_conjunction() {
 }
 
 #[test]
-fn wave23_smt_builtin_negated_comparison_contradiction() {
+fn smt_builtin_negated_comparison_contradiction() {
     // not(x <= 5) and x < 3 → x > 5 and x < 3 → Unsat
     let solver = BuiltinSmtSolver::new();
     let assertions = vec![
@@ -762,7 +762,7 @@ fn wave23_smt_builtin_negated_comparison_contradiction() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave23_smt_builtin_theory_support() {
+fn smt_builtin_theory_support() {
     let solver = BuiltinSmtSolver::new();
     assert!(solver.supports_theory(SmtTheory::QfLia));
     assert!(solver.supports_theory(SmtTheory::QfLra));
@@ -779,7 +779,7 @@ fn wave23_smt_builtin_theory_support() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave23_smt_builtin_quantifier_returns_unknown() {
+fn smt_builtin_quantifier_returns_unknown() {
     let solver = BuiltinSmtSolver::new();
     let assertions = vec![SmtExpr::ForAll(
         vec![("x".to_string(), SmtSort::Int)],
@@ -793,7 +793,7 @@ fn wave23_smt_builtin_quantifier_returns_unknown() {
 }
 
 #[test]
-fn wave23_smt_builtin_bitvector_returns_unknown() {
+fn smt_builtin_bitvector_returns_unknown() {
     let solver = BuiltinSmtSolver::new();
     let assertions = vec![SmtExpr::BvAnd(
         Box::new(SmtExpr::Var("a".to_string(), SmtSort::BitVec(8))),
@@ -804,7 +804,7 @@ fn wave23_smt_builtin_bitvector_returns_unknown() {
 }
 
 #[test]
-fn wave23_smt_builtin_array_returns_unknown() {
+fn smt_builtin_array_returns_unknown() {
     let solver = BuiltinSmtSolver::new();
     let assertions = vec![SmtExpr::ArraySelect(
         Box::new(SmtExpr::Var(
@@ -818,7 +818,7 @@ fn wave23_smt_builtin_array_returns_unknown() {
 }
 
 #[test]
-fn wave23_smt_builtin_constant_comparison_sat() {
+fn smt_builtin_constant_comparison_sat() {
     let solver = BuiltinSmtSolver::new();
     // 5 > 3 → Sat
     let assertions = vec![SmtExpr::Gt(
@@ -829,7 +829,7 @@ fn wave23_smt_builtin_constant_comparison_sat() {
 }
 
 #[test]
-fn wave23_smt_builtin_constant_comparison_unsat() {
+fn smt_builtin_constant_comparison_unsat() {
     let solver = BuiltinSmtSolver::new();
     // 3 > 5 → Unsat
     let assertions = vec![SmtExpr::Gt(
@@ -844,7 +844,7 @@ fn wave23_smt_builtin_constant_comparison_unsat() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave23_smt_result_helpers() {
+fn smt_result_helpers() {
     assert!(SmtResult::Sat.is_sat());
     assert!(!SmtResult::Sat.is_unsat());
     assert!(SmtResult::Unsat.is_unsat());
@@ -855,7 +855,7 @@ fn wave23_smt_result_helpers() {
 }
 
 #[test]
-fn wave23_smt_value_display() {
+fn smt_value_display() {
     assert_eq!(format!("{}", SmtValue::Int(42)), "42");
     assert_eq!(format!("{}", SmtValue::Bool(true)), "true");
     assert_eq!(format!("{}", SmtValue::Float(3.14)), "3.14");
@@ -863,7 +863,7 @@ fn wave23_smt_value_display() {
 }
 
 #[test]
-fn wave23_smt_model_operations() {
+fn smt_model_operations() {
     let mut model = SmtModel::new();
     assert!(model.get("x").is_none());
     model.assignments.insert("x".to_string(), SmtValue::Int(5));
@@ -875,7 +875,7 @@ fn wave23_smt_model_operations() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave23_smt_collect_vars() {
+fn smt_collect_vars() {
     let expr = SmtExpr::And(vec![
         SmtExpr::Gt(
             Box::new(SmtExpr::Var("x".to_string(), SmtSort::Int)),
@@ -894,7 +894,7 @@ fn wave23_smt_collect_vars() {
 }
 
 #[test]
-fn wave23_smt_collect_vars_no_vars() {
+fn smt_collect_vars_no_vars() {
     let expr = SmtExpr::And(vec![SmtExpr::BoolConst(true), SmtExpr::IntConst(5)]);
     let vars = expr.collect_vars();
     assert!(vars.is_empty());
@@ -905,7 +905,7 @@ fn wave23_smt_collect_vars_no_vars() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave23_smt_builtin_linear_arith_sat() {
+fn smt_builtin_linear_arith_sat() {
     // (x + 1) > 0 and x < 100 → Sat
     let solver = BuiltinSmtSolver::new();
     let assertions = vec![
@@ -925,7 +925,7 @@ fn wave23_smt_builtin_linear_arith_sat() {
 }
 
 #[test]
-fn wave23_smt_builtin_linear_arith_unsat() {
+fn smt_builtin_linear_arith_unsat() {
     // (x + 1) > 10 and x < 5 → x > 9 and x < 5 → Unsat
     let solver = BuiltinSmtSolver::new();
     let assertions = vec![
@@ -949,13 +949,13 @@ fn wave23_smt_builtin_linear_arith_unsat() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave23_smt_z3_availability_check() {
+fn smt_z3_availability_check() {
     // This test always passes; it just exercises the availability check
     let _available = Z3ProcessSolver::is_available();
 }
 
 #[test]
-fn wave23_smt_cvc5_availability_check() {
+fn smt_cvc5_availability_check() {
     let _available = Cvc5ProcessSolver::is_available();
 }
 
@@ -964,7 +964,7 @@ fn wave23_smt_cvc5_availability_check() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave23_smt_translate_and_solve_sat() {
+fn smt_translate_and_solve_sat() {
     let constraint = Constraint::IntComparison {
         var: "x".to_string(),
         op: CmpOp::Gt,
@@ -976,7 +976,7 @@ fn wave23_smt_translate_and_solve_sat() {
 }
 
 #[test]
-fn wave23_smt_translate_and_solve_unsat() {
+fn smt_translate_and_solve_unsat() {
     let constraint = Constraint::And(vec![
         Constraint::IntComparison {
             var: "x".to_string(),
@@ -995,7 +995,7 @@ fn wave23_smt_translate_and_solve_unsat() {
 }
 
 #[test]
-fn wave23_smt_translate_effect_budget_and_solve() {
+fn smt_translate_effect_budget_and_solve() {
     let within = Constraint::EffectBudget {
         effect_name: "net".to_string(),
         max_calls: 3,

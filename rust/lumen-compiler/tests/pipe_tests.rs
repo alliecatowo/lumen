@@ -24,7 +24,7 @@ fn assert_compiles(label: &str, source: &str) {
 // ============================================================================
 
 #[test]
-fn wave20_pipe_basic_single_call() {
+fn pipe_basic_single_call() {
     assert_compiles(
         "pipe_basic",
         r#"
@@ -40,7 +40,7 @@ end
 }
 
 #[test]
-fn wave20_pipe_bare_function_name() {
+fn pipe_bare_function_name() {
     // Pipe with bare function name (no parentheses) should desugar to f(x)
     assert_compiles(
         "pipe_bare_fn",
@@ -61,7 +61,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_pipe_chain_two() {
+fn pipe_chain_two() {
     assert_compiles(
         "pipe_chain_two",
         r#"
@@ -81,7 +81,7 @@ end
 }
 
 #[test]
-fn wave20_pipe_chain_three() {
+fn pipe_chain_three() {
     assert_compiles(
         "pipe_chain_three",
         r#"
@@ -109,7 +109,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_pipe_with_extra_args() {
+fn pipe_with_extra_args() {
     assert_compiles(
         "pipe_extra_args",
         r#"
@@ -125,7 +125,7 @@ end
 }
 
 #[test]
-fn wave20_pipe_with_multiple_extra_args() {
+fn pipe_with_multiple_extra_args() {
     assert_compiles(
         "pipe_multi_extra_args",
         r#"
@@ -145,7 +145,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_pipe_type_propagation_int_to_string() {
+fn pipe_type_propagation_int_to_string() {
     assert_compiles(
         "pipe_int_to_string",
         r#"
@@ -165,7 +165,7 @@ end
 }
 
 #[test]
-fn wave20_pipe_type_propagation_string_to_int() {
+fn pipe_type_propagation_string_to_int() {
     assert_compiles(
         "pipe_str_to_int",
         r#"
@@ -185,7 +185,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_pipe_with_let_binding() {
+fn pipe_with_let_binding() {
     assert_compiles(
         "pipe_let_binding",
         r#"
@@ -203,7 +203,7 @@ end
 }
 
 #[test]
-fn wave20_pipe_intermediate_let() {
+fn pipe_intermediate_let() {
     assert_compiles(
         "pipe_intermediate_let",
         r#"
@@ -229,7 +229,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_pipe_with_lambda() {
+fn pipe_with_lambda() {
     assert_compiles(
         "pipe_lambda",
         r#"
@@ -242,7 +242,7 @@ end
 }
 
 #[test]
-fn wave20_pipe_chain_with_lambda() {
+fn pipe_chain_with_lambda() {
     assert_compiles(
         "pipe_chain_lambda",
         r#"
@@ -263,7 +263,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_pipe_with_builtin_len() {
+fn pipe_with_builtin_len() {
     assert_compiles(
         "pipe_builtin_len",
         r#"
@@ -275,7 +275,7 @@ end
 }
 
 #[test]
-fn wave20_pipe_with_builtin_to_string() {
+fn pipe_with_builtin_to_string() {
     assert_compiles(
         "pipe_builtin_tostring",
         r#"
@@ -291,7 +291,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_pipe_expression_input() {
+fn pipe_expression_input() {
     assert_compiles(
         "pipe_expr_input",
         r#"
@@ -311,7 +311,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_pipe_compiles_to_lir() {
+fn pipe_compiles_to_lir() {
     let source = r#"
 cell double(x: Int) -> Int
   return x * 2
@@ -335,7 +335,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_pipe_in_if_condition() {
+fn pipe_in_if_condition() {
     assert_compiles(
         "pipe_in_if",
         r#"
@@ -358,7 +358,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_pipe_string_operations() {
+fn pipe_string_operations() {
     assert_compiles(
         "pipe_string_ops",
         r#"
@@ -378,7 +378,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_pipe_list_operations() {
+fn pipe_list_operations() {
     assert_compiles(
         "pipe_list_ops",
         r#"
@@ -398,7 +398,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_pipe_evaluation_order() {
+fn pipe_evaluation_order() {
     // This test verifies that the left side is evaluated before the right side
     // by using a chain that depends on evaluation order
     assert_compiles(
@@ -424,7 +424,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_pipe_nested_call_arg() {
+fn pipe_nested_call_arg() {
     assert_compiles(
         "pipe_nested_call_arg",
         r#"
@@ -448,7 +448,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_pipe_type_transformation_chain() {
+fn pipe_type_transformation_chain() {
     assert_compiles(
         "pipe_type_chain",
         r#"

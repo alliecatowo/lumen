@@ -35,7 +35,7 @@ fn assert_compiles_to_lir(label: &str, source: &str) -> lumen_compiler::compiler
 // ============================================================================
 
 #[test]
-fn wave20_in_list_literal() {
+fn in_list_literal() {
     assert_compiles(
         "in_list_literal",
         r#"
@@ -47,7 +47,7 @@ end
 }
 
 #[test]
-fn wave20_in_list_variable() {
+fn in_list_variable() {
     assert_compiles(
         "in_list_var",
         r#"
@@ -60,7 +60,7 @@ end
 }
 
 #[test]
-fn wave20_in_list_not_found() {
+fn in_list_not_found() {
     assert_compiles(
         "in_list_not_found",
         r#"
@@ -72,7 +72,7 @@ end
 }
 
 #[test]
-fn wave20_in_list_string_elements() {
+fn in_list_string_elements() {
     assert_compiles(
         "in_list_strings",
         r#"
@@ -85,7 +85,7 @@ end
 }
 
 #[test]
-fn wave20_in_empty_list() {
+fn in_empty_list() {
     assert_compiles(
         "in_empty_list",
         r#"
@@ -102,7 +102,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_in_set_literal() {
+fn in_set_literal() {
     assert_compiles(
         "in_set_literal",
         r#"
@@ -114,7 +114,7 @@ end
 }
 
 #[test]
-fn wave20_in_set_variable() {
+fn in_set_variable() {
     assert_compiles(
         "in_set_var",
         r#"
@@ -131,7 +131,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_in_map_key_check() {
+fn in_map_key_check() {
     assert_compiles(
         "in_map_key",
         r#"
@@ -144,7 +144,7 @@ end
 }
 
 #[test]
-fn wave20_in_map_missing_key() {
+fn in_map_missing_key() {
     assert_compiles(
         "in_map_missing",
         r#"
@@ -161,7 +161,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_in_string_substring() {
+fn in_string_substring() {
     assert_compiles(
         "in_string_substr",
         r#"
@@ -173,7 +173,7 @@ end
 }
 
 #[test]
-fn wave20_in_string_not_found() {
+fn in_string_not_found() {
     assert_compiles(
         "in_string_not_found",
         r#"
@@ -185,7 +185,7 @@ end
 }
 
 #[test]
-fn wave20_in_string_with_variables() {
+fn in_string_with_variables() {
     assert_compiles(
         "in_string_vars",
         r#"
@@ -203,7 +203,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_in_returns_bool_type() {
+fn in_returns_bool_type() {
     // Verify that `in` expression has Bool type (usable in if conditions)
     assert_compiles(
         "in_returns_bool",
@@ -220,7 +220,7 @@ end
 }
 
 #[test]
-fn wave20_in_in_let_binding() {
+fn in_in_let_binding() {
     assert_compiles(
         "in_let_binding",
         r#"
@@ -238,7 +238,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_in_with_not() {
+fn in_with_not() {
     assert_compiles(
         "in_with_not",
         r#"
@@ -255,7 +255,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_in_combined_with_and() {
+fn in_combined_with_and() {
     assert_compiles(
         "in_with_and",
         r#"
@@ -269,7 +269,7 @@ end
 }
 
 #[test]
-fn wave20_in_combined_with_or() {
+fn in_combined_with_or() {
     assert_compiles(
         "in_with_or",
         r#"
@@ -286,7 +286,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_in_emits_in_opcode() {
+fn in_emits_in_opcode() {
     use lumen_compiler::compiler::lir::OpCode;
 
     let module = assert_compiles_to_lir(
@@ -308,7 +308,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_in_with_function_result() {
+fn in_with_function_result() {
     assert_compiles(
         "in_func_result",
         r#"
@@ -328,7 +328,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_in_as_argument() {
+fn in_as_argument() {
     assert_compiles(
         "in_as_arg",
         r#"
@@ -351,7 +351,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_in_while_condition() {
+fn in_while_condition() {
     assert_compiles(
         "in_while_cond",
         r#"
@@ -374,7 +374,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_in_nested_expression() {
+fn in_nested_expression() {
     assert_compiles(
         "in_nested",
         r#"
@@ -391,7 +391,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_in_for_loop_regression() {
+fn in_for_loop_regression() {
     // The `in` keyword is used in for-loops; ensure it still works there
     assert_compiles(
         "in_for_loop_regression",
@@ -408,7 +408,7 @@ end
 }
 
 #[test]
-fn wave20_in_for_loop_with_range() {
+fn in_for_loop_with_range() {
     assert_compiles(
         "in_for_range",
         r#"
@@ -428,7 +428,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_in_match_guard() {
+fn in_match_guard() {
     assert_compiles(
         "in_match_guard",
         r#"
@@ -452,7 +452,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_in_multiple_same_scope() {
+fn in_multiple_same_scope() {
     assert_compiles(
         "in_multi_scope",
         r#"

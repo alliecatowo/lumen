@@ -1,0 +1,5 @@
+# Null coalescing
+cell main() -> Int
+  let x: Int? = null
+  x ?? 42
+end

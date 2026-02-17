@@ -1,0 +1,4 @@
+# Greater than or equal
+cell main() -> Bool
+  10 >= 10
+end

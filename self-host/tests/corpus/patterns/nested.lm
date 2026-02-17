@@ -1,0 +1,6 @@
+cell main() -> Int
+  let data = ((1, 2), (3, 4))
+  match data
+    ((a, b), (c, d)) -> a + b + c + d
+  end
+end

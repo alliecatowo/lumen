@@ -1,0 +1,25 @@
+enum Node
+  Cons(value: Int, next: Node)
+  Nil
+end
+
+cell list_len(node: Node) -> Int
+  match node
+    Node.Cons(value:, next:) -> 1 + list_len(next)
+    Node.Nil -> 0
+  end
+end
+
+cell list_sum(node: Node) -> Int
+  match node
+    Node.Cons(value:, next:) -> value + list_sum(next)
+    Node.Nil -> 0
+  end
+end
+
+cell main() -> Int
+  let lst = Node.Cons(value: 1, next: Node.Cons(value: 2, next: Node.Cons(value: 3, next: Node.Nil)))
+  let length = list_len(lst)
+  let total = list_sum(lst)
+  length + total
+end

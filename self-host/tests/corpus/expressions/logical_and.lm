@@ -1,0 +1,4 @@
+# Logical and
+cell main() -> Bool
+  true and false
+end

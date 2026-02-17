@@ -1,0 +1,7 @@
+trait Printable
+  cell to_string(self) -> String
+end
+
+cell main() -> String
+  "traits defined"
+end

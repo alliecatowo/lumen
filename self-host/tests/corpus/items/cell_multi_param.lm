@@ -1,0 +1,7 @@
+cell sum3(a: Int, b: Int, c: Int) -> Int
+  a + b + c
+end
+
+cell main() -> Int
+  sum3(1, 2, 3)
+end

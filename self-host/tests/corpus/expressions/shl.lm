@@ -1,0 +1,4 @@
+# Left shift
+cell main() -> Int
+  1 << 8
+end

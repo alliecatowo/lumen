@@ -1,0 +1,4 @@
+# Subtraction
+cell main() -> Int
+  10 - 4
+end

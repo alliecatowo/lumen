@@ -1,0 +1,8 @@
+cell main() -> String
+  let x = 5
+  match x
+    1 | 2 | 3 -> "small"
+    4 | 5 | 6 -> "medium"
+    _ -> "large"
+  end
+end

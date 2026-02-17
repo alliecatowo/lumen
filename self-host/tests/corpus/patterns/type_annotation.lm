@@ -1,0 +1,6 @@
+cell main() -> String
+  let x: Int = 42
+  match x
+    n -> "got {n}"
+  end
+end

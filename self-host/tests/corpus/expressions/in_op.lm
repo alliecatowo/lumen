@@ -1,0 +1,4 @@
+# In operator
+cell main() -> Bool
+  3 in [1, 2, 3, 4]
+end

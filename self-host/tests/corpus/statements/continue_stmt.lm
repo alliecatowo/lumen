@@ -1,0 +1,10 @@
+cell main() -> Int
+  let sum = 0
+  for i in 1..10
+    if i % 2 == 0
+      continue
+    end
+    sum = sum + i
+  end
+  sum
+end

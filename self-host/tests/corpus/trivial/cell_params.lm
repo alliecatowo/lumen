@@ -1,0 +1,8 @@
+# Cell with parameters
+cell add(a: Int, b: Int) -> Int
+  a + b
+end
+
+cell main() -> Int
+  add(3, 4)
+end

@@ -1,0 +1,22 @@
+cell binary_search(items: list[Int], target: Int) -> Int
+  let lo = 0
+  let hi = len(items) - 1
+  while lo <= hi
+    let mid = (lo + hi) // 2
+    let val = items[mid]
+    if val == target
+      return mid
+    elif val < target
+      lo = mid + 1
+    else
+      hi = mid - 1
+    end
+  end
+  -1
+end
+
+cell main() -> Int
+  let sorted = [1, 3, 5, 7, 9, 11, 13, 15, 17, 19]
+  let idx = binary_search(sorted, 11)
+  idx
+end

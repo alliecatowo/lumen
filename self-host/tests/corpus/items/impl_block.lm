@@ -1,0 +1,13 @@
+record Counter(value: Int)
+
+impl Counter
+  cell increment(self) -> Counter
+    Counter(value: self.value + 1)
+  end
+end
+
+cell main() -> Int
+  let c = Counter(value: 0)
+  let c2 = c.increment()
+  c2.value
+end

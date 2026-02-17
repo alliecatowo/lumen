@@ -1,0 +1,5 @@
+# String interpolation
+cell main() -> String
+  let name = "Lumen"
+  "hello, {name}!"
+end

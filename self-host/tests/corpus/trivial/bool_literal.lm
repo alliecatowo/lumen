@@ -1,0 +1,4 @@
+# Boolean literal
+cell main() -> Bool
+  true
+end

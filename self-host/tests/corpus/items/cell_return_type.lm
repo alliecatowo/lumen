@@ -1,0 +1,7 @@
+cell double(x: Int) -> Int
+  x * 2
+end
+
+cell main() -> Int
+  double(21)
+end

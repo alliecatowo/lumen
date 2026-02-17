@@ -1,0 +1,10 @@
+cell outer(x: Int) -> Int
+  cell inner(y: Int) -> Int
+    y * 2
+  end
+  inner(x) + 1
+end
+
+cell main() -> Int
+  outer(10)
+end

@@ -1,0 +1,4 @@
+# Bitwise xor
+cell main() -> Int
+  0xAA ^ 0x55
+end

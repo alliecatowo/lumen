@@ -1,0 +1,16 @@
+cell calc(op: String, a: Int, b: Int) -> Int
+  match op
+    "add" -> a + b
+    "sub" -> a - b
+    "mul" -> a * b
+    "div" -> a // b
+    _ -> 0
+  end
+end
+
+cell main() -> Int
+  let r1 = calc("add", 10, 20)
+  let r2 = calc("mul", r1, 2)
+  let r3 = calc("sub", r2, 5)
+  r3
+end

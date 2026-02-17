@@ -1,0 +1,32 @@
+enum Tree
+  Leaf(value: Int)
+  Branch(left: Tree, right: Tree)
+end
+
+cell tree_sum(t: Tree) -> Int
+  match t
+    Tree.Leaf(value:) -> value
+    Tree.Branch(left:, right:) -> tree_sum(left) + tree_sum(right)
+  end
+end
+
+cell tree_depth(t: Tree) -> Int
+  match t
+    Tree.Leaf(value:) -> 1
+    Tree.Branch(left:, right:) ->
+      let ld = tree_depth(left)
+      let rd = tree_depth(right)
+      1 + if ld > rd ld else rd end
+  end
+end
+
+cell main() -> Int
+  let tree = Tree.Branch(
+    left: Tree.Branch(
+      left: Tree.Leaf(value: 1),
+      right: Tree.Leaf(value: 2)
+    ),
+    right: Tree.Leaf(value: 3)
+  )
+  tree_sum(tree) + tree_depth(tree)
+end

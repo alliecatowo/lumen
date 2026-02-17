@@ -1,0 +1,8 @@
+# Nested cell calls
+cell double(x: Int) -> Int
+  x * 2
+end
+
+cell main() -> Int
+  double(double(5))
+end

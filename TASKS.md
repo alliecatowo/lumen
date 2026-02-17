@@ -61,17 +61,17 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 |---|------|-----------------------------|
 | T001 | Define new `Value` enum layout — **DONE** | Current `Value` in `rust/lumen-vm/src/values.rs` carries `Rc`-wrapped collections. Define a layout (e.g. 64-bit nan-boxed or 128-bit tagged) that supports immediate scalars and heap object references without mandatory reference counting for all data. |
 | T002 | Replace `Rc<T>` with `Arc<T>` in shared VM structures — **DONE** | `Rc` is not `Send`; multi-threaded execution requires thread-safe sharing. Replace in value and runtime structures where shared ownership is required. |
-| T003 | Introduce `GcHeader` / tagged pointer for GC | To support a future GC (e.g. Immix-style), define a header (e.g. color, pinned bit) and tagging so the runtime can distinguish immediates from heap pointers and support tracing. |
-| T004 | Tagged-pointer / small-value optimization | Store small integers, bools, null in the value word to avoid heap allocation and reduce cache pressure. |
-| T005 | Linear/affine wrapper in type system | Add a way to mark values as consumed-once (e.g. `owned T` or linear marker) so the compiler can enforce single use and enable zero-copy handoff. |
-| T006 | Ownership rules document | Write a spec (e.g. in `docs/` or SPEC.md) defining move, copy, and borrow semantics for the planned ownership system. |
-| T007 | Symbol table scope tracking for ownership | In `rust/lumen-compiler/src/compiler/typecheck.rs` (or resolver), maintain per-variable state: alive, moved, dropped. |
-| T008 | Move-check pass | After a value is moved (e.g. passed to a function consuming `owned T`), any subsequent use must be a compile error. Implement check and emit `UseAfterMove` (or equivalent) diagnostic. |
-| T009 | Borrow-check pass | Enforce at most one mutable borrow or many immutable borrows; no use-after-free for linear types. Implement in typecheck/resolve. |
-| T010 | Negative tests for use-after-move | Add tests in `rust/lumen-compiler/tests/` that expect compilation failure when a moved variable is used. |
-| T011 | Arena or region allocator for process-local data | In `rust/lumen-vm/src/` (e.g. new `memory.rs`), implement an arena or region allocator for values that are local to a single process/agent to reduce global heap pressure. |
-| T012 | Optional: Immix-style block/line allocator | For a concurrent GC, implement the block/line layout and allocation interface; can be behind a feature flag until scheduler and GC are integrated. |
-| T013 | Thread-local allocation buffers (TLAB) | If moving to a GC, provide per-thread allocation buffers to reduce contention on the global allocator. |
+| T003 | Introduce `GcHeader` / tagged pointer for GC — **DONE** | To support a future GC (e.g. Immix-style), define a header (e.g. color, pinned bit) and tagging so the runtime can distinguish immediates from heap pointers and support tracing. |
+| T004 | Tagged-pointer / small-value optimization — **DONE** | Store small integers, bools, null in the value word to avoid heap allocation and reduce cache pressure. |
+| T005 | Linear/affine wrapper in type system — **DONE** | Add a way to mark values as consumed-once (e.g. `owned T` or linear marker) so the compiler can enforce single use and enable zero-copy handoff. |
+| T006 | Ownership rules document — **DONE** | Write a spec (e.g. in `docs/` or SPEC.md) defining move, copy, and borrow semantics for the planned ownership system. |
+| T007 | Symbol table scope tracking for ownership — **DONE** | In `rust/lumen-compiler/src/compiler/typecheck.rs` (or resolver), maintain per-variable state: alive, moved, dropped. |
+| T008 | Move-check pass — **DONE** | After a value is moved (e.g. passed to a function consuming `owned T`), any subsequent use must be a compile error. Implement check and emit `UseAfterMove` (or equivalent) diagnostic. |
+| T009 | Borrow-check pass — **DONE** | Enforce at most one mutable borrow or many immutable borrows; no use-after-free for linear types. Implement in typecheck/resolve. |
+| T010 | Negative tests for use-after-move — **DONE** | Add tests in `rust/lumen-compiler/tests/` that expect compilation failure when a moved variable is used. |
+| T011 | Arena or region allocator for process-local data — **DONE** | In `rust/lumen-vm/src/` (e.g. new `memory.rs`), implement an arena or region allocator for values that are local to a single process/agent to reduce global heap pressure. |
+| T012 | Optional: Immix-style block/line allocator — **DONE** | For a concurrent GC, implement the block/line layout and allocation interface; can be behind a feature flag until scheduler and GC are integrated. |
+| T013 | Thread-local allocation buffers (TLAB) — **DONE** | If moving to a GC, provide per-thread allocation buffers to reduce contention on the global allocator. |
 | T014 | Copy optimization for small scalars | In the VM or lowering, avoid allocating for small scalars (Int, Bool, Float) when copying; keep them in registers or immediate form. |
 | T015 | String representation: SmolStr or interning — **DONE** (pre-existing StringRef) | In `rust/lumen-vm/src/strings.rs`, consider SmolStr or interned IDs for string comparison and to reduce allocations. |
 | T016 | Optional: 64-bit packed LIR instructions | In `rust/lumen-compiler/src/compiler/lir.rs`, evaluate 64-bit instruction encoding to reduce cache pressure; document tradeoffs vs 32-bit. |
@@ -82,26 +82,26 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
-| T017 | Add LLVM or Cranelift dependency | Introduce `inkwell` (or equivalent) in `rust/lumen-compiler` or a new `lumen-codegen` crate for native code generation. |
-| T018 | Codegen module skeleton | Create `rust/lumen-compiler/src/codegen/` (or equivalent) with context, module, and builder initialization. |
-| T019 | Target machine configuration | Detect host (x86_64, aarch64) and set optimization level and target attributes. |
-| T020 | Lower Lumen Int to LLVM i64 | Map Lumen integer type to a fixed-width LLVM integer type for AOT. |
-| T021 | Lower Lumen Float to LLVM double | Map Lumen float to LLVM double (or f64). |
-| T022 | Lower Lumen Bool to LLVM i1 | Map Lumen bool to single-bit integer. |
-| T023 | Lower Lumen struct/record to LLVM struct | Map record types to packed or non-packed LLVM struct types. |
-| T024 | Lower Lumen enum to LLVM (tag + payload) | Represent enums as tag plus union payload in LLVM IR. |
-| T025 | Codegen: binary operations | Emit LLVM IR for Add, Sub, Mul, Div (and optionally checked variants). |
-| T026 | Codegen: comparison operations | Emit integer and float comparison (Eq, Ne, Lt, Gt, etc.). |
-| T027 | Codegen: function prologue | Stack frame setup, parameter passing, callee-saved registers. |
-| T028 | Codegen: return values | Emit return instruction and ABI-compliant return value handling. |
-| T029 | Codegen: if/else to basic blocks | Lower conditionals to branches and phi nodes where needed. |
-| T030 | Codegen: loops (while/loop) | Lower loops to basic blocks with conditional back-edges. |
-| T031 | Codegen: match to switch/br | Lower match to switch or branch chain. |
-| T032 | Codegen: function calls (ABI) | Correct calling convention and argument marshalling. |
-| T033 | Tail-call optimization flag | Mark or optimize tail calls in the LLVM pipeline. |
-| T034 | Optional: Template JIT for hot paths | Identify hot loops in LIR and compile them to native code on first execution (baseline JIT). |
+| T017 | Add LLVM or Cranelift dependency — **DONE** | Introduce `inkwell` (or equivalent) in `rust/lumen-compiler` or a new `lumen-codegen` crate for native code generation. |
+| T018 | Codegen module skeleton — **DONE** | Create `rust/lumen-compiler/src/codegen/` (or equivalent) with context, module, and builder initialization. |
+| T019 | Target machine configuration — **DONE** | Detect host (x86_64, aarch64) and set optimization level and target attributes. |
+| T020 | Lower Lumen Int to LLVM i64 — **DONE** | Map Lumen integer type to a fixed-width LLVM integer type for AOT. |
+| T021 | Lower Lumen Float to LLVM double — **DONE** | Map Lumen float to LLVM double (or f64). |
+| T022 | Lower Lumen Bool to LLVM i1 — **DONE** | Map Lumen bool to single-bit integer. |
+| T023 | Lower Lumen struct/record to LLVM struct — **DONE** | Map record types to packed or non-packed LLVM struct types. |
+| T024 | Lower Lumen enum to LLVM (tag + payload) — **DONE** | Represent enums as tag plus union payload in LLVM IR. |
+| T025 | Codegen: binary operations — **DONE** | Emit LLVM IR for Add, Sub, Mul, Div (and optionally checked variants). |
+| T026 | Codegen: comparison operations — **DONE** | Emit integer and float comparison (Eq, Ne, Lt, Gt, etc.). |
+| T027 | Codegen: function prologue — **DONE** | Stack frame setup, parameter passing, callee-saved registers. |
+| T028 | Codegen: return values — **DONE** | Emit return instruction and ABI-compliant return value handling. |
+| T029 | Codegen: if/else to basic blocks — **DONE** | Lower conditionals to branches and phi nodes where needed. |
+| T030 | Codegen: loops (while/loop) — **DONE** | Lower loops to basic blocks with conditional back-edges. |
+| T031 | Codegen: match to switch/br — **DONE** | Lower match to switch or branch chain. |
+| T032 | Codegen: function calls (ABI) — **DONE** | Correct calling convention and argument marshalling. |
+| T033 | Tail-call optimization flag — **DONE** | Mark or optimize tail calls in the LLVM pipeline. |
+| T034 | Optional: Template JIT for hot paths — **DONE** | Identify hot loops in LIR and compile them to native code on first execution (baseline JIT). |
 | T035 | Optional: JIT engine (OrcJIT) | If using LLVM, implement a small JIT engine to run generated code in-process. |
-| T036 | Benchmark: matrix multiply vs C/Rust | Add a benchmark that compares Lumen AOT/JIT to a C or Rust baseline; target within a few percent. |
+| T036 | Benchmark: matrix multiply vs C/Rust — **DONE** | Add a benchmark that compares Lumen AOT/JIT to a C or Rust baseline; target within a few percent. |
 
 ---
 
@@ -114,15 +114,15 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T039 | Map Lumen types to SMT sorts — **DONE** | Implement mapping from Lumen Int, Bool, etc., to solver sorts (e.g. Z3_mk_int). |
 | T040 | Parse `where` clauses into AST | Ensure `where` expressions in records and function contracts are available in the AST. |
 | T041 | Lower `where` to SMT assertions — **DONE** (verification/constraints.rs) | Translate boolean expressions in `where` to SMT-LIB or solver API calls. |
-| T042 | Verify function preconditions | For each call site, assert caller’s context implies callee’s precondition; check satisfiability. |
-| T043 | Verify function postconditions | After call, assume callee’s postcondition for subsequent reasoning. |
-| T044 | Verification pass in pipeline | Run verification after typecheck; on UNSAT (invariant violated), emit compiler error. |
-| T045 | UNKNOWN handling | When solver returns UNKNOWN, emit warning or require explicit assertion. |
-| T046 | Path-sensitive refinement | In typecheck, update refinement info after conditionals (e.g. `if x > 0` then `x` is positive in then-branch). |
-| T047 | Array/list bounds in refinement | Where possible, prove index in range so runtime bounds checks can be elided. |
-| T048 | Effect budget checking | If effect row includes bounds (e.g. `network(max_calls: 5)`), prove no path exceeds the bound. |
+| T042 | Verify function preconditions — **DONE** | For each call site, assert caller’s context implies callee’s precondition; check satisfiability. |
+| T043 | Verify function postconditions — **DONE** | After call, assume callee’s postcondition for subsequent reasoning. |
+| T044 | Verification pass in pipeline — **DONE** | Run verification after typecheck; on UNSAT (invariant violated), emit compiler error. |
+| T045 | UNKNOWN handling — **DONE** | When solver returns UNKNOWN, emit warning or require explicit assertion. |
+| T046 | Path-sensitive refinement — **DONE** | In typecheck, update refinement info after conditionals (e.g. `if x > 0` then `x` is positive in then-branch). |
+| T047 | Array/list bounds in refinement — **DONE** | Where possible, prove index in range so runtime bounds checks can be elided. |
+| T048 | Effect budget checking — **DONE** | If effect row includes bounds (e.g. `network(max_calls: 5)`), prove no path exceeds the bound. |
 | T049 | Exhaustiveness for refinement ranges | For match on refined integers (e.g. 0..100), ensure all cases are covered or warn. |
-| T050 | Typestate (e.g. File Open/Closed) | Design and implement typestate so that operations (e.g. read) are only valid in certain states; compiler error otherwise. |
+| T050 | Typestate (e.g. File Open/Closed) — **DONE** | Design and implement typestate so that operations (e.g. read) are only valid in certain states; compiler error otherwise. |
 | T051 | Test: refinement verification | Add tests that expect success or failure of verification (e.g. division by positive divisor). |
 | T052 | Fuzz type checker with constraints | Property-based or random programs with `where` clauses; ensure solver results are consistent. |
 
@@ -134,17 +134,17 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 |---|------|-----------------------------|
 | T053 | Process/task control block (PCB) — **DONE** | Define a structure that holds enough state to suspend and resume a task (e.g. stack, IP, locals). |
 | T054 | Scheduler module in runtime — **DONE** | Create `rust/lumen-runtime/src/scheduler.rs` (or equivalent) with run queues. |
-| T055 | Per-thread run queues | Each worker thread has a local queue of runnable tasks. |
-| T056 | Work-stealing algorithm | When local queue is empty, steal from another thread’s queue (e.g. Chase–Lev deque). |
+| T055 | Per-thread run queues — **DONE** | Each worker thread has a local queue of runnable tasks. |
+| T056 | Work-stealing algorithm — **DONE** | When local queue is empty, steal from another thread’s queue (e.g. Chase–Lev deque). |
 | T057 | Global injection queue | New tasks (e.g. from `spawn`) go into a global or per-worker queue. |
 | T058 | Replace Tokio spawn with scheduler | Make `spawn` push a task into the new scheduler instead of delegating to Tokio (or document hybrid). |
-| T059 | Explicit yield points in VM | In the VM dispatch loop, periodically check for yield/reduction count to allow preemption. |
-| T060 | Reduction counting | After N instructions (e.g. 2000), force a context switch to avoid starvation. |
+| T059 | Explicit yield points in VM — **DONE** | In the VM dispatch loop, periodically check for yield/reduction count to allow preemption. |
+| T060 | Reduction counting — **DONE** | After N instructions (e.g. 2000), force a context switch to avoid starvation. |
 | T061 | Mailbox or MPSC queue for agents | Lock-free or low-contention queue for messages to a single agent. |
 | T062 | Channel&lt;T&gt; type in runtime — **DONE** | Typed channel (MPMC or SPSC) for inter-agent communication. |
 | T063 | Selective receive (Erlang-style) | Allow receiving only messages matching a pattern; document semantics. |
-| T064 | Supervisor behaviour (design) | Define in spec or std how a supervisor restarts or escalates on child failure. |
-| T065 | link / monitor primitives | When process A links to B, A is notified if B crashes; implement or stub in runtime. |
+| T064 | Supervisor behaviour (design) — **DONE** | Define in spec or std how a supervisor restarts or escalates on child failure. |
+| T065 | link / monitor primitives — **DONE** | When process A links to B, A is notified if B crashes; implement or stub in runtime. |
 | T066 | C10K-style test | Spawn many agents and measure latency and memory; establish baseline. |
 
 ---
@@ -153,12 +153,12 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
-| T067 | Snapshot format specification | Define serialization format (e.g. Cap’n Proto, bincode) for stack frames, heap reachability, and IP. |
-| T068 | Serialize VM stack frames | Implement traversal of call stack and serialization of locals and return addresses. |
-| T069 | Serialize heap reachable from stack | Only serialize reachable heap objects to bound snapshot size. |
-| T070 | checkpoint intrinsic | VM intrinsic that triggers snapshot and writes to configured storage (e.g. file or log). |
-| T071 | Durable log interface | In `rust/lumen-runtime`, define an abstraction for append-only log used for checkpointing. |
-| T072 | restore / rehydrate | Load snapshot from storage and restore VM state; resume execution from saved IP. |
+| T067 | Snapshot format specification — **DONE** | Define serialization format (e.g. Cap’n Proto, bincode) for stack frames, heap reachability, and IP. |
+| T068 | Serialize VM stack frames — **DONE** | Implement traversal of call stack and serialization of locals and return addresses. |
+| T069 | Serialize heap reachable from stack — **DONE** | Only serialize reachable heap objects to bound snapshot size. |
+| T070 | checkpoint intrinsic — **DONE** | VM intrinsic that triggers snapshot and writes to configured storage (e.g. file or log). |
+| T071 | Durable log interface — **DONE** | In `rust/lumen-runtime`, define an abstraction for append-only log used for checkpointing. |
+| T072 | restore / rehydrate — **DONE** | Load snapshot from storage and restore VM state; resume execution from saved IP. |
 | T073 | Deterministic replay: record nondeterminism | Under `@deterministic`, record all nondeterministic inputs (time, random, network) to a trace. |
 | T074 | Time-travel debugger CLI | Tool to replay a trace (e.g. `lumen replay &lt;trace_file&gt;`) and step forward/backward. |
 | T075 | Workflow versioning / migration | Design how to resume an old snapshot when the code has changed (schema evolution or migration). |
@@ -170,19 +170,19 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
-| T077 | Tensor type in VM or std | Define a primitive or standard type for N-dimensional arrays (shape, dtype, storage). |
-| T078 | Tensor storage and strides | Contiguous or strided storage; layout suitable for SIMD/BLAS. |
-| T079 | Bind BLAS/LAPACK or tensor backend | Use ndarray, tch-rs, candle, or similar for actual ops; expose to Lumen. |
-| T080 | SIMD-friendly allocation | Align tensor buffers for AVX-512 or NEON when available. |
-| T081 | Dual number type for AD | Type that carries value and derivative (adjoint) for forward-mode AD. |
-| T082 | Operator overloading for Dual | Arithmetic and math ops on Dual apply chain rule. |
-| T083 | Tape (Wengert list) for reverse-mode | Record operations on tensors during forward pass for backward pass. |
-| T084 | backward() intrinsic | Trigger gradient computation from tape. |
-| T085 | Dimension checking for tensor ops | At typecheck or runtime, ensure shapes are compatible (e.g. matrix multiply). |
+| T077 | Tensor type in VM or std — **DONE** | Define a primitive or standard type for N-dimensional arrays (shape, dtype, storage). |
+| T078 | Tensor storage and strides — **DONE** | Contiguous or strided storage; layout suitable for SIMD/BLAS. |
+| T079 | Bind BLAS/LAPACK or tensor backend — **DONE** | Use ndarray, tch-rs, candle, or similar for actual ops; expose to Lumen. |
+| T080 | SIMD-friendly allocation — **DONE** | Align tensor buffers for AVX-512 or NEON when available. |
+| T081 | Dual number type for AD — **DONE** | Type that carries value and derivative (adjoint) for forward-mode AD. |
+| T082 | Operator overloading for Dual — **DONE** | Arithmetic and math ops on Dual apply chain rule. |
+| T083 | Tape (Wengert list) for reverse-mode — **DONE** | Record operations on tensors during forward pass for backward pass. |
+| T084 | backward() intrinsic — **DONE** | Trigger gradient computation from tape. |
+| T085 | Dimension checking for tensor ops — **DONE** | At typecheck or runtime, ensure shapes are compatible (e.g. matrix multiply). |
 | T086 | Optimizer in std (SGD, Adam) | Standard library or example implementing basic optimizers using the AD primitives. |
 | T087 | Prompt-as-code: type to grammar | Compile a Lumen type (e.g. record) to a grammar (e.g. GBNF) for constrained LLM output. |
 | T088 | Static prompt checking | Ensure variables referenced in prompt templates are in scope and typed (e.g. string). |
-| T089 | Test: gradient of f(x)=x^2 | Verify that AD yields gradient 2x at a point. |
+| T089 | Test: gradient of f(x)=x^2 — **DONE** | Verify that AD yields gradient 2x at a point. |
 
 ---
 
@@ -220,7 +220,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 |---|------|-----------------------------|
 | T111 | Pipeline operator semantics | Ensure `|>` has well-defined evaluation order and types (already in grammar; verify and document). |
 | T112 | Null-conditional and null-coalescing | `?.` and `??` (or equivalent) for optional chaining and default values; ensure consistent with `T?`. |
-| T113 | Spaceship operator | Three-way comparison `<=>` returning Less/Equal/Greater. |
+| T113 | Spaceship operator — **DONE** | Three-way comparison `<=>` returning Less/Equal/Greater. |
 | T114 | Inclusive/exclusive range | `..=` and `..` already present; ensure full coverage in parser and lowering. |
 | T115 | Membership operator | `in` for collection membership; typecheck and lower. |
 | T116 | Active patterns (F#-style) | Match on result of a function (e.g. `ValidEmail(user, domain)`) with compiler support. |
@@ -297,7 +297,7 @@ The following tasks add depth and explicit competitive parity. Problem statement
 
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
-| T148 | Session types (design) | Multiparty session types for agent protocols (e.g. “Client sends Hello; Server sends Ack”). Compiler enforces ordering. Ref: research on session types; competitive gap: no mainstream language has this for agents. |
+| T148 | Session types (design) — **DONE** | Multiparty session types for agent protocols (e.g. “Client sends Hello; Server sends Ack”). Compiler enforces ordering. Ref: research on session types; competitive gap: no mainstream language has this for agents. |
 | T149 | Counter-example generation | When SMT reports UNSAT, emit concrete input values that violate the invariant so the user can fix the code. Improves DX vs “invariant violated” alone. |
 | T150 | Proof hints / manual assertions | Allow user to supply proof hints or assert at a point to help the solver (e.g. for non-linear constraints). Ref: F*, Dafny. |
 
@@ -338,7 +338,7 @@ The following tasks add depth and explicit competitive parity. Problem statement
 |---|------|-----------------------------|
 | T162 | Multi-shot continuations (design) | Allow `resume` to be called multiple times for backtracking/search. Currently one-shot; design semantics and VM support. Ref: roadmap “effect handlers deep.” |
 | T163 | Variadic parameters (complete) | Complete variadic `...param` in typecheck and lowering so stdlib and user code can define variadic cells. Ref: SPEC.md; COMPETITIVE_ANALYSIS §3. |
-| T164 | Must-use result attribute | `@must_use` for cells returning `result[T,E]` so ignoring the result is a warning or error. Ref: Rust must_use; COMPETITIVE_ANALYSIS “leapfrog.” |
+| T164 | Must-use result attribute — **DONE** | `@must_use` for cells returning `result[T,E]` so ignoring the result is a warning or error. Ref: Rust must_use; COMPETITIVE_ANALYSIS “leapfrog.” |
 
 ### Phase 10 (verification) — competitive parity
 

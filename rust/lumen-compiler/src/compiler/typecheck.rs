@@ -1903,8 +1903,21 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::NullSafeAccess(obj, field, _span) => {
                 let ot = self.infer_expr(obj);
+                // Resolve the underlying record type, stripping Null from unions
+                let record_type = match &ot {
+                    Type::Record(_) => ot.clone(),
+                    Type::Union(types) => {
+                        // Find the non-null record type in the union (e.g., Record | Null)
+                        types
+                            .iter()
+                            .find(|t| matches!(t, Type::Record(_)))
+                            .cloned()
+                            .unwrap_or(ot.clone())
+                    }
+                    _ => ot.clone(),
+                };
                 // Result is T | Null
-                let field_type = if let Type::Record(ref name) = ot {
+                let field_type = if let Type::Record(ref name) = record_type {
                     if let Some(ti) = self.symbols.types.get(name) {
                         if let crate::compiler::resolve::TypeInfoKind::Record(ref rd) = ti.kind {
                             if let Some(f) = rd.fields.iter().find(|f| f.name == *field) {

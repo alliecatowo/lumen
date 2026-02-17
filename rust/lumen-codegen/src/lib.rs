@@ -5,6 +5,7 @@
 pub mod bench_programs;
 pub mod context;
 pub mod emit;
+pub mod ffi;
 pub mod jit;
 pub mod lower;
 pub mod types;

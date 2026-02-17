@@ -8,6 +8,7 @@ pub mod channel;
 pub mod checkpoint;
 pub mod durability;
 pub mod injection;
+pub mod nursery;
 pub mod process;
 pub mod reduction;
 pub mod scheduler;

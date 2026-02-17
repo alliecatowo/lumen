@@ -2,6 +2,7 @@
 
 use crate::compiler::ast::*;
 use crate::compiler::tokens::{Span, Token, TokenKind};
+use num_bigint::BigInt;
 use std::collections::BTreeMap;
 use thiserror::Error;
 
@@ -4806,7 +4807,29 @@ impl Parser {
                 let s = self.advance().span;
                 let expr = self.parse_expr(28)?; // high bp for unary
                 let span = s.merge(expr.span());
-                Ok(Expr::UnaryOp(UnaryOp::Neg, Box::new(expr), span))
+                // Constant-fold negation of integer literals at parse time.
+                // This is critical for i64::MIN (-9223372036854775808) which
+                // cannot be represented as a positive i64 then negated at runtime.
+                // The positive literal 9223372036854775808 overflows i64 and becomes
+                // a BigIntLit; we detect this case and fold it into IntLit(i64::MIN).
+                match &expr {
+                    Expr::IntLit(n, _) => {
+                        // Fold -n for normal i64 values (wrapping handles i64::MIN negation
+                        // of the already-negative i64::MIN, though that's an exotic case)
+                        Ok(Expr::IntLit(n.wrapping_neg(), span))
+                    }
+                    Expr::BigIntLit(n, _) => {
+                        // Check if this is exactly i64::MAX + 1, which means -n == i64::MIN
+                        let i64_min_abs = BigInt::from(i64::MAX) + BigInt::from(1);
+                        if *n == i64_min_abs {
+                            Ok(Expr::IntLit(i64::MIN, span))
+                        } else {
+                            // General BigInt negation
+                            Ok(Expr::UnaryOp(UnaryOp::Neg, Box::new(expr), span))
+                        }
+                    }
+                    _ => Ok(Expr::UnaryOp(UnaryOp::Neg, Box::new(expr), span)),
+                }
             }
             TokenKind::Not => {
                 let s = self.advance().span;

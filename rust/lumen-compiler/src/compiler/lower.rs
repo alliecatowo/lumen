@@ -520,8 +520,18 @@ fn try_const_eval(expr: &Expr) -> Option<ConstValue> {
         Expr::UnaryOp(op, inner, _) => {
             let val = try_const_eval(inner)?;
             match (op, val) {
-                (UnaryOp::Neg, ConstValue::Int(n)) => Some(ConstValue::Int(-n)),
+                (UnaryOp::Neg, ConstValue::Int(n)) => Some(ConstValue::Int(n.wrapping_neg())),
                 (UnaryOp::Neg, ConstValue::Float(f)) => Some(ConstValue::Float(-f)),
+                (UnaryOp::Neg, ConstValue::BigInt(n)) => {
+                    let negated = -n;
+                    // If the negated BigInt fits in i64, fold to Int
+                    use num_traits::ToPrimitive;
+                    if let Some(i) = negated.to_i64() {
+                        Some(ConstValue::Int(i))
+                    } else {
+                        Some(ConstValue::BigInt(negated))
+                    }
+                }
                 (UnaryOp::Not, ConstValue::Bool(b)) => Some(ConstValue::Bool(!b)),
                 (UnaryOp::BitNot, ConstValue::Int(n)) => Some(ConstValue::Int(!n)),
                 _ => None,
@@ -689,8 +699,12 @@ fn try_const_eval(expr: &Expr) -> Option<ConstValue> {
 /// Tracks a loop for break/continue patching
 struct LoopContext {
     label: Option<String>,
-    start: usize,
     break_jumps: Vec<usize>,
+    /// Indices of continue Jmp instructions that need forward-patching.
+    /// For for-loops, these jump to the iterator-advance (idx += 1) section
+    /// rather than to `start` (which would skip the increment and cause
+    /// infinite loops).
+    continue_jumps: Vec<usize>,
 }
 
 struct Lowerer<'a> {
@@ -1299,8 +1313,8 @@ impl<'a> Lowerer<'a> {
 
                 self.loop_stack.push(LoopContext {
                     label: fs.label.clone(),
-                    start: loop_start,
                     break_jumps: Vec::new(),
+                    continue_jumps: Vec::new(),
                 });
 
                 // If there's a filter condition, skip the body if it's false
@@ -1330,6 +1344,8 @@ impl<'a> Lowerer<'a> {
                 }
 
                 // idx = idx + 1
+                // Continue jumps target this increment section (not loop_start)
+                let increment_start = instrs.len();
                 let one_idx = consts.len() as u16;
                 consts.push(Constant::Int(1));
                 let one_reg = ra.alloc_temp();
@@ -1349,6 +1365,10 @@ impl<'a> Lowerer<'a> {
                 let ctx = self.loop_stack.pop().unwrap();
                 for bj in ctx.break_jumps {
                     instrs[bj] = Instruction::sax(OpCode::Jmp, (after_loop - bj - 1) as i32);
+                }
+                // Patch continue jumps to the increment section
+                for cj in ctx.continue_jumps {
+                    instrs[cj] = Instruction::sax(OpCode::Jmp, (increment_start - cj - 1) as i32);
                 }
                 // After for loop completes, free any temps used for iteration
                 ra.free_statement_temps();
@@ -1459,8 +1479,8 @@ impl<'a> Lowerer<'a> {
                 let loop_start = instrs.len();
                 self.loop_stack.push(LoopContext {
                     label: ws.label.clone(),
-                    start: loop_start,
                     break_jumps: Vec::new(),
+                    continue_jumps: Vec::new(),
                 });
 
                 let cond_reg = self.lower_expr(&ws.condition, ra, consts, instrs);
@@ -1487,6 +1507,10 @@ impl<'a> Lowerer<'a> {
                 for bj in ctx.break_jumps {
                     instrs[bj] = Instruction::sax(OpCode::Jmp, (after - bj - 1) as i32);
                 }
+                // Patch continue jumps back to loop start (re-evaluate condition)
+                for cj in ctx.continue_jumps {
+                    instrs[cj] = Instruction::sax(OpCode::Jmp, loop_start as i32 - cj as i32 - 1);
+                }
                 // After while loop completes, free any temps used for condition
                 ra.free_statement_temps();
             }
@@ -1494,8 +1518,8 @@ impl<'a> Lowerer<'a> {
                 let loop_start = instrs.len();
                 self.loop_stack.push(LoopContext {
                     label: ls.label.clone(),
-                    start: loop_start,
                     break_jumps: Vec::new(),
+                    continue_jumps: Vec::new(),
                 });
 
                 for s in &ls.body {
@@ -1508,6 +1532,10 @@ impl<'a> Lowerer<'a> {
                 let ctx = self.loop_stack.pop().unwrap();
                 for bj in ctx.break_jumps {
                     instrs[bj] = Instruction::sax(OpCode::Jmp, (after - bj - 1) as i32);
+                }
+                // Patch continue jumps back to loop start
+                for cj in ctx.continue_jumps {
+                    instrs[cj] = Instruction::sax(OpCode::Jmp, loop_start as i32 - cj as i32 - 1);
                 }
             }
             Stmt::Break(bs) => {
@@ -1526,19 +1554,18 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Stmt::Continue(cs) => {
+                let jmp_idx = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
                 let target = if let Some(label) = &cs.label {
                     self.loop_stack
-                        .iter()
+                        .iter_mut()
                         .rev()
                         .find(|ctx| ctx.label.as_deref() == Some(label))
                 } else {
-                    self.loop_stack.last()
+                    self.loop_stack.last_mut()
                 };
                 if let Some(ctx) = target {
-                    let back_offset = ctx.start as i32 - instrs.len() as i32 - 1;
-                    instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
-                } else {
-                    instrs.push(Instruction::sax(OpCode::Jmp, 0));
+                    ctx.continue_jumps.push(jmp_idx);
                 }
             }
             Stmt::Emit(es) => {
@@ -3180,13 +3207,16 @@ impl<'a> Lowerer<'a> {
                     r
                 };
                 let dest = ra.alloc_temp();
-                let start_reg = ra.alloc_temp();
-                ra.alloc_temp(); // for end
+                // Allocate a contiguous block of 2 for [start, end] args to avoid
+                // clobbering live registers when temps are recycled (T193).
+                let arg_block = ra.alloc_block(2);
+                let start_reg = arg_block;
+                let end_reg = arg_block + 1;
                 if sr != start_reg {
                     instrs.push(Instruction::abc(OpCode::Move, start_reg, sr, 0));
                 }
-                if er != start_reg + 1 {
-                    instrs.push(Instruction::abc(OpCode::Move, start_reg + 1, er, 0));
+                if er != end_reg {
+                    instrs.push(Instruction::abc(OpCode::Move, end_reg, er, 0));
                 }
                 instrs.push(Instruction::abc(
                     OpCode::Intrinsic,
@@ -3579,35 +3609,44 @@ impl<'a> Lowerer<'a> {
                 ..
             } => {
                 let val_reg = self.lower_expr(inner, ra, consts, instrs);
-                let dest = ra.alloc_temp();
-                let intrinsic = match target_type.as_str() {
-                    "Int" => IntrinsicId::ToInt,
-                    "Float" => IntrinsicId::ToFloat,
-                    "String" => IntrinsicId::ToString,
+                match target_type.as_str() {
                     "Bool" => {
                         // Truthiness check: not(not(val))
+                        let dest = ra.alloc_temp();
                         instrs.push(Instruction::abc(OpCode::Not, dest, val_reg, 0));
                         instrs.push(Instruction::abc(OpCode::Not, dest, dest, 0));
-                        return dest;
+                        dest
+                    }
+                    "Int" | "Float" | "String" => {
+                        let intrinsic = match target_type.as_str() {
+                            "Int" => IntrinsicId::ToInt,
+                            "Float" => IntrinsicId::ToFloat,
+                            _ => IntrinsicId::ToString,
+                        };
+                        // Allocate a contiguous block of 2 registers [dest, arg_start]
+                        // to avoid clobbering a live register when a recycled temp
+                        // is adjacent to an unrelated named binding (T193).
+                        let block = ra.alloc_block(2);
+                        let dest = block;
+                        let arg_start = block + 1;
+                        if val_reg != arg_start {
+                            instrs.push(Instruction::abc(OpCode::Move, arg_start, val_reg, 0));
+                        }
+                        instrs.push(Instruction::abc(
+                            OpCode::Intrinsic,
+                            dest,
+                            intrinsic as u8,
+                            arg_start,
+                        ));
+                        dest
                     }
                     _ => {
                         // Unknown cast: just move the value through
+                        let dest = ra.alloc_temp();
                         instrs.push(Instruction::abc(OpCode::Move, dest, val_reg, 0));
-                        return dest;
+                        dest
                     }
-                };
-                // Emit intrinsic call: dest = intrinsic(val_reg)
-                let arg_start = dest + 1;
-                if val_reg != arg_start {
-                    instrs.push(Instruction::abc(OpCode::Move, arg_start, val_reg, 0));
                 }
-                instrs.push(Instruction::abc(
-                    OpCode::Intrinsic,
-                    dest,
-                    intrinsic as u8,
-                    arg_start,
-                ));
-                dest
             }
             Expr::BlockExpr(stmts, _) => {
                 let dest = ra.alloc_temp();
@@ -3712,13 +3751,21 @@ impl<'a> Lowerer<'a> {
                 args,
                 ..
             } => {
-                let dest = ra.alloc_temp();
-                // Emit args to consecutive registers starting at dest+1
-                for (i, arg) in args.iter().enumerate() {
+                // First, lower all args to get their register locations
+                let mut arg_regs = Vec::new();
+                for arg in args {
                     let ar = self.lower_expr(arg, ra, consts, instrs);
+                    arg_regs.push(ar);
+                }
+                // Allocate a contiguous block [dest, arg1, arg2, ...] to avoid
+                // clobbering live registers when dest comes from the free list (T193).
+                let block = ra.alloc_block(1 + args.len() as u8);
+                let dest = block;
+                // Move args into consecutive registers starting at dest+1
+                for (i, ar) in arg_regs.iter().enumerate() {
                     let target = dest + 1 + i as u8;
-                    if ar != target {
-                        instrs.push(Instruction::abc(OpCode::Move, target, ar, 0));
+                    if *ar != target {
+                        instrs.push(Instruction::abc(OpCode::Move, target, *ar, 0));
                     }
                 }
                 // Load effect_name and operation as constants

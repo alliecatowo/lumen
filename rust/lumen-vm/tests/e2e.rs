@@ -2290,3 +2290,211 @@ end
         other => panic!("expected String(\"Hello\"), got {:?}", other),
     }
 }
+
+// ─── For-loop continue (T199) ───
+
+/// Basic continue in a for-loop: skip element 2, collect the rest.
+#[test]
+fn e2e_for_loop_continue_basic() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  let mut results: list[Int] = []
+  for x in [1, 2, 3, 4, 5]
+    if x == 2
+      continue
+    end
+    results = append(results, x)
+  end
+  return results
+end
+"#,
+    );
+    assert_eq!(
+        result,
+        Value::new_list(vec![
+            Value::Int(1),
+            Value::Int(3),
+            Value::Int(4),
+            Value::Int(5),
+        ])
+    );
+}
+
+/// Continue with filter: filter removes even numbers, continue skips 3.
+#[test]
+fn e2e_for_loop_continue_with_filter() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  let mut results: list[Int] = []
+  for x in [1, 2, 3, 4, 5, 6] if x % 2 != 0
+    if x == 3
+      continue
+    end
+    results = append(results, x)
+  end
+  return results
+end
+"#,
+    );
+    assert_eq!(result, Value::new_list(vec![Value::Int(1), Value::Int(5)]));
+}
+
+/// Continue in nested loops: inner continue should not affect outer loop.
+#[test]
+fn e2e_for_loop_continue_nested() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  let mut results: list[Int] = []
+  for i in [1, 2]
+    for j in [10, 20, 30]
+      if j == 20
+        continue
+      end
+      results = append(results, i * 100 + j)
+    end
+  end
+  return results
+end
+"#,
+    );
+    // i=1: j=10 -> 110, j=20 skip, j=30 -> 130
+    // i=2: j=10 -> 210, j=20 skip, j=30 -> 230
+    assert_eq!(
+        result,
+        Value::new_list(vec![
+            Value::Int(110),
+            Value::Int(130),
+            Value::Int(210),
+            Value::Int(230),
+        ])
+    );
+}
+
+/// Labeled continue: continue outer for-loop from inside inner loop.
+#[test]
+fn e2e_for_loop_labeled_continue() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  let mut results: list[Int] = []
+  for @outer i in [1, 2, 3]
+    for j in [10, 20]
+      if i == 2
+        continue @outer
+      end
+      results = append(results, i * 100 + j)
+    end
+  end
+  return results
+end
+"#,
+    );
+    // i=1: j=10 -> 110, j=20 -> 120
+    // i=2: j=10 -> continue @outer (skip rest of i=2 entirely)
+    // i=3: j=10 -> 310, j=20 -> 320
+    assert_eq!(
+        result,
+        Value::new_list(vec![
+            Value::Int(110),
+            Value::Int(120),
+            Value::Int(310),
+            Value::Int(320),
+        ])
+    );
+}
+
+/// Continue as first statement in for-loop body (skip every element).
+#[test]
+fn e2e_for_loop_continue_first_statement() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  let mut results: list[Int] = []
+  for x in [1, 2, 3]
+    continue
+    results = append(results, x)
+  end
+  return results
+end
+"#,
+    );
+    // Every element is skipped, so the list stays empty.
+    assert_eq!(result, Value::new_list(vec![]));
+}
+
+/// Continue with accumulator: sum all elements except the skipped one.
+#[test]
+fn e2e_for_loop_continue_with_accumulator() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let mut sum = 0
+  for x in [10, 20, 30, 40, 50]
+    if x == 30
+      continue
+    end
+    sum = sum + x
+  end
+  return sum
+end
+"#,
+    );
+    // 10 + 20 + 40 + 50 = 120 (skip 30)
+    assert_eq!(result, Value::Int(120));
+}
+
+/// Multiple continues in a single for-loop body.
+#[test]
+fn e2e_for_loop_multiple_continues() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  let mut results: list[Int] = []
+  for x in [1, 2, 3, 4, 5, 6]
+    if x == 2
+      continue
+    end
+    if x == 5
+      continue
+    end
+    results = append(results, x)
+  end
+  return results
+end
+"#,
+    );
+    assert_eq!(
+        result,
+        Value::new_list(vec![
+            Value::Int(1),
+            Value::Int(3),
+            Value::Int(4),
+            Value::Int(6),
+        ])
+    );
+}
+
+/// Continue in a for-loop with range-like list, verifying all elements after
+/// the skipped one are still processed (regression: ensures iterator advances).
+#[test]
+fn e2e_for_loop_continue_no_infinite_loop() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let mut count = 0
+  for x in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    if x % 3 == 0
+      continue
+    end
+    count = count + 1
+  end
+  return count
+end
+"#,
+    );
+    // Skip 3, 6, 9 => count 7 elements
+    assert_eq!(result, Value::Int(7));
+}

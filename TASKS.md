@@ -121,7 +121,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T046 | Path-sensitive refinement — **DONE** | In typecheck, update refinement info after conditionals (e.g. `if x > 0` then `x` is positive in then-branch). |
 | T047 | Array/list bounds in refinement — **DONE** | Where possible, prove index in range so runtime bounds checks can be elided. |
 | T048 | Effect budget checking — **DONE** | If effect row includes bounds (e.g. `network(max_calls: 5)`), prove no path exceeds the bound. |
-| T049 | Exhaustiveness for refinement ranges | For match on refined integers (e.g. 0..100), ensure all cases are covered or warn. |
+| T049 | Exhaustiveness for refinement ranges — **DONE** | For match on refined integers (e.g. 0..100), ensure all cases are covered or warn. |
 | T050 | Typestate (e.g. File Open/Closed) — **DONE** | Design and implement typestate so that operations (e.g. read) are only valid in certain states; compiler error otherwise. |
 | T051 | Test: refinement verification | Add tests that expect success or failure of verification (e.g. division by positive divisor). |
 | T052 | Fuzz type checker with constraints | Property-based or random programs with `where` clauses; ensure solver results are consistent. |
@@ -194,7 +194,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T091 | Transparency log for packages | Append-only log for published artifacts; verification against log. |
 | T092 | Registry deployment | Deploy registry (e.g. Cloudflare Workers + D1/R2) so publish/search/install round-trip works. |
 | T093 | OIDC for registry auth — **DONE** | Use OpenID Connect for publisher identity where applicable. |
-| T094 | TUF or similar for repository metadata | The Update Framework (or equivalent) for secure package metadata. |
+| T094 | TUF or similar for repository metadata — **DONE** | The Update Framework (or equivalent) for secure package metadata. |
 | T095 | extern "C" and ABI — **DONE** | Support C calling convention and correct ABI in FFI. |
 | T096 | Header-to-Lumen bindgen | Tool that parses C (or Rust) headers and generates Lumen extern declarations. |
 | T097 | WASM target in codegen — **DONE** | Emit wasm32-wasi (or wasm32-unknown-unknown) from the same codegen path. |
@@ -208,7 +208,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T105 | Multi-error reporting in compiler — **DONE** | Emit all recoverable errors in one run, not only the first. |
 | T106 | Fix-it hints in diagnostics — **DONE** | Attach suggested edits to diagnostics where possible. |
 | T107 | Error codes and documentation — **DONE** | Assign codes to errors and link to documentation. |
-| T108 | Clippy: deny warnings in CI | Ensure `cargo clippy -- -D warnings` passes. |
+| T108 | Clippy: deny warnings in CI — **DONE** | Ensure `cargo clippy -- -D warnings` passes. |
 | T109 | Miri in CI | Run tests under Miri where applicable to catch UB. |
 | T110 | Benchmark suite and regression gate — **DONE** | Formal benchmark suite; CI fails on performance regression beyond a threshold. |
 
@@ -227,7 +227,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T117 | GADTs | Generalized algebraic data types with type parameters in variant return types. |
 | T118 | Hygienic macro system | Macro expansion without variable capture; define syntax and scope rules. |
 | T119 | String interpolation with format spec — **DONE** | e.g. `f"Value: {x:.2f}"` with typed formatting. |
-| T120 | Trailing lambda / DSL blocks | Allow block or lambda at end of call for DSLs (e.g. `html div { ... }`). |
+| T120 | Trailing lambda / DSL blocks — **DONE** | Allow block or lambda at end of call for DSLs (e.g. `html div { ... }`). |
 | T121 | Error propagation operator — **DONE** | Postfix `?` that unwraps `result[T,E]` or returns early with error. |
 | T122 | Try/else expression — **DONE** | `try expr else handler` for local error handling. |
 | T123 | Checked arithmetic by default — **DONE** | `+`, `-`, `*` check overflow; provide wrapping variants (e.g. `+%`). |
@@ -241,13 +241,13 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 |---|------|-----------------------------|
 | T125 | std::simd (or intrinsics) — **DONE** | Expose hardware SIMD where available for hot loops. |
 | T126 | std::crypto | Native or binding for Ed25519, BLAKE3, etc.; avoid unnecessary bindings where feasible. |
-| T127 | std::graph | First-class graph structure (e.g. for knowledge graphs). |
+| T127 | std::graph — **DONE** | First-class graph structure (e.g. for knowledge graphs). |
 | T128 | std::tensor — **DONE** | N-dimensional array API built on Phase 5 primitives. |
 | T129 | std::fs async | Async file I/O if async runtime is standardized. |
 | T130 | std::net | Async TCP/UDP or equivalent. |
 | T131 | std::http client/server | HTTP using hyper or equivalent; zero-copy where possible. |
 | T132 | std::json fast path — **DONE** | High-performance JSON using serde or similar. |
-| T133 | Collections with linear types | Where applicable, offer APIs that consume `self` (e.g. linear vector) for zero-copy pipelines. |
+| T133 | Collections with linear types — **DONE** | Where applicable, offer APIs that consume `self` (e.g. linear vector) for zero-copy pipelines. |
 
 ---
 
@@ -274,7 +274,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T143 | Coverage gate | Maintain or improve coverage (e.g. >95% for critical paths). |
 | T144 | Valgrind or sanitizers | No leaks; address sanitizer clean where applicable. |
 | T145 | Security audit (cargo audit) — **DONE** | Zero known vulnerabilities in dependencies. |
-| T146 | Documentation sync | SPEC, CLAUDE.md, and ROADMAP aligned with implementation. |
+| T146 | Documentation sync — **DONE** | SPEC, CLAUDE.md, and ROADMAP aligned with implementation. |
 | T147 | Release v1.0.0 tag | Tag and release when Phase 0–9 goals are met and gates pass. |
 
 ---
@@ -356,7 +356,7 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | T169 | Error context chaining — **DONE** | Propagate and display cause chains (e.g. "tool X failed because network unreachable because TLS handshake failed"). Improves debuggability vs single-message errors. |
 | T170 | Panic vs result (halt vs return err) — **DONE** | Define clear boundary: which failures panic (e.g. unreachable, invariant violation) vs return `result[T,E]`; document and enforce so agents can recover predictably. Ref: Rust panic vs Result. |
 | T171 | Inline / property-based / snapshot testing | Built-in or std test helpers: inline unit tests, property-based (e.g. QuickCheck-style), snapshot output comparison. Ref: COMPETITIVE_ANALYSIS §8 (leapfrog 11). |
-| T172 | Mock effects for tests | Test harness to stub effect operations (e.g. `perform HttpGet`) so tests run without real I/O. Complements deterministic replay. |
+| T172 | Mock effects for tests — **DONE** | Test harness to stub effect operations (e.g. `perform HttpGet`) so tests run without real I/O. Complements deterministic replay. |
 | T173 | LSP: go-to-implementations — **DONE** | "Go to implementation(s)" for cells and types; navigate to defining and overriding sites. Ref: IDE parity. |
 | T174 | Diagnostics: type diff and import suggestions | On type error, show concise type diff (expected vs actual); on unknown symbol, suggest imports or similar names. |
 | T175 | Watch mode (recheck on save) — **DONE** | `lumen watch` or LSP-driven re-check when files change; fast feedback without full rebuild. |
@@ -397,7 +397,7 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | T206 | **Missing or renamed builtins** — **DONE** | Tests use type_of (not type), to_json (not json_stringify), to_int/to_float (not parse_*), timestamp (not timestamp_ms); trim_start/trim_end, exp, tan, random_int not present. builtins.lm stubbed or uses alternatives. |
 | T207 | **Effect handler resume at runtime** — **DONE** | handle/perform with resume() can fail with "resume called outside of effect handler". effects.lm minimal stub avoids handle/perform until fixed. |
 | T208 | **Record method scoping / generic T** — **DONE** | Records with nested method cells (Stack[T], Queue[T], etc.) cause duplicate definition (is_empty, size) and undefined type T in method signatures. end_to_end.lm stubbed to calculator-only. |
-| T209 | **Result/optional syntactic sugar** | Code and tests use `unwrap`, `unwrap_or`, `is_ok`/`is_err`, and explicit `match` on `result[T,E]`/optional heavily. **Research:** Rust’s `?` operator propagates `Err`/`None` from the current function (unwrap-or-return); Swift optional binding (`if let`); JS optional chaining (`?.`). Adding similar ergonomics (e.g. postfix `?` for propagation in cells that return `result`/optional, or optional chaining for nullable fields) would reduce boilerplate and improve readability. See COMPETITIVE_ANALYSIS §6.3 (error/optional ergonomics), ROADMAP Phase 3. |
+| T209 | **Result/optional syntactic sugar** — **DONE** | Code and tests use `unwrap`, `unwrap_or`, `is_ok`/`is_err`, and explicit `match` on `result[T,E]`/optional heavily. **Research:** Rust’s `?` operator propagates `Err`/`None` from the current function (unwrap-or-return); Swift optional binding (`if let`); JS optional chaining (`?.`). Adding similar ergonomics (e.g. postfix `?` for propagation in cells that return `result`/optional, or optional chaining for nullable fields) would reduce boilerplate and improve readability. See COMPETITIVE_ANALYSIS §6.3 (error/optional ergonomics), ROADMAP Phase 3. |
 | **T204** | **Resolve all test-suite TODOs and implement expected behavior** | Work through every TODO in `tests/` (T193–T209 and any in-file TODOs). For each: either implement the expected language/VM behavior so the test can be restored to its intended form, or document the decision to keep the workaround and close the TODO. Track in this file; goal: test suite passes with no remaining test-side workarounds for compiler/VM gaps. See `tests/README.md` § Test-suite TODOs. |
 
 ---

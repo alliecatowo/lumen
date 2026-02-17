@@ -1,0 +1,6 @@
+cell main() -> Int
+  let x: Int = 42
+  let name: String = "hello"
+  let flag: Bool = true
+  x
+end

@@ -1,0 +1,6 @@
+# Integer arithmetic
+cell main() -> Int
+  let a = 10
+  let b = 3
+  a + b * 2
+end

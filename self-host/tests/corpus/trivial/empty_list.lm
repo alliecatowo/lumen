@@ -1,0 +1,4 @@
+# Empty list
+cell main() -> list[Int]
+  []
+end

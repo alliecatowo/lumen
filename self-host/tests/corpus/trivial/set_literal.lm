@@ -1,0 +1,4 @@
+# Set literal
+cell main() -> set[Int]
+  {1, 2, 3}
+end

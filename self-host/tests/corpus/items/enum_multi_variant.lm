@@ -1,0 +1,14 @@
+enum Result
+  Ok(value: Int)
+  Err(message: String)
+  Pending
+end
+
+cell main() -> String
+  let r = Result.Ok(value: 42)
+  match r
+    Result.Ok(value:) -> "ok: {value}"
+    Result.Err(message:) -> "err: {message}"
+    Result.Pending -> "pending"
+  end
+end

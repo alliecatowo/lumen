@@ -1,0 +1,7 @@
+cell greet(name: String) -> String
+  "hello {name}"
+end
+
+cell main() -> String
+  greet("world")
+end

@@ -1,0 +1,4 @@
+# Right shift
+cell main() -> Int
+  256 >> 4
+end

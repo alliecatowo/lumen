@@ -1,0 +1,7 @@
+# Field access
+record Point(x: Int, y: Int)
+
+cell main() -> Int
+  let p = Point(x: 3, y: 4)
+  p.x + p.y
+end

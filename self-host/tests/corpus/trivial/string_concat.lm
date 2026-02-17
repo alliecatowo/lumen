@@ -1,0 +1,4 @@
+# String concatenation
+cell main() -> String
+  "hello" ++ " " ++ "world"
+end

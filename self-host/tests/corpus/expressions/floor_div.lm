@@ -1,0 +1,4 @@
+# Floor division
+cell main() -> Int
+  7 // 2
+end

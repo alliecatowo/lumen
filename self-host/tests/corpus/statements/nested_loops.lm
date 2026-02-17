@@ -1,0 +1,9 @@
+cell main() -> Int
+  let sum = 0
+  for i in 1..4
+    for j in 1..4
+      sum = sum + i * j
+    end
+  end
+  sum
+end

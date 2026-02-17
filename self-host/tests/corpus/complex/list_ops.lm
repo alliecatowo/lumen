@@ -1,0 +1,32 @@
+cell map_list(items: list[Int], f: (Int) -> Int) -> list[Int]
+  let result: list[Int] = []
+  for item in items
+    result = result + [f(item)]
+  end
+  result
+end
+
+cell filter_list(items: list[Int], pred: (Int) -> Bool) -> list[Int]
+  let result: list[Int] = []
+  for item in items
+    if pred(item)
+      result = result + [item]
+    end
+  end
+  result
+end
+
+cell sum_list(items: list[Int]) -> Int
+  let total = 0
+  for item in items
+    total = total + item
+  end
+  total
+end
+
+cell main() -> Int
+  let nums = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+  let doubled = map_list(nums, cell(x: Int) -> Int x * 2 end)
+  let evens = filter_list(doubled, cell(x: Int) -> Bool x % 2 == 0 end)
+  sum_list(evens)
+end

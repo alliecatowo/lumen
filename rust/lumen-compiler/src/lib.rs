@@ -26,6 +26,8 @@ pub enum CompileError {
     Type(Vec<compiler::typecheck::TypeError>),
     #[error("constraint errors: {0:?}")]
     Constraint(Vec<compiler::constraints::ConstraintError>),
+    #[error("ownership errors: {0:?}")]
+    Ownership(Vec<compiler::ownership::OwnershipError>),
 }
 
 impl From<compiler::parser::ParseError> for CompileError {

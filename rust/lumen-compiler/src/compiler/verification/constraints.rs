@@ -34,6 +34,24 @@ impl std::fmt::Display for CmpOp {
     }
 }
 
+/// Arithmetic operators for constraints like `x + 1 > 0`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArithOp {
+    Add,
+    Sub,
+    Mul,
+}
+
+impl std::fmt::Display for ArithOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ArithOp::Add => write!(f, "+"),
+            ArithOp::Sub => write!(f, "-"),
+            ArithOp::Mul => write!(f, "*"),
+        }
+    }
+}
+
 /// Solver-independent constraint representation.
 ///
 /// Intentionally kept simple — this is the IR that the toy solver and
@@ -54,6 +72,228 @@ pub enum Constraint {
     Not(Box<Constraint>),
     /// A symbolic boolean variable (e.g. `is_valid`).
     BoolVar(String),
+
+    // ── New variants (T042-T048) ────────────────────────────────
+    /// A named variable reference (non-boolean, for use in constraint
+    /// substitution, e.g. representing "the value of x").
+    Var(String),
+
+    /// Comparison between two variables: `left <op> right`.
+    VarComparison {
+        left: String,
+        op: CmpOp,
+        right: String,
+    },
+
+    /// Arithmetic constraint: `(var <arith_op> constant) <cmp_op> value`.
+    /// Example: `x + 1 > 0` → Arithmetic { var: "x", arith_op: Add, arith_const: 1, cmp_op: Gt, cmp_value: 0 }
+    Arithmetic {
+        var: String,
+        arith_op: ArithOp,
+        arith_const: i64,
+        cmp_op: CmpOp,
+        cmp_value: i64,
+    },
+
+    /// Effect budget constraint: limits the number of calls to a given
+    /// effect/tool within a cell body.
+    EffectBudget {
+        effect_name: String,
+        max_calls: u32,
+        actual_calls: u32,
+    },
+}
+
+impl Constraint {
+    /// Substitute all occurrences of `var_name` with a constant integer value.
+    /// This is used to check preconditions when arguments are known literals.
+    pub fn substitute_int(&self, var_name: &str, value: i64) -> Constraint {
+        match self {
+            Constraint::IntComparison { var, op, value: v } if var == var_name => {
+                // After substitution, this becomes a concrete check.
+                let holds = match op {
+                    CmpOp::Gt => value > *v,
+                    CmpOp::GtEq => value >= *v,
+                    CmpOp::Lt => value < *v,
+                    CmpOp::LtEq => value <= *v,
+                    CmpOp::Eq => value == *v,
+                    CmpOp::NotEq => value != *v,
+                };
+                Constraint::BoolConst(holds)
+            }
+            Constraint::IntComparison { .. } => self.clone(),
+            Constraint::FloatComparison { .. } => self.clone(),
+            Constraint::BoolConst(_) => self.clone(),
+            Constraint::BoolVar(name) if name == var_name => {
+                // Treat non-zero as true for boolean substitution.
+                Constraint::BoolConst(value != 0)
+            }
+            Constraint::BoolVar(_) => self.clone(),
+            Constraint::Var(name) if name == var_name => {
+                // Replace with a bool-const for now (var becomes concrete).
+                Constraint::BoolConst(true)
+            }
+            Constraint::Var(_) => self.clone(),
+            Constraint::And(parts) => Constraint::And(
+                parts
+                    .iter()
+                    .map(|p| p.substitute_int(var_name, value))
+                    .collect(),
+            ),
+            Constraint::Or(parts) => Constraint::Or(
+                parts
+                    .iter()
+                    .map(|p| p.substitute_int(var_name, value))
+                    .collect(),
+            ),
+            Constraint::Not(inner) => {
+                Constraint::Not(Box::new(inner.substitute_int(var_name, value)))
+            }
+            Constraint::VarComparison { left, op, right } => {
+                if left == var_name && right == var_name {
+                    // Both sides are the same variable being substituted.
+                    let holds = match op {
+                        CmpOp::Eq => true,
+                        CmpOp::NotEq => false,
+                        CmpOp::Lt => false,
+                        CmpOp::LtEq => true,
+                        CmpOp::Gt => false,
+                        CmpOp::GtEq => true,
+                    };
+                    Constraint::BoolConst(holds)
+                } else if left == var_name {
+                    Constraint::IntComparison {
+                        var: right.clone(),
+                        op: flip_cmp(*op),
+                        value,
+                    }
+                } else if right == var_name {
+                    Constraint::IntComparison {
+                        var: left.clone(),
+                        op: *op,
+                        value,
+                    }
+                } else {
+                    self.clone()
+                }
+            }
+            Constraint::Arithmetic {
+                var,
+                arith_op,
+                arith_const,
+                cmp_op,
+                cmp_value,
+            } if var == var_name => {
+                let computed = match arith_op {
+                    ArithOp::Add => value + arith_const,
+                    ArithOp::Sub => value - arith_const,
+                    ArithOp::Mul => value * arith_const,
+                };
+                let holds = match cmp_op {
+                    CmpOp::Gt => computed > *cmp_value,
+                    CmpOp::GtEq => computed >= *cmp_value,
+                    CmpOp::Lt => computed < *cmp_value,
+                    CmpOp::LtEq => computed <= *cmp_value,
+                    CmpOp::Eq => computed == *cmp_value,
+                    CmpOp::NotEq => computed != *cmp_value,
+                };
+                Constraint::BoolConst(holds)
+            }
+            Constraint::Arithmetic { .. } => self.clone(),
+            Constraint::EffectBudget { .. } => self.clone(),
+        }
+    }
+
+    /// Rename a variable in the constraint (used to map callee parameter
+    /// names to caller argument names).
+    pub fn rename_var(&self, from: &str, to: &str) -> Constraint {
+        match self {
+            Constraint::IntComparison { var, op, value } => {
+                let var = if var == from {
+                    to.to_string()
+                } else {
+                    var.clone()
+                };
+                Constraint::IntComparison {
+                    var,
+                    op: *op,
+                    value: *value,
+                }
+            }
+            Constraint::FloatComparison { var, op, value } => {
+                let var = if var == from {
+                    to.to_string()
+                } else {
+                    var.clone()
+                };
+                Constraint::FloatComparison {
+                    var,
+                    op: *op,
+                    value: *value,
+                }
+            }
+            Constraint::BoolConst(_) => self.clone(),
+            Constraint::BoolVar(name) => {
+                if name == from {
+                    Constraint::BoolVar(to.to_string())
+                } else {
+                    self.clone()
+                }
+            }
+            Constraint::Var(name) => {
+                if name == from {
+                    Constraint::Var(to.to_string())
+                } else {
+                    self.clone()
+                }
+            }
+            Constraint::And(parts) => {
+                Constraint::And(parts.iter().map(|p| p.rename_var(from, to)).collect())
+            }
+            Constraint::Or(parts) => {
+                Constraint::Or(parts.iter().map(|p| p.rename_var(from, to)).collect())
+            }
+            Constraint::Not(inner) => Constraint::Not(Box::new(inner.rename_var(from, to))),
+            Constraint::VarComparison { left, op, right } => {
+                let left = if left == from {
+                    to.to_string()
+                } else {
+                    left.clone()
+                };
+                let right = if right == from {
+                    to.to_string()
+                } else {
+                    right.clone()
+                };
+                Constraint::VarComparison {
+                    left,
+                    op: *op,
+                    right,
+                }
+            }
+            Constraint::Arithmetic {
+                var,
+                arith_op,
+                arith_const,
+                cmp_op,
+                cmp_value,
+            } => {
+                let var = if var == from {
+                    to.to_string()
+                } else {
+                    var.clone()
+                };
+                Constraint::Arithmetic {
+                    var,
+                    arith_op: *arith_op,
+                    arith_const: *arith_const,
+                    cmp_op: *cmp_op,
+                    cmp_value: *cmp_value,
+                }
+            }
+            Constraint::EffectBudget { .. } => self.clone(),
+        }
+    }
 }
 
 impl std::fmt::Display for Constraint {
@@ -76,6 +316,34 @@ impl std::fmt::Display for Constraint {
             }
             Constraint::Not(c) => write!(f, "not({})", c),
             Constraint::BoolVar(name) => write!(f, "{}", name),
+            Constraint::Var(name) => write!(f, "${}", name),
+            Constraint::VarComparison { left, op, right } => {
+                write!(f, "{} {} {}", left, op, right)
+            }
+            Constraint::Arithmetic {
+                var,
+                arith_op,
+                arith_const,
+                cmp_op,
+                cmp_value,
+            } => {
+                write!(
+                    f,
+                    "({} {} {}) {} {}",
+                    var, arith_op, arith_const, cmp_op, cmp_value
+                )
+            }
+            Constraint::EffectBudget {
+                effect_name,
+                max_calls,
+                actual_calls,
+            } => {
+                write!(
+                    f,
+                    "effect_budget({}, max={}, actual={})",
+                    effect_name, max_calls, actual_calls
+                )
+            }
         }
     }
 }
@@ -156,10 +424,23 @@ fn lower_binop(lhs: &Expr, op: BinOp, rhs: &Expr) -> Result<Constraint, Lowering
     }
 }
 
-/// Lower a comparison expression.  We require exactly one side to be an
-/// identifier and the other to be a numeric literal.  If the literal is on
-/// the left, we flip the operator.
+/// Lower a comparison expression.  We handle three cases:
+/// 1. `ident <op> literal`  → IntComparison / FloatComparison
+/// 2. `literal <op> ident`  → flip the operator
+/// 3. `ident <op> ident`    → VarComparison (NEW)
+///
+/// Additionally, if one side is `ident <arith> literal` and the other
+/// side is a literal, we produce an Arithmetic constraint.
 fn lower_comparison(lhs: &Expr, op: CmpOp, rhs: &Expr) -> Result<Constraint, LoweringError> {
+    // Try: (ident arith_op const) cmp_op literal
+    if let Some(c) = try_lower_arithmetic(lhs, op, rhs) {
+        return Ok(c);
+    }
+    // Try: literal cmp_op (ident arith_op const)
+    if let Some(c) = try_lower_arithmetic(rhs, flip_cmp(op), lhs) {
+        return Ok(c);
+    }
+
     match (extract_ident(lhs), extract_ident(rhs)) {
         // ident <op> literal
         (Some(name), None) => match extract_number(rhs) {
@@ -192,8 +473,42 @@ fn lower_comparison(lhs: &Expr, op: CmpOp, rhs: &Expr) -> Result<Constraint, Low
                 None => Err(LoweringError::NonCanonicalComparison),
             }
         }
+        // ident <op> ident → VarComparison
+        (Some(left), Some(right)) => Ok(Constraint::VarComparison {
+            left: left.to_string(),
+            op,
+            right: right.to_string(),
+        }),
         _ => Err(LoweringError::NonCanonicalComparison),
     }
+}
+
+/// Try to lower `(ident arith_op const) cmp_op literal`.
+/// Returns `None` if lhs is not an arithmetic expression.
+fn try_lower_arithmetic(lhs: &Expr, cmp_op: CmpOp, rhs: &Expr) -> Option<Constraint> {
+    // lhs must be BinOp(ident, arith, int_lit) and rhs must be int_lit
+    if let Expr::BinOp(inner_lhs, inner_op, inner_rhs, _) = lhs {
+        let arith_op = match inner_op {
+            BinOp::Add => ArithOp::Add,
+            BinOp::Sub => ArithOp::Sub,
+            BinOp::Mul => ArithOp::Mul,
+            _ => return None,
+        };
+        if let (Some(var_name), Some(NumericValue::Int(arith_const))) =
+            (extract_ident(inner_lhs), extract_number(inner_rhs))
+        {
+            if let Some(NumericValue::Int(cmp_value)) = extract_number(rhs) {
+                return Some(Constraint::Arithmetic {
+                    var: var_name.to_string(),
+                    arith_op,
+                    arith_const,
+                    cmp_op,
+                    cmp_value,
+                });
+            }
+        }
+    }
+    None
 }
 
 enum NumericValue {
@@ -222,7 +537,7 @@ fn extract_number(expr: &Expr) -> Option<NumericValue> {
     }
 }
 
-fn flip_cmp(op: CmpOp) -> CmpOp {
+pub fn flip_cmp(op: CmpOp) -> CmpOp {
     match op {
         CmpOp::Lt => CmpOp::Gt,
         CmpOp::LtEq => CmpOp::GtEq,
@@ -386,7 +701,7 @@ mod tests {
 
     #[test]
     fn unsupported_operator() {
-        // x + 1 (arithmetic, not a constraint)
+        // x + 1 (arithmetic, not a constraint — no comparison wrapping it)
         let expr = binop(ident("x"), BinOp::Add, int_lit(1));
         assert!(lower_expr_to_constraint(&expr).is_err());
     }
@@ -414,5 +729,144 @@ mod tests {
             value: 0,
         };
         assert_eq!(format!("{}", c), "age >= 0");
+    }
+
+    // ── New constraint variant tests ────────────────────────────
+
+    #[test]
+    fn lower_var_comparison() {
+        // x > y
+        let expr = binop(ident("x"), BinOp::Gt, ident("y"));
+        let c = lower_expr_to_constraint(&expr).unwrap();
+        assert_eq!(
+            c,
+            Constraint::VarComparison {
+                left: "x".to_string(),
+                op: CmpOp::Gt,
+                right: "y".to_string(),
+            },
+        );
+    }
+
+    #[test]
+    fn lower_arithmetic_constraint() {
+        // (x + 1) > 0
+        let arith = binop(ident("x"), BinOp::Add, int_lit(1));
+        let expr = binop(arith, BinOp::Gt, int_lit(0));
+        let c = lower_expr_to_constraint(&expr).unwrap();
+        assert_eq!(
+            c,
+            Constraint::Arithmetic {
+                var: "x".to_string(),
+                arith_op: ArithOp::Add,
+                arith_const: 1,
+                cmp_op: CmpOp::Gt,
+                cmp_value: 0,
+            },
+        );
+    }
+
+    #[test]
+    fn substitute_int_simple() {
+        // x > 0, substitute x = 5 → true
+        let c = Constraint::IntComparison {
+            var: "x".to_string(),
+            op: CmpOp::Gt,
+            value: 0,
+        };
+        assert_eq!(c.substitute_int("x", 5), Constraint::BoolConst(true));
+    }
+
+    #[test]
+    fn substitute_int_fails() {
+        // x > 0, substitute x = -1 → false
+        let c = Constraint::IntComparison {
+            var: "x".to_string(),
+            op: CmpOp::Gt,
+            value: 0,
+        };
+        assert_eq!(c.substitute_int("x", -1), Constraint::BoolConst(false));
+    }
+
+    #[test]
+    fn rename_var_in_constraint() {
+        let c = Constraint::IntComparison {
+            var: "param_x".to_string(),
+            op: CmpOp::Gt,
+            value: 0,
+        };
+        let renamed = c.rename_var("param_x", "arg_val");
+        assert_eq!(
+            renamed,
+            Constraint::IntComparison {
+                var: "arg_val".to_string(),
+                op: CmpOp::Gt,
+                value: 0,
+            },
+        );
+    }
+
+    #[test]
+    fn display_var_comparison() {
+        let c = Constraint::VarComparison {
+            left: "x".to_string(),
+            op: CmpOp::Gt,
+            right: "y".to_string(),
+        };
+        assert_eq!(format!("{}", c), "x > y");
+    }
+
+    #[test]
+    fn display_arithmetic() {
+        let c = Constraint::Arithmetic {
+            var: "x".to_string(),
+            arith_op: ArithOp::Add,
+            arith_const: 1,
+            cmp_op: CmpOp::Gt,
+            cmp_value: 0,
+        };
+        assert_eq!(format!("{}", c), "(x + 1) > 0");
+    }
+
+    #[test]
+    fn display_effect_budget() {
+        let c = Constraint::EffectBudget {
+            effect_name: "network".to_string(),
+            max_calls: 3,
+            actual_calls: 2,
+        };
+        assert_eq!(format!("{}", c), "effect_budget(network, max=3, actual=2)");
+    }
+
+    #[test]
+    fn substitute_arithmetic_constraint() {
+        // (x + 1) > 0, substitute x = 5 → (6 > 0) → true
+        let c = Constraint::Arithmetic {
+            var: "x".to_string(),
+            arith_op: ArithOp::Add,
+            arith_const: 1,
+            cmp_op: CmpOp::Gt,
+            cmp_value: 0,
+        };
+        assert_eq!(c.substitute_int("x", 5), Constraint::BoolConst(true));
+    }
+
+    #[test]
+    fn substitute_var_comparison_left() {
+        // x > y, substitute x = 10 → y < 10
+        let c = Constraint::VarComparison {
+            left: "x".to_string(),
+            op: CmpOp::Gt,
+            right: "y".to_string(),
+        };
+        let result = c.substitute_int("x", 10);
+        assert_eq!(
+            result,
+            Constraint::IntComparison {
+                var: "y".to_string(),
+                op: CmpOp::Lt,
+                value: 10,
+            },
+        );
     }
 }

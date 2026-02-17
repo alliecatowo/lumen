@@ -208,6 +208,27 @@ impl Value {
         }
     }
 
+    /// Borrow the inner `&str` from a `Value::String(StringRef::Owned(..))`.
+    /// Returns `None` for non-string values and for `StringRef::Interned`
+    /// (use `as_str_with_table` when the `StringTable` is available).
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Value::String(StringRef::Owned(s)) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Borrow the inner `&str` from any string Value, resolving interned
+    /// strings via the provided `StringTable`.
+    /// Returns `None` for non-string values.
+    pub fn as_str_with_table<'a>(&'a self, strings: &'a crate::strings::StringTable) -> Option<&'a str> {
+        match self {
+            Value::String(StringRef::Owned(s)) => Some(s.as_str()),
+            Value::String(StringRef::Interned(id)) => strings.resolve(*id),
+            _ => None,
+        }
+    }
+
     pub fn as_int(&self) -> Option<i64> {
         match self {
             Value::Int(n) => Some(*n),

@@ -11,6 +11,7 @@ pub(crate) use processes::{
     MachineExpr, MachineGraphDef, MachineParamDef, MachineRuntime, MachineStateDef, MemoryRuntime,
 };
 
+use crate::jit_tier::{JitTier, JitTierConfig};
 use crate::strings::StringTable;
 use crate::types::{RuntimeField, RuntimeType, RuntimeTypeKind, RuntimeVariant, TypeTable};
 use crate::values::{
@@ -338,6 +339,9 @@ pub struct VM {
     pub(crate) effect_budgets: HashMap<String, (u32, u32)>,
     /// Cache mapping cell names to their index in module.cells for O(1) dispatch.
     cell_index_cache: HashMap<String, usize>,
+    /// Tiered JIT compilation engine. Tracks call counts and compiles hot cells
+    /// to native code via Cranelift.
+    pub jit_tier: JitTier,
 }
 
 const MAX_AWAIT_RETRIES: u32 = 10_000;
@@ -376,6 +380,7 @@ impl VM {
             trace_seq: 0,
             effect_budgets: HashMap::new(),
             cell_index_cache: HashMap::new(),
+            jit_tier: JitTier::disabled(),
         }
     }
 
@@ -385,6 +390,31 @@ impl VM {
     /// previously configured dispatcher.
     pub fn set_provider_registry(&mut self, registry: ProviderRegistry) {
         self.tool_dispatcher = Some(Box::new(registry));
+    }
+
+    /// Enable tiered JIT compilation with the given hot threshold.
+    ///
+    /// Once enabled, the VM tracks call counts for every cell. When a cell's
+    /// count crosses the threshold, it is compiled to native code via Cranelift
+    /// and subsequent calls bypass the interpreter.
+    ///
+    /// Default threshold is 10 (compile after 10 calls).
+    pub fn enable_jit(&mut self, threshold: u64) {
+        self.jit_tier = JitTier::new(JitTierConfig {
+            hot_threshold: threshold,
+            enabled: true,
+            ..Default::default()
+        });
+    }
+
+    /// Enable tiered JIT with full configuration.
+    pub fn enable_jit_with_config(&mut self, config: JitTierConfig) {
+        self.jit_tier = JitTier::new(config);
+    }
+
+    /// Get tiered JIT statistics.
+    pub fn jit_stats(&self) -> crate::jit_tier::JitTierStats {
+        self.jit_tier.tier_stats()
     }
 
     pub(crate) fn validate_schema(&self, val: &Value, schema_name: &str) -> bool {
@@ -646,7 +676,10 @@ impl VM {
             };
             self.types.register(rt);
         }
+        // Initialise the JIT tier to track the correct number of cells.
+        let num_cells = module.cells.len();
         self.module = Some(module);
+        self.jit_tier.init_for_module(num_cells);
     }
 
     pub fn set_future_schedule(&mut self, schedule: FutureSchedule) {
@@ -1438,6 +1471,52 @@ impl VM {
                         };
 
                         if let Some(target_idx) = fast_cell_idx {
+                            // ─── JIT TIER: check if cell is compiled ─────────
+                            // If the cell is already JIT-compiled, execute it as
+                            // a native function pointer and skip the interpreter.
+                            if self.jit_tier.is_enabled() {
+                                // Check if already compiled
+                                let run_jit = if self.jit_tier.is_compiled(target_idx) {
+                                    true
+                                } else if self.jit_tier.record_call(target_idx) {
+                                    // Just crossed hot threshold — try to compile
+                                    if self.jit_tier.check_eligibility(target_idx, module) {
+                                        self.jit_tier.try_compile(target_idx, module)
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                };
+
+                                if run_jit {
+                                    // Extract i64 args from registers
+                                    let callee_cell = &module.cells[target_idx];
+                                    let mut i64_args: Vec<i64> = Vec::with_capacity(nargs);
+                                    let mut args_ok = true;
+                                    for i in 0..nargs {
+                                        match &self.registers[base + a + 1 + i] {
+                                            Value::Int(v) => i64_args.push(*v),
+                                            _ => {
+                                                args_ok = false;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if args_ok {
+                                        if let Some(result) =
+                                            self.jit_tier.execute(&callee_cell.name, &i64_args)
+                                        {
+                                            // Store result in callee register (return position)
+                                            self.registers[callee_reg] = Value::Int(result);
+                                            continue;
+                                        }
+                                    }
+                                    // JIT execution failed — fall through to interpreter
+                                }
+                            }
+                            // ─── END JIT TIER ────────────────────────────────
+
                             // Fast path: direct cell call — no cloning, no dispatch_call overhead
                             if self.frames.len() >= MAX_CALL_DEPTH {
                                 return Err(VmError::StackOverflow(MAX_CALL_DEPTH));
@@ -1606,7 +1685,7 @@ impl VM {
                 OpCode::NewMap => {
                     let mut map = BTreeMap::new();
                     for i in 0..b {
-                        let k = self.registers[base + a + 1 + i * 2].as_string();
+                        let k = value_to_str_cow(&self.registers[base + a + 1 + i * 2], &self.strings).into_owned();
                         let v = self.registers[base + a + 2 + i * 2].clone();
                         map.insert(k, v);
                     }
@@ -1623,7 +1702,7 @@ impl VM {
                     self.registers[base + a] = Value::new_record(RecordValue { type_name, fields });
                 }
                 OpCode::NewUnion => {
-                    let tag = self.registers[base + b].as_string();
+                    let tag = value_to_str_cow(&self.registers[base + b], &self.strings).into_owned();
                     let payload = Box::new(self.registers[base + c].clone());
                     self.registers[base + a] = Value::Union(UnionValue { tag, payload });
                 }
@@ -1801,21 +1880,16 @@ impl VM {
                     let rhs = &self.registers[base + c];
                     // Check for strings first for concatenation
                     if matches!(lhs, Value::String(_)) || matches!(rhs, Value::String(_)) {
-                        self.registers[base + a] = Value::String(StringRef::Owned(format!(
-                            "{}{}",
-                            lhs.as_string(),
-                            rhs.as_string()
-                        )));
+                        let result = concat_string_values(lhs, rhs, &self.strings);
+                        self.registers[base + a] = result;
                     } else if matches!(lhs, Value::List(_)) && matches!(rhs, Value::List(_)) {
-                        // List concatenation
-                        let mut combined = Vec::new();
-                        if let Value::List(l) = lhs {
+                        // List concatenation with pre-allocated capacity
+                        if let (Value::List(l), Value::List(r)) = (lhs, rhs) {
+                            let mut combined = Vec::with_capacity(l.len() + r.len());
                             combined.extend(l.iter().cloned());
-                        }
-                        if let Value::List(r) = rhs {
                             combined.extend(r.iter().cloned());
+                            self.registers[base + a] = Value::new_list(combined);
                         }
-                        self.registers[base + a] = Value::new_list(combined);
                     } else {
                         // Numeric addition with promotion
                         self.arith_op(base, a, b, c, BinaryOp::Add)?;
@@ -1868,16 +1942,13 @@ impl VM {
                     let lhs = &self.registers[base + b];
                     let rhs = &self.registers[base + c];
                     let result = match (lhs, rhs) {
-                        (Value::List(a), Value::List(b)) => {
-                            let mut combined: Vec<Value> = (**a).clone();
-                            combined.extend(b.iter().cloned());
+                        (Value::List(la), Value::List(lb)) => {
+                            let mut combined = Vec::with_capacity(la.len() + lb.len());
+                            combined.extend(la.iter().cloned());
+                            combined.extend(lb.iter().cloned());
                             Value::new_list(combined)
                         }
-                        _ => Value::String(StringRef::Owned(format!(
-                            "{}{}",
-                            lhs.as_string(),
-                            rhs.as_string()
-                        ))),
+                        _ => concat_string_values(lhs, rhs, &self.strings),
                     };
                     self.registers[base + a] = result;
                 }
@@ -2070,16 +2141,22 @@ impl VM {
                     let result = match haystack {
                         Value::List(l) => l.contains(needle),
                         Value::Set(s) => s.contains(needle),
-                        Value::Map(m) => m.contains_key(&needle.as_string()),
-                        Value::String(StringRef::Owned(s)) => s.contains(&needle.as_string()),
+                        Value::Map(m) => {
+                            let needle_str = value_to_str_cow(needle, &self.strings);
+                            m.contains_key(needle_str.as_ref())
+                        }
+                        Value::String(StringRef::Owned(s)) => {
+                            let needle_str = value_to_str_cow(needle, &self.strings);
+                            s.contains(needle_str.as_ref())
+                        }
                         _ => false,
                     };
                     self.registers[base + a] = Value::Bool(result);
                 }
                 OpCode::Is => {
                     let val = &self.registers[base + b];
-                    let type_str = self.registers[base + c].as_string();
-                    let matches = val.type_name() == type_str;
+                    let type_str = value_to_str_cow(&self.registers[base + c], &self.strings);
+                    let matches = val.type_name() == type_str.as_ref();
                     self.registers[base + a] = Value::Bool(matches);
                 }
                 OpCode::NullCo => {
@@ -2155,7 +2232,7 @@ impl VM {
                     cell = &module.cells[cell_idx];
                 }
                 OpCode::Halt => {
-                    let msg = self.registers[base + a].as_string();
+                    let msg = value_to_str_cow(&self.registers[base + a], &self.strings).into_owned();
                     if let Some(fid) = self.current_future_id() {
                         let _ = self.frames.pop();
                         self.future_states.insert(fid, FutureState::Error(msg));

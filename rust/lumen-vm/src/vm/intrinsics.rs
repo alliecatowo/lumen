@@ -124,8 +124,14 @@ impl VM {
                 let result = match collection {
                     Value::List(l) => l.iter().any(|v| v == needle),
                     Value::Set(s) => s.iter().any(|v| v == needle),
-                    Value::Map(m) => m.contains_key(&needle.as_string()),
-                    Value::String(StringRef::Owned(s)) => s.contains(&needle.as_string()),
+                    Value::Map(m) => {
+                        let needle_str = value_to_str_cow(needle, &self.strings);
+                        m.contains_key(needle_str.as_ref())
+                    }
+                    Value::String(StringRef::Owned(s)) => {
+                        let needle_str = value_to_str_cow(needle, &self.strings);
+                        s.contains(needle_str.as_ref())
+                    }
                     _ => false,
                 };
                 Ok(Value::Bool(result))
@@ -133,51 +139,51 @@ impl VM {
             "join" => {
                 let list = &self.registers[base + a + 1];
                 let sep = if nargs > 1 {
-                    self.registers[base + a + 2].as_string()
+                    value_to_str_cow(&self.registers[base + a + 2], &self.strings)
                 } else {
-                    ", ".to_string()
+                    std::borrow::Cow::Borrowed(", ")
                 };
                 if let Value::List(l) = list {
                     let joined = l
                         .iter()
                         .map(|v| v.display_pretty())
                         .collect::<Vec<_>>()
-                        .join(&sep);
+                        .join(sep.as_ref());
                     Ok(Value::String(StringRef::Owned(joined)))
                 } else {
                     Ok(Value::String(StringRef::Owned(list.display_pretty())))
                 }
             }
             "split" => {
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 let sep = if nargs > 1 {
-                    self.registers[base + a + 2].as_string()
+                    value_to_str_cow(&self.registers[base + a + 2], &self.strings)
                 } else {
-                    " ".to_string()
+                    std::borrow::Cow::Borrowed(" ")
                 };
                 let parts: Vec<Value> = s
-                    .split(&sep)
+                    .split(sep.as_ref())
                     .map(|p| Value::String(StringRef::Owned(p.to_string())))
                     .collect();
                 Ok(Value::new_list(parts))
             }
             "trim" => {
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 Ok(Value::String(StringRef::Owned(s.trim().to_string())))
             }
             "upper" => {
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 Ok(Value::String(StringRef::Owned(s.to_uppercase())))
             }
             "lower" => {
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 Ok(Value::String(StringRef::Owned(s.to_lowercase())))
             }
             "replace" => {
-                let s = self.registers[base + a + 1].as_string();
-                let from = self.registers[base + a + 2].as_string();
-                let to = self.registers[base + a + 3].as_string();
-                Ok(Value::String(StringRef::Owned(s.replace(&from, &to))))
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
+                let from = value_to_str_cow(&self.registers[base + a + 2], &self.strings);
+                let to = value_to_str_cow(&self.registers[base + a + 3], &self.strings);
+                Ok(Value::String(StringRef::Owned(s.replace(from.as_ref(), to.as_ref()))))
             }
             "abs" => {
                 let arg = &self.registers[base + a + 1];
@@ -388,7 +394,7 @@ impl VM {
             }
             "hash" | "sha256" => {
                 use sha2::{Digest, Sha256};
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 let h = format!("sha256:{:x}", Sha256::digest(s.as_bytes()));
                 Ok(Value::String(StringRef::Owned(h)))
             }
@@ -487,7 +493,7 @@ impl VM {
                 }))
             }
             "chars" => {
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 Ok(Value::new_list(
                     s.chars()
                         .map(|c| Value::String(StringRef::Owned(c.to_string())))
@@ -495,53 +501,53 @@ impl VM {
                 ))
             }
             "starts_with" => {
-                let s = self.registers[base + a + 1].as_string();
-                let prefix = self.registers[base + a + 2].as_string();
-                Ok(Value::Bool(s.starts_with(&prefix)))
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
+                let prefix = value_to_str_cow(&self.registers[base + a + 2], &self.strings);
+                Ok(Value::Bool(s.starts_with(prefix.as_ref())))
             }
             "ends_with" => {
-                let s = self.registers[base + a + 1].as_string();
-                let suffix = self.registers[base + a + 2].as_string();
-                Ok(Value::Bool(s.ends_with(&suffix)))
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
+                let suffix = value_to_str_cow(&self.registers[base + a + 2], &self.strings);
+                Ok(Value::Bool(s.ends_with(suffix.as_ref())))
             }
             "index_of" => {
-                let s = self.registers[base + a + 1].as_string();
-                let needle = self.registers[base + a + 2].as_string();
-                Ok(match s.find(&needle) {
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
+                let needle = value_to_str_cow(&self.registers[base + a + 2], &self.strings);
+                Ok(match s.find(needle.as_ref()) {
                     Some(i) => Value::Int(i as i64),
                     None => Value::Int(-1),
                 })
             }
             "pad_left" => {
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 let width = self.registers[base + a + 2].as_int().unwrap_or(0) as usize;
                 let pad = if nargs > 2 {
-                    self.registers[base + a + 3].as_string()
+                    value_to_str_cow(&self.registers[base + a + 3], &self.strings)
                 } else {
-                    " ".to_string()
+                    std::borrow::Cow::Borrowed(" ")
                 };
                 let pad_char = pad.chars().next().unwrap_or(' ');
                 if s.len() < width {
                     let padding: String = std::iter::repeat_n(pad_char, width - s.len()).collect();
                     Ok(Value::String(StringRef::Owned(format!("{}{}", padding, s))))
                 } else {
-                    Ok(Value::String(StringRef::Owned(s)))
+                    Ok(Value::String(StringRef::Owned(s.into_owned())))
                 }
             }
             "pad_right" => {
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 let width = self.registers[base + a + 2].as_int().unwrap_or(0) as usize;
                 let pad = if nargs > 2 {
-                    self.registers[base + a + 3].as_string()
+                    value_to_str_cow(&self.registers[base + a + 3], &self.strings)
                 } else {
-                    " ".to_string()
+                    std::borrow::Cow::Borrowed(" ")
                 };
                 let pad_char = pad.chars().next().unwrap_or(' ');
                 if s.len() < width {
                     let padding: String = std::iter::repeat_n(pad_char, width - s.len()).collect();
                     Ok(Value::String(StringRef::Owned(format!("{}{}", s, padding))))
                 } else {
-                    Ok(Value::String(StringRef::Owned(s)))
+                    Ok(Value::String(StringRef::Owned(s.into_owned())))
                 }
             }
             // Math
@@ -707,7 +713,7 @@ impl VM {
             // Crypto
             "sha512" => {
                 use sha2::{Digest, Sha512};
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 let h = format!("sha512:{:x}", Sha512::digest(s.as_bytes()));
                 Ok(Value::String(StringRef::Owned(h)))
             }
@@ -724,13 +730,13 @@ impl VM {
             // Encoding
             "base64_encode" => {
                 // Simple base64 implementation
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 Ok(Value::String(StringRef::Owned(simple_base64_encode(
                     s.as_bytes(),
                 ))))
             }
             "base64_decode" => {
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 match simple_base64_decode(&s) {
                     Some(bytes) => Ok(Value::String(StringRef::Owned(
                         String::from_utf8_lossy(&bytes).to_string(),
@@ -739,12 +745,12 @@ impl VM {
                 }
             }
             "hex_encode" => {
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 let hex: String = s.bytes().map(|b| format!("{:02x}", b)).collect();
                 Ok(Value::String(StringRef::Owned(hex)))
             }
             "hex_decode" => {
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 if !s.is_ascii() || !s.len().is_multiple_of(2) {
                     return Ok(Value::Null);
                 }
@@ -764,7 +770,7 @@ impl VM {
                 )))
             }
             "url_encode" => {
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 let mut encoded = String::new();
                 for byte in s.bytes() {
                     if byte.is_ascii_alphanumeric()
@@ -781,7 +787,7 @@ impl VM {
                 Ok(Value::String(StringRef::Owned(encoded)))
             }
             "url_decode" => {
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 let mut result = String::new();
                 let mut chars = s.chars();
                 while let Some(c) = chars.next() {
@@ -802,7 +808,7 @@ impl VM {
             }
             // JSON
             "json_parse" | "parse_json" => {
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 match serde_json::from_str::<serde_json::Value>(&s) {
                     Ok(v) => Ok(json_to_value(&v)),
                     Err(_) => Ok(Value::Null),
@@ -822,7 +828,7 @@ impl VM {
             }
             // String case transforms (std.string)
             "capitalize" => {
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 let mut c = s.chars();
                 let result = match c.next() {
                     None => String::new(),
@@ -831,7 +837,7 @@ impl VM {
                 Ok(Value::String(StringRef::Owned(result)))
             }
             "title_case" => {
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 let result: String = s
                     .split_whitespace()
                     .map(|word| {
@@ -846,7 +852,7 @@ impl VM {
                 Ok(Value::String(StringRef::Owned(result)))
             }
             "snake_case" => {
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 let mut result = String::new();
                 for (i, ch) in s.chars().enumerate() {
                     if ch.is_uppercase() && i > 0 {
@@ -859,7 +865,7 @@ impl VM {
                 )))
             }
             "camel_case" => {
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 let result: String = s
                     .split(['_', ' ', '-'])
                     .enumerate()
@@ -884,7 +890,7 @@ impl VM {
                 let arg = &self.registers[base + a + 1];
                 if !arg.is_truthy() {
                     let msg = if nargs > 1 {
-                        self.registers[base + a + 2].as_string()
+                        value_to_str_cow(&self.registers[base + a + 2], &self.strings).into_owned()
                     } else {
                         "assertion failed".to_string()
                     };
@@ -919,7 +925,10 @@ impl VM {
                 let needle = &self.registers[base + a + 2];
                 let found = match collection {
                     Value::List(l) => l.contains(needle),
-                    Value::String(StringRef::Owned(s)) => s.contains(&needle.as_string()),
+                    Value::String(StringRef::Owned(s)) => {
+                        let needle_str = value_to_str_cow(needle, &self.strings);
+                        s.contains(needle_str.as_ref())
+                    }
                     _ => false,
                 };
                 if !found {
@@ -1134,7 +1143,7 @@ impl VM {
                     let mut groups: BTreeMap<String, Value> = BTreeMap::new();
                     for item in l.iter() {
                         let key = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
-                        let key_str = key.as_string();
+                        let key_str = value_to_str_cow(&key, &self.strings).into_owned();
                         match groups.get_mut(&key_str) {
                             Some(Value::List(ref mut list)) => {
                                 Arc::make_mut(list).push(item.clone())
@@ -1151,16 +1160,16 @@ impl VM {
             }
             // Filesystem
             "read_file" => {
-                let path = self.registers[base + a + 1].as_string();
-                match std::fs::read_to_string(&path) {
+                let path = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
+                match std::fs::read_to_string(path.as_ref()) {
                     Ok(contents) => Ok(Value::String(StringRef::Owned(contents))),
                     Err(e) => Err(VmError::Runtime(format!("read_file failed: {}", e))),
                 }
             }
             "write_file" => {
-                let path = self.registers[base + a + 1].as_string();
-                let content = self.registers[base + a + 2].as_string();
-                match std::fs::write(&path, &content) {
+                let path = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
+                let content = value_to_str_cow(&self.registers[base + a + 2], &self.strings);
+                match std::fs::write(path.as_ref(), content.as_bytes()) {
                     Ok(()) => Ok(Value::Null),
                     Err(e) => Err(VmError::Runtime(format!("write_file failed: {}", e))),
                 }
@@ -1191,15 +1200,15 @@ impl VM {
             }
             // Environment
             "get_env" => {
-                let name = self.registers[base + a + 1].as_string();
-                match std::env::var(&name) {
+                let name = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
+                match std::env::var(name.as_ref()) {
                     Ok(val) => Ok(Value::String(StringRef::Owned(val))),
                     Err(_) => Ok(Value::Null),
                 }
             }
             "freeze" => Ok(self.registers[base + a + 1].clone()),
             "format" => {
-                let template = self.registers[base + a + 1].as_string();
+                let template = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 let mut result = String::new();
                 let mut arg_idx = 0;
                 let mut chars = template.chars().peekable();
@@ -1266,7 +1275,7 @@ impl VM {
                 }
             }
             "read_dir" => {
-                let path = self.registers[base + a].as_string();
+                let path = value_to_str_cow(&self.registers[base + a], &self.strings).into_owned();
                 match std::fs::read_dir(&path) {
                     Ok(entries) => {
                         let mut result = Vec::new();
@@ -1281,11 +1290,11 @@ impl VM {
                 }
             }
             "exists" => {
-                let path = self.registers[base + a].as_string();
+                let path = value_to_str_cow(&self.registers[base + a], &self.strings).into_owned();
                 Ok(Value::Bool(std::path::Path::new(&path).exists()))
             }
             "mkdir" => {
-                let path = self.registers[base + a].as_string();
+                let path = value_to_str_cow(&self.registers[base + a], &self.strings).into_owned();
                 match std::fs::create_dir_all(&path) {
                     Ok(()) => Ok(Value::Null),
                     Err(e) => Err(VmError::Runtime(format!("mkdir failed: {}", e))),
@@ -1297,11 +1306,11 @@ impl VM {
             }
             // String trimming variants
             "trim_start" => {
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 Ok(Value::String(StringRef::Owned(s.trim_start().to_string())))
             }
             "trim_end" => {
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 Ok(Value::String(StringRef::Owned(s.trim_end().to_string())))
             }
             // Math: exponential
@@ -1488,7 +1497,7 @@ impl VM {
 
             // ── String-to-number parsing: parse_int / parse_float ──
             "parse_int" => {
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 match s.trim().parse::<i64>() {
                     Ok(n) => Ok(Value::Union(UnionValue {
                         tag: "ok".to_string(),
@@ -1510,7 +1519,7 @@ impl VM {
                 }
             }
             "parse_float" => {
-                let s = self.registers[base + a + 1].as_string();
+                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 match s.trim().parse::<f64>() {
                     Ok(f) => Ok(Value::Union(UnionValue {
                         tag: "ok".to_string(),
@@ -1607,7 +1616,7 @@ impl VM {
 
             // ── Filesystem: read_lines, walk_dir, glob ──
             "read_lines" => {
-                let path = self.registers[base + a + 1].as_string();
+                let path = value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
                 match std::fs::read_to_string(&path) {
                     Ok(contents) => {
                         let lines: Vec<Value> = contents
@@ -1620,7 +1629,7 @@ impl VM {
                 }
             }
             "walk_dir" => {
-                let path = self.registers[base + a + 1].as_string();
+                let path = value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
                 fn walk_recursive_cb(
                     dir: &std::path::Path,
                     result: &mut Vec<Value>,
@@ -1643,7 +1652,7 @@ impl VM {
                 Ok(Value::new_list(result))
             }
             "glob" => {
-                let pattern = self.registers[base + a + 1].as_string();
+                let pattern = value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
                 let mut result = Vec::new();
                 glob_walk(std::path::Path::new("."), &pattern, &mut result)?;
                 Ok(Value::new_list(result))
@@ -1651,8 +1660,8 @@ impl VM {
 
             // ── Path operations ──
             "path_join" => {
-                let a_str = self.registers[base + a + 1].as_string();
-                let b_str = self.registers[base + a + 2].as_string();
+                let a_str = value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
+                let b_str = value_to_str_cow(&self.registers[base + a + 2], &self.strings).into_owned();
                 let joined = std::path::Path::new(&a_str)
                     .join(&b_str)
                     .to_string_lossy()
@@ -1660,7 +1669,7 @@ impl VM {
                 Ok(Value::String(StringRef::Owned(joined)))
             }
             "path_parent" => {
-                let p_str = self.registers[base + a + 1].as_string();
+                let p_str = value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
                 let parent = std::path::Path::new(&p_str)
                     .parent()
                     .map(|pp| pp.to_string_lossy().to_string())
@@ -1668,7 +1677,7 @@ impl VM {
                 Ok(Value::String(StringRef::Owned(parent)))
             }
             "path_extension" => {
-                let p_str = self.registers[base + a + 1].as_string();
+                let p_str = value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
                 let ext = std::path::Path::new(&p_str)
                     .extension()
                     .map(|e| e.to_string_lossy().to_string())
@@ -1676,7 +1685,7 @@ impl VM {
                 Ok(Value::String(StringRef::Owned(ext)))
             }
             "path_filename" => {
-                let p_str = self.registers[base + a + 1].as_string();
+                let p_str = value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
                 let name = std::path::Path::new(&p_str)
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
@@ -1684,7 +1693,7 @@ impl VM {
                 Ok(Value::String(StringRef::Owned(name)))
             }
             "path_stem" => {
-                let p_str = self.registers[base + a + 1].as_string();
+                let p_str = value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
                 let stem = std::path::Path::new(&p_str)
                     .file_stem()
                     .map(|s| s.to_string_lossy().to_string())
@@ -1694,7 +1703,7 @@ impl VM {
 
             // ── Process execution ──
             "exec" => {
-                let cmd = self.registers[base + a + 1].as_string();
+                let cmd = value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
                 match std::process::Command::new("sh")
                     .arg("-c")
                     .arg(&cmd)
@@ -1760,7 +1769,7 @@ impl VM {
 
             // ── CSV ──
             "csv_parse" => {
-                let text = self.registers[base + a + 1].as_string();
+                let text = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 Ok(csv_parse_text(&text))
             }
             "csv_encode" => {
@@ -1770,7 +1779,7 @@ impl VM {
 
             // ── TOML ──
             "toml_parse" => {
-                let text = self.registers[base + a + 1].as_string();
+                let text = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 Ok(toml_parse_text(&text))
             }
             "toml_encode" => {
@@ -1780,8 +1789,8 @@ impl VM {
 
             // ── Regex ──
             "regex_match" => {
-                let pattern = self.registers[base + a + 1].as_string();
-                let text = self.registers[base + a + 2].as_string();
+                let pattern = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
+                let text = value_to_str_cow(&self.registers[base + a + 2], &self.strings);
                 match regex::Regex::new(&pattern) {
                     Ok(re) => {
                         if let Some(caps) = re.captures(&text) {
@@ -1806,12 +1815,12 @@ impl VM {
                 }
             }
             "regex_replace" => {
-                let pattern = self.registers[base + a + 1].as_string();
-                let text = self.registers[base + a + 2].as_string();
-                let replacement = self.registers[base + a + 3].as_string();
+                let pattern = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
+                let text = value_to_str_cow(&self.registers[base + a + 2], &self.strings);
+                let replacement = value_to_str_cow(&self.registers[base + a + 3], &self.strings);
                 match regex::Regex::new(&pattern) {
                     Ok(re) => {
-                        let result = re.replace_all(&text, replacement.as_str());
+                        let result = re.replace_all(&text, &*replacement);
                         Ok(Value::String(StringRef::Owned(result.to_string())))
                     }
                     Err(e) => Err(VmError::Runtime(format!(
@@ -1821,8 +1830,8 @@ impl VM {
                 }
             }
             "regex_find_all" => {
-                let pattern = self.registers[base + a + 1].as_string();
-                let text = self.registers[base + a + 2].as_string();
+                let pattern = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
+                let text = value_to_str_cow(&self.registers[base + a + 2], &self.strings);
                 match regex::Regex::new(&pattern) {
                     Ok(re) => {
                         let matches: Vec<Value> = re
@@ -1854,38 +1863,38 @@ impl VM {
 
             // ----- HTTP client builtins -----
             "http_get" => {
-                let url = self.registers[base + a + 1].as_string();
+                let url = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 Ok(http_builtin_get(&url))
             }
             "http_post" => {
-                let url = self.registers[base + a + 1].as_string();
+                let url = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 let body = if nargs > 1 {
-                    self.registers[base + a + 2].as_string()
+                    value_to_str_cow(&self.registers[base + a + 2], &self.strings)
                 } else {
-                    String::new()
+                    std::borrow::Cow::Borrowed("")
                 };
                 Ok(http_builtin_post(&url, &body))
             }
             "http_put" => {
-                let url = self.registers[base + a + 1].as_string();
+                let url = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 let body = if nargs > 1 {
-                    self.registers[base + a + 2].as_string()
+                    value_to_str_cow(&self.registers[base + a + 2], &self.strings)
                 } else {
-                    String::new()
+                    std::borrow::Cow::Borrowed("")
                 };
                 Ok(http_builtin_put(&url, &body))
             }
             "http_delete" => {
-                let url = self.registers[base + a + 1].as_string();
+                let url = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 Ok(http_builtin_delete(&url))
             }
             "http_request" => {
-                let method = self.registers[base + a + 1].as_string();
-                let url = self.registers[base + a + 2].as_string();
+                let method = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
+                let url = value_to_str_cow(&self.registers[base + a + 2], &self.strings);
                 let body = if nargs > 2 {
-                    self.registers[base + a + 3].as_string()
+                    value_to_str_cow(&self.registers[base + a + 3], &self.strings)
                 } else {
-                    String::new()
+                    std::borrow::Cow::Borrowed("")
                 };
                 let headers = if nargs > 3 {
                     extract_headers_map(&self.registers[base + a + 4])
@@ -1897,16 +1906,16 @@ impl VM {
 
             // ----- TCP/UDP networking builtins -----
             "tcp_connect" => {
-                let addr = self.registers[base + a + 1].as_string();
+                let addr = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 Ok(net_tcp_connect(&addr))
             }
             "tcp_listen" => {
-                let addr = self.registers[base + a + 1].as_string();
+                let addr = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 Ok(net_tcp_listen(&addr))
             }
             "tcp_send" => {
                 let handle = self.registers[base + a + 1].as_int().unwrap_or(-1);
-                let data = self.registers[base + a + 2].as_string();
+                let data = value_to_str_cow(&self.registers[base + a + 2], &self.strings);
                 Ok(net_tcp_send(handle, &data))
             }
             "tcp_recv" => {
@@ -1924,13 +1933,13 @@ impl VM {
                 Ok(Value::Null)
             }
             "udp_bind" => {
-                let addr = self.registers[base + a + 1].as_string();
+                let addr = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 Ok(net_udp_bind(&addr))
             }
             "udp_send" => {
                 let handle = self.registers[base + a + 1].as_int().unwrap_or(-1);
-                let addr = self.registers[base + a + 2].as_string();
-                let data = self.registers[base + a + 3].as_string();
+                let addr = value_to_str_cow(&self.registers[base + a + 2], &self.strings);
+                let data = value_to_str_cow(&self.registers[base + a + 3], &self.strings);
                 Ok(net_udp_send(handle, &addr, &data))
             }
             "udp_recv" => {
@@ -2072,7 +2081,7 @@ impl VM {
                     Value::Int(n) => *n as f64,
                     _ => 0.0,
                 };
-                let format_str = self.registers[base + a + 2].as_string();
+                let format_str = value_to_str_cow(&self.registers[base + a + 2], &self.strings);
                 let total_secs = timestamp_secs as i64;
                 let frac = timestamp_secs - total_secs as f64;
                 let (year, month, day, hour, minute, second) = epoch_to_datetime(total_secs);
@@ -2114,8 +2123,8 @@ impl VM {
                 Ok(Value::new_list(args))
             }
             "set_env" => {
-                let key = self.registers[base + a + 1].as_string();
-                let value = self.registers[base + a + 2].as_string();
+                let key = value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
+                let value = value_to_str_cow(&self.registers[base + a + 2], &self.strings).into_owned();
                 #[allow(unused_unsafe)]
                 unsafe {
                     std::env::set_var(&key, &value);
@@ -2244,14 +2253,14 @@ impl VM {
                 // MATCHES
                 Ok(match arg {
                     Value::Bool(b) => Value::Bool(*b),
-                    Value::String(_) => Value::Bool(!arg.as_string().is_empty()),
+                    Value::String(_) => Value::Bool(!value_to_str_cow(arg, &self.strings).is_empty()),
                     _ => Value::Bool(false),
                 })
             }
             3 => {
                 // HASH
                 use sha2::{Digest, Sha256};
-                let hash = format!("{:x}", Sha256::digest(arg.as_string().as_bytes()));
+                let hash = format!("{:x}", Sha256::digest(value_to_str_cow(arg, &self.strings).as_bytes()));
                 Ok(Value::String(StringRef::Owned(format!("sha256:{}", hash))))
             }
             4 => {
@@ -2352,21 +2361,21 @@ impl VM {
                 Ok(match arg {
                     Value::List(l) => Value::Bool(l.contains(item)),
                     Value::Set(s) => Value::Bool(s.contains(item)),
-                    Value::Map(m) => Value::Bool(m.contains_key(&item.as_string())),
+                    Value::Map(m) => Value::Bool(m.contains_key(&*value_to_str_cow(item, &self.strings))),
                     Value::String(StringRef::Owned(s)) => {
-                        Value::Bool(s.contains(&item.as_string()))
+                        Value::Bool(s.contains(&*value_to_str_cow(item, &self.strings)))
                     }
                     _ => Value::Bool(false),
                 })
             }
             17 => {
                 // JOIN
-                let sep = self.registers[base + arg_reg + 1].as_string();
+                let sep = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings);
                 Ok(match arg {
                     Value::List(l) => {
                         let s = l
                             .iter()
-                            .map(|v| v.as_string())
+                            .map(|v| value_to_str_cow(v, &self.strings).into_owned())
                             .collect::<Vec<_>>()
                             .join(&sep);
                         Value::String(StringRef::Owned(s))
@@ -2376,11 +2385,11 @@ impl VM {
             }
             18 => {
                 // SPLIT
-                let sep = self.registers[base + arg_reg + 1].as_string();
+                let sep = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings);
                 Ok(match arg {
                     Value::String(StringRef::Owned(s)) => {
                         let parts: Vec<Value> = s
-                            .split(&sep)
+                            .split(&*sep)
                             .map(|p| Value::String(StringRef::Owned(p.to_string())))
                             .collect();
                         Value::new_list(parts)
@@ -2408,11 +2417,11 @@ impl VM {
             }), // LOWER
             22 => {
                 // REPLACE
-                let pat = self.registers[base + arg_reg + 1].as_string();
-                let with = self.registers[base + arg_reg + 2].as_string();
+                let pat = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings);
+                let with = value_to_str_cow(&self.registers[base + arg_reg + 2], &self.strings);
                 Ok(match arg {
                     Value::String(StringRef::Owned(s)) => {
-                        Value::String(StringRef::Owned(s.replace(&pat, &with)))
+                        Value::String(StringRef::Owned(s.replace(&*pat, &*with)))
                     }
                     _ => arg.clone(),
                 })
@@ -2675,7 +2684,7 @@ impl VM {
                     let mut groups: BTreeMap<String, Value> = BTreeMap::new();
                     for item in l.iter() {
                         let key = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
-                        let key_str = key.as_string();
+                        let key_str = value_to_str_cow(&key, &self.strings).into_owned();
                         match groups.get_mut(&key_str) {
                             Some(Value::List(ref mut list)) => {
                                 Arc::make_mut(list).push(item.clone())
@@ -2782,7 +2791,7 @@ impl VM {
             })), // ISEMPTY
             51 => {
                 // CHARS
-                let s = arg.as_string();
+                let s = value_to_str_cow(arg, &self.strings);
                 Ok(Value::new_list(
                     s.chars()
                         .map(|c| Value::String(StringRef::Owned(c.to_string())))
@@ -2791,19 +2800,19 @@ impl VM {
             }
             52 => {
                 // STARTSWITH
-                let prefix = self.registers[base + arg_reg + 1].as_string();
-                Ok(Value::Bool(arg.as_string().starts_with(&prefix)))
+                let prefix = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings);
+                Ok(Value::Bool(value_to_str_cow(arg, &self.strings).starts_with(&*prefix)))
             }
             53 => {
                 // ENDSWITH
-                let suffix = self.registers[base + arg_reg + 1].as_string();
-                Ok(Value::Bool(arg.as_string().ends_with(&suffix)))
+                let suffix = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings);
+                Ok(Value::Bool(value_to_str_cow(arg, &self.strings).ends_with(&*suffix)))
             }
             54 => {
                 // INDEXOF (Unicode-aware: returns character index, not byte index)
-                let needle = self.registers[base + arg_reg + 1].as_string();
-                let haystack = arg.as_string();
-                Ok(match haystack.find(&needle) {
+                let needle = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings);
+                let haystack = value_to_str_cow(arg, &self.strings);
+                Ok(match haystack.find(&*needle) {
                     Some(byte_idx) => {
                         // Convert byte index to character index
                         let char_idx = haystack[..byte_idx].chars().count();
@@ -2815,25 +2824,25 @@ impl VM {
             55 => {
                 // PADLEFT (Unicode-aware)
                 let width = self.registers[base + arg_reg + 1].as_int().unwrap_or(0) as usize;
-                let s = arg.as_string();
+                let s = value_to_str_cow(arg, &self.strings);
                 let char_count = s.chars().count();
                 if char_count < width {
                     let padding = " ".repeat(width - char_count);
                     Ok(Value::String(StringRef::Owned(format!("{}{}", padding, s))))
                 } else {
-                    Ok(Value::String(StringRef::Owned(s)))
+                    Ok(Value::String(StringRef::Owned(s.into_owned())))
                 }
             }
             56 => {
                 // PADRIGHT (Unicode-aware)
                 let width = self.registers[base + arg_reg + 1].as_int().unwrap_or(0) as usize;
-                let s = arg.as_string();
+                let s = value_to_str_cow(arg, &self.strings);
                 let char_count = s.chars().count();
                 if char_count < width {
                     let padding = " ".repeat(width - char_count);
                     Ok(Value::String(StringRef::Owned(format!("{}{}", s, padding))))
                 } else {
-                    Ok(Value::String(StringRef::Owned(s)))
+                    Ok(Value::String(StringRef::Owned(s.into_owned())))
                 }
             }
             57 => Ok(match arg {
@@ -2969,7 +2978,7 @@ impl VM {
             }
             70 => {
                 // HAS_KEY - check if map has a key
-                let key = self.registers[base + arg_reg + 1].as_string();
+                let key = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings).into_owned();
                 Ok(match arg {
                     Value::Map(m) => Value::Bool(m.contains_key(&key)),
                     Value::Record(r) => Value::Bool(r.fields.contains_key(&key)),
@@ -3030,7 +3039,7 @@ impl VM {
                         Value::new_set(new_set)
                     }
                     Value::Map(m) => {
-                        let key = item.as_string();
+                        let key = value_to_str_cow(&item, &self.strings).into_owned();
                         let mut new_map: BTreeMap<String, Value> = (**m).clone();
                         new_map.remove(&key);
                         Value::new_map(new_map)
@@ -3071,7 +3080,7 @@ impl VM {
             }
             77 => {
                 // FORMAT: format string with {} placeholders
-                let template = arg.as_string();
+                let template = value_to_str_cow(arg, &self.strings);
                 let mut result = String::new();
                 let mut placeholder_idx = 0;
                 let mut chars = template.chars().peekable();
@@ -3141,7 +3150,7 @@ impl VM {
             }
             79 => {
                 // READ_DIR: list directory entries
-                let path = arg.as_string();
+                let path = value_to_str_cow(arg, &self.strings).into_owned();
                 match std::fs::read_dir(&path) {
                     Ok(entries) => {
                         let mut result = Vec::new();
@@ -3157,12 +3166,12 @@ impl VM {
             }
             80 => {
                 // EXISTS: check if path exists
-                let path = arg.as_string();
+                let path = value_to_str_cow(arg, &self.strings).into_owned();
                 Ok(Value::Bool(std::path::Path::new(&path).exists()))
             }
             81 => {
                 // MKDIR: create directory (and parents)
-                let path = arg.as_string();
+                let path = value_to_str_cow(arg, &self.strings).into_owned();
                 match std::fs::create_dir_all(&path) {
                     Ok(()) => Ok(Value::Null),
                     Err(e) => Err(VmError::Runtime(format!("mkdir failed: {}", e))),
@@ -3170,7 +3179,7 @@ impl VM {
             }
             82 => {
                 // EVAL: compile and execute string code
-                let source = arg.as_string();
+                let source = value_to_str_cow(arg, &self.strings).into_owned();
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
@@ -3211,7 +3220,7 @@ impl VM {
             }
             86 => {
                 // READ_LINES: read file and split by newline
-                let path = arg.as_string();
+                let path = value_to_str_cow(arg, &self.strings).into_owned();
                 match std::fs::read_to_string(&path) {
                     Ok(contents) => {
                         let lines: Vec<Value> = contents
@@ -3225,7 +3234,7 @@ impl VM {
             }
             87 => {
                 // WALK_DIR: recursively list all file paths
-                let path = arg.as_string();
+                let path = value_to_str_cow(arg, &self.strings).into_owned();
                 fn walk_recursive(
                     dir: &std::path::Path,
                     result: &mut Vec<Value>,
@@ -3249,15 +3258,15 @@ impl VM {
             }
             88 => {
                 // GLOB: simple glob matching over current directory
-                let pattern = arg.as_string();
+                let pattern = value_to_str_cow(arg, &self.strings).into_owned();
                 let mut result = Vec::new();
                 glob_walk(std::path::Path::new("."), &pattern, &mut result)?;
                 Ok(Value::new_list(result))
             }
             89 => {
                 // PATH_JOIN: join two path components
-                let other = self.registers[base + arg_reg + 1].as_string();
-                let joined = std::path::Path::new(&arg.as_string())
+                let other = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings).into_owned();
+                let joined = std::path::Path::new(&value_to_str_cow(arg, &self.strings).into_owned())
                     .join(&other)
                     .to_string_lossy()
                     .to_string();
@@ -3265,7 +3274,7 @@ impl VM {
             }
             90 => {
                 // PATH_PARENT
-                let s = arg.as_string();
+                let s = value_to_str_cow(arg, &self.strings).into_owned();
                 let p = std::path::Path::new(&s);
                 let parent = p
                     .parent()
@@ -3275,7 +3284,7 @@ impl VM {
             }
             91 => {
                 // PATH_EXTENSION
-                let s = arg.as_string();
+                let s = value_to_str_cow(arg, &self.strings).into_owned();
                 let p = std::path::Path::new(&s);
                 let ext = p
                     .extension()
@@ -3285,7 +3294,7 @@ impl VM {
             }
             92 => {
                 // PATH_FILENAME
-                let s = arg.as_string();
+                let s = value_to_str_cow(arg, &self.strings).into_owned();
                 let p = std::path::Path::new(&s);
                 let name = p
                     .file_name()
@@ -3295,7 +3304,7 @@ impl VM {
             }
             93 => {
                 // PATH_STEM
-                let s = arg.as_string();
+                let s = value_to_str_cow(arg, &self.strings).into_owned();
                 let p = std::path::Path::new(&s);
                 let stem = p
                     .file_stem()
@@ -3305,7 +3314,7 @@ impl VM {
             }
             94 => {
                 // EXEC: run shell command
-                let cmd = arg.as_string();
+                let cmd = value_to_str_cow(arg, &self.strings).into_owned();
                 match std::process::Command::new("sh")
                     .arg("-c")
                     .arg(&cmd)
@@ -3352,7 +3361,7 @@ impl VM {
             }
             98 => {
                 // CSV_PARSE: parse CSV text into list of lists of strings
-                let text = arg.as_string();
+                let text = value_to_str_cow(arg, &self.strings);
                 let rows = csv_parse_text(&text);
                 Ok(rows)
             }
@@ -3363,7 +3372,7 @@ impl VM {
             }
             100 => {
                 // TOML_PARSE: parse TOML text into map
-                let text = arg.as_string();
+                let text = value_to_str_cow(arg, &self.strings);
                 Ok(toml_parse_text(&text))
             }
             101 => {
@@ -3373,8 +3382,8 @@ impl VM {
             }
             102 => {
                 // REGEX_MATCH: return capture groups for first match
-                let pattern = arg.as_string();
-                let text = self.registers[base + arg_reg + 1].as_string();
+                let pattern = value_to_str_cow(arg, &self.strings);
+                let text = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings);
                 match regex::Regex::new(&pattern) {
                     Ok(re) => {
                         if let Some(caps) = re.captures(&text) {
@@ -3400,12 +3409,12 @@ impl VM {
             }
             103 => {
                 // REGEX_REPLACE: replace all matches
-                let pattern = arg.as_string();
-                let text = self.registers[base + arg_reg + 1].as_string();
-                let replacement = self.registers[base + arg_reg + 2].as_string();
+                let pattern = value_to_str_cow(arg, &self.strings);
+                let text = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings);
+                let replacement = value_to_str_cow(&self.registers[base + arg_reg + 2], &self.strings);
                 match regex::Regex::new(&pattern) {
                     Ok(re) => {
-                        let result = re.replace_all(&text, replacement.as_str());
+                        let result = re.replace_all(&text, &*replacement);
                         Ok(Value::String(StringRef::Owned(result.to_string())))
                     }
                     Err(e) => Err(VmError::Runtime(format!(
@@ -3416,8 +3425,8 @@ impl VM {
             }
             104 => {
                 // REGEX_FIND_ALL: return all matches
-                let pattern = arg.as_string();
-                let text = self.registers[base + arg_reg + 1].as_string();
+                let pattern = value_to_str_cow(arg, &self.strings);
+                let text = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings);
                 match regex::Regex::new(&pattern) {
                     Ok(re) => {
                         let matches: Vec<Value> = re
@@ -3463,48 +3472,48 @@ impl VM {
             }
             107 => {
                 // HTTP_GET
-                let url = arg.as_string();
+                let url = value_to_str_cow(arg, &self.strings);
                 Ok(http_builtin_get(&url))
             }
             108 => {
                 // HTTP_POST
-                let url = arg.as_string();
-                let body = self.registers[base + arg_reg + 1].as_string();
+                let url = value_to_str_cow(arg, &self.strings);
+                let body = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings);
                 Ok(http_builtin_post(&url, &body))
             }
             109 => {
                 // HTTP_PUT
-                let url = arg.as_string();
-                let body = self.registers[base + arg_reg + 1].as_string();
+                let url = value_to_str_cow(arg, &self.strings);
+                let body = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings);
                 Ok(http_builtin_put(&url, &body))
             }
             110 => {
                 // HTTP_DELETE
-                let url = arg.as_string();
+                let url = value_to_str_cow(arg, &self.strings);
                 Ok(http_builtin_delete(&url))
             }
             111 => {
                 // HTTP_REQUEST
-                let method = arg.as_string();
-                let url = self.registers[base + arg_reg + 1].as_string();
-                let body = self.registers[base + arg_reg + 2].as_string();
+                let method = value_to_str_cow(arg, &self.strings);
+                let url = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings);
+                let body = value_to_str_cow(&self.registers[base + arg_reg + 2], &self.strings);
                 let headers = extract_headers_map(&self.registers[base + arg_reg + 3]);
                 Ok(http_builtin_request(&method, &url, &body, &headers))
             }
             112 => {
                 // TCP_CONNECT
-                let addr = arg.as_string();
+                let addr = value_to_str_cow(arg, &self.strings);
                 Ok(net_tcp_connect(&addr))
             }
             113 => {
                 // TCP_LISTEN
-                let addr = arg.as_string();
+                let addr = value_to_str_cow(arg, &self.strings);
                 Ok(net_tcp_listen(&addr))
             }
             114 => {
                 // TCP_SEND
                 let handle = arg.as_int().unwrap_or(-1);
-                let data = self.registers[base + arg_reg + 1].as_string();
+                let data = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings);
                 Ok(net_tcp_send(handle, &data))
             }
             115 => {
@@ -3515,14 +3524,14 @@ impl VM {
             }
             116 => {
                 // UDP_BIND
-                let addr = arg.as_string();
+                let addr = value_to_str_cow(arg, &self.strings);
                 Ok(net_udp_bind(&addr))
             }
             117 => {
                 // UDP_SEND
                 let handle = arg.as_int().unwrap_or(-1);
-                let addr = self.registers[base + arg_reg + 1].as_string();
-                let data = self.registers[base + arg_reg + 2].as_string();
+                let addr = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings);
+                let data = value_to_str_cow(&self.registers[base + arg_reg + 2], &self.strings);
                 Ok(net_udp_send(handle, &addr, &data))
             }
             118 => {
@@ -3551,7 +3560,7 @@ impl VM {
             }
             121 => {
                 // PARSE_INT: parse string to int, return result type
-                let s = arg.as_string();
+                let s = value_to_str_cow(arg, &self.strings);
                 match s.trim().parse::<i64>() {
                     Ok(n) => Ok(Value::Union(UnionValue {
                         tag: "ok".to_string(),
@@ -3577,7 +3586,7 @@ impl VM {
             }
             122 => {
                 // PARSE_FLOAT: parse string to float, return result type
-                let s = arg.as_string();
+                let s = value_to_str_cow(arg, &self.strings);
                 match s.trim().parse::<f64>() {
                     Ok(f) => Ok(Value::Union(UnionValue {
                         tag: "ok".to_string(),
@@ -3718,7 +3727,7 @@ impl VM {
                     Value::Int(n) => *n as f64,
                     _ => 0.0,
                 };
-                let format_str = self.registers[base + arg_reg + 1].as_string();
+                let format_str = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings).into_owned();
 
                 // Manual ISO 8601 formatting from epoch seconds
                 let total_secs = timestamp_secs as i64;
@@ -3768,8 +3777,8 @@ impl VM {
             }
             136 => {
                 // SET_ENV: set environment variable
-                let key = arg.as_string();
-                let value = self.registers[base + arg_reg + 1].as_string();
+                let key = value_to_str_cow(arg, &self.strings).into_owned();
+                let value = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings).into_owned();
                 // SAFETY: This is intentional; Lumen programs run single-threaded.
                 #[allow(unused_unsafe)]
                 unsafe {

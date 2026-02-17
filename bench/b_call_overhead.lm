@@ -1,0 +1,17 @@
+# Benchmark: Function call overhead
+# Tests: call/return dispatch cost with trivial function body
+# Expected result: sum of inc(0)..inc(9999999) = sum(1..10000000) = 50000005000000
+
+cell inc(n: Int) -> Int
+  n + 1
+end
+
+cell main() -> Int
+  let mut sum = 0
+  let mut i = 0
+  while i < 10000000
+    sum = sum + inc(i)
+    i = i + 1
+  end
+  sum
+end

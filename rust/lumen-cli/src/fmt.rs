@@ -1129,6 +1129,19 @@ impl Formatter {
             Expr::TryExpr(expr, _) => {
                 format!("{}?", self.fmt_expr(expr))
             }
+            Expr::TryElse {
+                expr,
+                error_binding,
+                handler,
+                ..
+            } => {
+                format!(
+                    "try {} else |{}| {}",
+                    self.fmt_expr(expr),
+                    error_binding,
+                    self.fmt_expr(handler)
+                )
+            }
             Expr::NullCoalesce(left, right, _) => {
                 format!("{} ?? {}", self.fmt_expr(left), self.fmt_expr(right))
             }

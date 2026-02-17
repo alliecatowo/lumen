@@ -5079,8 +5079,30 @@ impl Parser {
             TokenKind::Try => {
                 let s = self.advance().span;
                 let inner = self.parse_expr(0)?;
-                let span = s.merge(inner.span());
-                Ok(Expr::TryExpr(Box::new(inner), span))
+                // Check for try/else: try expr else |err| fallback
+                if matches!(self.peek_kind(), TokenKind::Else) {
+                    self.advance(); // consume 'else'
+                                    // Parse optional error binding: |err|
+                    let error_binding = if matches!(self.peek_kind(), TokenKind::Pipe) {
+                        self.advance(); // consume opening |
+                        let name = self.expect_ident()?;
+                        self.expect(&TokenKind::Pipe)?; // consume closing |
+                        name
+                    } else {
+                        "_err".to_string()
+                    };
+                    let handler = self.parse_expr(0)?;
+                    let span = s.merge(handler.span());
+                    Ok(Expr::TryElse {
+                        expr: Box::new(inner),
+                        error_binding,
+                        handler: Box::new(handler),
+                        span,
+                    })
+                } else {
+                    let span = s.merge(inner.span());
+                    Ok(Expr::TryExpr(Box::new(inner), span))
+                }
             }
             TokenKind::Async => {
                 let s = self.advance().span;

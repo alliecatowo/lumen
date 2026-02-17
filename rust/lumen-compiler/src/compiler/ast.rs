@@ -643,6 +643,13 @@ pub enum Expr {
     },
     /// Postfix try: expr?
     TryExpr(Box<Expr>, Span),
+    /// Try/else: try expr else |err| fallback
+    TryElse {
+        expr: Box<Expr>,
+        error_binding: String,
+        handler: Box<Expr>,
+        span: Span,
+    },
     /// Null coalescing: lhs ?? rhs
     NullCoalesce(Box<Expr>, Box<Expr>, Span),
     /// Null-safe access: expr?.field
@@ -751,6 +758,7 @@ impl Expr {
             | Expr::SetLit(_, s)
             | Expr::TryExpr(_, s)
             | Expr::NullCoalesce(_, _, s)
+            | Expr::TryElse { span: s, .. }
             | Expr::NullSafeAccess(_, _, s)
             | Expr::NullSafeIndex(_, _, s)
             | Expr::NullAssert(_, s)

@@ -1,7 +1,8 @@
 //! Lumen CLI — command-line interface for the Lumen language.
 
 use lumen_cli::{
-    ci_output, colors, config, doc, fmt, lang_ref, lint, module_resolver, repl, test_cmd,
+    ci_output, colors, config, doc, error_chain, fmt, lang_ref, lint, module_resolver, repl,
+    test_cmd,
 };
 
 use clap::{Parser as ClapParser, Subcommand, ValueEnum};
@@ -284,6 +285,18 @@ fn register_providers(
         registry.register(
             "crypto.hmac_sha256",
             Box::new(lumen_provider_crypto::CryptoProvider::hmac_sha256()),
+        );
+        registry.register(
+            "crypto.ed25519_keygen",
+            Box::new(lumen_provider_crypto::Ed25519Provider::keygen()),
+        );
+        registry.register(
+            "crypto.ed25519_sign",
+            Box::new(lumen_provider_crypto::Ed25519Provider::sign()),
+        );
+        registry.register(
+            "crypto.ed25519_verify",
+            Box::new(lumen_provider_crypto::Ed25519Provider::verify()),
         );
     }
 
@@ -1001,7 +1014,9 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
     let module = match compile_source_file(file, &source) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("{} compilation failed", red("✗ Error:"));
+            let chain = error_chain::ErrorChain::new("compilation failed")
+                .caused_by(format!("in file '{}'", filename));
+            eprintln!("{}", chain.format_with_prefix(&red("✗")));
             let formatted = lumen_compiler::format_error(&e, &source, &filename);
             eprint!("{}", formatted);
             std::process::exit(1);
@@ -1096,7 +1111,8 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
                     ts.end_run();
                 }
             }
-            eprintln!("{} {}", red("✗ Error:"), e);
+            let chain = error_chain::chain_from_error(&e);
+            eprintln!("{}", chain.format_with_prefix(&red("✗ Error:")));
             std::process::exit(1);
         }
     }
@@ -1110,7 +1126,9 @@ fn cmd_emit(file: &PathBuf, output: Option<PathBuf>) {
     let module = match compile_source_file(file, &source) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("{} compilation failed", red("error:"));
+            let chain = error_chain::ErrorChain::new("compilation failed")
+                .caused_by(format!("in file '{}'", filename));
+            eprintln!("{}", chain.format_with_prefix(&red("✗")));
             let formatted = lumen_compiler::format_error(&e, &source, &filename);
             eprint!("{}", formatted);
             std::process::exit(1);
@@ -1118,7 +1136,8 @@ fn cmd_emit(file: &PathBuf, output: Option<PathBuf>) {
     };
 
     let json = lumen_compiler::compiler::emit::emit_json(&module).unwrap_or_else(|e| {
-        eprintln!("{} emit failed: {}", red("error:"), e);
+        let chain = error_chain::ErrorChain::new("emit failed").caused_by(e.to_string());
+        eprintln!("{}", chain.format_with_prefix(&red("✗")));
         std::process::exit(1);
     });
 

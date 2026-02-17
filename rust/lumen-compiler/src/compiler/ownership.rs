@@ -815,6 +815,14 @@ impl<'a> OwnershipChecker<'a> {
             Expr::TryExpr(inner, _) => {
                 self.check_expr(inner);
             }
+            Expr::TryElse {
+                expr: inner,
+                handler,
+                ..
+            } => {
+                self.check_expr(inner);
+                self.check_expr(handler);
+            }
             Expr::NullCoalesce(lhs, rhs, _) => {
                 self.check_expr(lhs);
                 self.check_expr(rhs);

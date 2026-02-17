@@ -3329,6 +3329,42 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::abc(OpCode::Unbox, dest, ir, 0));
                 dest
             }
+            Expr::TryElse {
+                expr,
+                error_binding,
+                handler,
+                ..
+            } => {
+                let ir = self.lower_expr(expr, ra, consts, instrs);
+                let dest = ra.alloc_temp();
+                // Check if result is err variant
+                let err_idx = self.intern_string("err");
+                instrs.push(Instruction::abx(OpCode::IsVariant, ir, err_idx));
+                // IsVariant: if matched (is err), skip next instruction
+                // If err: skip Jmp -> go to handler
+                // If ok: execute Jmp -> jump to unbox ok
+                let jmp_ok = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder: jump to ok path
+                                                               // Err path: unbox err value, bind to error_binding, eval handler
+                let err_val = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::Unbox, err_val, ir, 0));
+                // Bind the error value to the error_binding name
+                let binding_reg = ra.alloc_named(error_binding);
+                instrs.push(Instruction::abc(OpCode::Move, binding_reg, err_val, 0));
+                let hr = self.lower_expr(handler, ra, consts, instrs);
+                instrs.push(Instruction::abc(OpCode::Move, dest, hr, 0));
+                let jmp_end = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder: jump past ok path
+                                                               // Patch jmp_ok to here (ok path)
+                let ok_start = instrs.len();
+                instrs[jmp_ok] = Instruction::sax(OpCode::Jmp, (ok_start - jmp_ok - 1) as i32);
+                // Ok path: unbox ok value
+                instrs.push(Instruction::abc(OpCode::Unbox, dest, ir, 0));
+                // Patch jmp_end to here
+                let after = instrs.len();
+                instrs[jmp_end] = Instruction::sax(OpCode::Jmp, (after - jmp_end - 1) as i32);
+                dest
+            }
             Expr::NullCoalesce(lhs, rhs, _) => {
                 let lr = self.lower_expr(lhs, ra, consts, instrs);
                 let rr = self.lower_expr(rhs, ra, consts, instrs);
@@ -4138,6 +4174,14 @@ fn collect_free_idents_expr(expr: &Expr, out: &mut Vec<String>) {
         | Expr::TryExpr(inner, _)
         | Expr::AwaitExpr(inner, _) => {
             collect_free_idents_expr(inner, out);
+        }
+        Expr::TryElse {
+            expr: inner,
+            handler,
+            ..
+        } => {
+            collect_free_idents_expr(inner, out);
+            collect_free_idents_expr(handler, out);
         }
         Expr::ExpectSchema(inner, _, _) => collect_free_idents_expr(inner, out),
         Expr::IsType { expr: inner, .. } | Expr::TypeCast { expr: inner, .. } => {

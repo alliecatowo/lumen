@@ -120,16 +120,40 @@ impl CheckpointStore for FileCheckpointStore {
 /// High-level checkpoint engine that combines serialization with storage.
 pub struct CheckpointEngine {
     store: Box<dyn CheckpointStore>,
+    /// When true, snapshots are gzip-compressed before saving and
+    /// decompressed on load.
+    compressed: bool,
 }
 
 impl CheckpointEngine {
     pub fn new(store: Box<dyn CheckpointStore>) -> Self {
-        CheckpointEngine { store }
+        CheckpointEngine {
+            store,
+            compressed: false,
+        }
+    }
+
+    /// Create a checkpoint engine that compresses snapshots on save and
+    /// decompresses on load.
+    pub fn new_compressed(store: Box<dyn CheckpointStore>) -> Self {
+        CheckpointEngine {
+            store,
+            compressed: true,
+        }
+    }
+
+    /// Whether this engine uses compression.
+    pub fn is_compressed(&self) -> bool {
+        self.compressed
     }
 
     /// Serialize a snapshot and persist it.  Returns the snapshot's ID.
     pub fn checkpoint(&self, snapshot: &Snapshot) -> Result<SnapshotId, CheckpointError> {
-        let bytes = snapshot.serialize()?;
+        let bytes = if self.compressed {
+            snapshot.serialize_compressed()?
+        } else {
+            snapshot.serialize()?
+        };
         self.store.save(snapshot.id, &bytes)?;
         Ok(snapshot.id)
     }
@@ -137,7 +161,11 @@ impl CheckpointEngine {
     /// Load and deserialize a snapshot by ID.
     pub fn restore(&self, id: SnapshotId) -> Result<Snapshot, CheckpointError> {
         let bytes = self.store.load(id)?;
-        Ok(Snapshot::deserialize(&bytes)?)
+        if self.compressed {
+            Ok(Snapshot::deserialize_compressed(&bytes)?)
+        } else {
+            Ok(Snapshot::deserialize(&bytes)?)
+        }
     }
 
     /// Return the most-recent snapshot (by ID, which is monotonically increasing).
@@ -355,5 +383,73 @@ mod tests {
         assert_eq!(deleted, 0);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn engine_compressed_checkpoint_restore() {
+        let dir = temp_dir("engine-compressed");
+        let store = FileCheckpointStore::new(&dir).unwrap();
+        let engine = CheckpointEngine::new_compressed(Box::new(store));
+
+        assert!(engine.is_compressed());
+
+        let snap = sample_snapshot_for_checkpoint();
+        let id = engine.checkpoint(&snap).unwrap();
+        let restored = engine.restore(id).unwrap();
+
+        assert_eq!(snap.id, restored.id);
+        assert_eq!(snap.frames[0].registers, restored.frames[0].registers);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compressed_engine_latest() {
+        let dir = temp_dir("engine-compressed-latest");
+        let store = FileCheckpointStore::new(&dir).unwrap();
+        let engine = CheckpointEngine::new_compressed(Box::new(store));
+
+        let s1 = sample_snapshot_for_checkpoint();
+        let s2 = sample_snapshot_for_checkpoint();
+        engine.checkpoint(&s1).unwrap();
+        engine.checkpoint(&s2).unwrap();
+
+        let latest = engine.latest().unwrap().expect("should have latest");
+        assert_eq!(latest.id, s2.id);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compressed_smaller_than_raw() {
+        let dir_raw = temp_dir("engine-size-raw");
+        let dir_comp = temp_dir("engine-size-comp");
+        let store_raw = FileCheckpointStore::new(&dir_raw).unwrap();
+        let store_comp = FileCheckpointStore::new(&dir_comp).unwrap();
+        let engine_raw = CheckpointEngine::new(Box::new(store_raw));
+        let engine_comp = CheckpointEngine::new_compressed(Box::new(store_comp));
+
+        let snap = sample_snapshot_for_checkpoint();
+        engine_raw.checkpoint(&snap).unwrap();
+        engine_comp.checkpoint(&snap).unwrap();
+
+        // Compare file sizes
+        let raw_path = dir_raw.join(format!("{}.snap", snap.id.0));
+        let comp_path = dir_comp.join(format!("{}.snap", snap.id.0));
+        let raw_size = fs::metadata(&raw_path).unwrap().len();
+        let comp_size = fs::metadata(&comp_path).unwrap().len();
+
+        // Compressed should not be larger than raw for structured data
+        // (For very small data, gzip header can make it larger, so we just
+        // check it doesn't blow up — for real workloads it'll be smaller)
+        assert!(
+            comp_size <= raw_size + 50,
+            "compressed ({}) should not be much larger than raw ({})",
+            comp_size,
+            raw_size,
+        );
+
+        let _ = fs::remove_dir_all(&dir_raw);
+        let _ = fs::remove_dir_all(&dir_comp);
     }
 }

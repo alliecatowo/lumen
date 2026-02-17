@@ -9,6 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 // ---------------------------------------------------------------------------
@@ -208,6 +209,107 @@ impl Snapshot {
         // paths the caller could cache this, but correctness > micro-opt here.
         self.serialize().map(|v| v.len()).unwrap_or(0)
     }
+
+    /// Serialize and compress this snapshot to a byte vector (bincode + gzip).
+    pub fn serialize_compressed(&self) -> Result<Vec<u8>, SnapshotError> {
+        let raw = self.serialize()?;
+        compress(&raw).map_err(|e| SnapshotError::Serialize(e.to_string()))
+    }
+
+    /// Decompress and deserialize a snapshot from compressed bytes.
+    pub fn deserialize_compressed(bytes: &[u8]) -> Result<Self, SnapshotError> {
+        let raw = decompress(bytes).map_err(|e| SnapshotError::Deserialize(e.to_string()))?;
+        Self::deserialize(&raw)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Compression / decompression (gzip via flate2)
+// ---------------------------------------------------------------------------
+
+/// Compress data using gzip (flate2, compression level 6).
+pub fn compress(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(data)?;
+    encoder.finish()
+}
+
+/// Decompress gzip-compressed data.
+pub fn decompress(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    let mut decoder = flate2::read::GzDecoder::new(data);
+    let mut out = Vec::new();
+    decoder.read_to_end(&mut out)?;
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot pruner
+// ---------------------------------------------------------------------------
+
+/// Prunes snapshot collections to keep only the N most recent entries.
+///
+/// Works with any ordered collection of [`Snapshot`] objects (in-memory) or
+/// with a [`CheckpointStore`](crate::checkpoint::CheckpointStore) (on-disk).
+pub struct SnapshotPruner {
+    /// Maximum number of snapshots to retain.
+    max_retained: usize,
+}
+
+impl SnapshotPruner {
+    /// Create a pruner that keeps at most `max_retained` snapshots.
+    ///
+    /// # Panics
+    /// Panics if `max_retained` is zero.
+    pub fn new(max_retained: usize) -> Self {
+        assert!(max_retained > 0, "max_retained must be at least 1");
+        SnapshotPruner { max_retained }
+    }
+
+    /// Maximum number of snapshots this pruner retains.
+    pub fn max_retained(&self) -> usize {
+        self.max_retained
+    }
+
+    /// Prune an in-memory list of snapshots, keeping only the
+    /// `max_retained` most recent (by [`SnapshotId`]).
+    ///
+    /// Returns the IDs of removed snapshots. The input `Vec` is modified
+    /// in-place with only the retained snapshots remaining.
+    pub fn prune_in_memory(&self, snapshots: &mut Vec<Snapshot>) -> Vec<SnapshotId> {
+        if snapshots.len() <= self.max_retained {
+            return Vec::new();
+        }
+
+        // Sort by ID ascending
+        snapshots.sort_by_key(|s| s.id);
+
+        let to_remove = snapshots.len() - self.max_retained;
+        let removed: Vec<SnapshotId> = snapshots[..to_remove].iter().map(|s| s.id).collect();
+        snapshots.drain(..to_remove);
+        removed
+    }
+
+    /// Prune snapshots from a [`CheckpointStore`](crate::checkpoint::CheckpointStore),
+    /// keeping only the `max_retained` most recent snapshot IDs.
+    ///
+    /// Returns the number of snapshots deleted.
+    pub fn prune_store(
+        &self,
+        store: &dyn crate::checkpoint::CheckpointStore,
+    ) -> Result<usize, crate::checkpoint::CheckpointError> {
+        let mut ids = store.list()?;
+        if ids.len() <= self.max_retained {
+            return Ok(0);
+        }
+        ids.sort();
+        let to_remove = ids.len() - self.max_retained;
+        let mut deleted = 0;
+        for id in ids.into_iter().take(to_remove) {
+            store.delete(id)?;
+            deleted += 1;
+        }
+        Ok(deleted)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -377,5 +479,193 @@ mod tests {
         let restored = Snapshot::deserialize(&bytes).unwrap();
         assert!(restored.frames.is_empty());
         assert!(restored.heap.objects.is_empty());
+    }
+
+    // =====================================================================
+    // Compression tests
+    // =====================================================================
+
+    #[test]
+    fn compress_decompress_round_trip() {
+        let data = b"Hello, Lumen! This is test data for compression.";
+        let compressed = compress(data).unwrap();
+        let decompressed = decompress(&compressed).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    #[test]
+    fn compress_empty_data() {
+        let data = b"";
+        let compressed = compress(data).unwrap();
+        let decompressed = decompress(&compressed).unwrap();
+        assert_eq!(decompressed, data.to_vec());
+    }
+
+    #[test]
+    fn compress_reduces_size_for_repetitive_data() {
+        // Highly repetitive data should compress well
+        let data = vec![0xABu8; 10_000];
+        let compressed = compress(&data).unwrap();
+        assert!(
+            compressed.len() < data.len(),
+            "compressed size ({}) should be smaller than original ({})",
+            compressed.len(),
+            data.len()
+        );
+    }
+
+    #[test]
+    fn snapshot_compressed_round_trip() {
+        let snap = sample_snapshot();
+        let compressed = snap.serialize_compressed().unwrap();
+        let restored = Snapshot::deserialize_compressed(&compressed).unwrap();
+        assert_eq!(snap.id, restored.id);
+        assert_eq!(snap.version, restored.version);
+        assert_eq!(snap.frames.len(), restored.frames.len());
+        assert_eq!(snap.frames[0].registers, restored.frames[0].registers);
+        assert_eq!(snap.heap, restored.heap);
+        assert_eq!(snap.ip, restored.ip);
+        assert_eq!(snap.metadata, restored.metadata);
+    }
+
+    #[test]
+    fn compressed_snapshot_is_smaller() {
+        // Create a snapshot with enough data that compression helps
+        let mut frames = Vec::new();
+        for i in 0..50 {
+            frames.push(StackFrame {
+                cell_index: i,
+                pc: i * 10,
+                registers: vec![
+                    SerializedValue::Int(i as i64),
+                    SerializedValue::String(format!("register_{}", i)),
+                    SerializedValue::Null,
+                ],
+                return_address: None,
+            });
+        }
+        let snap = Snapshot::new(
+            frames,
+            HeapSnapshot { objects: vec![] },
+            InstructionPointer {
+                cell_index: 0,
+                pc: 0,
+            },
+            sample_metadata(),
+        );
+
+        let raw = snap.serialize().unwrap();
+        let compressed = snap.serialize_compressed().unwrap();
+        assert!(
+            compressed.len() < raw.len(),
+            "compressed ({}) should be smaller than raw ({})",
+            compressed.len(),
+            raw.len()
+        );
+    }
+
+    #[test]
+    fn decompress_invalid_data_fails() {
+        let bad_data = vec![0x00, 0x01, 0x02, 0x03];
+        assert!(decompress(&bad_data).is_err());
+    }
+
+    // =====================================================================
+    // SnapshotPruner tests
+    // =====================================================================
+
+    #[test]
+    fn pruner_keeps_max_retained() {
+        let pruner = SnapshotPruner::new(2);
+        assert_eq!(pruner.max_retained(), 2);
+
+        let mut snapshots: Vec<Snapshot> = (0..5).map(|_| sample_snapshot()).collect();
+        let last_two_ids: Vec<SnapshotId> = {
+            let mut sorted = snapshots.clone();
+            sorted.sort_by_key(|s| s.id);
+            sorted.iter().rev().take(2).map(|s| s.id).collect()
+        };
+
+        let removed = pruner.prune_in_memory(&mut snapshots);
+        assert_eq!(removed.len(), 3);
+        assert_eq!(snapshots.len(), 2);
+
+        // The two remaining should be the ones with the highest IDs
+        for snap in &snapshots {
+            assert!(last_two_ids.contains(&snap.id));
+        }
+    }
+
+    #[test]
+    fn pruner_noop_when_under_limit() {
+        let pruner = SnapshotPruner::new(10);
+        let mut snapshots: Vec<Snapshot> = (0..3).map(|_| sample_snapshot()).collect();
+        let removed = pruner.prune_in_memory(&mut snapshots);
+        assert!(removed.is_empty());
+        assert_eq!(snapshots.len(), 3);
+    }
+
+    #[test]
+    fn pruner_exact_limit() {
+        let pruner = SnapshotPruner::new(3);
+        let mut snapshots: Vec<Snapshot> = (0..3).map(|_| sample_snapshot()).collect();
+        let removed = pruner.prune_in_memory(&mut snapshots);
+        assert!(removed.is_empty());
+        assert_eq!(snapshots.len(), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "max_retained must be at least 1")]
+    fn pruner_zero_panics() {
+        SnapshotPruner::new(0);
+    }
+
+    #[test]
+    fn pruner_single_snapshot() {
+        let pruner = SnapshotPruner::new(1);
+        let mut snapshots: Vec<Snapshot> = (0..5).map(|_| sample_snapshot()).collect();
+        let last_id = {
+            let mut sorted = snapshots.clone();
+            sorted.sort_by_key(|s| s.id);
+            sorted.last().unwrap().id
+        };
+        let removed = pruner.prune_in_memory(&mut snapshots);
+        assert_eq!(removed.len(), 4);
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].id, last_id);
+    }
+
+    #[test]
+    fn pruner_store_integration() {
+        use crate::checkpoint::{CheckpointStore, FileCheckpointStore};
+
+        let dir = std::env::temp_dir().join(format!("lumen-pruner-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = FileCheckpointStore::new(&dir).unwrap();
+
+        // Save 5 snapshots
+        let mut ids = Vec::new();
+        for _ in 0..5 {
+            let snap = sample_snapshot();
+            let bytes = snap.serialize().unwrap();
+            store.save(snap.id, &bytes).unwrap();
+            ids.push(snap.id);
+        }
+        ids.sort();
+
+        // Prune to keep 2
+        let pruner = SnapshotPruner::new(2);
+        let deleted = pruner.prune_store(&store).unwrap();
+        assert_eq!(deleted, 3);
+
+        let remaining = store.list().unwrap();
+        assert_eq!(remaining.len(), 2);
+
+        // Remaining should be the 2 highest IDs
+        for id in &remaining {
+            assert!(ids[3..].contains(id));
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

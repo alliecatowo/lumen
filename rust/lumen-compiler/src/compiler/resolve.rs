@@ -2207,6 +2207,14 @@ fn collect_expr_call_requirements(
         | Expr::SpreadExpr(inner, _)
         | Expr::IsType { expr: inner, .. }
         | Expr::TypeCast { expr: inner, .. } => collect_expr_call_requirements(inner, table, out),
+        Expr::TryElse {
+            expr: inner,
+            handler,
+            ..
+        } => {
+            collect_expr_call_requirements(inner, table, out);
+            collect_expr_call_requirements(handler, table, out);
+        }
         Expr::Call(callee, args, span) => {
             collect_expr_call_requirements(callee, table, out);
             for a in args {
@@ -2503,6 +2511,14 @@ fn collect_expr_effect_evidence(
         | Expr::IsType { expr: inner, .. }
         | Expr::TypeCast { expr: inner, .. } => {
             collect_expr_effect_evidence(inner, table, current, out);
+        }
+        Expr::TryElse {
+            expr: inner,
+            handler,
+            ..
+        } => {
+            collect_expr_effect_evidence(inner, table, current, out);
+            collect_expr_effect_evidence(handler, table, current, out);
         }
         Expr::AwaitExpr(inner, span) => {
             collect_expr_effect_evidence(inner, table, current, out);
@@ -2907,6 +2923,14 @@ fn infer_expr_effects(
             if matches!(expr, Expr::AwaitExpr(_, _)) {
                 out.insert("async".into());
             }
+        }
+        Expr::TryElse {
+            expr: inner,
+            handler,
+            ..
+        } => {
+            infer_expr_effects(inner, table, current, out);
+            infer_expr_effects(handler, table, current, out);
         }
         Expr::Call(callee, args, _) => {
             infer_expr_effects(callee, table, current, out);

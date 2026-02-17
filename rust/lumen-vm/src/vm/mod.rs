@@ -84,8 +84,8 @@ pub enum VmError {
     TypeError(String),
     #[error("no module loaded")]
     NoModule,
-    #[error("arithmetic overflow")]
-    ArithmeticOverflow,
+    #[error("integer overflow in {0}")]
+    ArithmeticOverflow(String),
     #[error("division by zero")]
     DivisionByZero,
     #[error("instruction limit exceeded: {0}")]
@@ -158,8 +158,8 @@ impl VmError {
     /// Check if the underlying error is an ArithmeticOverflow (works through WithStackTrace wrapper).
     pub fn is_arithmetic_overflow(&self) -> bool {
         match self {
-            VmError::ArithmeticOverflow => true,
-            VmError::WithStackTrace { message, .. } => message == "arithmetic overflow",
+            VmError::ArithmeticOverflow(_) => true,
+            VmError::WithStackTrace { message, .. } => message.starts_with("integer overflow in "),
             _ => false,
         }
     }
@@ -1644,7 +1644,10 @@ impl VM {
                 OpCode::Neg => {
                     let val = &self.registers[base + b];
                     self.registers[base + a] = match val {
-                        Value::Int(n) => Value::Int(-n),
+                        Value::Int(n) => n
+                            .checked_neg()
+                            .map(Value::Int)
+                            .ok_or(VmError::ArithmeticOverflow("negation".to_string()))?,
                         Value::Float(f) => Value::Float(-f),
                         _ => return Err(VmError::TypeError(format!("cannot negate {}", val))),
                     };
@@ -4424,7 +4427,7 @@ end
         let err = vm.execute("main", vec![]).unwrap_err();
         // 2^64 overflows i64, so we get ArithmeticOverflow
         assert!(
-            err.to_string().contains("arithmetic overflow"),
+            err.is_arithmetic_overflow() || err.to_string().contains("overflow"),
             "expected arithmetic overflow, got: {}",
             err
         );
@@ -6197,5 +6200,266 @@ end
             .expect("should match read_line handler");
         // The read_line handler resumes with 7, so result should be 7
         assert_eq!(result, Value::Int(7));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // T123 — Checked arithmetic tests
+    // ═══════════════════════════════════════════════════════════════
+
+    /// Helper: compile and execute, returning the Result for error inspection.
+    fn try_run_main(source: &str) -> Result<Value, VmError> {
+        let md = format!("# test\n\n```lumen\n{}\n```\n", source.trim());
+        let module = compile_lumen(&md).expect("source should compile");
+        let mut vm = VM::new();
+        vm.load(module);
+        vm.execute("main", vec![])
+    }
+
+    #[test]
+    fn t123_addition_overflow() {
+        // i64::MAX + 1 should produce ArithmeticOverflow, not wrap
+        let src = r#"
+cell main() -> Int
+  let x = 9223372036854775807   # i64::MAX
+  x + 1
+end
+"#;
+        let err = try_run_main(src).unwrap_err();
+        assert!(
+            err.is_arithmetic_overflow(),
+            "expected arithmetic overflow, got: {}",
+            err
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("addition"),
+            "error should mention 'addition', got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn t123_subtraction_overflow() {
+        // i64::MIN - 1 should overflow
+        // Build i64::MIN as (0 - i64::MAX - 1) to avoid literal parsing issues
+        let src = r#"
+cell main() -> Int
+  let max = 9223372036854775807
+  let min = 0 - max - 1
+  min - 1
+end
+"#;
+        let err = try_run_main(src).unwrap_err();
+        assert!(
+            err.is_arithmetic_overflow(),
+            "expected arithmetic overflow, got: {}",
+            err
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("subtraction"),
+            "error should mention 'subtraction', got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn t123_multiplication_overflow() {
+        // i64::MAX * 2 should overflow
+        let src = r#"
+cell main() -> Int
+  let x = 9223372036854775807   # i64::MAX
+  x * 2
+end
+"#;
+        let err = try_run_main(src).unwrap_err();
+        assert!(
+            err.is_arithmetic_overflow(),
+            "expected arithmetic overflow, got: {}",
+            err
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("multiplication"),
+            "error should mention 'multiplication', got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn t123_power_overflow() {
+        // 2 ** 63 = 9223372036854775808 which overflows i64
+        let src = r#"
+cell main() -> Int
+  2 ** 63
+end
+"#;
+        let err = try_run_main(src).unwrap_err();
+        assert!(
+            err.is_arithmetic_overflow(),
+            "expected arithmetic overflow, got: {}",
+            err
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("exponentiation"),
+            "error should mention 'exponentiation', got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn t123_negation_overflow() {
+        // Negation of i64::MIN overflows because |i64::MIN| > i64::MAX.
+        // Test via raw LIR to directly exercise the Neg opcode with checked_neg.
+        use lumen_compiler::compiler::lir::*;
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("Int".into()),
+                registers: 4,
+                // i64::MIN = -9223372036854775808
+                constants: vec![Constant::Int(i64::MIN)],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),     // r0 = i64::MIN
+                    Instruction::abc(OpCode::Neg, 1, 0, 0),    // r1 = -r0 (should overflow)
+                    Instruction::abc(OpCode::Return, 1, 1, 0), // return r1
+                ],
+                effect_handler_metas: vec![],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+        let mut vm = VM::new();
+        vm.load(module);
+        let err = vm.execute("main", vec![]).unwrap_err();
+        assert!(
+            err.is_arithmetic_overflow(),
+            "expected arithmetic overflow from negation, got: {}",
+            err
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("negation"),
+            "error should mention 'negation', got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn t123_normal_arithmetic_works() {
+        // Normal operations should still produce correct results
+        let src = r#"
+cell main() -> Int
+  let a = 100 + 200
+  let b = a - 50
+  let c = b * 3
+  let d = c // 4
+  d
+end
+"#;
+        let result = run_main(src);
+        // (100+200) = 300, -50 = 250, *3 = 750, //4 = 187
+        assert_eq!(result, Value::Int(187));
+    }
+
+    #[test]
+    fn t123_float_overflow_produces_infinity() {
+        // Float overflow should produce infinity per IEEE 754, NOT an error
+        let src = r#"
+cell main() -> Float
+  let x = 1.7976931348623157e308   # close to f64::MAX
+  x * 2.0
+end
+"#;
+        let result = try_run_main(src).expect("float overflow should not error");
+        match result {
+            Value::Float(f) => assert!(
+                f.is_infinite() && f.is_sign_positive(),
+                "expected +infinity, got: {}",
+                f
+            ),
+            other => panic!("expected Float, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn t123_float_large_mul_produces_infinity() {
+        // Another float overflow case: large * large -> infinity
+        let src = r#"
+cell main() -> Float
+  let x = 1.0e300
+  x * x
+end
+"#;
+        let result = try_run_main(src).expect("float overflow should not error");
+        match result {
+            Value::Float(f) => assert!(f.is_infinite(), "expected infinity, got: {}", f),
+            other => panic!("expected Float, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn t123_division_by_zero_preserved() {
+        // Division by zero should still produce DivisionByZero, not ArithmeticOverflow
+        let src = r#"
+cell main() -> Int
+  10 / 0
+end
+"#;
+        let err = try_run_main(src).unwrap_err();
+        assert!(
+            err.is_division_by_zero(),
+            "expected division by zero, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn t123_operation_specific_messages() {
+        // Test that each operation produces the right message keyword
+        let cases: Vec<(&str, &str)> = vec![
+            ("9223372036854775807 + 1", "addition"),
+            ("9223372036854775807 * 2", "multiplication"),
+            ("2 ** 63", "exponentiation"),
+        ];
+        for (expr, expected_op) in cases {
+            let src = format!("cell main() -> Int\n  {}\nend", expr);
+            let err = try_run_main(&src).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains(expected_op),
+                "for '{}': expected '{}' in message, got: {}",
+                expr,
+                expected_op,
+                msg
+            );
+        }
+
+        // Subtraction case needs special handling to construct i64::MIN
+        let sub_src = r#"
+cell main() -> Int
+  let max = 9223372036854775807
+  let min = 0 - max - 1
+  min - 1
+end
+"#;
+        let err = try_run_main(sub_src).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("subtraction"),
+            "for subtraction: expected 'subtraction' in message, got: {}",
+            msg
+        );
     }
 }

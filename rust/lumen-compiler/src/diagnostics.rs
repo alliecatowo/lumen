@@ -405,6 +405,19 @@ pub fn format_compile_error(error: &CompileError, source: &str, filename: &str) 
             .iter()
             .map(|e| format_ownership_error(e, source, filename))
             .collect(),
+        CompileError::Lower(msg) => vec![Diagnostic {
+            severity: Severity::Error,
+            code: Some("E100".to_string()),
+            message: msg.clone(),
+            file: Some(filename.to_string()),
+            line: None,
+            col: None,
+            source_line: None,
+            underline: None,
+            suggestions: vec![
+                "Consider breaking large cells into smaller helper cells.".to_string()
+            ],
+        }],
         CompileError::Multiple(errors) => errors
             .iter()
             .flat_map(|e| format_compile_error(e, source, filename))

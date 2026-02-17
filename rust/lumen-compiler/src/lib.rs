@@ -28,6 +28,8 @@ pub enum CompileError {
     Constraint(Vec<compiler::constraints::ConstraintError>),
     #[error("ownership errors: {0:?}")]
     Ownership(Vec<compiler::ownership::OwnershipError>),
+    #[error("lowering error: {0}")]
+    Lower(String),
     #[error("multiple errors: {0:?}")]
     Multiple(Vec<CompileError>),
 }
@@ -56,6 +58,28 @@ impl From<compiler::parser::ParseError> for CompileError {
     fn from(err: compiler::parser::ParseError) -> Self {
         CompileError::Parse(vec![err])
     }
+}
+
+/// Safe wrapper around the lowering pass that converts register allocation
+/// panics into proper `CompileError::Lower` errors instead of crashing.
+fn lower_safe(
+    program: &compiler::ast::Program,
+    symbols: &SymbolTable,
+    source: &str,
+) -> Result<LirModule, CompileError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        compiler::lower::lower(program, symbols, source)
+    }))
+    .map_err(|panic_val| {
+        let msg = if let Some(s) = panic_val.downcast_ref::<String>() {
+            s.clone()
+        } else if let Some(s) = panic_val.downcast_ref::<&str>() {
+            (*s).to_string()
+        } else {
+            "internal lowering error".to_string()
+        };
+        CompileError::Lower(msg)
+    })
 }
 
 /// Compile with access to external modules for import resolution.
@@ -311,7 +335,7 @@ fn compile_with_imports_internal(
     }
 
     // 10. Lower to LIR
-    let mut module = compiler::lower::lower(&program, &symbols, source);
+    let mut module = lower_safe(&program, &symbols, source)?;
 
     // 11. Merge imported modules
     for imported_module in imported_modules {
@@ -540,7 +564,7 @@ fn compile_raw_with_imports_internal(
     }
 
     // 7. Lower to LIR
-    let mut module = compiler::lower::lower(&program, &symbols, source);
+    let mut module = lower_safe(&program, &symbols, source)?;
 
     // 8. Merge imported modules
     for imported_module in imported_modules {
@@ -591,7 +615,7 @@ pub fn compile_raw(source: &str) -> Result<LirModule, CompileError> {
     }
 
     // 6. Lower to LIR
-    let module = compiler::lower::lower(&program, &symbols, source);
+    let module = lower_safe(&program, &symbols, source)?;
 
     Ok(module)
 }
@@ -663,7 +687,7 @@ pub fn compile(source: &str) -> Result<LirModule, CompileError> {
     }
 
     // 9. Lower to LIR
-    let module = compiler::lower::lower(&program, &symbols, source);
+    let module = lower_safe(&program, &symbols, source)?;
 
     Ok(module)
 }

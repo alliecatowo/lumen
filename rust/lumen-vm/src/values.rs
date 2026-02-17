@@ -7,12 +7,12 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// Runtime values in the Lumen VM.
 ///
-/// Collection variants (List, Tuple, Set, Map, Record) are wrapped in `Rc` for
-/// cheap cloning via reference counting. Mutation uses `Rc::make_mut()` which
+/// Collection variants (List, Tuple, Set, Map, Record) are wrapped in `Arc` for
+/// cheap cloning via reference counting. Mutation uses `Arc::make_mut()` which
 /// provides copy-on-write semantics — the inner data is only cloned when the
 /// reference count is greater than one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,11 +24,11 @@ pub enum Value {
     Float(f64),
     String(StringRef),
     Bytes(Vec<u8>),
-    List(Rc<Vec<Value>>),
-    Tuple(Rc<Vec<Value>>),
-    Set(Rc<BTreeSet<Value>>),
-    Map(Rc<BTreeMap<String, Value>>),
-    Record(Rc<RecordValue>),
+    List(Arc<Vec<Value>>),
+    Tuple(Arc<Vec<Value>>),
+    Set(Arc<BTreeSet<Value>>),
+    Map(Arc<BTreeMap<String, Value>>),
+    Record(Arc<RecordValue>),
     Union(UnionValue),
     Closure(ClosureValue),
     TraceRef(TraceRefValue),
@@ -80,30 +80,30 @@ pub enum FutureStatus {
 }
 
 impl Value {
-    // -- Constructors (wrap inner data in Rc) --
+    // -- Constructors (wrap inner data in Arc) --
 
     pub fn new_list(v: Vec<Value>) -> Self {
-        Value::List(Rc::new(v))
+        Value::List(Arc::new(v))
     }
 
     pub fn new_tuple(v: Vec<Value>) -> Self {
-        Value::Tuple(Rc::new(v))
+        Value::Tuple(Arc::new(v))
     }
 
     pub fn new_set(s: BTreeSet<Value>) -> Self {
-        Value::Set(Rc::new(s))
+        Value::Set(Arc::new(s))
     }
 
     pub fn new_set_from_vec(v: Vec<Value>) -> Self {
-        Value::Set(Rc::new(v.into_iter().collect()))
+        Value::Set(Arc::new(v.into_iter().collect()))
     }
 
     pub fn new_map(m: BTreeMap<String, Value>) -> Self {
-        Value::Map(Rc::new(m))
+        Value::Map(Arc::new(m))
     }
 
     pub fn new_record(r: RecordValue) -> Self {
-        Value::Record(Rc::new(r))
+        Value::Record(Arc::new(r))
     }
 
     pub fn is_truthy(&self) -> bool {

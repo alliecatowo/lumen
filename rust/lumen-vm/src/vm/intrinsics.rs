@@ -5,7 +5,7 @@ use lumen_compiler::compile_raw;
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
 use std::collections::{BTreeMap, BTreeSet};
-use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 impl VM {
@@ -48,7 +48,7 @@ impl VM {
                 let list = self.registers[base + a + 1].clone();
                 let elem = self.registers[base + a + 2].clone();
                 if let Value::List(mut l) = list {
-                    Rc::make_mut(&mut l).push(elem);
+                    Arc::make_mut(&mut l).push(elem);
                     Ok(Value::List(l))
                 } else {
                     Ok(Value::new_list(vec![elem]))
@@ -396,7 +396,7 @@ impl VM {
             "sort" => {
                 let arg = self.registers[base + a + 1].clone();
                 if let Value::List(mut l) = arg {
-                    Rc::make_mut(&mut l).sort();
+                    Arc::make_mut(&mut l).sort();
                     Ok(Value::List(l))
                 } else {
                     Ok(arg)
@@ -405,7 +405,7 @@ impl VM {
             "reverse" => {
                 let arg = self.registers[base + a + 1].clone();
                 if let Value::List(mut l) = arg {
-                    Rc::make_mut(&mut l).reverse();
+                    Arc::make_mut(&mut l).reverse();
                     Ok(Value::List(l))
                 } else {
                     Ok(arg)
@@ -1137,7 +1137,7 @@ impl VM {
                         let key_str = key.as_string();
                         match groups.get_mut(&key_str) {
                             Some(Value::List(ref mut list)) => {
-                                Rc::make_mut(list).push(item.clone())
+                                Arc::make_mut(list).push(item.clone())
                             }
                             _ => {
                                 groups.insert(key_str, Value::new_list(vec![item.clone()]));
@@ -1231,7 +1231,11 @@ impl VM {
                             StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
                         };
                         let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                        module.cells.iter().position(|c| c.name == name_str).map(|idx| ClosureValue {
+                        module
+                            .cells
+                            .iter()
+                            .position(|c| c.name == name_str)
+                            .map(|idx| ClosureValue {
                                 cell_idx: idx,
                                 captures: vec![],
                             })
@@ -1827,7 +1831,7 @@ impl VM {
                         let key_str = key.as_string();
                         match groups.get_mut(&key_str) {
                             Some(Value::List(ref mut list)) => {
-                                Rc::make_mut(list).push(item.clone())
+                                Arc::make_mut(list).push(item.clone())
                             }
                             _ => {
                                 groups.insert(key_str, Value::new_list(vec![item.clone()]));
@@ -2037,9 +2041,7 @@ impl VM {
                         if let Some(y_u32) = y.to_u32() {
                             Value::BigInt(BigInt::from(*x).pow(y_u32))
                         } else if y.sign() == num_bigint::Sign::Minus {
-                            Value::Float(
-                                (*x as f64).powf(y.to_f64().unwrap_or(f64::NEG_INFINITY)),
-                            )
+                            Value::Float((*x as f64).powf(y.to_f64().unwrap_or(f64::NEG_INFINITY)))
                         } else {
                             Value::Null
                         }
@@ -2256,7 +2258,11 @@ impl VM {
 
                         let module = self.module.as_ref().ok_or(VmError::NoModule)?;
 
-                        module.cells.iter().position(|c| c.name == name_str).map(|idx| ClosureValue {
+                        module
+                            .cells
+                            .iter()
+                            .position(|c| c.name == name_str)
+                            .map(|idx| ClosureValue {
                                 cell_idx: idx,
                                 captures: vec![],
                             })

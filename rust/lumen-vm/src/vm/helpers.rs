@@ -101,15 +101,18 @@ pub(crate) fn domain_matches(pattern: &str, url: &str) -> bool {
         return false;
     }
 
-    let pattern = pattern.to_ascii_lowercase();
-    let host = host.to_ascii_lowercase();
+    // Compare case-insensitively without allocating new strings
     if let Some(suffix) = pattern.strip_prefix("*.") {
-        return host == suffix || host.ends_with(&format!(".{}", suffix));
+        return host.eq_ignore_ascii_case(suffix)
+            || (host.len() > suffix.len() + 1
+                && host.as_bytes()[host.len() - suffix.len() - 1] == b'.'
+                && host[host.len() - suffix.len()..].eq_ignore_ascii_case(suffix));
     }
-    host == pattern
+    host.eq_ignore_ascii_case(pattern)
 }
 
-pub(crate) fn extract_host(url: &str) -> String {
+/// Extract host from a URL, returning a borrowed slice to avoid allocation.
+pub(crate) fn extract_host(url: &str) -> &str {
     let without_scheme = if let Some((_, rest)) = url.split_once("://") {
         rest
     } else {
@@ -122,7 +125,6 @@ pub(crate) fn extract_host(url: &str) -> String {
         .split(':')
         .next()
         .unwrap_or_default()
-        .to_string()
 }
 
 pub(crate) fn parse_machine_expr_json(value: &serde_json::Value) -> Option<MachineExpr> {
@@ -198,10 +200,21 @@ pub(crate) fn strip_quote_wrappers(s: &str) -> &str {
 }
 
 pub(crate) fn parse_bool_like(raw: &str) -> Option<bool> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
+    let trimmed = raw.trim();
+    if trimmed.eq_ignore_ascii_case("true")
+        || trimmed.eq_ignore_ascii_case("yes")
+        || trimmed.eq_ignore_ascii_case("on")
+        || trimmed == "1"
+    {
+        Some(true)
+    } else if trimmed.eq_ignore_ascii_case("false")
+        || trimmed.eq_ignore_ascii_case("no")
+        || trimmed.eq_ignore_ascii_case("off")
+        || trimmed == "0"
+    {
+        Some(false)
+    } else {
+        None
     }
 }
 
@@ -277,7 +290,8 @@ pub(crate) fn json_to_value(val: &serde_json::Value) -> Value {
 /// Simple base64 encode (no external dependency).
 pub(crate) fn simple_base64_encode(data: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::new();
+    let encoded_len = 4 * ((data.len() + 2) / 3);
+    let mut result = String::with_capacity(encoded_len);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
@@ -301,29 +315,41 @@ pub(crate) fn simple_base64_encode(data: &[u8]) -> String {
 
 /// Simple base64 decode.
 pub(crate) fn simple_base64_decode(s: &str) -> Option<Vec<u8>> {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = Vec::new();
+    // Lookup table: maps ASCII byte value -> base64 index (0-63), 255 = invalid
+    const INVALID: u8 = 255;
+    const DECODE_TABLE: [u8; 256] = {
+        let mut table = [INVALID; 256];
+        let chars = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut i = 0;
+        while i < 64 {
+            table[chars[i] as usize] = i as u8;
+            i += 1;
+        }
+        table
+    };
+
+    let mut result = Vec::with_capacity(s.len() * 3 / 4);
     let bytes: Vec<u8> = s.bytes().filter(|&b| b != b'\n' && b != b'\r').collect();
     for chunk in bytes.chunks(4) {
         if chunk.len() < 4 {
             break;
         }
-        let vals: Vec<Option<usize>> = chunk
-            .iter()
-            .map(|&b| {
-                if b == b'=' {
-                    Some(0)
-                } else {
-                    CHARS.iter().position(|&c| c == b)
+        let mut vals = [0u8; 4];
+        for (i, &b) in chunk.iter().enumerate() {
+            if b == b'=' {
+                vals[i] = 0;
+            } else {
+                let v = DECODE_TABLE[b as usize];
+                if v == INVALID {
+                    return None;
                 }
-            })
-            .collect();
-        if vals.iter().any(|v| v.is_none()) {
-            return None;
+                vals[i] = v;
+            }
         }
-        // Safe: we just verified none are None above
-        let v: Vec<usize> = vals.into_iter().flatten().collect();
-        let triple = (v[0] << 18) | (v[1] << 12) | (v[2] << 6) | v[3];
+        let triple = ((vals[0] as u32) << 18)
+            | ((vals[1] as u32) << 12)
+            | ((vals[2] as u32) << 6)
+            | (vals[3] as u32);
         result.push(((triple >> 16) & 0xFF) as u8);
         if chunk[2] != b'=' {
             result.push(((triple >> 8) & 0xFF) as u8);

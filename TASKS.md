@@ -100,7 +100,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T032 | Codegen: function calls (ABI) — **DONE** | Correct calling convention and argument marshalling. |
 | T033 | Tail-call optimization flag — **DONE** | Mark or optimize tail calls in the LLVM pipeline. |
 | T034 | Optional: Template JIT for hot paths — **DONE** | Identify hot loops in LIR and compile them to native code on first execution (baseline JIT). |
-| T035 | Optional: JIT engine (OrcJIT) | If using LLVM, implement a small JIT engine to run generated code in-process. |
+| T035 | Optional: JIT engine (OrcJIT) — **DONE** | If using LLVM, implement a small JIT engine to run generated code in-process. |
 | T036 | Benchmark: matrix multiply vs C/Rust — **DONE** | Add a benchmark that compares Lumen AOT/JIT to a C or Rust baseline; target within a few percent. |
 
 ---
@@ -191,8 +191,8 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
 | T090 | Real Ed25519/Sigstore signing — **DONE** | Replace package manager signing stubs with actual cryptographic signing (see COMPETITIVE_ANALYSIS §7.3). |
-| T091 | Transparency log for packages | Append-only log for published artifacts; verification against log. |
-| T092 | Registry deployment | Deploy registry (e.g. Cloudflare Workers + D1/R2) so publish/search/install round-trip works. |
+| T091 | Transparency log for packages — **DONE** | Append-only log for published artifacts; verification against log. |
+| T092 | Registry deployment — **DONE** | Deploy registry (e.g. Cloudflare Workers + D1/R2) so publish/search/install round-trip works. |
 | T093 | OIDC for registry auth — **DONE** | Use OpenID Connect for publisher identity where applicable. |
 | T094 | TUF or similar for repository metadata — **DONE** | The Update Framework (or equivalent) for secure package metadata. |
 | T095 | extern "C" and ABI — **DONE** | Support C calling convention and correct ABI in FFI. |
@@ -209,7 +209,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T106 | Fix-it hints in diagnostics — **DONE** | Attach suggested edits to diagnostics where possible. |
 | T107 | Error codes and documentation — **DONE** | Assign codes to errors and link to documentation. |
 | T108 | Clippy: deny warnings in CI — **DONE** | Ensure `cargo clippy -- -D warnings` passes. |
-| T109 | Miri in CI | Run tests under Miri where applicable to catch UB. |
+| T109 | Miri in CI — **DONE** | Run tests under Miri where applicable to catch UB. |
 | T110 | Benchmark suite and regression gate — **DONE** | Formal benchmark suite; CI fails on performance regression beyond a threshold. |
 
 ---
@@ -271,8 +271,8 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 |---|------|-----------------------------|
 | T141 | All 1365+ tests pass | After any change, full workspace test suite passes. |
 | T142 | Zero clippy warnings | `cargo clippy -- -D warnings` for all crates. |
-| T143 | Coverage gate | Maintain or improve coverage (e.g. >95% for critical paths). |
-| T144 | Valgrind or sanitizers | No leaks; address sanitizer clean where applicable. |
+| T143 | Coverage gate — **DONE** | Maintain or improve coverage (e.g. >95% for critical paths). |
+| T144 | Valgrind or sanitizers — **DONE** | No leaks; address sanitizer clean where applicable. |
 | T145 | Security audit (cargo audit) — **DONE** | Zero known vulnerabilities in dependencies. |
 | T146 | Documentation sync — **DONE** | SPEC, CLAUDE.md, and ROADMAP aligned with implementation. |
 | T147 | Release v1.0.0 tag | Tag and release when Phase 0–9 goals are met and gates pass. |
@@ -355,7 +355,7 @@ The following tasks add depth and explicit competitive parity. Problem statement
 |---|------|-----------------------------|
 | T169 | Error context chaining — **DONE** | Propagate and display cause chains (e.g. "tool X failed because network unreachable because TLS handshake failed"). Improves debuggability vs single-message errors. |
 | T170 | Panic vs result (halt vs return err) — **DONE** | Define clear boundary: which failures panic (e.g. unreachable, invariant violation) vs return `result[T,E]`; document and enforce so agents can recover predictably. Ref: Rust panic vs Result. |
-| T171 | Inline / property-based / snapshot testing | Built-in or std test helpers: inline unit tests, property-based (e.g. QuickCheck-style), snapshot output comparison. Ref: COMPETITIVE_ANALYSIS §8 (leapfrog 11). |
+| T171 | Inline / property-based / snapshot testing — **DONE** | Built-in or std test helpers: inline unit tests, property-based (e.g. QuickCheck-style), snapshot output comparison. Ref: COMPETITIVE_ANALYSIS §8 (leapfrog 11). |
 | T172 | Mock effects for tests — **DONE** | Test harness to stub effect operations (e.g. `perform HttpGet`) so tests run without real I/O. Complements deterministic replay. |
 | T173 | LSP: go-to-implementations — **DONE** | "Go to implementation(s)" for cells and types; navigate to defining and overriding sites. Ref: IDE parity. |
 | T174 | Diagnostics: type diff and import suggestions — **DONE** | On type error, show concise type diff (expected vs actual); on unknown symbol, suggest imports or similar names. |
@@ -363,12 +363,12 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | T176 | CI machine-readable output — **DONE** | Emit check/test results in a standard format (e.g. SARIF, JUnit XML) for CI dashboards and gates. Ref: T105–T110. |
 | T177 | Service package template — **DONE** | Scaffold for HTTP/gRPC services: typed route contracts, generated schemas, replayable fixtures. Ref: COMPETITIVE_ANALYSIS §4 (Web/backend). |
 | T178 | Array bounds propagation (refinement) — **DONE** | Use refinement/SMT or flow analysis to prove or warn on list/tuple index bounds. Reduces runtime index errors. Ref: D05–D06. |
-| T179 | Docs-as-tests (snippets in CI) | All fenced Lumen code blocks in SPEC/docs compiled (or run) in CI; doc drift fails the build. Ref: COMPETITIVE_ANALYSIS §8 (leapfrog 17). |
+| T179 | Docs-as-tests (snippets in CI) — **DONE** | All fenced Lumen code blocks in SPEC/docs compiled (or run) in CI; doc drift fails the build. Ref: COMPETITIVE_ANALYSIS §8 (leapfrog 17). |
 | T180 | Execution graph visualizer — **DONE** | Tool or LSP view that renders execution/trace events as a graph (calls, effects, tool invocations) for debugging and audit. Ref: COMPETITIVE_ANALYSIS §8 (leapfrog 20). |
 | T181 | Import path error recovery — **DONE** | Use `parse_program_with_recovery` when compiling imported modules so multiple parse errors in a dependency are reported. Ref: COMPETITIVE_ANALYSIS §7.4 (A). |
 | T182 | LSP document formatting — **DONE** | Expose existing formatter via LSP `textDocument/formatting` (document_formatting_provider). Ref: lumen-lsp main.rs; §7.4 (B). |
 | T183 | Semver constraint `!=` operator — **DONE** | Implement `!=` in semver constraint parser (e.g. `!=1.2.3`) for version ranges. Ref: semver.rs test note; §7.4 (C). |
-| T184 | Retry-After header in provider errors | Extract `Retry-After` HTTP header into `ToolError::RateLimit { retry_after_ms }` in Gemini (and other HTTP) providers. Ref: lumen-provider-gemini. |
+| T184 | Retry-After header in provider errors — **DONE** | Extract `Retry-After` HTTP header into `ToolError::RateLimit { retry_after_ms }` in Gemini (and other HTTP) providers. Ref: lumen-provider-gemini. |
 | T185 | Cache persistence on startup — **DONE** | Runtime `CacheStore` (`lumen-runtime/src/cache.rs`) only writes on put; add load-from-disk on init so cache survives process restart. Ref: deficit 13. |
 | T186 | Validate builtin (runtime schema validation) — **DONE** | SPEC documents `validate(Any) -> Bool` as stub. Implement real schema-constrained validation for the standalone builtin (Schema opcode already validates at tool/output). |
 | T187 | Fix role_interpolation.lm.md parse and un-ignore — **DONE** | Resolve known parse issue in `examples/role_interpolation.lm.md`; remove from SKIP_COMPILE and re-enable `examples_compile` test. |

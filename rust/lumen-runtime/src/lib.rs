@@ -28,6 +28,7 @@ pub mod panic_boundary;
 pub mod process;
 pub mod reduction;
 pub mod replay;
+pub mod retry;
 pub mod schema_drift;
 pub mod select;
 pub mod scheduler;

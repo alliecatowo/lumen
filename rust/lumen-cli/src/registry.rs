@@ -1565,3 +1565,811 @@ r2_access_key = "key_id:secret_key"
         assert_eq!(config.secret_access_key, "secret_key");
     }
 }
+
+// =============================================================================
+// Deployment Registry Infrastructure (T092)
+// =============================================================================
+
+/// HTTP method for registry requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestMethod {
+    /// HTTP GET
+    Get,
+    /// HTTP PUT
+    Put,
+    /// HTTP Post
+    Post,
+    /// HTTP DELETE
+    Delete,
+    /// HTTP HEAD
+    Head,
+}
+
+impl fmt::Display for RequestMethod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RequestMethod::Get => write!(f, "GET"),
+            RequestMethod::Put => write!(f, "PUT"),
+            RequestMethod::Post => write!(f, "POST"),
+            RequestMethod::Delete => write!(f, "DELETE"),
+            RequestMethod::Head => write!(f, "HEAD"),
+        }
+    }
+}
+
+/// A request specification for registry API calls.
+///
+/// Instead of making actual HTTP requests, the deployment registry client
+/// produces `RegistryRequest` values describing the intended API call.
+/// This enables testing, offline usage, and custom transport layers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryRequest {
+    /// HTTP method.
+    pub method: RequestMethod,
+    /// Full URL for the request.
+    pub url: String,
+    /// Request headers as key-value pairs.
+    pub headers: Vec<(String, String)>,
+    /// Optional request body.
+    pub body: Option<Vec<u8>>,
+    /// Description of what this request does (for logging).
+    pub description: String,
+}
+
+impl RegistryRequest {
+    /// Create a new GET request.
+    pub fn get(url: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            method: RequestMethod::Get,
+            url: url.into(),
+            headers: Vec::new(),
+            body: None,
+            description: description.into(),
+        }
+    }
+
+    /// Create a new PUT request with a body.
+    pub fn put(url: impl Into<String>, body: Vec<u8>, description: impl Into<String>) -> Self {
+        Self {
+            method: RequestMethod::Put,
+            url: url.into(),
+            headers: Vec::new(),
+            body: Some(body),
+            description: description.into(),
+        }
+    }
+
+    /// Create a new POST request with a body.
+    pub fn post(url: impl Into<String>, body: Vec<u8>, description: impl Into<String>) -> Self {
+        Self {
+            method: RequestMethod::Post,
+            url: url.into(),
+            headers: Vec::new(),
+            body: Some(body),
+            description: description.into(),
+        }
+    }
+
+    /// Create a new DELETE request.
+    pub fn delete(url: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            method: RequestMethod::Delete,
+            url: url.into(),
+            headers: Vec::new(),
+            body: None,
+            description: description.into(),
+        }
+    }
+
+    /// Create a new HEAD request.
+    pub fn head(url: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            method: RequestMethod::Head,
+            url: url.into(),
+            headers: Vec::new(),
+            body: None,
+            description: description.into(),
+        }
+    }
+
+    /// Add a header to the request.
+    pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.push((key.into(), value.into()));
+        self
+    }
+}
+
+/// Semver version comparator for the deployment registry.
+///
+/// Supports common version constraint operators. This is a standalone
+/// implementation for the deployment registry that does not depend on
+/// the `semver` module's `Constraint` type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VersionComparator {
+    /// Exact match: `=1.2.3`
+    Exact { major: u64, minor: u64, patch: u64 },
+    /// Caret (compatible): `^1.2.3` — same major if major > 0
+    Caret { major: u64, minor: u64, patch: u64 },
+    /// Tilde (approximate): `~1.2.3` — same major.minor
+    Tilde { major: u64, minor: u64, patch: u64 },
+    /// Greater than or equal: `>=1.2.3`
+    Gte { major: u64, minor: u64, patch: u64 },
+    /// Less than: `<2.0.0`
+    Lt { major: u64, minor: u64, patch: u64 },
+    /// Any version
+    Any,
+}
+
+impl VersionComparator {
+    /// Parse a version comparator from a string.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let s = s.trim();
+        if s == "*" {
+            return Ok(VersionComparator::Any);
+        }
+
+        if let Some(rest) = s.strip_prefix("^") {
+            let (major, minor, patch) = parse_version_triple(rest.trim())?;
+            return Ok(VersionComparator::Caret {
+                major,
+                minor,
+                patch,
+            });
+        }
+
+        if let Some(rest) = s.strip_prefix("~") {
+            let (major, minor, patch) = parse_version_triple(rest.trim())?;
+            return Ok(VersionComparator::Tilde {
+                major,
+                minor,
+                patch,
+            });
+        }
+
+        if let Some(rest) = s.strip_prefix(">=") {
+            let (major, minor, patch) = parse_version_triple(rest.trim())?;
+            return Ok(VersionComparator::Gte {
+                major,
+                minor,
+                patch,
+            });
+        }
+
+        if let Some(rest) = s.strip_prefix("<") {
+            let (major, minor, patch) = parse_version_triple(rest.trim())?;
+            return Ok(VersionComparator::Lt {
+                major,
+                minor,
+                patch,
+            });
+        }
+
+        if let Some(rest) = s.strip_prefix("=") {
+            let (major, minor, patch) = parse_version_triple(rest.trim())?;
+            return Ok(VersionComparator::Exact {
+                major,
+                minor,
+                patch,
+            });
+        }
+
+        // Bare version is exact match
+        let (major, minor, patch) = parse_version_triple(s)?;
+        Ok(VersionComparator::Exact {
+            major,
+            minor,
+            patch,
+        })
+    }
+
+    /// Check if a version triple matches this comparator.
+    pub fn matches(&self, major: u64, minor: u64, patch: u64) -> bool {
+        match self {
+            VersionComparator::Exact {
+                major: m,
+                minor: mi,
+                patch: p,
+            } => major == *m && minor == *mi && patch == *p,
+
+            VersionComparator::Caret {
+                major: m,
+                minor: mi,
+                patch: p,
+            } => {
+                if *m > 0 {
+                    major == *m && (minor > *mi || (minor == *mi && patch >= *p))
+                } else if *mi > 0 {
+                    major == 0 && minor == *mi && patch >= *p
+                } else {
+                    major == 0 && minor == 0 && patch == *p
+                }
+            }
+
+            VersionComparator::Tilde {
+                major: m,
+                minor: mi,
+                patch: p,
+            } => major == *m && minor == *mi && patch >= *p,
+
+            VersionComparator::Gte {
+                major: m,
+                minor: mi,
+                patch: p,
+            } => {
+                if major > *m {
+                    true
+                } else if major == *m {
+                    if minor > *mi {
+                        true
+                    } else if minor == *mi {
+                        patch >= *p
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+
+            VersionComparator::Lt {
+                major: m,
+                minor: mi,
+                patch: p,
+            } => {
+                if major < *m {
+                    true
+                } else if major == *m {
+                    if minor < *mi {
+                        true
+                    } else if minor == *mi {
+                        patch < *p
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+
+            VersionComparator::Any => true,
+        }
+    }
+
+    /// Check if a version string (e.g. "1.2.3") matches this comparator.
+    pub fn matches_str(&self, version: &str) -> bool {
+        match parse_version_triple(version) {
+            Ok((major, minor, patch)) => self.matches(major, minor, patch),
+            Err(_) => false,
+        }
+    }
+}
+
+impl fmt::Display for VersionComparator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            VersionComparator::Exact {
+                major,
+                minor,
+                patch,
+            } => write!(f, "={}.{}.{}", major, minor, patch),
+            VersionComparator::Caret {
+                major,
+                minor,
+                patch,
+            } => write!(f, "^{}.{}.{}", major, minor, patch),
+            VersionComparator::Tilde {
+                major,
+                minor,
+                patch,
+            } => write!(f, "~{}.{}.{}", major, minor, patch),
+            VersionComparator::Gte {
+                major,
+                minor,
+                patch,
+            } => write!(f, ">={}.{}.{}", major, minor, patch),
+            VersionComparator::Lt {
+                major,
+                minor,
+                patch,
+            } => write!(f, "<{}.{}.{}", major, minor, patch),
+            VersionComparator::Any => write!(f, "*"),
+        }
+    }
+}
+
+/// A version requirement combining multiple comparators with AND semantics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionReq {
+    /// The comparators that must all be satisfied.
+    pub comparators: Vec<VersionComparator>,
+}
+
+impl VersionReq {
+    /// Parse a version requirement string.
+    ///
+    /// Supports space-separated comparators (AND semantics):
+    /// - `"^1.2.3"` — single caret comparator
+    /// - `">=1.0.0 <2.0.0"` — range via AND of two comparators
+    /// - `"*"` — any version
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let s = s.trim();
+        if s.is_empty() {
+            return Err("empty version requirement".to_string());
+        }
+
+        let mut comparators = Vec::new();
+        let mut rest = s;
+
+        while !rest.is_empty() {
+            rest = rest.trim_start();
+            if rest.is_empty() {
+                break;
+            }
+
+            // Find where this comparator ends: at the next space followed by an operator
+            let end = find_comparator_boundary(rest);
+            let part = &rest[..end];
+            rest = &rest[end..];
+
+            let comp = VersionComparator::parse(part)?;
+            comparators.push(comp);
+        }
+
+        if comparators.is_empty() {
+            return Err("no comparators found".to_string());
+        }
+
+        Ok(VersionReq { comparators })
+    }
+
+    /// Check if a version triple matches all comparators.
+    pub fn matches(&self, major: u64, minor: u64, patch: u64) -> bool {
+        self.comparators
+            .iter()
+            .all(|c| c.matches(major, minor, patch))
+    }
+
+    /// Check if a version string matches all comparators.
+    pub fn matches_str(&self, version: &str) -> bool {
+        match parse_version_triple(version) {
+            Ok((major, minor, patch)) => self.matches(major, minor, patch),
+            Err(_) => false,
+        }
+    }
+
+    /// Any version requirement.
+    pub fn any() -> Self {
+        VersionReq {
+            comparators: vec![VersionComparator::Any],
+        }
+    }
+}
+
+impl fmt::Display for VersionReq {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let parts: Vec<String> = self.comparators.iter().map(|c| c.to_string()).collect();
+        write!(f, "{}", parts.join(" "))
+    }
+}
+
+/// Find the boundary of the current comparator in a space-separated string.
+fn find_comparator_boundary(s: &str) -> usize {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    // Skip any leading operator characters
+    while i < bytes.len()
+        && (bytes[i] == b'^'
+            || bytes[i] == b'~'
+            || bytes[i] == b'>'
+            || bytes[i] == b'<'
+            || bytes[i] == b'='
+            || bytes[i] == b'!')
+    {
+        i += 1;
+    }
+    // Skip the version part (digits and dots and hyphens)
+    while i < bytes.len() && bytes[i] != b' ' {
+        i += 1;
+    }
+    i
+}
+
+/// Parse a `"major.minor.patch"` triple. Ignores pre-release/build suffixes.
+fn parse_version_triple(s: &str) -> Result<(u64, u64, u64), String> {
+    // Strip pre-release/build suffixes
+    let core = s.split('-').next().unwrap_or(s);
+    let core = core.split('+').next().unwrap_or(core);
+
+    let parts: Vec<&str> = core.split('.').collect();
+    if parts.len() != 3 {
+        return Err(format!("expected major.minor.patch, got '{}'", s));
+    }
+    let major = parts[0]
+        .parse::<u64>()
+        .map_err(|e| format!("invalid major '{}': {}", parts[0], e))?;
+    let minor = parts[1]
+        .parse::<u64>()
+        .map_err(|e| format!("invalid minor '{}': {}", parts[1], e))?;
+    let patch = parts[2]
+        .parse::<u64>()
+        .map_err(|e| format!("invalid patch '{}': {}", parts[2], e))?;
+    Ok((major, minor, patch))
+}
+
+/// Configuration for a deployment registry endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeploymentRegistryConfig {
+    /// Base URL for the registry API (e.g., `"https://registry.lumen.dev/api/v1"`).
+    pub base_url: String,
+    /// Optional API token for authenticated requests.
+    pub api_token: Option<String>,
+    /// Request timeout in seconds.
+    pub timeout_secs: u64,
+    /// Whether to verify TLS certificates.
+    pub verify_tls: bool,
+    /// Whether to include pre-release versions in resolution.
+    pub include_prereleases: bool,
+}
+
+impl DeploymentRegistryConfig {
+    /// Create a new config with default settings.
+    pub fn new(base_url: impl Into<String>) -> Self {
+        Self {
+            base_url: base_url.into(),
+            api_token: None,
+            timeout_secs: 30,
+            verify_tls: true,
+            include_prereleases: false,
+        }
+    }
+
+    /// Set the API token.
+    pub fn with_token(mut self, token: impl Into<String>) -> Self {
+        self.api_token = Some(token.into());
+        self
+    }
+
+    /// Set the timeout in seconds.
+    pub fn with_timeout(mut self, secs: u64) -> Self {
+        self.timeout_secs = secs;
+        self
+    }
+
+    /// Set whether to verify TLS.
+    pub fn with_tls_verification(mut self, verify: bool) -> Self {
+        self.verify_tls = verify;
+        self
+    }
+
+    /// Set whether to include prereleases.
+    pub fn with_prereleases(mut self, include: bool) -> Self {
+        self.include_prereleases = include;
+        self
+    }
+}
+
+impl Default for DeploymentRegistryConfig {
+    fn default() -> Self {
+        Self::new("https://registry.lumen.dev/api/v1")
+    }
+}
+
+/// Metadata for a package in the deployment registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeploymentPackageMetadata {
+    /// Package name (may include scope, e.g. `"@scope/name"`).
+    pub name: String,
+    /// Available versions (sorted in ascending order).
+    pub versions: Vec<String>,
+    /// Latest stable version.
+    pub latest: Option<String>,
+    /// Description of the package.
+    pub description: Option<String>,
+    /// License identifier (SPDX).
+    pub license: Option<String>,
+    /// Repository URL.
+    pub repository: Option<String>,
+    /// Yanked version set: version -> reason.
+    pub yanked: BTreeMap<String, String>,
+}
+
+impl DeploymentPackageMetadata {
+    /// Create metadata for a new package.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            versions: Vec::new(),
+            latest: None,
+            description: None,
+            license: None,
+            repository: None,
+            yanked: BTreeMap::new(),
+        }
+    }
+
+    /// Check if a specific version is yanked.
+    pub fn is_yanked(&self, version: &str) -> bool {
+        self.yanked.contains_key(version)
+    }
+
+    /// Get non-yanked versions.
+    pub fn available_versions(&self) -> Vec<&str> {
+        self.versions
+            .iter()
+            .filter(|v| !self.yanked.contains_key(v.as_str()))
+            .map(|v| v.as_str())
+            .collect()
+    }
+
+    /// Resolve the best matching version for a requirement.
+    ///
+    /// Returns the highest non-yanked version that satisfies the requirement.
+    pub fn resolve(&self, req: &VersionReq) -> Option<String> {
+        self.available_versions()
+            .into_iter()
+            .rfind(|v| req.matches_str(v))
+            .map(|v| v.to_string())
+    }
+}
+
+/// Local cache entry for resolved package metadata.
+#[derive(Debug, Clone)]
+pub struct CachedPackage {
+    /// The package metadata.
+    pub metadata: DeploymentPackageMetadata,
+    /// Unix timestamp when this entry was cached.
+    pub cached_at: u64,
+    /// ETag from the server (for conditional requests).
+    pub etag: Option<String>,
+}
+
+/// Deployment registry client that produces request specifications.
+///
+/// This client does NOT make HTTP requests directly. Instead, it produces
+/// `RegistryRequest` objects that describe the API calls to be made.
+/// This design enables:
+/// - Pure unit testing without network
+/// - Custom transport layers (e.g., caching proxies)
+/// - Offline operation with cached data
+#[derive(Debug)]
+pub struct DeploymentRegistryClient {
+    config: DeploymentRegistryConfig,
+    cache: BTreeMap<String, CachedPackage>,
+}
+
+impl DeploymentRegistryClient {
+    /// Create a new deployment registry client.
+    pub fn new(config: DeploymentRegistryConfig) -> Self {
+        Self {
+            config,
+            cache: BTreeMap::new(),
+        }
+    }
+
+    /// Get the configuration.
+    pub fn config(&self) -> &DeploymentRegistryConfig {
+        &self.config
+    }
+
+    /// Build a request to fetch the global package index.
+    pub fn fetch_index_request(&self) -> RegistryRequest {
+        let url = format!("{}/index.json", self.base_url());
+        let mut req = RegistryRequest::get(url, "fetch global package index");
+        req = self.apply_auth(req);
+        req
+    }
+
+    /// Build a request to fetch a package's metadata.
+    pub fn fetch_package_request(&self, name: &str) -> RegistryRequest {
+        let (scope, pkg) = parse_package_name(name);
+        let url = if let Some(s) = scope {
+            format!("{}/packages/@{}/{}/index.json", self.base_url(), s, pkg)
+        } else {
+            format!("{}/packages/{}/index.json", self.base_url(), pkg)
+        };
+        let mut req = RegistryRequest::get(url, format!("fetch package metadata for '{}'", name));
+        req = self.apply_auth(req);
+
+        // Add conditional request header if we have a cached ETag
+        if let Some(cached) = self.cache.get(name) {
+            if let Some(ref etag) = cached.etag {
+                req = req.with_header("If-None-Match", etag.clone());
+            }
+        }
+
+        req
+    }
+
+    /// Build a request to fetch a specific version's metadata.
+    pub fn fetch_version_request(&self, name: &str, version: &str) -> RegistryRequest {
+        let (scope, pkg) = parse_package_name(name);
+        let url = if let Some(s) = scope {
+            format!(
+                "{}/packages/@{}/{}/{}.json",
+                self.base_url(),
+                s,
+                pkg,
+                version
+            )
+        } else {
+            format!("{}/packages/{}/{}.json", self.base_url(), pkg, version)
+        };
+        let mut req = RegistryRequest::get(
+            url,
+            format!("fetch version metadata for '{}@{}'", name, version),
+        );
+        req = self.apply_auth(req);
+        req
+    }
+
+    /// Build a request to download an artifact by its content hash.
+    pub fn download_artifact_request(&self, cid: &str) -> Result<RegistryRequest, String> {
+        let hash = if let Some(h) = cid.strip_prefix("sha256:") {
+            h
+        } else if let Some(h) = cid.strip_prefix("cid:sha256:") {
+            h
+        } else {
+            return Err(format!("unsupported CID format: {}", cid));
+        };
+
+        if hash.len() < 4 {
+            return Err("hash too short".to_string());
+        }
+        let prefix = &hash[..2];
+        let rest = &hash[2..];
+        let url = format!("{}/artifacts/sha256/{}/{}", self.base_url(), prefix, rest);
+        let mut req = RegistryRequest::get(url, format!("download artifact {}", cid));
+        req = self.apply_auth(req);
+        Ok(req)
+    }
+
+    /// Build a request to publish a package version.
+    pub fn publish_request(
+        &self,
+        name: &str,
+        version: &str,
+        metadata_json: Vec<u8>,
+    ) -> RegistryRequest {
+        let (scope, pkg) = parse_package_name(name);
+        let url = if let Some(s) = scope {
+            format!(
+                "{}/packages/@{}/{}/{}.json",
+                self.base_url(),
+                s,
+                pkg,
+                version
+            )
+        } else {
+            format!("{}/packages/{}/{}.json", self.base_url(), pkg, version)
+        };
+        let mut req = RegistryRequest::put(
+            url,
+            metadata_json,
+            format!("publish '{}@{}'", name, version),
+        );
+        req = self.apply_auth(req);
+        req = req.with_header("Content-Type", "application/json");
+        req
+    }
+
+    /// Build a request to yank a version.
+    pub fn yank_request(&self, name: &str, version: &str) -> RegistryRequest {
+        let (scope, pkg) = parse_package_name(name);
+        let url = if let Some(s) = scope {
+            format!(
+                "{}/packages/@{}/{}/{}/yank",
+                self.base_url(),
+                s,
+                pkg,
+                version
+            )
+        } else {
+            format!("{}/packages/{}/{}/yank", self.base_url(), pkg, version)
+        };
+        let mut req =
+            RegistryRequest::post(url, Vec::new(), format!("yank '{}@{}'", name, version));
+        req = self.apply_auth(req);
+        req
+    }
+
+    /// Build a request to check if an artifact exists (HEAD request).
+    pub fn artifact_exists_request(&self, cid: &str) -> Result<RegistryRequest, String> {
+        let hash = if let Some(h) = cid.strip_prefix("sha256:") {
+            h
+        } else if let Some(h) = cid.strip_prefix("cid:sha256:") {
+            h
+        } else {
+            return Err(format!("unsupported CID format: {}", cid));
+        };
+
+        if hash.len() < 4 {
+            return Err("hash too short".to_string());
+        }
+        let prefix = &hash[..2];
+        let rest = &hash[2..];
+        let url = format!("{}/artifacts/sha256/{}/{}", self.base_url(), prefix, rest);
+        let mut req = RegistryRequest::head(url, format!("check artifact exists {}", cid));
+        req = self.apply_auth(req);
+        Ok(req)
+    }
+
+    // =========================================================================
+    // Cache operations
+    // =========================================================================
+
+    /// Insert or update a cached package.
+    pub fn cache_package(&mut self, metadata: DeploymentPackageMetadata, etag: Option<String>) {
+        let name = metadata.name.clone();
+        self.cache.insert(
+            name,
+            CachedPackage {
+                metadata,
+                cached_at: 0, // Caller should set this from a clock
+                etag,
+            },
+        );
+    }
+
+    /// Get a cached package if available.
+    pub fn get_cached(&self, name: &str) -> Option<&CachedPackage> {
+        self.cache.get(name)
+    }
+
+    /// Clear the local cache.
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+
+    /// Get number of cached packages.
+    pub fn cache_size(&self) -> usize {
+        self.cache.len()
+    }
+
+    // =========================================================================
+    // Version resolution
+    // =========================================================================
+
+    /// Resolve the best version from cached metadata.
+    ///
+    /// Returns `None` if the package is not cached or no version matches.
+    pub fn resolve_cached(&self, name: &str, req: &VersionReq) -> Option<String> {
+        self.cache
+            .get(name)
+            .and_then(|cached| cached.metadata.resolve(req))
+    }
+
+    /// Resolve versions for multiple packages from cache.
+    ///
+    /// Returns a map of package name -> resolved version for all packages
+    /// that could be resolved from cache.
+    pub fn resolve_all_cached(
+        &self,
+        requirements: &[(String, VersionReq)],
+    ) -> BTreeMap<String, String> {
+        let mut results = BTreeMap::new();
+        for (name, req) in requirements {
+            if let Some(version) = self.resolve_cached(name, req) {
+                results.insert(name.clone(), version);
+            }
+        }
+        results
+    }
+
+    // =========================================================================
+    // Private helpers
+    // =========================================================================
+
+    fn base_url(&self) -> &str {
+        self.config.base_url.trim_end_matches('/')
+    }
+
+    fn apply_auth(&self, req: RegistryRequest) -> RegistryRequest {
+        if let Some(ref token) = self.config.api_token {
+            req.with_header("Authorization", format!("Bearer {}", token))
+        } else {
+            req
+        }
+    }
+}
+
+use std::fmt;

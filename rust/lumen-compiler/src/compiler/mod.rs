@@ -1,6 +1,7 @@
 pub mod active_patterns;
 pub mod ast;
 pub mod constraints;
+pub mod docs_as_tests;
 pub mod emit;
 pub mod error_codes;
 pub mod fixit;
@@ -18,6 +19,7 @@ pub mod regalloc;
 pub mod resolve;
 pub mod sandbox;
 pub mod session;
+pub mod testing_helpers;
 pub mod tokens;
 pub mod typecheck;
 pub mod typestate;

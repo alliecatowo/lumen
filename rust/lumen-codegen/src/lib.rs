@@ -8,6 +8,7 @@ pub mod emit;
 pub mod ffi;
 pub mod jit;
 pub mod lower;
+pub mod orc_jit;
 pub mod types;
 pub mod wasm;
 pub mod wit;

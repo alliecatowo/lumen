@@ -117,7 +117,7 @@ impl Workspace {
             let manifest_path = dir.join("lumen.toml");
             if manifest_path.exists() {
                 if let Ok(content) = std::fs::read_to_string(&manifest_path) {
-                    if let Ok(config) = LumenConfig::from_str(&content) {
+                    if let Ok(config) = content.parse::<LumenConfig>() {
                         if config.workspace.is_some() {
                             return Self::load(&manifest_path).ok();
                         }
@@ -161,7 +161,7 @@ impl Workspace {
             let manifest_path = dir.join("lumen.toml");
             if manifest_path.exists() {
                 if let Ok(content) = std::fs::read_to_string(&manifest_path) {
-                    if let Ok(config) = LumenConfig::from_str(&content) {
+                    if let Ok(config) = content.parse::<LumenConfig>() {
                         if config.workspace.is_some() {
                             return Some(dir);
                         }
@@ -182,7 +182,8 @@ impl Workspace {
         let content = std::fs::read_to_string(manifest_path)
             .map_err(|e| WorkspaceError::ManifestError(e.to_string()))?;
 
-        let config = LumenConfig::from_str(&content)
+        let config = content
+            .parse::<LumenConfig>()
             .map_err(|e| WorkspaceError::ManifestError(e.to_string()))?;
 
         let ws_config = config.workspace.ok_or_else(|| {
@@ -384,7 +385,9 @@ impl Workspace {
                         }
                     } else if let DependencySpec::Workspace { .. } = spec {
                         // Check if workspace dependency points to another member
-                        if let Some(DependencySpec::Path { path }) = self.dependencies.get(&dep_name) {
+                        if let Some(DependencySpec::Path { path }) =
+                            self.dependencies.get(&dep_name)
+                        {
                             let dep_path = self
                                 .root
                                 .join(path)
@@ -566,7 +569,8 @@ impl Workspace {
         let content = std::fs::read_to_string(manifest_path)
             .map_err(|e| WorkspaceError::ManifestError(e.to_string()))?;
 
-        let config = LumenConfig::from_str(&content)
+        let config = content
+            .parse::<LumenConfig>()
             .map_err(|e| WorkspaceError::ManifestError(e.to_string()))?;
 
         Ok((config.package.clone(), config))
@@ -930,9 +934,10 @@ fn walk_dir_for_manifests(
         if path.is_dir() {
             // Check for manifest
             if path.join("lumen.toml").exists()
-                && (suffix.is_empty() || path.ends_with(suffix.trim_start_matches('/'))) {
-                    results.push(path.clone());
-                }
+                && (suffix.is_empty() || path.ends_with(suffix.trim_start_matches('/')))
+            {
+                results.push(path.clone());
+            }
 
             // Recurse into subdirectories
             walk_dir_for_manifests(&path, suffix, results)?;

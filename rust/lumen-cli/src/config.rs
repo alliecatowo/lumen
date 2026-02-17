@@ -364,7 +364,6 @@ pub struct PackageInfo {
     pub build: Option<PackageBuildSpec>,
 }
 
-
 fn default_publish() -> Option<PublishPolicy> {
     Some(PublishPolicy::Enabled(true))
 }
@@ -604,7 +603,6 @@ pub struct BuildProfile {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env: HashMap<String, String>,
 }
-
 
 // =============================================================================
 // Build Script Configuration
@@ -875,6 +873,14 @@ pub struct McpConfig {
 // Implementation
 // =============================================================================
 
+impl std::str::FromStr for LumenConfig {
+    type Err = toml::de::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        toml::from_str(s)
+    }
+}
+
 impl LumenConfig {
     /// Get the registry URL to use.
     /// Precedence: env var > config > default
@@ -936,11 +942,6 @@ impl LumenConfig {
             }
         }
         None
-    }
-
-    /// Parse a TOML string directly.
-    pub fn from_str(s: &str) -> Result<Self, toml::de::Error> {
-        toml::from_str(s)
     }
 
     /// Generate a default template.

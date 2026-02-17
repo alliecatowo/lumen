@@ -102,24 +102,44 @@ fn opcode_info(op: &OpCode) -> (&str, &str, &str) {
             "Load bool B into A; if C, skip next instruction",
             "Load/Move",
         ),
-        LoadInt => ("A, sB", "Load small signed integer sB into register A", "Load/Move"),
+        LoadInt => (
+            "A, sB",
+            "Load small signed integer sB into register A",
+            "Load/Move",
+        ),
         Move => ("A, B", "Copy register B to register A", "Load/Move"),
 
         // Data Construction
-        NewList => ("A, B", "Create list from B values starting at A+1", "Data Construction"),
+        NewList => (
+            "A, B",
+            "Create list from B values starting at A+1",
+            "Data Construction",
+        ),
         NewMap => (
             "A, B",
             "Create map from B key-value pairs starting at A+1",
             "Data Construction",
         ),
-        NewRecord => ("A, Bx", "Create record of type index Bx", "Data Construction"),
+        NewRecord => (
+            "A, Bx",
+            "Create record of type index Bx",
+            "Data Construction",
+        ),
         NewUnion => (
             "A, B, C",
             "Create union with tag B and payload register C",
             "Data Construction",
         ),
-        NewTuple => ("A, B", "Create tuple from B values starting at A+1", "Data Construction"),
-        NewSet => ("A, B", "Create set from B values starting at A+1", "Data Construction"),
+        NewTuple => (
+            "A, B",
+            "Create tuple from B values starting at A+1",
+            "Data Construction",
+        ),
+        NewSet => (
+            "A, B",
+            "Create set from B values starting at A+1",
+            "Data Construction",
+        ),
 
         // Access
         GetField => ("A, B, C", "A = B.field[C]", "Access"),
@@ -136,7 +156,11 @@ fn opcode_info(op: &OpCode) -> (&str, &str, &str) {
         Mod => ("A, B, C", "A = B % C", "Arithmetic"),
         Pow => ("A, B, C", "A = B ** C (exponentiation)", "Arithmetic"),
         Neg => ("A, B", "A = -B (arithmetic negation)", "Arithmetic"),
-        Concat => ("A, B, C", "A = B ++ C (string/list concatenation)", "Arithmetic"),
+        Concat => (
+            "A, B, C",
+            "A = B ++ C (string/list concatenation)",
+            "Arithmetic",
+        ),
         FloorDiv => ("A, B, C", "A = B // C (floor division)", "Arithmetic"),
 
         // Bitwise
@@ -185,10 +209,26 @@ fn opcode_info(op: &OpCode) -> (&str, &str, &str) {
 
         // Control Flow
         Jmp => ("sAx", "Jump by signed offset", "Control Flow"),
-        Call => ("A, B, C", "Call function A with B args, C results", "Control Flow"),
-        TailCall => ("A, B, C", "Tail-call function A with B args", "Control Flow"),
-        Return => ("A, B", "Return B values starting from register A", "Control Flow"),
-        Halt => ("A", "Halt execution with error message in A", "Control Flow"),
+        Call => (
+            "A, B, C",
+            "Call function A with B args, C results",
+            "Control Flow",
+        ),
+        TailCall => (
+            "A, B, C",
+            "Tail-call function A with B args",
+            "Control Flow",
+        ),
+        Return => (
+            "A, B",
+            "Return B values starting from register A",
+            "Control Flow",
+        ),
+        Halt => (
+            "A",
+            "Halt execution with error message in A",
+            "Control Flow",
+        ),
         Loop => ("sAx", "Decrement loop counter, jump if > 0", "Control Flow"),
         ForPrep => ("A, sB", "Prepare numeric for-loop", "Control Flow"),
         ForLoop => ("A, sB", "Iterate numeric for-loop", "Control Flow"),
@@ -230,7 +270,11 @@ fn opcode_info(op: &OpCode) -> (&str, &str, &str) {
         ),
         HandlePush => ("Ax", "Push effect handler scope at offset Ax", "Effects"),
         HandlePop => ("–", "Pop current effect handler scope", "Effects"),
-        Resume => ("A", "Resume suspended continuation with value in A", "Effects"),
+        Resume => (
+            "A",
+            "Resume suspended continuation with value in A",
+            "Effects",
+        ),
 
         // List Ops
         Append => ("A, B", "Append value B to list A", "List Ops"),
@@ -348,18 +392,34 @@ fn intrinsic_description(id: &IntrinsicId) -> &str {
 const KEYWORDS: &[(&str, &str, &str)] = &[
     // Control Flow
     ("if", "Conditional branch", "Control Flow"),
-    ("else", "Alternate branch of an if expression", "Control Flow"),
+    (
+        "else",
+        "Alternate branch of an if expression",
+        "Control Flow",
+    ),
     ("for", "Iterate over a collection or range", "Control Flow"),
     ("in", "Membership test or for-loop iterator", "Control Flow"),
     ("while", "Loop while a condition is true", "Control Flow"),
     ("loop", "Unconditional loop", "Control Flow"),
     ("break", "Exit the enclosing loop", "Control Flow"),
-    ("continue", "Skip to the next loop iteration", "Control Flow"),
+    (
+        "continue",
+        "Skip to the next loop iteration",
+        "Control Flow",
+    ),
     ("match", "Pattern-match on a value", "Control Flow"),
     ("return", "Return a value from a cell", "Control Flow"),
     ("halt", "Halt execution with an error", "Control Flow"),
-    ("when", "Multi-branch conditional expression", "Control Flow"),
-    ("then", "Clause separator in when expressions", "Control Flow"),
+    (
+        "when",
+        "Multi-branch conditional expression",
+        "Control Flow",
+    ),
+    (
+        "then",
+        "Clause separator in when expressions",
+        "Control Flow",
+    ),
     // Declarations
     ("cell", "Define a function (cell)", "Declarations"),
     ("record", "Define a record type", "Declarations"),
@@ -372,7 +432,11 @@ const KEYWORDS: &[(&str, &str, &str)] = &[
     ("mod", "Module declaration", "Declarations"),
     ("const", "Declare a compile-time constant", "Declarations"),
     ("pub", "Mark a declaration as public", "Declarations"),
-    ("import", "Import symbols from another module", "Declarations"),
+    (
+        "import",
+        "Import symbols from another module",
+        "Declarations",
+    ),
     ("from", "Specify import source", "Declarations"),
     ("use", "Bring a tool or module into scope", "Declarations"),
     // Effects
@@ -381,7 +445,11 @@ const KEYWORDS: &[(&str, &str, &str)] = &[
     ("resume", "Resume a suspended continuation", "Effects"),
     ("emit", "Emit an output value", "Effects"),
     ("yield", "Yield a value from a generator cell", "Effects"),
-    ("defer", "Register cleanup code for scope exit (LIFO order)", "Effects"),
+    (
+        "defer",
+        "Register cleanup code for scope exit (LIFO order)",
+        "Effects",
+    ),
     ("async", "Mark a cell as asynchronous", "Effects"),
     ("await", "Await the result of a future", "Effects"),
     ("parallel", "Execute futures in parallel", "Effects"),
@@ -404,7 +472,11 @@ const KEYWORDS: &[(&str, &str, &str)] = &[
     ("json", "JSON type name", "Data"),
     // AI/Tool
     ("tool", "Declare an external tool", "AI/Tool"),
-    ("grant", "Grant tool-call permissions with policy", "AI/Tool"),
+    (
+        "grant",
+        "Grant tool-call permissions with policy",
+        "AI/Tool",
+    ),
     ("expect", "Declare expected output constraints", "AI/Tool"),
     ("schema", "Declare a schema for validation", "AI/Tool"),
     ("role", "Define a role for tool access control", "AI/Tool"),
@@ -418,7 +490,11 @@ const KEYWORDS: &[(&str, &str, &str)] = &[
     ("end", "Block terminator", "Modifiers"),
     ("comptime", "Compile-time evaluation block", "Modifiers"),
     ("macro", "Macro definition", "Modifiers"),
-    ("extern", "Foreign function interface declaration", "Modifiers"),
+    (
+        "extern",
+        "Foreign function interface declaration",
+        "Modifiers",
+    ),
     ("and", "Logical AND operator", "Modifiers"),
     ("or", "Logical OR operator", "Modifiers"),
     ("not", "Logical NOT operator", "Modifiers"),
@@ -437,7 +513,12 @@ const OPERATORS: &[(&str, &str, &str, &str)] = &[
     ("/", "Div", "Division", "Arithmetic"),
     ("%", "Mod", "Remainder (modulo)", "Arithmetic"),
     ("**", "Pow", "Exponentiation", "Arithmetic"),
-    ("//", "FloorDiv", "Floor division (integer division)", "Arithmetic"),
+    (
+        "//",
+        "FloorDiv",
+        "Floor division (integer division)",
+        "Arithmetic",
+    ),
     // Comparison
     ("==", "Eq", "Equality test", "Comparison"),
     ("!=", "Neq", "Inequality test", "Comparison"),
@@ -467,18 +548,48 @@ const OPERATORS: &[(&str, &str, &str, &str)] = &[
     ("&=", "BitAndAssign", "Bitwise AND and assign", "Assignment"),
     ("|=", "BitOrAssign", "Bitwise OR and assign", "Assignment"),
     ("^=", "BitXorAssign", "Bitwise XOR and assign", "Assignment"),
-    ("//=", "FloorDivAssign", "Floor-divide and assign", "Assignment"),
+    (
+        "//=",
+        "FloorDivAssign",
+        "Floor-divide and assign",
+        "Assignment",
+    ),
     // Special
-    ("|>", "Pipe", "Pipe value through functions (eager, left-to-right)", "Special"),
-    ("~>", "Compose", "Compose functions into a new function (lazy)", "Special"),
-    ("??", "NullCoalesce", "Null coalescing — return left if non-null, else right", "Special"),
+    (
+        "|>",
+        "Pipe",
+        "Pipe value through functions (eager, left-to-right)",
+        "Special",
+    ),
+    (
+        "~>",
+        "Compose",
+        "Compose functions into a new function (lazy)",
+        "Special",
+    ),
+    (
+        "??",
+        "NullCoalesce",
+        "Null coalescing — return left if non-null, else right",
+        "Special",
+    ),
     ("?.", "NullSafeAccess", "Null-safe field access", "Special"),
     ("?[]", "NullSafeIndex", "Null-safe index access", "Special"),
     ("!", "NullAssert", "Assert value is non-null", "Special"),
-    ("?", "Optional", "Optional type suffix (T? = T | Null)", "Special"),
+    (
+        "?",
+        "Optional",
+        "Optional type suffix (T? = T | Null)",
+        "Special",
+    ),
     ("...", "Spread", "Spread / variadic parameter", "Special"),
     ("..", "RangeExcl", "Exclusive range (start..end)", "Special"),
-    ("..=", "RangeIncl", "Inclusive range (start..=end)", "Special"),
+    (
+        "..=",
+        "RangeIncl",
+        "Inclusive range (start..=end)",
+        "Special",
+    ),
     ("=>", "FatArrow", "Match arm separator", "Special"),
     ("++", "Concat", "String or list concatenation", "Special"),
     ("->", "Arrow", "Return type annotation", "Special"),
@@ -499,7 +610,11 @@ const BUILTIN_TYPES: &[(&str, &str, &str)] = &[
     ("List", "Ordered, growable sequence — list[T]", "Collection"),
     ("Map", "Key-value mapping — map[K, V]", "Collection"),
     ("Set", "Unordered unique elements — set[T]", "Collection"),
-    ("Tuple", "Fixed-size heterogeneous sequence — tuple[T, U, ...]", "Collection"),
+    (
+        "Tuple",
+        "Fixed-size heterogeneous sequence — tuple[T, U, ...]",
+        "Collection",
+    ),
     ("Result", "Success or error — result[T, E]", "Composite"),
     ("Any", "Dynamic type — accepts any value", "Composite"),
 ];
@@ -510,49 +625,198 @@ const BUILTIN_TYPES: &[(&str, &str, &str)] = &[
 
 const BUILTIN_FUNCTIONS: &[(&str, &str, &str, &str)] = &[
     ("print", "Print a value to stdout", "Null", "IO"),
-    ("len", "Return length of a collection or string", "Int", "Collection"),
+    (
+        "len",
+        "Return length of a collection or string",
+        "Int",
+        "Collection",
+    ),
     ("length", "Alias for len", "Int", "Collection"),
     ("append", "Append an element to a list", "T", "Collection"),
-    ("range", "Generate a list of integers in a range", "List[Int]", "Collection"),
-    ("to_string", "Convert a value to String", "String", "Conversion"),
+    (
+        "range",
+        "Generate a list of integers in a range",
+        "List[Int]",
+        "Collection",
+    ),
+    (
+        "to_string",
+        "Convert a value to String",
+        "String",
+        "Conversion",
+    ),
     ("str", "Alias for to_string", "String", "Conversion"),
     ("to_int", "Convert a value to Int", "Int", "Conversion"),
     ("int", "Alias for to_int", "Int", "Conversion"),
-    ("to_float", "Convert a value to Float", "Float", "Conversion"),
+    (
+        "to_float",
+        "Convert a value to Float",
+        "Float",
+        "Conversion",
+    ),
     ("float", "Alias for to_float", "Float", "Conversion"),
-    ("type_of", "Return the runtime type name of a value", "String", "Reflection"),
-    ("keys", "Return the keys of a map or record", "List[String]", "Collection"),
-    ("values", "Return the values of a map or record", "List[Any]", "Collection"),
-    ("contains", "Test if a collection contains a value", "Bool", "Collection"),
-    ("join", "Join a list of strings with a separator", "String", "String"),
-    ("split", "Split a string by a separator", "List[String]", "String"),
-    ("trim", "Remove leading and trailing whitespace", "String", "String"),
+    (
+        "type_of",
+        "Return the runtime type name of a value",
+        "String",
+        "Reflection",
+    ),
+    (
+        "keys",
+        "Return the keys of a map or record",
+        "List[String]",
+        "Collection",
+    ),
+    (
+        "values",
+        "Return the values of a map or record",
+        "List[Any]",
+        "Collection",
+    ),
+    (
+        "contains",
+        "Test if a collection contains a value",
+        "Bool",
+        "Collection",
+    ),
+    (
+        "join",
+        "Join a list of strings with a separator",
+        "String",
+        "String",
+    ),
+    (
+        "split",
+        "Split a string by a separator",
+        "List[String]",
+        "String",
+    ),
+    (
+        "trim",
+        "Remove leading and trailing whitespace",
+        "String",
+        "String",
+    ),
     ("upper", "Convert a string to uppercase", "String", "String"),
     ("lower", "Convert a string to lowercase", "String", "String"),
-    ("replace", "Replace occurrences in a string", "String", "String"),
+    (
+        "replace",
+        "Replace occurrences in a string",
+        "String",
+        "String",
+    ),
     ("abs", "Absolute value of a number", "T", "Math"),
     ("min", "Return the minimum of two values", "T", "Math"),
     ("max", "Return the maximum of two values", "T", "Math"),
     ("sort", "Sort a list", "T", "Collection"),
     ("reverse", "Reverse a list", "T", "Collection"),
-    ("filter", "Keep elements matching a predicate", "T", "Collection"),
+    (
+        "filter",
+        "Keep elements matching a predicate",
+        "T",
+        "Collection",
+    ),
     ("map", "Apply a function to each element", "T", "Collection"),
-    ("reduce", "Fold a list with an accumulator", "T", "Collection"),
-    ("parse_json", "Parse a JSON string into a value", "Any", "IO"),
-    ("to_json", "Serialize a value to a JSON string", "String", "IO"),
-    ("read_file", "Read a file's contents as a string", "String", "IO"),
+    (
+        "reduce",
+        "Fold a list with an accumulator",
+        "T",
+        "Collection",
+    ),
+    (
+        "parse_json",
+        "Parse a JSON string into a value",
+        "Any",
+        "IO",
+    ),
+    (
+        "to_json",
+        "Serialize a value to a JSON string",
+        "String",
+        "IO",
+    ),
+    (
+        "read_file",
+        "Read a file's contents as a string",
+        "String",
+        "IO",
+    ),
     ("write_file", "Write a string to a file", "Null", "IO"),
-    ("timestamp", "Current Unix timestamp in seconds", "Float", "IO"),
-    ("random", "Generate a random float in [0, 1)", "Float", "Math"),
+    (
+        "timestamp",
+        "Current Unix timestamp in seconds",
+        "Float",
+        "IO",
+    ),
+    (
+        "random",
+        "Generate a random float in [0, 1)",
+        "Float",
+        "Math",
+    ),
     ("get_env", "Read an environment variable", "Any", "IO"),
     ("hash", "Compute hash of a value", "Int", "Reflection"),
     ("not", "Logical negation", "Bool", "Logic"),
-    ("slice", "Extract a sub-range from a list or string", "T", "Collection"),
-    ("count", "Count elements matching a predicate", "Int", "Collection"),
-    ("matches", "Test if a string matches a pattern", "Bool", "String"),
-    ("starts_with", "True if a string starts with a prefix", "Bool", "String"),
-    ("ends_with", "True if a string ends with a suffix", "Bool", "String"),
-    ("is_empty", "True if a collection or string is empty", "Bool", "Collection"),
+    (
+        "slice",
+        "Extract a sub-range from a list or string",
+        "T",
+        "Collection",
+    ),
+    (
+        "count",
+        "Count elements matching a predicate",
+        "Int",
+        "Collection",
+    ),
+    (
+        "matches",
+        "Test if a string matches a pattern",
+        "Bool",
+        "String",
+    ),
+    (
+        "starts_with",
+        "True if a string starts with a prefix",
+        "Bool",
+        "String",
+    ),
+    (
+        "ends_with",
+        "True if a string ends with a suffix",
+        "Bool",
+        "String",
+    ),
+    (
+        "is_empty",
+        "True if a collection or string is empty",
+        "Bool",
+        "Collection",
+    ),
+    (
+        "assert",
+        "Assert a condition is true; halt with message if not",
+        "Null",
+        "IO",
+    ),
+    (
+        "assert_eq",
+        "Assert two values are equal; halt with message if not",
+        "Null",
+        "IO",
+    ),
+    (
+        "assert_ne",
+        "Assert two values are not equal; halt with message if equal",
+        "Null",
+        "IO",
+    ),
+    (
+        "assert_contains",
+        "Assert a collection contains a value; halt with message if not",
+        "Null",
+        "IO",
+    ),
 ];
 
 // ---------------------------------------------------------------------------
@@ -572,7 +836,10 @@ const STATEMENT_FORMS: &[(&str, &str)] = &[
     ("Break", "Break from the enclosing loop"),
     ("Continue", "Continue to the next iteration"),
     ("Emit", "Emit an output value"),
-    ("CompoundAssign", "Compound assignment: x += expr, x -= expr, etc."),
+    (
+        "CompoundAssign",
+        "Compound assignment: x += expr, x -= expr, etc.",
+    ),
     ("Defer", "Deferred cleanup: defer ... end (LIFO order)"),
     ("Yield", "Yield a value from a generator cell"),
     ("Expr", "Expression evaluated for side effects"),
@@ -632,7 +899,10 @@ const EXPRESSION_FORMS: &[(&str, &str)] = &[
 
 const CLI_COMMANDS: &[(&str, &str)] = &[
     ("lumen check <file>", "Type-check a Lumen source file"),
-    ("lumen run <file>", "Compile and execute (default cell: main)"),
+    (
+        "lumen run <file>",
+        "Compile and execute (default cell: main)",
+    ),
     ("lumen emit <file>", "Emit LIR JSON to stdout"),
     ("lumen repl", "Start the interactive REPL"),
     ("lumen fmt <files>", "Format Lumen source files"),
@@ -640,8 +910,14 @@ const CLI_COMMANDS: &[(&str, &str)] = &[
     ("lumen lint <files>", "Run linter checks"),
     ("lumen test <file>", "Run tests in a Lumen file"),
     ("lumen ci", "Run all checks for continuous integration"),
-    ("lumen build wasm --target <target>", "Build WASM output (web, nodejs, wasi)"),
-    ("lumen trace show <run-id>", "Display trace events for a run"),
+    (
+        "lumen build wasm --target <target>",
+        "Build WASM output (web, nodejs, wasi)",
+    ),
+    (
+        "lumen trace show <run-id>",
+        "Display trace events for a run",
+    ),
     ("lumen cache clear", "Clear tool result cache"),
     ("lumen lang-ref", "Print the language reference"),
 ];
@@ -833,7 +1109,10 @@ pub fn format_markdown(ref_data: &LanguageReference) -> String {
     md.push_str("| Name | ID | Description |\n");
     md.push_str("|------|----|-------------|\n");
     for i in &ref_data.intrinsics {
-        md.push_str(&format!("| `{}` | {} | {} |\n", i.name, i.id, i.description));
+        md.push_str(&format!(
+            "| `{}` | {} | {} |\n",
+            i.name, i.id, i.description
+        ));
     }
     md.push('\n');
 

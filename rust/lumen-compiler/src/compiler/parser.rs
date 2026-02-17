@@ -2,6 +2,7 @@
 
 use crate::compiler::ast::*;
 use crate::compiler::tokens::{Span, Token, TokenKind};
+use num_bigint::BigInt;
 use std::collections::BTreeMap;
 use thiserror::Error;
 
@@ -57,6 +58,10 @@ pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     bracket_depth: usize,
+    /// Nesting depth for cell bodies. When > 0, `parse_block` allows
+    /// `cell`, `record`, `enum` keywords as local definitions instead of
+    /// treating them as block terminators.
+    block_depth: usize,
     errors: Vec<ParseError>,
 }
 
@@ -66,6 +71,7 @@ impl Parser {
             tokens,
             pos: 0,
             bracket_depth: 0,
+            block_depth: 0,
             errors: Vec::new(),
         }
     }
@@ -293,6 +299,25 @@ impl Parser {
             && matches!(self.peek_n_kind(1), Some(TokenKind::Colon))
     }
 
+    /// Check if the current `cell` keyword starts a cell definition (cell name(...))
+    /// rather than being used as a type-position keyword.
+    fn looks_like_cell_def(&self) -> bool {
+        // cell <ident> ( ... )
+        // cell <ident> [ ... ] ( ... )   (generic)
+        if !matches!(self.peek_kind(), TokenKind::Cell) {
+            return false;
+        }
+        // Next token should be an identifier (the cell name)
+        if !matches!(self.peek_n_kind(1), Some(TokenKind::Ident(_))) {
+            return false;
+        }
+        // After the name, should be `(` or `[` (for generics)
+        matches!(
+            self.peek_n_kind(2),
+            Some(TokenKind::LParen | TokenKind::LBracket)
+        )
+    }
+
     fn token_can_be_named_arg_key(&self) -> bool {
         matches!(
             self.peek_kind(),
@@ -426,15 +451,17 @@ impl Parser {
             }
             // Handle markdown blocks: docstrings or comments
             if matches!(self.peek_kind(), TokenKind::MarkdownBlock(_)) {
-                let doc_content = if let TokenKind::MarkdownBlock(content) = self.peek_kind().clone() {
-                    self.advance();
-                    Some(content)
-                } else {
-                    None
-                };
+                let doc_content =
+                    if let TokenKind::MarkdownBlock(content) = self.peek_kind().clone() {
+                        self.advance();
+                        Some(content)
+                    } else {
+                        None
+                    };
                 self.skip_newlines();
                 // If followed by a declaration keyword, parse item and attach docstring
-                if !self.at_end() && !self.is_top_level_stmt_start()
+                if !self.at_end()
+                    && !self.is_top_level_stmt_start()
                     && !matches!(self.peek_kind(), TokenKind::Eof | TokenKind::End)
                 {
                     match self.parse_item() {
@@ -507,6 +534,7 @@ impl Parser {
                 is_pub: false,
                 is_async: false,
                 is_extern: false,
+                must_use: false,
                 where_clauses: vec![],
                 span: span_start.merge(end_span),
                 doc: None,
@@ -522,6 +550,19 @@ impl Parser {
             items,
             span,
         })
+    }
+
+    /// Check if current position is `@must_use` (@ followed by identifier "must_use")
+    fn is_must_use_attribute(&self) -> bool {
+        if !matches!(self.peek_kind(), TokenKind::At) {
+            return false;
+        }
+        // Look ahead: position after @ should be ident "must_use"
+        if let Some(tok) = self.tokens.get(self.pos + 1) {
+            matches!(&tok.kind, TokenKind::Ident(name) if name == "must_use")
+        } else {
+            false
+        }
     }
 
     fn is_top_level_stmt_start(&self) -> bool {
@@ -606,7 +647,43 @@ impl Parser {
                 c.is_async = is_async;
                 Ok(Item::Cell(c))
             }
-            TokenKind::At => Ok(Item::Addon(self.parse_attribute_decl()?)),
+            TokenKind::At => {
+                // Check for @must_use before a cell definition
+                if self.is_must_use_attribute() {
+                    self.advance(); // consume '@'
+                    self.advance(); // consume 'must_use'
+                    self.skip_newlines();
+                    if matches!(self.peek_kind(), TokenKind::Pub) {
+                        // @must_use pub cell ...
+                        self.advance();
+                        self.skip_newlines();
+                        let mut c = self.parse_cell(true)?;
+                        c.is_pub = true;
+                        c.must_use = true;
+                        Ok(Item::Cell(c))
+                    } else if matches!(self.peek_kind(), TokenKind::Cell) {
+                        let mut c = self.parse_cell(true)?;
+                        c.is_pub = is_pub;
+                        c.must_use = true;
+                        Ok(Item::Cell(c))
+                    } else {
+                        // @must_use not followed by cell — treat as regular attribute
+                        // Back up and re-parse as attribute
+                        // Since we already consumed @ and must_use, just make an AddonDecl
+                        let end = self.current().span;
+                        if matches!(self.peek_kind(), TokenKind::Newline) {
+                            self.skip_newlines();
+                        }
+                        Ok(Item::Addon(AddonDecl {
+                            kind: "attribute".into(),
+                            name: Some("must_use".to_string()),
+                            span: end,
+                        }))
+                    }
+                } else {
+                    Ok(Item::Addon(self.parse_attribute_decl()?))
+                }
+            }
             TokenKind::Use => Ok(Item::UseTool(self.parse_use_tool()?)),
             TokenKind::Grant => Ok(Item::Grant(self.parse_grant()?)),
             TokenKind::Type => Ok(Item::TypeAlias(self.parse_type_alias(is_pub)?)),
@@ -988,6 +1065,7 @@ impl Parser {
                 is_pub: false,
                 is_async: false,
                 is_extern: false,
+                must_use: false,
                 where_clauses: vec![],
                 span,
                 doc: None,
@@ -1024,6 +1102,7 @@ impl Parser {
                     is_pub: false,
                     is_async: false,
                     is_extern: false,
+                    must_use: false,
                     where_clauses: vec![],
                     span: start.merge(end_span),
                     doc: None,
@@ -1032,7 +1111,9 @@ impl Parser {
         }
 
         self.skip_newlines();
+        self.block_depth += 1;
         let body = self.parse_block()?;
+        self.block_depth -= 1;
         let end_span = self.expect(&TokenKind::End)?.span;
         Ok(CellDef {
             name,
@@ -1044,27 +1125,38 @@ impl Parser {
             is_pub: false,
             is_async: false,
             is_extern: false,
+            must_use: false,
             where_clauses: vec![],
             span: start.merge(end_span),
             doc: None,
         })
     }
 
-    fn parse_block(&mut self) -> Result<Vec<Stmt>, ParseError> {
-        let mut stmts = Vec::new();
-        let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
-        if has_indent {
-            self.advance();
+    /// Check if the current token should terminate a block.
+    /// When `block_depth > 0`, `Cell`/`Record`/`Enum` at column 1 (top-level
+    /// indentation) are still terminators — they represent the start of the next
+    /// top-level item, which is critical for error recovery when a cell is missing
+    /// its `end` keyword. Only indented (`col > 1`) occurrences inside a cell body
+    /// are treated as local definitions (not terminators).
+    fn is_block_terminator(&self) -> bool {
+        let kind = self.peek_kind();
+        if self.block_depth > 0
+            && matches!(kind, TokenKind::Cell | TokenKind::Record | TokenKind::Enum)
+        {
+            // If the token is at column 1, it's a top-level item → terminator
+            // If indented (col > 1), it could be a local def → not a terminator
+            let col = self.current().span.col;
+            return col <= 1;
         }
-        self.skip_newlines();
-        while !matches!(
-            self.peek_kind(),
+        self.is_block_terminator_kind(kind)
+    }
+
+    fn is_block_terminator_kind(&self, kind: &TokenKind) -> bool {
+        matches!(
+            kind,
             TokenKind::End
                 | TokenKind::Eof
                 | TokenKind::Else
-                | TokenKind::Cell
-                | TokenKind::Record
-                | TokenKind::Enum
                 | TokenKind::Type
                 | TokenKind::Grant
                 | TokenKind::Import
@@ -1075,27 +1167,22 @@ impl Parser {
                 | TokenKind::Mod
                 | TokenKind::Trait
                 | TokenKind::Impl
-        ) {
+                | TokenKind::Cell
+                | TokenKind::Record
+                | TokenKind::Enum
+        )
+    }
+
+    fn parse_block(&mut self) -> Result<Vec<Stmt>, ParseError> {
+        let mut stmts = Vec::new();
+        let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
+        if has_indent {
+            self.advance();
+        }
+        self.skip_newlines();
+        while !self.is_block_terminator() {
             self.skip_newlines();
-            if matches!(
-                self.peek_kind(),
-                TokenKind::End
-                    | TokenKind::Eof
-                    | TokenKind::Else
-                    | TokenKind::Cell
-                    | TokenKind::Record
-                    | TokenKind::Enum
-                    | TokenKind::Type
-                    | TokenKind::Grant
-                    | TokenKind::Import
-                    | TokenKind::Use
-                    | TokenKind::Pub
-                    | TokenKind::Schema
-                    | TokenKind::Fn
-                    | TokenKind::Mod
-                    | TokenKind::Trait
-                    | TokenKind::Impl
-            ) {
+            if self.is_block_terminator() {
                 break;
             }
             if matches!(self.peek_kind(), TokenKind::Dedent) {
@@ -1106,27 +1193,12 @@ impl Parser {
                 ) {
                     i += 1;
                 }
-                if matches!(
-                    self.tokens.get(i).map(|t| &t.kind),
-                    Some(
-                        TokenKind::End
-                            | TokenKind::Else
-                            | TokenKind::Eof
-                            | TokenKind::Cell
-                            | TokenKind::Record
-                            | TokenKind::Enum
-                            | TokenKind::Type
-                            | TokenKind::Grant
-                            | TokenKind::Import
-                            | TokenKind::Use
-                            | TokenKind::Pub
-                            | TokenKind::Schema
-                            | TokenKind::Fn
-                            | TokenKind::Mod
-                            | TokenKind::Trait
-                            | TokenKind::Impl
-                    )
-                ) {
+                if self
+                    .tokens
+                    .get(i)
+                    .map(|t| self.is_block_terminator_kind(&t.kind))
+                    .unwrap_or(true)
+                {
                     break;
                 }
                 self.advance();
@@ -1154,27 +1226,12 @@ impl Parser {
             ) {
                 i += 1;
             }
-            if matches!(
-                self.tokens.get(i).map(|t| &t.kind),
-                Some(
-                    TokenKind::End
-                        | TokenKind::Else
-                        | TokenKind::Eof
-                        | TokenKind::Cell
-                        | TokenKind::Record
-                        | TokenKind::Enum
-                        | TokenKind::Type
-                        | TokenKind::Grant
-                        | TokenKind::Import
-                        | TokenKind::Use
-                        | TokenKind::Pub
-                        | TokenKind::Schema
-                        | TokenKind::Fn
-                        | TokenKind::Mod
-                        | TokenKind::Trait
-                        | TokenKind::Impl
-                )
-            ) {
+            if self
+                .tokens
+                .get(i)
+                .map(|t| self.is_block_terminator_kind(&t.kind))
+                .unwrap_or(true)
+            {
                 self.advance();
             } else {
                 break;
@@ -1215,6 +1272,28 @@ impl Parser {
     // ── Statements ──
 
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
+        // Inside a cell body (block_depth > 0), allow local record/enum/cell definitions
+        if self.block_depth > 0 {
+            match self.peek_kind() {
+                TokenKind::Record => {
+                    let r = self.parse_record()?;
+                    return Ok(Stmt::LocalRecord(r));
+                }
+                TokenKind::Enum => {
+                    let e = self.parse_enum()?;
+                    return Ok(Stmt::LocalEnum(e));
+                }
+                TokenKind::Cell => {
+                    // Look ahead to see if this is `cell name(` — a local cell definition
+                    // vs `cell` used as a type name in an expression
+                    if self.looks_like_cell_def() {
+                        let c = self.parse_cell(true)?;
+                        return Ok(Stmt::LocalCell(c));
+                    }
+                }
+                _ => {}
+            }
+        }
         match self.peek_kind() {
             TokenKind::Let => self.parse_let(),
             TokenKind::If => self.parse_if(),
@@ -2040,7 +2119,9 @@ impl Parser {
                 Expr::BoolLit(true, start)
             };
             self.skip_newlines();
+            self.block_depth += 1;
             let body = self.parse_block()?;
+            self.block_depth -= 1;
             let end_span = self.expect(&TokenKind::End)?.span;
 
             // Desugar to:
@@ -3398,6 +3479,7 @@ impl Parser {
                 is_pub: false,
                 is_async: false,
                 is_extern: false,
+                must_use: false,
                 where_clauses: vec![],
                 span,
                 doc: None,
@@ -3430,6 +3512,7 @@ impl Parser {
                     is_pub: false,
                     is_async: false,
                     is_extern: false,
+                    must_use: false,
                     where_clauses: vec![],
                     span: start.merge(end_span),
                     doc: None,
@@ -3450,6 +3533,7 @@ impl Parser {
             is_pub: false,
             is_async: false,
             is_extern: false,
+            must_use: false,
             where_clauses: vec![],
             span: start.merge(end_span),
             doc: None,
@@ -3515,7 +3599,13 @@ impl Parser {
             self.skip_newlines();
         }
         let span = start.merge(self.current().span);
-        Ok(EffectHandler { effect_name, operation, params, body, span })
+        Ok(EffectHandler {
+            effect_name,
+            operation,
+            params,
+            body,
+            span,
+        })
     }
 
     /// Check if the current position looks like the start of an effect handler arm:
@@ -3527,7 +3617,10 @@ impl Parser {
         // Lookahead: Ident . Ident (
         let mut look = self.pos + 1;
         // Skip any newlines
-        while matches!(self.tokens.get(look).map(|t| &t.kind), Some(TokenKind::Newline)) {
+        while matches!(
+            self.tokens.get(look).map(|t| &t.kind),
+            Some(TokenKind::Newline)
+        ) {
             look += 1;
         }
         if !matches!(self.tokens.get(look).map(|t| &t.kind), Some(TokenKind::Dot)) {
@@ -3535,18 +3628,30 @@ impl Parser {
         }
         look += 1;
         // Skip newlines after dot
-        while matches!(self.tokens.get(look).map(|t| &t.kind), Some(TokenKind::Newline)) {
+        while matches!(
+            self.tokens.get(look).map(|t| &t.kind),
+            Some(TokenKind::Newline)
+        ) {
             look += 1;
         }
-        if !matches!(self.tokens.get(look).map(|t| &t.kind), Some(TokenKind::Ident(_))) {
+        if !matches!(
+            self.tokens.get(look).map(|t| &t.kind),
+            Some(TokenKind::Ident(_))
+        ) {
             return false;
         }
         look += 1;
         // Skip newlines after ident
-        while matches!(self.tokens.get(look).map(|t| &t.kind), Some(TokenKind::Newline)) {
+        while matches!(
+            self.tokens.get(look).map(|t| &t.kind),
+            Some(TokenKind::Newline)
+        ) {
             look += 1;
         }
-        matches!(self.tokens.get(look).map(|t| &t.kind), Some(TokenKind::LParen))
+        matches!(
+            self.tokens.get(look).map(|t| &t.kind),
+            Some(TokenKind::LParen)
+        )
     }
 
     fn consume_parenthesized(&mut self) {
@@ -4330,6 +4435,7 @@ impl Parser {
                 TokenKind::LtEq => (BinOp::LtEq, (14, 15)),
                 TokenKind::Gt => (BinOp::Gt, (14, 15)),
                 TokenKind::GtEq => (BinOp::GtEq, (14, 15)),
+                TokenKind::Spaceship => (BinOp::Spaceship, (14, 15)),
                 TokenKind::In => {
                     if matches!(
                         self.peek_n_kind(1),
@@ -4601,7 +4707,10 @@ impl Parser {
             // evaluated twice at runtime.
             if matches!(op, BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq) {
                 let next = self.peek_kind();
-                if matches!(next, TokenKind::Lt | TokenKind::LtEq | TokenKind::Gt | TokenKind::GtEq) {
+                if matches!(
+                    next,
+                    TokenKind::Lt | TokenKind::LtEq | TokenKind::Gt | TokenKind::GtEq
+                ) {
                     let op2 = match self.peek_kind() {
                         TokenKind::Lt => BinOp::Lt,
                         TokenKind::LtEq => BinOp::LtEq,
@@ -4615,7 +4724,12 @@ impl Parser {
                     let right_span = rhs.span().merge(rhs2.span());
                     let right_cmp = Expr::BinOp(Box::new(rhs), op2, Box::new(rhs2), right_span);
                     let full_span = left_cmp.span().merge(right_cmp.span());
-                    lhs = Expr::BinOp(Box::new(left_cmp), BinOp::And, Box::new(right_cmp), full_span);
+                    lhs = Expr::BinOp(
+                        Box::new(left_cmp),
+                        BinOp::And,
+                        Box::new(right_cmp),
+                        full_span,
+                    );
                     continue;
                 }
             }
@@ -4680,15 +4794,9 @@ impl Parser {
                 let segments = segments.clone();
                 let span = self.advance().span;
                 let mut ast_segments = Vec::new();
-                for (is_expr, text) in segments {
+                for (is_expr, text, fmt_spec) in segments {
                     if is_expr {
                         // Parse the expression string
-                        // We need a fresh lexer/parser for the snippet
-                        // Use base offsets from the current span?
-                        // For simplicity in v1, we won't perfectly map the span inside the string,
-                        // but we could if we tracked offsets in StringInterpLit.
-                        // The Lexer change I made doesn't track offsets per segment yet, just strings.
-                        // So correct source mapping is a TODO for v2.
                         let mut lexer =
                             crate::compiler::lexer::Lexer::new(&text, span.line, span.col);
                         let tokens = lexer.tokenize().map_err(|e| ParseError::Unexpected {
@@ -4699,7 +4807,13 @@ impl Parser {
                         })?;
                         let mut parser = Parser::new(tokens);
                         let expr = parser.parse_expr(0)?;
-                        ast_segments.push(StringSegment::Interpolation(Box::new(expr)));
+                        if let Some(spec_str) = fmt_spec {
+                            let spec = parse_format_spec(&spec_str);
+                            ast_segments
+                                .push(StringSegment::FormattedInterpolation(Box::new(expr), spec));
+                        } else {
+                            ast_segments.push(StringSegment::Interpolation(Box::new(expr)));
+                        }
                     } else {
                         ast_segments.push(StringSegment::Literal(text));
                     }
@@ -4718,7 +4832,29 @@ impl Parser {
                 let s = self.advance().span;
                 let expr = self.parse_expr(28)?; // high bp for unary
                 let span = s.merge(expr.span());
-                Ok(Expr::UnaryOp(UnaryOp::Neg, Box::new(expr), span))
+                // Constant-fold negation of integer literals at parse time.
+                // This is critical for i64::MIN (-9223372036854775808) which
+                // cannot be represented as a positive i64 then negated at runtime.
+                // The positive literal 9223372036854775808 overflows i64 and becomes
+                // a BigIntLit; we detect this case and fold it into IntLit(i64::MIN).
+                match &expr {
+                    Expr::IntLit(n, _) => {
+                        // Fold -n for normal i64 values (wrapping handles i64::MIN negation
+                        // of the already-negative i64::MIN, though that's an exotic case)
+                        Ok(Expr::IntLit(n.wrapping_neg(), span))
+                    }
+                    Expr::BigIntLit(n, _) => {
+                        // Check if this is exactly i64::MAX + 1, which means -n == i64::MIN
+                        let i64_min_abs = BigInt::from(i64::MAX) + BigInt::from(1);
+                        if *n == i64_min_abs {
+                            Ok(Expr::IntLit(i64::MIN, span))
+                        } else {
+                            // General BigInt negation
+                            Ok(Expr::UnaryOp(UnaryOp::Neg, Box::new(expr), span))
+                        }
+                    }
+                    _ => Ok(Expr::UnaryOp(UnaryOp::Neg, Box::new(expr), span)),
+                }
             }
             TokenKind::Not => {
                 let s = self.advance().span;
@@ -4783,7 +4919,12 @@ impl Parser {
                 self.bracket_depth -= 1;
                 self.expect(&TokenKind::RParen)?;
                 let span = s.merge(self.current().span);
-                Ok(Expr::Perform { effect_name, operation, args, span })
+                Ok(Expr::Perform {
+                    effect_name,
+                    operation,
+                    args,
+                    span,
+                })
             }
             TokenKind::Handle => {
                 let s = self.advance().span;
@@ -4828,7 +4969,11 @@ impl Parser {
                 }
                 self.expect(&TokenKind::End)?;
                 let span = s.merge(self.current().span);
-                Ok(Expr::HandleExpr { body, handlers, span })
+                Ok(Expr::HandleExpr {
+                    body,
+                    handlers,
+                    span,
+                })
             }
             TokenKind::Resume => {
                 let s = self.advance().span;
@@ -4905,7 +5050,11 @@ impl Parser {
                             self.skip_newlines();
                             let body = self.parse_expr(0)?;
                             let span = arm_start.merge(body.span());
-                            arms.push(WhenArm { condition: cond, body, span });
+                            arms.push(WhenArm {
+                                condition: cond,
+                                body,
+                                span,
+                            });
                             self.skip_newlines();
                             continue;
                         }
@@ -4918,7 +5067,11 @@ impl Parser {
                     self.skip_newlines();
                     let body = self.parse_expr(0)?;
                     let span = arm_start.merge(body.span());
-                    arms.push(WhenArm { condition: cond, body, span });
+                    arms.push(WhenArm {
+                        condition: cond,
+                        body,
+                        span,
+                    });
                     self.skip_newlines();
                 }
                 if has_indent && matches!(self.peek_kind(), TokenKind::Dedent) {
@@ -4951,8 +5104,30 @@ impl Parser {
             TokenKind::Try => {
                 let s = self.advance().span;
                 let inner = self.parse_expr(0)?;
-                let span = s.merge(inner.span());
-                Ok(Expr::TryExpr(Box::new(inner), span))
+                // Check for try/else: try expr else |err| fallback
+                if matches!(self.peek_kind(), TokenKind::Else) {
+                    self.advance(); // consume 'else'
+                                    // Parse optional error binding: |err|
+                    let error_binding = if matches!(self.peek_kind(), TokenKind::Pipe) {
+                        self.advance(); // consume opening |
+                        let name = self.expect_ident()?;
+                        self.expect(&TokenKind::Pipe)?; // consume closing |
+                        name
+                    } else {
+                        "_err".to_string()
+                    };
+                    let handler = self.parse_expr(0)?;
+                    let span = s.merge(handler.span());
+                    Ok(Expr::TryElse {
+                        expr: Box::new(inner),
+                        error_binding,
+                        handler: Box::new(handler),
+                        span,
+                    })
+                } else {
+                    let span = s.merge(inner.span());
+                    Ok(Expr::TryExpr(Box::new(inner), span))
+                }
             }
             TokenKind::Async => {
                 let s = self.advance().span;
@@ -5104,11 +5279,16 @@ impl Parser {
                     let var = self.expect_ident()?;
                     self.expect(&TokenKind::In)?;
                     let iter = self.parse_expr(0)?;
+                    let mut extra_clauses = Vec::new();
                     while matches!(self.peek_kind(), TokenKind::For) {
                         self.advance();
-                        let _ = self.expect_ident()?;
+                        let inner_var = self.expect_ident()?;
                         self.expect(&TokenKind::In)?;
-                        let _ = self.parse_expr(0)?;
+                        let inner_iter = self.parse_expr(0)?;
+                        extra_clauses.push(ComprehensionClause {
+                            var: inner_var,
+                            iter: inner_iter,
+                        });
                     }
                     let condition = if matches!(self.peek_kind(), TokenKind::If) {
                         self.advance();
@@ -5123,6 +5303,7 @@ impl Parser {
                         body: Box::new(first),
                         var,
                         iter: Box::new(iter),
+                        extra_clauses,
                         condition,
                         kind: ComprehensionKind::Set,
                         span: s.merge(end),
@@ -5353,21 +5534,28 @@ impl Parser {
             self.expect(&TokenKind::In)?;
             let iter = self.parse_expr(0)?;
             self.skip_whitespace_tokens();
+            let mut extra_clauses = Vec::new();
             while matches!(self.peek_kind(), TokenKind::For) {
                 self.advance();
-                if matches!(self.peek_kind(), TokenKind::LParen) {
+                let inner_var = if matches!(self.peek_kind(), TokenKind::LParen) {
                     self.advance();
+                    let first_ident = self.expect_ident()?;
                     while !matches!(self.peek_kind(), TokenKind::RParen | TokenKind::Eof) {
                         self.advance();
                     }
                     if matches!(self.peek_kind(), TokenKind::RParen) {
                         self.advance();
                     }
+                    first_ident
                 } else {
-                    let _ = self.expect_ident()?;
-                }
+                    self.expect_ident()?
+                };
                 self.expect(&TokenKind::In)?;
-                let _ = self.parse_expr(0)?;
+                let inner_iter = self.parse_expr(0)?;
+                extra_clauses.push(ComprehensionClause {
+                    var: inner_var,
+                    iter: inner_iter,
+                });
                 self.skip_whitespace_tokens();
             }
             let condition = if matches!(self.peek_kind(), TokenKind::If) {
@@ -5383,6 +5571,7 @@ impl Parser {
                 body: Box::new(first),
                 var,
                 iter: Box::new(iter),
+                extra_clauses,
                 condition,
                 kind: ComprehensionKind::List,
                 span: start.merge(end),
@@ -5503,7 +5692,96 @@ impl Parser {
         self.bracket_depth -= 1;
         let end = self.expect(&TokenKind::RParen)?.span;
 
-        Ok(Expr::Call(Box::new(callee), args, start.merge(end)))
+        // T120: Trailing lambda / DSL block — `foo() do |params| ... end`
+        let (final_args, final_span) = self.try_parse_trailing_lambda(args, start.merge(end))?;
+
+        Ok(Expr::Call(Box::new(callee), final_args, final_span))
+    }
+
+    /// T120: Parse an optional trailing `do ... end` block after a call.
+    ///
+    /// Syntax: `call(...) do |params| body end`  or  `call(...) do body end`
+    ///
+    /// The block is desugared into a `Lambda` and appended as the last
+    /// positional argument.
+    fn try_parse_trailing_lambda(
+        &mut self,
+        mut args: Vec<CallArg>,
+        span: Span,
+    ) -> Result<(Vec<CallArg>, Span), ParseError> {
+        // Skip whitespace but NOT newlines — trailing do must be on same line
+        // or immediately after call.
+        let save = self.pos;
+        // Also skip a single newline + optional indent (for next-line do blocks)
+        while matches!(
+            self.peek_kind(),
+            TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent
+        ) {
+            self.advance();
+        }
+
+        if !matches!(self.peek_kind(), TokenKind::Ident(ref s) if s == "do") {
+            self.pos = save;
+            return Ok((args, span));
+        }
+
+        // Check that this isn't a `do` that's the start of a new statement
+        // by looking at context — if we're inside parens/brackets, don't parse trailing do
+        if self.bracket_depth > 0 {
+            self.pos = save;
+            return Ok((args, span));
+        }
+
+        // It's worth trying to peek further to check ambiguity, but for now
+        // we commit: consume the `do` keyword
+        let do_span = self.advance().span; // consume "do"
+
+        // Parse optional parameters: `|param1, param2|`
+        let params = if matches!(self.peek_kind(), TokenKind::Pipe) {
+            self.advance(); // consume `|`
+            let mut params = Vec::new();
+            while !matches!(self.peek_kind(), TokenKind::Pipe | TokenKind::Eof) {
+                if !params.is_empty() {
+                    self.expect(&TokenKind::Comma)?;
+                }
+                let ps = self.current().span;
+                let pname = self.expect_ident()?;
+                let pty = if matches!(self.peek_kind(), TokenKind::Colon) {
+                    self.advance();
+                    // Use parse_base_type instead of parse_type to avoid
+                    // consuming `|` as a union type delimiter.
+                    self.parse_base_type()?
+                } else {
+                    TypeExpr::Named("Any".into(), ps)
+                };
+                params.push(Param {
+                    name: pname,
+                    ty: pty,
+                    default_value: None,
+                    variadic: false,
+                    span: ps,
+                });
+            }
+            self.expect(&TokenKind::Pipe)?; // consume closing `|`
+            params
+        } else {
+            Vec::new()
+        };
+
+        // Parse body until `end`
+        self.skip_newlines();
+        let body = self.parse_block()?;
+        let end_span = self.expect(&TokenKind::End)?.span;
+
+        let lambda = Expr::Lambda {
+            params,
+            return_type: None,
+            body: LambdaBody::Block(body),
+            span: do_span.merge(end_span),
+        };
+
+        args.push(CallArg::Positional(lambda));
+        Ok((args, span.merge(end_span)))
     }
 
     fn parse_map_lit(&mut self) -> Result<Expr, ParseError> {
@@ -5575,11 +5853,16 @@ impl Parser {
                 let var = self.expect_ident()?;
                 self.expect(&TokenKind::In)?;
                 let iter = self.parse_expr(0)?;
+                let mut extra_clauses = Vec::new();
                 while matches!(self.peek_kind(), TokenKind::For) {
                     self.advance();
-                    let _ = self.expect_ident()?;
+                    let inner_var = self.expect_ident()?;
                     self.expect(&TokenKind::In)?;
-                    let _ = self.parse_expr(0)?;
+                    let inner_iter = self.parse_expr(0)?;
+                    extra_clauses.push(ComprehensionClause {
+                        var: inner_var,
+                        iter: inner_iter,
+                    });
                 }
                 let condition = if matches!(self.peek_kind(), TokenKind::If) {
                     self.advance();
@@ -5603,6 +5886,7 @@ impl Parser {
                     body: Box::new(first),
                     var,
                     iter: Box::new(iter),
+                    extra_clauses,
                     condition,
                     kind,
                     span: start.merge(end),
@@ -6151,6 +6435,7 @@ impl Parser {
             body: Box::new(spawn_body),
             var,
             iter: Box::new(iter),
+            extra_clauses: Vec::new(),
             condition: None,
             kind: ComprehensionKind::List,
             span: call_span.merge(end_span),
@@ -7379,7 +7664,8 @@ end
     #[test]
     fn test_chained_comparison_mixed_ops() {
         // `a >= b > c` should desugar to `(a >= b) and (b > c)`
-        let prog = parse_src("cell f(a: Int, b: Int, c: Int) -> Bool\n  return a >= b > c\nend").unwrap();
+        let prog =
+            parse_src("cell f(a: Int, b: Int, c: Int) -> Bool\n  return a >= b > c\nend").unwrap();
         let cell = match &prog.items[0] {
             Item::Cell(c) => c,
             _ => panic!("expected cell"),
@@ -7471,7 +7757,10 @@ end
         assert_eq!(prog.items.len(), 1);
         if let Item::Cell(c) = &prog.items[0] {
             assert_eq!(c.name, "main");
-            assert_eq!(c.doc, Some("# Main\nEntry point for the program.".to_string()));
+            assert_eq!(
+                c.doc,
+                Some("# Main\nEntry point for the program.".to_string())
+            );
         } else {
             panic!("expected cell");
         }
@@ -7519,10 +7808,15 @@ end
         if let Item::Cell(c) = &prog.items[0] {
             assert_eq!(c.name, "main");
             // The body should contain an Expr statement with a Perform expression
-            assert!(c.body.len() >= 1);
+            assert!(!c.body.is_empty());
             if let Stmt::Expr(es) = &c.body[0] {
                 match &es.expr {
-                    Expr::Perform { effect_name, operation, args, .. } => {
+                    Expr::Perform {
+                        effect_name,
+                        operation,
+                        args,
+                        ..
+                    } => {
                         assert_eq!(effect_name, "Console");
                         assert_eq!(operation, "log");
                         assert_eq!(args.len(), 1);
@@ -7544,7 +7838,12 @@ end
         if let Item::Cell(c) = &prog.items[0] {
             if let Stmt::Let(ls) = &c.body[0] {
                 match &ls.value {
-                    Expr::Perform { effect_name, operation, args, .. } => {
+                    Expr::Perform {
+                        effect_name,
+                        operation,
+                        args,
+                        ..
+                    } => {
                         assert_eq!(effect_name, "IO");
                         assert_eq!(operation, "read_line");
                         assert_eq!(args.len(), 0);
@@ -7594,5 +7893,110 @@ end
                 panic!("expected Let statement");
             }
         }
+    }
+}
+
+/// Parse a format spec string (the part after `:` in `{expr:spec}`) into a `FormatSpec` AST node.
+fn parse_format_spec(s: &str) -> FormatSpec {
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    let mut fill = None;
+    let mut align = None;
+    let mut sign = None;
+    let mut alternate = false;
+    let mut zero_pad = false;
+    let mut width = None;
+    let mut precision = None;
+    let mut fmt_type = None;
+
+    // Check for fill + align or just align
+    if i + 1 < chars.len() && matches!(chars[i + 1], '<' | '>' | '^') {
+        fill = Some(chars[i]);
+        align = Some(match chars[i + 1] {
+            '<' => FormatAlign::Left,
+            '>' => FormatAlign::Right,
+            '^' => FormatAlign::Center,
+            _ => unreachable!(),
+        });
+        i += 2;
+    } else if i < chars.len() && matches!(chars[i], '<' | '>' | '^') {
+        align = Some(match chars[i] {
+            '<' => FormatAlign::Left,
+            '>' => FormatAlign::Right,
+            '^' => FormatAlign::Center,
+            _ => unreachable!(),
+        });
+        i += 1;
+    }
+
+    // Optional sign
+    if i < chars.len() && (chars[i] == '+' || chars[i] == '-') {
+        sign = Some(chars[i]);
+        i += 1;
+    }
+
+    // Optional '#' (alternate form)
+    if i < chars.len() && chars[i] == '#' {
+        alternate = true;
+        i += 1;
+    }
+
+    // Optional '0' (zero pad)
+    if i < chars.len() && chars[i] == '0' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit() {
+        zero_pad = true;
+        i += 1;
+    }
+
+    // Optional width (digits)
+    let width_start = i;
+    while i < chars.len() && chars[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i > width_start {
+        width = chars[width_start..i]
+            .iter()
+            .collect::<String>()
+            .parse()
+            .ok();
+    }
+
+    // Optional '.' + precision
+    if i < chars.len() && chars[i] == '.' {
+        i += 1;
+        let prec_start = i;
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i > prec_start {
+            precision = chars[prec_start..i].iter().collect::<String>().parse().ok();
+        }
+    }
+
+    // Optional type char
+    if i < chars.len() {
+        fmt_type = match chars[i] {
+            'd' => Some(FormatType::Decimal),
+            'x' => Some(FormatType::Hex),
+            'X' => Some(FormatType::HexUpper),
+            'o' => Some(FormatType::Octal),
+            'b' => Some(FormatType::Binary),
+            'f' => Some(FormatType::Fixed),
+            'e' => Some(FormatType::Scientific),
+            'E' => Some(FormatType::ScientificUpper),
+            's' => Some(FormatType::Str),
+            _ => None,
+        };
+    }
+
+    FormatSpec {
+        fill,
+        align,
+        sign,
+        alternate,
+        zero_pad,
+        width,
+        precision,
+        fmt_type,
+        raw: s.to_string(),
     }
 }

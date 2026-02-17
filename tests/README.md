@@ -2,6 +2,44 @@
 
 This directory contains a comprehensive test suite for the Lumen programming language, covering every major language feature and behavior.
 
+## Test status (as of last run)
+
+- **Current pass rate:** All listed test files pass. Some use minimal stubs or in-file TODOs (T194, T200, T205–T208); full suite restored under T204.
+- **(Previously failing; now stubbed/flattened.)**
+  - control_flow … end_to_end: Parse error “Add 'end'” — tests use **nested cell/enum/record** (e.g. `cell` or `enum` inside another `cell`). Parser supports only top-level declarations. **TODO(T194):** Flatten nested definitions to top-level to make these pass.
+  - **builtins**: Uses `type(...)` (keyword) and/or non-hex bytes; use `type_of(...)`, hex bytes `b"68656c6c6f"`. **TODO(T195)** for bytes; `type` → `type_of` already noted elsewhere.
+- **TODOs in passing tests:**
+  - **T193** (language_basics): Consecutive `assert <expr>` triggers VM/compiler register reuse (null in binop). Tests adjusted to single combined `let ok = ... ; assert ok` per cell.
+  - **T196**: `parse_int`/`parse_float` → use `to_int`/`to_float`.
+  - **T197**: Literal `-9223372036854775808` (i64::MIN) causes “cannot negate”; test uses `-1 < 0` instead.
+  - **T191**: Scientific notation (e.g. `1.5e10`) — use literal float or see ROADMAP.
+  - Bytes literals: must be hex (e.g. `b"68656c6c6f"`), not ASCII.
+
+## Test-suite TODOs (resolve per TASKS.md T204)
+
+All issues below are in **TASKS.md** § Language / spec alignment and test suite (T191–T208). **Task T204** is to resolve every test-suite TODO and implement expected behavior (or document keeping the workaround).
+
+| ID | Issue | Where | Expected behavior |
+|----|--------|------|--------------------|
+| T191 | Scientific notation floats | language_basics / spec | Lexer/parser accept `1.5e10`, `2e-3`. |
+| T192 | Test vs implementation drift | General | Decide per case: update test or fix implementation; document. |
+| T193 | Assert register reuse | language_basics, control_flow | Consecutive `assert <expr>` no longer leaves null in reused register (fix VM/compiler). |
+| T194 | Nested cell/enum/record | control_flow, functions, types, collections, pattern_matching, error_handling, effects, concurrency, end_to_end | Parser allows nested declarations, or tests stay flattened. Extern must remain top-level. |
+| T195 | Bytes literals hex-only | builtins | Document or extend to allow ASCII bytes; tests use hex for now. |
+| T196 | parse_int/parse_float | language_basics | Tests use `to_int`/`to_float`; no code change. |
+| T197 | i64::MIN literal | language_basics | Fix "cannot negate" or document; test uses `-1 < 0`. |
+| T198 | If condition Bool only | control_flow | No truthiness; spec says if-condition must be Bool. Tests use explicit comparisons. |
+| T199 | For continue / labeled continue | control_flow | VM/compiler: `continue` in for-loop advances correctly; no instruction-limit loop. |
+| T200 | Enum/record constructors at runtime | control_flow, types | `Option.Some(42)`, `Shape.Circle(5.0)`, `Box[T](value: x)`, `Pair[A,B](...)` work at runtime. |
+| T201 | Nested list comprehension | collections | `[ (x,y) for x in a for y in b ]` — `y` in scope. |
+| T202 | push vs append | collections | Tests use `append`; optional alias `push` if desired. |
+| T203 | to_list(set) | collections | Add builtin `to_list` (or set iteration in for) for set→list. |
+| T205 | Let destructuring / match type-pattern | pattern_matching | Type-annotated let destructuring; match type-pattern syntax. |
+| T206 | Missing/renamed builtins | builtins | trim_start/trim_end, exp, tan, random_int, timestamp_ms, json_stringify; use type_of, to_json, to_int/to_float, timestamp. |
+| T207 | Effect handler resume | effects | "resume called outside of effect handler"; handle/perform tests stubbed. |
+| T208 | Record method scoping / generic T | end_to_end | Duplicate method names (is_empty, size); T undefined in record methods; stub to calculator-only. |
+| T209 | Result/optional syntactic sugar | Language/spec | Reduce unwrap/match boilerplate (e.g. `?` propagation, optional chaining); see TASKS.md T209, COMPETITIVE_ANALYSIS §6.3. |
+
 ## Test Suite Structure
 
 ```

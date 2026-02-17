@@ -172,6 +172,7 @@ pub struct CellDef {
     pub is_pub: bool,
     pub is_async: bool,
     pub is_extern: bool,
+    pub must_use: bool,
     pub where_clauses: Vec<Expr>,
     pub span: Span,
     pub doc: Option<String>,
@@ -358,6 +359,12 @@ pub enum Stmt {
     CompoundAssign(CompoundAssignStmt),
     Defer(DeferStmt),
     Yield(YieldStmt),
+    /// Local record definition inside a cell body
+    LocalRecord(RecordDef),
+    /// Local enum definition inside a cell body
+    LocalEnum(EnumDef),
+    /// Local cell (nested function) definition inside a cell body
+    LocalCell(CellDef),
 }
 
 impl Stmt {
@@ -379,6 +386,9 @@ impl Stmt {
             Stmt::CompoundAssign(s) => s.span,
             Stmt::Defer(s) => s.span,
             Stmt::Yield(s) => s.span,
+            Stmt::LocalRecord(r) => r.span,
+            Stmt::LocalEnum(e) => e.span,
+            Stmt::LocalCell(c) => c.span,
         }
     }
 }
@@ -570,6 +580,13 @@ pub enum ComprehensionKind {
     Set,
 }
 
+/// An additional `for var in iter` clause in a comprehension.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComprehensionClause {
+    pub var: String,
+    pub iter: Expr,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Expr {
     /// Integer literal
@@ -635,6 +652,13 @@ pub enum Expr {
     },
     /// Postfix try: expr?
     TryExpr(Box<Expr>, Span),
+    /// Try/else: try expr else |err| fallback
+    TryElse {
+        expr: Box<Expr>,
+        error_binding: String,
+        handler: Box<Expr>,
+        span: Span,
+    },
     /// Null coalescing: lhs ?? rhs
     NullCoalesce(Box<Expr>, Box<Expr>, Span),
     /// Null-safe access: expr?.field
@@ -654,11 +678,12 @@ pub enum Expr {
     },
     /// Await expression: await expr
     AwaitExpr(Box<Expr>, Span),
-    /// Comprehension: [expr for pat in iter if cond]
+    /// Comprehension: [expr for pat in iter (for pat2 in iter2)* if cond]
     Comprehension {
         body: Box<Expr>,
         var: String,
         iter: Box<Expr>,
+        extra_clauses: Vec<ComprehensionClause>,
         condition: Option<Box<Expr>>,
         kind: ComprehensionKind,
         span: Span,
@@ -742,6 +767,7 @@ impl Expr {
             | Expr::SetLit(_, s)
             | Expr::TryExpr(_, s)
             | Expr::NullCoalesce(_, _, s)
+            | Expr::TryElse { span: s, .. }
             | Expr::NullSafeAccess(_, _, s)
             | Expr::NullSafeIndex(_, _, s)
             | Expr::NullAssert(_, s)
@@ -776,6 +802,62 @@ pub struct WhenArm {
 pub enum StringSegment {
     Literal(String),
     Interpolation(Box<Expr>),
+    /// Interpolation with format specifier: `{expr:spec}`
+    FormattedInterpolation(Box<Expr>, FormatSpec),
+}
+
+/// Alignment for format specifiers
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum FormatAlign {
+    Left,
+    Right,
+    Center,
+}
+
+/// Type hint in a format specifier
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum FormatType {
+    /// `d` — decimal integer
+    Decimal,
+    /// `x` — lowercase hex
+    Hex,
+    /// `X` — uppercase hex
+    HexUpper,
+    /// `o` — octal
+    Octal,
+    /// `b` — binary
+    Binary,
+    /// `f` — fixed-point float
+    Fixed,
+    /// `e` — scientific notation
+    Scientific,
+    /// `E` — uppercase scientific
+    ScientificUpper,
+    /// `s` — string (default)
+    Str,
+}
+
+/// Parsed format specifier from `{expr:spec}`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FormatSpec {
+    /// Fill character (default space)
+    pub fill: Option<char>,
+    /// Alignment
+    pub align: Option<FormatAlign>,
+    /// `+` or `-` sign
+    pub sign: Option<char>,
+    /// `#` alternate form (e.g. `0x` prefix for hex)
+    pub alternate: bool,
+    /// Zero-pad with `0`
+    pub zero_pad: bool,
+    /// Minimum width
+    pub width: Option<usize>,
+    /// Precision (digits after decimal point)
+    pub precision: Option<usize>,
+    /// Type character
+    pub fmt_type: Option<FormatType>,
+    /// The raw spec string (for lowering)
+    pub raw: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -811,6 +893,7 @@ pub enum BinOp {
     Shl,
     Shr,
     Compose,
+    Spaceship,
 }
 
 impl fmt::Display for BinOp {
@@ -840,6 +923,7 @@ impl fmt::Display for BinOp {
             BinOp::Shl => write!(f, "<<"),
             BinOp::Shr => write!(f, ">>"),
             BinOp::Compose => write!(f, "~>"),
+            BinOp::Spaceship => write!(f, "<=>"),
         }
     }
 }

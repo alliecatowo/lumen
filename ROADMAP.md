@@ -1,196 +1,149 @@
 # Roadmap
 
-This roadmap reflects the actual implementation status of Lumen as of February 2025. Items are marked as Complete, In Progress, or Planned based on what's actually built and working.
-
-## Phase 1: Core Language [Complete]
-
-**Status:** Fully implemented and tested. All core language features are production-ready.
-
-### Compiler Pipeline
-- Lexer, parser, resolver, typechecker, constraint validator, LIR lowerer
-- Register-based VM with 74+ opcodes (32-bit fixed-width instructions)
-- Multi-file compilation with import resolution and circular dependency detection
-
-### Type System
-- All primitive types: Int, Float, String, Bool, Bytes, Json, Null
-- Collections: List, Map, Set, Tuple with Rc copy-on-write semantics
-- Records with where-clause constraints
-- Enums with payloads
-- Pattern matching with exhaustiveness checking
-- Union types, optional sugar (`T?`), result types (`result[T, E]`)
-
-### Control Flow
-- if/else, for, while, loop, match statements
-- break/continue with labels
-- try expressions for error handling
-
-### Language Features
-- String interpolation
-- Range expressions (`1..5`, `1..=5`)
-- Pipe operator (`|>`)
-- Compose operator (`~>`)
-- Closures with upvalue capture
-- Import system with wildcard and named imports
-
-### Examples & Testing
-- 30 working examples covering all language features
-- 1,365+ tests passing across compiler, VM, and runtime
+This roadmap reflects implementation status as of February 2026. **Current status** (Phases 1–2.5) is below; **strategic trajectory** (systems-grade performance, verification, durability, AI-native) is in §Strategic trajectory. The granular task list and deficiency checklist live in **TASKS.md**. Competitive context (who beats us on which dimension, and how we close or leapfrog) is in **docs/research/COMPETITIVE_ANALYSIS.md**.
 
 ---
 
-## Phase 2: Advanced Features [Complete]
+## Current status
 
-**Status:** All advanced language features implemented and integrated into the compiler, VM, and tooling.
+### Phase 1: Core Language [Complete]
 
-### Language Features
-- Full algebraic effects: `perform`, `handle`, `resume` with one-shot continuations
-- `when` expressions (multi-branch conditionals)
-- `comptime` expressions (compile-time evaluation)
-- `defer` statements (LIFO scope-exit cleanup)
-- `extern` declarations (FFI boundary)
-- `yield` statements (generator-style values)
+**Status:** Implemented and tested. Core language is production-ready.
 
-### Source Format
-- Markdown-native `.lm` files (triple-backtick blocks as markdown comments/docstrings)
-- `.lumen` file extension support
-- Docstrings attached to declarations (cells, records, enums, handlers)
+- **Compiler:** Lexer, parser, resolver, typechecker, constraint validator, LIR lowerer. Register-based VM with 74+ opcodes (32-bit fixed-width). Multi-file compilation with import resolution and circular dependency detection.
+- **Types:** Int, Float, String, Bool, Bytes, Json, Null; List, Map, Set, Tuple (Rc copy-on-write); records with where-clause constraints; enums with payloads; pattern matching with exhaustiveness; union types, `T?`, `result[T, E]`.
+- **Control flow:** if/else, for, while, loop, match; break/continue with labels; try expressions.
+- **Features:** String interpolation; ranges `1..5`, `1..=5`; pipe `|>`; compose `~>`; closures; import system.
+- **Testing:** 30 examples; 2,900+ tests across compiler, VM, runtime, CLI.
 
-### LSP
-- Hover with markdown docstring rendering
-- Completion with context-aware suggestions
-- Go-to-definition
-- Semantic tokens
-- Document symbols (cells as Functions, records as Structs, enums with members)
-- Signature help with parameter labels and docstrings
-- Folding ranges (code blocks and markdown comments)
-- Diagnostics with source context
+### Phase 2: Advanced Features [Complete]
 
-### VS Code Extension
-- TextMate grammar for syntax highlighting
-- Tree-sitter grammar for advanced tooling
-- Language configuration (folding, indentation)
-- Format-on-save and lint-on-save support
+**Status:** Advanced language features and tooling implemented.
 
-### Formatter
-- `lumen fmt` command with markdown block preservation
-- Docstring attachment preservation
-- CI mode (`--check` flag)
+- **Language:** Algebraic effects (perform/handle/resume, one-shot continuations); `when`, `comptime`, `defer`, `extern`, `yield`.
+- **Source:** Markdown-native `.lm`/`.lumen`; docstrings on declarations.
+- **LSP:** Hover, completion, go-to-definition, semantic tokens, document symbols, signature help, folding, diagnostics.
+- **VS Code:** TextMate + Tree-sitter grammar; format/lint on save.
+- **Formatter:** `lumen fmt` with markdown/docstring preservation; `--check` for CI.
+- **VM:** Rc-wrapped collections; BTreeSet for Set; module split (mod, intrinsics, processes, ops, helpers); bounds and fuel.
 
-### Builtins
-- 7 new builtins: `parse_json`, `to_json`, `read_file`, `write_file`, `timestamp`, `random`, `get_env`
-- 76 total builtin intrinsics with typed return signatures
+### Phase 2.5: Package Manager "Wares" [Mostly Complete]
 
-### VM Performance
-- Rc-wrapped collections (List, Tuple, Map, Record) for copy-on-write
-- BTreeSet for Set (replacing Vec-based implementation)
-- VM module split into `mod.rs`, `intrinsics.rs`, `processes.rs`, `ops.rs`, `helpers.rs`
-- Index out-of-bounds returns runtime errors (with Python-style negative indexing)
+**Status:** CLI and lockfile complete; registry deployment pending.
+
+- **Manifest/lockfile:** `lumen.toml`, `lumen.lock` v4, SAT/CDCL resolver; `@namespace/name` naming.
+- **CLI:** init, add, remove, install, update, publish, search, info, trust-check, policy; frozen/locked modes.
+- **Security:** Real Ed25519 signing (`auth.rs`); OIDC authentication (`oidc.rs`); TUF metadata verification (`tuf.rs`) with threshold signing, rollback detection, expiration enforcement, root rotation, and target hash/size verification; trust policy; content hash in lockfile; audit logging (`audit.rs`).
+- **Registry:** Cloudflare Workers scaffolded; D1 + R2 not deployed.
+
+### Phase 3: Production Readiness [In Progress]
+
+- Documentation: lang-ref from compiler; stdlib docs.
+- Security: transparency log, registry deployment (Ed25519 signing and TUF verification complete).
+- WASM: multi-file imports, tool providers, browser/Node/WASI.
+- Performance: benchmarks, VM dispatch and compiler optimizations.
+- Language: gradual ownership (`ref T`, `mut ref T`), stdlib bootstrap, self-hosting exploration; **result/optional syntactic sugar** (e.g. propagation operator or optional chaining) to reduce `unwrap`/match boilerplate—see TASKS.md T209, COMPETITIVE_ANALYSIS §6.3.
+
+### Phase 4: Ecosystem [Planned]
+
+- Live registry, discovery, versioning policies.
+- Tooling: rename, code actions, debugging, profiling; editors beyond VS Code.
+- Playground, tutorials, AI agent SDK and tool provider ecosystem.
 
 ---
 
-## Phase 2.5: Package Manager "Wares" [Mostly Complete]
+## Strategic trajectory
 
-**Status:** Core package manager infrastructure complete. Cryptographic signing and registry deployment pending.
+Long-term direction: move from interpreted scripting to **verified, durable, systems-level AI orchestration**. Gaps are enumerated in **TASKS.md** (§1 Deficiency checklist). The following phases and goals map to the task list in TASKS.md (§3).
 
-### Manifest & Lockfile
-- `lumen.toml` manifest with full schema
-- `lumen.lock` v4 content-addressed lockfile
-- SAT/CDCL dependency resolver
+### Memory and value representation
 
-### Package Naming
-- Mandatory `@namespace/name` package naming
-- Correct `@scope/name@version` parsing
+- **Objective:** Replace sole reliance on `Rc<T>` with thread-safe sharing and optional linear/affine types; reduce allocation and cache pressure.
+- **Goals:** Arc (or equivalent) for shared VM structures; optional GC (e.g. Immix-style) or region/arena for process-local data; tagged immediates/small-value optimization; linear types for single-consumption and zero-copy handoff.
+- **Tasks:** T001–T016 (value layout, Arc, GC header, move/borrow checking, arena/TLAB, string representation).
+- **Competitive context:** Rust, Swift, Zig, C++, Nim, V lead on memory safety and/or zero-cost control (COMPETITIVE_ANALYSIS §3.1). Closing D01–D03 removes the “scripting language” memory profile and enables safe parallelism and zero-copy agent handoff.
 
-### CLI Commands
-- `init` — Create new package
-- `add` / `remove` — Manage dependencies
-- `list` — Show installed packages
-- `install` / `update` — Install/update dependencies
-- `publish` — Publish packages
-- `login` / `logout` — Registry authentication
-- `search` — Search registry
-- `info` — Package information
-- `trust-check` — Verify package signatures
-- `policy` — Manage trust policies
-- `--frozen` and `--locked` modes enforced
+### Compiler backend (AOT / JIT)
 
-### Security Infrastructure
-- Sigstore-style keyless signing (stub implementation — needs real crypto)
-- Trust policy enforcement
-- Content hash verification in lockfile
-- URL canonicalization to `wares.lumen-lang.com`
+- **Objective:** Generate native code (LLVM or Cranelift) so compute-heavy and agent workloads approach C/Rust performance.
+- **Goals:** Lower LIR to machine code; optional tiered execution (interpreter → baseline JIT → optimizing JIT); AOT binaries and optional PGO.
+- **Tasks:** T017–T036 (codegen setup, type/control lowering, calls, TCO, JIT, benchmarks).
+- **Competitive context:** Rust, C, C++, Go, Julia, LuaJIT, Mojo lead on raw or hot-path performance (COMPETITIVE_ANALYSIS §3.2). Closing D04 makes Lumen viable for high-throughput and numeric workloads; PGO persistence (roadmap) differentiates for agent loops.
 
-### Registry Infrastructure
-- Cloudflare Workers registry scaffolded
-- D1 + R2 storage planned
-- Not yet deployed
+### Formal verification
+
+- **Objective:** Move `where` clauses and contracts from runtime checks to compile-time proofs where possible.
+- **Goals:** Integrate SMT solver (Z3/CVC5); refinement types verified at compile time; path-sensitive refinement; optional typestate (e.g. File Open/Closed); effect budgets.
+- **Tasks:** T037–T052, T148–T150 (solver, constraint lowering, verification pass, typestate, session types, counter-examples).
+- **Competitive context:** Liquid Haskell, F*, TypeScript strict, Kotlin contracts lead on compile-time invariants (COMPETITIVE_ANALYSIS §3.3). Closing D05–D06 and adding effect budgets (T048) gives “if it compiles, it obeys bounds” for AI-generated code—a leapfrog over mainstream languages.
+
+### Concurrency and scheduler
+
+- **Objective:** True M:N parallelism and structured concurrency instead of single-threaded or ad-hoc spawning.
+- **Goals:** Work-stealing scheduler with per-thread queues; typed channels; optional selective receive; supervisor/link/monitor semantics; structured concurrency (nursery/scope).
+- **Tasks:** T053–T066, T151–T153 (PCB, scheduler, work-stealing, channels, supervisor, structured concurrency, select, actor interface).
+- **Competitive context:** Go (goroutines/channels), Erlang/Elixir (OTP supervision), Rust (Tokio), Swift (structured concurrency) lead (COMPETITIVE_ANALYSIS §3.4). Closing D07–D09 matches Go/Erlang on concurrency and fault tolerance while layering grant-based capability security.
+
+### Durable execution
+
+- **Objective:** Processes that survive process death and machine restarts via checkpoint and replay.
+- **Goals:** Snapshot format for stack and heap; checkpoint/restore intrinsics; durable log; deterministic replay (record nondeterminism under `@deterministic`); time-travel debugging and workflow versioning; idempotency for replayed side effects.
+- **Tasks:** T067–T076, T154–T155 (snapshot, checkpoint, restore, replay, CLI, migration, idempotency keys, snapshot compression).
+- **Competitive context:** Temporal, Inngest, Erlang offer durability as external services or process model (COMPETITIVE_ANALYSIS §3.5). First-class checkpoint/replay in the VM (D13) makes long-running agents and workflows a language feature rather than a separate stack.
+
+### AI-native (tensors and differentiation)
+
+- **Objective:** First-class tensors and automatic differentiation so agents can optimize parameters and use ML without ad-hoc FFI.
+- **Goals:** Tensor type and storage; BLAS/SIMD bindings; dual numbers and tape-based reverse-mode AD; backward() intrinsic; prompt/type-to-grammar for constrained generation; schema drift detection; effect-budget runtime enforcement.
+- **Tasks:** T077–T089, T156–T158 (tensor, AD, optimizers, prompt-as-code, Prob&lt;T&gt; design, schema drift, effect budgets).
+- **Competitive context:** Python/Julia lead on ML libraries; Lumen already leads on tools, grants, trace, deterministic (COMPETITIVE_ANALYSIS §3.7). Adding tensors and AD closes the numeric gap; constrained generation and effect budgets extend the lead.
+
+### Ecosystem and tooling
+
+- **Objective:** Supply-chain security, zero-cost FFI, WASM component model, and professional tooling.
+- **Goals:** Real signing (Ed25519/Sigstore), transparency log, registry deployment, OIDC/TUF; C/Rust bindgen; WASM + WIT; LSP rename/code actions and semantic search; DAP (breakpoints, stepping, inspection); multi-error reporting, fix-its, benchmarks and CI gates; optional import-site sandboxing; binary caching.
+- **Tasks:** T090–T110, T159–T161 (signing, registry, FFI, WASM, LSP, DAP, CI, sandbox at import, binary cache, LSP semantic search).
+- **Competitive context:** Cargo, npm, pip, Go modules, WASM WIT lead on packaging and interop (COMPETITIVE_ANALYSIS §3.6, §3.8). Closing D10–D11 and adding grant-aware sandboxing (T159) and binary caching (T160) brings parity and differentiates on security.
+
+### Syntax and language surface
+
+- **Objective:** Ergonomic and consistent syntax: null-safety, ranges, error propagation, checked arithmetic, macros.
+- **Goals:** `?.`, `??`, `<=>`, `in`; active patterns; GADTs; hygienic macros; f-strings; trailing lambdas; `?` and try/else; checked arithmetic; virtual registers or higher register limit; multi-shot continuations (design); variadic parameters; @must_use for result.
+- **Tasks:** T111–T124, T162–T164.
+- **Work item (language):** **Scientific notation for float literals** — Support `1.5e10`, `2e-3` etc. in lexer/parser (see TASKS.md T191). Currently only `1e10`-style is exercised; full form is desired.
+- **Competitive context:** TypeScript, Kotlin, Swift, Rust set expectations for null-safety and error handling (COMPETITIVE_ANALYSIS §3.3, §4). Matching these reduces friction for adoption; multi-shot continuations (T162) enable logic-programming-style search.
+
+### Standard library
+
+- **Objective:** Batteries-included std: SIMD, crypto, graph, tensor, async I/O, HTTP, JSON, and collections that work with linear types where beneficial.
+- **Tasks:** T125–T133.
+- **Competitive context:** Python, Go, Rust, Java have rich stdlibs (COMPETITIVE_ANALYSIS §3.6, §4). Closing “no cohesive stdlib” (COMPETITIVE_ANALYSIS §7.3) and adding graph/tensor/SIMD supports AI and data workloads.
+
+### Self-hosting and bootstrap
+
+- **Objective:** Compiler written in Lumen, bootstrapped by the Rust compiler; reproducible builds.
+- **Tasks:** T134–T140 (lexer/parser/typecheck/lower in Lumen, bootstrap, reproducibility).
+- **Competitive context:** Self-hosting is a maturity signal (e.g. Rust, Go, Swift); Lumen-in-Lumen validates the language for complex, long-lived tooling.
+
+### Verification and release
+
+- **Objective:** All tests pass; zero warnings; coverage and sanitizer gates; security audit; docs in sync; v1.0.0 when trajectory goals are met. Explicit parity checklists for memory, concurrency, verification, and durability.
+- **Tasks:** T141–T147, T165–T168 (parity checklists).
 
 ---
 
-## Phase 3: Production Readiness [In Progress]
+## References
 
-**Status:** Core language is production-ready. Remaining work focuses on ecosystem maturity, performance optimization, and advanced language features.
-
-### Documentation
-- [ ] Auto-generated language reference from compiler source
-- [ ] Comprehensive standard library documentation
-
-### Security
-- [ ] Real cryptographic signing (replace stubs with ed25519/sigstore)
-- [ ] Transparency log implementation
-- [ ] Registry deployment (Cloudflare Workers + D1 + R2)
-
-### WASM Target
-- [ ] Multi-file imports in WASM builds
-- [ ] Tool providers in WASM runtime
-- [ ] Improved browser/Node.js/WASI integration
-
-### Performance
-- [ ] Performance benchmarks and optimization pass
-- [ ] VM dispatch table optimization
-- [ ] Compiler performance improvements
-
-### Language Features
-- [ ] Gradual ownership system (`ref T`, `mut ref T`, `addr`)
-- [ ] Standard library bootstrap
-- [ ] Self-hosting exploration (Lumen-in-Lumen compiler)
-
----
-
-## Phase 4: Ecosystem [Planned]
-
-**Status:** Future work to grow the Lumen ecosystem and developer experience.
-
-### Package Registry
-- [ ] Live registry with real community packages
-- [ ] Package discovery and curation tools
-- [ ] Versioning and compatibility policies
-
-### Tooling
-- [ ] Community formatters and linters
-- [ ] Editor plugins beyond VS Code (Vim, Emacs, etc.)
-- [ ] Language server improvements (rename, refactor, code actions)
-- [ ] Debugging support
-- [ ] Profiling tools
-
-### Developer Experience
-- [ ] WebAssembly playground
-- [ ] Interactive tutorials and guides
-- [ ] Community examples and patterns
-
-### AI Agent Integration
-- [ ] AI agent SDK / Lumen runtime for agent frameworks
-- [ ] Tool provider ecosystem expansion
-- [ ] Agent-specific debugging and tracing tools
+- **Competitive analysis:** docs/research/COMPETITIVE_ANALYSIS.md — dimensions, 50-language matrix, gap matrix, references.
+- **Task list and deficiencies:** TASKS.md — D01–D18, T001–T192, protocol, rationale.
+- **Competitive analysis:** docs/research/COMPETITIVE_ANALYSIS.md — completion/parity (§3), domain matrix (§4), dimensions (§5–6), deficits and gaps-by-priority (§7, §7.3), leapfrog (§8), 50-language matrix (§9), gap matrix (§10), execution backlog (§11), refs [1]–[29].
 
 ---
 
 ## Summary
 
-**Complete:** Core language, advanced features, LSP, VS Code extension, formatter, package manager CLI, and VM performance optimizations.
+- **Done:** Core language, advanced features, LSP, VS Code, formatter, Wares CLI, VM improvements, Ed25519 signing, OIDC auth, TUF metadata verification (Phases 1–2.5).
+- **In progress:** Production hardening (transparency log, registry deployment, WASM, performance, ownership, stdlib).
+- **Planned:** Full strategic trajectory in TASKS.md: memory model, AOT/JIT, verification, scheduler, durability, tensors/AD, ecosystem, syntax, stdlib, self-hosting, release gates. Extended tasks T148–T180 add session types, structured concurrency, parity checklists, diagnostics, testing, IDE, CI, and service templates.
 
-**In Progress:** Production hardening (crypto signing, registry deployment, WASM improvements, performance benchmarks, standard library).
-
-**Planned:** Ecosystem growth (live registry, community tooling, debugging support, AI agent SDK).
-
-The language is ready for real-world use. Remaining work focuses on ecosystem maturity and production infrastructure.
+The granular task list (T001–T192), deficiency checklist (D01–D18), protocol, and competitive rationale are in **TASKS.md**. The 50-language comparison and gap matrix are in **docs/research/COMPETITIVE_ANALYSIS.md**.

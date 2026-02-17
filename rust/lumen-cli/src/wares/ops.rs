@@ -4,15 +4,13 @@
 //! Moved from `pkg.rs`.
 
 use crate::config::{DependencySpec, LumenConfig};
-use crate::git::{
-    checkout_git_commit, fetch_git_repo, GitRef,
-};
+use crate::git::{checkout_git_commit, fetch_git_repo, GitRef};
 use crate::lockfile::{LockFile, LockedPackage};
-use crate::wares::{
-    RegistryClient, R2Client,
-    ResolutionPolicy, ResolutionRequest, ResolvedPackage, ResolvedSource, Resolver,
-};
 use crate::registry_cmd::{is_authenticated, publish_with_auth};
+use crate::wares::{
+    R2Client, RegistryClient, ResolutionPolicy, ResolutionRequest, ResolvedPackage, ResolvedSource,
+    Resolver,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -512,7 +510,11 @@ fn resolve_dependencies_with_registry(
 
     for pkg in resolved_packages.packages {
         pkg_map.insert(pkg.name.clone(), pkg.clone());
-        let deps: Vec<String> = pkg.deps.iter().map(|(n, _): &(String, DependencySpec)| n.clone()).collect();
+        let deps: Vec<String> = pkg
+            .deps
+            .iter()
+            .map(|(n, _): &(String, DependencySpec)| n.clone())
+            .collect();
         graph.insert(pkg.name.clone(), deps);
     }
 
@@ -563,9 +565,7 @@ fn visit_topo(
         for dep in deps {
             // Only visit if it's in our resolved set (transitive deps included)
             if graph.contains_key(dep) {
-                if let Err(e) = visit_topo(dep, graph, visited, temp_visited, sorted) {
-                    return Err(e);
-                }
+                visit_topo(dep, graph, visited, temp_visited, sorted)?
             }
         }
     }
@@ -748,10 +748,13 @@ fn materialize_package(
 
 /// Sanitize a URL to create a valid directory name.
 fn sanitize_filename(url: &str) -> String {
-    url.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '@', "_")
-        .replace("https___", "")
-        .replace("http___", "")
-        .replace(".", "_")
+    url.replace(
+        |c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '@',
+        "_",
+    )
+    .replace("https___", "")
+    .replace("http___", "")
+    .replace(".", "_")
 }
 
 fn unpack_tarball(tar_path: &Path, dst: &Path) -> Result<(), String> {
@@ -771,7 +774,7 @@ fn resolve_dep(
     spec: &DependencySpec,
     parent_dir: &Path,
     registry_dir_override: Option<&Path>,
-    resolved: &mut Vec<ResolvedDep>,
+    resolved: &mut [ResolvedDep],
     visited: &mut HashSet<String>,
     stack: &mut HashSet<String>,
 ) -> Result<(), String> {
@@ -1060,7 +1063,7 @@ pub fn add(package: &str, path_opt: Option<&str>) {
 
     let (dep_name, dep_spec) = if package.starts_with("http") || package.starts_with("git@") {
         let url = package.to_string();
-        let name_part = url.split('/').last().unwrap_or("unknown");
+        let name_part = url.split('/').next_back().unwrap_or("unknown");
         let name = name_part
             .strip_suffix(".git")
             .unwrap_or(name_part)
@@ -1579,11 +1582,11 @@ pub fn info(package: &str, version: Option<&str>) {
                         println!(
                             "    {} {} {} (no reason given)",
                             gray("•"),
-                            red(&ver),
+                            red(ver),
                             gray("-")
                         );
                     } else {
-                        println!("    {} {} {} {}", gray("•"), red(&ver), gray("-"), reason);
+                        println!("    {} {} {} {}", gray("•"), red(ver), gray("-"), reason);
                     }
                 }
             }
@@ -1597,11 +1600,11 @@ pub fn info(package: &str, version: Option<&str>) {
                     println!(
                         "  {} {} ({})",
                         gray("Latest:"),
-                        yellow(&latest),
+                        yellow(latest),
                         red("yanked")
                     );
                 } else {
-                    println!("  {} {}", gray("Latest:"), green(&latest));
+                    println!("  {} {}", gray("Latest:"), green(latest));
                 }
             }
 
@@ -1743,7 +1746,7 @@ fn create_package_tarball(project_dir: &Path, output_path: &Path) -> Result<(), 
             let rel_path = prefix.join(name);
 
             if path.is_file() {
-                if include_files.iter().any(|f| *f == name)
+                if include_files.contains(&name)
                     || name.ends_with(".lm")
                     || name.ends_with(".lm.md")
                 {
@@ -1814,11 +1817,12 @@ fn try_publish_to_r2(
     let secret_access_key = std::env::var("R2_SECRET_KEY").map_err(|_| "R2_SECRET_KEY not set")?;
 
     // Create R2 client using the builder pattern
-    let r2_config = crate::wares::R2Config::new(account_id.to_string(), access_key_id, secret_access_key)
-        .with_bucket("lumen-registry");
+    let r2_config =
+        crate::wares::R2Config::new(account_id.to_string(), access_key_id, secret_access_key)
+            .with_bucket("lumen-registry");
 
-    let client = R2Client::new(r2_config)
-        .map_err(|e| format!("Failed to create R2 client: {}", e))?;
+    let client =
+        R2Client::new(r2_config).map_err(|e| format!("Failed to create R2 client: {}", e))?;
 
     // Compute hash for the tarball
     let hash = Sha256::digest(tarball_data);
@@ -1967,7 +1971,10 @@ pub fn publish(dry_run: bool) {
     }
 
     // Generate resolution proof
-    println!("{} generating resolution proof...", status_label("Auditing"));
+    println!(
+        "{} generating resolution proof...",
+        status_label("Auditing")
+    );
     let resolver = Resolver::new(&registry_url, None);
     let request = ResolutionRequest {
         root_deps: config.dependencies.clone(),
@@ -1979,12 +1986,16 @@ pub fn publish(dry_run: bool) {
         include_build: false,
         include_yanked: false,
     };
-    
+
     let proof_val = match resolver.resolve(&request) {
         Ok(result) => {
-            println!("  {} resolution verified (trail of {} decisions)", green("✓"), result.proof.decisions.len());
+            println!(
+                "  {} resolution verified (trail of {} decisions)",
+                green("✓"),
+                result.proof.decisions.len()
+            );
             Some(serde_json::to_value(result.proof).unwrap_or(serde_json::Value::Null))
-        },
+        }
         Err(e) => {
             eprintln!("{} resolution failed: {}", red("error:"), e);
             eprintln!("  Publication requires a valid resolution trail.");
@@ -1993,7 +2004,13 @@ pub fn publish(dry_run: bool) {
     };
 
     // Publish with authentication via REST API
-    match publish_with_auth(&registry_url, package_name, version, archive_data, proof_val) {
+    match publish_with_auth(
+        &registry_url,
+        package_name,
+        version,
+        archive_data,
+        proof_val,
+    ) {
         Ok(()) => {
             println!(
                 "{} published {}@{}",
@@ -2046,7 +2063,7 @@ fn collect_package_files(project_dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn collect_files_recursive(dir: &Path, base: &Path, files: &mut Vec<PathBuf>) {
+fn collect_files_recursive(dir: &Path, _base: &Path, files: &mut Vec<PathBuf>) {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -2062,7 +2079,7 @@ fn collect_files_recursive(dir: &Path, base: &Path, files: &mut Vec<PathBuf>) {
                 // Skip hidden directories
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     if !name.starts_with('.') && name != "target" && name != "dist" {
-                        collect_files_recursive(&path, base, files);
+                        collect_files_recursive(&path, _base, files);
                     }
                 }
             }
@@ -2163,7 +2180,7 @@ pub fn add_with_kind(package: &str, path_opt: Option<&str>, kind: DependencyKind
 
     let (dep_name, dep_spec) = if package.starts_with("http") || package.starts_with("git@") {
         let url = package.to_string();
-        let name_part = url.split('/').last().unwrap_or("unknown");
+        let name_part = url.split('/').next_back().unwrap_or("unknown");
         let name = name_part
             .strip_suffix(".git")
             .unwrap_or(name_part)
@@ -2337,7 +2354,6 @@ pub fn install_with_kind(kind: DependencyKind, frozen: bool) {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn make_config(deps: Vec<(&str, &str)>) -> LumenConfig {
         let mut dependencies = HashMap::new();

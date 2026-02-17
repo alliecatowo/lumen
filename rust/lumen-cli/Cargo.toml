@@ -22,15 +22,15 @@ path = "src/bin/wares.rs"
 
 
 [dependencies]
-lumen-compiler = { path = "../lumen-compiler", version = "0.4.0" }
-lumen-vm = { path = "../lumen-vm", version = "0.4.0" }
-lumen-runtime = { path = "../lumen-runtime", version = "0.4.0" }
-lumen-provider-http = { path = "../lumen-provider-http", version = "0.4.0", optional = true }
-lumen-provider-json = { path = "../lumen-provider-json", version = "0.4.0", optional = true }
-lumen-provider-fs = { path = "../lumen-provider-fs", version = "0.4.0", optional = true }
-lumen-provider-env = { path = "../lumen-provider-env", version = "0.4.0", optional = true }
-lumen-provider-crypto = { path = "../lumen-provider-crypto", version = "0.4.0", optional = true }
-lumen-provider-gemini = { path = "../lumen-provider-gemini", version = "0.4.0", optional = true }
+lumen-compiler = { path = "../lumen-compiler", version = "0.5.0" }
+lumen-vm = { path = "../lumen-vm", version = "0.5.0" }
+lumen-runtime = { path = "../lumen-runtime", version = "0.5.0" }
+lumen-provider-http = { path = "../lumen-provider-http", version = "0.5.0", optional = true }
+lumen-provider-json = { path = "../lumen-provider-json", version = "0.5.0", optional = true }
+lumen-provider-fs = { path = "../lumen-provider-fs", version = "0.5.0", optional = true }
+lumen-provider-env = { path = "../lumen-provider-env", version = "0.5.0", optional = true }
+lumen-provider-crypto = { path = "../lumen-provider-crypto", version = "0.5.0", optional = true }
+lumen-provider-gemini = { path = "../lumen-provider-gemini", version = "0.5.0", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
@@ -61,6 +61,7 @@ open = "5"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 regex = "1"
 humantime = "2"
+ctrlc = "3"
 
 [features]
 default = ["http", "json", "fs", "env", "crypto", "keyring", "ed25519"]
@@ -72,3 +73,10 @@ crypto = ["lumen-provider-crypto"]
 gemini = ["lumen-provider-gemini"]
 keyring = ["dep:keyring"]
 ed25519 = ["dep:ed25519-dalek", "dep:rand"]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "compile_benchmarks"
+harness = false

@@ -56,8 +56,10 @@ pub enum TokenKind {
     BigIntLit(BigInt),
     FloatLit(f64),
     StringLit(String),
-    /// Interpolated string segments: (is_expr, text). is_expr=true means {expr}, false means literal text.
-    StringInterpLit(Vec<(bool, String)>),
+    /// Interpolated string segments: (is_expr, text, format_spec).
+    /// is_expr=true means {expr}, false means literal text.
+    /// format_spec is Some("spec") when the interpolation has `{expr:spec}`.
+    StringInterpLit(Vec<(bool, String, Option<String>)>),
     BoolLit(bool),
     /// Raw string literal (no escapes, no interpolation)
     RawStringLit(String),
@@ -198,6 +200,7 @@ pub enum TokenKind {
     FloorDiv,         // // floor division
     FloorDivAssign,   // //= floor division assignment
     QuestionBracket,  // ?[ null-safe index
+    Spaceship,        // <=> three-way comparison
 
     // Delimiters
     Symbol(char),
@@ -358,6 +361,7 @@ impl fmt::Display for TokenKind {
             TokenKind::FloorDiv => write!(f, "//"),
             TokenKind::FloorDivAssign => write!(f, "//="),
             TokenKind::QuestionBracket => write!(f, "?["),
+            TokenKind::Spaceship => write!(f, "<=>"),
             // Delimiters
             TokenKind::LParen => write!(f, "("),
             TokenKind::RParen => write!(f, ")"),

@@ -1,7 +1,10 @@
 //! Rich error diagnostics with source snippets, colors, and suggestions.
 
 use crate::compiler::constraints::ConstraintError;
+use crate::compiler::error_codes;
+use crate::compiler::fixit;
 use crate::compiler::lexer::LexError;
+use crate::compiler::ownership::OwnershipError;
 use crate::compiler::parser::ParseError;
 use crate::compiler::resolve::ResolveError;
 use crate::compiler::typecheck::TypeError;
@@ -37,20 +40,29 @@ impl Diagnostic {
         // Build the error category title
         let error_category = match self.severity {
             Severity::Error => match self.code.as_deref() {
-                Some("E010") | Some("E011") | Some("E012") | Some("E013") | Some("E014")
-                | Some("E015") | Some("E016") => "PARSE ERROR",
-                Some("E040") => "TYPE MISMATCH",
-                Some("E041") => "UNDEFINED VARIABLE",
-                Some("E042") => "UNKNOWN FIELD",
-                Some("E043") => "INCOMPLETE MATCH",
-                Some("E020") => "UNDEFINED TYPE",
-                Some("E021") => "UNDEFINED CELL",
-                Some("E022") => "UNDEFINED TOOL",
-                Some("E023") => "DUPLICATE DEFINITION",
-                Some("E030") => "UNDECLARED EFFECT",
-                Some("E001") | Some("E002") | Some("E003") | Some("E004") | Some("E005")
-                | Some("E006") => "LEX ERROR",
-                Some("E050") => "CONSTRAINT ERROR",
+                Some(c) if c.starts_with("E000") => "LEX ERROR",
+                Some(c) if c.starts_with("E001") && c.len() == 5 => "PARSE ERROR",
+                Some("E0010") | Some("E0011") | Some("E0012") | Some("E0013") | Some("E0014")
+                | Some("E0015") | Some("E0016") => "PARSE ERROR",
+                Some("E0100") | Some("E0102") | Some("E0103") | Some("E0104") | Some("E0105") => {
+                    "RESOLVE ERROR"
+                }
+                Some("E0107") | Some("E0108") | Some("E0109") => "UNDECLARED EFFECT",
+                Some(c) if c.starts_with("E011") => "MACHINE ERROR",
+                Some(c) if c.starts_with("E012") => "IMPORT ERROR",
+                Some("E0200") => "TYPE MISMATCH",
+                Some("E0201") => "UNDEFINED VARIABLE",
+                Some("E0202") => "NOT CALLABLE",
+                Some("E0203") => "ARGUMENT COUNT",
+                Some("E0204") => "UNKNOWN FIELD",
+                Some("E0205") => "UNDEFINED TYPE",
+                Some("E0206") => "MISSING RETURN",
+                Some("E0207") => "IMMUTABLE ASSIGN",
+                Some("E0208") => "INCOMPLETE MATCH",
+                Some("E0209") => "MUST USE",
+                Some("E0300") => "CONSTRAINT ERROR",
+                Some(c) if c.starts_with("E04") => "OWNERSHIP ERROR",
+                Some("E0500") => "LOWERING ERROR",
                 _ => "ERROR",
             },
             Severity::Warning => "WARNING",
@@ -127,7 +139,7 @@ impl Diagnostic {
     /// Generate a friendly, plain-language explanation of the error
     fn generate_explanation(&self) -> String {
         match self.code.as_deref() {
-            Some("E041") => {
+            Some("E0201") => {
                 // Extract variable name from message
                 let var_name = self
                     .message
@@ -135,46 +147,46 @@ impl Diagnostic {
                     .trim_end_matches('\'');
                 format!("I cannot find a variable named `{}`:", var_name)
             }
-            Some("E040") => {
+            Some("E0200") => {
                 // Type mismatch
                 format!(
                     "I found a type mismatch:\n\n  {}",
                     self.message.trim_start_matches("type mismatch: ")
                 )
             }
-            Some("E042") => {
+            Some("E0204") => {
                 // Unknown field
                 format!("I cannot find this field:\n\n  {}", self.message)
             }
-            Some("E043") => {
+            Some("E0208") => {
                 // Incomplete match
                 format!(
                     "This match expression is not complete:\n\n  {}",
                     self.message
                 )
             }
-            Some("E020") => {
+            Some("E0100") | Some("E0205") => {
                 let type_name = self
                     .message
                     .trim_start_matches("undefined type '")
                     .trim_end_matches('\'');
                 format!("I cannot find a type named `{}`:", type_name)
             }
-            Some("E021") => {
+            Some("E0102") => {
                 let cell_name = self
                     .message
                     .trim_start_matches("undefined cell '")
                     .trim_end_matches('\'');
                 format!("I cannot find a cell named `{}`:", cell_name)
             }
-            Some("E010") | Some("E011") | Some("E012") | Some("E013") | Some("E014")
-            | Some("E015") | Some("E016") => {
+            Some("E0010") | Some("E0011") | Some("E0012") | Some("E0013") | Some("E0014")
+            | Some("E0015") | Some("E0016") => {
                 format!(
                     "I found something unexpected while parsing:\n\n  {}",
                     self.message
                 )
             }
-            Some("E030") => {
+            Some("E0107") => {
                 format!(
                     "This cell is performing an effect that it hasn't declared:\n\n  {}",
                     self.message
@@ -307,7 +319,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
     matrix[a_len][b_len]
 }
 
-fn suggest_similar(name: &str, candidates: &[&str], max_distance: usize) -> Vec<String> {
+pub fn suggest_similar(name: &str, candidates: &[&str], max_distance: usize) -> Vec<String> {
     let mut matches: Vec<(usize, String)> = candidates
         .iter()
         .filter_map(|c| {
@@ -381,7 +393,11 @@ const BUILTINS: &[&str] = &[
 
 /// Convert a CompileError + source text into a list of Diagnostics
 pub fn format_compile_error(error: &CompileError, source: &str, filename: &str) -> Vec<Diagnostic> {
-    match error {
+    // Generate fix-it hints for the whole error up front.
+    let fixit_hints = fixit::suggest_fixit(error, source);
+    let hint_lines = fixit::render_hints(&fixit_hints);
+
+    let mut diagnostics = match error {
         CompileError::Lex(e) => vec![format_lex_error(e, source, filename)],
         CompileError::Parse(errors) => errors
             .iter()
@@ -399,10 +415,75 @@ pub fn format_compile_error(error: &CompileError, source: &str, filename: &str) 
             .iter()
             .map(|e| format_constraint_error(e, source, filename))
             .collect(),
+        CompileError::Ownership(errors) => errors
+            .iter()
+            .map(|e| format_ownership_error(e, source, filename))
+            .collect(),
+        CompileError::Lower(msg) => vec![Diagnostic {
+            severity: Severity::Error,
+            code: Some("E0500".to_string()),
+            message: msg.clone(),
+            file: Some(filename.to_string()),
+            line: None,
+            col: None,
+            source_line: None,
+            underline: None,
+            suggestions: vec![
+                "Consider breaking large cells into smaller helper cells.".to_string()
+            ],
+        }],
+        CompileError::Multiple(errors) => errors
+            .iter()
+            .flat_map(|e| format_compile_error(e, source, filename))
+            .collect(),
+        CompileError::Typestate(errors) => errors
+            .iter()
+            .map(|e| Diagnostic {
+                severity: Severity::Error,
+                code: Some("E0600".to_string()),
+                message: format!("{:?}", e),
+                file: Some(filename.to_string()),
+                line: None,
+                col: None,
+                source_line: None,
+                underline: None,
+                suggestions: vec![],
+            })
+            .collect(),
+        CompileError::Session(errors) => errors
+            .iter()
+            .map(|e| Diagnostic {
+                severity: Severity::Error,
+                code: Some("E0700".to_string()),
+                message: format!("{:?}", e),
+                file: Some(filename.to_string()),
+                line: None,
+                col: None,
+                source_line: None,
+                underline: None,
+                suggestions: vec![],
+            })
+            .collect(),
+    };
+
+    // Append fix-it hint lines to the *first* diagnostic (if any).
+    // This avoids duplicating hints across every sub-diagnostic while
+    // still making them visible in the rendered output.
+    if !hint_lines.is_empty() {
+        if let Some(first) = diagnostics.first_mut() {
+            for line in &hint_lines {
+                if !first.suggestions.iter().any(|s| s == line) {
+                    first.suggestions.push(line.clone());
+                }
+            }
+        }
     }
+
+    diagnostics
 }
 
 fn format_lex_error(error: &LexError, source: &str, filename: &str) -> Diagnostic {
+    let code = error_codes::lex_code(error).to_string();
     match error {
         LexError::UnexpectedChar { ch, line, col } => {
             let source_line = get_source_line(source, *line);
@@ -410,7 +491,7 @@ fn format_lex_error(error: &LexError, source: &str, filename: &str) -> Diagnosti
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E001".to_string()),
+                code: Some(code),
                 message: format!("unexpected character '{}'", ch),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -428,7 +509,7 @@ fn format_lex_error(error: &LexError, source: &str, filename: &str) -> Diagnosti
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E002".to_string()),
+                code: Some(code),
                 message: "unterminated string literal".to_string(),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -447,7 +528,7 @@ fn format_lex_error(error: &LexError, source: &str, filename: &str) -> Diagnosti
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E003".to_string()),
+                code: Some(code),
                 message: "inconsistent indentation".to_string(),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -465,7 +546,7 @@ fn format_lex_error(error: &LexError, source: &str, filename: &str) -> Diagnosti
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E004".to_string()),
+                code: Some(code),
                 message: "invalid number literal".to_string(),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -481,7 +562,7 @@ fn format_lex_error(error: &LexError, source: &str, filename: &str) -> Diagnosti
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E005".to_string()),
+                code: Some(code),
                 message: "invalid bytes literal".to_string(),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -497,7 +578,7 @@ fn format_lex_error(error: &LexError, source: &str, filename: &str) -> Diagnosti
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E006".to_string()),
+                code: Some(code),
                 message: "invalid unicode escape sequence".to_string(),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -513,7 +594,7 @@ fn format_lex_error(error: &LexError, source: &str, filename: &str) -> Diagnosti
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E007".to_string()),
+                code: Some(code),
                 message: "unterminated markdown block".to_string(),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -527,6 +608,7 @@ fn format_lex_error(error: &LexError, source: &str, filename: &str) -> Diagnosti
 }
 
 fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagnostic {
+    let code = error_codes::parse_code(error).to_string();
     match error {
         ParseError::Unexpected {
             found,
@@ -580,7 +662,7 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E010".to_string()),
+                code: Some(code),
                 message: friendly_message,
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -592,7 +674,7 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
         }
         ParseError::UnexpectedEof => Diagnostic {
             severity: Severity::Error,
-            code: Some("E011".to_string()),
+            code: Some(code),
             message: "unexpected end of input".to_string(),
             file: Some(filename.to_string()),
             line: None,
@@ -612,7 +694,7 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
             let underline = source_line.as_ref().map(|_| make_underline(*open_col, 1));
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E012".to_string()),
+                code: Some(code.clone()),
                 message: format!(
                     "unclosed '{}' opened at line {}, col {}",
                     bracket, open_line, open_col
@@ -644,7 +726,7 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
             let underline = source_line.as_ref().map(|_| make_underline(*open_col, 1));
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E013".to_string()),
+                code: Some(code.clone()),
                 message: format!(
                     "expected 'end' to close '{}' at line {}, col {}",
                     construct, open_line, open_col
@@ -662,7 +744,7 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
             let underline = source_line.as_ref().map(|_| make_underline(*col, 1));
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E014".to_string()),
+                code: Some(code),
                 message: "missing type annotation".to_string(),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -677,7 +759,7 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
             let underline = source_line.as_ref().map(|_| make_underline(*col, 1));
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E015".to_string()),
+                code: Some(code),
                 message: "incomplete expression".to_string(),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -692,7 +774,7 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
             let underline = source_line.as_ref().map(|_| make_underline(*col, 1));
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E016".to_string()),
+                code: Some(code),
                 message: "malformed construct".to_string(),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -706,6 +788,7 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
 }
 
 fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> Diagnostic {
+    let code = error_codes::resolve_code(error).to_string();
     match error {
         ResolveError::UndefinedType {
             name,
@@ -729,7 +812,7 @@ fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> D
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E020".to_string()),
+                code: Some(code),
                 message: format!("undefined type '{}'", name),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -761,7 +844,7 @@ fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> D
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E021".to_string()),
+                code: Some(code.clone()),
                 message: format!("undefined cell '{}'", name),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -783,7 +866,7 @@ fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> D
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E022".to_string()),
+                code: Some(code),
                 message: format!("undefined tool alias '{}'", name),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -805,7 +888,7 @@ fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> D
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E023".to_string()),
+                code: Some(code),
                 message: format!("duplicate definition '{}'", name),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -834,7 +917,7 @@ fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> D
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E030".to_string()),
+                code: Some(code),
                 message: format!(
                     "cell '{}' performs effect '{}' but it is not declared in its effect row",
                     cell, effect
@@ -851,7 +934,7 @@ fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> D
             // Fallback for other resolve errors
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E099".to_string()),
+                code: Some(code),
                 message: error.to_string(),
                 file: Some(filename.to_string()),
                 line: None,
@@ -865,6 +948,7 @@ fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> D
 }
 
 fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnostic {
+    let code = error_codes::type_code(error).to_string();
     match error {
         TypeError::Mismatch {
             expected,
@@ -876,7 +960,7 @@ fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnos
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E040".to_string()),
+                code: Some(code),
                 message: format!("type mismatch: expected {}, got {}", expected, actual),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -907,7 +991,7 @@ fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnos
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E041".to_string()),
+                code: Some(code),
                 message: format!("undefined variable '{}'", name),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -940,7 +1024,7 @@ fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnos
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E042".to_string()),
+                code: Some(code),
                 message: format!("unknown field '{}' on type '{}'", field, ty),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -966,7 +1050,7 @@ fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnos
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E043".to_string()),
+                code: Some(code),
                 message: format!(
                     "incomplete match on enum '{}': missing variants [{}]",
                     enum_name, missing_list
@@ -996,7 +1080,7 @@ fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnos
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E049".to_string()),
+                code: Some(code),
                 message: error.to_string(),
                 file: Some(filename.to_string()),
                 line,
@@ -1010,6 +1094,7 @@ fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnos
 }
 
 fn format_constraint_error(error: &ConstraintError, source: &str, filename: &str) -> Diagnostic {
+    let code = error_codes::constraint_code(error).to_string();
     match error {
         ConstraintError::Invalid {
             field,
@@ -1021,7 +1106,7 @@ fn format_constraint_error(error: &ConstraintError, source: &str, filename: &str
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E050".to_string()),
+                code: Some(code),
                 message: format!("invalid constraint on field '{}': {}", field, message),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -1032,6 +1117,425 @@ fn format_constraint_error(error: &ConstraintError, source: &str, filename: &str
             }
         }
     }
+}
+
+fn format_ownership_error(error: &OwnershipError, source: &str, filename: &str) -> Diagnostic {
+    let code = error_codes::ownership_code(error).to_string();
+    match error {
+        OwnershipError::UseAfterMove {
+            variable,
+            moved_at,
+            used_at,
+        } => {
+            let source_line = get_source_line(source, used_at.line);
+            let underline = source_line
+                .as_ref()
+                .map(|_| make_underline(used_at.col.max(1), variable.len().max(1)));
+
+            Diagnostic {
+                severity: Severity::Error,
+                code: Some(code),
+                message: format!(
+                    "use of moved variable '{}' (moved at line {})",
+                    variable, moved_at.line
+                ),
+                file: Some(filename.to_string()),
+                line: Some(used_at.line),
+                col: Some(used_at.col),
+                source_line,
+                underline,
+                suggestions: vec![format!(
+                    "'{}' was moved at line {}. Consider cloning it or restructuring to avoid reuse after move.",
+                    variable, moved_at.line
+                )],
+            }
+        }
+        OwnershipError::NotConsumed {
+            variable,
+            declared_at,
+        } => {
+            let source_line = get_source_line(source, declared_at.line);
+            let underline = source_line
+                .as_ref()
+                .map(|_| make_underline(declared_at.col.max(1), variable.len().max(1)));
+
+            Diagnostic {
+                severity: Severity::Error,
+                code: Some(code.clone()),
+                message: format!(
+                    "owned variable '{}' was never consumed",
+                    variable
+                ),
+                file: Some(filename.to_string()),
+                line: Some(declared_at.line),
+                col: Some(declared_at.col),
+                source_line,
+                underline,
+                suggestions: vec![format!(
+                    "owned variable '{}' must be used or explicitly dropped before going out of scope",
+                    variable
+                )],
+            }
+        }
+        OwnershipError::AlreadyBorrowed {
+            variable,
+            first_borrow,
+            second_borrow,
+        } => {
+            let source_line = get_source_line(source, second_borrow.line);
+            let underline = source_line
+                .as_ref()
+                .map(|_| make_underline(second_borrow.col.max(1), variable.len().max(1)));
+
+            Diagnostic {
+                severity: Severity::Error,
+                code: Some(code.clone()),
+                message: format!(
+                    "variable '{}' already borrowed at line {}",
+                    variable, first_borrow.line
+                ),
+                file: Some(filename.to_string()),
+                line: Some(second_borrow.line),
+                col: Some(second_borrow.col),
+                source_line,
+                underline,
+                suggestions: vec![format!(
+                    "cannot create a second borrow of '{}' while the first borrow (line {}) is active",
+                    variable, first_borrow.line
+                )],
+            }
+        }
+        OwnershipError::MoveWhileBorrowed {
+            variable,
+            borrow_at,
+            move_at,
+        } => {
+            let source_line = get_source_line(source, move_at.line);
+            let underline = source_line
+                .as_ref()
+                .map(|_| make_underline(move_at.col.max(1), variable.len().max(1)));
+
+            Diagnostic {
+                severity: Severity::Error,
+                code: Some(code),
+                message: format!(
+                    "cannot move '{}' while it is borrowed (borrowed at line {})",
+                    variable, borrow_at.line
+                ),
+                file: Some(filename.to_string()),
+                line: Some(move_at.line),
+                col: Some(move_at.col),
+                source_line,
+                underline,
+                suggestions: vec![format!(
+                    "the borrow of '{}' at line {} must end before the value can be moved",
+                    variable, borrow_at.line
+                )],
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Public API: type_diff, suggest_similar_names, format_suggestions
+// =============================================================================
+
+/// Format a concise type diff between expected and actual type strings.
+/// Returns a human-readable description highlighting where types diverge.
+pub fn type_diff(expected: &str, actual: &str) -> String {
+    if expected == actual {
+        return format!("Both types are `{}`", expected);
+    }
+
+    // Try structural diff for parameterized types
+    if let Some(diff) = structural_type_diff(expected, actual) {
+        return diff;
+    }
+
+    // Simple diff
+    format!("Expected `{}`, found `{}`", expected, actual)
+}
+
+fn structural_type_diff(expected: &str, actual: &str) -> Option<String> {
+    // list[T] vs list[U]
+    if let (Some(e_inner), Some(a_inner)) = (
+        strip_wrapper(expected, "list["),
+        strip_wrapper(actual, "list["),
+    ) {
+        let mut result = format!("Expected `{}`, found `{}`", expected, actual);
+        if e_inner != a_inner {
+            result.push_str(&format!(
+                " (list element: Expected `{}`, found `{}`)",
+                e_inner, a_inner
+            ));
+        }
+        return Some(result);
+    }
+
+    // set[T] vs set[U]
+    if let (Some(e_inner), Some(a_inner)) = (
+        strip_wrapper(expected, "set["),
+        strip_wrapper(actual, "set["),
+    ) {
+        let mut result = format!("Expected `{}`, found `{}`", expected, actual);
+        if e_inner != a_inner {
+            result.push_str(&format!(
+                " (set element: Expected `{}`, found `{}`)",
+                e_inner, a_inner
+            ));
+        }
+        return Some(result);
+    }
+
+    // map[K, V] vs map[K2, V2]
+    if let (Some((ek, ev)), Some((ak, av))) = (parse_map_types(expected), parse_map_types(actual)) {
+        let mut result = format!("Expected `{}`, found `{}`", expected, actual);
+        if ek != ak {
+            result.push_str(&format!(" (map key: Expected `{}`, found `{}`)", ek, ak));
+        }
+        if ev != av {
+            result.push_str(&format!(" (map value: Expected `{}`, found `{}`)", ev, av));
+        }
+        return Some(result);
+    }
+
+    // result[T, E] vs result[T2, E2]
+    if let (Some((et, ee)), Some((at, ae))) =
+        (parse_result_types(expected), parse_result_types(actual))
+    {
+        let mut result = format!("Expected `{}`, found `{}`", expected, actual);
+        if et != at {
+            result.push_str(&format!(" (ok type: Expected `{}`, found `{}`)", et, at));
+        }
+        if ee != ae {
+            result.push_str(&format!(" (err type: Expected `{}`, found `{}`)", ee, ae));
+        }
+        return Some(result);
+    }
+
+    // tuple[T1, T2, ...] vs tuple[U1, U2, ...]
+    if let (Some(e_elems), Some(a_elems)) = (parse_tuple_types(expected), parse_tuple_types(actual))
+    {
+        let mut result = format!("Expected `{}`, found `{}`", expected, actual);
+        if e_elems.len() != a_elems.len() {
+            result.push_str(&format!(
+                " (tuple arity: expected {}, found {})",
+                e_elems.len(),
+                a_elems.len()
+            ));
+        } else {
+            for (i, (e, a)) in e_elems.iter().zip(a_elems.iter()).enumerate() {
+                if e != a {
+                    result.push_str(&format!(
+                        " (element {}: Expected `{}`, found `{}`)",
+                        i, e, a
+                    ));
+                }
+            }
+        }
+        return Some(result);
+    }
+
+    None
+}
+
+fn strip_wrapper<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    if s.starts_with(prefix) && s.ends_with(']') {
+        Some(&s[prefix.len()..s.len() - 1])
+    } else {
+        None
+    }
+}
+
+fn parse_map_types(s: &str) -> Option<(String, String)> {
+    let inner = strip_wrapper(s, "map[")?;
+    let (k, v) = split_type_pair(inner)?;
+    Some((k.trim().to_string(), v.trim().to_string()))
+}
+
+fn parse_result_types(s: &str) -> Option<(String, String)> {
+    let inner = strip_wrapper(s, "result[")?;
+    let (t, e) = split_type_pair(inner)?;
+    Some((t.trim().to_string(), e.trim().to_string()))
+}
+
+fn parse_tuple_types(s: &str) -> Option<Vec<String>> {
+    let inner = strip_wrapper(s, "tuple[")?;
+    Some(
+        split_type_list(inner)
+            .into_iter()
+            .map(|t| t.trim().to_string())
+            .collect(),
+    )
+}
+
+fn split_type_pair(s: &str) -> Option<(String, String)> {
+    let parts = split_type_list(s);
+    if parts.len() == 2 {
+        Some((parts[0].clone(), parts[1].clone()))
+    } else {
+        None
+    }
+}
+
+fn split_type_list(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut depth = 0;
+    let mut current = String::new();
+    for ch in s.chars() {
+        match ch {
+            '[' | '(' => {
+                depth += 1;
+                current.push(ch);
+            }
+            ']' | ')' => {
+                depth -= 1;
+                current.push(ch);
+            }
+            ',' if depth == 0 => {
+                parts.push(current.trim().to_string());
+                current = String::new();
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current.trim().to_string());
+    }
+    parts
+}
+
+/// Suggest similar names from a list of candidates (max edit distance 2, at most 3 results).
+/// This is a public wrapper around `suggest_similar`.
+pub fn suggest_similar_names(name: &str, candidates: &[&str]) -> Vec<String> {
+    suggest_similar(name, candidates, 2)
+}
+
+/// Format suggestions for a misspelled name.
+/// Returns `Some("did you mean 'x'?")` if similar names found, `None` otherwise.
+pub fn format_suggestions(name: &str, candidates: &[&str]) -> Option<String> {
+    let suggestions = suggest_similar(name, candidates, 2);
+    if suggestions.is_empty() {
+        return None;
+    }
+    if suggestions.len() == 1 {
+        Some(format!("did you mean '{}'?", suggestions[0]))
+    } else {
+        let quoted: Vec<String> = suggestions.iter().map(|s| format!("'{}'", s)).collect();
+        Some(format!("did you mean one of: {}?", quoted.join(", ")))
+    }
+}
+
+// =============================================================================
+// Public API: Interpolation span mapping (T188)
+// =============================================================================
+
+/// Represents a segment of an interpolated string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterpolationSegmentSpan {
+    /// Offset from the opening quote character (1-based: 1 = first char after quote)
+    pub offset: usize,
+    /// Length in characters
+    pub length: usize,
+    /// True if this segment is an interpolated expression (`{expr}`), false for literal text
+    pub is_expr: bool,
+}
+
+/// Parse a line of source at the given string-start column and return interpolation segments.
+/// `string_start_col` is the 1-based column of the opening `"` character.
+/// Returns empty vec if the column doesn't point to a `"`.
+pub fn map_interpolation_spans(
+    line: &str,
+    string_start_col: usize,
+) -> Vec<InterpolationSegmentSpan> {
+    let chars: Vec<char> = line.chars().collect();
+    let idx = if string_start_col == 0 {
+        0
+    } else {
+        string_start_col.saturating_sub(1)
+    };
+
+    if idx >= chars.len() || chars[idx] != '"' {
+        return vec![];
+    }
+
+    // Parse content between quotes
+    let mut pos = idx + 1; // skip opening quote
+    let mut segments = Vec::new();
+    let mut offset = 1usize; // 1-based offset from the quote
+    let mut literal_start = offset;
+    let mut literal_len = 0usize;
+
+    while pos < chars.len() && chars[pos] != '"' {
+        if chars[pos] == '\\' {
+            // Escape sequence — consume two chars as literal
+            literal_len += 2;
+            pos += 2;
+        } else if chars[pos] == '{' {
+            // Flush any pending literal
+            if literal_len > 0 {
+                segments.push(InterpolationSegmentSpan {
+                    offset: literal_start,
+                    length: literal_len,
+                    is_expr: false,
+                });
+                offset += literal_len;
+                literal_len = 0;
+            }
+
+            // Find matching closing brace, handling nesting
+            let expr_start = pos;
+            let mut depth = 1;
+            pos += 1;
+            while pos < chars.len() && depth > 0 {
+                if chars[pos] == '{' {
+                    depth += 1;
+                } else if chars[pos] == '}' {
+                    depth -= 1;
+                }
+                pos += 1;
+            }
+            let expr_len = pos - expr_start;
+            segments.push(InterpolationSegmentSpan {
+                offset,
+                length: expr_len,
+                is_expr: true,
+            });
+            offset += expr_len;
+            literal_start = offset;
+        } else {
+            literal_len += 1;
+            pos += 1;
+        }
+    }
+
+    // Flush remaining literal
+    if literal_len > 0 {
+        segments.push(InterpolationSegmentSpan {
+            offset: literal_start,
+            length: literal_len,
+            is_expr: false,
+        });
+    }
+
+    segments
+}
+
+/// Get the column range (start, end) of the Nth interpolated expression in a string.
+/// `string_start_col` is the 1-based column of the opening `"`.
+/// `expr_index` is the 0-based index of the expression segment to find.
+/// Returns `Some((start_col, end_col))` or `None` if not found.
+pub fn interpolation_expr_col_range(
+    line: &str,
+    string_start_col: usize,
+    expr_index: usize,
+) -> Option<(usize, usize)> {
+    let spans = map_interpolation_spans(line, string_start_col);
+    let expr_spans: Vec<&InterpolationSegmentSpan> = spans.iter().filter(|s| s.is_expr).collect();
+    let span = expr_spans.get(expr_index)?;
+    let start_col = string_start_col + span.offset;
+    let end_col = start_col + span.length;
+    Some((start_col, end_col))
 }
 
 #[cfg(test)]
@@ -1087,7 +1591,7 @@ mod tests {
         let diag = format_parse_error(&error, source, "test.lm.md");
 
         assert_eq!(diag.severity, Severity::Error);
-        assert_eq!(diag.code, Some("E010".to_string()));
+        assert_eq!(diag.code, Some("E0010".to_string()));
         assert!(diag.message.contains("expecting") || diag.message.contains("found"));
         assert_eq!(diag.line, Some(5));
     }
@@ -1102,7 +1606,7 @@ mod tests {
         let diag = format_type_error(&error, source, "test.lm.md");
 
         assert_eq!(diag.severity, Severity::Error);
-        assert_eq!(diag.code, Some("E041".to_string()));
+        assert_eq!(diag.code, Some("E0201".to_string()));
         assert!(diag.message.contains("undefined variable"));
         assert!(!diag.suggestions.is_empty());
         // Should suggest "for" since edit distance is 1
@@ -1116,7 +1620,7 @@ mod tests {
     fn test_render_plain() {
         let diag = Diagnostic {
             severity: Severity::Error,
-            code: Some("E041".to_string()),
+            code: Some("E0201".to_string()),
             message: "undefined variable 'foo'".to_string(),
             file: Some("test.lm.md".to_string()),
             line: Some(10),
@@ -1127,7 +1631,7 @@ mod tests {
         };
 
         let output = diag.render_plain();
-        assert!(output.contains("error[E041]"));
+        assert!(output.contains("error[E0201]"));
         assert!(output.contains("undefined variable"));
         assert!(output.contains("test.lm.md:10:5"));
         assert!(output.contains("let x = foo"));
@@ -1139,7 +1643,7 @@ mod tests {
     fn test_render_ansi() {
         let diag = Diagnostic {
             severity: Severity::Error,
-            code: Some("E041".to_string()),
+            code: Some("E0201".to_string()),
             message: "undefined variable 'foo'".to_string(),
             file: Some("test.lm.md".to_string()),
             line: Some(10),

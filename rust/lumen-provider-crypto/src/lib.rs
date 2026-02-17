@@ -9,8 +9,14 @@
 //! - `crypto.uuid` — Generate UUID v4
 //! - `crypto.random_int` — Random integer in range
 //! - `crypto.hmac_sha256` — HMAC-SHA256
+//! - `crypto.ed25519_keygen` — Generate Ed25519 keypair
+//! - `crypto.ed25519_sign` — Sign with Ed25519
+//! - `crypto.ed25519_verify` — Verify Ed25519 signature
 //!
 //! All hash operations return hexadecimal strings.
+
+pub mod ed25519;
+pub use ed25519::Ed25519Provider;
 
 use hmac::{Hmac, Mac};
 use lumen_runtime::tools::{ToolError, ToolProvider, ToolSchema};

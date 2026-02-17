@@ -264,6 +264,7 @@ pub struct LumenConfig {
 /// Package metadata section.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub struct PackageInfo {
     /// Package name, optionally namespaced: `@namespace/name` or `name`.
     pub name: String,
@@ -361,36 +362,6 @@ pub struct PackageInfo {
     /// Build script configuration (path to build script or inline config).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<PackageBuildSpec>,
-}
-
-impl Default for PackageInfo {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            version: None,
-            description: None,
-            authors: None,
-            license: None,
-            license_file: None,
-            repository: None,
-            homepage: None,
-            documentation: None,
-            keywords: None,
-            categories: None,
-            readme: None,
-            include: None,
-            exclude: None,
-            links: None,
-            proc_macro: None,
-            edition: None,
-            lumen_version: None,
-            exports: None,
-            bin: HashMap::new(),
-            lib: None,
-            publish: None,
-            build: None,
-        }
-    }
 }
 
 fn default_publish() -> Option<PublishPolicy> {
@@ -590,6 +561,7 @@ pub struct TargetDeps {
 /// A build profile configuration.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub struct BuildProfile {
     /// Optimization level (0-3, "s", "z").
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -630,23 +602,6 @@ pub struct BuildProfile {
     /// Custom environment variables.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env: HashMap<String, String>,
-}
-
-impl Default for BuildProfile {
-    fn default() -> Self {
-        Self {
-            opt_level: None,
-            debug: None,
-            lto: None,
-            strip: None,
-            codegen_units: None,
-            debug_assertions: None,
-            overflow_checks: None,
-            panic: None,
-            incremental: None,
-            env: HashMap::new(),
-        }
-    }
 }
 
 // =============================================================================
@@ -918,6 +873,14 @@ pub struct McpConfig {
 // Implementation
 // =============================================================================
 
+impl std::str::FromStr for LumenConfig {
+    type Err = toml::de::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        toml::from_str(s)
+    }
+}
+
 impl LumenConfig {
     /// Get the registry URL to use.
     /// Precedence: env var > config > default
@@ -979,11 +942,6 @@ impl LumenConfig {
             }
         }
         None
-    }
-
-    /// Parse a TOML string directly.
-    pub fn from_str(s: &str) -> Result<Self, toml::de::Error> {
-        toml::from_str(s)
     }
 
     /// Generate a default template.

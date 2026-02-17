@@ -209,6 +209,7 @@ pub struct CellInfo {
     pub effects: Vec<String>,
     /// Generic type parameter names (e.g. ["T", "U"])
     pub generic_params: Vec<String>,
+    pub must_use: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -354,12 +355,156 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
     resolve_with_base(program, SymbolTable::new())
 }
 
+/// Like `resolve`, but always returns the partial symbol table alongside any errors.
+/// This allows downstream passes (typecheck, constraints) to run even when resolution fails.
+pub fn resolve_partial(program: &Program) -> (SymbolTable, Vec<ResolveError>) {
+    resolve_with_base_partial(program, SymbolTable::new())
+}
+
+/// Like `resolve_with_base`, but always returns the partial symbol table alongside any errors.
+pub fn resolve_with_base_partial(
+    program: &Program,
+    base: SymbolTable,
+) -> (SymbolTable, Vec<ResolveError>) {
+    resolve_with_base_inner(program, base)
+}
+
 /// Resolve all names in a program, using a pre-populated symbol table as the base.
 /// This is useful for multi-file compilation where imported symbols need to be available.
 pub fn resolve_with_base(
     program: &Program,
-    mut table: SymbolTable,
+    table: SymbolTable,
 ) -> Result<SymbolTable, Vec<ResolveError>> {
+    let (table, errors) = resolve_with_base_inner(program, table);
+    if errors.is_empty() {
+        Ok(table)
+    } else {
+        Err(errors)
+    }
+}
+
+/// Recursively scan a cell body for local definitions (LocalRecord, LocalEnum,
+/// LocalCell) and register them in the symbol table as if they were top-level
+/// definitions. This allows them to be referenced within the enclosing cell
+/// and supports nested function/type patterns.
+fn register_local_defs_in_body(
+    body: &[Stmt],
+    table: &mut SymbolTable,
+    errors: &mut Vec<ResolveError>,
+) {
+    use std::collections::hash_map::Entry;
+    for stmt in body {
+        match stmt {
+            Stmt::LocalRecord(r) => {
+                if table.type_aliases.contains_key(&r.name) {
+                    errors.push(ResolveError::Duplicate {
+                        name: r.name.clone(),
+                        line: r.span.line,
+                    });
+                } else {
+                    match table.types.entry(r.name.clone()) {
+                        Entry::Occupied(_) => {
+                            errors.push(ResolveError::Duplicate {
+                                name: r.name.clone(),
+                                line: r.span.line,
+                            });
+                        }
+                        Entry::Vacant(entry) => {
+                            entry.insert(TypeInfo {
+                                kind: TypeInfoKind::Record(r.clone()),
+                                generic_params: r
+                                    .generic_params
+                                    .iter()
+                                    .map(|gp| gp.name.clone())
+                                    .collect(),
+                            });
+                        }
+                    }
+                }
+            }
+            Stmt::LocalEnum(e) => {
+                if table.type_aliases.contains_key(&e.name) {
+                    errors.push(ResolveError::Duplicate {
+                        name: e.name.clone(),
+                        line: e.span.line,
+                    });
+                } else {
+                    match table.types.entry(e.name.clone()) {
+                        Entry::Occupied(_) => {
+                            errors.push(ResolveError::Duplicate {
+                                name: e.name.clone(),
+                                line: e.span.line,
+                            });
+                        }
+                        Entry::Vacant(entry) => {
+                            entry.insert(TypeInfo {
+                                kind: TypeInfoKind::Enum(e.clone()),
+                                generic_params: e
+                                    .generic_params
+                                    .iter()
+                                    .map(|gp| gp.name.clone())
+                                    .collect(),
+                            });
+                        }
+                    }
+                }
+            }
+            Stmt::LocalCell(c) => {
+                match table.cells.entry(c.name.clone()) {
+                    Entry::Occupied(_) => {
+                        errors.push(ResolveError::Duplicate {
+                            name: c.name.clone(),
+                            line: c.span.line,
+                        });
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(CellInfo {
+                            params: c
+                                .params
+                                .iter()
+                                .map(|p| (p.name.clone(), p.ty.clone(), p.variadic))
+                                .collect(),
+                            return_type: c.return_type.clone(),
+                            effects: c.effects.clone(),
+                            generic_params: c
+                                .generic_params
+                                .iter()
+                                .map(|gp| gp.name.clone())
+                                .collect(),
+                            must_use: c.must_use,
+                        });
+                    }
+                }
+                // Recurse into the nested cell's body for deeper nesting
+                register_local_defs_in_body(&c.body, table, errors);
+            }
+            // Recurse into block-containing statements so we catch nested defs
+            // inside if/for/while/loop/match/defer bodies.
+            Stmt::If(s) => {
+                register_local_defs_in_body(&s.then_body, table, errors);
+                if let Some(ref eb) = s.else_body {
+                    register_local_defs_in_body(eb, table, errors);
+                }
+            }
+            Stmt::For(s) => register_local_defs_in_body(&s.body, table, errors),
+            Stmt::While(s) => register_local_defs_in_body(&s.body, table, errors),
+            Stmt::Loop(s) => register_local_defs_in_body(&s.body, table, errors),
+            Stmt::Match(s) => {
+                for arm in &s.arms {
+                    register_local_defs_in_body(&arm.body, table, errors);
+                }
+            }
+            Stmt::Defer(s) => register_local_defs_in_body(&s.body, table, errors),
+            _ => {}
+        }
+    }
+}
+
+/// Internal implementation that always returns the (possibly partial) symbol table and any errors.
+fn resolve_with_base_inner(
+    program: &Program,
+    mut table: SymbolTable,
+) -> (SymbolTable, Vec<ResolveError>) {
     let mut errors = Vec::new();
     let doc_mode = parse_directive_bool(program, "doc_mode").unwrap_or(false);
 
@@ -385,7 +530,11 @@ pub fn resolve_with_base(
                         Entry::Vacant(entry) => {
                             entry.insert(TypeInfo {
                                 kind: TypeInfoKind::Record(r.clone()),
-                                generic_params: r.generic_params.iter().map(|gp| gp.name.clone()).collect(),
+                                generic_params: r
+                                    .generic_params
+                                    .iter()
+                                    .map(|gp| gp.name.clone())
+                                    .collect(),
                             });
                         }
                     }
@@ -409,7 +558,11 @@ pub fn resolve_with_base(
                         Entry::Vacant(entry) => {
                             entry.insert(TypeInfo {
                                 kind: TypeInfoKind::Enum(e.clone()),
-                                generic_params: e.generic_params.iter().map(|gp| gp.name.clone()).collect(),
+                                generic_params: e
+                                    .generic_params
+                                    .iter()
+                                    .map(|gp| gp.name.clone())
+                                    .collect(),
                             });
                         }
                     }
@@ -432,6 +585,7 @@ pub fn resolve_with_base(
                         return_type: c.return_type.clone(),
                         effects: c.effects.clone(),
                         generic_params: c.generic_params.iter().map(|gp| gp.name.clone()).collect(),
+                        must_use: c.must_use,
                     });
                 }
             },
@@ -453,30 +607,28 @@ pub fn resolve_with_base(
 
                 // Check cross-kind: agent name vs explicit record/enum type
                 match table.types.entry(a.name.clone()) {
-                    Entry::Occupied(existing) => {
-                        match &existing.get().kind {
-                            TypeInfoKind::Builtin => {
-                                errors.push(ResolveError::Duplicate {
-                                    name: a.name.clone(),
-                                    line: a.span.line,
-                                });
-                            }
-                            TypeInfoKind::Record(rd) => {
-                                if rd.span.line != a.span.line {
-                                    errors.push(ResolveError::Duplicate {
-                                        name: a.name.clone(),
-                                        line: a.span.line,
-                                    });
-                                }
-                            }
-                            TypeInfoKind::Enum(_) => {
+                    Entry::Occupied(existing) => match &existing.get().kind {
+                        TypeInfoKind::Builtin => {
+                            errors.push(ResolveError::Duplicate {
+                                name: a.name.clone(),
+                                line: a.span.line,
+                            });
+                        }
+                        TypeInfoKind::Record(rd) => {
+                            if rd.span.line != a.span.line {
                                 errors.push(ResolveError::Duplicate {
                                     name: a.name.clone(),
                                     line: a.span.line,
                                 });
                             }
                         }
-                    }
+                        TypeInfoKind::Enum(_) => {
+                            errors.push(ResolveError::Duplicate {
+                                name: a.name.clone(),
+                                line: a.span.line,
+                            });
+                        }
+                    },
                     Entry::Vacant(entry) => {
                         entry.insert(TypeInfo {
                             kind: TypeInfoKind::Record(RecordDef {
@@ -500,6 +652,7 @@ pub fn resolve_with_base(
                             return_type: Some(TypeExpr::Named(a.name.clone(), a.span)),
                             effects: vec![],
                             generic_params: vec![],
+                            must_use: false,
                         },
                     );
                 }
@@ -522,7 +675,12 @@ pub fn resolve_with_base(
                                     .collect(),
                                 return_type: cell.return_type.clone(),
                                 effects: cell.effects.clone(),
-                                generic_params: cell.generic_params.iter().map(|gp| gp.name.clone()).collect(),
+                                generic_params: cell
+                                    .generic_params
+                                    .iter()
+                                    .map(|gp| gp.name.clone())
+                                    .collect(),
+                                must_use: cell.must_use,
                             });
                         }
                     }
@@ -622,6 +780,7 @@ pub fn resolve_with_base(
                             return_type: Some(TypeExpr::Named(p.name.clone(), p.span)),
                             effects: vec![],
                             generic_params: vec![],
+                            must_use: false,
                         },
                     );
                 }
@@ -635,7 +794,12 @@ pub fn resolve_with_base(
                             .collect(),
                         return_type: cell.return_type.clone(),
                         effects: cell.effects.clone(),
-                        generic_params: cell.generic_params.iter().map(|gp| gp.name.clone()).collect(),
+                        generic_params: cell
+                            .generic_params
+                            .iter()
+                            .map(|gp| gp.name.clone())
+                            .collect(),
+                        must_use: cell.must_use,
                     });
                 }
                 for g in &p.grants {
@@ -670,7 +834,12 @@ pub fn resolve_with_base(
                             .collect(),
                         return_type: op.return_type.clone(),
                         effects: op.effects.clone(),
-                        generic_params: op.generic_params.iter().map(|gp| gp.name.clone()).collect(),
+                        generic_params: op
+                            .generic_params
+                            .iter()
+                            .map(|gp| gp.name.clone())
+                            .collect(),
+                        must_use: false,
                     });
                 }
             }
@@ -709,7 +878,12 @@ pub fn resolve_with_base(
                             .collect(),
                         return_type: handle.return_type.clone(),
                         effects: handle.effects.clone(),
-                        generic_params: handle.generic_params.iter().map(|gp| gp.name.clone()).collect(),
+                        generic_params: handle
+                            .generic_params
+                            .iter()
+                            .map(|gp| gp.name.clone())
+                            .collect(),
+                        must_use: false,
                     });
                 }
             }
@@ -776,24 +950,75 @@ pub fn resolve_with_base(
                     methods,
                 });
             }
-            Item::ConstDecl(c) => {
-                match table.consts.entry(c.name.clone()) {
+            Item::ConstDecl(c) => match table.consts.entry(c.name.clone()) {
+                Entry::Occupied(_) => {
+                    errors.push(ResolveError::Duplicate {
+                        name: c.name.clone(),
+                        line: c.span.line,
+                    });
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(ConstInfo {
+                        name: c.name.clone(),
+                        ty: c.type_ann.clone(),
+                        value: Some(c.value.clone()),
+                    });
+                }
+            },
+            Item::Import(_) | Item::MacroDecl(_) => {}
+        }
+    }
+
+    // Register local definitions (nested records, enums, cells inside cell bodies)
+    // by scanning all cell bodies for LocalRecord/LocalEnum/LocalCell statements.
+    for item in &program.items {
+        let bodies: Vec<&[Stmt]> = match item {
+            Item::Cell(c) => vec![&c.body],
+            Item::Process(p) => p.cells.iter().map(|c| c.body.as_slice()).collect(),
+            Item::Agent(a) => a.cells.iter().map(|c| c.body.as_slice()).collect(),
+            _ => vec![],
+        };
+        for body in bodies {
+            register_local_defs_in_body(body, &mut table, &mut errors);
+        }
+    }
+
+    // T208: Register impl block methods as cells in the symbol table so they
+    // can be typechecked and referenced. Each method is registered as
+    // "TargetType.method_name".
+    for item in &program.items {
+        if let Item::Impl(i) = item {
+            // Collect generics from the impl block itself
+            let impl_generics: Vec<String> =
+                i.generic_params.iter().map(|g| g.name.clone()).collect();
+            for method in &i.cells {
+                let method_name = format!("{}.{}", i.target_type, method.name);
+                use std::collections::hash_map::Entry;
+                match table.cells.entry(method_name.clone()) {
                     Entry::Occupied(_) => {
                         errors.push(ResolveError::Duplicate {
-                            name: c.name.clone(),
-                            line: c.span.line,
+                            name: method_name,
+                            line: method.span.line,
                         });
                     }
                     Entry::Vacant(entry) => {
-                        entry.insert(ConstInfo {
-                            name: c.name.clone(),
-                            ty: c.type_ann.clone(),
-                            value: Some(c.value.clone()),
+                        let mut method_generic_params = impl_generics.clone();
+                        method_generic_params
+                            .extend(method.generic_params.iter().map(|gp| gp.name.clone()));
+                        entry.insert(CellInfo {
+                            params: method
+                                .params
+                                .iter()
+                                .map(|p| (p.name.clone(), p.ty.clone(), p.variadic))
+                                .collect(),
+                            return_type: method.return_type.clone(),
+                            effects: method.effects.clone(),
+                            generic_params: method_generic_params,
+                            must_use: method.must_use,
                         });
                     }
                 }
             }
-            Item::Import(_) | Item::MacroDecl(_) => {}
         }
     }
 
@@ -1182,11 +1407,7 @@ pub fn resolve_with_base(
 
     apply_effect_inference(program, &mut table, &mut errors);
 
-    if errors.is_empty() {
-        Ok(table)
-    } else {
-        Err(errors)
-    }
+    (table, errors)
 }
 
 fn check_generic_param_bounds(
@@ -1220,7 +1441,22 @@ fn check_impl_target_type_refs(
         });
     }
 
-    let target = TypeExpr::Named(impl_decl.target_type.clone(), impl_decl.span);
+    // The target_type may include generic parameters, e.g. "Box[T]".
+    // Parse it into the appropriate TypeExpr variant so type-ref checking
+    // validates the base name ("Box") and treats the parameters as generics.
+    let target_type = &impl_decl.target_type;
+    let target = if let Some(bracket_pos) = target_type.find('[') {
+        let base_name = target_type[..bracket_pos].to_string();
+        // Extract the contents between [ and ]
+        let inner = &target_type[bracket_pos + 1..target_type.len() - 1];
+        let args: Vec<TypeExpr> = inner
+            .split(',')
+            .map(|s| TypeExpr::Named(s.trim().to_string(), impl_decl.span))
+            .collect();
+        TypeExpr::Generic(base_name, args, impl_decl.span)
+    } else {
+        TypeExpr::Named(target_type.clone(), impl_decl.span)
+    };
     check_type_refs_with_generics(&target, table, type_alias_arities, errors, generics);
 }
 
@@ -1252,9 +1488,10 @@ fn check_effect_grants_for(
 
         // Effects that correspond to a declared `effect` block are algebraic effects
         // and don't need tool grants (they are handled by handle...with...end blocks)
-        let is_declared_effect = table.effects.keys().any(|name| {
-            name.to_lowercase() == effect.to_lowercase()
-        });
+        let is_declared_effect = table
+            .effects
+            .keys()
+            .any(|name| name.to_lowercase() == effect.to_lowercase());
         if is_declared_effect {
             continue;
         }
@@ -1806,9 +2043,12 @@ fn infer_machine_expr_type(expr: &Expr, scope: &HashMap<String, TypeExpr>) -> Op
                 | BinOp::Or
                 | BinOp::In => Some("Bool".to_string()),
                 BinOp::PipeForward | BinOp::Concat | BinOp::Compose => Some("Any".to_string()),
-                BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
-                    Some("Int".to_string())
-                }
+                BinOp::BitAnd
+                | BinOp::BitOr
+                | BinOp::BitXor
+                | BinOp::Shl
+                | BinOp::Shr
+                | BinOp::Spaceship => Some("Int".to_string()),
             }
         }
         _ => None,
@@ -2127,6 +2367,8 @@ fn collect_stmt_call_requirements(
                 collect_stmt_call_requirements(stmt, table, out);
             }
         }
+        // Local definitions — no call requirements to collect.
+        Stmt::LocalRecord(_) | Stmt::LocalEnum(_) | Stmt::LocalCell(_) => {}
     }
 }
 
@@ -2152,6 +2394,14 @@ fn collect_expr_call_requirements(
         | Expr::SpreadExpr(inner, _)
         | Expr::IsType { expr: inner, .. }
         | Expr::TypeCast { expr: inner, .. } => collect_expr_call_requirements(inner, table, out),
+        Expr::TryElse {
+            expr: inner,
+            handler,
+            ..
+        } => {
+            collect_expr_call_requirements(inner, table, out);
+            collect_expr_call_requirements(handler, table, out);
+        }
         Expr::Call(callee, args, span) => {
             collect_expr_call_requirements(callee, table, out);
             for a in args {
@@ -2233,10 +2483,14 @@ fn collect_expr_call_requirements(
         Expr::Comprehension {
             body,
             iter,
+            extra_clauses,
             condition,
             ..
         } => {
             collect_expr_call_requirements(iter, table, out);
+            for clause in extra_clauses {
+                collect_expr_call_requirements(&clause.iter, table, out);
+            }
             if let Some(c) = condition {
                 collect_expr_call_requirements(c, table, out);
             }
@@ -2418,6 +2672,8 @@ fn collect_stmt_effect_evidence(
                 collect_stmt_effect_evidence(stmt, table, current, out);
             }
         }
+        // Local definitions — no effect evidence to collect.
+        Stmt::LocalRecord(_) | Stmt::LocalEnum(_) | Stmt::LocalCell(_) => {}
     }
 }
 
@@ -2444,6 +2700,14 @@ fn collect_expr_effect_evidence(
         | Expr::IsType { expr: inner, .. }
         | Expr::TypeCast { expr: inner, .. } => {
             collect_expr_effect_evidence(inner, table, current, out);
+        }
+        Expr::TryElse {
+            expr: inner,
+            handler,
+            ..
+        } => {
+            collect_expr_effect_evidence(inner, table, current, out);
+            collect_expr_effect_evidence(handler, table, current, out);
         }
         Expr::AwaitExpr(inner, span) => {
             collect_expr_effect_evidence(inner, table, current, out);
@@ -2634,10 +2898,14 @@ fn collect_expr_effect_evidence(
         Expr::Comprehension {
             body,
             iter,
+            extra_clauses,
             condition,
             ..
         } => {
             collect_expr_effect_evidence(iter, table, current, out);
+            for clause in extra_clauses {
+                collect_expr_effect_evidence(&clause.iter, table, current, out);
+            }
             if let Some(c) = condition {
                 collect_expr_effect_evidence(c, table, current, out);
             }
@@ -2683,7 +2951,12 @@ fn collect_expr_effect_evidence(
         Expr::ComptimeExpr(inner, _) => {
             collect_expr_effect_evidence(inner, table, current, out);
         }
-        Expr::Perform { effect_name, args, span, .. } => {
+        Expr::Perform {
+            effect_name,
+            args,
+            span,
+            ..
+        } => {
             for arg in args {
                 collect_expr_effect_evidence(arg, table, current, out);
             }
@@ -2809,6 +3082,8 @@ fn infer_stmt_effects(
                 infer_stmt_effects(stmt, table, current, out);
             }
         }
+        // Local definitions — no effects to infer.
+        Stmt::LocalRecord(_) | Stmt::LocalEnum(_) | Stmt::LocalCell(_) => {}
     }
 }
 
@@ -2839,6 +3114,14 @@ fn infer_expr_effects(
             if matches!(expr, Expr::AwaitExpr(_, _)) {
                 out.insert("async".into());
             }
+        }
+        Expr::TryElse {
+            expr: inner,
+            handler,
+            ..
+        } => {
+            infer_expr_effects(inner, table, current, out);
+            infer_expr_effects(handler, table, current, out);
         }
         Expr::Call(callee, args, _) => {
             infer_expr_effects(callee, table, current, out);
@@ -2984,10 +3267,14 @@ fn infer_expr_effects(
         Expr::Comprehension {
             body,
             iter,
+            extra_clauses,
             condition,
             ..
         } => {
             infer_expr_effects(iter, table, current, out);
+            for clause in extra_clauses {
+                infer_expr_effects(&clause.iter, table, current, out);
+            }
             if let Some(c) = condition {
                 infer_expr_effects(c, table, current, out);
             }
@@ -3020,7 +3307,9 @@ fn infer_expr_effects(
         Expr::ComptimeExpr(inner, _) => {
             infer_expr_effects(inner, table, current, out);
         }
-        Expr::Perform { effect_name, args, .. } => {
+        Expr::Perform {
+            effect_name, args, ..
+        } => {
             for arg in args {
                 infer_expr_effects(arg, table, current, out);
             }
@@ -3853,6 +4142,7 @@ mod tests {
                 is_async: false,
                 is_extern: false,
                 where_clauses: vec![],
+                must_use: false,
                 span: sp,
                 doc: None,
             })],
@@ -3891,6 +4181,7 @@ mod tests {
                 is_pub: false,
                 is_async: false,
                 is_extern: false,
+                must_use: false,
                 where_clauses: vec![],
                 span: sp,
                 doc: None,
@@ -4276,10 +4567,7 @@ mod tests {
     #[test]
     fn test_duplicate_type_alias_vs_record() {
         // A type alias and a record with the same name should conflict
-        let err = resolve_src(
-            "type Foo = String\n\nrecord Foo\n  x: Int\nend",
-        )
-        .unwrap_err();
+        let err = resolve_src("type Foo = String\n\nrecord Foo\n  x: Int\nend").unwrap_err();
         assert!(err.iter().any(|e| matches!(
             e,
             ResolveError::Duplicate { name, .. } if name == "Foo"
@@ -4289,10 +4577,7 @@ mod tests {
     #[test]
     fn test_duplicate_record_vs_type_alias() {
         // Reverse order: record first, then type alias
-        let err = resolve_src(
-            "record Foo\n  x: Int\nend\n\ntype Foo = String",
-        )
-        .unwrap_err();
+        let err = resolve_src("record Foo\n  x: Int\nend\n\ntype Foo = String").unwrap_err();
         assert!(err.iter().any(|e| matches!(
             e,
             ResolveError::Duplicate { name, .. } if name == "Foo"
@@ -4301,10 +4586,7 @@ mod tests {
 
     #[test]
     fn test_duplicate_type_alias_vs_enum() {
-        let err = resolve_src(
-            "type Color = String\n\nenum Color\n  Red\n  Blue\nend",
-        )
-        .unwrap_err();
+        let err = resolve_src("type Color = String\n\nenum Color\n  Red\n  Blue\nend").unwrap_err();
         assert!(err.iter().any(|e| matches!(
             e,
             ResolveError::Duplicate { name, .. } if name == "Color"
@@ -4313,10 +4595,7 @@ mod tests {
 
     #[test]
     fn test_duplicate_enum_vs_type_alias() {
-        let err = resolve_src(
-            "enum Color\n  Red\n  Blue\nend\n\ntype Color = String",
-        )
-        .unwrap_err();
+        let err = resolve_src("enum Color\n  Red\n  Blue\nend\n\ntype Color = String").unwrap_err();
         assert!(err.iter().any(|e| matches!(
             e,
             ResolveError::Duplicate { name, .. } if name == "Color"
@@ -4326,10 +4605,7 @@ mod tests {
     #[test]
     fn test_duplicate_type_alias_detection() {
         // Two type aliases with the same name
-        let err = resolve_src(
-            "type Foo = String\n\ntype Foo = Int",
-        )
-        .unwrap_err();
+        let err = resolve_src("type Foo = String\n\ntype Foo = Int").unwrap_err();
         assert!(err.iter().any(|e| matches!(
             e,
             ResolveError::Duplicate { name, .. } if name == "Foo"
@@ -4338,10 +4614,7 @@ mod tests {
 
     #[test]
     fn test_duplicate_const_detection() {
-        let err = resolve_src(
-            "const MAX = 100\n\nconst MAX = 200",
-        )
-        .unwrap_err();
+        let err = resolve_src("const MAX = 100\n\nconst MAX = 200").unwrap_err();
         assert!(err.iter().any(|e| matches!(
             e,
             ResolveError::Duplicate { name, .. } if name == "MAX"
@@ -4375,10 +4648,7 @@ mod tests {
     #[test]
     fn test_record_vs_enum_same_name() {
         // Record and enum with same name should conflict (both go in types)
-        let err = resolve_src(
-            "record Foo\n  x: Int\nend\n\nenum Foo\n  A\n  B\nend",
-        )
-        .unwrap_err();
+        let err = resolve_src("record Foo\n  x: Int\nend\n\nenum Foo\n  A\n  B\nend").unwrap_err();
         assert!(err.iter().any(|e| matches!(
             e,
             ResolveError::Duplicate { name, .. } if name == "Foo"

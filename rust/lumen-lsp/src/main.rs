@@ -1,17 +1,21 @@
 //! Lumen Language Server Protocol implementation
 //!
 //! Provides IDE features: diagnostics, completion, hover, go-to-definition,
-//! semantic tokens, inlay hints, and more.
+//! semantic tokens, inlay hints, rename, code actions, and more.
 
 mod cache;
 mod code_actions;
 mod completion;
+pub mod dap;
 mod diagnostics;
 mod document_symbols;
 mod folding_ranges;
+mod formatting;
 mod goto_definition;
 mod hover;
+mod implementations;
 mod inlay_hints;
+mod rename;
 mod semantic_tokens;
 mod signature_help;
 
@@ -79,8 +83,13 @@ fn main() {
         inlay_hint_provider: Some(OneOf::Left(true)),
         code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
-        document_formatting_provider: Some(OneOf::Left(false)), // Formatter not implemented via LSP
+        document_formatting_provider: Some(OneOf::Left(true)),
+        rename_provider: Some(OneOf::Right(RenameOptions {
+            prepare_provider: Some(true),
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+        })),
         references_provider: Some(OneOf::Left(true)),
+        implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
         ..Default::default()
     };
@@ -634,6 +643,27 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
                 let _ = connection.sender.send(Message::Response(response));
             }
         }
+        request::GotoImplementation::METHOD => {
+            if let Ok(params) = serde_json::from_value::<GotoDefinitionParams>(req.params.clone()) {
+                let uri = params
+                    .text_document_position_params
+                    .text_document
+                    .uri
+                    .clone();
+                let position = params.text_document_position_params.position;
+                let text = cache.get_text(&uri).map(|s| s.as_str()).unwrap_or("");
+                let program = cache.get_program(&uri);
+
+                let result = implementations::build_implementations(position, text, program, &uri);
+
+                let response = Response {
+                    id: req.id.clone(),
+                    result: serde_json::to_value(result).ok(),
+                    error: None,
+                };
+                let _ = connection.sender.send(Message::Response(response));
+            }
+        }
         request::HoverRequest::METHOD => {
             if let Ok(params) = serde_json::from_value::<HoverParams>(req.params.clone()) {
                 let uri = &params.text_document_position_params.text_document.uri;
@@ -699,9 +729,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
             }
         }
         request::DocumentSymbolRequest::METHOD => {
-            if let Ok(params) =
-                serde_json::from_value::<DocumentSymbolParams>(req.params.clone())
-            {
+            if let Ok(params) = serde_json::from_value::<DocumentSymbolParams>(req.params.clone()) {
                 let uri = &params.text_document.uri;
                 let text = cache.get_text(uri).map(|s| s.as_str()).unwrap_or("");
                 let program = cache.get_program(uri);
@@ -717,9 +745,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
             }
         }
         request::SignatureHelpRequest::METHOD => {
-            if let Ok(params) =
-                serde_json::from_value::<SignatureHelpParams>(req.params.clone())
-            {
+            if let Ok(params) = serde_json::from_value::<SignatureHelpParams>(req.params.clone()) {
                 let uri = &params.text_document_position_params.text_document.uri;
                 let text = cache.get_text(uri).map(|s| s.as_str()).unwrap_or("");
                 let program = cache.get_program(uri);
@@ -754,14 +780,30 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
             let _ = connection.sender.send(Message::Response(response));
         }
         request::FoldingRangeRequest::METHOD => {
-            if let Ok(params) =
-                serde_json::from_value::<FoldingRangeParams>(req.params.clone())
-            {
+            if let Ok(params) = serde_json::from_value::<FoldingRangeParams>(req.params.clone()) {
                 let uri = &params.text_document.uri;
                 let text = cache.get_text(uri).map(|s| s.as_str()).unwrap_or("");
                 let program = cache.get_program(uri);
 
                 let result = folding_ranges::build_folding_ranges(params, text, program);
+
+                let response = Response {
+                    id: req.id.clone(),
+                    result: Some(serde_json::to_value(result).unwrap()),
+                    error: None,
+                };
+                let _ = connection.sender.send(Message::Response(response));
+            }
+        }
+        request::Formatting::METHOD => {
+            if let Ok(params) =
+                serde_json::from_value::<DocumentFormattingParams>(req.params.clone())
+            {
+                let uri = params.text_document.uri.clone();
+                let text = cache.get_text(&uri).map(|s| s.as_str()).unwrap_or("");
+                let uri_path = uri.path().as_str().to_string();
+
+                let result = formatting::build_formatting(params, text, &uri_path);
 
                 let response = Response {
                     id: req.id.clone(),
@@ -783,6 +825,44 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
             let response = Response {
                 id: req.id.clone(),
                 result: Some(serde_json::to_value(Vec::<SymbolInformation>::new()).unwrap()),
+                error: None,
+            };
+            let _ = connection.sender.send(Message::Response(response));
+        }
+        request::Rename::METHOD => {
+            let result =
+                if let Ok(params) = serde_json::from_value::<RenameParams>(req.params.clone()) {
+                    let uri = params.text_document_position.text_document.uri.clone();
+                    let text = cache.get_text(&uri).cloned().unwrap_or_default();
+                    let program = cache.get_program(&uri);
+                    let position = params.text_document_position.position;
+
+                    rename::rename_symbol(&uri, &text, position, &params.new_name, program)
+                } else {
+                    None
+                };
+            let response = Response {
+                id: req.id.clone(),
+                result: Some(serde_json::to_value(result).unwrap()),
+                error: None,
+            };
+            let _ = connection.sender.send(Message::Response(response));
+        }
+        request::PrepareRenameRequest::METHOD => {
+            let result = if let Ok(params) =
+                serde_json::from_value::<TextDocumentPositionParams>(req.params.clone())
+            {
+                let uri = params.text_document.uri.clone();
+                let text = cache.get_text(&uri).cloned().unwrap_or_default();
+                let program = cache.get_program(&uri);
+
+                rename::prepare_rename(&text, params.position, program)
+            } else {
+                None
+            };
+            let response = Response {
+                id: req.id.clone(),
+                result: Some(serde_json::to_value(result).unwrap()),
                 error: None,
             };
             let _ = connection.sender.send(Message::Response(response));

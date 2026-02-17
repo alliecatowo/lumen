@@ -3,8 +3,10 @@
 //! This crate provides a WASM-compatible interface for compiling and executing
 //! Lumen programs in browser and WASI environments.
 
-use wasm_bindgen::prelude::*;
+pub mod wasi;
+
 use lumen_vm::vm::VM;
+use wasm_bindgen::prelude::*;
 
 /// Result of a compilation or execution operation.
 ///
@@ -70,12 +72,10 @@ pub fn check(source: &str) -> LumenResult {
 #[wasm_bindgen]
 pub fn compile(source: &str) -> LumenResult {
     match lumen_compiler::compile(source) {
-        Ok(module) => {
-            match serde_json::to_string_pretty(&module) {
-                Ok(json) => LumenResult::ok(json),
-                Err(e) => LumenResult::err(format!("Failed to serialize LIR: {}", e)),
-            }
-        }
+        Ok(module) => match serde_json::to_string_pretty(&module) {
+            Ok(json) => LumenResult::ok(json),
+            Err(e) => LumenResult::err(format!("Failed to serialize LIR: {}", e)),
+        },
         Err(err) => {
             let formatted = lumen_compiler::format_error(&err, source, "input.lm");
             LumenResult::err(formatted)

@@ -11,12 +11,14 @@ members = [
     "rust/lumen-provider-fs",
     "rust/lumen-provider-mcp",
     "rust/lumen-provider-gemini",
+    "rust/lumen-codegen",
+    "rust/lumen-tensor",
 ]
 # lumen-wasm excluded - built separately via wasm-pack
 exclude = ["rust/lumen-wasm"]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
 description = "The AI-Native Programming Language"
@@ -35,3 +37,6 @@ clap = { version = "4", features = ["derive"] }
 toml = "0.8"
 num-bigint = "0.4"
 num-traits = "0.2"
+
+[workspace.lints.clippy]
+all = "warn"

@@ -1,5 +1,6 @@
 //! Register VM dispatch loop for executing LIR bytecode.
 
+pub mod continuations;
 mod helpers;
 mod intrinsics;
 mod ops;
@@ -12,19 +13,19 @@ pub(crate) use processes::{
 
 use crate::strings::StringTable;
 use crate::types::{RuntimeField, RuntimeType, RuntimeTypeKind, RuntimeVariant, TypeTable};
-use crate::vm::ops::BinaryOp;
 use crate::values::{
     values_equal, ClosureValue, FutureStatus, FutureValue, RecordValue, StringRef, TraceRefValue,
     UnionValue, Value,
 };
+use crate::vm::ops::BinaryOp;
 use lumen_compiler::compiler::lir::*;
 
 use lumen_runtime::tools::{ProviderRegistry, ToolDispatcher, ToolRequest};
-use std::collections::{BTreeMap, VecDeque};
-use std::rc::Rc;
-use thiserror::Error;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::Arc;
+use thiserror::Error;
 
 /// Type alias for debug callback to simplify type signatures
 pub type DebugCallback = Option<Box<dyn FnMut(&DebugEvent)>>;
@@ -84,8 +85,8 @@ pub enum VmError {
     TypeError(String),
     #[error("no module loaded")]
     NoModule,
-    #[error("arithmetic overflow")]
-    ArithmeticOverflow,
+    #[error("integer overflow in {0}")]
+    ArithmeticOverflow(String),
     #[error("division by zero")]
     DivisionByZero,
     #[error("instruction limit exceeded: {0}")]
@@ -158,8 +159,8 @@ impl VmError {
     /// Check if the underlying error is an ArithmeticOverflow (works through WithStackTrace wrapper).
     pub fn is_arithmetic_overflow(&self) -> bool {
         match self {
-            VmError::ArithmeticOverflow => true,
-            VmError::WithStackTrace { message, .. } => message == "arithmetic overflow",
+            VmError::ArithmeticOverflow(_) => true,
+            VmError::WithStackTrace { message, .. } => message.starts_with("integer overflow in "),
             _ => false,
         }
     }
@@ -190,9 +191,7 @@ impl VmError {
     pub fn is_type_error(&self) -> bool {
         match self {
             VmError::TypeError(_) => true,
-            VmError::WithStackTrace { message, .. } => {
-                message.starts_with("type error at runtime")
-            }
+            VmError::WithStackTrace { message, .. } => message.starts_with("type error at runtime"),
             _ => false,
         }
     }
@@ -272,7 +271,6 @@ pub enum FutureSchedule {
     DeferredFifo,
 }
 
-
 /// Scope for an installed effect handler.
 #[derive(Debug, Clone)]
 pub(crate) struct EffectScope {
@@ -335,6 +333,9 @@ pub struct VM {
     pub(crate) fuel: Option<u64>,
     pub(crate) trace_id: Option<String>,
     pub(crate) trace_seq: u64,
+    /// Effect budget tracking: maps effect name → (remaining_calls, original_limit).
+    /// When a budget is set and remaining reaches 0, further calls are rejected.
+    pub(crate) effect_budgets: HashMap<String, (u32, u32)>,
 }
 
 const MAX_AWAIT_RETRIES: u32 = 10_000;
@@ -371,6 +372,7 @@ impl VM {
             fuel: None,
             trace_id: None,
             trace_seq: 0,
+            effect_budgets: HashMap::new(),
         }
     }
 
@@ -426,23 +428,30 @@ impl VM {
                     let next_prefix = &current_pattern[..next_prefix_start];
                     if let Some(match_pos) = current_input.find(next_prefix) {
                         let val = &current_input[..match_pos];
-                        captures.insert(key.to_string(), Value::String(StringRef::Owned(val.to_string())));
+                        captures.insert(
+                            key.to_string(),
+                            Value::String(StringRef::Owned(val.to_string())),
+                        );
                         current_input = &current_input[match_pos..];
                     } else {
                         return None;
                     }
+                } else if current_pattern.is_empty() {
+                    captures.insert(
+                        key.to_string(),
+                        Value::String(StringRef::Owned(current_input.to_string())),
+                    );
+                    current_input = "";
+                } else if current_input.ends_with(current_pattern) {
+                    let val = &current_input[..current_input.len() - current_pattern.len()];
+                    captures.insert(
+                        key.to_string(),
+                        Value::String(StringRef::Owned(val.to_string())),
+                    );
+                    current_input = "";
+                    current_pattern = "";
                 } else {
-                    if current_pattern.is_empty() {
-                        captures.insert(key.to_string(), Value::String(StringRef::Owned(current_input.to_string())));
-                        current_input = "";
-                    } else if current_input.ends_with(current_pattern) {
-                        let val = &current_input[..current_input.len() - current_pattern.len()];
-                        captures.insert(key.to_string(), Value::String(StringRef::Owned(val.to_string())));
-                        current_input = "";
-                        current_pattern = "";
-                    } else {
-                        return None;
-                    }
+                    return None;
                 }
             } else {
                 return None;
@@ -507,9 +516,7 @@ impl VM {
                 }
                 if addon.kind == "pipeline.stages" {
                     if let Some((pipeline_name, stages_json)) = name.split_once('=') {
-                        if let Ok(stages) =
-                            serde_json::from_str::<Vec<String>>(stages_json)
-                        {
+                        if let Ok(stages) = serde_json::from_str::<Vec<String>>(stages_json) {
                             self.pipeline_stages
                                 .insert(pipeline_name.to_string(), stages);
                         }
@@ -519,7 +526,9 @@ impl VM {
                     if let Some(ref name) = addon.name {
                         if let Some((target, payload)) = name.split_once('=') {
                             if let Some((process_name, config_key)) = target.split_once('.') {
-                                if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(payload) {
+                                if let Ok(json_val) =
+                                    serde_json::from_str::<serde_json::Value>(payload)
+                                {
                                     let val = helpers::json_to_value(&json_val);
                                     self.process_configs
                                         .entry(process_name.to_string())
@@ -658,6 +667,32 @@ impl VM {
     /// When fuel reaches 0, execution stops with a "fuel exhausted" error.
     pub fn set_fuel(&mut self, fuel: u64) {
         self.fuel = Some(fuel);
+    }
+
+    /// Set an effect budget — the maximum number of times `effect` may be
+    /// invoked (via `perform` or tool-call) before the VM rejects further
+    /// calls with a `BudgetExhausted` error.
+    pub fn set_effect_budget(&mut self, effect: &str, limit: u32) {
+        self.effect_budgets
+            .insert(effect.to_string(), (limit, limit));
+    }
+
+    /// Check (and decrement) the budget for `effect`.  Returns `Ok(())` when
+    /// the call is allowed, or `Err(message)` when the budget is exhausted.
+    pub fn check_effect_budget(&mut self, effect: &str) -> Result<(), String> {
+        if let Some((remaining, limit)) = self.effect_budgets.get_mut(effect) {
+            if *remaining == 0 {
+                return Err(format!(
+                    "effect budget exhausted for '{}': limit {} reached",
+                    effect, limit
+                ));
+            }
+            *remaining -= 1;
+            Ok(())
+        } else {
+            // No budget configured for this effect — always allowed.
+            Ok(())
+        }
     }
 
     /// Capture the current call stack for error reporting.
@@ -885,9 +920,7 @@ impl VM {
 
             OpCode::ToolCall => self.check_register(a, cell_registers),
 
-            OpCode::Perform => {
-                self.check_register(a, cell_registers)
-            }
+            OpCode::Perform => self.check_register(a, cell_registers),
             OpCode::HandlePush | OpCode::HandlePop => Ok(()),
             OpCode::Resume => self.check_register(a, cell_registers),
         }
@@ -905,8 +938,9 @@ impl VM {
         }
         let id = self.next_process_instance_id;
         self.next_process_instance_id += 1;
-        let r_mut = Rc::make_mut(r);
-        r_mut.fields
+        let r_mut = Arc::make_mut(r);
+        r_mut
+            .fields
             .insert("__instance_id".to_string(), Value::Int(id as i64));
         r_mut.fields.insert(
             "__process_name".to_string(),
@@ -915,6 +949,7 @@ impl VM {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)] // used by tests / debug tooling
     pub(crate) fn debug_state(&self) -> String {
         format!(
             "process_kinds: {:?}, memory_runtime: {:?}",
@@ -1160,7 +1195,7 @@ impl VM {
             }
             Value::Record(mut record) => {
                 let mut out = BTreeMap::new();
-                for (k, v) in std::mem::take(&mut Rc::make_mut(&mut record).fields) {
+                for (k, v) in std::mem::take(&mut Arc::make_mut(&mut record).fields) {
                     match self.await_value_recursive(v)? {
                         Some(resolved) => {
                             out.insert(k, resolved);
@@ -1168,7 +1203,7 @@ impl VM {
                         None => return Ok(None),
                     }
                 }
-                Rc::make_mut(&mut record).fields = out;
+                Arc::make_mut(&mut record).fields = out;
                 Ok(Some(Value::Record(record)))
             }
             other => Ok(Some(other)),
@@ -1330,8 +1365,7 @@ impl VM {
             ) {
                 match instr.op {
                     OpCode::Call => {
-                        let callee = &self.registers[base + a];
-
+                        let _callee = &self.registers[base + a];
 
                         if let Err(err) = self.dispatch_call(base, a, b) {
                             if self.fail_current_future(err.to_string()) {
@@ -1480,7 +1514,7 @@ impl VM {
                         String::new()
                     };
                     if let Value::Record(ref mut r) = self.registers[base + a] {
-                        Rc::make_mut(r).fields.insert(field_name, val);
+                        Arc::make_mut(r).fields.insert(field_name, val);
                     }
                 }
                 OpCode::GetIndex => {
@@ -1511,14 +1545,30 @@ impl VM {
                             }
                             t[effective as usize].clone()
                         }
-                        (Value::Map(m), _) => {
-                            m.get(&idx.as_string_resolved(&self.strings)).cloned().unwrap_or(Value::Null)
-                        }
+                        (Value::Map(m), _) => m
+                            .get(&idx.as_string_resolved(&self.strings))
+                            .cloned()
+                            .unwrap_or(Value::Null),
                         (Value::Record(r), _) => r
                             .fields
                             .get(&idx.as_string_resolved(&self.strings))
                             .cloned()
                             .unwrap_or(Value::Null),
+                        (Value::Set(s), Value::Int(i)) => {
+                            let ii = *i;
+                            let len = s.len() as i64;
+                            let effective = if ii < 0 { ii + len } else { ii };
+                            if effective < 0 || effective >= len {
+                                return Err(VmError::Runtime(format!(
+                                    "index {} out of bounds for set of size {}",
+                                    ii, len
+                                )));
+                            }
+                            s.iter()
+                                .nth(effective as usize)
+                                .cloned()
+                                .unwrap_or(Value::Null)
+                        }
                         _ => Value::Null,
                     };
                     self.registers[base + a] = val;
@@ -1537,7 +1587,7 @@ impl VM {
                                         i, len
                                     )));
                                 }
-                                Rc::make_mut(l)[effective as usize] = val;
+                                Arc::make_mut(l)[effective as usize] = val;
                             } else {
                                 return Err(VmError::TypeError(format!(
                                     "list index must be an integer, got {}",
@@ -1546,10 +1596,12 @@ impl VM {
                             }
                         }
                         Value::Map(m) => {
-                            Rc::make_mut(m).insert(key.as_string_resolved(&self.strings), val);
+                            Arc::make_mut(m).insert(key.as_string_resolved(&self.strings), val);
                         }
                         Value::Record(r) => {
-                            Rc::make_mut(r).fields.insert(key.as_string_resolved(&self.strings), val);
+                            Arc::make_mut(r)
+                                .fields
+                                .insert(key.as_string_resolved(&self.strings), val);
                         }
                         target => {
                             return Err(VmError::TypeError(format!(
@@ -1593,7 +1645,7 @@ impl VM {
                     let rhs = &self.registers[base + c];
                     // Check for strings first for concatenation
                     if matches!(lhs, Value::String(_)) || matches!(rhs, Value::String(_)) {
-                         self.registers[base + a] = Value::String(StringRef::Owned(format!(
+                        self.registers[base + a] = Value::String(StringRef::Owned(format!(
                             "{}{}",
                             lhs.as_string(),
                             rhs.as_string()
@@ -1620,7 +1672,7 @@ impl VM {
                     self.arith_op(base, a, b, c, BinaryOp::Div)?;
                 }
                 OpCode::FloorDiv => {
-                   self.arith_op(base, a, b, c, BinaryOp::FloorDiv)?;
+                    self.arith_op(base, a, b, c, BinaryOp::FloorDiv)?;
                 }
                 OpCode::Mod => {
                     // Pre-check for integer modulo by zero
@@ -1638,7 +1690,10 @@ impl VM {
                 OpCode::Neg => {
                     let val = &self.registers[base + b];
                     self.registers[base + a] = match val {
-                        Value::Int(n) => Value::Int(-n),
+                        Value::Int(n) => n
+                            .checked_neg()
+                            .map(Value::Int)
+                            .ok_or(VmError::ArithmeticOverflow("negation".to_string()))?,
                         Value::Float(f) => Value::Float(-f),
                         _ => return Err(VmError::TypeError(format!("cannot negate {}", val))),
                     };
@@ -1760,13 +1815,25 @@ impl VM {
                         (Value::BigInt(x), Value::Int(y)) => *x < BigInt::from(*y),
                         (Value::BigInt(x), Value::BigInt(y)) => x < y,
                         (Value::BigInt(x), Value::Float(y)) => {
-                             let af = x.to_f64().unwrap_or_else(|| if x.sign() == num_bigint::Sign::Minus { f64::NEG_INFINITY } else { f64::INFINITY });
-                             af < *y
-                        },
+                            let af = x.to_f64().unwrap_or_else(|| {
+                                if x.sign() == num_bigint::Sign::Minus {
+                                    f64::NEG_INFINITY
+                                } else {
+                                    f64::INFINITY
+                                }
+                            });
+                            af < *y
+                        }
                         (Value::Float(x), Value::BigInt(y)) => {
-                             let bf = y.to_f64().unwrap_or_else(|| if y.sign() == num_bigint::Sign::Minus { f64::NEG_INFINITY } else { f64::INFINITY });
-                             *x < bf
-                        },
+                            let bf = y.to_f64().unwrap_or_else(|| {
+                                if y.sign() == num_bigint::Sign::Minus {
+                                    f64::NEG_INFINITY
+                                } else {
+                                    f64::INFINITY
+                                }
+                            });
+                            *x < bf
+                        }
                         _ => false,
                     };
                     self.registers[base + a] = Value::Bool(result);
@@ -1794,13 +1861,25 @@ impl VM {
                         (Value::BigInt(x), Value::Int(y)) => *x <= BigInt::from(*y),
                         (Value::BigInt(x), Value::BigInt(y)) => x <= y,
                         (Value::BigInt(x), Value::Float(y)) => {
-                             let af = x.to_f64().unwrap_or_else(|| if x.sign() == num_bigint::Sign::Minus { f64::NEG_INFINITY } else { f64::INFINITY });
-                             af <= *y
-                        },
+                            let af = x.to_f64().unwrap_or_else(|| {
+                                if x.sign() == num_bigint::Sign::Minus {
+                                    f64::NEG_INFINITY
+                                } else {
+                                    f64::INFINITY
+                                }
+                            });
+                            af <= *y
+                        }
                         (Value::Float(x), Value::BigInt(y)) => {
-                             let bf = y.to_f64().unwrap_or_else(|| if y.sign() == num_bigint::Sign::Minus { f64::NEG_INFINITY } else { f64::INFINITY });
-                             *x <= bf
-                        },
+                            let bf = y.to_f64().unwrap_or_else(|| {
+                                if y.sign() == num_bigint::Sign::Minus {
+                                    f64::NEG_INFINITY
+                                } else {
+                                    f64::INFINITY
+                                }
+                            });
+                            *x <= bf
+                        }
                         _ => false,
                     };
                     self.registers[base + a] = Value::Bool(result);
@@ -1936,7 +2015,9 @@ impl VM {
                         let iter = &self.registers[base + a];
                         let elem = match iter {
                             Value::List(l) => l.get(idx as usize).cloned().unwrap_or(Value::Null),
-                            Value::Set(s) => s.iter().nth(idx as usize).cloned().unwrap_or(Value::Null),
+                            Value::Set(s) => {
+                                s.iter().nth(idx as usize).cloned().unwrap_or(Value::Null)
+                            }
                             Value::Tuple(t) => t.get(idx as usize).cloned().unwrap_or(Value::Null),
                             _ => Value::Null,
                         };
@@ -1966,9 +2047,20 @@ impl VM {
                                 let key = keys[idx as usize].clone();
                                 let val = m.get(&key).cloned().unwrap_or(Value::Null);
                                 (
-                                    Value::new_tuple(vec![Value::String(StringRef::Owned(key)), val]),
+                                    Value::new_tuple(vec![
+                                        Value::String(StringRef::Owned(key)),
+                                        val,
+                                    ]),
                                     true,
                                 )
+                            } else {
+                                (Value::Null, false)
+                            }
+                        }
+                        Value::Set(s) => {
+                            let items: Vec<_> = s.iter().collect();
+                            if (idx as usize) < items.len() {
+                                (items[idx as usize].clone(), true)
                             } else {
                                 (Value::Null, false)
                             }
@@ -2086,6 +2178,23 @@ impl VM {
                             continue;
                         }
                         return Err(VmError::ToolError(err_msg));
+                    }
+
+                    // ── Effect-budget enforcement (T158) ──
+                    // Check budgets against both the tool alias and the tool_id
+                    // prefix (e.g. "http" from "http.get") so callers can set
+                    // budgets at either granularity.
+                    for budget_key in [tool_alias.as_str(), tool_id.split('.').next().unwrap_or("")]
+                    {
+                        if let Some((remaining, limit)) = self.effect_budgets.get_mut(budget_key) {
+                            if *remaining == 0 {
+                                return Err(VmError::ToolError(format!(
+                                    "effect budget exceeded for '{}': limit {} reached",
+                                    budget_key, limit
+                                )));
+                            }
+                            *remaining -= 1;
+                        }
                     }
 
                     let request = ToolRequest {
@@ -2214,7 +2323,7 @@ impl VM {
                 OpCode::Append => {
                     let val = self.registers[base + b].clone();
                     if let Value::List(ref mut l) = self.registers[base + a] {
-                        Rc::make_mut(l).push(val);
+                        Arc::make_mut(l).push(val);
                     }
                 }
 
@@ -2243,7 +2352,7 @@ impl VM {
 
                 // Algebraic effects
                 OpCode::HandlePush => {
-                    let meta_idx = a as usize;
+                    let meta_idx = a;
                     let offset = instr.bx() as usize;
                     let frame = self.frames.last().unwrap();
                     let handler_ip = frame.ip.saturating_sub(1) + offset;
@@ -2273,17 +2382,36 @@ impl VM {
                     let cell = &module.cells[cell_idx];
                     let eff_name = match &cell.constants[b] {
                         Constant::String(s) => s.clone(),
-                        _ => return Err(VmError::Runtime("perform: expected string constant for effect name".into())),
+                        _ => {
+                            return Err(VmError::Runtime(
+                                "perform: expected string constant for effect name".into(),
+                            ))
+                        }
                     };
                     let op_name = match &cell.constants[c] {
                         Constant::String(s) => s.clone(),
-                        _ => return Err(VmError::Runtime("perform: expected string constant for operation".into())),
+                        _ => {
+                            return Err(VmError::Runtime(
+                                "perform: expected string constant for operation".into(),
+                            ))
+                        }
                     };
 
+                    // ── Effect-budget enforcement (T158) ──
+                    if let Err(msg) = self.check_effect_budget(&eff_name) {
+                        return Err(VmError::Runtime(format!(
+                            "effect budget exceeded for '{}.{}': {}",
+                            eff_name, op_name, msg
+                        )));
+                    }
+
                     // Search effect_handlers stack (top to bottom) for matching handler
-                    let handler_scope = self.effect_handlers.iter().rev().find(|scope| {
-                        scope.effect_name == eff_name && scope.operation == op_name
-                    }).cloned();
+                    let handler_scope = self
+                        .effect_handlers
+                        .iter()
+                        .rev()
+                        .find(|scope| scope.effect_name == eff_name && scope.operation == op_name)
+                        .cloned();
 
                     if let Some(scope) = handler_scope {
                         // Save continuation: snapshot current execution state
@@ -2313,7 +2441,9 @@ impl VM {
                 }
                 OpCode::Resume => {
                     if let Some(cont) = self.suspended_continuation.take() {
-                        let resume_value = self.registers[base + a].clone();
+                        // The lowerer emits: Resume dest, val_reg, 0
+                        // The resume value is in register B (val_reg), not A (dest).
+                        let resume_value = self.registers[base + b].clone();
                         // Restore the suspended state
                         self.frames = cont.frames;
                         self.registers = cont.registers;
@@ -2431,18 +2561,22 @@ impl VM {
                 self.emit_debug_event(DebugEvent::CallEnter { cell_name });
             }
             _ => {
-                println!("DEBUG: cannot call {:?} (type: {})", callee, callee.type_name());
+                println!(
+                    "DEBUG: cannot call {:?} (type: {})",
+                    callee,
+                    callee.type_name()
+                );
                 println!("DEBUG: Current frame: {:?}", self.frames.last());
                 if let Some(frame) = self.frames.last() {
-                     if let Some(module) = self.module.as_ref() {
-                         if let Some(cell) = module.cells.get(frame.cell_idx) {
-                             println!("DEBUG: Instructions for cell '{}':", cell.name);
-                             println!("DEBUG: Constants: {:?}", cell.constants);
-                             for (i, instr) in cell.instructions.iter().enumerate() {
-                                 println!("  {:03}: {:?}", i, instr);
-                             }
-                         }
-                     }
+                    if let Some(module) = self.module.as_ref() {
+                        if let Some(cell) = module.cells.get(frame.cell_idx) {
+                            println!("DEBUG: Instructions for cell '{}':", cell.name);
+                            println!("DEBUG: Constants: {:?}", cell.constants);
+                            for (i, instr) in cell.instructions.iter().enumerate() {
+                                println!("  {:03}: {:?}", i, instr);
+                            }
+                        }
+                    }
                 }
                 return Err(VmError::TypeError(format!("cannot call {}", callee)));
             }
@@ -2514,7 +2648,6 @@ impl VM {
         Ok(())
     }
 }
-
 
 impl Default for VM {
     fn default() -> Self {
@@ -3810,7 +3943,11 @@ end
         let mut vm = VM::new();
         vm.load(module);
         let err = vm.execute("main", vec![]).unwrap_err();
-        assert!(err.is_division_by_zero(), "expected DivisionByZero, got: {:?}", err);
+        assert!(
+            err.is_division_by_zero(),
+            "expected DivisionByZero, got: {:?}",
+            err
+        );
     }
 
     #[test]
@@ -3842,7 +3979,11 @@ end
         let mut vm = VM::new();
         vm.load(module);
         let err = vm.execute("main", vec![]).unwrap_err();
-        assert!(err.is_division_by_zero(), "expected DivisionByZero, got: {:?}", err);
+        assert!(
+            err.is_division_by_zero(),
+            "expected DivisionByZero, got: {:?}",
+            err
+        );
     }
 
     fn make_spawn_await_module(
@@ -4283,7 +4424,11 @@ end
         let mut vm = VM::new();
         vm.load(module);
         let err = vm.execute("main", vec![]).unwrap_err();
-        assert!(err.is_division_by_zero(), "expected DivisionByZero, got: {:?}", err);
+        assert!(
+            err.is_division_by_zero(),
+            "expected DivisionByZero, got: {:?}",
+            err
+        );
     }
 
     #[test]
@@ -4318,7 +4463,11 @@ end
         let mut vm = VM::new();
         vm.load(module);
         let err = vm.execute("main", vec![]).unwrap_err();
-        assert!(err.is_division_by_zero(), "expected DivisionByZero, got: {:?}", err);
+        assert!(
+            err.is_division_by_zero(),
+            "expected DivisionByZero, got: {:?}",
+            err
+        );
     }
 
     #[test]
@@ -4357,7 +4506,7 @@ end
         let err = vm.execute("main", vec![]).unwrap_err();
         // 2^64 overflows i64, so we get ArithmeticOverflow
         assert!(
-            err.to_string().contains("arithmetic overflow"),
+            err.is_arithmetic_overflow() || err.to_string().contains("overflow"),
             "expected arithmetic overflow, got: {}",
             err
         );
@@ -5269,7 +5418,11 @@ end
         let err = vm
             .execute("main", vec![])
             .expect_err("invalid register operand should fail");
-        assert!(err.is_register_oob(), "expected RegisterOOB, got: {:?}", err);
+        assert!(
+            err.is_register_oob(),
+            "expected RegisterOOB, got: {:?}",
+            err
+        );
     }
 
     #[test]
@@ -5306,7 +5459,11 @@ end
         let err = vm
             .execute("main", vec![])
             .expect_err("invalid call argument span should fail");
-        assert!(err.is_register_oob(), "expected RegisterOOB, got: {:?}", err);
+        assert!(
+            err.is_register_oob(),
+            "expected RegisterOOB, got: {:?}",
+            err
+        );
     }
 
     #[test]
@@ -5668,7 +5825,11 @@ end
         let err = vm
             .execute("main", vec![])
             .expect_err("loop should hit instruction limit");
-        assert!(err.is_instruction_limit_exceeded(), "expected InstructionLimitExceeded, got: {:?}", err);
+        assert!(
+            err.is_instruction_limit_exceeded(),
+            "expected InstructionLimitExceeded, got: {:?}",
+            err
+        );
     }
 
     #[test]
@@ -5697,13 +5858,21 @@ end
 
         assert!(result.is_err());
         if let Err(e) = result {
-            assert!(e.is_division_by_zero(), "expected DivisionByZero, got: {:?}", e);
+            assert!(
+                e.is_division_by_zero(),
+                "expected DivisionByZero, got: {:?}",
+                e
+            );
             // WithStackTrace should include the stack frames
             let frames = e.stack_frames();
             assert!(!frames.is_empty(), "stack trace should have frames");
             // The error message should include the stack trace
             let msg = format!("{}", e);
-            assert!(msg.contains("Stack trace"), "error should include stack trace: {}", msg);
+            assert!(
+                msg.contains("Stack trace"),
+                "error should include stack trace: {}",
+                msg
+            );
         }
     }
 
@@ -5739,7 +5908,11 @@ end
         let err = vm
             .execute("main", vec![])
             .expect_err("should run out of fuel");
-        assert!(err.message_contains("fuel exhausted"), "expected fuel exhausted, got: {:?}", err);
+        assert!(
+            err.message_contains("fuel exhausted"),
+            "expected fuel exhausted, got: {:?}",
+            err
+        );
     }
 
     #[test]
@@ -5850,9 +6023,9 @@ end
                 constants: vec![Constant::Int(42)],
                 instructions: vec![
                     Instruction::abx(OpCode::HandlePush, 0, 4), // meta_idx=0, handler code at offset +4
-                    Instruction::abx(OpCode::LoadK, 0, 0),  // load 42
-                    Instruction::ax(OpCode::HandlePop, 0),   // pop handler
-                    Instruction::abc(OpCode::Return, 0, 1, 0), // return 42
+                    Instruction::abx(OpCode::LoadK, 0, 0),      // load 42
+                    Instruction::ax(OpCode::HandlePop, 0),      // pop handler
+                    Instruction::abc(OpCode::Return, 0, 1, 0),  // return 42
                 ],
                 effect_handler_metas: vec![LirEffectHandlerMeta {
                     effect_name: "TestEffect".into(),
@@ -5872,7 +6045,9 @@ end
 
         let mut vm = VM::new();
         vm.load(module);
-        let result = vm.execute("main", vec![]).expect("should execute successfully");
+        let result = vm
+            .execute("main", vec![])
+            .expect("should execute successfully");
         assert_eq!(result, Value::Int(42));
     }
 
@@ -5918,10 +6093,10 @@ end
                 returns: Some("Int".into()),
                 registers: 8,
                 constants: vec![
-                    Constant::String("Console".into()),  // 0: effect name for Perform
-                    Constant::String("log".into()),       // 1: operation for Perform
-                    Constant::String("hello".into()),     // 2: arg
-                    Constant::Int(42),                    // 3: resume value
+                    Constant::String("Console".into()), // 0: effect name for Perform
+                    Constant::String("log".into()),     // 1: operation for Perform
+                    Constant::String("hello".into()),   // 2: arg
+                    Constant::Int(42),                  // 3: resume value
                 ],
                 instructions: vec![
                     // 0: HandlePush meta_idx=0, offset=5 (handler code at ip 0+5=5)
@@ -5957,7 +6132,9 @@ end
 
         let mut vm = VM::new();
         vm.load(module);
-        let result = vm.execute("main", vec![]).expect("should execute with matching handler");
+        let result = vm
+            .execute("main", vec![])
+            .expect("should execute with matching handler");
         assert_eq!(result, Value::Int(42));
     }
 
@@ -5978,8 +6155,8 @@ end
                 returns: Some("String".into()),
                 registers: 8,
                 constants: vec![
-                    Constant::String("Console".into()),      // 0: effect name
-                    Constant::String("read_line".into()),     // 1: operation (not handled!)
+                    Constant::String("Console".into()),   // 0: effect name
+                    Constant::String("read_line".into()), // 1: operation (not handled!)
                 ],
                 instructions: vec![
                     // 0: HandlePush for Console.log (meta_idx=0), offset=4
@@ -6011,7 +6188,9 @@ end
 
         let mut vm = VM::new();
         vm.load(module);
-        let err = vm.execute("main", vec![]).expect_err("should fail with unhandled effect");
+        let err = vm
+            .execute("main", vec![])
+            .expect_err("should fail with unhandled effect");
         let msg = format!("{}", err);
         assert!(
             msg.contains("unhandled effect: Console.read_line"),
@@ -6037,10 +6216,10 @@ end
                 returns: Some("Int".into()),
                 registers: 8,
                 constants: vec![
-                    Constant::String("Console".into()),       // 0
-                    Constant::String("read_line".into()),     // 1
-                    Constant::Int(99),                        // 2: wrong handler value
-                    Constant::Int(7),                         // 3: correct handler value
+                    Constant::String("Console".into()),   // 0
+                    Constant::String("read_line".into()), // 1
+                    Constant::Int(99),                    // 2: wrong handler value
+                    Constant::Int(7),                     // 3: correct handler value
                 ],
                 instructions: vec![
                     // 0: HandlePush meta=0 (Console.log), offset to handler at 8
@@ -6095,8 +6274,690 @@ end
 
         let mut vm = VM::new();
         vm.load(module);
-        let result = vm.execute("main", vec![]).expect("should match read_line handler");
+        let result = vm
+            .execute("main", vec![])
+            .expect("should match read_line handler");
         // The read_line handler resumes with 7, so result should be 7
         assert_eq!(result, Value::Int(7));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // T123 — Checked arithmetic tests
+    // ═══════════════════════════════════════════════════════════════
+
+    /// Helper: compile and execute, returning the Result for error inspection.
+    fn try_run_main(source: &str) -> Result<Value, VmError> {
+        let md = format!("# test\n\n```lumen\n{}\n```\n", source.trim());
+        let module = compile_lumen(&md).expect("source should compile");
+        let mut vm = VM::new();
+        vm.load(module);
+        vm.execute("main", vec![])
+    }
+
+    #[test]
+    fn t123_addition_overflow() {
+        // i64::MAX + 1 should produce ArithmeticOverflow, not wrap
+        let src = r#"
+cell main() -> Int
+  let x = 9223372036854775807   # i64::MAX
+  x + 1
+end
+"#;
+        let err = try_run_main(src).unwrap_err();
+        assert!(
+            err.is_arithmetic_overflow(),
+            "expected arithmetic overflow, got: {}",
+            err
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("addition"),
+            "error should mention 'addition', got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn t123_subtraction_overflow() {
+        // i64::MIN - 1 should overflow
+        // Build i64::MIN as (0 - i64::MAX - 1) to avoid literal parsing issues
+        let src = r#"
+cell main() -> Int
+  let max = 9223372036854775807
+  let min = 0 - max - 1
+  min - 1
+end
+"#;
+        let err = try_run_main(src).unwrap_err();
+        assert!(
+            err.is_arithmetic_overflow(),
+            "expected arithmetic overflow, got: {}",
+            err
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("subtraction"),
+            "error should mention 'subtraction', got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn t123_multiplication_overflow() {
+        // i64::MAX * 2 should overflow
+        let src = r#"
+cell main() -> Int
+  let x = 9223372036854775807   # i64::MAX
+  x * 2
+end
+"#;
+        let err = try_run_main(src).unwrap_err();
+        assert!(
+            err.is_arithmetic_overflow(),
+            "expected arithmetic overflow, got: {}",
+            err
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("multiplication"),
+            "error should mention 'multiplication', got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn t123_power_overflow() {
+        // 2 ** 63 = 9223372036854775808 which overflows i64
+        let src = r#"
+cell main() -> Int
+  2 ** 63
+end
+"#;
+        let err = try_run_main(src).unwrap_err();
+        assert!(
+            err.is_arithmetic_overflow(),
+            "expected arithmetic overflow, got: {}",
+            err
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("exponentiation"),
+            "error should mention 'exponentiation', got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn t123_negation_overflow() {
+        // Negation of i64::MIN overflows because |i64::MIN| > i64::MAX.
+        // Test via raw LIR to directly exercise the Neg opcode with checked_neg.
+        use lumen_compiler::compiler::lir::*;
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("Int".into()),
+                registers: 4,
+                // i64::MIN = -9223372036854775808
+                constants: vec![Constant::Int(i64::MIN)],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),     // r0 = i64::MIN
+                    Instruction::abc(OpCode::Neg, 1, 0, 0),    // r1 = -r0 (should overflow)
+                    Instruction::abc(OpCode::Return, 1, 1, 0), // return r1
+                ],
+                effect_handler_metas: vec![],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+        let mut vm = VM::new();
+        vm.load(module);
+        let err = vm.execute("main", vec![]).unwrap_err();
+        assert!(
+            err.is_arithmetic_overflow(),
+            "expected arithmetic overflow from negation, got: {}",
+            err
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("negation"),
+            "error should mention 'negation', got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn t123_normal_arithmetic_works() {
+        // Normal operations should still produce correct results
+        let src = r#"
+cell main() -> Int
+  let a = 100 + 200
+  let b = a - 50
+  let c = b * 3
+  let d = c // 4
+  d
+end
+"#;
+        let result = run_main(src);
+        // (100+200) = 300, -50 = 250, *3 = 750, //4 = 187
+        assert_eq!(result, Value::Int(187));
+    }
+
+    #[test]
+    fn t123_float_overflow_produces_infinity() {
+        // Float overflow should produce infinity per IEEE 754, NOT an error
+        let src = r#"
+cell main() -> Float
+  let x = 1.7976931348623157e308   # close to f64::MAX
+  x * 2.0
+end
+"#;
+        let result = try_run_main(src).expect("float overflow should not error");
+        match result {
+            Value::Float(f) => assert!(
+                f.is_infinite() && f.is_sign_positive(),
+                "expected +infinity, got: {}",
+                f
+            ),
+            other => panic!("expected Float, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn t123_float_large_mul_produces_infinity() {
+        // Another float overflow case: large * large -> infinity
+        let src = r#"
+cell main() -> Float
+  let x = 1.0e300
+  x * x
+end
+"#;
+        let result = try_run_main(src).expect("float overflow should not error");
+        match result {
+            Value::Float(f) => assert!(f.is_infinite(), "expected infinity, got: {}", f),
+            other => panic!("expected Float, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn t123_division_by_zero_preserved() {
+        // Division by zero should still produce DivisionByZero, not ArithmeticOverflow
+        let src = r#"
+cell main() -> Int
+  10 / 0
+end
+"#;
+        let err = try_run_main(src).unwrap_err();
+        assert!(
+            err.is_division_by_zero(),
+            "expected division by zero, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn t123_operation_specific_messages() {
+        // Test that each operation produces the right message keyword
+        let cases: Vec<(&str, &str)> = vec![
+            ("9223372036854775807 + 1", "addition"),
+            ("9223372036854775807 * 2", "multiplication"),
+            ("2 ** 63", "exponentiation"),
+        ];
+        for (expr, expected_op) in cases {
+            let src = format!("cell main() -> Int\n  {}\nend", expr);
+            let err = try_run_main(&src).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains(expected_op),
+                "for '{}': expected '{}' in message, got: {}",
+                expr,
+                expected_op,
+                msg
+            );
+        }
+
+        // Subtraction case needs special handling to construct i64::MIN
+        let sub_src = r#"
+cell main() -> Int
+  let max = 9223372036854775807
+  let min = 0 - max - 1
+  min - 1
+end
+"#;
+        let err = try_run_main(sub_src).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("subtraction"),
+            "for subtraction: expected 'subtraction' in message, got: {}",
+            msg
+        );
+    }
+
+    // ── T206: new builtin tests ──────────────────────────────────────
+
+    #[test]
+    fn test_builtin_trim_start() {
+        let result = run_main(
+            r#"
+cell main() -> String
+  trim_start("  hello  ")
+end
+"#,
+        );
+        assert_eq!(result, Value::String(StringRef::Owned("hello  ".into())));
+    }
+
+    #[test]
+    fn test_builtin_trim_end() {
+        let result = run_main(
+            r#"
+cell main() -> String
+  trim_end("  hello  ")
+end
+"#,
+        );
+        assert_eq!(result, Value::String(StringRef::Owned("  hello".into())));
+    }
+
+    #[test]
+    fn test_builtin_trim_start_no_leading_whitespace() {
+        let result = run_main(
+            r#"
+cell main() -> String
+  trim_start("hello")
+end
+"#,
+        );
+        assert_eq!(result, Value::String(StringRef::Owned("hello".into())));
+    }
+
+    #[test]
+    fn test_builtin_trim_end_no_trailing_whitespace() {
+        let result = run_main(
+            r#"
+cell main() -> String
+  trim_end("hello")
+end
+"#,
+        );
+        assert_eq!(result, Value::String(StringRef::Owned("hello".into())));
+    }
+
+    #[test]
+    fn test_builtin_exp_float() {
+        let result = run_main(
+            r#"
+cell main() -> Float
+  exp(0.0)
+end
+"#,
+        );
+        assert_eq!(result, Value::Float(1.0));
+    }
+
+    #[test]
+    fn test_builtin_exp_int() {
+        let result = run_main(
+            r#"
+cell main() -> Float
+  exp(0)
+end
+"#,
+        );
+        assert_eq!(result, Value::Float(1.0));
+    }
+
+    #[test]
+    fn test_builtin_exp_one() {
+        let result = run_main(
+            r#"
+cell main() -> Float
+  exp(1.0)
+end
+"#,
+        );
+        match result {
+            Value::Float(f) => {
+                assert!(
+                    (f - std::f64::consts::E).abs() < 1e-10,
+                    "exp(1.0) should be e (~2.718), got {}",
+                    f
+                );
+            }
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_builtin_tan_zero() {
+        let result = run_main(
+            r#"
+cell main() -> Float
+  tan(0.0)
+end
+"#,
+        );
+        assert_eq!(result, Value::Float(0.0));
+    }
+
+    #[test]
+    fn test_builtin_tan_int() {
+        let result = run_main(
+            r#"
+cell main() -> Float
+  tan(0)
+end
+"#,
+        );
+        assert_eq!(result, Value::Float(0.0));
+    }
+
+    #[test]
+    fn test_builtin_tan_pi_over_4() {
+        // tan(pi/4) ≈ 1.0
+        let result = run_main(
+            r#"
+cell main() -> Float
+  tan(0.7853981633974483)
+end
+"#,
+        );
+        match result {
+            Value::Float(f) => {
+                assert!(
+                    (f - 1.0).abs() < 1e-10,
+                    "tan(pi/4) should be ~1.0, got {}",
+                    f
+                );
+            }
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_builtin_random_int_returns_in_range() {
+        let result = run_main(
+            r#"
+cell main() -> Bool
+  let r = random_int(1, 10)
+  r >= 1 and r <= 10
+end
+"#,
+        );
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_builtin_random_int_same_min_max() {
+        let result = run_main(
+            r#"
+cell main() -> Int
+  random_int(5, 5)
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(5));
+    }
+
+    #[test]
+    fn test_builtin_random_int_negative_range() {
+        let result = run_main(
+            r#"
+cell main() -> Bool
+  let r = random_int(-10, -1)
+  r >= -10 and r <= -1
+end
+"#,
+        );
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_builtin_random_int_min_greater_than_max_errors() {
+        let err = try_run_main(
+            r#"
+cell main() -> Int
+  random_int(10, 1)
+end
+"#,
+        );
+        assert!(err.is_err(), "random_int(10, 1) should fail");
+        let msg = err.unwrap_err().to_string();
+        assert!(
+            msg.contains("min") && msg.contains("max"),
+            "error should mention min/max, got: {}",
+            msg
+        );
+    }
+
+    // ── T158: effect-budget enforcement tests ────────────────────────
+
+    #[test]
+    fn test_effect_budget_unit_check_and_decrement() {
+        let mut vm = VM::new();
+        vm.set_effect_budget("http", 2);
+
+        // Two calls should succeed
+        assert!(vm.check_effect_budget("http").is_ok());
+        assert!(vm.check_effect_budget("http").is_ok());
+        // Third call should fail
+        assert!(vm.check_effect_budget("http").is_err());
+    }
+
+    #[test]
+    fn test_effect_budget_untracked_effect_always_allowed() {
+        let mut vm = VM::new();
+        vm.set_effect_budget("http", 1);
+
+        // An effect with no budget configured is always allowed
+        assert!(vm.check_effect_budget("fs").is_ok());
+        assert!(vm.check_effect_budget("fs").is_ok());
+    }
+
+    #[test]
+    fn test_effect_budget_zero_immediately_rejects() {
+        let mut vm = VM::new();
+        vm.set_effect_budget("network", 0);
+
+        let err = vm.check_effect_budget("network");
+        assert!(err.is_err());
+        let msg = err.unwrap_err();
+        assert!(
+            msg.contains("budget exhausted") && msg.contains("network"),
+            "expected budget exhausted message for network, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_effect_budget_error_message_contains_limit() {
+        let mut vm = VM::new();
+        vm.set_effect_budget("api", 3);
+        // Drain the budget
+        for _ in 0..3 {
+            vm.check_effect_budget("api").unwrap();
+        }
+        let msg = vm.check_effect_budget("api").unwrap_err();
+        assert!(
+            msg.contains("3"),
+            "error should mention the limit (3), got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_effect_budget_toolcall_enforcement() {
+        // Build a module that calls a tool twice via ToolCall opcode.
+        // Set a budget of 1 — first call succeeds, second should fail.
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec!["String".into()],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("String".into()),
+                registers: 4,
+                constants: vec![],
+                instructions: vec![
+                    // First tool call
+                    Instruction::abx(OpCode::ToolCall, 0, 0),
+                    // Second tool call (should exceed budget)
+                    Instruction::abx(OpCode::ToolCall, 1, 0),
+                    Instruction::abc(OpCode::Return, 1, 1, 0),
+                ],
+                effect_handler_metas: vec![],
+            }],
+            tools: vec![LirTool {
+                alias: "HttpGet".into(),
+                tool_id: "http.get".into(),
+                version: "1.0.0".into(),
+                mcp_url: None,
+            }],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut dispatcher = StubDispatcher::new();
+        dispatcher.set_response("http.get", serde_json::json!("response-data"));
+
+        let mut vm = VM::new();
+        vm.tool_dispatcher = Some(Box::new(dispatcher));
+        // Set budget by alias — only 1 call allowed
+        vm.set_effect_budget("HttpGet", 1);
+        vm.load(module);
+
+        let err = vm
+            .execute("main", vec![])
+            .expect_err("second tool call should exceed budget");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("budget exceeded") || msg.contains("budget exhausted"),
+            "expected budget error, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("HttpGet"),
+            "error should mention tool alias, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_effect_budget_toolcall_by_id_prefix() {
+        // Budget keyed by tool_id prefix ("http") should also block.
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec!["String".into()],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("String".into()),
+                registers: 4,
+                constants: vec![],
+                instructions: vec![
+                    Instruction::abx(OpCode::ToolCall, 0, 0),
+                    Instruction::abx(OpCode::ToolCall, 1, 0),
+                    Instruction::abc(OpCode::Return, 1, 1, 0),
+                ],
+                effect_handler_metas: vec![],
+            }],
+            tools: vec![LirTool {
+                alias: "MyHttp".into(),
+                tool_id: "http.get".into(),
+                version: "1.0.0".into(),
+                mcp_url: None,
+            }],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut dispatcher = StubDispatcher::new();
+        dispatcher.set_response("http.get", serde_json::json!("ok"));
+
+        let mut vm = VM::new();
+        vm.tool_dispatcher = Some(Box::new(dispatcher));
+        // Budget by tool_id prefix "http" — only 1 call allowed
+        vm.set_effect_budget("http", 1);
+        vm.load(module);
+
+        let err = vm
+            .execute("main", vec![])
+            .expect_err("second call should exceed http budget");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("budget exceeded"),
+            "expected budget error, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_effect_budget_toolcall_within_limit_succeeds() {
+        // Budget of 2, exactly 2 calls — should succeed.
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec!["String".into()],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("String".into()),
+                registers: 4,
+                constants: vec![],
+                instructions: vec![
+                    Instruction::abx(OpCode::ToolCall, 0, 0),
+                    Instruction::abx(OpCode::ToolCall, 1, 0),
+                    Instruction::abc(OpCode::Return, 1, 1, 0),
+                ],
+                effect_handler_metas: vec![],
+            }],
+            tools: vec![LirTool {
+                alias: "HttpGet".into(),
+                tool_id: "http.get".into(),
+                version: "1.0.0".into(),
+                mcp_url: None,
+            }],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut dispatcher = StubDispatcher::new();
+        dispatcher.set_response("http.get", serde_json::json!("ok"));
+
+        let mut vm = VM::new();
+        vm.tool_dispatcher = Some(Box::new(dispatcher));
+        vm.set_effect_budget("HttpGet", 2);
+        vm.load(module);
+
+        let result = vm
+            .execute("main", vec![])
+            .expect("2 calls within budget of 2 should succeed");
+        assert_eq!(result, Value::String(StringRef::Owned("ok".into())));
     }
 }

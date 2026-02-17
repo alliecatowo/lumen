@@ -57,6 +57,10 @@ fn is_builtin_function(name: &str) -> bool {
             | "exists"
             | "mkdir"
             | "exit"
+            | "assert"
+            | "assert_eq"
+            | "assert_ne"
+            | "assert_contains"
     )
 }
 
@@ -121,7 +125,7 @@ fn builtin_return_type(name: &str, arg_types: &[Type]) -> Option<Type> {
         }
         "reduce" => Some(Type::Any),
         "type_of" | "type_name" => Some(Type::String),
-        "assert" | "assert_eq" => Some(Type::Null),
+        "assert" | "assert_eq" | "assert_ne" | "assert_contains" => Some(Type::Null),
         "error" => Some(Type::Null),
         "hash" => Some(Type::Int),
         "not" => Some(Type::Bool),
@@ -299,6 +303,8 @@ pub enum TypeError {
         missing: Vec<String>,
         line: usize,
     },
+    #[error("unused result of @must_use cell '{name}' at line {line}")]
+    MustUseIgnored { name: String, line: usize },
 }
 
 /// Resolved type representation
@@ -622,8 +628,10 @@ impl<'a> TypeChecker<'a> {
             None
         };
 
-        for stmt in &cell.body {
-            self.check_stmt(stmt, return_type.as_ref());
+        let body_len = cell.body.len();
+        for (i, stmt) in cell.body.iter().enumerate() {
+            let is_tail = body_len > 0 && i == body_len - 1;
+            self.check_stmt(stmt, return_type.as_ref(), is_tail);
         }
     }
 
@@ -651,7 +659,7 @@ impl<'a> TypeChecker<'a> {
             None
         };
         for stmt in &cell.body {
-            self.check_stmt(stmt, return_type.as_ref());
+            self.check_stmt(stmt, return_type.as_ref(), false);
         }
     }
 
@@ -663,7 +671,11 @@ impl<'a> TypeChecker<'a> {
     ) {
         // Check if the last parameter is variadic
         let has_variadic = params.last().is_some_and(|(_, _, v)| *v);
-        let fixed_count = if has_variadic { params.len() - 1 } else { params.len() };
+        let fixed_count = if has_variadic {
+            params.len() - 1
+        } else {
+            params.len()
+        };
 
         if !has_variadic && args.len() > params.len() {
             self.errors.push(TypeError::ArgCount {
@@ -764,7 +776,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_stmt(&mut self, stmt: &Stmt, expected_return: Option<&Type>) {
+    fn check_stmt(&mut self, stmt: &Stmt, expected_return: Option<&Type>, is_tail: bool) {
         match stmt {
             Stmt::Let(ls) => {
                 let val_type = self.infer_expr(&ls.value);
@@ -810,7 +822,7 @@ impl<'a> TypeChecker<'a> {
                 };
 
                 for s in &ifs.then_body {
-                    self.check_stmt(s, expected_return);
+                    self.check_stmt(s, expected_return, false);
                 }
 
                 // Restore original type after then-branch
@@ -824,7 +836,7 @@ impl<'a> TypeChecker<'a> {
 
                 if let Some(ref eb) = ifs.else_body {
                     for s in eb {
-                        self.check_stmt(s, expected_return);
+                        self.check_stmt(s, expected_return, false);
                     }
                 }
             }
@@ -849,7 +861,7 @@ impl<'a> TypeChecker<'a> {
                     self.infer_expr(filter);
                 }
                 for s in &fs.body {
-                    self.check_stmt(s, expected_return);
+                    self.check_stmt(s, expected_return, false);
                 }
             }
             Stmt::Match(ms) => {
@@ -866,7 +878,7 @@ impl<'a> TypeChecker<'a> {
                         arm.span.line,
                     );
                     for s in &arm.body {
-                        self.check_stmt(s, expected_return);
+                        self.check_stmt(s, expected_return, false);
                     }
                 }
 
@@ -891,6 +903,11 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     }
+                }
+
+                // T049: Exhaustiveness check for integer refinement ranges
+                if subject_type == Type::Int && !has_catchall {
+                    check_int_match_exhaustiveness(&ms.arms, ms.span.line, &mut self.errors);
                 }
             }
             Stmt::Return(rs) => {
@@ -917,23 +934,39 @@ impl<'a> TypeChecker<'a> {
             }
             Stmt::Expr(es) => {
                 self.infer_expr(&es.expr);
+                // Check if this is a call to a @must_use cell whose result is discarded.
+                // Skip the check if this is the tail expression (implicit return).
+                if !is_tail {
+                    if let Expr::Call(callee, _, _) = &es.expr {
+                        if let Expr::Ident(name, _) = callee.as_ref() {
+                            if let Some(cell_info) = self.symbols.cells.get(name.as_str()) {
+                                if cell_info.must_use {
+                                    self.errors.push(TypeError::MustUseIgnored {
+                                        name: name.clone(),
+                                        line: es.span.line,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
             }
             Stmt::While(ws) => {
                 let ct = self.infer_expr(&ws.condition);
                 self.check_compat(&Type::Bool, &ct, ws.span.line);
                 for s in &ws.body {
-                    self.check_stmt(s, expected_return);
+                    self.check_stmt(s, expected_return, false);
                 }
             }
             Stmt::Loop(ls) => {
                 for s in &ls.body {
-                    self.check_stmt(s, expected_return);
+                    self.check_stmt(s, expected_return, false);
                 }
             }
             Stmt::Break(_) | Stmt::Continue(_) => {}
             Stmt::Defer(ds) => {
                 for s in &ds.body {
-                    self.check_stmt(s, expected_return);
+                    self.check_stmt(s, expected_return, false);
                 }
             }
             Stmt::Emit(es) => {
@@ -980,6 +1013,9 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+            // Local definitions — types/cells are already registered at module level
+            // by the resolver. Nothing extra to check inline here.
+            Stmt::LocalRecord(_) | Stmt::LocalEnum(_) | Stmt::LocalCell(_) => {}
         }
     }
 
@@ -1005,9 +1041,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Pattern::RecordDestructure {
-                type_name,
-                fields,
-                ..
+                type_name, fields, ..
             } => {
                 for (field_name, field_pat) in fields {
                     let field_ty = if let Some(ti) = self.symbols.types.get(type_name) {
@@ -1045,6 +1079,14 @@ impl<'a> TypeChecker<'a> {
                         .insert(rest_name.clone(), Type::List(Box::new(elem_type)));
                     self.mutables.insert(rest_name.clone(), true);
                 }
+            }
+            Pattern::TypeCheck {
+                name, type_expr, ..
+            } => {
+                let expected = resolve_type_expr(type_expr, self.symbols);
+                self.check_compat(&expected, subject_type, line);
+                self.locals.insert(name.clone(), expected);
+                self.mutables.insert(name.clone(), true);
             }
             _ => {
                 // Other patterns (Guard, Or, Variant, etc.) not valid in let position
@@ -1262,14 +1304,15 @@ impl<'a> TypeChecker<'a> {
                 self.locals.insert(name.clone(), expected);
             }
             Pattern::Literal(_) => {}
-            Pattern::Range {
-                start, end, ..
-            } => {
+            Pattern::Range { start, end, .. } => {
                 let start_ty = self.infer_expr(start);
                 let end_ty = self.infer_expr(end);
                 // Validate start and end are same comparable type (Int or Float)
                 match (&start_ty, &end_ty) {
-                    (Type::Int, Type::Int) | (Type::Float, Type::Float) | (Type::Any, _) | (_, Type::Any) => {}
+                    (Type::Int, Type::Int)
+                    | (Type::Float, Type::Float)
+                    | (Type::Any, _)
+                    | (_, Type::Any) => {}
                     _ => {
                         self.errors.push(TypeError::Mismatch {
                             expected: format!("{}", start_ty),
@@ -1288,7 +1331,53 @@ impl<'a> TypeChecker<'a> {
             Expr::BigIntLit(_, _) => Type::Int,
             Expr::FloatLit(_, _) => Type::Float,
             Expr::StringLit(_, _) => Type::String,
-            Expr::StringInterp(_, _) => Type::String,
+            Expr::StringInterp(segments, _span) => {
+                // Walk segments and validate format spec types
+                for seg in segments {
+                    match seg {
+                        StringSegment::Interpolation(expr) => {
+                            self.infer_expr(expr);
+                        }
+                        StringSegment::FormattedInterpolation(expr, spec) => {
+                            let expr_ty = self.infer_expr(expr);
+                            // Validate format type against expression type
+                            if let Some(ref ft) = spec.fmt_type {
+                                match ft {
+                                    FormatType::Decimal
+                                    | FormatType::Hex
+                                    | FormatType::HexUpper
+                                    | FormatType::Octal
+                                    | FormatType::Binary => {
+                                        if !matches!(expr_ty, Type::Int | Type::Any) {
+                                            self.errors.push(TypeError::Mismatch {
+                                                expected: "Int".to_string(),
+                                                actual: format!("{:?}", expr_ty),
+                                                line: expr.span().line,
+                                            });
+                                        }
+                                    }
+                                    FormatType::Fixed
+                                    | FormatType::Scientific
+                                    | FormatType::ScientificUpper => {
+                                        if !matches!(expr_ty, Type::Float | Type::Int | Type::Any) {
+                                            self.errors.push(TypeError::Mismatch {
+                                                expected: "Float".to_string(),
+                                                actual: format!("{:?}", expr_ty),
+                                                line: expr.span().line,
+                                            });
+                                        }
+                                    }
+                                    FormatType::Str => {
+                                        // 's' is compatible with any type
+                                    }
+                                }
+                            }
+                        }
+                        StringSegment::Literal(_) => {}
+                    }
+                }
+                Type::String
+            }
             Expr::BoolLit(_, _) => Type::Bool,
             Expr::NullLit(_) => Type::Null,
             Expr::Ident(name, span) => {
@@ -1492,6 +1581,18 @@ impl<'a> TypeChecker<'a> {
                     BinOp::PipeForward | BinOp::Compose => rt,
                     BinOp::Concat => lt,
                     BinOp::In => Type::Bool,
+                    BinOp::Spaceship => {
+                        // Both operands must be the same orderable type (Int, Float, String)
+                        if lt != Type::Any && rt != Type::Any && lt != rt {
+                            self.errors.push(TypeError::Mismatch {
+                                expected: format!("{}", lt),
+                                actual: format!("{}", rt),
+                                line: _span.line,
+                            });
+                        }
+                        // Result is always Int (-1, 0, or 1)
+                        Type::Int
+                    }
                     BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => Type::Int,
                     BinOp::Shl | BinOp::Shr => {
                         if lt != Type::Any && lt != Type::Int {
@@ -1595,7 +1696,8 @@ impl<'a> TypeChecker<'a> {
                             let subst = build_subst(&ci.generic_params, &generic_args);
 
                             // Check call with substituted param types
-                            let substituted_params: Vec<(String, TypeExpr, bool)> = ci.params.clone();
+                            let substituted_params: Vec<(String, TypeExpr, bool)> =
+                                ci.params.clone();
                             self.check_call_against_signature_with_subst(
                                 &substituted_params,
                                 &checked_args,
@@ -1608,11 +1710,7 @@ impl<'a> TypeChecker<'a> {
                             }
                         } else {
                             // Non-generic cell: use standard checking
-                            self.check_call_against_signature(
-                                &ci.params,
-                                &checked_args,
-                                span.line,
-                            );
+                            self.check_call_against_signature(&ci.params, &checked_args, span.line);
                             if let Some(ref rt) = ci.return_type {
                                 return resolve_type_expr(rt, self.symbols);
                             }
@@ -1794,7 +1892,7 @@ impl<'a> TypeChecker<'a> {
                         LambdaBody::Expr(e) => self.infer_expr(e),
                         LambdaBody::Block(stmts) => {
                             for s in stmts {
-                                self.check_stmt(s, None);
+                                self.check_stmt(s, None, false);
                             }
                             Type::Any
                         }
@@ -1842,6 +1940,31 @@ impl<'a> TypeChecker<'a> {
                     t
                 }
             }
+            Expr::TryElse {
+                expr,
+                error_binding,
+                handler,
+                ..
+            } => {
+                let t = self.infer_expr(expr);
+                // If expr is Result[Ok, Err], bind error and evaluate handler
+                if let Type::Result(ok, err) = t {
+                    // Temporarily register error binding type for handler inference
+                    self.locals.insert(error_binding.clone(), *err);
+                    let handler_ty = self.infer_expr(handler);
+                    // The result type is the Ok type (both branches should produce T)
+                    // If handler type matches ok type, return ok type; otherwise use handler
+                    if handler_ty == *ok || handler_ty == Type::Any || *ok == Type::Any {
+                        *ok
+                    } else {
+                        handler_ty
+                    }
+                } else {
+                    // Not a result type — handler is unused, just return expr type
+                    self.infer_expr(handler);
+                    t
+                }
+            }
             Expr::NullCoalesce(lhs, rhs, _) => {
                 let lt = self.infer_expr(lhs);
                 let rt = self.infer_expr(rhs);
@@ -1862,13 +1985,28 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     Type::Null => rt,
+                    // T209: result[T, E] ?? default → T
+                    Type::Result(ok, _err) => *ok,
                     _ => lt,
                 }
             }
             Expr::NullSafeAccess(obj, field, _span) => {
                 let ot = self.infer_expr(obj);
+                // Resolve the underlying record type, stripping Null from unions
+                let record_type = match &ot {
+                    Type::Record(_) => ot.clone(),
+                    Type::Union(types) => {
+                        // Find the non-null record type in the union (e.g., Record | Null)
+                        types
+                            .iter()
+                            .find(|t| matches!(t, Type::Record(_)))
+                            .cloned()
+                            .unwrap_or(ot.clone())
+                    }
+                    _ => ot.clone(),
+                };
                 // Result is T | Null
-                let field_type = if let Type::Record(ref name) = ot {
+                let field_type = if let Type::Record(ref name) = record_type {
                     if let Some(ti) = self.symbols.types.get(name) {
                         if let crate::compiler::resolve::TypeInfoKind::Record(ref rd) = ti.kind {
                             if let Some(f) = rd.fields.iter().find(|f| f.name == *field) {
@@ -1914,6 +2052,8 @@ impl<'a> TypeChecker<'a> {
                             Type::Union(non_null)
                         }
                     }
+                    // T209: Unwrap result[T, E] — expr! returns T
+                    Type::Result(ok, _err) => *ok,
                     _ => t,
                 }
             }
@@ -1988,10 +2128,14 @@ impl<'a> TypeChecker<'a> {
                 body,
                 var,
                 iter,
+                extra_clauses,
                 condition,
                 kind,
                 span: _,
             } => {
+                // Save locals snapshot — comprehension variables must not leak
+                let saved_locals = self.locals.clone();
+
                 let iter_type = self.infer_expr(iter);
                 let elem_type = match &iter_type {
                     Type::List(inner) => *inner.clone(),
@@ -1999,11 +2143,25 @@ impl<'a> TypeChecker<'a> {
                     _ => Type::Any,
                 };
                 self.locals.insert(var.clone(), elem_type);
+                // Register bindings for extra for-clauses
+                for clause in extra_clauses {
+                    let clause_iter_type = self.infer_expr(&clause.iter);
+                    let clause_elem_type = match &clause_iter_type {
+                        Type::List(inner) => *inner.clone(),
+                        Type::Set(inner) => *inner.clone(),
+                        _ => Type::Any,
+                    };
+                    self.locals.insert(clause.var.clone(), clause_elem_type);
+                }
                 if let Some(ref cond) = condition {
                     let ct = self.infer_expr(cond);
                     self.check_compat(&Type::Bool, &ct, cond.span().line);
                 }
                 let body_type = self.infer_expr(body);
+
+                // Restore locals — comprehension variables don't leak to outer scope
+                self.locals = saved_locals;
+
                 match kind {
                     ComprehensionKind::List => Type::List(Box::new(body_type)),
                     ComprehensionKind::Set => Type::Set(Box::new(body_type)),
@@ -2029,7 +2187,7 @@ impl<'a> TypeChecker<'a> {
                         arm.span.line,
                     );
                     for s in &arm.body {
-                        self.check_stmt(s, None);
+                        self.check_stmt(s, None, false);
                     }
                     // Infer type from last expression in arm body
                     if let Some(Stmt::Expr(es)) = arm.body.last() {
@@ -2062,11 +2220,16 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                // T049: Exhaustiveness check for integer refinement ranges
+                if subject_type == Type::Int && !has_catchall {
+                    check_int_match_exhaustiveness(arms, span.line, &mut self.errors);
+                }
+
                 result_type
             }
             Expr::BlockExpr(stmts, _) => {
                 for s in stmts {
-                    self.check_stmt(s, None);
+                    self.check_stmt(s, None, false);
                 }
                 // Infer type from last expression in block
                 if let Some(Stmt::Expr(es)) = stmts.last() {
@@ -2097,11 +2260,11 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::HandleExpr { body, handlers, .. } => {
                 for stmt in body {
-                    self.check_stmt(stmt, None);
+                    self.check_stmt(stmt, None, false);
                 }
                 for handler in handlers {
                     for stmt in &handler.body {
-                        self.check_stmt(stmt, None);
+                        self.check_stmt(stmt, None, false);
                     }
                 }
                 Type::Any
@@ -2232,6 +2395,163 @@ fn parse_directive_bool(program: &Program, name: &str) -> Option<bool> {
     }
 }
 
+/// T049: Check exhaustiveness of integer match arms.
+///
+/// Extracts literal and range patterns from match arms and checks whether they
+/// cover a contiguous range.  If the overall range exceeds 256 values, the
+/// match is considered incomplete (a wildcard/catchall is required).  For
+/// smaller ranges we verify every value is covered.
+fn check_int_match_exhaustiveness(arms: &[MatchArm], line: usize, errors: &mut Vec<TypeError>) {
+    use std::collections::BTreeSet;
+
+    // Collect covered integer values and ranges from patterns.
+    let mut covered: BTreeSet<i64> = BTreeSet::new();
+    let mut ranges: Vec<(i64, i64)> = Vec::new(); // (lo, hi) inclusive
+    let mut has_non_int_pattern = false;
+
+    for arm in arms {
+        collect_int_patterns(
+            &arm.pattern,
+            &mut covered,
+            &mut ranges,
+            &mut has_non_int_pattern,
+        );
+    }
+
+    // If any arm has a non-integer, non-range pattern (e.g. identifier binding
+    // that wasn't detected as catchall, or guard), skip the check.
+    if has_non_int_pattern {
+        return;
+    }
+
+    // If there are no literal/range patterns at all, skip.
+    if covered.is_empty() && ranges.is_empty() {
+        return;
+    }
+
+    // Determine the full range [lo..=hi] from the patterns themselves.
+    let mut lo = i64::MAX;
+    let mut hi = i64::MIN;
+    for &v in &covered {
+        lo = lo.min(v);
+        hi = hi.max(v);
+    }
+    for &(rlo, rhi) in &ranges {
+        lo = lo.min(rlo);
+        hi = hi.max(rhi);
+    }
+
+    // If range exceeds 256 values, just require a wildcard.
+    let span_size = (hi as i128) - (lo as i128) + 1;
+    if span_size > 256 || span_size <= 0 {
+        errors.push(TypeError::IncompleteMatch {
+            enum_name: "Int".to_string(),
+            missing: vec!["_ (wildcard required for large integer ranges)".to_string()],
+            line,
+        });
+        return;
+    }
+
+    // Build the full covered set.
+    for &(rlo, rhi) in &ranges {
+        for v in rlo..=rhi {
+            covered.insert(v);
+        }
+    }
+
+    // Check for missing values.
+    let mut missing_vals = Vec::new();
+    for v in lo..=hi {
+        if !covered.contains(&v) {
+            missing_vals.push(v.to_string());
+            if missing_vals.len() >= 5 {
+                missing_vals.push("...".to_string());
+                break;
+            }
+        }
+    }
+
+    if !missing_vals.is_empty() {
+        errors.push(TypeError::IncompleteMatch {
+            enum_name: "Int".to_string(),
+            missing: missing_vals,
+            line,
+        });
+    }
+}
+
+/// Extract integer literal and range patterns from a match pattern.
+fn collect_int_patterns(
+    pattern: &Pattern,
+    covered: &mut std::collections::BTreeSet<i64>,
+    ranges: &mut Vec<(i64, i64)>,
+    has_non_int: &mut bool,
+) {
+    match pattern {
+        Pattern::Literal(Expr::IntLit(v, _)) => {
+            covered.insert(*v);
+        }
+        Pattern::Literal(Expr::UnaryOp(UnaryOp::Neg, inner, _)) => {
+            if let Expr::IntLit(v, _) = inner.as_ref() {
+                covered.insert(-v);
+            } else {
+                *has_non_int = true;
+            }
+        }
+        Pattern::Range {
+            start,
+            end,
+            inclusive,
+            ..
+        } => {
+            if let (Some(lo), Some(hi)) = (extract_int_lit(start), extract_int_lit(end)) {
+                let hi_val = if *inclusive { hi } else { hi - 1 };
+                if lo <= hi_val {
+                    ranges.push((lo, hi_val));
+                }
+            } else {
+                *has_non_int = true;
+            }
+        }
+        Pattern::Or { patterns, .. } => {
+            for p in patterns {
+                collect_int_patterns(p, covered, ranges, has_non_int);
+            }
+        }
+        Pattern::Guard { inner, .. } => {
+            // Guards don't contribute to exhaustiveness but we still
+            // collect the inner pattern's literals so we can determine
+            // the range (the overall check already requires a catchall
+            // due to the guard being excluded from has_catchall).
+            collect_int_patterns(inner, covered, ranges, has_non_int);
+        }
+        Pattern::Wildcard(_) | Pattern::Ident(_, _) => {
+            // These should have set has_catchall = true already;
+            // reaching here means the caller should have bailed.
+            // But if we do reach here, treat as non-int to skip.
+            *has_non_int = true;
+        }
+        _ => {
+            *has_non_int = true;
+        }
+    }
+}
+
+/// Extract an integer literal value from an expression (handles negation).
+fn extract_int_lit(expr: &Expr) -> Option<i64> {
+    match expr {
+        Expr::IntLit(v, _) => Some(*v),
+        Expr::UnaryOp(UnaryOp::Neg, inner, _) => {
+            if let Expr::IntLit(v, _) = inner.as_ref() {
+                Some(-v)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Typecheck a program.
 pub fn typecheck(program: &Program, symbols: &SymbolTable) -> Result<(), Vec<TypeError>> {
     let strict = parse_directive_bool(program, "strict").unwrap_or(true);
@@ -2259,6 +2579,12 @@ pub fn typecheck(program: &Program, symbols: &SymbolTable) -> Result<(), Vec<Typ
             Item::Handler(h) => {
                 for handle in &h.handles {
                     checker.check_cell(handle);
+                }
+            }
+            Item::Impl(i) => {
+                // T208: typecheck each impl method with its own scope.
+                for method in &i.cells {
+                    checker.check_cell(method);
                 }
             }
             _ => {}
@@ -2296,6 +2622,13 @@ mod tests {
     fn test_typecheck_undefined_var() {
         let err = typecheck_src("cell bad() -> Int\n  return missing_var\nend").unwrap_err();
         assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn test_typecheck_assert_builtin() {
+        // assert and assert_* are builtins; typecheck should accept them
+        typecheck_src("cell main() -> Null\n  assert 1 + 1 == 2\n  assert_eq(2, 2)\n  assert_ne(1, 2)\n  assert_contains([1, 2, 3], 2)\n  return null\nend")
+            .unwrap();
     }
 
     #[test]

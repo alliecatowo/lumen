@@ -694,7 +694,8 @@ impl From<toml::de::Error> for TrustError {
 fn parse_slsa_level(version: &str) -> u8 {
     // Extract level from "v1.0" or similar
     version
-        .chars().find(|c| c.is_ascii_digit())
+        .chars()
+        .find(|c| c.is_ascii_digit())
         .and_then(|c| c.to_digit(10))
         .map(|n| n as u8)
         .unwrap_or(0)
@@ -874,8 +875,6 @@ fn extract_query_param(request: &str, name: &str) -> Option<String> {
     // Parse params
     for param in query.split('&') {
         let (key, value) = param.split_once('=')?;
-        
-        
 
         if key == name {
             return Some(urlencoding::decode(value).ok()?.into_owned());

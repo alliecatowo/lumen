@@ -1,7 +1,6 @@
 //! Tests for the deployment registry infrastructure (T092).
 
 use lumen_cli::registry::*;
-use std::collections::BTreeMap;
 
 // =============================================================================
 // VersionComparator — parsing

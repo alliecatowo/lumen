@@ -259,8 +259,7 @@ pub fn run_build_scripts(package_dir: &Path, target_dir: &Path) -> Result<(), Bu
     }
 
     // Run the main build script/steps
-    let build_ran = if let Some(pkg_build) =
-        config.package.as_ref().and_then(|p| p.build.as_ref())
+    let build_ran = if let Some(pkg_build) = config.package.as_ref().and_then(|p| p.build.as_ref())
     {
         // Run package-level build script if specified
         if let Some(script_path) = pkg_build.script_path() {

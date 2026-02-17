@@ -16,11 +16,12 @@
 //! Task completion is tracked via a shared [`AtomicUsize`] counter so callers
 //! can wait for a known number of tasks to finish.
 
-use crate::process::ProcessId;
+use crate::process::{ProcessControlBlock, ProcessId, ProcessStatus};
 use crossbeam_deque::{Injector, Steal, Stealer, Worker};
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -114,6 +115,8 @@ pub struct Scheduler {
     worker_count: usize,
     /// Number of tasks that have been completed across all workers.
     completed_count: Arc<AtomicUsize>,
+    /// Registry of spawned process control blocks, keyed by [`ProcessId`].
+    process_registry: Arc<Mutex<HashMap<ProcessId, Arc<ProcessControlBlock>>>>,
 }
 
 impl Scheduler {
@@ -172,6 +175,7 @@ impl Scheduler {
             shutdown,
             worker_count: num_workers,
             completed_count,
+            process_registry: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -198,6 +202,48 @@ impl Scheduler {
     pub fn spawn_fn<F: FnOnce() + Send + 'static>(&self, f: F) {
         let pid = ProcessId::next();
         self.global_queue.push(Task::new(pid, f));
+    }
+
+    /// Spawn a new process with a [`ProcessControlBlock`].
+    ///
+    /// Creates a PCB with the given priority and optional name, wraps the
+    /// closure so that the process status is updated on completion, registers
+    /// the PCB in the process registry, and pushes the task to the global
+    /// injection queue. Returns the [`ProcessId`] of the new process.
+    pub fn spawn_process<F>(&self, priority: u8, name: Option<String>, work: F) -> ProcessId
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let pcb = Arc::new(ProcessControlBlock::new(priority, name));
+        let pid = pcb.id();
+
+        // Register the PCB before pushing the task so lookups are valid
+        // immediately after this call returns.
+        self.process_registry
+            .lock()
+            .unwrap()
+            .insert(pid, Arc::clone(&pcb));
+
+        // Wrap the user's closure so we transition the PCB status.
+        let pcb_inner = Arc::clone(&pcb);
+        let task = Task::new(pid, move || {
+            pcb_inner.set_status(ProcessStatus::Running);
+            work();
+            pcb_inner.set_status(ProcessStatus::Completed);
+        });
+
+        self.global_queue.push(task);
+        pid
+    }
+
+    /// Look up a process by its [`ProcessId`].
+    pub fn get_process(&self, pid: ProcessId) -> Option<Arc<ProcessControlBlock>> {
+        self.process_registry.lock().unwrap().get(&pid).cloned()
+    }
+
+    /// Return the number of processes in the registry.
+    pub fn process_count(&self) -> usize {
+        self.process_registry.lock().unwrap().len()
     }
 
     /// Block until at least `expected` tasks have completed, or `timeout`
@@ -542,5 +588,78 @@ mod tests {
         sched.shutdown();
         assert_eq!(completed, n);
         assert_eq!(counter.load(Ordering::Relaxed), n);
+    }
+
+    // -- T058: spawn_process with PCB tracking ----------------------------
+
+    #[test]
+    fn spawn_process_creates_pcb_and_executes() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let mut sched = Scheduler::new(2);
+
+        let ctr = Arc::clone(&counter);
+        let pid = sched.spawn_process(10, Some("worker".into()), move || {
+            ctr.fetch_add(1, Ordering::Relaxed);
+        });
+
+        // PCB should be registered immediately.
+        let pcb = sched.get_process(pid).expect("PCB should be registered");
+        assert_eq!(pcb.priority(), 10);
+        assert_eq!(pcb.name(), Some("worker"));
+
+        // Wait for execution.
+        let _ = sched.wait_for_completion(1, Duration::from_secs(5));
+        sched.shutdown();
+
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+        assert_eq!(pcb.status(), ProcessStatus::Completed);
+    }
+
+    #[test]
+    fn spawn_process_tracks_multiple_processes() {
+        let mut sched = Scheduler::new(2);
+
+        let n = 20usize;
+        let mut pids = Vec::new();
+        for i in 0..n {
+            let pid = sched.spawn_process(128, Some(format!("proc-{}", i)), || {});
+            pids.push(pid);
+        }
+
+        assert_eq!(sched.process_count(), n);
+
+        // All PIDs should be unique.
+        let unique: std::collections::HashSet<_> = pids.iter().copied().collect();
+        assert_eq!(unique.len(), n);
+
+        let _ = sched.wait_for_completion(n, Duration::from_secs(5));
+        sched.shutdown();
+    }
+
+    #[test]
+    fn spawn_process_status_transitions_to_completed() {
+        let mut sched = Scheduler::new(1);
+
+        let pid = sched.spawn_process(0, None, || {
+            // simulate a tiny bit of work
+            std::thread::yield_now();
+        });
+
+        let pcb = sched.get_process(pid).unwrap();
+        // Status should be Ready before execution.
+        assert_eq!(pcb.status(), ProcessStatus::Ready);
+
+        let _ = sched.wait_for_completion(1, Duration::from_secs(5));
+        sched.shutdown();
+
+        assert_eq!(pcb.status(), ProcessStatus::Completed);
+    }
+
+    #[test]
+    fn get_process_returns_none_for_unknown_pid() {
+        let mut sched = Scheduler::new(1);
+        let fake_pid = ProcessId::next();
+        assert!(sched.get_process(fake_pid).is_none());
+        sched.shutdown();
     }
 }

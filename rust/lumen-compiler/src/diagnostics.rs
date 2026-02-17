@@ -405,6 +405,10 @@ pub fn format_compile_error(error: &CompileError, source: &str, filename: &str) 
             .iter()
             .map(|e| format_ownership_error(e, source, filename))
             .collect(),
+        CompileError::Multiple(errors) => errors
+            .iter()
+            .flat_map(|e| format_compile_error(e, source, filename))
+            .collect(),
     }
 }
 

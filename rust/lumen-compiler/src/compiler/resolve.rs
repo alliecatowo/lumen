@@ -355,12 +355,39 @@ pub fn resolve(program: &Program) -> Result<SymbolTable, Vec<ResolveError>> {
     resolve_with_base(program, SymbolTable::new())
 }
 
+/// Like `resolve`, but always returns the partial symbol table alongside any errors.
+/// This allows downstream passes (typecheck, constraints) to run even when resolution fails.
+pub fn resolve_partial(program: &Program) -> (SymbolTable, Vec<ResolveError>) {
+    resolve_with_base_partial(program, SymbolTable::new())
+}
+
+/// Like `resolve_with_base`, but always returns the partial symbol table alongside any errors.
+pub fn resolve_with_base_partial(
+    program: &Program,
+    base: SymbolTable,
+) -> (SymbolTable, Vec<ResolveError>) {
+    resolve_with_base_inner(program, base)
+}
+
 /// Resolve all names in a program, using a pre-populated symbol table as the base.
 /// This is useful for multi-file compilation where imported symbols need to be available.
 pub fn resolve_with_base(
     program: &Program,
-    mut table: SymbolTable,
+    table: SymbolTable,
 ) -> Result<SymbolTable, Vec<ResolveError>> {
+    let (table, errors) = resolve_with_base_inner(program, table);
+    if errors.is_empty() {
+        Ok(table)
+    } else {
+        Err(errors)
+    }
+}
+
+/// Internal implementation that always returns the (possibly partial) symbol table and any errors.
+fn resolve_with_base_inner(
+    program: &Program,
+    mut table: SymbolTable,
+) -> (SymbolTable, Vec<ResolveError>) {
     let mut errors = Vec::new();
     let doc_mode = parse_directive_bool(program, "doc_mode").unwrap_or(false);
 
@@ -1210,11 +1237,7 @@ pub fn resolve_with_base(
 
     apply_effect_inference(program, &mut table, &mut errors);
 
-    if errors.is_empty() {
-        Ok(table)
-    } else {
-        Err(errors)
-    }
+    (table, errors)
 }
 
 fn check_generic_param_bounds(

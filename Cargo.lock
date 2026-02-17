@@ -1423,6 +1423,7 @@ version = "0.4.0"
 dependencies = [
  "lsp-server",
  "lsp-types",
+ "lumen-cli",
  "lumen-compiler",
  "serde",
  "serde_json",

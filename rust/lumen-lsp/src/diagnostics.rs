@@ -22,6 +22,10 @@ pub fn compile_error_to_diagnostics(error: &CompileError, _source: &str) -> Vec<
         CompileError::Ownership(errors) => {
             errors.iter().map(ownership_error_to_diagnostic).collect()
         }
+        CompileError::Multiple(errors) => errors
+            .iter()
+            .flat_map(|e| compile_error_to_diagnostics(e, _source))
+            .collect(),
     }
 }
 

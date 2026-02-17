@@ -403,6 +403,19 @@ fn intrinsic_description(id: &IntrinsicId) -> &str {
         RegexFindAll => "Return all regex matches as a list of strings",
         ReadLine => "Read a single line from stdin",
         StringConcat => "Concatenate a list of values into a single string",
+        HttpGet => "Perform an HTTP GET request and return a map with status, body, and ok fields",
+        HttpPost => "Perform an HTTP POST request with a body and return a response map",
+        HttpPut => "Perform an HTTP PUT request with a body and return a response map",
+        HttpDelete => "Perform an HTTP DELETE request and return a response map",
+        HttpRequest => "Perform a custom HTTP request with method, url, body, and headers",
+        TcpConnect => "Open a TCP connection to an address and return a handle",
+        TcpListen => "Bind a TCP listener to an address and return a handle",
+        TcpSend => "Send data on a TCP connection and return bytes sent",
+        TcpRecv => "Receive data from a TCP connection and return a string",
+        UdpBind => "Bind a UDP socket to an address and return a handle",
+        UdpSend => "Send a datagram to an address via a UDP socket",
+        UdpRecv => "Receive a datagram from a UDP socket and return data and sender address",
+        TcpClose => "Close a TCP connection or listener by handle",
     }
 }
 

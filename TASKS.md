@@ -27,7 +27,7 @@ These features must work correctly before self-hosting is viable.
 | T300 | HTTP client/server implementation | OPEN | `rust/lumen-runtime/src/http.rs` is type definitions only — no actual I/O. Implement real HTTP client using ureq or reqwest (sync, behind builtin). Add builtins: `http_get(url) -> result[String, String]`, `http_post(url, body, headers) -> result[String, String]`. |
 | T301 | TCP/UDP networking implementation | OPEN | `rust/lumen-runtime/src/net.rs` is type stubs only. Implement real TCP connect/listen/accept/send/recv and UDP send/recv builtins using std::net. |
 | T302 | Multi-shot continuations VM integration | OPEN | `rust/lumen-vm/src/vm/continuations.rs` has data structures but isn't integrated with the VM dispatch loop. Wire ContinuationSnapshot into Perform/Resume opcodes. |
-| T303 | ORC JIT real codegen | OPEN | `rust/lumen-codegen/src/orc_jit.rs` is a management abstraction that flips `is_compiled` flags without actual codegen. Either make it real or remove it — no pretend code. |
+| T303 | ORC JIT real codegen | DONE | Removed `orc_jit.rs` — it was a fake bookkeeping module (no real codegen). Real JIT lives in `jit.rs` (Cranelift-backed). |
 
 ### A2: Incremental GC
 
@@ -45,17 +45,17 @@ These features must work correctly before self-hosting is viable.
 
 | # | Task | Status | Description |
 |---|------|--------|-------------|
-| T320 | Feature maturity level system | OPEN | Define three maturity levels: `experimental` (may change/break), `unstable` (API may change, semantics stable), `stable` (semver-guaranteed). Every language feature, builtin, and API gets a level. |
-| T321 | `@feature` directive for unstable features | OPEN | Add `@feature "feature_name"` directive that must be present to use experimental/unstable features. Compiler emits error if unstable feature used without opt-in. |
-| T322 | Feature registry in compiler | OPEN | In the resolver, maintain a registry of all features with their maturity levels. Check `@feature` directives against this registry. Store in a static table in `resolve.rs`. |
-| T323 | Classify existing features | OPEN | Go through every language feature and classify: `stable` (cells, records, enums, match, if/while/for, builtins), `unstable` (effects, macros, GADTs, active patterns, session types, typestate), `experimental` (Prob<T>, multi-shot continuations, tensor). |
-| T324 | Feature gate CLI flag | OPEN | Add `--allow-unstable` CLI flag to allow all unstable features without per-file `@feature` directives (for development). |
+| T320 | Feature maturity level system | DONE | Define three maturity levels: `experimental` (may change/break), `unstable` (API may change, semantics stable), `stable` (semver-guaranteed). Every language feature, builtin, and API gets a level. |
+| T321 | `@feature` directive for unstable features | DONE | Add `@feature "feature_name"` directive that must be present to use experimental/unstable features. Compiler emits error if unstable feature used without opt-in. |
+| T322 | Feature registry in compiler | DONE | In the resolver, maintain a registry of all features with their maturity levels. Check `@feature` directives against this registry. Store in a static table in `resolve.rs`. |
+| T323 | Classify existing features | DONE | Go through every language feature and classify: `stable` (cells, records, enums, match, if/while/for, builtins), `unstable` (effects, macros, GADTs, active patterns, session types, typestate), `experimental` (Prob<T>, multi-shot continuations, tensor). |
+| T324 | Feature gate CLI flag | DONE | Add `--allow-unstable` CLI flag to allow all unstable features without per-file `@feature` directives (for development). |
 
 ### A4: Edition System
 
 | # | Task | Status | Description |
 |---|------|--------|-------------|
-| T330 | Edition field in lumen.toml | OPEN | Add `edition = "2026"` field to lumen.toml. Compiler reads this and adjusts behavior accordingly. Default edition is "2026" if not specified. |
+| T330 | Edition field in lumen.toml | DONE | Add `edition = "2026"` field to lumen.toml. Compiler reads this and adjusts behavior accordingly. Default edition is "2026" if not specified. |
 | T331 | Edition-aware parsing | OPEN | Parser checks edition to determine which syntax is available. Future editions can change defaults (e.g., strictness levels) without breaking old code. |
 | T332 | Edition migration tool | OPEN | `lumen migrate --edition 2027` command that automatically updates code for a new edition (when editions diverge). Stub for now — the infrastructure matters. |
 
@@ -64,8 +64,8 @@ These features must work correctly before self-hosting is viable.
 | # | Task | Status | Description |
 |---|------|--------|-------------|
 | T335 | Stability guarantees document | OPEN | Write `docs/STABILITY.md` defining what is guaranteed across minor/patch versions. Builtins, syntax, semantics that are `stable` will not break in minor versions. |
-| T336 | Deprecation mechanism | OPEN | `@deprecated "message"` attribute for cells, records, types. Compiler emits warnings when deprecated items are used. Deprecated items are removed only in major versions. |
-| T337 | Deprecation warnings in compiler | OPEN | When resolver encounters a reference to a deprecated symbol, emit a warning with the deprecation message and suggested replacement. |
+| T336 | Deprecation mechanism | DONE | `@deprecated "message"` attribute for cells, records, types. Compiler emits warnings when deprecated items are used. Deprecated items are removed only in major versions. |
+| T337 | Deprecation warnings in compiler | DONE | When resolver encounters a reference to a deprecated symbol, emit a warning with the deprecation message and suggested replacement. |
 
 ---
 
@@ -77,21 +77,21 @@ The stdlib must be rich enough to write a compiler, a benchmark tool, a report g
 
 | # | Task | Status | Description |
 |---|------|--------|-------------|
-| T340 | String builder / efficient concatenation | OPEN | Repeated string concatenation in a loop is O(n^2). Add `string_builder()` builtin or optimize Concat opcode to use a mutable buffer internally. |
-| T341 | Regex / pattern matching on strings | OPEN | Add `regex_match(pattern, text) -> list[String]`, `regex_replace(pattern, text, replacement) -> String`, `regex_find_all(pattern, text) -> list[String]` builtins. Critical for any text processing. |
+| T340 | String builder / efficient concatenation | DONE | Repeated string concatenation in a loop is O(n^2). Add `string_builder()` builtin or optimize Concat opcode to use a mutable buffer internally. |
+| T341 | Regex / pattern matching on strings | DONE | Add `regex_match(pattern, text) -> list[String]`, `regex_replace(pattern, text, replacement) -> String`, `regex_find_all(pattern, text) -> list[String]` builtins. Critical for any text processing. |
 | T342 | String formatting / printf-style | OPEN | Ensure string interpolation with format specs covers all cases: `{value:>10.2f}`, `{value:#x}`, `{value:08b}`. Verify the `__format_spec` builtin handles all format types. |
-| T343 | CSV parsing builtin | OPEN | `csv_parse(text) -> list[list[String]]` and `csv_encode(data) -> String` builtins. The benchmark report generator needs this. |
-| T344 | TOML parsing builtin | OPEN | `toml_parse(text) -> map[String, Any]` and `toml_encode(data) -> String`. Needed for lumen.toml and Cargo.toml reading. A language that can't read its own config format is broken. |
+| T343 | CSV parsing builtin | DONE | `csv_parse(text) -> list[list[String]]` and `csv_encode(data) -> String` builtins. The benchmark report generator needs this. |
+| T344 | TOML parsing builtin | DONE | `toml_parse(text) -> map[String, Any]` and `toml_encode(data) -> String`. Needed for lumen.toml and Cargo.toml reading. A language that can't read its own config format is broken. |
 
 ### B2: File System & I/O
 
 | # | Task | Status | Description |
 |---|------|--------|-------------|
-| T350 | File line-by-line reading | OPEN | `read_lines(path) -> list[String]` builtin. Currently `read_file` returns the whole string — need efficient line iteration for large files. |
-| T351 | Directory walking / glob | OPEN | `walk_dir(path) -> list[String]` recursive directory listing. `glob(pattern) -> list[String]` for file pattern matching. Essential for any build tool or project scanner. |
-| T352 | Path manipulation builtins | OPEN | `path_join(parts...) -> String`, `path_parent(p) -> String`, `path_filename(p) -> String`, `path_extension(p) -> String`, `path_stem(p) -> String`. Every language needs these. |
-| T353 | Stdin/stdout/stderr builtins | OPEN | `read_stdin() -> String` (read all stdin), `read_line() -> String` (read one line), `eprint(msg)` / `eprintln(msg)` (write to stderr). Currently only `print` exists. |
-| T354 | Command execution / subprocess | OPEN | `exec(cmd, args) -> result[String, String]` — run external command, capture stdout/stderr. Returns ok(stdout) or err(stderr). Needed for benchmark runner, build tools. |
+| T350 | File line-by-line reading | DONE | `read_lines(path) -> list[String]` builtin. Currently `read_file` returns the whole string — need efficient line iteration for large files. |
+| T351 | Directory walking / glob | DONE | `walk_dir(path) -> list[String]` recursive directory listing. `glob(pattern) -> list[String]` for file pattern matching. Essential for any build tool or project scanner. |
+| T352 | Path manipulation builtins | DONE | `path_join(parts...) -> String`, `path_parent(p) -> String`, `path_filename(p) -> String`, `path_extension(p) -> String`, `path_stem(p) -> String`. Every language needs these. |
+| T353 | Stdin/stdout/stderr builtins | DONE | `read_stdin() -> String` (read all stdin), `read_line() -> String` (read one line), `eprint(msg)` / `eprintln(msg)` (write to stderr). Currently only `print` exists. |
+| T354 | Command execution / subprocess | DONE | `exec(cmd, args) -> result[String, String]` — run external command, capture stdout/stderr. Returns ok(stdout) or err(stderr). Needed for benchmark runner, build tools. |
 
 ### B3: Data Structures & Algorithms
 

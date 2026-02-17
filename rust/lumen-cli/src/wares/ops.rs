@@ -774,7 +774,7 @@ fn resolve_dep(
     spec: &DependencySpec,
     parent_dir: &Path,
     registry_dir_override: Option<&Path>,
-    resolved: &mut Vec<ResolvedDep>,
+    resolved: &mut [ResolvedDep],
     visited: &mut HashSet<String>,
     stack: &mut HashSet<String>,
 ) -> Result<(), String> {
@@ -2354,7 +2354,6 @@ pub fn install_with_kind(kind: DependencyKind, frozen: bool) {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    
 
     fn make_config(deps: Vec<(&str, &str)>) -> LumenConfig {
         let mut dependencies = HashMap::new();

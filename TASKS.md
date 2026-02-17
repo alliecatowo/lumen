@@ -10,14 +10,14 @@ Use this list to verify whether a given deficiency is still present. Mark items 
 
 | ID | Deficiency | Rationale | Status |
 |----|------------|-----------|--------|
-| D01 | **Memory: Rc&lt;T&gt; only** | Reference counting is not thread-safe; prevents true parallelism. No `Arc` or GC. | OPEN |
+| D01 | **Memory: Rc&lt;T&gt; only** | Reference counting is not thread-safe; prevents true parallelism. No `Arc` or GC. | IN PROGRESS |
 | D02 | **Memory: No cycle collection** | Simple reference counting cannot reclaim cycles (e.g. doubly linked structures); long-running agents risk leaks. | OPEN |
 | D03 | **Memory: No linear/affine types** | No single-consumption guarantee; zero-copy handoff of large buffers between agents impossible. | OPEN |
 | D04 | **Runtime: Interpreter-only** | Bytecode VM only; no JIT or AOT. High-throughput numeric/tensor workloads are not competitive. | OPEN |
 | D05 | **Types: Constraints are runtime** | `where` clauses and record constraints are asserted at runtime; violations cause production failures instead of compile-time errors. | OPEN |
 | D06 | **Types: No SMT-backed refinement** | Refinement types (e.g. `Int where x > 0`) cannot be proved at compile time. | OPEN |
 | D07 | **Concurrency: Single-threaded scheduler** | No M:N work-stealing; `spawn`/parallel may not utilize multiple cores. | OPEN |
-| D08 | **Concurrency: No typed channels** | No first-class `Channel<T>` or session types for agent-to-agent communication. | OPEN |
+| D08 | **Concurrency: No typed channels** | No first-class `Channel<T>` or session types for agent-to-agent communication. | IN PROGRESS |
 | D09 | **Concurrency: No supervision** | No hierarchical restart or supervision of failed processes. | OPEN |
 | D10 | **Ecosystem: No zero-cost FFI** | `extern` exists but no bindgen-style generation from C/Rust headers. | OPEN |
 | D11 | **Ecosystem: No WASM component model** | WASM target exists; WIT / component model not adopted. | OPEN |
@@ -59,8 +59,8 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
-| T001 | Define new `Value` enum layout | Current `Value` in `rust/lumen-vm/src/values.rs` carries `Rc`-wrapped collections. Define a layout (e.g. 64-bit nan-boxed or 128-bit tagged) that supports immediate scalars and heap object references without mandatory reference counting for all data. |
-| T002 | Replace `Rc<T>` with `Arc<T>` in shared VM structures | `Rc` is not `Send`; multi-threaded execution requires thread-safe sharing. Replace in value and runtime structures where shared ownership is required. |
+| T001 | Define new `Value` enum layout — **DONE** | Current `Value` in `rust/lumen-vm/src/values.rs` carries `Rc`-wrapped collections. Define a layout (e.g. 64-bit nan-boxed or 128-bit tagged) that supports immediate scalars and heap object references without mandatory reference counting for all data. |
+| T002 | Replace `Rc<T>` with `Arc<T>` in shared VM structures — **DONE** | `Rc` is not `Send`; multi-threaded execution requires thread-safe sharing. Replace in value and runtime structures where shared ownership is required. |
 | T003 | Introduce `GcHeader` / tagged pointer for GC | To support a future GC (e.g. Immix-style), define a header (e.g. color, pinned bit) and tagging so the runtime can distinguish immediates from heap pointers and support tracing. |
 | T004 | Tagged-pointer / small-value optimization | Store small integers, bools, null in the value word to avoid heap allocation and reduce cache pressure. |
 | T005 | Linear/affine wrapper in type system | Add a way to mark values as consumed-once (e.g. `owned T` or linear marker) so the compiler can enforce single use and enable zero-copy handoff. |
@@ -73,7 +73,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T012 | Optional: Immix-style block/line allocator | For a concurrent GC, implement the block/line layout and allocation interface; can be behind a feature flag until scheduler and GC are integrated. |
 | T013 | Thread-local allocation buffers (TLAB) | If moving to a GC, provide per-thread allocation buffers to reduce contention on the global allocator. |
 | T014 | Copy optimization for small scalars | In the VM or lowering, avoid allocating for small scalars (Int, Bool, Float) when copying; keep them in registers or immediate form. |
-| T015 | String representation: SmolStr or interning | In `rust/lumen-vm/src/strings.rs`, consider SmolStr or interned IDs for string comparison and to reduce allocations. |
+| T015 | String representation: SmolStr or interning — **DONE** (pre-existing StringRef) | In `rust/lumen-vm/src/strings.rs`, consider SmolStr or interned IDs for string comparison and to reduce allocations. |
 | T016 | Optional: 64-bit packed LIR instructions | In `rust/lumen-compiler/src/compiler/lir.rs`, evaluate 64-bit instruction encoding to reduce cache pressure; document tradeoffs vs 32-bit. |
 
 ---
@@ -110,10 +110,10 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
 | T037 | Add Z3 or CVC5 bindings | Add `z3-sys` or equivalent to the compiler crate for SMT solving. |
-| T038 | Verification module skeleton | Create `rust/lumen-compiler/src/verification/` (or `verifier/`) with solver wrapper. |
-| T039 | Map Lumen types to SMT sorts | Implement mapping from Lumen Int, Bool, etc., to solver sorts (e.g. Z3_mk_int). |
+| T038 | Verification module skeleton — **DONE** | Create `rust/lumen-compiler/src/verification/` (or `verifier/`) with solver wrapper. |
+| T039 | Map Lumen types to SMT sorts — **DONE** | Implement mapping from Lumen Int, Bool, etc., to solver sorts (e.g. Z3_mk_int). |
 | T040 | Parse `where` clauses into AST | Ensure `where` expressions in records and function contracts are available in the AST. |
-| T041 | Lower `where` to SMT assertions | Translate boolean expressions in `where` to SMT-LIB or solver API calls. |
+| T041 | Lower `where` to SMT assertions — **DONE** (verification/constraints.rs) | Translate boolean expressions in `where` to SMT-LIB or solver API calls. |
 | T042 | Verify function preconditions | For each call site, assert caller’s context implies callee’s precondition; check satisfiability. |
 | T043 | Verify function postconditions | After call, assume callee’s postcondition for subsequent reasoning. |
 | T044 | Verification pass in pipeline | Run verification after typecheck; on UNSAT (invariant violated), emit compiler error. |
@@ -132,8 +132,8 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
-| T053 | Process/task control block (PCB) | Define a structure that holds enough state to suspend and resume a task (e.g. stack, IP, locals). |
-| T054 | Scheduler module in runtime | Create `rust/lumen-runtime/src/scheduler.rs` (or equivalent) with run queues. |
+| T053 | Process/task control block (PCB) — **DONE** | Define a structure that holds enough state to suspend and resume a task (e.g. stack, IP, locals). |
+| T054 | Scheduler module in runtime — **DONE** | Create `rust/lumen-runtime/src/scheduler.rs` (or equivalent) with run queues. |
 | T055 | Per-thread run queues | Each worker thread has a local queue of runnable tasks. |
 | T056 | Work-stealing algorithm | When local queue is empty, steal from another thread’s queue (e.g. Chase–Lev deque). |
 | T057 | Global injection queue | New tasks (e.g. from `spawn`) go into a global or per-worker queue. |
@@ -141,7 +141,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T059 | Explicit yield points in VM | In the VM dispatch loop, periodically check for yield/reduction count to allow preemption. |
 | T060 | Reduction counting | After N instructions (e.g. 2000), force a context switch to avoid starvation. |
 | T061 | Mailbox or MPSC queue for agents | Lock-free or low-contention queue for messages to a single agent. |
-| T062 | Channel&lt;T&gt; type in runtime | Typed channel (MPMC or SPSC) for inter-agent communication. |
+| T062 | Channel&lt;T&gt; type in runtime — **DONE** | Typed channel (MPMC or SPSC) for inter-agent communication. |
 | T063 | Selective receive (Erlang-style) | Allow receiving only messages matching a pattern; document semantics. |
 | T064 | Supervisor behaviour (design) | Define in spec or std how a supervisor restarts or escalates on child failure. |
 | T065 | link / monitor primitives | When process A links to B, A is notified if B crashes; implement or stub in runtime. |

@@ -48,12 +48,14 @@ pub type PackageId = String;
 /// Type alias for version constraints used in dependency declarations.
 pub type VersionConstraint = Constraint;
 
+/// Resolved version selections: maps each package ID to its chosen (version, source).
+type VersionSelections = HashMap<PackageId, (Version, String)>;
+
 /// A feature flag name.
 pub type FeatureName = String;
 
 /// Dependency kind for resolution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum DependencyKind {
     /// Normal runtime dependency.
     #[default]
@@ -64,10 +66,8 @@ pub enum DependencyKind {
     Build,
 }
 
-
 /// Request for dependency resolution.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ResolutionRequest {
     /// Root dependencies with version constraints.
     pub root_deps: HashMap<PackageId, DependencySpec>,
@@ -86,7 +86,6 @@ pub struct ResolutionRequest {
     /// Whether to include yanked versions in resolution.
     pub include_yanked: bool,
 }
-
 
 /// A resolved package with its exact version and dependencies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -727,9 +726,10 @@ impl SatSolver {
 
                 let new_lit = new_lit.unwrap();
                 if (clause.literals.len() == 1 || !found_false)
-                    && (clause.literals.len() == 1 || self.value(new_lit).is_none()) {
-                        self.assign(new_lit, Some(clause_idx));
-                    }
+                    && (clause.literals.len() == 1 || self.value(new_lit).is_none())
+                {
+                    self.assign(new_lit, Some(clause_idx));
+                }
             }
         }
 
@@ -825,7 +825,7 @@ impl SatSolver {
         true
     }
 
-    fn get_solution(&self) -> HashMap<PackageId, (Version, String)> {
+    fn get_solution(&self) -> VersionSelections {
         let mut solution = HashMap::new();
         for (pkg_idx, vers) in self.assignment.iter().enumerate() {
             for (ver_idx, &val) in vers.iter().enumerate() {
@@ -1797,7 +1797,7 @@ impl Resolver {
         &self,
         solver: &mut SatSolver,
         state: &ResolutionState,
-    ) -> Result<(HashMap<PackageId, (Version, String)>, usize), ResolutionError> {
+    ) -> Result<(VersionSelections, usize), ResolutionError> {
         let max_conflicts = 10000;
         let mut conflicts = 0;
 

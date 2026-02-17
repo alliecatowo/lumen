@@ -7,45 +7,45 @@ use lumen_cli::service_template::*;
 // =============================================================================
 
 #[test]
-fn wave24_service_identifier_simple() {
+fn service_identifier_simple() {
     assert!(is_valid_identifier("foo"));
 }
 
 #[test]
-fn wave24_service_identifier_snake_case() {
+fn service_identifier_snake_case() {
     assert!(is_valid_identifier("hello_world"));
 }
 
 #[test]
-fn wave24_service_identifier_leading_underscore() {
+fn service_identifier_leading_underscore() {
     assert!(is_valid_identifier("_private"));
 }
 
 #[test]
-fn wave24_service_identifier_with_digits() {
+fn service_identifier_with_digits() {
     assert!(is_valid_identifier("x2"));
     assert!(is_valid_identifier("handler_v3"));
 }
 
 #[test]
-fn wave24_service_identifier_reject_empty() {
+fn service_identifier_reject_empty() {
     assert!(!is_valid_identifier(""));
 }
 
 #[test]
-fn wave24_service_identifier_reject_uppercase() {
+fn service_identifier_reject_uppercase() {
     assert!(!is_valid_identifier("Foo"));
     assert!(!is_valid_identifier("ALLCAPS"));
 }
 
 #[test]
-fn wave24_service_identifier_reject_digit_start() {
+fn service_identifier_reject_digit_start() {
     assert!(!is_valid_identifier("123"));
     assert!(!is_valid_identifier("3abc"));
 }
 
 #[test]
-fn wave24_service_identifier_reject_reserved() {
+fn service_identifier_reject_reserved() {
     assert!(!is_valid_identifier("cell"));
     assert!(!is_valid_identifier("return"));
     assert!(!is_valid_identifier("end"));
@@ -63,7 +63,7 @@ fn wave24_service_identifier_reject_reserved() {
 }
 
 #[test]
-fn wave24_service_identifier_reject_special_chars() {
+fn service_identifier_reject_special_chars() {
     assert!(!is_valid_identifier("foo-bar"));
     assert!(!is_valid_identifier("foo.bar"));
     assert!(!is_valid_identifier("foo bar"));
@@ -74,26 +74,26 @@ fn wave24_service_identifier_reject_special_chars() {
 // =============================================================================
 
 #[test]
-fn wave24_service_type_name_pascal() {
+fn service_type_name_pascal() {
     assert!(is_valid_type_name("Foo"));
     assert!(is_valid_type_name("MyType"));
     assert!(is_valid_type_name("CreateItemRequest"));
 }
 
 #[test]
-fn wave24_service_type_name_single_char() {
+fn service_type_name_single_char() {
     assert!(is_valid_type_name("A"));
     assert!(is_valid_type_name("Z"));
 }
 
 #[test]
-fn wave24_service_type_name_reject_lowercase() {
+fn service_type_name_reject_lowercase() {
     assert!(!is_valid_type_name("foo"));
     assert!(!is_valid_type_name("myType"));
 }
 
 #[test]
-fn wave24_service_type_name_reject_empty() {
+fn service_type_name_reject_empty() {
     assert!(!is_valid_type_name(""));
 }
 
@@ -102,7 +102,7 @@ fn wave24_service_type_name_reject_empty() {
 // =============================================================================
 
 #[test]
-fn wave24_service_name_simple() {
+fn service_name_simple() {
     assert!(is_valid_service_name("api"));
     assert!(is_valid_service_name("my-svc"));
     assert!(is_valid_service_name("web-app-2"));
@@ -110,22 +110,22 @@ fn wave24_service_name_simple() {
 }
 
 #[test]
-fn wave24_service_name_reject_uppercase() {
+fn service_name_reject_uppercase() {
     assert!(!is_valid_service_name("MyService"));
 }
 
 #[test]
-fn wave24_service_name_reject_empty() {
+fn service_name_reject_empty() {
     assert!(!is_valid_service_name(""));
 }
 
 #[test]
-fn wave24_service_name_reject_start_dash() {
+fn service_name_reject_start_dash() {
     assert!(!is_valid_service_name("-bad"));
 }
 
 #[test]
-fn wave24_service_name_reject_too_long() {
+fn service_name_reject_too_long() {
     let long = "a".repeat(65);
     assert!(!is_valid_service_name(&long));
     // Exactly 64 should be fine
@@ -138,7 +138,7 @@ fn wave24_service_name_reject_too_long() {
 // =============================================================================
 
 #[test]
-fn wave24_service_route_path_ok() {
+fn service_route_path_ok() {
     assert!(validate_route_path("/").is_ok());
     assert!(validate_route_path("/api/items").is_ok());
     assert!(validate_route_path("/api/items/:id").is_ok());
@@ -146,19 +146,19 @@ fn wave24_service_route_path_ok() {
 }
 
 #[test]
-fn wave24_service_route_path_no_slash() {
+fn service_route_path_no_slash() {
     let r = validate_route_path("api/items");
     assert!(matches!(r, Err(TemplateError::InvalidRoutePath(_))));
 }
 
 #[test]
-fn wave24_service_route_path_empty() {
+fn service_route_path_empty() {
     let r = validate_route_path("");
     assert!(matches!(r, Err(TemplateError::InvalidRoutePath(_))));
 }
 
 #[test]
-fn wave24_service_route_path_duplicate_param() {
+fn service_route_path_duplicate_param() {
     let r = validate_route_path("/api/:id/sub/:id");
     assert!(matches!(r, Err(TemplateError::InvalidRoutePath(_))));
     if let Err(TemplateError::InvalidRoutePath(msg)) = r {
@@ -167,7 +167,7 @@ fn wave24_service_route_path_duplicate_param() {
 }
 
 #[test]
-fn wave24_service_route_path_empty_param() {
+fn service_route_path_empty_param() {
     let r = validate_route_path("/api/:/other");
     assert!(matches!(r, Err(TemplateError::InvalidRoutePath(_))));
 }
@@ -188,12 +188,12 @@ fn minimal_config() -> ServiceConfig {
 }
 
 #[test]
-fn wave24_service_validate_minimal() {
+fn service_validate_minimal() {
     assert!(validate_config(&minimal_config()).is_ok());
 }
 
 #[test]
-fn wave24_service_validate_bad_name() {
+fn service_validate_bad_name() {
     let mut c = minimal_config();
     c.name = "BadName".to_string();
     assert!(matches!(
@@ -203,7 +203,7 @@ fn wave24_service_validate_bad_name() {
 }
 
 #[test]
-fn wave24_service_validate_zero_port() {
+fn service_validate_zero_port() {
     let mut c = minimal_config();
     c.port = 0;
     assert!(matches!(
@@ -213,7 +213,7 @@ fn wave24_service_validate_zero_port() {
 }
 
 #[test]
-fn wave24_service_validate_bad_handler() {
+fn service_validate_bad_handler() {
     let mut c = minimal_config();
     c.routes.push(RouteSpec {
         method: HttpMethod::Get,
@@ -230,7 +230,7 @@ fn wave24_service_validate_bad_handler() {
 }
 
 #[test]
-fn wave24_service_validate_bad_request_type() {
+fn service_validate_bad_request_type() {
     let mut c = minimal_config();
     c.routes.push(RouteSpec {
         method: HttpMethod::Post,
@@ -247,7 +247,7 @@ fn wave24_service_validate_bad_request_type() {
 }
 
 #[test]
-fn wave24_service_validate_bad_response_type() {
+fn service_validate_bad_response_type() {
     let mut c = minimal_config();
     c.routes.push(RouteSpec {
         method: HttpMethod::Get,
@@ -264,7 +264,7 @@ fn wave24_service_validate_bad_response_type() {
 }
 
 #[test]
-fn wave24_service_validate_duplicate_routes() {
+fn service_validate_duplicate_routes() {
     let mut c = minimal_config();
     let route = RouteSpec {
         method: HttpMethod::Get,
@@ -290,7 +290,7 @@ fn wave24_service_validate_duplicate_routes() {
 }
 
 #[test]
-fn wave24_service_validate_same_path_diff_method() {
+fn service_validate_same_path_diff_method() {
     let mut c = minimal_config();
     c.routes.push(RouteSpec {
         method: HttpMethod::Get,
@@ -312,7 +312,7 @@ fn wave24_service_validate_same_path_diff_method() {
 }
 
 #[test]
-fn wave24_service_validate_empty_db_name() {
+fn service_validate_empty_db_name() {
     let mut c = minimal_config();
     c.database = Some(DatabaseConfig {
         kind: DatabaseKind::Sqlite,
@@ -329,7 +329,7 @@ fn wave24_service_validate_empty_db_name() {
 // =============================================================================
 
 #[test]
-fn wave24_service_rest_api_preset() {
+fn service_rest_api_preset() {
     let config = ServiceTemplateGenerator::rest_api("my-api");
     assert_eq!(config.name, "my-api");
     assert_eq!(config.service_type, ServiceType::HttpApi);
@@ -340,13 +340,13 @@ fn wave24_service_rest_api_preset() {
 }
 
 #[test]
-fn wave24_service_rest_api_validates() {
+fn service_rest_api_validates() {
     let config = ServiceTemplateGenerator::rest_api("my-api");
     assert!(validate_config(&config).is_ok());
 }
 
 #[test]
-fn wave24_service_rest_api_generates() {
+fn service_rest_api_generates() {
     let config = ServiceTemplateGenerator::rest_api("my-api");
     let files = ServiceTemplateGenerator::generate(&config).unwrap();
     assert!(files.len() >= 9);
@@ -368,7 +368,7 @@ fn wave24_service_rest_api_generates() {
 // =============================================================================
 
 #[test]
-fn wave24_service_ws_preset() {
+fn service_ws_preset() {
     let config = ServiceTemplateGenerator::websocket_server("ws-server");
     assert_eq!(config.name, "ws-server");
     assert_eq!(config.service_type, ServiceType::WebSocket);
@@ -378,7 +378,7 @@ fn wave24_service_ws_preset() {
 }
 
 #[test]
-fn wave24_service_ws_validates() {
+fn service_ws_validates() {
     let config = ServiceTemplateGenerator::websocket_server("ws-server");
     assert!(validate_config(&config).is_ok());
 }
@@ -388,7 +388,7 @@ fn wave24_service_ws_validates() {
 // =============================================================================
 
 #[test]
-fn wave24_service_crud_preset() {
+fn service_crud_preset() {
     let config = ServiceTemplateGenerator::crud_service("user-svc", "user");
     assert_eq!(config.name, "user-svc");
     assert_eq!(config.routes.len(), 5);
@@ -399,13 +399,13 @@ fn wave24_service_crud_preset() {
 }
 
 #[test]
-fn wave24_service_crud_validates() {
+fn service_crud_validates() {
     let config = ServiceTemplateGenerator::crud_service("user-svc", "user");
     assert!(validate_config(&config).is_ok());
 }
 
 #[test]
-fn wave24_service_crud_generates_db_module() {
+fn service_crud_generates_db_module() {
     let config = ServiceTemplateGenerator::crud_service("user-svc", "user");
     let files = ServiceTemplateGenerator::generate(&config).unwrap();
     let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
@@ -413,7 +413,7 @@ fn wave24_service_crud_generates_db_module() {
 }
 
 #[test]
-fn wave24_service_crud_route_names() {
+fn service_crud_route_names() {
     let config = ServiceTemplateGenerator::crud_service("item-svc", "item");
     let handlers: Vec<&str> = config.routes.iter().map(|r| r.handler.as_str()).collect();
     assert!(handlers.contains(&"list_item"));
@@ -428,7 +428,7 @@ fn wave24_service_crud_route_names() {
 // =============================================================================
 
 #[test]
-fn wave24_service_main_has_lumen_block() {
+fn service_main_has_lumen_block() {
     let config = minimal_config();
     let main = ServiceTemplateGenerator::generate_main(&config);
     assert!(main.contains("```lumen"));
@@ -436,7 +436,7 @@ fn wave24_service_main_has_lumen_block() {
 }
 
 #[test]
-fn wave24_service_main_has_cell() {
+fn service_main_has_cell() {
     let config = minimal_config();
     let main = ServiceTemplateGenerator::generate_main(&config);
     assert!(main.contains("cell main()"));
@@ -444,7 +444,7 @@ fn wave24_service_main_has_cell() {
 }
 
 #[test]
-fn wave24_service_main_has_imports() {
+fn service_main_has_imports() {
     let config = minimal_config();
     let main = ServiceTemplateGenerator::generate_main(&config);
     assert!(main.contains("import routes: *"));
@@ -454,7 +454,7 @@ fn wave24_service_main_has_imports() {
 }
 
 #[test]
-fn wave24_service_main_has_port() {
+fn service_main_has_port() {
     let mut c = minimal_config();
     c.port = 9090;
     let main = ServiceTemplateGenerator::generate_main(&c);
@@ -462,7 +462,7 @@ fn wave24_service_main_has_port() {
 }
 
 #[test]
-fn wave24_service_main_has_db_import() {
+fn service_main_has_db_import() {
     let mut c = minimal_config();
     c.database = Some(DatabaseConfig {
         kind: DatabaseKind::InMemory,
@@ -473,7 +473,7 @@ fn wave24_service_main_has_db_import() {
 }
 
 #[test]
-fn wave24_service_main_effects() {
+fn service_main_effects() {
     let config = ServiceTemplateGenerator::rest_api("my-api");
     let main = ServiceTemplateGenerator::generate_main(&config);
     // Should have effect row for http
@@ -485,7 +485,7 @@ fn wave24_service_main_effects() {
 // =============================================================================
 
 #[test]
-fn wave24_service_routes_has_record() {
+fn service_routes_has_record() {
     let config = ServiceTemplateGenerator::rest_api("my-api");
     let routes = ServiceTemplateGenerator::generate_routes(&config);
     assert!(routes.contains("record Route"));
@@ -494,7 +494,7 @@ fn wave24_service_routes_has_record() {
 }
 
 #[test]
-fn wave24_service_routes_empty() {
+fn service_routes_empty() {
     let config = minimal_config();
     let routes = ServiceTemplateGenerator::generate_routes(&config);
     assert!(routes.contains("return []"));
@@ -505,21 +505,21 @@ fn wave24_service_routes_empty() {
 // =============================================================================
 
 #[test]
-fn wave24_service_handlers_has_grant() {
+fn service_handlers_has_grant() {
     let config = ServiceTemplateGenerator::rest_api("my-api");
     let handlers = ServiceTemplateGenerator::generate_handlers(&config);
     assert!(handlers.contains("grant HttpResponse"));
 }
 
 #[test]
-fn wave24_service_handlers_has_effect_row() {
+fn service_handlers_has_effect_row() {
     let config = ServiceTemplateGenerator::rest_api("my-api");
     let handlers = ServiceTemplateGenerator::generate_handlers(&config);
     assert!(handlers.contains("/ {http}"));
 }
 
 #[test]
-fn wave24_service_handlers_typed_request() {
+fn service_handlers_typed_request() {
     let mut c = minimal_config();
     c.routes.push(RouteSpec {
         method: HttpMethod::Post,
@@ -538,7 +538,7 @@ fn wave24_service_handlers_typed_request() {
 // =============================================================================
 
 #[test]
-fn wave24_service_types_has_status_enum() {
+fn service_types_has_status_enum() {
     let config = minimal_config();
     let types = ServiceTemplateGenerator::generate_types(&config);
     assert!(types.contains("enum HttpStatus"));
@@ -548,7 +548,7 @@ fn wave24_service_types_has_status_enum() {
 }
 
 #[test]
-fn wave24_service_types_has_api_response() {
+fn service_types_has_api_response() {
     let config = minimal_config();
     let types = ServiceTemplateGenerator::generate_types(&config);
     assert!(types.contains("record ApiResponse"));
@@ -556,7 +556,7 @@ fn wave24_service_types_has_api_response() {
 }
 
 #[test]
-fn wave24_service_types_generates_route_types() {
+fn service_types_generates_route_types() {
     let config = ServiceTemplateGenerator::rest_api("my-api");
     let types = ServiceTemplateGenerator::generate_types(&config);
     assert!(types.contains("record HealthResponse"));
@@ -566,7 +566,7 @@ fn wave24_service_types_generates_route_types() {
 }
 
 #[test]
-fn wave24_service_types_no_duplicates() {
+fn service_types_no_duplicates() {
     // ItemResponse appears in multiple routes but should only be generated once
     let config = ServiceTemplateGenerator::rest_api("my-api");
     let types = ServiceTemplateGenerator::generate_types(&config);
@@ -575,7 +575,7 @@ fn wave24_service_types_no_duplicates() {
 }
 
 #[test]
-fn wave24_service_types_db_model() {
+fn service_types_db_model() {
     let mut c = minimal_config();
     c.database = Some(DatabaseConfig {
         kind: DatabaseKind::Postgres,
@@ -590,14 +590,14 @@ fn wave24_service_types_db_model() {
 // =============================================================================
 
 #[test]
-fn wave24_service_middleware_empty() {
+fn service_middleware_empty() {
     let config = minimal_config();
     let mw = ServiceTemplateGenerator::generate_middleware(&config);
     assert!(mw.contains("return []"));
 }
 
 #[test]
-fn wave24_service_middleware_entries() {
+fn service_middleware_entries() {
     let config = ServiceTemplateGenerator::rest_api("my-api");
     let mw = ServiceTemplateGenerator::generate_middleware(&config);
     assert!(mw.contains("request_logger"));
@@ -610,7 +610,7 @@ fn wave24_service_middleware_entries() {
 // =============================================================================
 
 #[test]
-fn wave24_service_tests_has_health() {
+fn service_tests_has_health() {
     let config = minimal_config();
     let tests = ServiceTemplateGenerator::generate_tests(&config);
     assert!(tests.contains("cell test_health()"));
@@ -618,7 +618,7 @@ fn wave24_service_tests_has_health() {
 }
 
 #[test]
-fn wave24_service_tests_per_handler() {
+fn service_tests_per_handler() {
     let config = ServiceTemplateGenerator::rest_api("my-api");
     let tests = ServiceTemplateGenerator::generate_tests(&config);
     assert!(tests.contains("cell test_health_check()"));
@@ -632,7 +632,7 @@ fn wave24_service_tests_per_handler() {
 // =============================================================================
 
 #[test]
-fn wave24_service_toml_package() {
+fn service_toml_package() {
     let config = minimal_config();
     let toml = ServiceTemplateGenerator::generate_config_toml(&config);
     assert!(toml.contains("[package]"));
@@ -641,7 +641,7 @@ fn wave24_service_toml_package() {
 }
 
 #[test]
-fn wave24_service_toml_sections() {
+fn service_toml_sections() {
     let config = minimal_config();
     let toml = ServiceTemplateGenerator::generate_config_toml(&config);
     assert!(toml.contains("[toolchain]"));
@@ -651,7 +651,7 @@ fn wave24_service_toml_sections() {
 }
 
 #[test]
-fn wave24_service_toml_db_provider() {
+fn service_toml_db_provider() {
     let mut c = minimal_config();
     c.database = Some(DatabaseConfig {
         kind: DatabaseKind::Sqlite,
@@ -667,7 +667,7 @@ fn wave24_service_toml_db_provider() {
 // =============================================================================
 
 #[test]
-fn wave24_service_dockerfile_expose() {
+fn service_dockerfile_expose() {
     let mut c = minimal_config();
     c.port = 4000;
     let df = ServiceTemplateGenerator::generate_dockerfile(&c);
@@ -681,14 +681,14 @@ fn wave24_service_dockerfile_expose() {
 // =============================================================================
 
 #[test]
-fn wave24_service_readme_title() {
+fn service_readme_title() {
     let config = minimal_config();
     let readme = ServiceTemplateGenerator::generate_readme(&config);
     assert!(readme.contains("# test-svc"));
 }
 
 #[test]
-fn wave24_service_readme_routes_table() {
+fn service_readme_routes_table() {
     let config = ServiceTemplateGenerator::rest_api("my-api");
     let readme = ServiceTemplateGenerator::generate_readme(&config);
     assert!(readme.contains("| Method | Path | Handler | Description |"));
@@ -697,14 +697,14 @@ fn wave24_service_readme_routes_table() {
 }
 
 #[test]
-fn wave24_service_readme_middleware_section() {
+fn service_readme_middleware_section() {
     let config = ServiceTemplateGenerator::rest_api("my-api");
     let readme = ServiceTemplateGenerator::generate_readme(&config);
     assert!(readme.contains("## Middleware"));
 }
 
 #[test]
-fn wave24_service_readme_db_section() {
+fn service_readme_db_section() {
     let config = ServiceTemplateGenerator::crud_service("item-svc", "item");
     let readme = ServiceTemplateGenerator::generate_readme(&config);
     assert!(readme.contains("## Database"));
@@ -716,7 +716,7 @@ fn wave24_service_readme_db_section() {
 // =============================================================================
 
 #[test]
-fn wave24_service_pascal_case() {
+fn service_pascal_case() {
     assert_eq!(ServiceTemplateGenerator::to_pascal_case("hello"), "Hello");
     assert_eq!(
         ServiceTemplateGenerator::to_pascal_case("hello_world"),
@@ -739,7 +739,7 @@ fn wave24_service_pascal_case() {
 // =============================================================================
 
 #[test]
-fn wave24_service_display_service_type() {
+fn service_display_service_type() {
     assert_eq!(format!("{}", ServiceType::HttpApi), "HTTP API");
     assert_eq!(format!("{}", ServiceType::WebSocket), "WebSocket");
     assert_eq!(format!("{}", ServiceType::Grpc), "gRPC");
@@ -747,7 +747,7 @@ fn wave24_service_display_service_type() {
 }
 
 #[test]
-fn wave24_service_display_http_method() {
+fn service_display_http_method() {
     assert_eq!(format!("{}", HttpMethod::Get), "GET");
     assert_eq!(format!("{}", HttpMethod::Post), "POST");
     assert_eq!(format!("{}", HttpMethod::Put), "PUT");
@@ -756,7 +756,7 @@ fn wave24_service_display_http_method() {
 }
 
 #[test]
-fn wave24_service_display_middleware_kind() {
+fn service_display_middleware_kind() {
     assert_eq!(format!("{}", MiddlewareKind::Auth), "auth");
     assert_eq!(format!("{}", MiddlewareKind::Cors), "cors");
     assert_eq!(format!("{}", MiddlewareKind::RateLimit), "rate_limit");
@@ -769,14 +769,14 @@ fn wave24_service_display_middleware_kind() {
 }
 
 #[test]
-fn wave24_service_display_db_kind() {
+fn service_display_db_kind() {
     assert_eq!(format!("{}", DatabaseKind::Sqlite), "sqlite");
     assert_eq!(format!("{}", DatabaseKind::Postgres), "postgres");
     assert_eq!(format!("{}", DatabaseKind::InMemory), "in-memory");
 }
 
 #[test]
-fn wave24_service_display_template_error() {
+fn service_display_template_error() {
     let e = TemplateError::InvalidConfig("bad".to_string());
     assert_eq!(format!("{}", e), "invalid config: bad");
 
@@ -795,7 +795,7 @@ fn wave24_service_display_template_error() {
 // =============================================================================
 
 #[test]
-fn wave24_service_files_not_executable() {
+fn service_files_not_executable() {
     let config = ServiceTemplateGenerator::rest_api("my-api");
     let files = ServiceTemplateGenerator::generate(&config).unwrap();
     for f in &files {
@@ -804,7 +804,7 @@ fn wave24_service_files_not_executable() {
 }
 
 #[test]
-fn wave24_service_generated_file_count() {
+fn service_generated_file_count() {
     // Without db: 9 files
     let config = minimal_config();
     let files = ServiceTemplateGenerator::generate(&config).unwrap();
@@ -821,7 +821,7 @@ fn wave24_service_generated_file_count() {
 // =============================================================================
 
 #[test]
-fn wave24_service_handler_reserved_as_keyword() {
+fn service_handler_reserved_as_keyword() {
     let mut c = minimal_config();
     c.routes.push(RouteSpec {
         method: HttpMethod::Get,
@@ -838,7 +838,7 @@ fn wave24_service_handler_reserved_as_keyword() {
 }
 
 #[test]
-fn wave24_service_route_all_methods() {
+fn service_route_all_methods() {
     let mut c = minimal_config();
     let methods = [
         HttpMethod::Get,
@@ -861,7 +861,7 @@ fn wave24_service_route_all_methods() {
 }
 
 #[test]
-fn wave24_service_crud_pascal_resource() {
+fn service_crud_pascal_resource() {
     let config = ServiceTemplateGenerator::crud_service("order-svc", "order");
     let types = ServiceTemplateGenerator::generate_types(&config);
     assert!(types.contains("record OrderResponse"));

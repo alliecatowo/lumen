@@ -10,7 +10,7 @@ use lumen_runtime::parity_durability::*;
 // ===========================================================================
 
 #[test]
-fn wave26_parity_full_checklist_at_least_30_items() {
+fn parity_full_checklist_at_least_30_items() {
     let cl = DurabilityParityChecklist::full_checklist();
     assert!(
         cl.total_count() >= 30,
@@ -20,7 +20,7 @@ fn wave26_parity_full_checklist_at_least_30_items() {
 }
 
 #[test]
-fn wave26_parity_all_ids_unique() {
+fn parity_all_ids_unique() {
     let cl = DurabilityParityChecklist::full_checklist();
     let mut ids: Vec<&str> = cl.items.iter().map(|i| i.id.as_str()).collect();
     let before = ids.len();
@@ -30,7 +30,7 @@ fn wave26_parity_all_ids_unique() {
 }
 
 #[test]
-fn wave26_parity_all_fields_nonempty() {
+fn parity_all_fields_nonempty() {
     let cl = DurabilityParityChecklist::full_checklist();
     for item in &cl.items {
         assert!(!item.id.is_empty());
@@ -42,7 +42,7 @@ fn wave26_parity_all_fields_nonempty() {
 }
 
 #[test]
-fn wave26_parity_ids_follow_dur_prefix() {
+fn parity_ids_follow_dur_prefix() {
     let cl = DurabilityParityChecklist::full_checklist();
     for item in &cl.items {
         assert!(
@@ -58,26 +58,26 @@ fn wave26_parity_ids_follow_dur_prefix() {
 // ===========================================================================
 
 #[test]
-fn wave26_parity_implemented_count_positive() {
+fn parity_implemented_count_positive() {
     let cl = DurabilityParityChecklist::full_checklist();
     assert!(cl.implemented_count() > 0);
 }
 
 #[test]
-fn wave26_parity_total_count_equals_items_len() {
+fn parity_total_count_equals_items_len() {
     let cl = DurabilityParityChecklist::full_checklist();
     assert_eq!(cl.total_count(), cl.items.len());
 }
 
 #[test]
-fn wave26_parity_coverage_percent_in_range() {
+fn parity_coverage_percent_in_range() {
     let cl = DurabilityParityChecklist::full_checklist();
     let pct = cl.coverage_percent();
     assert!(pct > 0.0 && pct <= 100.0, "coverage {pct} out of range");
 }
 
 #[test]
-fn wave26_parity_coverage_formula_correct() {
+fn parity_coverage_formula_correct() {
     let cl = DurabilityParityChecklist::full_checklist();
     let expected = (cl.implemented_count() as f64 / cl.total_count() as f64) * 100.0;
     assert!(
@@ -91,7 +91,7 @@ fn wave26_parity_coverage_formula_correct() {
 // ===========================================================================
 
 #[test]
-fn wave26_parity_gaps_all_are_gaps() {
+fn parity_gaps_all_are_gaps() {
     let cl = DurabilityParityChecklist::full_checklist();
     for gap in cl.gaps() {
         assert!(gap.status.is_gap(), "{} should be a gap", gap.id);
@@ -99,7 +99,7 @@ fn wave26_parity_gaps_all_are_gaps() {
 }
 
 #[test]
-fn wave26_parity_gaps_plus_impl_plus_na_equals_total() {
+fn parity_gaps_plus_impl_plus_na_equals_total() {
     let cl = DurabilityParityChecklist::full_checklist();
     let gaps = cl.gaps().len();
     let implemented = cl.implemented_count();
@@ -112,7 +112,7 @@ fn wave26_parity_gaps_plus_impl_plus_na_equals_total() {
 }
 
 #[test]
-fn wave26_parity_has_some_gaps() {
+fn parity_has_some_gaps() {
     let cl = DurabilityParityChecklist::full_checklist();
     assert!(
         !cl.gaps().is_empty(),
@@ -125,7 +125,7 @@ fn wave26_parity_has_some_gaps() {
 // ===========================================================================
 
 #[test]
-fn wave26_parity_by_category_checkpointing_nonempty() {
+fn parity_by_category_checkpointing_nonempty() {
     let cl = DurabilityParityChecklist::full_checklist();
     let items = cl.by_category(DurabilityCategory::Checkpointing);
     assert!(!items.is_empty());
@@ -135,19 +135,19 @@ fn wave26_parity_by_category_checkpointing_nonempty() {
 }
 
 #[test]
-fn wave26_parity_by_category_replay_nonempty() {
+fn parity_by_category_replay_nonempty() {
     let cl = DurabilityParityChecklist::full_checklist();
     assert!(!cl.by_category(DurabilityCategory::Replay).is_empty());
 }
 
 #[test]
-fn wave26_parity_by_category_event_sourcing_nonempty() {
+fn parity_by_category_event_sourcing_nonempty() {
     let cl = DurabilityParityChecklist::full_checklist();
     assert!(!cl.by_category(DurabilityCategory::EventSourcing).is_empty());
 }
 
 #[test]
-fn wave26_parity_by_category_time_travel_debug_nonempty() {
+fn parity_by_category_time_travel_debug_nonempty() {
     let cl = DurabilityParityChecklist::full_checklist();
     assert!(!cl
         .by_category(DurabilityCategory::TimeTravelDebug)
@@ -155,19 +155,19 @@ fn wave26_parity_by_category_time_travel_debug_nonempty() {
 }
 
 #[test]
-fn wave26_parity_by_category_crash_recovery_nonempty() {
+fn parity_by_category_crash_recovery_nonempty() {
     let cl = DurabilityParityChecklist::full_checklist();
     assert!(!cl.by_category(DurabilityCategory::CrashRecovery).is_empty());
 }
 
 #[test]
-fn wave26_parity_by_category_saga_pattern_nonempty() {
+fn parity_by_category_saga_pattern_nonempty() {
     let cl = DurabilityParityChecklist::full_checklist();
     assert!(!cl.by_category(DurabilityCategory::SagaPattern).is_empty());
 }
 
 #[test]
-fn wave26_parity_all_15_categories_covered() {
+fn parity_all_15_categories_covered() {
     let cl = DurabilityParityChecklist::full_checklist();
     let all_cats = [
         DurabilityCategory::Checkpointing,
@@ -196,7 +196,7 @@ fn wave26_parity_all_15_categories_covered() {
 }
 
 #[test]
-fn wave26_parity_by_category_nonexistent_returns_empty_on_filtered_list() {
+fn parity_by_category_nonexistent_returns_empty_on_filtered_list() {
     // Test with an empty checklist to show by_category returns empty.
     let cl = DurabilityParityChecklist { items: vec![] };
     assert!(cl.by_category(DurabilityCategory::SagaPattern).is_empty());
@@ -207,14 +207,14 @@ fn wave26_parity_by_category_nonexistent_returns_empty_on_filtered_list() {
 // ===========================================================================
 
 #[test]
-fn wave26_parity_to_markdown_contains_header() {
+fn parity_to_markdown_contains_header() {
     let cl = DurabilityParityChecklist::full_checklist();
     let md = cl.to_markdown();
     assert!(md.contains("# Durability Parity Checklist"));
 }
 
 #[test]
-fn wave26_parity_to_markdown_contains_coverage() {
+fn parity_to_markdown_contains_coverage() {
     let cl = DurabilityParityChecklist::full_checklist();
     let md = cl.to_markdown();
     assert!(md.contains("**Coverage**"));
@@ -222,7 +222,7 @@ fn wave26_parity_to_markdown_contains_coverage() {
 }
 
 #[test]
-fn wave26_parity_to_markdown_contains_table_headers() {
+fn parity_to_markdown_contains_table_headers() {
     let cl = DurabilityParityChecklist::full_checklist();
     let md = cl.to_markdown();
     assert!(md.contains("| ID |"));
@@ -233,7 +233,7 @@ fn wave26_parity_to_markdown_contains_table_headers() {
 }
 
 #[test]
-fn wave26_parity_to_markdown_contains_all_ids() {
+fn parity_to_markdown_contains_all_ids() {
     let cl = DurabilityParityChecklist::full_checklist();
     let md = cl.to_markdown();
     for item in &cl.items {
@@ -246,7 +246,7 @@ fn wave26_parity_to_markdown_contains_all_ids() {
 // ===========================================================================
 
 #[test]
-fn wave26_parity_summary_contains_key_terms() {
+fn parity_summary_contains_key_terms() {
     let cl = DurabilityParityChecklist::full_checklist();
     let s = cl.summary();
     assert!(s.contains("Durability Parity:"));
@@ -257,7 +257,7 @@ fn wave26_parity_summary_contains_key_terms() {
 }
 
 #[test]
-fn wave26_parity_summary_contains_percentage() {
+fn parity_summary_contains_percentage() {
     let cl = DurabilityParityChecklist::full_checklist();
     let s = cl.summary();
     assert!(s.contains('%'));
@@ -268,29 +268,29 @@ fn wave26_parity_summary_contains_percentage() {
 // ===========================================================================
 
 #[test]
-fn wave26_parity_status_display_implemented() {
+fn parity_status_display_implemented() {
     assert_eq!(DurabParityStatus::Implemented.to_string(), "Implemented");
 }
 
 #[test]
-fn wave26_parity_status_display_partial() {
+fn parity_status_display_partial() {
     let s = DurabParityStatus::Partial("half done".into());
     assert_eq!(s.to_string(), "Partial: half done");
 }
 
 #[test]
-fn wave26_parity_status_display_designed() {
+fn parity_status_display_designed() {
     assert_eq!(DurabParityStatus::Designed.to_string(), "Designed");
 }
 
 #[test]
-fn wave26_parity_status_display_na() {
+fn parity_status_display_na() {
     let s = DurabParityStatus::NotApplicable("not needed".into());
     assert_eq!(s.to_string(), "N/A: not needed");
 }
 
 #[test]
-fn wave26_parity_status_is_implemented() {
+fn parity_status_is_implemented() {
     assert!(DurabParityStatus::Implemented.is_implemented());
     assert!(!DurabParityStatus::Partial("x".into()).is_implemented());
     assert!(!DurabParityStatus::Designed.is_implemented());
@@ -298,7 +298,7 @@ fn wave26_parity_status_is_implemented() {
 }
 
 #[test]
-fn wave26_parity_status_is_gap() {
+fn parity_status_is_gap() {
     assert!(!DurabParityStatus::Implemented.is_gap());
     assert!(DurabParityStatus::Partial("x".into()).is_gap());
     assert!(DurabParityStatus::Designed.is_gap());
@@ -310,7 +310,7 @@ fn wave26_parity_status_is_gap() {
 // ===========================================================================
 
 #[test]
-fn wave26_parity_category_display_all_nonempty() {
+fn parity_category_display_all_nonempty() {
     let categories = [
         DurabilityCategory::Checkpointing,
         DurabilityCategory::Replay,
@@ -334,7 +334,7 @@ fn wave26_parity_category_display_all_nonempty() {
 }
 
 #[test]
-fn wave26_parity_category_equality() {
+fn parity_category_equality() {
     assert_eq!(
         DurabilityCategory::Checkpointing,
         DurabilityCategory::Checkpointing
@@ -350,13 +350,13 @@ fn wave26_parity_category_equality() {
 // ===========================================================================
 
 #[test]
-fn wave26_parity_empty_checklist_coverage_zero() {
+fn parity_empty_checklist_coverage_zero() {
     let cl = DurabilityParityChecklist { items: vec![] };
     assert!((cl.coverage_percent() - 0.0).abs() < f64::EPSILON);
 }
 
 #[test]
-fn wave26_parity_empty_checklist_counts_zero() {
+fn parity_empty_checklist_counts_zero() {
     let cl = DurabilityParityChecklist { items: vec![] };
     assert_eq!(cl.implemented_count(), 0);
     assert_eq!(cl.total_count(), 0);

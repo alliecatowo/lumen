@@ -29,35 +29,35 @@ fn make_key(src: &str, ver: &str, target: &str, opt: OptLevel) -> CacheKey {
 // =============================================================================
 
 #[test]
-fn wave24_binary_cache_opt_level_display_debug() {
+fn binary_cache_opt_level_display_debug() {
     assert_eq!(OptLevel::Debug.to_string(), "debug");
 }
 
 #[test]
-fn wave24_binary_cache_opt_level_display_release() {
+fn binary_cache_opt_level_display_release() {
     assert_eq!(OptLevel::Release.to_string(), "release");
 }
 
 #[test]
-fn wave24_binary_cache_opt_level_display_size() {
+fn binary_cache_opt_level_display_size() {
     assert_eq!(OptLevel::Size.to_string(), "size");
 }
 
 #[test]
-fn wave24_binary_cache_opt_level_parse_valid() {
+fn binary_cache_opt_level_parse_valid() {
     assert_eq!("debug".parse::<OptLevel>().unwrap(), OptLevel::Debug);
     assert_eq!("release".parse::<OptLevel>().unwrap(), OptLevel::Release);
     assert_eq!("size".parse::<OptLevel>().unwrap(), OptLevel::Size);
 }
 
 #[test]
-fn wave24_binary_cache_opt_level_parse_invalid() {
+fn binary_cache_opt_level_parse_invalid() {
     assert!("turbo".parse::<OptLevel>().is_err());
     assert!("".parse::<OptLevel>().is_err());
 }
 
 #[test]
-fn wave24_binary_cache_opt_level_serde_roundtrip() {
+fn binary_cache_opt_level_serde_roundtrip() {
     for opt in [OptLevel::Debug, OptLevel::Release, OptLevel::Size] {
         let json = serde_json::to_string(&opt).unwrap();
         let back: OptLevel = serde_json::from_str(&json).unwrap();
@@ -70,49 +70,49 @@ fn wave24_binary_cache_opt_level_serde_roundtrip() {
 // =============================================================================
 
 #[test]
-fn wave24_binary_cache_key_hex_deterministic() {
+fn binary_cache_key_hex_deterministic() {
     let k1 = make_key("fn main() end", "0.4.0", "default", OptLevel::Debug);
     let k2 = make_key("fn main() end", "0.4.0", "default", OptLevel::Debug);
     assert_eq!(k1.to_hex(), k2.to_hex());
 }
 
 #[test]
-fn wave24_binary_cache_key_hex_varies_source() {
+fn binary_cache_key_hex_varies_source() {
     let k1 = make_key("source_a", "0.4.0", "default", OptLevel::Debug);
     let k2 = make_key("source_b", "0.4.0", "default", OptLevel::Debug);
     assert_ne!(k1.to_hex(), k2.to_hex());
 }
 
 #[test]
-fn wave24_binary_cache_key_hex_varies_version() {
+fn binary_cache_key_hex_varies_version() {
     let k1 = make_key("src", "0.4.0", "default", OptLevel::Debug);
     let k2 = make_key("src", "0.5.0", "default", OptLevel::Debug);
     assert_ne!(k1.to_hex(), k2.to_hex());
 }
 
 #[test]
-fn wave24_binary_cache_key_hex_varies_target() {
+fn binary_cache_key_hex_varies_target() {
     let k1 = make_key("src", "0.4.0", "x86_64-linux", OptLevel::Debug);
     let k2 = make_key("src", "0.4.0", "wasm32-wasi", OptLevel::Debug);
     assert_ne!(k1.to_hex(), k2.to_hex());
 }
 
 #[test]
-fn wave24_binary_cache_key_hex_varies_opt() {
+fn binary_cache_key_hex_varies_opt() {
     let k1 = make_key("src", "0.4.0", "default", OptLevel::Debug);
     let k2 = make_key("src", "0.4.0", "default", OptLevel::Release);
     assert_ne!(k1.to_hex(), k2.to_hex());
 }
 
 #[test]
-fn wave24_binary_cache_key_display_truncates() {
+fn binary_cache_key_display_truncates() {
     let k = make_key("src", "0.4.0", "default", OptLevel::Debug);
     let display = format!("{}", k);
     assert_eq!(display.len(), 16);
 }
 
 #[test]
-fn wave24_binary_cache_key_serde_roundtrip() {
+fn binary_cache_key_serde_roundtrip() {
     let k = make_key("src", "0.4.0", "default", OptLevel::Release);
     let json = serde_json::to_string(&k).unwrap();
     let back: CacheKey = serde_json::from_str(&json).unwrap();
@@ -124,28 +124,28 @@ fn wave24_binary_cache_key_serde_roundtrip() {
 // =============================================================================
 
 #[test]
-fn wave24_binary_cache_source_hash_deterministic() {
+fn binary_cache_source_hash_deterministic() {
     let h1 = BinaryCache::compute_source_hash("cell main() -> Int 42 end");
     let h2 = BinaryCache::compute_source_hash("cell main() -> Int 42 end");
     assert_eq!(h1, h2);
 }
 
 #[test]
-fn wave24_binary_cache_source_hash_differs() {
+fn binary_cache_source_hash_differs() {
     let h1 = BinaryCache::compute_source_hash("aaa");
     let h2 = BinaryCache::compute_source_hash("bbb");
     assert_ne!(h1, h2);
 }
 
 #[test]
-fn wave24_binary_cache_source_hash_length() {
+fn binary_cache_source_hash_length() {
     // SHA-256 produces 64 hex characters
     let h = BinaryCache::compute_source_hash("test");
     assert_eq!(h.len(), 64);
 }
 
 #[test]
-fn wave24_binary_cache_source_hash_empty_input() {
+fn binary_cache_source_hash_empty_input() {
     let h = BinaryCache::compute_source_hash("");
     assert_eq!(h.len(), 64);
 }
@@ -155,7 +155,7 @@ fn wave24_binary_cache_source_hash_empty_input() {
 // =============================================================================
 
 #[test]
-fn wave24_binary_cache_key_to_path_format() {
+fn binary_cache_key_to_path_format() {
     let k = make_key("src", "0.4.0", "default", OptLevel::Debug);
     let p = BinaryCache::cache_key_to_path(&k);
     assert!(p.starts_with("artifacts/"));
@@ -167,7 +167,7 @@ fn wave24_binary_cache_key_to_path_format() {
 // =============================================================================
 
 #[test]
-fn wave24_binary_cache_new_creates_dir() {
+fn binary_cache_new_creates_dir() {
     let dir = temp_cache_dir("new_creates_dir");
     let cache = BinaryCache::new(dir.clone()).unwrap();
     assert!(dir.exists());
@@ -177,7 +177,7 @@ fn wave24_binary_cache_new_creates_dir() {
 }
 
 #[test]
-fn wave24_binary_cache_with_max_size() {
+fn binary_cache_with_max_size() {
     let dir = temp_cache_dir("with_max_size");
     let cache = BinaryCache::with_max_size(dir.clone(), 512).unwrap();
     assert_eq!(cache.max_size_bytes(), 512);
@@ -189,7 +189,7 @@ fn wave24_binary_cache_with_max_size() {
 // =============================================================================
 
 #[test]
-fn wave24_binary_cache_put_and_get() {
+fn binary_cache_put_and_get() {
     let dir = temp_cache_dir("put_and_get");
     let mut cache = BinaryCache::new(dir.clone()).unwrap();
 
@@ -206,7 +206,7 @@ fn wave24_binary_cache_put_and_get() {
 }
 
 #[test]
-fn wave24_binary_cache_get_miss() {
+fn binary_cache_get_miss() {
     let dir = temp_cache_dir("get_miss");
     let cache = BinaryCache::new(dir.clone()).unwrap();
     let key = make_key("missing", "0.4.0", "default", OptLevel::Debug);
@@ -215,7 +215,7 @@ fn wave24_binary_cache_get_miss() {
 }
 
 #[test]
-fn wave24_binary_cache_put_overwrites() {
+fn binary_cache_put_overwrites() {
     let dir = temp_cache_dir("put_overwrites");
     let mut cache = BinaryCache::new(dir.clone()).unwrap();
 
@@ -231,7 +231,7 @@ fn wave24_binary_cache_put_overwrites() {
 }
 
 #[test]
-fn wave24_binary_cache_put_multiple_keys() {
+fn binary_cache_put_multiple_keys() {
     let dir = temp_cache_dir("put_multiple");
     let mut cache = BinaryCache::new(dir.clone()).unwrap();
 
@@ -249,7 +249,7 @@ fn wave24_binary_cache_put_multiple_keys() {
 }
 
 #[test]
-fn wave24_binary_cache_put_artifact_on_disk() {
+fn binary_cache_put_artifact_on_disk() {
     let dir = temp_cache_dir("artifact_on_disk");
     let mut cache = BinaryCache::new(dir.clone()).unwrap();
 
@@ -271,7 +271,7 @@ fn wave24_binary_cache_put_artifact_on_disk() {
 // =============================================================================
 
 #[test]
-fn wave24_binary_cache_invalidate_existing() {
+fn binary_cache_invalidate_existing() {
     let dir = temp_cache_dir("invalidate_existing");
     let mut cache = BinaryCache::new(dir.clone()).unwrap();
 
@@ -285,7 +285,7 @@ fn wave24_binary_cache_invalidate_existing() {
 }
 
 #[test]
-fn wave24_binary_cache_invalidate_missing() {
+fn binary_cache_invalidate_missing() {
     let dir = temp_cache_dir("invalidate_missing");
     let mut cache = BinaryCache::new(dir.clone()).unwrap();
     let key = make_key("no_such", "0.4.0", "default", OptLevel::Debug);
@@ -294,7 +294,7 @@ fn wave24_binary_cache_invalidate_missing() {
 }
 
 #[test]
-fn wave24_binary_cache_invalidate_all() {
+fn binary_cache_invalidate_all() {
     let dir = temp_cache_dir("invalidate_all");
     let mut cache = BinaryCache::new(dir.clone()).unwrap();
 
@@ -312,7 +312,7 @@ fn wave24_binary_cache_invalidate_all() {
 }
 
 #[test]
-fn wave24_binary_cache_invalidate_all_empty() {
+fn binary_cache_invalidate_all_empty() {
     let dir = temp_cache_dir("invalidate_all_empty");
     let mut cache = BinaryCache::new(dir.clone()).unwrap();
     assert_eq!(cache.invalidate_all(), 0);
@@ -324,7 +324,7 @@ fn wave24_binary_cache_invalidate_all_empty() {
 // =============================================================================
 
 #[test]
-fn wave24_binary_cache_evict_lru_frees_space() {
+fn binary_cache_evict_lru_frees_space() {
     let dir = temp_cache_dir("evict_lru");
     let mut cache = BinaryCache::with_max_size(dir.clone(), 1_000_000).unwrap();
 
@@ -349,7 +349,7 @@ fn wave24_binary_cache_evict_lru_frees_space() {
 }
 
 #[test]
-fn wave24_binary_cache_evict_lru_zero_target() {
+fn binary_cache_evict_lru_zero_target() {
     let dir = temp_cache_dir("evict_zero");
     let mut cache = BinaryCache::new(dir.clone()).unwrap();
     assert_eq!(cache.evict_lru(0), 0);
@@ -357,7 +357,7 @@ fn wave24_binary_cache_evict_lru_zero_target() {
 }
 
 #[test]
-fn wave24_binary_cache_evict_lru_all() {
+fn binary_cache_evict_lru_all() {
     let dir = temp_cache_dir("evict_all");
     let mut cache = BinaryCache::new(dir.clone()).unwrap();
     for i in 0..3 {
@@ -375,7 +375,7 @@ fn wave24_binary_cache_evict_lru_all() {
 // =============================================================================
 
 #[test]
-fn wave24_binary_cache_prune_expired_removes_old() {
+fn binary_cache_prune_expired_removes_old() {
     let dir = temp_cache_dir("prune_old");
     let mut cache = BinaryCache::new(dir.clone()).unwrap();
 
@@ -397,7 +397,7 @@ fn wave24_binary_cache_prune_expired_removes_old() {
 }
 
 #[test]
-fn wave24_binary_cache_prune_expired_keeps_fresh() {
+fn binary_cache_prune_expired_keeps_fresh() {
     let dir = temp_cache_dir("prune_fresh");
     let mut cache = BinaryCache::new(dir.clone()).unwrap();
 
@@ -417,7 +417,7 @@ fn wave24_binary_cache_prune_expired_keeps_fresh() {
 // =============================================================================
 
 #[test]
-fn wave24_binary_cache_total_size_accumulates() {
+fn binary_cache_total_size_accumulates() {
     let dir = temp_cache_dir("total_size");
     let mut cache = BinaryCache::new(dir.clone()).unwrap();
 
@@ -433,7 +433,7 @@ fn wave24_binary_cache_total_size_accumulates() {
 }
 
 #[test]
-fn wave24_binary_cache_size_after_invalidate() {
+fn binary_cache_size_after_invalidate() {
     let dir = temp_cache_dir("size_after_inv");
     let mut cache = BinaryCache::new(dir.clone()).unwrap();
 
@@ -452,7 +452,7 @@ fn wave24_binary_cache_size_after_invalidate() {
 // =============================================================================
 
 #[test]
-fn wave24_binary_cache_save_and_load_index() {
+fn binary_cache_save_and_load_index() {
     let dir = temp_cache_dir("save_load_idx");
     {
         let mut cache = BinaryCache::new(dir.clone()).unwrap();
@@ -469,7 +469,7 @@ fn wave24_binary_cache_save_and_load_index() {
 }
 
 #[test]
-fn wave24_binary_cache_load_index_empty_dir() {
+fn binary_cache_load_index_empty_dir() {
     let dir = temp_cache_dir("load_empty");
     std::fs::create_dir_all(&dir).unwrap();
     let loaded = BinaryCache::load_index(&dir).unwrap();
@@ -478,7 +478,7 @@ fn wave24_binary_cache_load_index_empty_dir() {
 }
 
 #[test]
-fn wave24_binary_cache_load_index_corrupt_json() {
+fn binary_cache_load_index_corrupt_json() {
     let dir = temp_cache_dir("corrupt_index");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("index.json"), "not valid json!!!").unwrap();
@@ -492,7 +492,7 @@ fn wave24_binary_cache_load_index_corrupt_json() {
 // =============================================================================
 
 #[test]
-fn wave24_binary_cache_put_evicts_when_full() {
+fn binary_cache_put_evicts_when_full() {
     let dir = temp_cache_dir("evict_when_full");
     // Max 150 bytes
     let mut cache = BinaryCache::with_max_size(dir.clone(), 150).unwrap();
@@ -521,38 +521,38 @@ fn wave24_binary_cache_put_evicts_when_full() {
 // =============================================================================
 
 #[test]
-fn wave24_binary_cache_error_display_io() {
+fn binary_cache_error_display_io() {
     let e = CacheError::IoError("disk full".into());
     assert!(e.to_string().contains("disk full"));
 }
 
 #[test]
-fn wave24_binary_cache_error_display_serialization() {
+fn binary_cache_error_display_serialization() {
     let e = CacheError::SerializationError("bad json".into());
     assert!(e.to_string().contains("bad json"));
 }
 
 #[test]
-fn wave24_binary_cache_error_display_corrupted() {
+fn binary_cache_error_display_corrupted() {
     let e = CacheError::CorruptedEntry("bad checksum".into());
     assert!(e.to_string().contains("bad checksum"));
 }
 
 #[test]
-fn wave24_binary_cache_error_display_full() {
+fn binary_cache_error_display_full() {
     let e = CacheError::CacheFull(999);
     let s = e.to_string();
     assert!(s.contains("999"));
 }
 
 #[test]
-fn wave24_binary_cache_error_display_invalid_key() {
+fn binary_cache_error_display_invalid_key() {
     let e = CacheError::InvalidKey("empty".into());
     assert!(e.to_string().contains("empty"));
 }
 
 #[test]
-fn wave24_binary_cache_error_eq() {
+fn binary_cache_error_eq() {
     let a = CacheError::IoError("x".into());
     let b = CacheError::IoError("x".into());
     assert_eq!(a, b);
@@ -565,7 +565,7 @@ fn wave24_binary_cache_error_eq() {
 // =============================================================================
 
 #[test]
-fn wave24_binary_cache_entry_has_timestamp() {
+fn binary_cache_entry_has_timestamp() {
     let dir = temp_cache_dir("entry_ts");
     let mut cache = BinaryCache::new(dir.clone()).unwrap();
     let key = make_key("ts", "0.4.0", "default", OptLevel::Debug);
@@ -576,7 +576,7 @@ fn wave24_binary_cache_entry_has_timestamp() {
 }
 
 #[test]
-fn wave24_binary_cache_entry_dependencies_default_empty() {
+fn binary_cache_entry_dependencies_default_empty() {
     let dir = temp_cache_dir("entry_deps");
     let mut cache = BinaryCache::new(dir.clone()).unwrap();
     let key = make_key("deps", "0.4.0", "default", OptLevel::Debug);
@@ -586,7 +586,7 @@ fn wave24_binary_cache_entry_dependencies_default_empty() {
 }
 
 #[test]
-fn wave24_binary_cache_entry_artifact_path_relative() {
+fn binary_cache_entry_artifact_path_relative() {
     let dir = temp_cache_dir("entry_relpath");
     let mut cache = BinaryCache::new(dir.clone()).unwrap();
     let key = make_key("rel", "0.4.0", "default", OptLevel::Debug);
@@ -600,7 +600,7 @@ fn wave24_binary_cache_entry_artifact_path_relative() {
 // =============================================================================
 
 #[test]
-fn wave24_binary_cache_empty_artifact_data() {
+fn binary_cache_empty_artifact_data() {
     let dir = temp_cache_dir("empty_data");
     let mut cache = BinaryCache::new(dir.clone()).unwrap();
     let key = make_key("empty", "0.4.0", "default", OptLevel::Debug);
@@ -610,7 +610,7 @@ fn wave24_binary_cache_empty_artifact_data() {
 }
 
 #[test]
-fn wave24_binary_cache_large_source_hash() {
+fn binary_cache_large_source_hash() {
     // Ensure hashing a large string works without panicking
     let big = "x".repeat(1_000_000);
     let h = BinaryCache::compute_source_hash(&big);
@@ -618,7 +618,7 @@ fn wave24_binary_cache_large_source_hash() {
 }
 
 #[test]
-fn wave24_binary_cache_unicode_source_hash() {
+fn binary_cache_unicode_source_hash() {
     let h1 = BinaryCache::compute_source_hash("hello unicode");
     let h2 = BinaryCache::compute_source_hash("hello unicode");
     assert_eq!(h1, h2);
@@ -626,7 +626,7 @@ fn wave24_binary_cache_unicode_source_hash() {
 }
 
 #[test]
-fn wave24_binary_cache_reopen_preserves_entries() {
+fn binary_cache_reopen_preserves_entries() {
     let dir = temp_cache_dir("reopen");
     {
         let mut cache = BinaryCache::new(dir.clone()).unwrap();
@@ -642,7 +642,7 @@ fn wave24_binary_cache_reopen_preserves_entries() {
 }
 
 #[test]
-fn wave24_binary_cache_cache_dir_accessor() {
+fn binary_cache_cache_dir_accessor() {
     let dir = temp_cache_dir("accessor_dir");
     let cache = BinaryCache::new(dir.clone()).unwrap();
     assert_eq!(cache.cache_dir(), dir.as_path());
@@ -650,7 +650,7 @@ fn wave24_binary_cache_cache_dir_accessor() {
 }
 
 #[test]
-fn wave24_binary_cache_max_size_accessor() {
+fn binary_cache_max_size_accessor() {
     let dir = temp_cache_dir("accessor_maxsz");
     let cache = BinaryCache::with_max_size(dir.clone(), 42).unwrap();
     assert_eq!(cache.max_size_bytes(), 42);

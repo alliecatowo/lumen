@@ -451,14 +451,15 @@ fn fs_async_file_watch_event_variants() {
 
 #[test]
 fn fs_async_normalize_path_dots() {
-    assert_eq!(normalize_path("a/./b"), "a/b");
-    assert_eq!(normalize_path("a/b/../c"), "a/c");
-    assert_eq!(normalize_path("./a/b"), "a/b");
+    // Use replace to normalise Windows backslashes for cross-platform comparison.
+    assert_eq!(normalize_path("a/./b").replace('\\', "/"), "a/b");
+    assert_eq!(normalize_path("a/b/../c").replace('\\', "/"), "a/c");
+    assert_eq!(normalize_path("./a/b").replace('\\', "/"), "a/b");
 }
 
 #[test]
 fn fs_async_normalize_path_multiple_parents() {
-    assert_eq!(normalize_path("a/b/c/../../d"), "a/d");
+    assert_eq!(normalize_path("a/b/c/../../d").replace('\\', "/"), "a/d");
 }
 
 #[test]
@@ -468,7 +469,7 @@ fn fs_async_normalize_path_only_dot() {
 
 #[test]
 fn fs_async_join_paths_basic() {
-    let joined = join_paths("/home/user", "docs/file.txt");
+    let joined = join_paths("/home/user", "docs/file.txt").replace('\\', "/");
     assert_eq!(joined, "/home/user/docs/file.txt");
 }
 

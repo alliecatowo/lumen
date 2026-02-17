@@ -49,20 +49,20 @@ fn wide_tree() -> ExecutionGraph {
 // ===========================================================================
 
 #[test]
-fn wave24_execution_graph_builder_new() {
+fn execution_graph_builder_new() {
     let b = GraphBuilder::new();
     assert_eq!(b.stack_depth(), 0);
     assert_eq!(b.current_parent(), None);
 }
 
 #[test]
-fn wave24_execution_graph_builder_default() {
+fn execution_graph_builder_default() {
     let b = GraphBuilder::default();
     assert_eq!(b.stack_depth(), 0);
 }
 
 #[test]
-fn wave24_execution_graph_builder_enter_exit() {
+fn execution_graph_builder_enter_exit() {
     let mut b = GraphBuilder::new();
     let id = b.enter_call("main", NodeKind::CellCall);
     assert_eq!(b.stack_depth(), 1);
@@ -72,7 +72,7 @@ fn wave24_execution_graph_builder_enter_exit() {
 }
 
 #[test]
-fn wave24_execution_graph_builder_auto_call_edges() {
+fn execution_graph_builder_auto_call_edges() {
     let mut b = GraphBuilder::new();
     let p = b.enter_call("parent", NodeKind::CellCall);
     let c = b.enter_call("child", NodeKind::CellCall);
@@ -86,7 +86,7 @@ fn wave24_execution_graph_builder_auto_call_edges() {
 }
 
 #[test]
-fn wave24_execution_graph_builder_properties() {
+fn execution_graph_builder_properties() {
     let mut b = GraphBuilder::new();
     let id = b.enter_call("main", NodeKind::CellCall);
     b.add_property(id, "key", "value");
@@ -96,7 +96,7 @@ fn wave24_execution_graph_builder_properties() {
 }
 
 #[test]
-fn wave24_execution_graph_builder_times() {
+fn execution_graph_builder_times() {
     let mut b = GraphBuilder::new();
     let id = b.enter_call("main", NodeKind::CellCall);
     b.set_start_time(id, 100);
@@ -107,7 +107,7 @@ fn wave24_execution_graph_builder_times() {
 }
 
 #[test]
-fn wave24_execution_graph_builder_labeled_edge() {
+fn execution_graph_builder_labeled_edge() {
     let mut b = GraphBuilder::new();
     let a = b.enter_call("a", NodeKind::CellCall);
     b.exit_call(a, NodeStatus::Completed);
@@ -128,7 +128,7 @@ fn wave24_execution_graph_builder_labeled_edge() {
 // ===========================================================================
 
 #[test]
-fn wave24_execution_graph_metadata_counts() {
+fn execution_graph_metadata_counts() {
     let g = linear_chain();
     assert_eq!(g.metadata.node_count, 3);
     assert_eq!(g.metadata.edge_count, 2);
@@ -136,13 +136,13 @@ fn wave24_execution_graph_metadata_counts() {
 }
 
 #[test]
-fn wave24_execution_graph_metadata_duration() {
+fn execution_graph_metadata_duration() {
     let g = linear_chain();
     assert_eq!(g.metadata.total_duration_us, 300); // 300 - 0
 }
 
 #[test]
-fn wave24_execution_graph_metadata_depth() {
+fn execution_graph_metadata_depth() {
     let g = linear_chain();
     assert_eq!(g.metadata.max_depth, 3);
 }
@@ -152,7 +152,7 @@ fn wave24_execution_graph_metadata_depth() {
 // ===========================================================================
 
 #[test]
-fn wave24_execution_graph_roots() {
+fn execution_graph_roots() {
     let g = linear_chain();
     let roots = g.roots();
     assert_eq!(roots.len(), 1);
@@ -160,7 +160,7 @@ fn wave24_execution_graph_roots() {
 }
 
 #[test]
-fn wave24_execution_graph_multiple_roots() {
+fn execution_graph_multiple_roots() {
     let mut b = GraphBuilder::new();
     let a = b.enter_call("a", NodeKind::CellCall);
     b.exit_call(a, NodeStatus::Completed);
@@ -171,14 +171,14 @@ fn wave24_execution_graph_multiple_roots() {
 }
 
 #[test]
-fn wave24_execution_graph_children() {
+fn execution_graph_children() {
     let g = wide_tree();
     let children = g.children(0);
     assert_eq!(children.len(), 4);
 }
 
 #[test]
-fn wave24_execution_graph_parents() {
+fn execution_graph_parents() {
     let g = wide_tree();
     // child_0 has node id=1
     let parents = g.parents(1);
@@ -187,14 +187,14 @@ fn wave24_execution_graph_parents() {
 }
 
 #[test]
-fn wave24_execution_graph_descendants() {
+fn execution_graph_descendants() {
     let g = linear_chain();
     let desc = g.descendants(0); // root "a"
     assert_eq!(desc.len(), 2); // b and c
 }
 
 #[test]
-fn wave24_execution_graph_descendants_leaf() {
+fn execution_graph_descendants_leaf() {
     let g = linear_chain();
     let desc = g.descendants(2); // leaf "c"
     assert!(desc.is_empty());
@@ -205,13 +205,13 @@ fn wave24_execution_graph_descendants_leaf() {
 // ===========================================================================
 
 #[test]
-fn wave24_execution_graph_depth_empty() {
+fn execution_graph_depth_empty() {
     let g = GraphBuilder::new().build("run");
     assert_eq!(g.depth(), 0);
 }
 
 #[test]
-fn wave24_execution_graph_depth_flat() {
+fn execution_graph_depth_flat() {
     let mut b = GraphBuilder::new();
     let a = b.enter_call("a", NodeKind::CellCall);
     b.exit_call(a, NodeStatus::Completed);
@@ -220,19 +220,19 @@ fn wave24_execution_graph_depth_flat() {
 }
 
 #[test]
-fn wave24_execution_graph_depth_deep() {
+fn execution_graph_depth_deep() {
     let g = linear_chain();
     assert_eq!(g.depth(), 3);
 }
 
 #[test]
-fn wave24_execution_graph_fan_out() {
+fn execution_graph_fan_out() {
     let g = wide_tree();
     assert_eq!(g.fan_out(0), 4); // root -> 4 children
 }
 
 #[test]
-fn wave24_execution_graph_fan_out_leaf() {
+fn execution_graph_fan_out_leaf() {
     let g = wide_tree();
     assert_eq!(g.fan_out(1), 0); // child_0 has no outgoing
 }
@@ -242,13 +242,13 @@ fn wave24_execution_graph_fan_out_leaf() {
 // ===========================================================================
 
 #[test]
-fn wave24_execution_graph_critical_path_empty() {
+fn execution_graph_critical_path_empty() {
     let g = GraphBuilder::new().build("run");
     assert!(g.critical_path().is_empty());
 }
 
 #[test]
-fn wave24_execution_graph_critical_path_single() {
+fn execution_graph_critical_path_single() {
     let mut b = GraphBuilder::new();
     let a = b.enter_call("a", NodeKind::CellCall);
     b.set_start_time(a, 0);
@@ -259,7 +259,7 @@ fn wave24_execution_graph_critical_path_single() {
 }
 
 #[test]
-fn wave24_execution_graph_critical_path_longest_branch() {
+fn execution_graph_critical_path_longest_branch() {
     let mut b = GraphBuilder::new();
     let root = b.enter_call("root", NodeKind::CellCall);
     b.set_start_time(root, 0);
@@ -288,7 +288,7 @@ fn wave24_execution_graph_critical_path_longest_branch() {
 // ===========================================================================
 
 #[test]
-fn wave24_execution_graph_bottlenecks() {
+fn execution_graph_bottlenecks() {
     let mut b = GraphBuilder::new();
     let fast = b.enter_call("fast", NodeKind::CellCall);
     b.set_start_time(fast, 0);
@@ -305,7 +305,7 @@ fn wave24_execution_graph_bottlenecks() {
 }
 
 #[test]
-fn wave24_execution_graph_bottlenecks_empty() {
+fn execution_graph_bottlenecks_empty() {
     let mut b = GraphBuilder::new();
     let a = b.enter_call("a", NodeKind::CellCall);
     b.set_start_time(a, 0);
@@ -320,13 +320,13 @@ fn wave24_execution_graph_bottlenecks_empty() {
 // ===========================================================================
 
 #[test]
-fn wave24_execution_graph_error_chains_none() {
+fn execution_graph_error_chains_none() {
     let g = linear_chain();
     assert!(g.error_chains().is_empty());
 }
 
 #[test]
-fn wave24_execution_graph_error_chains_single() {
+fn execution_graph_error_chains_single() {
     let mut b = GraphBuilder::new();
     let root = b.enter_call("root", NodeKind::CellCall);
     let err = b.enter_call("fail", NodeKind::Error);
@@ -341,7 +341,7 @@ fn wave24_execution_graph_error_chains_single() {
 }
 
 #[test]
-fn wave24_execution_graph_error_chains_deep() {
+fn execution_graph_error_chains_deep() {
     let mut b = GraphBuilder::new();
     let r = b.enter_call("r", NodeKind::CellCall);
     let m = b.enter_call("m", NodeKind::CellCall);
@@ -360,7 +360,7 @@ fn wave24_execution_graph_error_chains_deep() {
 // ===========================================================================
 
 #[test]
-fn wave24_execution_graph_filter_kind() {
+fn execution_graph_filter_kind() {
     let g = wide_tree();
     let tools = g.filter_by_kind(NodeKind::ToolCall);
     assert_eq!(tools.len(), 4);
@@ -369,20 +369,20 @@ fn wave24_execution_graph_filter_kind() {
 }
 
 #[test]
-fn wave24_execution_graph_filter_kind_empty() {
+fn execution_graph_filter_kind_empty() {
     let g = linear_chain();
     assert!(g.filter_by_kind(NodeKind::ToolCall).is_empty());
 }
 
 #[test]
-fn wave24_execution_graph_filter_status_completed() {
+fn execution_graph_filter_status_completed() {
     let g = linear_chain();
     let ok = g.filter_by_status(&NodeStatus::Completed);
     assert_eq!(ok.len(), 3);
 }
 
 #[test]
-fn wave24_execution_graph_filter_status_failed() {
+fn execution_graph_filter_status_failed() {
     let mut b = GraphBuilder::new();
     let a = b.enter_call("a", NodeKind::CellCall);
     b.exit_call(a, NodeStatus::Failed("x".to_string()));
@@ -399,7 +399,7 @@ fn wave24_execution_graph_filter_status_failed() {
 // ===========================================================================
 
 #[test]
-fn wave24_execution_graph_subgraph() {
+fn execution_graph_subgraph() {
     let g = linear_chain();
     // Subgraph rooted at "b" (id=1) should include b and c
     let sub = g.subgraph(1);
@@ -408,7 +408,7 @@ fn wave24_execution_graph_subgraph() {
 }
 
 #[test]
-fn wave24_execution_graph_subgraph_leaf() {
+fn execution_graph_subgraph_leaf() {
     let g = linear_chain();
     let sub = g.subgraph(2); // leaf "c"
     assert_eq!(sub.metadata.node_count, 1);
@@ -416,7 +416,7 @@ fn wave24_execution_graph_subgraph_leaf() {
 }
 
 #[test]
-fn wave24_execution_graph_subgraph_preserves_times() {
+fn execution_graph_subgraph_preserves_times() {
     let g = linear_chain();
     let sub = g.subgraph(1); // "b": start=10, end=200; "c": start=20, end=100
     assert_eq!(sub.metadata.total_duration_us, 190); // 200 - 10
@@ -427,7 +427,7 @@ fn wave24_execution_graph_subgraph_preserves_times() {
 // ===========================================================================
 
 #[test]
-fn wave24_execution_graph_dot_structure() {
+fn execution_graph_dot_structure() {
     let g = linear_chain();
     let dot = g.to_dot();
     assert!(dot.starts_with("digraph execution {"));
@@ -436,7 +436,7 @@ fn wave24_execution_graph_dot_structure() {
 }
 
 #[test]
-fn wave24_execution_graph_dot_nodes_and_edges() {
+fn execution_graph_dot_nodes_and_edges() {
     let g = linear_chain();
     let dot = g.to_dot();
     assert!(dot.contains("n0"));
@@ -447,7 +447,7 @@ fn wave24_execution_graph_dot_nodes_and_edges() {
 }
 
 #[test]
-fn wave24_execution_graph_dot_escapes() {
+fn execution_graph_dot_escapes() {
     let mut b = GraphBuilder::new();
     let id = b.enter_call("test \"special\"", NodeKind::CellCall);
     b.exit_call(id, NodeStatus::Completed);
@@ -461,14 +461,14 @@ fn wave24_execution_graph_dot_escapes() {
 // ===========================================================================
 
 #[test]
-fn wave24_execution_graph_mermaid_header() {
+fn execution_graph_mermaid_header() {
     let g = linear_chain();
     let m = g.to_mermaid();
     assert!(m.starts_with("graph TD\n"));
 }
 
 #[test]
-fn wave24_execution_graph_mermaid_nodes_edges() {
+fn execution_graph_mermaid_nodes_edges() {
     let g = linear_chain();
     let m = g.to_mermaid();
     assert!(m.contains("n0"));
@@ -481,7 +481,7 @@ fn wave24_execution_graph_mermaid_nodes_edges() {
 // ===========================================================================
 
 #[test]
-fn wave24_execution_graph_json_valid() {
+fn execution_graph_json_valid() {
     let g = linear_chain();
     let json = g.to_json();
     let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
@@ -491,7 +491,7 @@ fn wave24_execution_graph_json_valid() {
 }
 
 #[test]
-fn wave24_execution_graph_json_node_fields() {
+fn execution_graph_json_node_fields() {
     let g = linear_chain();
     let json = g.to_json();
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -503,7 +503,7 @@ fn wave24_execution_graph_json_node_fields() {
 }
 
 #[test]
-fn wave24_execution_graph_json_edge_fields() {
+fn execution_graph_json_edge_fields() {
     let g = linear_chain();
     let json = g.to_json();
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -514,7 +514,7 @@ fn wave24_execution_graph_json_edge_fields() {
 }
 
 #[test]
-fn wave24_execution_graph_json_special_chars() {
+fn execution_graph_json_special_chars() {
     let mut b = GraphBuilder::new();
     let id = b.enter_call("quote\"and\nnewline", NodeKind::CellCall);
     b.exit_call(id, NodeStatus::Completed);
@@ -529,7 +529,7 @@ fn wave24_execution_graph_json_special_chars() {
 // ===========================================================================
 
 #[test]
-fn wave24_execution_graph_summary_content() {
+fn execution_graph_summary_content() {
     let g = linear_chain();
     let s = g.summary();
     assert!(s.contains("linear-chain"));
@@ -544,7 +544,7 @@ fn wave24_execution_graph_summary_content() {
 // ===========================================================================
 
 #[test]
-fn wave24_execution_graph_all_node_kinds() {
+fn execution_graph_all_node_kinds() {
     let kinds = vec![
         NodeKind::CellCall,
         NodeKind::ToolCall,
@@ -569,7 +569,7 @@ fn wave24_execution_graph_all_node_kinds() {
 }
 
 #[test]
-fn wave24_execution_graph_all_edge_kinds() {
+fn execution_graph_all_edge_kinds() {
     let kinds = vec![
         EdgeKind::Call,
         EdgeKind::Return,
@@ -588,7 +588,7 @@ fn wave24_execution_graph_all_edge_kinds() {
 // ===========================================================================
 
 #[test]
-fn wave24_execution_graph_status_is_failed() {
+fn execution_graph_status_is_failed() {
     assert!(NodeStatus::Failed("x".to_string()).is_failed());
     assert!(!NodeStatus::Completed.is_failed());
     assert!(!NodeStatus::Pending.is_failed());
@@ -601,7 +601,7 @@ fn wave24_execution_graph_status_is_failed() {
 // ===========================================================================
 
 #[test]
-fn wave24_execution_graph_complex_scenario() {
+fn execution_graph_complex_scenario() {
     let mut b = GraphBuilder::new();
 
     let main = b.enter_call("main", NodeKind::CellCall);
@@ -658,7 +658,7 @@ fn wave24_execution_graph_complex_scenario() {
 }
 
 #[test]
-fn wave24_execution_graph_exit_wrong_id() {
+fn execution_graph_exit_wrong_id() {
     let mut b = GraphBuilder::new();
     let a = b.enter_call("a", NodeKind::CellCall);
     b.exit_call(999, NodeStatus::Completed);
@@ -667,7 +667,7 @@ fn wave24_execution_graph_exit_wrong_id() {
 }
 
 #[test]
-fn wave24_execution_graph_property_nonexistent_node() {
+fn execution_graph_property_nonexistent_node() {
     let mut b = GraphBuilder::new();
     b.add_property(999, "k", "v");
     let g = b.build("run");

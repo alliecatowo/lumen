@@ -1,0 +1,4 @@
+# Map literal
+cell main() -> map[String, Int]
+  {"a": 1, "b": 2}
+end

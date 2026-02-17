@@ -1,0 +1,4 @@
+# Not-equal
+cell main() -> Bool
+  1 != 2
+end

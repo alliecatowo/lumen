@@ -1,0 +1,11 @@
+cell sum(...args: Int) -> Int
+  let total = 0
+  for a in args
+    total = total + a
+  end
+  total
+end
+
+cell main() -> Int
+  sum(1, 2, 3, 4, 5)
+end

@@ -1,0 +1,28 @@
+cell reverse(s: String) -> String
+  let chars = split(s, "")
+  let result = ""
+  let i = len(chars) - 1
+  while i >= 0
+    result = result + chars[i]
+    i = i - 1
+  end
+  result
+end
+
+cell count_char(s: String, ch: String) -> Int
+  let chars = split(s, "")
+  let count = 0
+  for c in chars
+    if c == ch
+      count = count + 1
+    end
+  end
+  count
+end
+
+cell main() -> String
+  let text = "hello world"
+  let rev = reverse(text)
+  let l_count = count_char(text, "l")
+  "{rev} has {l_count} l's"
+end

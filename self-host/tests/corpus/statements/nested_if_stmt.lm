@@ -1,0 +1,12 @@
+cell main() -> String
+  let x = 15
+  if x > 10
+    if x > 20
+      "very big"
+    else
+      "big"
+    end
+  else
+    "small"
+  end
+end

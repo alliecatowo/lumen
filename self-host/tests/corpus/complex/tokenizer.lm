@@ -1,0 +1,35 @@
+enum TokenKind
+  Number
+  Plus
+  Minus
+  Star
+  Eof
+end
+
+record Token(kind: TokenKind, text: String)
+
+cell classify_char(ch: String) -> TokenKind
+  match ch
+    "+" -> TokenKind.Plus
+    "-" -> TokenKind.Minus
+    "*" -> TokenKind.Star
+    _ -> TokenKind.Number
+  end
+end
+
+cell tokenize(input: String) -> list[Token]
+  let chars = split(input, "")
+  let tokens: list[Token] = []
+  for ch in chars
+    if ch != " "
+      let kind = classify_char(ch)
+      tokens = tokens + [Token(kind: kind, text: ch)]
+    end
+  end
+  tokens + [Token(kind: TokenKind.Eof, text: "")]
+end
+
+cell main() -> Int
+  let tokens = tokenize("1 + 2 * 3")
+  len(tokens)
+end

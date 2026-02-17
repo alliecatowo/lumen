@@ -1,0 +1,5 @@
+# Let binding
+cell main() -> Int
+  let x = 42
+  x
+end

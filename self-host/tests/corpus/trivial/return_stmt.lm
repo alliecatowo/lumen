@@ -1,0 +1,11 @@
+# Return statement
+cell abs_val(x: Int) -> Int
+  if x < 0 then
+    return -x
+  end
+  x
+end
+
+cell main() -> Int
+  abs_val(-7)
+end

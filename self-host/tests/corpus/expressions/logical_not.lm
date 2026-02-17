@@ -1,0 +1,4 @@
+# Logical not
+cell main() -> Bool
+  not false
+end

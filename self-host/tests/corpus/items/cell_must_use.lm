@@ -1,0 +1,9 @@
+@must_use
+cell compute(x: Int) -> Int
+  x * x + 1
+end
+
+cell main() -> Int
+  let result = compute(5)
+  result
+end

@@ -122,7 +122,7 @@ fn collect_block_starts(instructions: &[Instruction]) -> BTreeSet<usize> {
                     targets.insert(pc + 1);
                 }
             }
-            OpCode::Return | OpCode::Halt => {
+            OpCode::Return | OpCode::Halt | OpCode::TailCall => {
                 if pc + 1 < instructions.len() {
                     targets.insert(pc + 1);
                 }
@@ -132,6 +132,23 @@ fn collect_block_starts(instructions: &[Instruction]) -> BTreeSet<usize> {
     }
 
     targets
+}
+
+/// Detect whether a cell contains any self-recursive tail calls. Scans for
+/// `TailCall` instructions whose callee (resolved via `find_callee_name`)
+/// matches the cell's own name.
+fn has_self_tail_call(cell: &LirCell) -> bool {
+    for (pc, inst) in cell.instructions.iter().enumerate() {
+        if inst.op == OpCode::TailCall {
+            let base = inst.a;
+            if let Some(ref name) = find_callee_name(cell, &cell.instructions, pc, base) {
+                if name == &cell.name {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +203,16 @@ fn lower_cell(
         vars.push(var);
     }
 
+    // --- Tail-call optimization: detect self-recursive tail calls ---
+    //
+    // If the cell contains any TailCall instructions targeting itself, we set
+    // up a "loop header" block that the tail calls can jump back to. The ABI
+    // entry block receives the actual function parameters, copies them into
+    // variables, and falls through to the loop header. Self-recursive tail
+    // calls overwrite the parameter variables and jump to the loop header,
+    // turning recursion into a loop.
+    let self_tco = has_self_tail_call(cell);
+
     // --- Pre-scan for basic-block boundaries ---
     let block_starts = collect_block_starts(&cell.instructions);
 
@@ -210,6 +237,17 @@ fn lower_cell(
             builder.def_var(vars[i], zero);
         }
     }
+
+    // If self-TCO is active, create a loop header block and jump to it.
+    // Self tail calls will jump back here after updating param variables.
+    let tco_loop_block = if self_tco {
+        let loop_block = builder.create_block();
+        builder.ins().jump(loop_block, &[]);
+        builder.switch_to_block(loop_block);
+        Some(loop_block)
+    } else {
+        None
+    };
 
     // Pre-create Cranelift blocks for each identified block start.
     let mut block_map: HashMap<usize, cranelift_codegen::ir::Block> = HashMap::new();
@@ -482,7 +520,37 @@ fn lower_cell(
 
                 let callee_name = find_callee_name(cell, &cell.instructions, pc, base);
 
-                if let Some(ref name) = callee_name {
+                // Check for self-recursive tail call — emit a loop-back jump
+                // instead of call + return (tail-call optimization).
+                let is_self_call = callee_name
+                    .as_ref()
+                    .map(|n| n == &cell.name)
+                    .unwrap_or(false);
+
+                if is_self_call && self_tco {
+                    if let Some(loop_block) = tco_loop_block {
+                        // Read the new argument values FIRST, before overwriting
+                        // any parameter variables (a later arg might read from
+                        // a register that is also a parameter slot).
+                        let mut new_args: Vec<Value> = Vec::with_capacity(num_args);
+                        for i in 0..num_args {
+                            let arg_reg = base + 1 + i as u8;
+                            new_args.push(use_var(&mut builder, &vars, arg_reg));
+                        }
+
+                        // Write the new values into the parameter variables.
+                        for (i, &val) in new_args.iter().enumerate() {
+                            if i < vars.len() {
+                                builder.def_var(vars[i], val);
+                            }
+                        }
+
+                        // Jump back to the loop header — this is where TCO
+                        // actually happens: no new stack frame is created.
+                        builder.ins().jump(loop_block, &[]);
+                        terminated = true;
+                    }
+                } else if let Some(ref name) = callee_name {
                     if let Some(&callee_func_id) = func_ids.get(name.as_str()) {
                         if let Some(&func_ref) = callee_refs.get(&callee_func_id) {
                             let mut args: Vec<Value> = Vec::with_capacity(num_args);
@@ -1228,6 +1296,273 @@ end
         assert!(
             lowered.functions.len() >= 2,
             "should have at least two functions (double + main)"
+        );
+
+        let bytes = emit_object(ctx.module).expect("emission should succeed");
+        assert!(!bytes.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // T033: Tail-call optimization (self-recursive → loop)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tco_self_recursive_tail_call() {
+        // Simulates a countdown function:
+        //   cell countdown(n: Int) -> Int
+        //     if n <= 0
+        //       0
+        //     else
+        //       countdown(n - 1)   # self tail-call → should become jump
+        //     end
+        //   end
+        //
+        // LIR layout:
+        //  0: LoadInt   r1, 0          (base case value)
+        //  1: Le        r2, r0, r1     (n <= 0?)
+        //  2: Test      r2, 0, 0
+        //  3: Jmp       +2             (→ 6: else)
+        //  4: Move      r0, r1         (return 0)
+        //  5: Return    r0
+        //  6: LoadK     r3, 0          (load "countdown" fn name)
+        //  7: LoadInt   r5, 1
+        //  8: Sub       r4, r0, r5     (n - 1)
+        //  9: TailCall  r3, 1, 1       (tail-call countdown(r4))
+        let cell = LirCell {
+            name: "countdown".to_string(),
+            params: vec![LirParam {
+                name: "n".to_string(),
+                ty: "Int".to_string(),
+                register: 0,
+                variadic: false,
+            }],
+            returns: Some("Int".to_string()),
+            registers: 6,
+            constants: vec![Constant::String("countdown".to_string())],
+            instructions: vec![
+                Instruction::abc(OpCode::LoadInt, 1, 0, 0),  // 0: r1 = 0
+                Instruction::abc(OpCode::Le, 2, 0, 1),       // 1: r2 = n <= 0
+                Instruction::abc(OpCode::Test, 2, 0, 0),     // 2: test r2
+                Instruction::sax(OpCode::Jmp, 2),            // 3: → 6 (else)
+                Instruction::abc(OpCode::Move, 0, 1, 0),     // 4: r0 = 0
+                Instruction::abc(OpCode::Return, 0, 1, 0),   // 5: return r0
+                Instruction::abx(OpCode::LoadK, 3, 0),       // 6: r3 = "countdown"
+                Instruction::abc(OpCode::LoadInt, 5, 1, 0),  // 7: r5 = 1
+                Instruction::abc(OpCode::Sub, 4, 0, 5),      // 8: r4 = n - 1
+                Instruction::abc(OpCode::TailCall, 3, 1, 1), // 9: tail-call countdown(r4)
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+
+        // Verify TCO detection
+        assert!(
+            has_self_tail_call(&cell),
+            "should detect self-recursive tail call"
+        );
+
+        let lir = make_multi_cell_module(vec![cell]);
+        let mut ctx = CodegenContext::new().expect("host context");
+        let ptr_ty = ctx.pointer_type();
+        let result = lower_module(&mut ctx.module, &lir, ptr_ty);
+        assert!(
+            result.is_ok(),
+            "self-recursive TCO lowering should succeed: {:?}",
+            result.err()
+        );
+
+        let bytes = emit_object(ctx.module).expect("emission should succeed");
+        assert!(!bytes.is_empty(), "object bytes should not be empty");
+        assert!(bytes.len() > 16);
+    }
+
+    #[test]
+    fn tco_non_self_tail_call_no_loop() {
+        // A TailCall to a *different* function should NOT trigger TCO.
+        // It should still emit call + return.
+        let helper = LirCell {
+            name: "helper".to_string(),
+            params: vec![LirParam {
+                name: "x".to_string(),
+                ty: "Int".to_string(),
+                register: 0,
+                variadic: false,
+            }],
+            returns: Some("Int".to_string()),
+            registers: 2,
+            constants: vec![],
+            instructions: vec![Instruction::abc(OpCode::Return, 0, 1, 0)],
+            effect_handler_metas: Vec::new(),
+        };
+
+        let caller = LirCell {
+            name: "caller".to_string(),
+            params: vec![LirParam {
+                name: "x".to_string(),
+                ty: "Int".to_string(),
+                register: 0,
+                variadic: false,
+            }],
+            returns: Some("Int".to_string()),
+            registers: 4,
+            constants: vec![Constant::String("helper".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 1, 0),       // r1 = "helper"
+                Instruction::abc(OpCode::Move, 2, 0, 0),     // r2 = x
+                Instruction::abc(OpCode::TailCall, 1, 1, 1), // tail-call helper(x)
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+
+        // Verify: caller does NOT have self-tail-calls
+        assert!(
+            !has_self_tail_call(&caller),
+            "non-self tail call should not trigger TCO detection"
+        );
+
+        let lir = make_multi_cell_module(vec![helper, caller]);
+        let mut ctx = CodegenContext::new().expect("host context");
+        let ptr_ty = ctx.pointer_type();
+        let result = lower_module(&mut ctx.module, &lir, ptr_ty);
+        assert!(
+            result.is_ok(),
+            "non-self tail-call lowering should succeed: {:?}",
+            result.err()
+        );
+
+        let bytes = emit_object(ctx.module).expect("emission should succeed");
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn tco_has_self_tail_call_detection() {
+        // Positive case: cell that tail-calls itself
+        let self_call = LirCell {
+            name: "recur".to_string(),
+            params: vec![LirParam {
+                name: "n".to_string(),
+                ty: "Int".to_string(),
+                register: 0,
+                variadic: false,
+            }],
+            returns: Some("Int".to_string()),
+            registers: 4,
+            constants: vec![Constant::String("recur".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 1, 0),
+                Instruction::abc(OpCode::Move, 2, 0, 0),
+                Instruction::abc(OpCode::TailCall, 1, 1, 1),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+        assert!(has_self_tail_call(&self_call));
+
+        // Negative case: cell that tail-calls a different function
+        let other_call = LirCell {
+            name: "wrapper".to_string(),
+            params: vec![LirParam {
+                name: "n".to_string(),
+                ty: "Int".to_string(),
+                register: 0,
+                variadic: false,
+            }],
+            returns: Some("Int".to_string()),
+            registers: 4,
+            constants: vec![Constant::String("other_fn".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 1, 0),
+                Instruction::abc(OpCode::Move, 2, 0, 0),
+                Instruction::abc(OpCode::TailCall, 1, 1, 1),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+        assert!(!has_self_tail_call(&other_call));
+
+        // Negative case: no tail calls at all
+        let no_tc = LirCell {
+            name: "simple".to_string(),
+            params: vec![],
+            returns: Some("Int".to_string()),
+            registers: 2,
+            constants: vec![Constant::Int(42)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+        assert!(!has_self_tail_call(&no_tc));
+    }
+
+    #[test]
+    fn tco_fibonacci_self_recursive() {
+        // Simulates tail-recursive fibonacci accumulator:
+        //   cell fib_acc(n: Int, a: Int, b: Int) -> Int
+        //     if n <= 0 then return a end
+        //     fib_acc(n - 1, b, a + b)
+        //   end
+        //
+        //  0: LoadInt   r3, 0
+        //  1: Le        r4, r0, r3      (n <= 0?)
+        //  2: Test      r4, 0, 0
+        //  3: Jmp       +1              (→ 5: not done)
+        //  4: Return    r1              (return a)
+        //  5: LoadK     r5, 0           ("fib_acc")
+        //  6: LoadInt   r8, 1
+        //  7: Sub       r6, r0, r8      (n - 1)
+        //  8: Move      r7, r2          (b)
+        //  9: Add       r8, r1, r2      (a + b)
+        // 10: TailCall  r5, 3, 1        (fib_acc(r6, r7, r8))
+        let cell = LirCell {
+            name: "fib_acc".to_string(),
+            params: vec![
+                LirParam {
+                    name: "n".to_string(),
+                    ty: "Int".to_string(),
+                    register: 0,
+                    variadic: false,
+                },
+                LirParam {
+                    name: "a".to_string(),
+                    ty: "Int".to_string(),
+                    register: 1,
+                    variadic: false,
+                },
+                LirParam {
+                    name: "b".to_string(),
+                    ty: "Int".to_string(),
+                    register: 2,
+                    variadic: false,
+                },
+            ],
+            returns: Some("Int".to_string()),
+            registers: 9,
+            constants: vec![Constant::String("fib_acc".to_string())],
+            instructions: vec![
+                Instruction::abc(OpCode::LoadInt, 3, 0, 0),  // 0: r3 = 0
+                Instruction::abc(OpCode::Le, 4, 0, 3),       // 1: r4 = n <= 0
+                Instruction::abc(OpCode::Test, 4, 0, 0),     // 2: test
+                Instruction::sax(OpCode::Jmp, 1),            // 3: → 5
+                Instruction::abc(OpCode::Return, 1, 1, 0),   // 4: return a
+                Instruction::abx(OpCode::LoadK, 5, 0),       // 5: r5 = "fib_acc"
+                Instruction::abc(OpCode::LoadInt, 8, 1, 0),  // 6: r8 = 1
+                Instruction::abc(OpCode::Sub, 6, 0, 8),      // 7: r6 = n - 1
+                Instruction::abc(OpCode::Move, 7, 2, 0),     // 8: r7 = b
+                Instruction::abc(OpCode::Add, 8, 1, 2),      // 9: r8 = a + b
+                Instruction::abc(OpCode::TailCall, 5, 3, 1), // 10: tail-call fib_acc(r6, r7, r8)
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+
+        assert!(has_self_tail_call(&cell));
+
+        let lir = make_multi_cell_module(vec![cell]);
+        let mut ctx = CodegenContext::new().expect("host context");
+        let ptr_ty = ctx.pointer_type();
+        let result = lower_module(&mut ctx.module, &lir, ptr_ty);
+        assert!(
+            result.is_ok(),
+            "TCO fibonacci should compile: {:?}",
+            result.err()
         );
 
         let bytes = emit_object(ctx.module).expect("emission should succeed");

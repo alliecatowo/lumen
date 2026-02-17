@@ -12,6 +12,7 @@ members = [
     "rust/lumen-provider-mcp",
     "rust/lumen-provider-gemini",
     "rust/lumen-codegen",
+    "rust/lumen-tensor",
 ]
 # lumen-wasm excluded - built separately via wasm-pack
 exclude = ["rust/lumen-wasm"]

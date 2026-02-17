@@ -16,3 +16,7 @@ cranelift-object = "0.116"
 target-lexicon = "0.13"
 lumen-compiler = { path = "../lumen-compiler" }
 thiserror = { workspace = true }
+
+[[bench]]
+name = "codegen_bench"
+harness = false

@@ -1524,6 +1524,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lumen-tensor"
+version = "0.4.0"
+dependencies = [
+ "num-traits",
+ "serde",
+]
+
+[[package]]
 name = "lumen-vm"
 version = "0.4.0"
 dependencies = [

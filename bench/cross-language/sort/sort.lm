@@ -1,48 +1,5 @@
-# Sort benchmark — insertion sort on 10,000 integers
-# (Lumen lacks mutable arrays, so we use functional insertion sort
-#  on a smaller N to keep runtime comparable)
-
-cell insert_sorted(sorted: list[Int], value: Int) -> list[Int]
-  let n = len(sorted)
-  if n == 0
-    return [value]
-  end
-
-  let result = []
-  let inserted = false
-  let i = 0
-
-  while i < n
-    let curr = sorted[i]
-    if not inserted and value <= curr
-      result = append(result, value)
-      inserted = true
-    end
-    result = append(result, curr)
-    i = i + 1
-  end
-
-  if not inserted
-    result = append(result, value)
-  end
-
-  return result
-end
-
-cell insertion_sort(items: list[Int]) -> list[Int]
-  let n = len(items)
-  if n <= 1
-    return items
-  end
-
-  let sorted = []
-  let i = 0
-  while i < n
-    sorted = insert_sorted(sorted, items[i])
-    i = i + 1
-  end
-  return sorted
-end
+# Sort benchmark — builtin sort on 10,000 integers
+# Uses Lumen's builtin sort() which delegates to Rust's stable sort (O(n log n))
 
 # Simple linear congruential generator for deterministic "random" data
 cell make_data(count: Int) -> list[Int]
@@ -75,7 +32,7 @@ end
 cell main() -> Null
   let n = 10000
   let data = make_data(n)
-  let sorted = insertion_sort(data)
+  let sorted = sort(data)
   let ok = is_sorted(sorted)
   print("sort(" + to_string(n) + ") sorted=" + to_string(ok))
   return null

@@ -16,8 +16,8 @@ end
 
 cell check_tree(node: Node) -> Int
   match node
-    Leaf -> node.value
-    Branch -> check_tree(node.left) + check_tree(node.right)
+    Leaf(v) -> v
+    Branch((left, right)) -> check_tree(left) + check_tree(right)
   end
 end
 

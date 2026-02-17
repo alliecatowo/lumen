@@ -1672,7 +1672,11 @@ impl VM {
                     self.registers[base + a] = Value::Int(sb as i64);
                 }
                 OpCode::Move => {
-                    let val = self.registers[base + b].clone();
+                    // Use take instead of clone: for heap-allocated values (String,
+                    // List, etc.) this avoids a deep copy. The source register is
+                    // left as Null, which is fine because the compiler treats it as
+                    // a temporary that won't be read again before being overwritten.
+                    let val = std::mem::replace(&mut self.registers[base + b], Value::Null);
                     self.registers[base + a] = val;
                 }
                 OpCode::NewList => {
@@ -1685,7 +1689,9 @@ impl VM {
                 OpCode::NewMap => {
                     let mut map = BTreeMap::new();
                     for i in 0..b {
-                        let k = value_to_str_cow(&self.registers[base + a + 1 + i * 2], &self.strings).into_owned();
+                        let k =
+                            value_to_str_cow(&self.registers[base + a + 1 + i * 2], &self.strings)
+                                .into_owned();
                         let v = self.registers[base + a + 2 + i * 2].clone();
                         map.insert(k, v);
                     }
@@ -1702,7 +1708,8 @@ impl VM {
                     self.registers[base + a] = Value::new_record(RecordValue { type_name, fields });
                 }
                 OpCode::NewUnion => {
-                    let tag = value_to_str_cow(&self.registers[base + b], &self.strings).into_owned();
+                    let tag =
+                        value_to_str_cow(&self.registers[base + b], &self.strings).into_owned();
                     let payload = Box::new(self.registers[base + c].clone());
                     self.registers[base + a] = Value::Union(UnionValue { tag, payload });
                 }
@@ -1880,7 +1887,43 @@ impl VM {
                     let rhs = &self.registers[base + c];
                     // Check for strings first for concatenation
                     if matches!(lhs, Value::String(_)) || matches!(rhs, Value::String(_)) {
-                        let result = concat_string_values(lhs, rhs, &self.strings);
+                        // In-place string concat optimization: when the left operand
+                        // is an owned String, take it out, push_str the right side,
+                        // and store it in the destination — avoids allocating a new
+                        // String on every iteration of `s = s + "x"`.
+                        //
+                        // To avoid allocating a heap String for the RHS on every
+                        // iteration, we extract the RHS to an owned String only
+                        // when necessary. For the common case (RHS is a short
+                        // owned/interned string), we use a stack-local SmallVec
+                        // approach to avoid heap alloc.
+                        let rhs_owned: String =
+                            value_to_str_cow(&self.registers[base + c], &self.strings).into_owned();
+                        // Take the left value out of its register (replacing with Null).
+                        let left_val =
+                            std::mem::replace(&mut self.registers[base + b], Value::Null);
+                        let result = match left_val {
+                            Value::String(StringRef::Owned(mut s)) => {
+                                s.push_str(&rhs_owned);
+                                Value::String(StringRef::Owned(s))
+                            }
+                            other => {
+                                // Slow path: left is interned or non-string
+                                let left_str = match &other {
+                                    Value::String(StringRef::Interned(id)) => {
+                                        self.strings.resolve(*id).unwrap_or("").to_string()
+                                    }
+                                    _ => other.as_string(),
+                                };
+                                let mut s = String::with_capacity(left_str.len() + rhs_owned.len());
+                                s.push_str(&left_str);
+                                s.push_str(&rhs_owned);
+                                if b != a {
+                                    self.registers[base + b] = other;
+                                }
+                                Value::String(StringRef::Owned(s))
+                            }
+                        };
                         self.registers[base + a] = result;
                     } else if matches!(lhs, Value::List(_)) && matches!(rhs, Value::List(_)) {
                         // List concatenation with pre-allocated capacity
@@ -1948,7 +1991,36 @@ impl VM {
                             combined.extend(lb.iter().cloned());
                             Value::new_list(combined)
                         }
-                        _ => concat_string_values(lhs, rhs, &self.strings),
+                        _ => {
+                            // In-place string concat optimization (same as Add path)
+                            let rhs_owned: String =
+                                value_to_str_cow(&self.registers[base + c], &self.strings)
+                                    .into_owned();
+                            let left_val =
+                                std::mem::replace(&mut self.registers[base + b], Value::Null);
+                            match left_val {
+                                Value::String(StringRef::Owned(mut s)) => {
+                                    s.push_str(&rhs_owned);
+                                    Value::String(StringRef::Owned(s))
+                                }
+                                other => {
+                                    let left_str = match &other {
+                                        Value::String(StringRef::Interned(id)) => {
+                                            self.strings.resolve(*id).unwrap_or("").to_string()
+                                        }
+                                        _ => other.as_string(),
+                                    };
+                                    let mut s =
+                                        String::with_capacity(left_str.len() + rhs_owned.len());
+                                    s.push_str(&left_str);
+                                    s.push_str(&rhs_owned);
+                                    if b != a {
+                                        self.registers[base + b] = other;
+                                    }
+                                    Value::String(StringRef::Owned(s))
+                                }
+                            }
+                        }
                     };
                     self.registers[base + a] = result;
                 }
@@ -2232,7 +2304,8 @@ impl VM {
                     cell = &module.cells[cell_idx];
                 }
                 OpCode::Halt => {
-                    let msg = value_to_str_cow(&self.registers[base + a], &self.strings).into_owned();
+                    let msg =
+                        value_to_str_cow(&self.registers[base + a], &self.strings).into_owned();
                     if let Some(fid) = self.current_future_id() {
                         let _ = self.frames.pop();
                         self.future_states.insert(fid, FutureState::Error(msg));

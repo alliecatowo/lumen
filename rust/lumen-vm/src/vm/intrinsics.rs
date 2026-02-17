@@ -183,7 +183,9 @@ impl VM {
                 let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
                 let from = value_to_str_cow(&self.registers[base + a + 2], &self.strings);
                 let to = value_to_str_cow(&self.registers[base + a + 3], &self.strings);
-                Ok(Value::String(StringRef::Owned(s.replace(from.as_ref(), to.as_ref()))))
+                Ok(Value::String(StringRef::Owned(
+                    s.replace(from.as_ref(), to.as_ref()),
+                )))
             }
             "abs" => {
                 let arg = &self.registers[base + a + 1];
@@ -1616,7 +1618,8 @@ impl VM {
 
             // ── Filesystem: read_lines, walk_dir, glob ──
             "read_lines" => {
-                let path = value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
+                let path =
+                    value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
                 match std::fs::read_to_string(&path) {
                     Ok(contents) => {
                         let lines: Vec<Value> = contents
@@ -1629,7 +1632,8 @@ impl VM {
                 }
             }
             "walk_dir" => {
-                let path = value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
+                let path =
+                    value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
                 fn walk_recursive_cb(
                     dir: &std::path::Path,
                     result: &mut Vec<Value>,
@@ -1652,7 +1656,8 @@ impl VM {
                 Ok(Value::new_list(result))
             }
             "glob" => {
-                let pattern = value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
+                let pattern =
+                    value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
                 let mut result = Vec::new();
                 glob_walk(std::path::Path::new("."), &pattern, &mut result)?;
                 Ok(Value::new_list(result))
@@ -1660,8 +1665,10 @@ impl VM {
 
             // ── Path operations ──
             "path_join" => {
-                let a_str = value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
-                let b_str = value_to_str_cow(&self.registers[base + a + 2], &self.strings).into_owned();
+                let a_str =
+                    value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
+                let b_str =
+                    value_to_str_cow(&self.registers[base + a + 2], &self.strings).into_owned();
                 let joined = std::path::Path::new(&a_str)
                     .join(&b_str)
                     .to_string_lossy()
@@ -1669,7 +1676,8 @@ impl VM {
                 Ok(Value::String(StringRef::Owned(joined)))
             }
             "path_parent" => {
-                let p_str = value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
+                let p_str =
+                    value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
                 let parent = std::path::Path::new(&p_str)
                     .parent()
                     .map(|pp| pp.to_string_lossy().to_string())
@@ -1677,7 +1685,8 @@ impl VM {
                 Ok(Value::String(StringRef::Owned(parent)))
             }
             "path_extension" => {
-                let p_str = value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
+                let p_str =
+                    value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
                 let ext = std::path::Path::new(&p_str)
                     .extension()
                     .map(|e| e.to_string_lossy().to_string())
@@ -1685,7 +1694,8 @@ impl VM {
                 Ok(Value::String(StringRef::Owned(ext)))
             }
             "path_filename" => {
-                let p_str = value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
+                let p_str =
+                    value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
                 let name = std::path::Path::new(&p_str)
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
@@ -1693,7 +1703,8 @@ impl VM {
                 Ok(Value::String(StringRef::Owned(name)))
             }
             "path_stem" => {
-                let p_str = value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
+                let p_str =
+                    value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
                 let stem = std::path::Path::new(&p_str)
                     .file_stem()
                     .map(|s| s.to_string_lossy().to_string())
@@ -1703,7 +1714,8 @@ impl VM {
 
             // ── Process execution ──
             "exec" => {
-                let cmd = value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
+                let cmd =
+                    value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
                 match std::process::Command::new("sh")
                     .arg("-c")
                     .arg(&cmd)
@@ -2123,8 +2135,10 @@ impl VM {
                 Ok(Value::new_list(args))
             }
             "set_env" => {
-                let key = value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
-                let value = value_to_str_cow(&self.registers[base + a + 2], &self.strings).into_owned();
+                let key =
+                    value_to_str_cow(&self.registers[base + a + 1], &self.strings).into_owned();
+                let value =
+                    value_to_str_cow(&self.registers[base + a + 2], &self.strings).into_owned();
                 #[allow(unused_unsafe)]
                 unsafe {
                     std::env::set_var(&key, &value);
@@ -2253,14 +2267,19 @@ impl VM {
                 // MATCHES
                 Ok(match arg {
                     Value::Bool(b) => Value::Bool(*b),
-                    Value::String(_) => Value::Bool(!value_to_str_cow(arg, &self.strings).is_empty()),
+                    Value::String(_) => {
+                        Value::Bool(!value_to_str_cow(arg, &self.strings).is_empty())
+                    }
                     _ => Value::Bool(false),
                 })
             }
             3 => {
                 // HASH
                 use sha2::{Digest, Sha256};
-                let hash = format!("{:x}", Sha256::digest(value_to_str_cow(arg, &self.strings).as_bytes()));
+                let hash = format!(
+                    "{:x}",
+                    Sha256::digest(value_to_str_cow(arg, &self.strings).as_bytes())
+                );
                 Ok(Value::String(StringRef::Owned(format!("sha256:{}", hash))))
             }
             4 => {
@@ -2361,7 +2380,9 @@ impl VM {
                 Ok(match arg {
                     Value::List(l) => Value::Bool(l.contains(item)),
                     Value::Set(s) => Value::Bool(s.contains(item)),
-                    Value::Map(m) => Value::Bool(m.contains_key(&*value_to_str_cow(item, &self.strings))),
+                    Value::Map(m) => {
+                        Value::Bool(m.contains_key(&*value_to_str_cow(item, &self.strings)))
+                    }
                     Value::String(StringRef::Owned(s)) => {
                         Value::Bool(s.contains(&*value_to_str_cow(item, &self.strings)))
                     }
@@ -2801,12 +2822,16 @@ impl VM {
             52 => {
                 // STARTSWITH
                 let prefix = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings);
-                Ok(Value::Bool(value_to_str_cow(arg, &self.strings).starts_with(&*prefix)))
+                Ok(Value::Bool(
+                    value_to_str_cow(arg, &self.strings).starts_with(&*prefix),
+                ))
             }
             53 => {
                 // ENDSWITH
                 let suffix = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings);
-                Ok(Value::Bool(value_to_str_cow(arg, &self.strings).ends_with(&*suffix)))
+                Ok(Value::Bool(
+                    value_to_str_cow(arg, &self.strings).ends_with(&*suffix),
+                ))
             }
             54 => {
                 // INDEXOF (Unicode-aware: returns character index, not byte index)
@@ -2978,7 +3003,8 @@ impl VM {
             }
             70 => {
                 // HAS_KEY - check if map has a key
-                let key = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings).into_owned();
+                let key = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings)
+                    .into_owned();
                 Ok(match arg {
                     Value::Map(m) => Value::Bool(m.contains_key(&key)),
                     Value::Record(r) => Value::Bool(r.fields.contains_key(&key)),
@@ -3265,11 +3291,13 @@ impl VM {
             }
             89 => {
                 // PATH_JOIN: join two path components
-                let other = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings).into_owned();
-                let joined = std::path::Path::new(&value_to_str_cow(arg, &self.strings).into_owned())
-                    .join(&other)
-                    .to_string_lossy()
-                    .to_string();
+                let other = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings)
+                    .into_owned();
+                let joined =
+                    std::path::Path::new(&value_to_str_cow(arg, &self.strings).into_owned())
+                        .join(&other)
+                        .to_string_lossy()
+                        .to_string();
                 Ok(Value::String(StringRef::Owned(joined)))
             }
             90 => {
@@ -3411,7 +3439,8 @@ impl VM {
                 // REGEX_REPLACE: replace all matches
                 let pattern = value_to_str_cow(arg, &self.strings);
                 let text = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings);
-                let replacement = value_to_str_cow(&self.registers[base + arg_reg + 2], &self.strings);
+                let replacement =
+                    value_to_str_cow(&self.registers[base + arg_reg + 2], &self.strings);
                 match regex::Regex::new(&pattern) {
                     Ok(re) => {
                         let result = re.replace_all(&text, &*replacement);
@@ -3727,7 +3756,9 @@ impl VM {
                     Value::Int(n) => *n as f64,
                     _ => 0.0,
                 };
-                let format_str = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings).into_owned();
+                let format_str =
+                    value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings)
+                        .into_owned();
 
                 // Manual ISO 8601 formatting from epoch seconds
                 let total_secs = timestamp_secs as i64;
@@ -3778,7 +3809,8 @@ impl VM {
             136 => {
                 // SET_ENV: set environment variable
                 let key = value_to_str_cow(arg, &self.strings).into_owned();
-                let value = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings).into_owned();
+                let value = value_to_str_cow(&self.registers[base + arg_reg + 1], &self.strings)
+                    .into_owned();
                 // SAFETY: This is intentional; Lumen programs run single-threaded.
                 #[allow(unused_unsafe)]
                 unsafe {

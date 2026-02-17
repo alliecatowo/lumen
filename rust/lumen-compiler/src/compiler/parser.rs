@@ -58,6 +58,10 @@ pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     bracket_depth: usize,
+    /// Nesting depth for cell bodies. When > 0, `parse_block` allows
+    /// `cell`, `record`, `enum` keywords as local definitions instead of
+    /// treating them as block terminators.
+    block_depth: usize,
     errors: Vec<ParseError>,
 }
 
@@ -67,6 +71,7 @@ impl Parser {
             tokens,
             pos: 0,
             bracket_depth: 0,
+            block_depth: 0,
             errors: Vec::new(),
         }
     }
@@ -292,6 +297,25 @@ impl Parser {
     fn looks_like_named_field(&self) -> bool {
         matches!(self.peek_kind(), TokenKind::Ident(_))
             && matches!(self.peek_n_kind(1), Some(TokenKind::Colon))
+    }
+
+    /// Check if the current `cell` keyword starts a cell definition (cell name(...))
+    /// rather than being used as a type-position keyword.
+    fn looks_like_cell_def(&self) -> bool {
+        // cell <ident> ( ... )
+        // cell <ident> [ ... ] ( ... )   (generic)
+        if !matches!(self.peek_kind(), TokenKind::Cell) {
+            return false;
+        }
+        // Next token should be an identifier (the cell name)
+        if !matches!(self.peek_n_kind(1), Some(TokenKind::Ident(_))) {
+            return false;
+        }
+        // After the name, should be `(` or `[` (for generics)
+        matches!(
+            self.peek_n_kind(2),
+            Some(TokenKind::LParen | TokenKind::LBracket)
+        )
     }
 
     fn token_can_be_named_arg_key(&self) -> bool {
@@ -1087,7 +1111,9 @@ impl Parser {
         }
 
         self.skip_newlines();
+        self.block_depth += 1;
         let body = self.parse_block()?;
+        self.block_depth -= 1;
         let end_span = self.expect(&TokenKind::End)?.span;
         Ok(CellDef {
             name,
@@ -1106,21 +1132,31 @@ impl Parser {
         })
     }
 
-    fn parse_block(&mut self) -> Result<Vec<Stmt>, ParseError> {
-        let mut stmts = Vec::new();
-        let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
-        if has_indent {
-            self.advance();
+    /// Check if the current token should terminate a block.
+    /// When `block_depth > 0`, `Cell`/`Record`/`Enum` at column 1 (top-level
+    /// indentation) are still terminators — they represent the start of the next
+    /// top-level item, which is critical for error recovery when a cell is missing
+    /// its `end` keyword. Only indented (`col > 1`) occurrences inside a cell body
+    /// are treated as local definitions (not terminators).
+    fn is_block_terminator(&self) -> bool {
+        let kind = self.peek_kind();
+        if self.block_depth > 0
+            && matches!(kind, TokenKind::Cell | TokenKind::Record | TokenKind::Enum)
+        {
+            // If the token is at column 1, it's a top-level item → terminator
+            // If indented (col > 1), it could be a local def → not a terminator
+            let col = self.current().span.col;
+            return col <= 1;
         }
-        self.skip_newlines();
-        while !matches!(
-            self.peek_kind(),
+        self.is_block_terminator_kind(kind)
+    }
+
+    fn is_block_terminator_kind(&self, kind: &TokenKind) -> bool {
+        matches!(
+            kind,
             TokenKind::End
                 | TokenKind::Eof
                 | TokenKind::Else
-                | TokenKind::Cell
-                | TokenKind::Record
-                | TokenKind::Enum
                 | TokenKind::Type
                 | TokenKind::Grant
                 | TokenKind::Import
@@ -1131,27 +1167,22 @@ impl Parser {
                 | TokenKind::Mod
                 | TokenKind::Trait
                 | TokenKind::Impl
-        ) {
+                | TokenKind::Cell
+                | TokenKind::Record
+                | TokenKind::Enum
+        )
+    }
+
+    fn parse_block(&mut self) -> Result<Vec<Stmt>, ParseError> {
+        let mut stmts = Vec::new();
+        let has_indent = matches!(self.peek_kind(), TokenKind::Indent);
+        if has_indent {
+            self.advance();
+        }
+        self.skip_newlines();
+        while !self.is_block_terminator() {
             self.skip_newlines();
-            if matches!(
-                self.peek_kind(),
-                TokenKind::End
-                    | TokenKind::Eof
-                    | TokenKind::Else
-                    | TokenKind::Cell
-                    | TokenKind::Record
-                    | TokenKind::Enum
-                    | TokenKind::Type
-                    | TokenKind::Grant
-                    | TokenKind::Import
-                    | TokenKind::Use
-                    | TokenKind::Pub
-                    | TokenKind::Schema
-                    | TokenKind::Fn
-                    | TokenKind::Mod
-                    | TokenKind::Trait
-                    | TokenKind::Impl
-            ) {
+            if self.is_block_terminator() {
                 break;
             }
             if matches!(self.peek_kind(), TokenKind::Dedent) {
@@ -1162,27 +1193,12 @@ impl Parser {
                 ) {
                     i += 1;
                 }
-                if matches!(
-                    self.tokens.get(i).map(|t| &t.kind),
-                    Some(
-                        TokenKind::End
-                            | TokenKind::Else
-                            | TokenKind::Eof
-                            | TokenKind::Cell
-                            | TokenKind::Record
-                            | TokenKind::Enum
-                            | TokenKind::Type
-                            | TokenKind::Grant
-                            | TokenKind::Import
-                            | TokenKind::Use
-                            | TokenKind::Pub
-                            | TokenKind::Schema
-                            | TokenKind::Fn
-                            | TokenKind::Mod
-                            | TokenKind::Trait
-                            | TokenKind::Impl
-                    )
-                ) {
+                if self
+                    .tokens
+                    .get(i)
+                    .map(|t| self.is_block_terminator_kind(&t.kind))
+                    .unwrap_or(true)
+                {
                     break;
                 }
                 self.advance();
@@ -1210,27 +1226,12 @@ impl Parser {
             ) {
                 i += 1;
             }
-            if matches!(
-                self.tokens.get(i).map(|t| &t.kind),
-                Some(
-                    TokenKind::End
-                        | TokenKind::Else
-                        | TokenKind::Eof
-                        | TokenKind::Cell
-                        | TokenKind::Record
-                        | TokenKind::Enum
-                        | TokenKind::Type
-                        | TokenKind::Grant
-                        | TokenKind::Import
-                        | TokenKind::Use
-                        | TokenKind::Pub
-                        | TokenKind::Schema
-                        | TokenKind::Fn
-                        | TokenKind::Mod
-                        | TokenKind::Trait
-                        | TokenKind::Impl
-                )
-            ) {
+            if self
+                .tokens
+                .get(i)
+                .map(|t| self.is_block_terminator_kind(&t.kind))
+                .unwrap_or(true)
+            {
                 self.advance();
             } else {
                 break;
@@ -1271,6 +1272,28 @@ impl Parser {
     // ── Statements ──
 
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
+        // Inside a cell body (block_depth > 0), allow local record/enum/cell definitions
+        if self.block_depth > 0 {
+            match self.peek_kind() {
+                TokenKind::Record => {
+                    let r = self.parse_record()?;
+                    return Ok(Stmt::LocalRecord(r));
+                }
+                TokenKind::Enum => {
+                    let e = self.parse_enum()?;
+                    return Ok(Stmt::LocalEnum(e));
+                }
+                TokenKind::Cell => {
+                    // Look ahead to see if this is `cell name(` — a local cell definition
+                    // vs `cell` used as a type name in an expression
+                    if self.looks_like_cell_def() {
+                        let c = self.parse_cell(true)?;
+                        return Ok(Stmt::LocalCell(c));
+                    }
+                }
+                _ => {}
+            }
+        }
         match self.peek_kind() {
             TokenKind::Let => self.parse_let(),
             TokenKind::If => self.parse_if(),
@@ -2096,7 +2119,9 @@ impl Parser {
                 Expr::BoolLit(true, start)
             };
             self.skip_newlines();
+            self.block_depth += 1;
             let body = self.parse_block()?;
+            self.block_depth -= 1;
             let end_span = self.expect(&TokenKind::End)?.span;
 
             // Desugar to:

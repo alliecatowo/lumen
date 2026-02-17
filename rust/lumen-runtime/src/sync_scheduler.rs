@@ -164,7 +164,7 @@ impl SyncScheduler {
         self.injection.drain_all(&mut buf);
         for entry in buf {
             // Mark the process as Ready (it already is, but be explicit).
-            entry.pcb.set_status(ProcessStatus::Ready);
+            entry.pcb.set_status(ProcessStatus::Ready).ok();
             let worker_idx = self.rr_index % self.num_workers;
             self.local_queues[worker_idx].push_back(entry.task);
             self.rr_index = self.rr_index.wrapping_add(1);
@@ -229,12 +229,12 @@ impl SyncScheduler {
             if let Some(mut task) = task {
                 // Mark the process as Running.
                 if let Some(pcb) = self.processes.iter().find(|p| p.id() == task.process_id) {
-                    pcb.set_status(ProcessStatus::Running);
+                    let _ = pcb.set_status(ProcessStatus::Running);
                 }
                 task.run();
                 // Mark the process as Completed.
                 if let Some(pcb) = self.processes.iter().find(|p| p.id() == task.process_id) {
-                    pcb.set_status(ProcessStatus::Completed);
+                    let _ = pcb.set_status(ProcessStatus::Completed);
                 }
                 self.completed_count += 1;
                 did_work = true;
@@ -246,7 +246,7 @@ impl SyncScheduler {
                         .iter()
                         .find(|p| p.id() == stolen_task.process_id)
                     {
-                        pcb.set_status(ProcessStatus::Running);
+                        let _ = pcb.set_status(ProcessStatus::Running);
                     }
                     stolen_task.run();
                     if let Some(pcb) = self
@@ -254,7 +254,7 @@ impl SyncScheduler {
                         .iter()
                         .find(|p| p.id() == stolen_task.process_id)
                     {
-                        pcb.set_status(ProcessStatus::Completed);
+                        let _ = pcb.set_status(ProcessStatus::Completed);
                     }
                     self.completed_count += 1;
                     did_work = true;
@@ -443,11 +443,11 @@ mod tests {
 
         // Before tick: process should be Ready.
         let pcb = sched.get_process(pid).unwrap();
-        assert_eq!(pcb.status(), ProcessStatus::Ready);
+        assert_eq!(pcb.status().unwrap(), ProcessStatus::Ready);
 
         // After tick: process should be Completed.
         sched.tick();
-        assert_eq!(pcb.status(), ProcessStatus::Completed);
+        assert_eq!(pcb.status().unwrap(), ProcessStatus::Completed);
     }
 
     #[test]

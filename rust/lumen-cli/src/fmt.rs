@@ -901,6 +901,10 @@ impl Formatter {
             Stmt::Yield(s) => {
                 self.writeln(&format!("yield {}", self.fmt_expr(&s.value)));
             }
+            Stmt::LocalRecord(_) | Stmt::LocalEnum(_) | Stmt::LocalCell(_) => {
+                // Local definitions inside cell bodies — format as-is for now
+                // These are lifted and formatted at the top level by the compiler
+            }
         }
     }
 

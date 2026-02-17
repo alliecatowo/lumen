@@ -1374,6 +1374,44 @@ impl VM {
                     Ok(Value::Int(result))
                 })
             }
+            "to_list" => {
+                let arg = self.registers[base + a + 1].clone();
+                match arg {
+                    Value::List(_) => Ok(arg),
+                    Value::Set(s) => {
+                        let sorted: Vec<Value> = s.iter().cloned().collect();
+                        Ok(Value::new_list(sorted))
+                    }
+                    Value::Map(m) => {
+                        let pairs: Vec<Value> = m
+                            .iter()
+                            .map(|(k, v)| {
+                                Value::new_list(vec![
+                                    Value::String(StringRef::Owned(k.clone())),
+                                    v.clone(),
+                                ])
+                            })
+                            .collect();
+                        Ok(Value::new_list(pairs))
+                    }
+                    Value::Tuple(t) => Ok(Value::new_list(t.to_vec())),
+                    Value::String(ref sr) => {
+                        let s = match sr {
+                            StringRef::Owned(s) => s.as_str(),
+                            StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                        };
+                        let chars: Vec<Value> = s
+                            .chars()
+                            .map(|c| Value::String(StringRef::Owned(c.to_string())))
+                            .collect();
+                        Ok(Value::new_list(chars))
+                    }
+                    other => Err(VmError::Runtime(format!(
+                        "to_list: cannot convert {} to list",
+                        other.type_name()
+                    ))),
+                }
+            }
             _ => Err(VmError::UndefinedCell(name.to_string())),
         }
     }

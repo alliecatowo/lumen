@@ -2,6 +2,7 @@
 //!
 //! This crate provides shared functionality for the Lumen CLI tools.
 
+pub mod audit;
 pub mod auth;
 pub mod build_script;
 pub mod cache;
@@ -16,6 +17,7 @@ pub mod lang_ref;
 pub mod lint;
 pub mod lockfile;
 pub mod module_resolver;
+pub mod oidc;
 pub mod registry;
 pub mod registry_cmd;
 pub mod repl;

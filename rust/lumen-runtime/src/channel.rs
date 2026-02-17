@@ -343,4 +343,45 @@ mod tests {
         assert_eq!(rx.try_recv().unwrap(), 10);
         assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
     }
+
+    // -- T066: C10K channel stress test -----------------------------------
+
+    #[test]
+    #[ignore]
+    fn stress_10k_channels_producer_consumer() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let n = 10_000usize;
+        let mut handles = Vec::with_capacity(n * 2);
+        let results = Arc::new(std::sync::Mutex::new(Vec::with_capacity(n)));
+
+        for i in 0..n {
+            let (tx, rx) = bounded::<usize>(1);
+            let res = Arc::clone(&results);
+
+            // Producer thread — sends exactly one value.
+            handles.push(thread::spawn(move || {
+                tx.send(i).unwrap();
+            }));
+
+            // Consumer thread — receives and records the value.
+            handles.push(thread::spawn(move || {
+                let val = rx.recv().unwrap();
+                res.lock().unwrap().push(val);
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let mut vals = results.lock().unwrap().clone();
+        vals.sort();
+        assert_eq!(vals.len(), n);
+        // Every value 0..n should appear exactly once.
+        for (idx, &val) in vals.iter().enumerate() {
+            assert_eq!(idx, val);
+        }
+    }
 }

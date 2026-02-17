@@ -498,6 +498,8 @@ impl TypestateChecker {
                 self.check_expr(&y.value);
             }
             Stmt::Break(_) | Stmt::Continue(_) => {}
+            // Local definitions have no typestate implications.
+            Stmt::LocalRecord(_) | Stmt::LocalEnum(_) | Stmt::LocalCell(_) => {}
         }
     }
 

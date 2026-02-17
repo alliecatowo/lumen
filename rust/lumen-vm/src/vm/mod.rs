@@ -1553,6 +1553,21 @@ impl VM {
                             .get(&idx.as_string_resolved(&self.strings))
                             .cloned()
                             .unwrap_or(Value::Null),
+                        (Value::Set(s), Value::Int(i)) => {
+                            let ii = *i;
+                            let len = s.len() as i64;
+                            let effective = if ii < 0 { ii + len } else { ii };
+                            if effective < 0 || effective >= len {
+                                return Err(VmError::Runtime(format!(
+                                    "index {} out of bounds for set of size {}",
+                                    ii, len
+                                )));
+                            }
+                            s.iter()
+                                .nth(effective as usize)
+                                .cloned()
+                                .unwrap_or(Value::Null)
+                        }
                         _ => Value::Null,
                     };
                     self.registers[base + a] = val;
@@ -2037,6 +2052,14 @@ impl VM {
                                     ]),
                                     true,
                                 )
+                            } else {
+                                (Value::Null, false)
+                            }
+                        }
+                        Value::Set(s) => {
+                            let items: Vec<_> = s.iter().collect();
+                            if (idx as usize) < items.len() {
+                                (items[idx as usize].clone(), true)
                             } else {
                                 (Value::Null, false)
                             }

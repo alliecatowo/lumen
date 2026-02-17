@@ -29,8 +29,12 @@
 //! Call [`verify()`] directly when you want to run verification as an
 //! optional pass after type-checking (T044 will integrate it).
 
+pub mod bounds;
 pub mod constraints;
+pub mod counterexample;
+pub mod proof_hints;
 pub mod refinement;
+pub mod smt_solver;
 pub mod solver;
 pub mod sort_map;
 

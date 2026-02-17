@@ -109,7 +109,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
-| T037 | Add Z3 or CVC5 bindings | Add `z3-sys` or equivalent to the compiler crate for SMT solving. |
+| T037 | Add Z3 or CVC5 bindings — **DONE** | Add `z3-sys` or equivalent to the compiler crate for SMT solving. |
 | T038 | Verification module skeleton — **DONE** | Create `rust/lumen-compiler/src/verification/` (or `verifier/`) with solver wrapper. |
 | T039 | Map Lumen types to SMT sorts — **DONE** | Implement mapping from Lumen Int, Bool, etc., to solver sorts (e.g. Z3_mk_int). |
 | T040 | Parse `where` clauses into AST — **DONE** | Ensure `where` expressions in records and function contracts are available in the AST. |
@@ -298,8 +298,8 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
 | T148 | Session types (design) — **DONE** | Multiparty session types for agent protocols (e.g. “Client sends Hello; Server sends Ack”). Compiler enforces ordering. Ref: research on session types; competitive gap: no mainstream language has this for agents. |
-| T149 | Counter-example generation | When SMT reports UNSAT, emit concrete input values that violate the invariant so the user can fix the code. Improves DX vs “invariant violated” alone. |
-| T150 | Proof hints / manual assertions | Allow user to supply proof hints or assert at a point to help the solver (e.g. for non-linear constraints). Ref: F*, Dafny. |
+| T149 | Counter-example generation — **DONE** | When SMT reports UNSAT, emit concrete input values that violate the invariant so the user can fix the code. Improves DX vs “invariant violated” alone. |
+| T150 | Proof hints / manual assertions — **DONE** | Allow user to supply proof hints or assert at a point to help the solver (e.g. for non-linear constraints). Ref: F*, Dafny. |
 
 ### Phase 3 (concurrency) — additional
 
@@ -321,7 +321,7 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
 | T156 | Probabilistic type (Prob&lt;T&gt;) (design) — **DONE** | Value representing a distribution; “if x” on Prob&lt;Bool&gt; could weight both branches. Enables Bayesian agents. Ref: roadmap “probabilistic type system.” |
-| T157 | Schema drift detector | Fail build or test when tool/API response schema diverges from declared Lumen types. Closes “silent breakage” gap vs ad-hoc SDKs. |
+| T157 | Schema drift detector — **DONE** | Fail build or test when tool/API response schema diverges from declared Lumen types. Closes “silent breakage” gap vs ad-hoc SDKs. |
 | T158 | Effect-budget enforcement at runtime — **DONE** | If effect row says `network(max_calls: 5)`, runtime (or compiled check) enforces the bound and fails fast. Complements T048 (compile-time proof). |
 
 ### Phase 6 (ecosystem) — additional
@@ -362,7 +362,7 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | T175 | Watch mode (recheck on save) — **DONE** | `lumen watch` or LSP-driven re-check when files change; fast feedback without full rebuild. |
 | T176 | CI machine-readable output — **DONE** | Emit check/test results in a standard format (e.g. SARIF, JUnit XML) for CI dashboards and gates. Ref: T105–T110. |
 | T177 | Service package template | Scaffold for HTTP/gRPC services: typed route contracts, generated schemas, replayable fixtures. Ref: COMPETITIVE_ANALYSIS §4 (Web/backend). |
-| T178 | Array bounds propagation (refinement) | Use refinement/SMT or flow analysis to prove or warn on list/tuple index bounds. Reduces runtime index errors. Ref: D05–D06. |
+| T178 | Array bounds propagation (refinement) — **DONE** | Use refinement/SMT or flow analysis to prove or warn on list/tuple index bounds. Reduces runtime index errors. Ref: D05–D06. |
 | T179 | Docs-as-tests (snippets in CI) | All fenced Lumen code blocks in SPEC/docs compiled (or run) in CI; doc drift fails the build. Ref: COMPETITIVE_ANALYSIS §8 (leapfrog 17). |
 | T180 | Execution graph visualizer | Tool or LSP view that renders execution/trace events as a graph (calls, effects, tool invocations) for debugging and audit. Ref: COMPETITIVE_ANALYSIS §8 (leapfrog 20). |
 | T181 | Import path error recovery — **DONE** | Use `parse_program_with_recovery` when compiling imported modules so multiple parse errors in a dependency are reported. Ref: COMPETITIVE_ANALYSIS §7.4 (A). |

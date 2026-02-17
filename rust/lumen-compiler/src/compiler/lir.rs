@@ -277,6 +277,136 @@ impl Instruction {
     pub fn sbx(&self) -> i16 {
         self.bx() as i16
     }
+
+    /// Losslessly widen this 32-bit instruction to 64-bit encoding.
+    /// All field values are zero-extended from 8-bit to 16-bit.
+    pub fn widen(&self) -> Instruction64 {
+        Instruction64 {
+            op: self.op,
+            a: self.a as u16,
+            b: self.b as u16,
+            c: self.c as u16,
+            pad: 0,
+        }
+    }
+}
+
+/// A 64-bit instruction — experimental wider encoding for cells that exceed
+/// the 32-bit `Instruction`'s 256-register / 64K-constant limits.
+///
+/// Layout (8 bytes total, fixed-width):
+///
+/// ```text
+/// ABC format:  [op:8][a:16][b:16][c:16][pad:8]  — 65,536 registers per operand
+/// ABx format:  [op:8][a:16][bx_hi:16][bx_lo:16][pad:8]  — 32-bit constant index
+/// Ax  format:  [op:8][ax_hi:16][ax_mid:16][ax_lo:16][pad:8]  — 48-bit immediate
+/// ```
+///
+/// This type is **additive** — it does not replace `Instruction`. Existing code
+/// continues to use the 32-bit encoding. This type is available for future use
+/// when a cell exceeds the 32-bit limits.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[repr(C)]
+pub struct Instruction64 {
+    pub op: OpCode,
+    pub pad: u8,
+    pub a: u16,
+    pub b: u16,
+    pub c: u16,
+}
+
+impl Instruction64 {
+    /// Three-register constructor (ABC format).
+    pub fn abc(op: OpCode, a: u16, b: u16, c: u16) -> Self {
+        Self {
+            op,
+            a,
+            b,
+            c,
+            pad: 0,
+        }
+    }
+
+    /// Register + 32-bit constant index constructor (ABx format).
+    /// The constant index is split across `b` (high 16 bits) and `c` (low 16 bits).
+    pub fn abx(op: OpCode, a: u16, bx: u32) -> Self {
+        Self {
+            op,
+            a,
+            b: (bx >> 16) as u16,
+            c: (bx & 0xFFFF) as u16,
+            pad: 0,
+        }
+    }
+
+    /// Unsigned 48-bit immediate constructor (Ax format).
+    /// The value is split across `a` (high), `b` (mid), `c` (low), each 16 bits.
+    pub fn ax(op: OpCode, ax: u64) -> Self {
+        Self {
+            op,
+            a: ((ax >> 32) & 0xFFFF) as u16,
+            b: ((ax >> 16) & 0xFFFF) as u16,
+            c: (ax & 0xFFFF) as u16,
+            pad: 0,
+        }
+    }
+
+    /// Signed 48-bit immediate constructor (sAx format) for jump offsets.
+    pub fn sax(op: OpCode, offset: i64) -> Self {
+        let bits = (offset as u64) & 0xFFFF_FFFF_FFFF;
+        Self {
+            op,
+            a: ((bits >> 32) & 0xFFFF) as u16,
+            b: ((bits >> 16) & 0xFFFF) as u16,
+            c: (bits & 0xFFFF) as u16,
+            pad: 0,
+        }
+    }
+
+    /// Reconstruct the 32-bit constant index from b (high) and c (low).
+    pub fn bx(&self) -> u32 {
+        ((self.b as u32) << 16) | (self.c as u32)
+    }
+
+    /// Reconstruct the unsigned 48-bit immediate from a, b, c.
+    pub fn ax_val(&self) -> u64 {
+        ((self.a as u64) << 32) | ((self.b as u64) << 16) | (self.c as u64)
+    }
+
+    /// Reconstruct the signed 48-bit immediate with sign extension.
+    pub fn sax_val(&self) -> i64 {
+        let raw = self.ax_val();
+        // Sign bit is bit 47
+        if raw & (1u64 << 47) != 0 {
+            (raw | 0xFFFF_0000_0000_0000) as i64
+        } else {
+            raw as i64
+        }
+    }
+
+    /// Signed 32-bit reinterpretation of bx() for signed constant offsets.
+    pub fn sbx(&self) -> i32 {
+        self.bx() as i32
+    }
+
+    /// Size of one instruction in bytes.
+    pub const fn size_bytes() -> usize {
+        8
+    }
+
+    /// Try to narrow this 64-bit instruction to 32-bit encoding.
+    /// Returns `None` if any register operand exceeds `u8::MAX` (255).
+    pub fn narrow(&self) -> Option<Instruction> {
+        if self.a > 255 || self.b > 255 || self.c > 255 {
+            return None;
+        }
+        Some(Instruction {
+            op: self.op,
+            a: self.a as u8,
+            b: self.b as u8,
+            c: self.c as u8,
+        })
+    }
 }
 
 /// Constant value in the constant pool

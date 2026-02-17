@@ -385,7 +385,11 @@ pub fn resolve_with_base(
                         Entry::Vacant(entry) => {
                             entry.insert(TypeInfo {
                                 kind: TypeInfoKind::Record(r.clone()),
-                                generic_params: r.generic_params.iter().map(|gp| gp.name.clone()).collect(),
+                                generic_params: r
+                                    .generic_params
+                                    .iter()
+                                    .map(|gp| gp.name.clone())
+                                    .collect(),
                             });
                         }
                     }
@@ -409,7 +413,11 @@ pub fn resolve_with_base(
                         Entry::Vacant(entry) => {
                             entry.insert(TypeInfo {
                                 kind: TypeInfoKind::Enum(e.clone()),
-                                generic_params: e.generic_params.iter().map(|gp| gp.name.clone()).collect(),
+                                generic_params: e
+                                    .generic_params
+                                    .iter()
+                                    .map(|gp| gp.name.clone())
+                                    .collect(),
                             });
                         }
                     }
@@ -453,30 +461,28 @@ pub fn resolve_with_base(
 
                 // Check cross-kind: agent name vs explicit record/enum type
                 match table.types.entry(a.name.clone()) {
-                    Entry::Occupied(existing) => {
-                        match &existing.get().kind {
-                            TypeInfoKind::Builtin => {
-                                errors.push(ResolveError::Duplicate {
-                                    name: a.name.clone(),
-                                    line: a.span.line,
-                                });
-                            }
-                            TypeInfoKind::Record(rd) => {
-                                if rd.span.line != a.span.line {
-                                    errors.push(ResolveError::Duplicate {
-                                        name: a.name.clone(),
-                                        line: a.span.line,
-                                    });
-                                }
-                            }
-                            TypeInfoKind::Enum(_) => {
+                    Entry::Occupied(existing) => match &existing.get().kind {
+                        TypeInfoKind::Builtin => {
+                            errors.push(ResolveError::Duplicate {
+                                name: a.name.clone(),
+                                line: a.span.line,
+                            });
+                        }
+                        TypeInfoKind::Record(rd) => {
+                            if rd.span.line != a.span.line {
                                 errors.push(ResolveError::Duplicate {
                                     name: a.name.clone(),
                                     line: a.span.line,
                                 });
                             }
                         }
-                    }
+                        TypeInfoKind::Enum(_) => {
+                            errors.push(ResolveError::Duplicate {
+                                name: a.name.clone(),
+                                line: a.span.line,
+                            });
+                        }
+                    },
                     Entry::Vacant(entry) => {
                         entry.insert(TypeInfo {
                             kind: TypeInfoKind::Record(RecordDef {
@@ -522,7 +528,11 @@ pub fn resolve_with_base(
                                     .collect(),
                                 return_type: cell.return_type.clone(),
                                 effects: cell.effects.clone(),
-                                generic_params: cell.generic_params.iter().map(|gp| gp.name.clone()).collect(),
+                                generic_params: cell
+                                    .generic_params
+                                    .iter()
+                                    .map(|gp| gp.name.clone())
+                                    .collect(),
                             });
                         }
                     }
@@ -635,7 +645,11 @@ pub fn resolve_with_base(
                             .collect(),
                         return_type: cell.return_type.clone(),
                         effects: cell.effects.clone(),
-                        generic_params: cell.generic_params.iter().map(|gp| gp.name.clone()).collect(),
+                        generic_params: cell
+                            .generic_params
+                            .iter()
+                            .map(|gp| gp.name.clone())
+                            .collect(),
                     });
                 }
                 for g in &p.grants {
@@ -670,7 +684,11 @@ pub fn resolve_with_base(
                             .collect(),
                         return_type: op.return_type.clone(),
                         effects: op.effects.clone(),
-                        generic_params: op.generic_params.iter().map(|gp| gp.name.clone()).collect(),
+                        generic_params: op
+                            .generic_params
+                            .iter()
+                            .map(|gp| gp.name.clone())
+                            .collect(),
                     });
                 }
             }
@@ -709,7 +727,11 @@ pub fn resolve_with_base(
                             .collect(),
                         return_type: handle.return_type.clone(),
                         effects: handle.effects.clone(),
-                        generic_params: handle.generic_params.iter().map(|gp| gp.name.clone()).collect(),
+                        generic_params: handle
+                            .generic_params
+                            .iter()
+                            .map(|gp| gp.name.clone())
+                            .collect(),
                     });
                 }
             }
@@ -776,23 +798,21 @@ pub fn resolve_with_base(
                     methods,
                 });
             }
-            Item::ConstDecl(c) => {
-                match table.consts.entry(c.name.clone()) {
-                    Entry::Occupied(_) => {
-                        errors.push(ResolveError::Duplicate {
-                            name: c.name.clone(),
-                            line: c.span.line,
-                        });
-                    }
-                    Entry::Vacant(entry) => {
-                        entry.insert(ConstInfo {
-                            name: c.name.clone(),
-                            ty: c.type_ann.clone(),
-                            value: Some(c.value.clone()),
-                        });
-                    }
+            Item::ConstDecl(c) => match table.consts.entry(c.name.clone()) {
+                Entry::Occupied(_) => {
+                    errors.push(ResolveError::Duplicate {
+                        name: c.name.clone(),
+                        line: c.span.line,
+                    });
                 }
-            }
+                Entry::Vacant(entry) => {
+                    entry.insert(ConstInfo {
+                        name: c.name.clone(),
+                        ty: c.type_ann.clone(),
+                        value: Some(c.value.clone()),
+                    });
+                }
+            },
             Item::Import(_) | Item::MacroDecl(_) => {}
         }
     }
@@ -1252,9 +1272,10 @@ fn check_effect_grants_for(
 
         // Effects that correspond to a declared `effect` block are algebraic effects
         // and don't need tool grants (they are handled by handle...with...end blocks)
-        let is_declared_effect = table.effects.keys().any(|name| {
-            name.to_lowercase() == effect.to_lowercase()
-        });
+        let is_declared_effect = table
+            .effects
+            .keys()
+            .any(|name| name.to_lowercase() == effect.to_lowercase());
         if is_declared_effect {
             continue;
         }
@@ -2683,7 +2704,12 @@ fn collect_expr_effect_evidence(
         Expr::ComptimeExpr(inner, _) => {
             collect_expr_effect_evidence(inner, table, current, out);
         }
-        Expr::Perform { effect_name, args, span, .. } => {
+        Expr::Perform {
+            effect_name,
+            args,
+            span,
+            ..
+        } => {
             for arg in args {
                 collect_expr_effect_evidence(arg, table, current, out);
             }
@@ -3020,7 +3046,9 @@ fn infer_expr_effects(
         Expr::ComptimeExpr(inner, _) => {
             infer_expr_effects(inner, table, current, out);
         }
-        Expr::Perform { effect_name, args, .. } => {
+        Expr::Perform {
+            effect_name, args, ..
+        } => {
             for arg in args {
                 infer_expr_effects(arg, table, current, out);
             }
@@ -4276,10 +4304,7 @@ mod tests {
     #[test]
     fn test_duplicate_type_alias_vs_record() {
         // A type alias and a record with the same name should conflict
-        let err = resolve_src(
-            "type Foo = String\n\nrecord Foo\n  x: Int\nend",
-        )
-        .unwrap_err();
+        let err = resolve_src("type Foo = String\n\nrecord Foo\n  x: Int\nend").unwrap_err();
         assert!(err.iter().any(|e| matches!(
             e,
             ResolveError::Duplicate { name, .. } if name == "Foo"
@@ -4289,10 +4314,7 @@ mod tests {
     #[test]
     fn test_duplicate_record_vs_type_alias() {
         // Reverse order: record first, then type alias
-        let err = resolve_src(
-            "record Foo\n  x: Int\nend\n\ntype Foo = String",
-        )
-        .unwrap_err();
+        let err = resolve_src("record Foo\n  x: Int\nend\n\ntype Foo = String").unwrap_err();
         assert!(err.iter().any(|e| matches!(
             e,
             ResolveError::Duplicate { name, .. } if name == "Foo"
@@ -4301,10 +4323,7 @@ mod tests {
 
     #[test]
     fn test_duplicate_type_alias_vs_enum() {
-        let err = resolve_src(
-            "type Color = String\n\nenum Color\n  Red\n  Blue\nend",
-        )
-        .unwrap_err();
+        let err = resolve_src("type Color = String\n\nenum Color\n  Red\n  Blue\nend").unwrap_err();
         assert!(err.iter().any(|e| matches!(
             e,
             ResolveError::Duplicate { name, .. } if name == "Color"
@@ -4313,10 +4332,7 @@ mod tests {
 
     #[test]
     fn test_duplicate_enum_vs_type_alias() {
-        let err = resolve_src(
-            "enum Color\n  Red\n  Blue\nend\n\ntype Color = String",
-        )
-        .unwrap_err();
+        let err = resolve_src("enum Color\n  Red\n  Blue\nend\n\ntype Color = String").unwrap_err();
         assert!(err.iter().any(|e| matches!(
             e,
             ResolveError::Duplicate { name, .. } if name == "Color"
@@ -4326,10 +4342,7 @@ mod tests {
     #[test]
     fn test_duplicate_type_alias_detection() {
         // Two type aliases with the same name
-        let err = resolve_src(
-            "type Foo = String\n\ntype Foo = Int",
-        )
-        .unwrap_err();
+        let err = resolve_src("type Foo = String\n\ntype Foo = Int").unwrap_err();
         assert!(err.iter().any(|e| matches!(
             e,
             ResolveError::Duplicate { name, .. } if name == "Foo"
@@ -4338,10 +4351,7 @@ mod tests {
 
     #[test]
     fn test_duplicate_const_detection() {
-        let err = resolve_src(
-            "const MAX = 100\n\nconst MAX = 200",
-        )
-        .unwrap_err();
+        let err = resolve_src("const MAX = 100\n\nconst MAX = 200").unwrap_err();
         assert!(err.iter().any(|e| matches!(
             e,
             ResolveError::Duplicate { name, .. } if name == "MAX"
@@ -4375,10 +4385,7 @@ mod tests {
     #[test]
     fn test_record_vs_enum_same_name() {
         // Record and enum with same name should conflict (both go in types)
-        let err = resolve_src(
-            "record Foo\n  x: Int\nend\n\nenum Foo\n  A\n  B\nend",
-        )
-        .unwrap_err();
+        let err = resolve_src("record Foo\n  x: Int\nend\n\nenum Foo\n  A\n  B\nend").unwrap_err();
         assert!(err.iter().any(|e| matches!(
             e,
             ResolveError::Duplicate { name, .. } if name == "Foo"

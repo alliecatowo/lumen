@@ -391,8 +391,14 @@ impl PartialEq for Value {
             // Compare floats by bit pattern so Eq stays reflexive for NaN and
             // preserves sign/payload distinctions (e.g. -0.0 vs +0.0, NaN payloads).
             (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
-            (Value::BigInt(a), Value::Float(b)) => a.to_f64().map(|f| f.to_bits() == b.to_bits()).unwrap_or(false),
-            (Value::Float(a), Value::BigInt(b)) => b.to_f64().map(|f| f.to_bits() == a.to_bits()).unwrap_or(false),
+            (Value::BigInt(a), Value::Float(b)) => a
+                .to_f64()
+                .map(|f| f.to_bits() == b.to_bits())
+                .unwrap_or(false),
+            (Value::Float(a), Value::BigInt(b)) => b
+                .to_f64()
+                .map(|f| f.to_bits() == a.to_bits())
+                .unwrap_or(false),
             (Value::String(StringRef::Owned(a)), Value::String(StringRef::Owned(b))) => a == b,
             // At Value-layer (without StringTable), interned equality is by id only.
             (Value::String(StringRef::Interned(a)), Value::String(StringRef::Interned(b))) => {
@@ -435,8 +441,14 @@ pub fn values_equal(a: &Value, b: &Value, strings: &StringTable) -> bool {
         (Value::Int(x), Value::BigInt(y)) => BigInt::from(*x) == *y,
         (Value::BigInt(x), Value::Int(y)) => *x == BigInt::from(*y),
         (Value::Float(x), Value::Float(y)) => x.to_bits() == y.to_bits(),
-        (Value::BigInt(x), Value::Float(y)) => x.to_f64().map(|f| f.to_bits() == y.to_bits()).unwrap_or(false),
-        (Value::Float(x), Value::BigInt(y)) => y.to_f64().map(|f| f.to_bits() == x.to_bits()).unwrap_or(false),
+        (Value::BigInt(x), Value::Float(y)) => x
+            .to_f64()
+            .map(|f| f.to_bits() == y.to_bits())
+            .unwrap_or(false),
+        (Value::Float(x), Value::BigInt(y)) => y
+            .to_f64()
+            .map(|f| f.to_bits() == x.to_bits())
+            .unwrap_or(false),
         (Value::String(sa), Value::String(sb)) => {
             let left = match sa {
                 StringRef::Owned(s) => s.as_str(),
@@ -473,10 +485,8 @@ pub fn values_equal(a: &Value, b: &Value, strings: &StringTable) -> bool {
         }
         (Value::Map(x), Value::Map(y)) => {
             x.len() == y.len()
-                && x.iter().all(|(k, va)| {
-                    y.get(k)
-                        .map_or(false, |vb| values_equal(va, vb, strings))
-                })
+                && x.iter()
+                    .all(|(k, va)| y.get(k).is_some_and(|vb| values_equal(va, vb, strings)))
         }
         (Value::Record(x), Value::Record(y)) => {
             x.type_name == y.type_name
@@ -484,7 +494,7 @@ pub fn values_equal(a: &Value, b: &Value, strings: &StringTable) -> bool {
                 && x.fields.iter().all(|(k, va)| {
                     y.fields
                         .get(k)
-                        .map_or(false, |vb| values_equal(va, vb, strings))
+                        .is_some_and(|vb| values_equal(va, vb, strings))
                 })
         }
         (Value::Union(x), Value::Union(y)) => {
@@ -493,9 +503,7 @@ pub fn values_equal(a: &Value, b: &Value, strings: &StringTable) -> bool {
         (Value::Closure(x), Value::Closure(y)) => {
             x.cell_idx == y.cell_idx && x.captures == y.captures
         }
-        (Value::TraceRef(x), Value::TraceRef(y)) => {
-            x.trace_id == y.trace_id && x.seq == y.seq
-        }
+        (Value::TraceRef(x), Value::TraceRef(y)) => x.trace_id == y.trace_id && x.seq == y.seq,
         (Value::Future(x), Value::Future(y)) => x.id == y.id && x.state == y.state,
         _ => false,
     }
@@ -812,10 +820,7 @@ mod tests {
         let mut table = StringTable::new();
         let id = table.intern("item");
 
-        let list_a = Value::new_list(vec![
-            Value::Int(1),
-            Value::String(StringRef::Interned(id)),
-        ]);
+        let list_a = Value::new_list(vec![Value::Int(1), Value::String(StringRef::Interned(id))]);
         let list_b = Value::new_list(vec![
             Value::Int(1),
             Value::String(StringRef::Owned("item".into())),
@@ -852,16 +857,8 @@ mod tests {
         let table = StringTable::new();
 
         // Same representation should still work
-        assert!(values_equal(
-            &Value::Int(42),
-            &Value::Int(42),
-            &table
-        ));
-        assert!(!values_equal(
-            &Value::Int(42),
-            &Value::Int(43),
-            &table
-        ));
+        assert!(values_equal(&Value::Int(42), &Value::Int(42), &table));
+        assert!(!values_equal(&Value::Int(42), &Value::Int(43), &table));
         assert!(values_equal(
             &Value::String(StringRef::Owned("hi".into())),
             &Value::String(StringRef::Owned("hi".into())),

@@ -598,7 +598,9 @@ end
     assert!(result.is_err(), "deep recursion should return an error");
     let err_msg = result.unwrap_err().to_string();
     assert!(
-        err_msg.contains("stack overflow") || err_msg.contains("call depth") || err_msg.contains("instruction limit"),
+        err_msg.contains("stack overflow")
+            || err_msg.contains("call depth")
+            || err_msg.contains("instruction limit"),
         "error should mention stack overflow, got: {}",
         err_msg
     );

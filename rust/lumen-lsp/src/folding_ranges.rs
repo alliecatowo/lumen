@@ -20,65 +20,49 @@ pub fn build_folding_ranges(
     for item in &prog.items {
         match item {
             Item::Cell(cell) => {
-                if let Some(range) = make_folding_range(
-                    &cell.span,
-                    text,
-                    FoldingRangeKind::Region,
-                ) {
+                if let Some(range) = make_folding_range(&cell.span, text, FoldingRangeKind::Region)
+                {
                     ranges.push(range);
                 }
             }
             Item::Record(record) => {
-                if let Some(range) = make_folding_range(
-                    &record.span,
-                    text,
-                    FoldingRangeKind::Region,
-                ) {
+                if let Some(range) =
+                    make_folding_range(&record.span, text, FoldingRangeKind::Region)
+                {
                     ranges.push(range);
                 }
             }
             Item::Enum(enum_def) => {
-                if let Some(range) = make_folding_range(
-                    &enum_def.span,
-                    text,
-                    FoldingRangeKind::Region,
-                ) {
+                if let Some(range) =
+                    make_folding_range(&enum_def.span, text, FoldingRangeKind::Region)
+                {
                     ranges.push(range);
                 }
             }
             Item::Process(process) => {
-                if let Some(range) = make_folding_range(
-                    &process.span,
-                    text,
-                    FoldingRangeKind::Region,
-                ) {
+                if let Some(range) =
+                    make_folding_range(&process.span, text, FoldingRangeKind::Region)
+                {
                     ranges.push(range);
                 }
             }
             Item::Effect(effect) => {
-                if let Some(range) = make_folding_range(
-                    &effect.span,
-                    text,
-                    FoldingRangeKind::Region,
-                ) {
+                if let Some(range) =
+                    make_folding_range(&effect.span, text, FoldingRangeKind::Region)
+                {
                     ranges.push(range);
                 }
             }
             Item::Handler(handler) => {
-                if let Some(range) = make_folding_range(
-                    &handler.span,
-                    text,
-                    FoldingRangeKind::Region,
-                ) {
+                if let Some(range) =
+                    make_folding_range(&handler.span, text, FoldingRangeKind::Region)
+                {
                     ranges.push(range);
                 }
             }
             Item::TypeAlias(alias) => {
-                if let Some(range) = make_folding_range(
-                    &alias.span,
-                    text,
-                    FoldingRangeKind::Region,
-                ) {
+                if let Some(range) = make_folding_range(&alias.span, text, FoldingRangeKind::Region)
+                {
                     ranges.push(range);
                 }
             }

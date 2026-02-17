@@ -1,6 +1,6 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
-use chrono::{DateTime, Utc};
 
 // =============================================================================
 // Registry Data Types
@@ -527,7 +527,9 @@ impl TrustPolicy {
     /// Strict policy for high-security environments.
     pub fn strict() -> Self {
         Self {
-            required_identity: Some("^https://github.com/[^/]+/[^/]+/.github/workflows/.*$".to_string()),
+            required_identity: Some(
+                "^https://github.com/[^/]+/[^/]+/.github/workflows/.*$".to_string(),
+            ),
             min_slsa_level: 2,
             require_transparency_log: true,
             min_package_age: Some("24h".to_string()),

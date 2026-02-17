@@ -739,14 +739,14 @@ impl Lexer {
         }
         let span = self.span_from(so, sl, sc);
         if let Ok(n) = i64::from_str_radix(&hex, 16) {
-             Ok(Token::new(TokenKind::IntLit(n), span))
+            Ok(Token::new(TokenKind::IntLit(n), span))
         } else if let Ok(n) = BigInt::from_str_radix(&hex, 16) {
-             Ok(Token::new(TokenKind::BigIntLit(n), span))
+            Ok(Token::new(TokenKind::BigIntLit(n), span))
         } else {
-             Err(LexError::InvalidNumber {
+            Err(LexError::InvalidNumber {
                 line: self.base_line + sl - 1,
                 col: sc,
-             })
+            })
         }
     }
 
@@ -772,14 +772,14 @@ impl Lexer {
         }
         let span = self.span_from(so, sl, sc);
         if let Ok(n) = i64::from_str_radix(&bin, 2) {
-             Ok(Token::new(TokenKind::IntLit(n), span))
+            Ok(Token::new(TokenKind::IntLit(n), span))
         } else if let Ok(n) = BigInt::from_str_radix(&bin, 2) {
-             Ok(Token::new(TokenKind::BigIntLit(n), span))
+            Ok(Token::new(TokenKind::BigIntLit(n), span))
         } else {
-             Err(LexError::InvalidNumber {
+            Err(LexError::InvalidNumber {
                 line: self.base_line + sl - 1,
                 col: sc,
-             })
+            })
         }
     }
 
@@ -805,14 +805,14 @@ impl Lexer {
         }
         let span = self.span_from(so, sl, sc);
         if let Ok(n) = i64::from_str_radix(&oct, 8) {
-             Ok(Token::new(TokenKind::IntLit(n), span))
+            Ok(Token::new(TokenKind::IntLit(n), span))
         } else if let Ok(n) = BigInt::from_str_radix(&oct, 8) {
-             Ok(Token::new(TokenKind::BigIntLit(n), span))
+            Ok(Token::new(TokenKind::BigIntLit(n), span))
         } else {
-             Err(LexError::InvalidNumber {
+            Err(LexError::InvalidNumber {
                 line: self.base_line + sl - 1,
                 col: sc,
-             })
+            })
         }
     }
 
@@ -916,7 +916,7 @@ impl Lexer {
         self.advance(); // first `
         self.advance(); // second `
         self.advance(); // third `
-        // Consume any language tag on the same line (e.g., ```markdown)
+                        // Consume any language tag on the same line (e.g., ```markdown)
         while matches!(self.current(), Some(c) if c != '\n') {
             self.advance();
         }
@@ -936,7 +936,7 @@ impl Lexer {
                     self.advance(); // `
                     self.advance(); // `
                     self.advance(); // `
-                    // Consume rest of closing fence line
+                                    // Consume rest of closing fence line
                     while matches!(self.current(), Some(c) if c != '\n') {
                         self.advance();
                     }
@@ -1536,7 +1536,9 @@ mod tests {
         let src = "```markdown\n# Title\nSome text\n```";
         let mut lexer = Lexer::new(src, 1, 0);
         let tokens = lexer.tokenize().unwrap();
-        assert!(matches!(&tokens[0].kind, TokenKind::MarkdownBlock(s) if s == "# Title\nSome text"));
+        assert!(
+            matches!(&tokens[0].kind, TokenKind::MarkdownBlock(s) if s == "# Title\nSome text")
+        );
     }
 
     #[test]
@@ -1544,7 +1546,9 @@ mod tests {
         let src = "```\nDocstring for main\n```\ncell main() -> Int\n  return 42\nend";
         let mut lexer = Lexer::new(src, 1, 0);
         let tokens = lexer.tokenize().unwrap();
-        assert!(matches!(&tokens[0].kind, TokenKind::MarkdownBlock(s) if s == "Docstring for main"));
+        assert!(
+            matches!(&tokens[0].kind, TokenKind::MarkdownBlock(s) if s == "Docstring for main")
+        );
         // Next meaningful token after newline should be Cell
         let cell_tok = tokens.iter().find(|t| matches!(t.kind, TokenKind::Cell));
         assert!(cell_tok.is_some());
@@ -1565,7 +1569,10 @@ mod tests {
         let mut lexer = Lexer::new(src, 1, 0);
         let result = lexer.tokenize();
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), LexError::UnterminatedMarkdownBlock { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            LexError::UnterminatedMarkdownBlock { .. }
+        ));
     }
 
     #[test]

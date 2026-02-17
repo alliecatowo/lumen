@@ -699,9 +699,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
             }
         }
         request::DocumentSymbolRequest::METHOD => {
-            if let Ok(params) =
-                serde_json::from_value::<DocumentSymbolParams>(req.params.clone())
-            {
+            if let Ok(params) = serde_json::from_value::<DocumentSymbolParams>(req.params.clone()) {
                 let uri = &params.text_document.uri;
                 let text = cache.get_text(uri).map(|s| s.as_str()).unwrap_or("");
                 let program = cache.get_program(uri);
@@ -717,9 +715,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
             }
         }
         request::SignatureHelpRequest::METHOD => {
-            if let Ok(params) =
-                serde_json::from_value::<SignatureHelpParams>(req.params.clone())
-            {
+            if let Ok(params) = serde_json::from_value::<SignatureHelpParams>(req.params.clone()) {
                 let uri = &params.text_document_position_params.text_document.uri;
                 let text = cache.get_text(uri).map(|s| s.as_str()).unwrap_or("");
                 let program = cache.get_program(uri);
@@ -754,9 +750,7 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
             let _ = connection.sender.send(Message::Response(response));
         }
         request::FoldingRangeRequest::METHOD => {
-            if let Ok(params) =
-                serde_json::from_value::<FoldingRangeParams>(req.params.clone())
-            {
+            if let Ok(params) = serde_json::from_value::<FoldingRangeParams>(req.params.clone()) {
                 let uri = &params.text_document.uri;
                 let text = cache.get_text(uri).map(|s| s.as_str()).unwrap_or("");
                 let program = cache.get_program(uri);

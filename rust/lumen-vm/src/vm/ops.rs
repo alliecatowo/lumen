@@ -203,14 +203,40 @@ impl VM {
                 BinaryOp::Add => x.checked_add(y),
                 BinaryOp::Sub => x.checked_sub(y),
                 BinaryOp::Mul => x.checked_mul(y),
-                BinaryOp::Div => if y == 0 { None } else { Some(x / y) },
-                BinaryOp::FloorDiv => if y == 0 { None } else { Some(x.div_euclid(y)) },
-                BinaryOp::Mod => if y == 0 { None } else { Some(x.rem_euclid(y)) },
-                BinaryOp::Rem => if y == 0 { None } else { Some(x % y) },
+                BinaryOp::Div => {
+                    if y == 0 {
+                        None
+                    } else {
+                        Some(x / y)
+                    }
+                }
+                BinaryOp::FloorDiv => {
+                    if y == 0 {
+                        None
+                    } else {
+                        Some(x.div_euclid(y))
+                    }
+                }
+                BinaryOp::Mod => {
+                    if y == 0 {
+                        None
+                    } else {
+                        Some(x.rem_euclid(y))
+                    }
+                }
+                BinaryOp::Rem => {
+                    if y == 0 {
+                        None
+                    } else {
+                        Some(x % y)
+                    }
+                }
                 BinaryOp::Pow => {
-                    if y < 0 { None }
-                    else if y > u32::MAX as i64 { None }
-                    else { x.checked_pow(y as u32) }
+                    if y < 0 || y > u32::MAX as i64 {
+                        None
+                    } else {
+                        x.checked_pow(y as u32)
+                    }
                 }
             }
         }
@@ -265,9 +291,7 @@ impl VM {
                     return Err(VmError::ArithmeticOverflow);
                 }
             }
-            (Value::BigInt(x), Value::BigInt(y)) => {
-                Value::BigInt(bigint_op(op, x, y)?)
-            }
+            (Value::BigInt(x), Value::BigInt(y)) => Value::BigInt(bigint_op(op, x, y)?),
             (Value::Int(x), Value::BigInt(y)) => {
                 Value::BigInt(bigint_op(op, &BigInt::from(*x), y)?)
             }

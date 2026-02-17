@@ -776,7 +776,6 @@ fn wrap_as_source(input: &str, session_state: &SessionState) -> String {
 fn eval_input(input: &str, session_state: &mut SessionState) {
     let source = wrap_as_source(input, session_state);
 
-
     let module = match lumen_compiler::compile(&source) {
         Ok(m) => m,
         Err(e) => {

@@ -12,19 +12,19 @@ pub(crate) use processes::{
 
 use crate::strings::StringTable;
 use crate::types::{RuntimeField, RuntimeType, RuntimeTypeKind, RuntimeVariant, TypeTable};
-use crate::vm::ops::BinaryOp;
 use crate::values::{
     values_equal, ClosureValue, FutureStatus, FutureValue, RecordValue, StringRef, TraceRefValue,
     UnionValue, Value,
 };
+use crate::vm::ops::BinaryOp;
 use lumen_compiler::compiler::lir::*;
 
 use lumen_runtime::tools::{ProviderRegistry, ToolDispatcher, ToolRequest};
+use num_bigint::BigInt;
+use num_traits::ToPrimitive;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 use thiserror::Error;
-use num_bigint::BigInt;
-use num_traits::ToPrimitive;
 
 /// Type alias for debug callback to simplify type signatures
 pub type DebugCallback = Option<Box<dyn FnMut(&DebugEvent)>>;
@@ -190,9 +190,7 @@ impl VmError {
     pub fn is_type_error(&self) -> bool {
         match self {
             VmError::TypeError(_) => true,
-            VmError::WithStackTrace { message, .. } => {
-                message.starts_with("type error at runtime")
-            }
+            VmError::WithStackTrace { message, .. } => message.starts_with("type error at runtime"),
             _ => false,
         }
     }
@@ -271,7 +269,6 @@ pub enum FutureSchedule {
     Eager,
     DeferredFifo,
 }
-
 
 /// Scope for an installed effect handler.
 #[derive(Debug, Clone)]
@@ -426,23 +423,30 @@ impl VM {
                     let next_prefix = &current_pattern[..next_prefix_start];
                     if let Some(match_pos) = current_input.find(next_prefix) {
                         let val = &current_input[..match_pos];
-                        captures.insert(key.to_string(), Value::String(StringRef::Owned(val.to_string())));
+                        captures.insert(
+                            key.to_string(),
+                            Value::String(StringRef::Owned(val.to_string())),
+                        );
                         current_input = &current_input[match_pos..];
                     } else {
                         return None;
                     }
+                } else if current_pattern.is_empty() {
+                    captures.insert(
+                        key.to_string(),
+                        Value::String(StringRef::Owned(current_input.to_string())),
+                    );
+                    current_input = "";
+                } else if current_input.ends_with(current_pattern) {
+                    let val = &current_input[..current_input.len() - current_pattern.len()];
+                    captures.insert(
+                        key.to_string(),
+                        Value::String(StringRef::Owned(val.to_string())),
+                    );
+                    current_input = "";
+                    current_pattern = "";
                 } else {
-                    if current_pattern.is_empty() {
-                        captures.insert(key.to_string(), Value::String(StringRef::Owned(current_input.to_string())));
-                        current_input = "";
-                    } else if current_input.ends_with(current_pattern) {
-                        let val = &current_input[..current_input.len() - current_pattern.len()];
-                        captures.insert(key.to_string(), Value::String(StringRef::Owned(val.to_string())));
-                        current_input = "";
-                        current_pattern = "";
-                    } else {
-                        return None;
-                    }
+                    return None;
                 }
             } else {
                 return None;
@@ -507,9 +511,7 @@ impl VM {
                 }
                 if addon.kind == "pipeline.stages" {
                     if let Some((pipeline_name, stages_json)) = name.split_once('=') {
-                        if let Ok(stages) =
-                            serde_json::from_str::<Vec<String>>(stages_json)
-                        {
+                        if let Ok(stages) = serde_json::from_str::<Vec<String>>(stages_json) {
                             self.pipeline_stages
                                 .insert(pipeline_name.to_string(), stages);
                         }
@@ -519,7 +521,9 @@ impl VM {
                     if let Some(ref name) = addon.name {
                         if let Some((target, payload)) = name.split_once('=') {
                             if let Some((process_name, config_key)) = target.split_once('.') {
-                                if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(payload) {
+                                if let Ok(json_val) =
+                                    serde_json::from_str::<serde_json::Value>(payload)
+                                {
                                     let val = helpers::json_to_value(&json_val);
                                     self.process_configs
                                         .entry(process_name.to_string())
@@ -885,9 +889,7 @@ impl VM {
 
             OpCode::ToolCall => self.check_register(a, cell_registers),
 
-            OpCode::Perform => {
-                self.check_register(a, cell_registers)
-            }
+            OpCode::Perform => self.check_register(a, cell_registers),
             OpCode::HandlePush | OpCode::HandlePop => Ok(()),
             OpCode::Resume => self.check_register(a, cell_registers),
         }
@@ -906,7 +908,8 @@ impl VM {
         let id = self.next_process_instance_id;
         self.next_process_instance_id += 1;
         let r_mut = Rc::make_mut(r);
-        r_mut.fields
+        r_mut
+            .fields
             .insert("__instance_id".to_string(), Value::Int(id as i64));
         r_mut.fields.insert(
             "__process_name".to_string(),
@@ -915,6 +918,7 @@ impl VM {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)] // used by tests / debug tooling
     pub(crate) fn debug_state(&self) -> String {
         format!(
             "process_kinds: {:?}, memory_runtime: {:?}",
@@ -1330,8 +1334,7 @@ impl VM {
             ) {
                 match instr.op {
                     OpCode::Call => {
-                        let callee = &self.registers[base + a];
-
+                        let _callee = &self.registers[base + a];
 
                         if let Err(err) = self.dispatch_call(base, a, b) {
                             if self.fail_current_future(err.to_string()) {
@@ -1511,9 +1514,10 @@ impl VM {
                             }
                             t[effective as usize].clone()
                         }
-                        (Value::Map(m), _) => {
-                            m.get(&idx.as_string_resolved(&self.strings)).cloned().unwrap_or(Value::Null)
-                        }
+                        (Value::Map(m), _) => m
+                            .get(&idx.as_string_resolved(&self.strings))
+                            .cloned()
+                            .unwrap_or(Value::Null),
                         (Value::Record(r), _) => r
                             .fields
                             .get(&idx.as_string_resolved(&self.strings))
@@ -1549,7 +1553,9 @@ impl VM {
                             Rc::make_mut(m).insert(key.as_string_resolved(&self.strings), val);
                         }
                         Value::Record(r) => {
-                            Rc::make_mut(r).fields.insert(key.as_string_resolved(&self.strings), val);
+                            Rc::make_mut(r)
+                                .fields
+                                .insert(key.as_string_resolved(&self.strings), val);
                         }
                         target => {
                             return Err(VmError::TypeError(format!(
@@ -1593,7 +1599,7 @@ impl VM {
                     let rhs = &self.registers[base + c];
                     // Check for strings first for concatenation
                     if matches!(lhs, Value::String(_)) || matches!(rhs, Value::String(_)) {
-                         self.registers[base + a] = Value::String(StringRef::Owned(format!(
+                        self.registers[base + a] = Value::String(StringRef::Owned(format!(
                             "{}{}",
                             lhs.as_string(),
                             rhs.as_string()
@@ -1620,7 +1626,7 @@ impl VM {
                     self.arith_op(base, a, b, c, BinaryOp::Div)?;
                 }
                 OpCode::FloorDiv => {
-                   self.arith_op(base, a, b, c, BinaryOp::FloorDiv)?;
+                    self.arith_op(base, a, b, c, BinaryOp::FloorDiv)?;
                 }
                 OpCode::Mod => {
                     // Pre-check for integer modulo by zero
@@ -1760,13 +1766,25 @@ impl VM {
                         (Value::BigInt(x), Value::Int(y)) => *x < BigInt::from(*y),
                         (Value::BigInt(x), Value::BigInt(y)) => x < y,
                         (Value::BigInt(x), Value::Float(y)) => {
-                             let af = x.to_f64().unwrap_or_else(|| if x.sign() == num_bigint::Sign::Minus { f64::NEG_INFINITY } else { f64::INFINITY });
-                             af < *y
-                        },
+                            let af = x.to_f64().unwrap_or_else(|| {
+                                if x.sign() == num_bigint::Sign::Minus {
+                                    f64::NEG_INFINITY
+                                } else {
+                                    f64::INFINITY
+                                }
+                            });
+                            af < *y
+                        }
                         (Value::Float(x), Value::BigInt(y)) => {
-                             let bf = y.to_f64().unwrap_or_else(|| if y.sign() == num_bigint::Sign::Minus { f64::NEG_INFINITY } else { f64::INFINITY });
-                             *x < bf
-                        },
+                            let bf = y.to_f64().unwrap_or_else(|| {
+                                if y.sign() == num_bigint::Sign::Minus {
+                                    f64::NEG_INFINITY
+                                } else {
+                                    f64::INFINITY
+                                }
+                            });
+                            *x < bf
+                        }
                         _ => false,
                     };
                     self.registers[base + a] = Value::Bool(result);
@@ -1794,13 +1812,25 @@ impl VM {
                         (Value::BigInt(x), Value::Int(y)) => *x <= BigInt::from(*y),
                         (Value::BigInt(x), Value::BigInt(y)) => x <= y,
                         (Value::BigInt(x), Value::Float(y)) => {
-                             let af = x.to_f64().unwrap_or_else(|| if x.sign() == num_bigint::Sign::Minus { f64::NEG_INFINITY } else { f64::INFINITY });
-                             af <= *y
-                        },
+                            let af = x.to_f64().unwrap_or_else(|| {
+                                if x.sign() == num_bigint::Sign::Minus {
+                                    f64::NEG_INFINITY
+                                } else {
+                                    f64::INFINITY
+                                }
+                            });
+                            af <= *y
+                        }
                         (Value::Float(x), Value::BigInt(y)) => {
-                             let bf = y.to_f64().unwrap_or_else(|| if y.sign() == num_bigint::Sign::Minus { f64::NEG_INFINITY } else { f64::INFINITY });
-                             *x <= bf
-                        },
+                            let bf = y.to_f64().unwrap_or_else(|| {
+                                if y.sign() == num_bigint::Sign::Minus {
+                                    f64::NEG_INFINITY
+                                } else {
+                                    f64::INFINITY
+                                }
+                            });
+                            *x <= bf
+                        }
                         _ => false,
                     };
                     self.registers[base + a] = Value::Bool(result);
@@ -1936,7 +1966,9 @@ impl VM {
                         let iter = &self.registers[base + a];
                         let elem = match iter {
                             Value::List(l) => l.get(idx as usize).cloned().unwrap_or(Value::Null),
-                            Value::Set(s) => s.iter().nth(idx as usize).cloned().unwrap_or(Value::Null),
+                            Value::Set(s) => {
+                                s.iter().nth(idx as usize).cloned().unwrap_or(Value::Null)
+                            }
                             Value::Tuple(t) => t.get(idx as usize).cloned().unwrap_or(Value::Null),
                             _ => Value::Null,
                         };
@@ -1966,7 +1998,10 @@ impl VM {
                                 let key = keys[idx as usize].clone();
                                 let val = m.get(&key).cloned().unwrap_or(Value::Null);
                                 (
-                                    Value::new_tuple(vec![Value::String(StringRef::Owned(key)), val]),
+                                    Value::new_tuple(vec![
+                                        Value::String(StringRef::Owned(key)),
+                                        val,
+                                    ]),
                                     true,
                                 )
                             } else {
@@ -2243,7 +2278,7 @@ impl VM {
 
                 // Algebraic effects
                 OpCode::HandlePush => {
-                    let meta_idx = a as usize;
+                    let meta_idx = a;
                     let offset = instr.bx() as usize;
                     let frame = self.frames.last().unwrap();
                     let handler_ip = frame.ip.saturating_sub(1) + offset;
@@ -2273,17 +2308,28 @@ impl VM {
                     let cell = &module.cells[cell_idx];
                     let eff_name = match &cell.constants[b] {
                         Constant::String(s) => s.clone(),
-                        _ => return Err(VmError::Runtime("perform: expected string constant for effect name".into())),
+                        _ => {
+                            return Err(VmError::Runtime(
+                                "perform: expected string constant for effect name".into(),
+                            ))
+                        }
                     };
                     let op_name = match &cell.constants[c] {
                         Constant::String(s) => s.clone(),
-                        _ => return Err(VmError::Runtime("perform: expected string constant for operation".into())),
+                        _ => {
+                            return Err(VmError::Runtime(
+                                "perform: expected string constant for operation".into(),
+                            ))
+                        }
                     };
 
                     // Search effect_handlers stack (top to bottom) for matching handler
-                    let handler_scope = self.effect_handlers.iter().rev().find(|scope| {
-                        scope.effect_name == eff_name && scope.operation == op_name
-                    }).cloned();
+                    let handler_scope = self
+                        .effect_handlers
+                        .iter()
+                        .rev()
+                        .find(|scope| scope.effect_name == eff_name && scope.operation == op_name)
+                        .cloned();
 
                     if let Some(scope) = handler_scope {
                         // Save continuation: snapshot current execution state
@@ -2431,18 +2477,22 @@ impl VM {
                 self.emit_debug_event(DebugEvent::CallEnter { cell_name });
             }
             _ => {
-                println!("DEBUG: cannot call {:?} (type: {})", callee, callee.type_name());
+                println!(
+                    "DEBUG: cannot call {:?} (type: {})",
+                    callee,
+                    callee.type_name()
+                );
                 println!("DEBUG: Current frame: {:?}", self.frames.last());
                 if let Some(frame) = self.frames.last() {
-                     if let Some(module) = self.module.as_ref() {
-                         if let Some(cell) = module.cells.get(frame.cell_idx) {
-                             println!("DEBUG: Instructions for cell '{}':", cell.name);
-                             println!("DEBUG: Constants: {:?}", cell.constants);
-                             for (i, instr) in cell.instructions.iter().enumerate() {
-                                 println!("  {:03}: {:?}", i, instr);
-                             }
-                         }
-                     }
+                    if let Some(module) = self.module.as_ref() {
+                        if let Some(cell) = module.cells.get(frame.cell_idx) {
+                            println!("DEBUG: Instructions for cell '{}':", cell.name);
+                            println!("DEBUG: Constants: {:?}", cell.constants);
+                            for (i, instr) in cell.instructions.iter().enumerate() {
+                                println!("  {:03}: {:?}", i, instr);
+                            }
+                        }
+                    }
                 }
                 return Err(VmError::TypeError(format!("cannot call {}", callee)));
             }
@@ -2514,7 +2564,6 @@ impl VM {
         Ok(())
     }
 }
-
 
 impl Default for VM {
     fn default() -> Self {
@@ -3810,7 +3859,11 @@ end
         let mut vm = VM::new();
         vm.load(module);
         let err = vm.execute("main", vec![]).unwrap_err();
-        assert!(err.is_division_by_zero(), "expected DivisionByZero, got: {:?}", err);
+        assert!(
+            err.is_division_by_zero(),
+            "expected DivisionByZero, got: {:?}",
+            err
+        );
     }
 
     #[test]
@@ -3842,7 +3895,11 @@ end
         let mut vm = VM::new();
         vm.load(module);
         let err = vm.execute("main", vec![]).unwrap_err();
-        assert!(err.is_division_by_zero(), "expected DivisionByZero, got: {:?}", err);
+        assert!(
+            err.is_division_by_zero(),
+            "expected DivisionByZero, got: {:?}",
+            err
+        );
     }
 
     fn make_spawn_await_module(
@@ -4283,7 +4340,11 @@ end
         let mut vm = VM::new();
         vm.load(module);
         let err = vm.execute("main", vec![]).unwrap_err();
-        assert!(err.is_division_by_zero(), "expected DivisionByZero, got: {:?}", err);
+        assert!(
+            err.is_division_by_zero(),
+            "expected DivisionByZero, got: {:?}",
+            err
+        );
     }
 
     #[test]
@@ -4318,7 +4379,11 @@ end
         let mut vm = VM::new();
         vm.load(module);
         let err = vm.execute("main", vec![]).unwrap_err();
-        assert!(err.is_division_by_zero(), "expected DivisionByZero, got: {:?}", err);
+        assert!(
+            err.is_division_by_zero(),
+            "expected DivisionByZero, got: {:?}",
+            err
+        );
     }
 
     #[test]
@@ -5269,7 +5334,11 @@ end
         let err = vm
             .execute("main", vec![])
             .expect_err("invalid register operand should fail");
-        assert!(err.is_register_oob(), "expected RegisterOOB, got: {:?}", err);
+        assert!(
+            err.is_register_oob(),
+            "expected RegisterOOB, got: {:?}",
+            err
+        );
     }
 
     #[test]
@@ -5306,7 +5375,11 @@ end
         let err = vm
             .execute("main", vec![])
             .expect_err("invalid call argument span should fail");
-        assert!(err.is_register_oob(), "expected RegisterOOB, got: {:?}", err);
+        assert!(
+            err.is_register_oob(),
+            "expected RegisterOOB, got: {:?}",
+            err
+        );
     }
 
     #[test]
@@ -5668,7 +5741,11 @@ end
         let err = vm
             .execute("main", vec![])
             .expect_err("loop should hit instruction limit");
-        assert!(err.is_instruction_limit_exceeded(), "expected InstructionLimitExceeded, got: {:?}", err);
+        assert!(
+            err.is_instruction_limit_exceeded(),
+            "expected InstructionLimitExceeded, got: {:?}",
+            err
+        );
     }
 
     #[test]
@@ -5697,13 +5774,21 @@ end
 
         assert!(result.is_err());
         if let Err(e) = result {
-            assert!(e.is_division_by_zero(), "expected DivisionByZero, got: {:?}", e);
+            assert!(
+                e.is_division_by_zero(),
+                "expected DivisionByZero, got: {:?}",
+                e
+            );
             // WithStackTrace should include the stack frames
             let frames = e.stack_frames();
             assert!(!frames.is_empty(), "stack trace should have frames");
             // The error message should include the stack trace
             let msg = format!("{}", e);
-            assert!(msg.contains("Stack trace"), "error should include stack trace: {}", msg);
+            assert!(
+                msg.contains("Stack trace"),
+                "error should include stack trace: {}",
+                msg
+            );
         }
     }
 
@@ -5739,7 +5824,11 @@ end
         let err = vm
             .execute("main", vec![])
             .expect_err("should run out of fuel");
-        assert!(err.message_contains("fuel exhausted"), "expected fuel exhausted, got: {:?}", err);
+        assert!(
+            err.message_contains("fuel exhausted"),
+            "expected fuel exhausted, got: {:?}",
+            err
+        );
     }
 
     #[test]
@@ -5850,9 +5939,9 @@ end
                 constants: vec![Constant::Int(42)],
                 instructions: vec![
                     Instruction::abx(OpCode::HandlePush, 0, 4), // meta_idx=0, handler code at offset +4
-                    Instruction::abx(OpCode::LoadK, 0, 0),  // load 42
-                    Instruction::ax(OpCode::HandlePop, 0),   // pop handler
-                    Instruction::abc(OpCode::Return, 0, 1, 0), // return 42
+                    Instruction::abx(OpCode::LoadK, 0, 0),      // load 42
+                    Instruction::ax(OpCode::HandlePop, 0),      // pop handler
+                    Instruction::abc(OpCode::Return, 0, 1, 0),  // return 42
                 ],
                 effect_handler_metas: vec![LirEffectHandlerMeta {
                     effect_name: "TestEffect".into(),
@@ -5872,7 +5961,9 @@ end
 
         let mut vm = VM::new();
         vm.load(module);
-        let result = vm.execute("main", vec![]).expect("should execute successfully");
+        let result = vm
+            .execute("main", vec![])
+            .expect("should execute successfully");
         assert_eq!(result, Value::Int(42));
     }
 
@@ -5918,10 +6009,10 @@ end
                 returns: Some("Int".into()),
                 registers: 8,
                 constants: vec![
-                    Constant::String("Console".into()),  // 0: effect name for Perform
-                    Constant::String("log".into()),       // 1: operation for Perform
-                    Constant::String("hello".into()),     // 2: arg
-                    Constant::Int(42),                    // 3: resume value
+                    Constant::String("Console".into()), // 0: effect name for Perform
+                    Constant::String("log".into()),     // 1: operation for Perform
+                    Constant::String("hello".into()),   // 2: arg
+                    Constant::Int(42),                  // 3: resume value
                 ],
                 instructions: vec![
                     // 0: HandlePush meta_idx=0, offset=5 (handler code at ip 0+5=5)
@@ -5957,7 +6048,9 @@ end
 
         let mut vm = VM::new();
         vm.load(module);
-        let result = vm.execute("main", vec![]).expect("should execute with matching handler");
+        let result = vm
+            .execute("main", vec![])
+            .expect("should execute with matching handler");
         assert_eq!(result, Value::Int(42));
     }
 
@@ -5978,8 +6071,8 @@ end
                 returns: Some("String".into()),
                 registers: 8,
                 constants: vec![
-                    Constant::String("Console".into()),      // 0: effect name
-                    Constant::String("read_line".into()),     // 1: operation (not handled!)
+                    Constant::String("Console".into()),   // 0: effect name
+                    Constant::String("read_line".into()), // 1: operation (not handled!)
                 ],
                 instructions: vec![
                     // 0: HandlePush for Console.log (meta_idx=0), offset=4
@@ -6011,7 +6104,9 @@ end
 
         let mut vm = VM::new();
         vm.load(module);
-        let err = vm.execute("main", vec![]).expect_err("should fail with unhandled effect");
+        let err = vm
+            .execute("main", vec![])
+            .expect_err("should fail with unhandled effect");
         let msg = format!("{}", err);
         assert!(
             msg.contains("unhandled effect: Console.read_line"),
@@ -6037,10 +6132,10 @@ end
                 returns: Some("Int".into()),
                 registers: 8,
                 constants: vec![
-                    Constant::String("Console".into()),       // 0
-                    Constant::String("read_line".into()),     // 1
-                    Constant::Int(99),                        // 2: wrong handler value
-                    Constant::Int(7),                         // 3: correct handler value
+                    Constant::String("Console".into()),   // 0
+                    Constant::String("read_line".into()), // 1
+                    Constant::Int(99),                    // 2: wrong handler value
+                    Constant::Int(7),                     // 3: correct handler value
                 ],
                 instructions: vec![
                     // 0: HandlePush meta=0 (Console.log), offset to handler at 8
@@ -6095,7 +6190,9 @@ end
 
         let mut vm = VM::new();
         vm.load(module);
-        let result = vm.execute("main", vec![]).expect("should match read_line handler");
+        let result = vm
+            .execute("main", vec![])
+            .expect("should match read_line handler");
         // The read_line handler resumes with 7, so result should be 7
         assert_eq!(result, Value::Int(7));
     }

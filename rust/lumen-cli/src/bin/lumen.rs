@@ -1,12 +1,9 @@
 //! Lumen CLI — command-line interface for the Lumen language.
 
-use lumen_cli::{
-    colors, config, doc, fmt, lang_ref,
-    lint, module_resolver, repl, test_cmd,
-};
+use lumen_cli::{colors, config, doc, fmt, lang_ref, lint, module_resolver, repl, test_cmd};
 
-use colors::{bold, cyan, gray, green, red, status_label, yellow};
 use clap::{Parser as ClapParser, Subcommand, ValueEnum};
+use colors::{bold, cyan, gray, green, red, status_label, yellow};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -966,7 +963,7 @@ fn read_trace_events(path: &Path) -> Result<Vec<lumen_runtime::trace::events::Tr
                 .map_err(|e| format!("invalid JSON in trace at line {}: {}", idx + 1, e))
         })
         .collect()
-    }
+}
 
 fn verify_trace_chain(events: &[lumen_runtime::trace::events::TraceEvent]) -> Result<(), String> {
     lumen_runtime::trace::store::verify_event_chain(events)

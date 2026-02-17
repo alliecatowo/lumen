@@ -217,7 +217,7 @@ impl FromStr for Version {
             let pre_str = &version_str[dash_pos + 1..];
             let pre: Result<Vec<_>, _> = pre_str
                 .split('.')
-                .map(|s| PrereleaseIdentifier::parse(s))
+                .map(PrereleaseIdentifier::parse)
                 .collect();
             let pre = pre?;
             (&version_str[..dash_pos], pre)
@@ -355,7 +355,7 @@ impl Constraint {
     ///
     /// * `version` - The version to check
     /// * `include_prerelease` - If true, pre-release versions are considered for matching
-    ///                         even when the constraint doesn't specify a pre-release
+    ///   even when the constraint doesn't specify a pre-release
     ///
     /// # Semver Prerelease Rules
     ///

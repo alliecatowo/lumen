@@ -1,8 +1,8 @@
 //! Memory, machine, and pipeline process runtime methods for the VM.
 
 use super::*;
-use std::collections::BTreeMap;
 use lumen_compiler::compile_raw;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct MemoryRuntime {
@@ -105,8 +105,9 @@ impl VM {
                         .unwrap_or_default()
                         .as_nanos();
                     let cell_name = format!("__eval_{}", now);
-                    let wrapped_src = format!("cell {}(input) -> Any\n  {}\nend", cell_name, source);
-                    
+                    let wrapped_src =
+                        format!("cell {}(input) -> Any\n  {}\nend", cell_name, source);
+
                     match compile_raw(&wrapped_src) {
                         Ok(new_module) => {
                             if let Some(current_mod) = self.module.as_mut() {
@@ -114,33 +115,42 @@ impl VM {
                                 let input_val = self.registers[base + a + 2].clone();
                                 Some(self.call_cell_sync(&cell_name, vec![input_val]))
                             } else {
-                                Some(Err(VmError::Runtime("VM has no module loaded for eval".into())))
+                                Some(Err(VmError::Runtime(
+                                    "VM has no module loaded for eval".into(),
+                                )))
                             }
                         }
-                        Err(e) => Some(Err(VmError::Runtime(format!("eval compilation failed: {}", e)))),
+                        Err(e) => Some(Err(VmError::Runtime(format!(
+                            "eval compilation failed: {}",
+                            e
+                        )))),
                     }
                 } else {
                     // Argument-based eval: run specific cell by name
                     let cell_name_val = self.registers[base + a + 2].clone();
                     let cell_name = cell_name_val.as_string();
                     if cell_name.is_empty() {
-                        return Some(Err(VmError::Runtime("eval requires a cell name argument or 'source' config".to_string())));
+                        return Some(Err(VmError::Runtime(
+                            "eval requires a cell name argument or 'source' config".to_string(),
+                        )));
                     }
-                    
+
                     // Collect remaining arguments
                     let start_arg = base + a + 3;
                     let end_arg = base + a + 1 + nargs;
                     let call_args: Vec<Value> = (start_arg..end_arg)
                         .map(|i| self.registers[i].clone())
                         .collect();
-                    
+
                     Some(self.call_cell_sync(&cell_name, call_args))
                 }
             }
             "guardrail" if method == "run" => {
                 let value = self.registers[base + a + 2].clone();
                 let config = self.process_configs.get(owner);
-                if let Some(schema_name) = config.and_then(|c| c.get("schema")).map(|v| v.as_string()) {
+                if let Some(schema_name) =
+                    config.and_then(|c| c.get("schema")).map(|v| v.as_string())
+                {
                     // Perform schema validation
                     if self.validate_schema(&value, &schema_name) {
                         Some(Ok(value))
@@ -158,7 +168,9 @@ impl VM {
             "pattern" if method == "run" => {
                 let value = self.registers[base + a + 2].as_string();
                 let config = self.process_configs.get(owner);
-                if let Some(pattern_def) = config.and_then(|c| c.get("pattern")).map(|v| v.as_string()) {
+                if let Some(pattern_def) =
+                    config.and_then(|c| c.get("pattern")).map(|v| v.as_string())
+                {
                     // Extract captures if pattern matches
                     if let Some(captures) = self.extract_pattern_captures(&pattern_def, &value) {
                         Some(Ok(Value::new_map(captures)))
@@ -176,7 +188,11 @@ impl VM {
     /// Execute a named cell synchronously with the given arguments, saving and
     /// restoring the current frame/register state so this can be called from
     /// within a process builtin handler.
-    pub(crate) fn call_cell_sync(&mut self, cell_name: &str, args: Vec<Value>) -> Result<Value, VmError> {
+    pub(crate) fn call_cell_sync(
+        &mut self,
+        cell_name: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, VmError> {
         let module = self.module.as_ref().ok_or(VmError::NoModule)?;
         let cell_idx = module
             .cells
@@ -193,8 +209,7 @@ impl VM {
         let saved_registers = std::mem::take(&mut self.registers);
 
         // Set up a fresh execution context for the target cell
-        self.registers
-            .resize(num_regs.max(256), Value::Null);
+        self.registers.resize(num_regs.max(256), Value::Null);
         for (i, arg) in args.into_iter().enumerate() {
             if i < params.len() {
                 let dst = params[i].register as usize;
@@ -223,7 +238,11 @@ impl VM {
     /// Execute a pipeline's `run` method by chaining stage calls.
     /// Each stage cell is called with the output of the previous stage,
     /// starting from the provided input argument.
-    pub(crate) fn call_pipeline_run(&mut self, owner: &str, args: &[Value]) -> Result<Value, VmError> {
+    pub(crate) fn call_pipeline_run(
+        &mut self,
+        owner: &str,
+        args: &[Value],
+    ) -> Result<Value, VmError> {
         let input = args.get(1).cloned().unwrap_or(Value::Null);
         let stages = self.pipeline_stages.get(owner).cloned().unwrap_or_default();
         if stages.is_empty() {
@@ -305,12 +324,14 @@ impl VM {
                     let key_str = key.as_string_resolved(&self.strings);
 
                     store.kv.insert(key_str, value.clone());
-
                 }
                 Ok(Value::Null)
             }
             "get" => {
-                let key = args.get(1).map(|v| v.as_string_resolved(&self.strings)).unwrap_or_default();
+                let key = args
+                    .get(1)
+                    .map(|v| v.as_string_resolved(&self.strings))
+                    .unwrap_or_default();
                 Ok(store.kv.get(&key).cloned().unwrap_or(Value::Null))
             }
             "query" => {

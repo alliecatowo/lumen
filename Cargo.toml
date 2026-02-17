@@ -37,3 +37,6 @@ clap = { version = "4", features = ["derive"] }
 toml = "0.8"
 num-bigint = "0.4"
 num-traits = "0.2"
+
+[workspace.lints.clippy]
+all = "warn"

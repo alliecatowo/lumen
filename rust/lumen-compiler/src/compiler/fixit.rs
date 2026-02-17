@@ -150,6 +150,7 @@ pub fn suggest_fixit(error: &CompileError, source: &str) -> Vec<FixitHint> {
             .iter()
             .flat_map(|e| suggest_fixit(e, source))
             .collect(),
+        CompileError::Typestate(_) | CompileError::Session(_) => vec![],
     }
 }
 

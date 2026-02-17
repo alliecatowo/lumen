@@ -129,6 +129,8 @@ pub fn error_code(error: &CompileError) -> &'static str {
         CompileError::Ownership(errors) => errors.first().map_or("E0400", ownership_error_code),
         CompileError::Lower(_) => "E0500",
         CompileError::Multiple(errors) => errors.first().map_or("E0500", error_code),
+        CompileError::Typestate(_) => "E0600",
+        CompileError::Session(_) => "E0700",
     }
 }
 

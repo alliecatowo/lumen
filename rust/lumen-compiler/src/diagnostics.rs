@@ -436,6 +436,34 @@ pub fn format_compile_error(error: &CompileError, source: &str, filename: &str) 
             .iter()
             .flat_map(|e| format_compile_error(e, source, filename))
             .collect(),
+        CompileError::Typestate(errors) => errors
+            .iter()
+            .map(|e| Diagnostic {
+                severity: Severity::Error,
+                code: Some("E0600".to_string()),
+                message: format!("{:?}", e),
+                file: Some(filename.to_string()),
+                line: None,
+                col: None,
+                source_line: None,
+                underline: None,
+                suggestions: vec![],
+            })
+            .collect(),
+        CompileError::Session(errors) => errors
+            .iter()
+            .map(|e| Diagnostic {
+                severity: Severity::Error,
+                code: Some("E0700".to_string()),
+                message: format!("{:?}", e),
+                file: Some(filename.to_string()),
+                line: None,
+                col: None,
+                source_line: None,
+                underline: None,
+                suggestions: vec![],
+            })
+            .collect(),
     };
 
     // Append fix-it hint lines to the *first* diagnostic (if any).

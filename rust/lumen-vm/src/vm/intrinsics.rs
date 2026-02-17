@@ -1412,6 +1412,64 @@ impl VM {
                     ))),
                 }
             }
+            // ── T216: Format specifier builtin ──
+            "__format_spec" => {
+                if nargs != 2 {
+                    return Err(VmError::Runtime(
+                        "__format_spec requires 2 arguments".into(),
+                    ));
+                }
+                let value = self.registers[base + a + 1].clone();
+                let fmt_str = match &self.registers[base + a + 2] {
+                    Value::String(StringRef::Owned(s)) => s.clone(),
+                    Value::String(StringRef::Interned(id)) => {
+                        self.strings.resolve(*id).unwrap_or("").to_string()
+                    }
+                    _ => {
+                        return Err(VmError::Runtime(
+                            "__format_spec: format spec must be a string".into(),
+                        ))
+                    }
+                };
+                let result = format_value_with_spec(&value, &fmt_str)?;
+                Ok(Value::String(StringRef::Owned(result)))
+            }
+
+            // ── T123: Wrapping arithmetic builtins ──
+            "wrapping_add" => {
+                if nargs != 2 {
+                    return Err(VmError::Runtime("wrapping_add requires 2 arguments".into()));
+                }
+                match (&self.registers[base + a + 1], &self.registers[base + a + 2]) {
+                    (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.wrapping_add(*b))),
+                    _ => Err(VmError::Runtime(
+                        "wrapping_add requires two integers".into(),
+                    )),
+                }
+            }
+            "wrapping_sub" => {
+                if nargs != 2 {
+                    return Err(VmError::Runtime("wrapping_sub requires 2 arguments".into()));
+                }
+                match (&self.registers[base + a + 1], &self.registers[base + a + 2]) {
+                    (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.wrapping_sub(*b))),
+                    _ => Err(VmError::Runtime(
+                        "wrapping_sub requires two integers".into(),
+                    )),
+                }
+            }
+            "wrapping_mul" => {
+                if nargs != 2 {
+                    return Err(VmError::Runtime("wrapping_mul requires 2 arguments".into()));
+                }
+                match (&self.registers[base + a + 1], &self.registers[base + a + 2]) {
+                    (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.wrapping_mul(*b))),
+                    _ => Err(VmError::Runtime(
+                        "wrapping_mul requires two integers".into(),
+                    )),
+                }
+            }
+
             _ => Err(VmError::UndefinedCell(name.to_string())),
         }
     }
@@ -2485,4 +2543,176 @@ impl VM {
             ))),
         }
     }
+}
+
+/// Format a Value according to a format specifier string.
+///
+/// Supported specifiers:
+/// - `.Nf`  — float with N decimal places (e.g., ".2f")
+/// - `#x`   — hexadecimal (lowercase)
+/// - `#o`   — octal
+/// - `#b`   — binary
+/// - `>N`   — right-align in width N
+/// - `<N`   — left-align in width N
+/// - `^N`   — center-align in width N
+/// - `0N`   — zero-pad to width N
+/// - `+`    — always show sign for numbers
+fn format_value_with_spec(value: &Value, spec: &str) -> Result<String, VmError> {
+    if spec.is_empty() {
+        return Ok(value.display_pretty());
+    }
+
+    // Parse the spec into components
+    let mut sign_plus = false;
+    let mut zero_pad: Option<usize> = None;
+    let mut align: Option<(char, usize)> = None; // (alignment_char, width)
+    let mut precision: Option<usize> = None;
+    let mut radix: Option<char> = None; // 'x', 'o', 'b'
+
+    let chars: Vec<char> = spec.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        match chars[i] {
+            '+' => {
+                sign_plus = true;
+                i += 1;
+            }
+            '#' if i + 1 < chars.len() => {
+                radix = Some(chars[i + 1]);
+                i += 2;
+            }
+            '.' => {
+                // Parse .Nf
+                i += 1;
+                let start = i;
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+                if i > start {
+                    if let Ok(n) = spec[start..i].parse::<usize>() {
+                        precision = Some(n);
+                    }
+                }
+                // Skip trailing 'f' if present
+                if i < chars.len() && chars[i] == 'f' {
+                    i += 1;
+                }
+            }
+            '>' | '<' | '^' => {
+                let align_char = chars[i];
+                i += 1;
+                let start = i;
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+                if i > start {
+                    if let Ok(width) = spec[start..i].parse::<usize>() {
+                        align = Some((align_char, width));
+                    }
+                }
+            }
+            '0' if i + 1 < chars.len() && chars[i + 1].is_ascii_digit() => {
+                i += 1; // skip the '0'
+                let start = i;
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+                if i > start {
+                    if let Ok(width) = spec[start..i].parse::<usize>() {
+                        zero_pad = Some(width);
+                    }
+                }
+            }
+            _ => {
+                i += 1; // skip unrecognized
+            }
+        }
+    }
+
+    // Format the base string
+    let mut formatted = if let Some(r) = radix {
+        match (r, value) {
+            ('x', Value::Int(n)) => format!("{:#x}", n),
+            ('o', Value::Int(n)) => format!("{:#o}", n),
+            ('b', Value::Int(n)) => format!("{:#b}", n),
+            ('x', _) => {
+                return Err(VmError::Runtime(
+                    "__format_spec: #x requires an integer value".into(),
+                ))
+            }
+            ('o', _) => {
+                return Err(VmError::Runtime(
+                    "__format_spec: #o requires an integer value".into(),
+                ))
+            }
+            ('b', _) => {
+                return Err(VmError::Runtime(
+                    "__format_spec: #b requires an integer value".into(),
+                ))
+            }
+            _ => {
+                return Err(VmError::Runtime(format!(
+                    "__format_spec: unknown radix specifier '#{}' ",
+                    r
+                )))
+            }
+        }
+    } else if let Some(prec) = precision {
+        match value {
+            Value::Float(f) => format!("{:.prec$}", f, prec = prec),
+            Value::Int(n) => format!("{:.prec$}", *n as f64, prec = prec),
+            _ => {
+                return Err(VmError::Runtime(
+                    "__format_spec: precision format requires a numeric value".into(),
+                ))
+            }
+        }
+    } else {
+        value.display_pretty()
+    };
+
+    // Apply sign
+    if sign_plus {
+        match value {
+            Value::Int(n) if *n >= 0 && radix.is_none() => {
+                formatted = format!("+{}", formatted);
+            }
+            Value::Float(f) if *f >= 0.0 && radix.is_none() => {
+                formatted = format!("+{}", formatted);
+            }
+            _ => {} // negative numbers already have sign, or non-numeric
+        }
+    }
+
+    // Apply zero-padding
+    if let Some(width) = zero_pad {
+        if formatted.len() < width {
+            let is_negative = formatted.starts_with('-');
+            let is_positive_sign = formatted.starts_with('+');
+            if is_negative || is_positive_sign {
+                let sign = &formatted[..1];
+                let rest = &formatted[1..];
+                let pad_len = width.saturating_sub(formatted.len());
+                formatted = format!("{}{}{}", sign, "0".repeat(pad_len), rest);
+            } else {
+                let pad_len = width.saturating_sub(formatted.len());
+                formatted = format!("{}{}", "0".repeat(pad_len), formatted);
+            }
+        }
+    }
+
+    // Apply alignment
+    if let Some((align_char, width)) = align {
+        if formatted.len() < width {
+            match align_char {
+                '>' => formatted = format!("{:>width$}", formatted, width = width),
+                '<' => formatted = format!("{:<width$}", formatted, width = width),
+                '^' => formatted = format!("{:^width$}", formatted, width = width),
+                _ => {}
+            }
+        }
+    }
+
+    Ok(formatted)
 }

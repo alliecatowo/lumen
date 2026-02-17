@@ -32,6 +32,24 @@ pub fn compile_error_to_diagnostics(error: &CompileError, _source: &str) -> Vec<
             message: msg.clone(),
             ..Default::default()
         }],
+        CompileError::Typestate(errors) => errors
+            .iter()
+            .map(|e| Diagnostic {
+                range: lsp_types::Range::default(),
+                severity: Some(lsp_types::DiagnosticSeverity::WARNING),
+                message: format!("Typestate: {:?}", e),
+                ..Default::default()
+            })
+            .collect(),
+        CompileError::Session(errors) => errors
+            .iter()
+            .map(|e| Diagnostic {
+                range: lsp_types::Range::default(),
+                severity: Some(lsp_types::DiagnosticSeverity::WARNING),
+                message: format!("Session type: {:?}", e),
+                ..Default::default()
+            })
+            .collect(),
     }
 }
 

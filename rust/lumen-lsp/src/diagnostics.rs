@@ -3,6 +3,7 @@
 use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
 use lumen_compiler::compiler::constraints::ConstraintError;
 use lumen_compiler::compiler::lexer::LexError;
+use lumen_compiler::compiler::ownership::OwnershipError;
 use lumen_compiler::compiler::parser::ParseError;
 use lumen_compiler::compiler::resolve::ResolveError;
 use lumen_compiler::compiler::typecheck::TypeError;
@@ -17,6 +18,9 @@ pub fn compile_error_to_diagnostics(error: &CompileError, _source: &str) -> Vec<
         CompileError::Type(errors) => errors.iter().map(type_error_to_diagnostic).collect(),
         CompileError::Constraint(errors) => {
             errors.iter().map(constraint_error_to_diagnostic).collect()
+        }
+        CompileError::Ownership(errors) => {
+            errors.iter().map(ownership_error_to_diagnostic).collect()
         }
     }
 }
@@ -728,6 +732,135 @@ fn constraint_error_to_diagnostic(error: &ConstraintError) -> Diagnostic {
                 code: Some(lsp_types::NumberOrString::String("E050".to_string())),
                 source: Some("lumen".to_string()),
                 message: format!("invalid constraint on field '{}': {}", field, message),
+                related_information: None,
+                tags: None,
+                code_description: None,
+                data: None,
+            }
+        }
+    }
+}
+
+fn ownership_error_to_diagnostic(error: &OwnershipError) -> Diagnostic {
+    match error {
+        OwnershipError::UseAfterMove {
+            variable,
+            moved_at,
+            used_at,
+        } => {
+            let line_zero = used_at.line.saturating_sub(1) as u32;
+            let col_zero = used_at.col.saturating_sub(1) as u32;
+
+            Diagnostic {
+                range: Range {
+                    start: Position {
+                        line: line_zero,
+                        character: col_zero,
+                    },
+                    end: Position {
+                        line: line_zero,
+                        character: col_zero + variable.len() as u32,
+                    },
+                },
+                severity: Some(DiagnosticSeverity::ERROR),
+                code: Some(lsp_types::NumberOrString::String("E060".to_string())),
+                source: Some("lumen".to_string()),
+                message: format!(
+                    "use of moved variable '{}' (moved at line {})",
+                    variable, moved_at.line
+                ),
+                related_information: None,
+                tags: None,
+                code_description: None,
+                data: None,
+            }
+        }
+        OwnershipError::NotConsumed {
+            variable,
+            declared_at,
+        } => {
+            let line_zero = declared_at.line.saturating_sub(1) as u32;
+            let col_zero = declared_at.col.saturating_sub(1) as u32;
+
+            Diagnostic {
+                range: Range {
+                    start: Position {
+                        line: line_zero,
+                        character: col_zero,
+                    },
+                    end: Position {
+                        line: line_zero,
+                        character: col_zero + variable.len() as u32,
+                    },
+                },
+                severity: Some(DiagnosticSeverity::ERROR),
+                code: Some(lsp_types::NumberOrString::String("E061".to_string())),
+                source: Some("lumen".to_string()),
+                message: format!("owned variable '{}' was never consumed", variable),
+                related_information: None,
+                tags: None,
+                code_description: None,
+                data: None,
+            }
+        }
+        OwnershipError::AlreadyBorrowed {
+            variable,
+            first_borrow,
+            second_borrow,
+        } => {
+            let line_zero = second_borrow.line.saturating_sub(1) as u32;
+            let col_zero = second_borrow.col.saturating_sub(1) as u32;
+
+            Diagnostic {
+                range: Range {
+                    start: Position {
+                        line: line_zero,
+                        character: col_zero,
+                    },
+                    end: Position {
+                        line: line_zero,
+                        character: col_zero + variable.len() as u32,
+                    },
+                },
+                severity: Some(DiagnosticSeverity::ERROR),
+                code: Some(lsp_types::NumberOrString::String("E062".to_string())),
+                source: Some("lumen".to_string()),
+                message: format!(
+                    "variable '{}' already borrowed at line {}",
+                    variable, first_borrow.line
+                ),
+                related_information: None,
+                tags: None,
+                code_description: None,
+                data: None,
+            }
+        }
+        OwnershipError::MoveWhileBorrowed {
+            variable,
+            borrow_at,
+            move_at,
+        } => {
+            let line_zero = move_at.line.saturating_sub(1) as u32;
+            let col_zero = move_at.col.saturating_sub(1) as u32;
+
+            Diagnostic {
+                range: Range {
+                    start: Position {
+                        line: line_zero,
+                        character: col_zero,
+                    },
+                    end: Position {
+                        line: line_zero,
+                        character: col_zero + variable.len() as u32,
+                    },
+                },
+                severity: Some(DiagnosticSeverity::ERROR),
+                code: Some(lsp_types::NumberOrString::String("E063".to_string())),
+                source: Some("lumen".to_string()),
+                message: format!(
+                    "cannot move '{}' while it is borrowed (borrowed at line {})",
+                    variable, borrow_at.line
+                ),
                 related_information: None,
                 tags: None,
                 code_description: None,

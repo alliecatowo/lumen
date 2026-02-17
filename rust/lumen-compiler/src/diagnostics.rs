@@ -2,6 +2,7 @@
 
 use crate::compiler::constraints::ConstraintError;
 use crate::compiler::lexer::LexError;
+use crate::compiler::ownership::OwnershipError;
 use crate::compiler::parser::ParseError;
 use crate::compiler::resolve::ResolveError;
 use crate::compiler::typecheck::TypeError;
@@ -51,6 +52,7 @@ impl Diagnostic {
                 Some("E001") | Some("E002") | Some("E003") | Some("E004") | Some("E005")
                 | Some("E006") => "LEX ERROR",
                 Some("E050") => "CONSTRAINT ERROR",
+                Some("E060") | Some("E061") | Some("E062") | Some("E063") => "OWNERSHIP ERROR",
                 _ => "ERROR",
             },
             Severity::Warning => "WARNING",
@@ -398,6 +400,10 @@ pub fn format_compile_error(error: &CompileError, source: &str, filename: &str) 
         CompileError::Constraint(errors) => errors
             .iter()
             .map(|e| format_constraint_error(e, source, filename))
+            .collect(),
+        CompileError::Ownership(errors) => errors
+            .iter()
+            .map(|e| format_ownership_error(e, source, filename))
             .collect(),
     }
 }
@@ -1029,6 +1035,122 @@ fn format_constraint_error(error: &ConstraintError, source: &str, filename: &str
                 source_line,
                 underline,
                 suggestions: vec![],
+            }
+        }
+    }
+}
+
+fn format_ownership_error(error: &OwnershipError, source: &str, filename: &str) -> Diagnostic {
+    match error {
+        OwnershipError::UseAfterMove {
+            variable,
+            moved_at,
+            used_at,
+        } => {
+            let source_line = get_source_line(source, used_at.line);
+            let underline = source_line
+                .as_ref()
+                .map(|_| make_underline(used_at.col.max(1), variable.len().max(1)));
+
+            Diagnostic {
+                severity: Severity::Error,
+                code: Some("E060".to_string()),
+                message: format!(
+                    "use of moved variable '{}' (moved at line {})",
+                    variable, moved_at.line
+                ),
+                file: Some(filename.to_string()),
+                line: Some(used_at.line),
+                col: Some(used_at.col),
+                source_line,
+                underline,
+                suggestions: vec![format!(
+                    "'{}' was moved at line {}. Consider cloning it or restructuring to avoid reuse after move.",
+                    variable, moved_at.line
+                )],
+            }
+        }
+        OwnershipError::NotConsumed {
+            variable,
+            declared_at,
+        } => {
+            let source_line = get_source_line(source, declared_at.line);
+            let underline = source_line
+                .as_ref()
+                .map(|_| make_underline(declared_at.col.max(1), variable.len().max(1)));
+
+            Diagnostic {
+                severity: Severity::Error,
+                code: Some("E061".to_string()),
+                message: format!(
+                    "owned variable '{}' was never consumed",
+                    variable
+                ),
+                file: Some(filename.to_string()),
+                line: Some(declared_at.line),
+                col: Some(declared_at.col),
+                source_line,
+                underline,
+                suggestions: vec![format!(
+                    "owned variable '{}' must be used or explicitly dropped before going out of scope",
+                    variable
+                )],
+            }
+        }
+        OwnershipError::AlreadyBorrowed {
+            variable,
+            first_borrow,
+            second_borrow,
+        } => {
+            let source_line = get_source_line(source, second_borrow.line);
+            let underline = source_line
+                .as_ref()
+                .map(|_| make_underline(second_borrow.col.max(1), variable.len().max(1)));
+
+            Diagnostic {
+                severity: Severity::Error,
+                code: Some("E062".to_string()),
+                message: format!(
+                    "variable '{}' already borrowed at line {}",
+                    variable, first_borrow.line
+                ),
+                file: Some(filename.to_string()),
+                line: Some(second_borrow.line),
+                col: Some(second_borrow.col),
+                source_line,
+                underline,
+                suggestions: vec![format!(
+                    "cannot create a second borrow of '{}' while the first borrow (line {}) is active",
+                    variable, first_borrow.line
+                )],
+            }
+        }
+        OwnershipError::MoveWhileBorrowed {
+            variable,
+            borrow_at,
+            move_at,
+        } => {
+            let source_line = get_source_line(source, move_at.line);
+            let underline = source_line
+                .as_ref()
+                .map(|_| make_underline(move_at.col.max(1), variable.len().max(1)));
+
+            Diagnostic {
+                severity: Severity::Error,
+                code: Some("E063".to_string()),
+                message: format!(
+                    "cannot move '{}' while it is borrowed (borrowed at line {})",
+                    variable, borrow_at.line
+                ),
+                file: Some(filename.to_string()),
+                line: Some(move_at.line),
+                col: Some(move_at.col),
+                source_line,
+                underline,
+                suggestions: vec![format!(
+                    "the borrow of '{}' at line {} must end before the value can be moved",
+                    variable, borrow_at.line
+                )],
             }
         }
     }

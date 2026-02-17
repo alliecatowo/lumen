@@ -793,7 +793,12 @@ const BUILTIN_FUNCTIONS: &[(&str, &str, &str, &str)] = &[
         "Bool",
         "Collection",
     ),
-    ("assert", "Assert a condition is true; halt with message if not", "Null", "IO"),
+    (
+        "assert",
+        "Assert a condition is true; halt with message if not",
+        "Null",
+        "IO",
+    ),
     (
         "assert_eq",
         "Assert two values are equal; halt with message if not",

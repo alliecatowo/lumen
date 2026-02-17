@@ -1,0 +1,30 @@
+# Benchmark: Simple 2-body gravitational simulation (1,000,000 steps)
+# Tests: floating-point arithmetic, sqrt builtin, tight numerical loop
+# Expected result: 1000000 (step count)
+
+cell simulate(px: Float, py: Float, vx: Float, vy: Float, dt: Float, n: Int) -> Float
+  let mut lpx = px
+  let mut lpy = py
+  let mut lvx = vx
+  let mut lvy = vy
+  let mut i = 0
+  while i < n
+    # Gravity: F = -G*m/r^2, simplified (G*m = 1)
+    let r2 = lpx * lpx + lpy * lpy
+    let r = sqrt(r2)
+    let f = 0.0 - 1.0 / r2
+    let ax = f * lpx / r
+    let ay = f * lpy / r
+    lvx = lvx + ax * dt
+    lvy = lvy + ay * dt
+    lpx = lpx + lvx * dt
+    lpy = lpy + lvy * dt
+    i = i + 1
+  end
+  # Return final distance
+  sqrt(lpx * lpx + lpy * lpy)
+end
+
+cell main() -> Float
+  simulate(1.0, 0.0, 0.0, 1.0, 0.001, 1000000)
+end

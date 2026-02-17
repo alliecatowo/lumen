@@ -1726,6 +1726,7 @@ name = "lumen-vm"
 version = "0.5.0"
 dependencies = [
  "chrono",
+ "lumen-codegen",
  "lumen-compiler",
  "lumen-runtime",
  "num-bigint",

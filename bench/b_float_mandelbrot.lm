@@ -1,0 +1,42 @@
+# Benchmark: Mandelbrot set on a 200x200 grid, max 100 iterations
+# Tests: floating-point arithmetic, nested loops, function calls, branching
+# Expected result: varies by grid mapping, roughly ~10000-12000 points in set
+
+cell mandelbrot_point(cx: Float, cy: Float) -> Int
+  let mut zx = 0.0
+  let mut zy = 0.0
+  let mut i = 0
+  while i < 100
+    let zx2 = zx * zx
+    let zy2 = zy * zy
+    if zx2 + zy2 > 4.0
+      return i
+    end
+    let new_zx = zx2 - zy2 + cx
+    zy = 2.0 * zx * zy + cy
+    zx = new_zx
+    i = i + 1
+  end
+  i
+end
+
+cell main() -> Int
+  let size = 200
+  let fsize = to_float(size)
+  let mut count = 0
+  let mut y = 0
+  while y < size
+    let mut x = 0
+    while x < size
+      let cx = (to_float(x) / fsize) * 3.5 - 2.5
+      let cy = (to_float(y) / fsize) * 2.0 - 1.0
+      let iters = mandelbrot_point(cx, cy)
+      if iters == 100
+        count = count + 1
+      end
+      x = x + 1
+    end
+    y = y + 1
+  end
+  count
+end

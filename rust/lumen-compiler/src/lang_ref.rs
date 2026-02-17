@@ -416,6 +416,25 @@ fn intrinsic_description(id: &IntrinsicId) -> &str {
         UdpSend => "Send a datagram to an address via a UDP socket",
         UdpRecv => "Receive a datagram from a UDP socket and return data and sender address",
         TcpClose => "Close a TCP connection or listener by handle",
+        // Wave 4A: stdlib completeness (T361-T370)
+        MapSortedKeys => "Return map keys in sorted order as a list",
+        ParseInt => "Parse a string to Int, returning result[Int, String]",
+        ParseFloat => "Parse a string to Float, returning result[Float, String]",
+        Log2 => "Base-2 logarithm of a number",
+        Log10 => "Base-10 logarithm of a number",
+        IsNan => "True if the value is NaN",
+        IsInfinite => "True if the value is positive or negative infinity",
+        MathPi => "Return the mathematical constant pi (3.14159...)",
+        MathE => "Return the mathematical constant e (2.71828...)",
+        SortAsc => "Sort a list in ascending natural order",
+        SortDesc => "Sort a list in descending natural order",
+        SortBy => "Sort a list using a comparator function (a, b) -> Int",
+        BinarySearch => "Binary search a sorted list; returns ok(index) or err(insertion_point)",
+        Hrtime => "High-resolution monotonic timer in nanoseconds",
+        FormatTime => "Format an epoch timestamp with a format string (basic ISO 8601)",
+        Args => "Return command-line arguments as a list of strings",
+        SetEnv => "Set an environment variable",
+        EnvVars => "Return all environment variables as a map",
     }
 }
 

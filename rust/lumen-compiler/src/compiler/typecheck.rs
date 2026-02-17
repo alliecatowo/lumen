@@ -95,6 +95,24 @@ fn is_builtin_function(name: &str) -> bool {
             | "udp_send"
             | "udp_recv"
             | "tcp_close"
+            | "map_sorted_keys"
+            | "parse_int"
+            | "parse_float"
+            | "log2"
+            | "log10"
+            | "is_nan"
+            | "is_infinite"
+            | "math_pi"
+            | "math_e"
+            | "sort_asc"
+            | "sort_desc"
+            | "sort_by"
+            | "binary_search"
+            | "hrtime"
+            | "format_time"
+            | "args"
+            | "set_env"
+            | "env_vars"
     )
 }
 
@@ -220,6 +238,21 @@ fn builtin_return_type(name: &str, arg_types: &[Type]) -> Option<Type> {
         "tcp_recv" => Some(Type::Any),
         "udp_recv" => Some(Type::Any),
         "tcp_close" => Some(Type::Null),
+        // Wave 4A: stdlib completeness (T361-T370)
+        "map_sorted_keys" => Some(Type::List(Box::new(Type::Any))),
+        "parse_int" => Some(Type::Result(Box::new(Type::Int), Box::new(Type::String))),
+        "parse_float" => Some(Type::Result(Box::new(Type::Float), Box::new(Type::String))),
+        "log2" | "log10" => Some(Type::Float),
+        "is_nan" | "is_infinite" => Some(Type::Bool),
+        "math_pi" | "math_e" => Some(Type::Float),
+        "sort_asc" | "sort_desc" => arg_types.first().cloned().or(Some(Type::Any)),
+        "sort_by" => arg_types.first().cloned().or(Some(Type::Any)),
+        "binary_search" => Some(Type::Result(Box::new(Type::Int), Box::new(Type::Int))),
+        "hrtime" => Some(Type::Int),
+        "format_time" => Some(Type::String),
+        "args" => Some(Type::List(Box::new(Type::String))),
+        "set_env" => Some(Type::Null),
+        "env_vars" => Some(Type::Map(Box::new(Type::String), Box::new(Type::String))),
         _ => None,
     }
 }

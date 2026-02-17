@@ -23,11 +23,11 @@ Use this list to verify whether a given deficiency is still present. Mark items 
 | D11 | **Ecosystem: No WASM component model** | WASM target exists; WIT / component model not adopted. | OPEN |
 | D12 | **AI: No first-class tensors** | No primitive tensor type or differentiable runtime; ML relies on external calls and serialization. | OPEN |
 | D13 | **Durability: No checkpoint/resume** | No serialization of stack/heap or replay; long-running workflows cannot survive process death. | OPEN |
-| D14 | **Tooling: No DAP** | No Debug Adapter Protocol; no breakpoints, stepping, or value inspection. | OPEN |
+| D14 | **Tooling: No DAP** | No Debug Adapter Protocol; no breakpoints, stepping, or value inspection. | RESOLVED |
 | D15 | **Tooling: No sampling profiler** | No flamegraph or allocation profiling. | OPEN |
 | D16 | **Metaprogramming: No hygienic macros** | No user-extensible syntax or DSLs; MacroDecl in AST has no documented semantics. | OPEN |
-| D17 | **Arithmetic: Overflow semantics** | Checked vs wrapping arithmetic not consistently defined. | OPEN |
-| D18 | **Register limit** | 255-register limit can cause compilation failure in large functions. | OPEN |
+| D17 | **Arithmetic: Overflow semantics** | Checked vs wrapping arithmetic not consistently defined. | RESOLVED |
+| D18 | **Register limit** | 255-register limit can cause compilation failure in large functions. | RESOLVED |
 
 ---
 
@@ -159,10 +159,10 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T070 | checkpoint intrinsic — **DONE** | VM intrinsic that triggers snapshot and writes to configured storage (e.g. file or log). |
 | T071 | Durable log interface — **DONE** | In `rust/lumen-runtime`, define an abstraction for append-only log used for checkpointing. |
 | T072 | restore / rehydrate — **DONE** | Load snapshot from storage and restore VM state; resume execution from saved IP. |
-| T073 | Deterministic replay: record nondeterminism | Under `@deterministic`, record all nondeterministic inputs (time, random, network) to a trace. |
-| T074 | Time-travel debugger CLI | Tool to replay a trace (e.g. `lumen replay &lt;trace_file&gt;`) and step forward/backward. |
-| T075 | Workflow versioning / migration | Design how to resume an old snapshot when the code has changed (schema evolution or migration). |
-| T076 | Integration test: kill and resume | Run a program, kill process, restart from last checkpoint, assert it resumes correctly. |
+| T073 | Deterministic replay: record nondeterminism — **DONE** | Under `@deterministic`, record all nondeterministic inputs (time, random, network) to a trace. |
+| T074 | Time-travel debugger CLI — **DONE** | Tool to replay a trace (e.g. `lumen replay &lt;trace_file&gt;`) and step forward/backward. |
+| T075 | Workflow versioning / migration — **DONE** | Design how to resume an old snapshot when the code has changed (schema evolution or migration). |
+| T076 | Integration test: kill and resume — **DONE** | Run a program, kill process, restart from last checkpoint, assert it resumes correctly. |
 
 ---
 
@@ -180,8 +180,8 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T084 | backward() intrinsic — **DONE** | Trigger gradient computation from tape. |
 | T085 | Dimension checking for tensor ops — **DONE** | At typecheck or runtime, ensure shapes are compatible (e.g. matrix multiply). |
 | T086 | Optimizer in std (SGD, Adam) — **DONE** | Standard library or example implementing basic optimizers using the AD primitives. |
-| T087 | Prompt-as-code: type to grammar | Compile a Lumen type (e.g. record) to a grammar (e.g. GBNF) for constrained LLM output. |
-| T088 | Static prompt checking | Ensure variables referenced in prompt templates are in scope and typed (e.g. string). |
+| T087 | Prompt-as-code: type to grammar — **DONE** | Compile a Lumen type (e.g. record) to a grammar (e.g. GBNF) for constrained LLM output. |
+| T088 | Static prompt checking — **DONE** | Ensure variables referenced in prompt templates are in scope and typed (e.g. string). |
 | T089 | Test: gradient of f(x)=x^2 — **DONE** | Verify that AD yields gradient 2x at a point. |
 
 ---
@@ -197,17 +197,17 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T094 | TUF or similar for repository metadata | The Update Framework (or equivalent) for secure package metadata. |
 | T095 | extern "C" and ABI — **DONE** | Support C calling convention and correct ABI in FFI. |
 | T096 | Header-to-Lumen bindgen | Tool that parses C (or Rust) headers and generates Lumen extern declarations. |
-| T097 | WASM target in codegen | Emit wasm32-wasi (or wasm32-unknown-unknown) from the same codegen path. |
-| T098 | WASM component model (WIT) | Adopt WIT IDL for imports/exports and component composition. |
+| T097 | WASM target in codegen — **DONE** | Emit wasm32-wasi (or wasm32-unknown-unknown) from the same codegen path. |
+| T098 | WASM component model (WIT) — **DONE** | Adopt WIT IDL for imports/exports and component composition. |
 | T099 | WASI host bindings | Implement or bind filesystem, clock, random for WASI. |
 | T100 | LSP: rename symbol — **DONE** | Rename cell/type/variable across the workspace. |
 | T101 | LSP: code actions — **DONE** | Quick fixes (e.g. add match arm, add import). |
 | T102 | LSP: inlay hints (types, params) — **DONE** | Show inferred types and parameter names inline. |
-| T103 | DAP: breakpoints and stepping | Debug Adapter Protocol server; breakpoints, step in/out/over. |
-| T104 | DAP: value inspection | Inspect variables and stack frames in debug session. |
+| T103 | DAP: breakpoints and stepping — **DONE** | Debug Adapter Protocol server; breakpoints, step in/out/over. |
+| T104 | DAP: value inspection — **DONE** | Inspect variables and stack frames in debug session. |
 | T105 | Multi-error reporting in compiler — **DONE** | Emit all recoverable errors in one run, not only the first. |
-| T106 | Fix-it hints in diagnostics | Attach suggested edits to diagnostics where possible. |
-| T107 | Error codes and documentation | Assign codes to errors and link to documentation. |
+| T106 | Fix-it hints in diagnostics — **DONE** | Attach suggested edits to diagnostics where possible. |
+| T107 | Error codes and documentation — **DONE** | Assign codes to errors and link to documentation. |
 | T108 | Clippy: deny warnings in CI | Ensure `cargo clippy -- -D warnings` passes. |
 | T109 | Miri in CI | Run tests under Miri where applicable to catch UB. |
 | T110 | Benchmark suite and regression gate | Formal benchmark suite; CI fails on performance regression beyond a threshold. |
@@ -230,8 +230,8 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T120 | Trailing lambda / DSL blocks | Allow block or lambda at end of call for DSLs (e.g. `html div { ... }`). |
 | T121 | Error propagation operator | Postfix `?` that unwraps `result[T,E]` or returns early with error. |
 | T122 | Try/else expression | `try expr else handler` for local error handling. |
-| T123 | Checked arithmetic by default | `+`, `-`, `*` check overflow; provide wrapping variants (e.g. `+%`). |
-| T124 | Register limit fix | Increase register set or use virtual registers and allocation so large functions compile. |
+| T123 | Checked arithmetic by default — **DONE** | `+`, `-`, `*` check overflow; provide wrapping variants (e.g. `+%`). |
+| T124 | Register limit fix — **DONE** | Increase register set or use virtual registers and allocation so large functions compile. |
 
 ---
 
@@ -239,10 +239,10 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
-| T125 | std::simd (or intrinsics) | Expose hardware SIMD where available for hot loops. |
+| T125 | std::simd (or intrinsics) — **DONE** | Expose hardware SIMD where available for hot loops. |
 | T126 | std::crypto | Native or binding for Ed25519, BLAKE3, etc.; avoid unnecessary bindings where feasible. |
 | T127 | std::graph | First-class graph structure (e.g. for knowledge graphs). |
-| T128 | std::tensor | N-dimensional array API built on Phase 5 primitives. |
+| T128 | std::tensor — **DONE** | N-dimensional array API built on Phase 5 primitives. |
 | T129 | std::fs async | Async file I/O if async runtime is standardized. |
 | T130 | std::net | Async TCP/UDP or equivalent. |
 | T131 | std::http client/server | HTTP using hyper or equivalent; zero-copy where possible. |
@@ -307,7 +307,7 @@ The following tasks add depth and explicit competitive parity. Problem statement
 |---|------|-----------------------------|
 | T151 | Structured concurrency (nursery/scope) — **DONE** | When a parent task is cancelled or fails, all child tasks are cancelled. Prevents orphaned agents. Ref: Swift structured concurrency; Kotlin coroutine scope. COMPETITIVE_ANALYSIS §3.4. |
 | T152 | Channel select / multiplexing — **DONE** | Block until one of several channels is ready (select or similar). Required for robust agent coordination. Ref: Go select, Erlang receive. |
-| T153 | Actor trait or process interface | Standard interface: mailbox + state + message handler. Enables uniform supervision and testing. Ref: Erlang/OTP gen_server. |
+| T153 | Actor trait or process interface — **DONE** | Standard interface: mailbox + state + message handler. Enables uniform supervision and testing. Ref: Erlang/OTP gen_server. |
 
 ### Phase 4 (durability) — additional
 

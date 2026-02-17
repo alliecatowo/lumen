@@ -74,7 +74,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T013 | Thread-local allocation buffers (TLAB) — **DONE** | If moving to a GC, provide per-thread allocation buffers to reduce contention on the global allocator. |
 | T014 | Copy optimization for small scalars — **DONE** | In the VM or lowering, avoid allocating for small scalars (Int, Bool, Float) when copying; keep them in registers or immediate form. |
 | T015 | String representation: SmolStr or interning — **DONE** (pre-existing StringRef) | In `rust/lumen-vm/src/strings.rs`, consider SmolStr or interned IDs for string comparison and to reduce allocations. |
-| T016 | Optional: 64-bit packed LIR instructions | In `rust/lumen-compiler/src/compiler/lir.rs`, evaluate 64-bit instruction encoding to reduce cache pressure; document tradeoffs vs 32-bit. |
+| T016 | Optional: 64-bit packed LIR instructions — **DONE** | In `rust/lumen-compiler/src/compiler/lir.rs`, evaluate 64-bit instruction encoding to reduce cache pressure; document tradeoffs vs 32-bit. |
 
 ---
 
@@ -112,7 +112,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T037 | Add Z3 or CVC5 bindings | Add `z3-sys` or equivalent to the compiler crate for SMT solving. |
 | T038 | Verification module skeleton — **DONE** | Create `rust/lumen-compiler/src/verification/` (or `verifier/`) with solver wrapper. |
 | T039 | Map Lumen types to SMT sorts — **DONE** | Implement mapping from Lumen Int, Bool, etc., to solver sorts (e.g. Z3_mk_int). |
-| T040 | Parse `where` clauses into AST | Ensure `where` expressions in records and function contracts are available in the AST. |
+| T040 | Parse `where` clauses into AST — **DONE** | Ensure `where` expressions in records and function contracts are available in the AST. |
 | T041 | Lower `where` to SMT assertions — **DONE** (verification/constraints.rs) | Translate boolean expressions in `where` to SMT-LIB or solver API calls. |
 | T042 | Verify function preconditions — **DONE** | For each call site, assert caller’s context implies callee’s precondition; check satisfiability. |
 | T043 | Verify function postconditions — **DONE** | After call, assume callee’s postcondition for subsequent reasoning. |
@@ -123,8 +123,8 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T048 | Effect budget checking — **DONE** | If effect row includes bounds (e.g. `network(max_calls: 5)`), prove no path exceeds the bound. |
 | T049 | Exhaustiveness for refinement ranges — **DONE** | For match on refined integers (e.g. 0..100), ensure all cases are covered or warn. |
 | T050 | Typestate (e.g. File Open/Closed) — **DONE** | Design and implement typestate so that operations (e.g. read) are only valid in certain states; compiler error otherwise. |
-| T051 | Test: refinement verification | Add tests that expect success or failure of verification (e.g. division by positive divisor). |
-| T052 | Fuzz type checker with constraints | Property-based or random programs with `where` clauses; ensure solver results are consistent. |
+| T051 | Test: refinement verification — **DONE** | Add tests that expect success or failure of verification (e.g. division by positive divisor). |
+| T052 | Fuzz type checker with constraints — **DONE** | Property-based or random programs with `where` clauses; ensure solver results are consistent. |
 
 ---
 
@@ -218,11 +218,11 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
-| T111 | Pipeline operator semantics | Ensure `|>` has well-defined evaluation order and types (already in grammar; verify and document). |
+| T111 | Pipeline operator semantics — **DONE** | Ensure `|>` has well-defined evaluation order and types (already in grammar; verify and document). |
 | T112 | Null-conditional and null-coalescing — **DONE** | `?.` and `??` (or equivalent) for optional chaining and default values; ensure consistent with `T?`. |
 | T113 | Spaceship operator — **DONE** | Three-way comparison `<=>` returning Less/Equal/Greater. |
-| T114 | Inclusive/exclusive range | `..=` and `..` already present; ensure full coverage in parser and lowering. |
-| T115 | Membership operator | `in` for collection membership; typecheck and lower. |
+| T114 | Inclusive/exclusive range — **DONE** | `..=` and `..` already present; ensure full coverage in parser and lowering. |
+| T115 | Membership operator — **DONE** | `in` for collection membership; typecheck and lower. |
 | T116 | Active patterns (F#-style) | Match on result of a function (e.g. `ValidEmail(user, domain)`) with compiler support. |
 | T117 | GADTs | Generalized algebraic data types with type parameters in variant return types. |
 | T118 | Hygienic macro system | Macro expansion without variable capture; define syntax and scope rules. |
@@ -358,21 +358,21 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | T171 | Inline / property-based / snapshot testing | Built-in or std test helpers: inline unit tests, property-based (e.g. QuickCheck-style), snapshot output comparison. Ref: COMPETITIVE_ANALYSIS §8 (leapfrog 11). |
 | T172 | Mock effects for tests — **DONE** | Test harness to stub effect operations (e.g. `perform HttpGet`) so tests run without real I/O. Complements deterministic replay. |
 | T173 | LSP: go-to-implementations — **DONE** | "Go to implementation(s)" for cells and types; navigate to defining and overriding sites. Ref: IDE parity. |
-| T174 | Diagnostics: type diff and import suggestions | On type error, show concise type diff (expected vs actual); on unknown symbol, suggest imports or similar names. |
+| T174 | Diagnostics: type diff and import suggestions — **DONE** | On type error, show concise type diff (expected vs actual); on unknown symbol, suggest imports or similar names. |
 | T175 | Watch mode (recheck on save) — **DONE** | `lumen watch` or LSP-driven re-check when files change; fast feedback without full rebuild. |
 | T176 | CI machine-readable output — **DONE** | Emit check/test results in a standard format (e.g. SARIF, JUnit XML) for CI dashboards and gates. Ref: T105–T110. |
 | T177 | Service package template | Scaffold for HTTP/gRPC services: typed route contracts, generated schemas, replayable fixtures. Ref: COMPETITIVE_ANALYSIS §4 (Web/backend). |
 | T178 | Array bounds propagation (refinement) | Use refinement/SMT or flow analysis to prove or warn on list/tuple index bounds. Reduces runtime index errors. Ref: D05–D06. |
 | T179 | Docs-as-tests (snippets in CI) | All fenced Lumen code blocks in SPEC/docs compiled (or run) in CI; doc drift fails the build. Ref: COMPETITIVE_ANALYSIS §8 (leapfrog 17). |
 | T180 | Execution graph visualizer | Tool or LSP view that renders execution/trace events as a graph (calls, effects, tool invocations) for debugging and audit. Ref: COMPETITIVE_ANALYSIS §8 (leapfrog 20). |
-| T181 | Import path error recovery | Use `parse_program_with_recovery` when compiling imported modules so multiple parse errors in a dependency are reported. Ref: COMPETITIVE_ANALYSIS §7.4 (A). |
+| T181 | Import path error recovery — **DONE** | Use `parse_program_with_recovery` when compiling imported modules so multiple parse errors in a dependency are reported. Ref: COMPETITIVE_ANALYSIS §7.4 (A). |
 | T182 | LSP document formatting — **DONE** | Expose existing formatter via LSP `textDocument/formatting` (document_formatting_provider). Ref: lumen-lsp main.rs; §7.4 (B). |
 | T183 | Semver constraint `!=` operator — **DONE** | Implement `!=` in semver constraint parser (e.g. `!=1.2.3`) for version ranges. Ref: semver.rs test note; §7.4 (C). |
 | T184 | Retry-After header in provider errors | Extract `Retry-After` HTTP header into `ToolError::RateLimit { retry_after_ms }` in Gemini (and other HTTP) providers. Ref: lumen-provider-gemini. |
 | T185 | Cache persistence on startup — **DONE** | Runtime `CacheStore` (`lumen-runtime/src/cache.rs`) only writes on put; add load-from-disk on init so cache survives process restart. Ref: deficit 13. |
-| T186 | Validate builtin (runtime schema validation) | SPEC documents `validate(Any) -> Bool` as stub. Implement real schema-constrained validation for the standalone builtin (Schema opcode already validates at tool/output). |
+| T186 | Validate builtin (runtime schema validation) — **DONE** | SPEC documents `validate(Any) -> Bool` as stub. Implement real schema-constrained validation for the standalone builtin (Schema opcode already validates at tool/output). |
 | T187 | Fix role_interpolation.lm.md parse and un-ignore — **DONE** | Resolve known parse issue in `examples/role_interpolation.lm.md`; remove from SKIP_COMPILE and re-enable `examples_compile` test. |
-| T188 | Source mapping for string interpolation spans | Parser TODO v2: map spans correctly inside string interpolation (track offsets per segment so diagnostics point into the interpolated expression). Ref: parser.rs. |
+| T188 | Source mapping for string interpolation spans — **DONE** | Parser TODO v2: map spans correctly inside string interpolation (track offsets per segment so diagnostics point into the interpolated expression). Ref: parser.rs. |
 | T189 | Verify/fix closure and upvalue model — **DONE** | Audit and fix any remaining closure capture or upvalue bugs in lower and VM; tests may pass but edge cases or replay/serialization may expose issues. Ref: deficit 6. |
 | T190 | Workspace (monorepo) resolver | Multi-package workspace support: resolve and build multiple packages in one repo with shared deps (Cargo/npm-style). Ref: COMPETITIVE_ANALYSIS domain matrix "workspace resolver". |
 
@@ -381,24 +381,24 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
 | T191 | **Float literals: scientific notation** — **DONE** | Lexer/parser should accept scientific notation for floats (e.g. `1.5e10`, `2e-3`). Currently `1.5e10` is tokenized as float `1.5` plus identifier `e10`, causing "undefined variable e10". Lexer has a test for `1e10`; ensure full form `[digits].[digits]e[+-]?[digits]` is supported and documented in SPEC.md/GRAMMAR.md. This is intended language support. |
-| T192 | **Consider: Lumen test suite vs implementation drift** | When `tests/` (e.g. `tests/core/*.lm`, `tests/integration/end_to_end.lm`) fail due to syntax or builtin mismatches, decide per case whether (a) the test is aspirational and should be updated to match current language, or (b) the implementation has drifted and should be fixed. Document decisions and any spec/grammar updates. Examples encountered: block expression `{ x = 1; true }` (parser expects `}` not `;`), `type(42)` vs keyword `type` (use `type_of` in tests or reserve builtin name), `assert` as builtin (typechecker was updated to recognize it). Keep a short note in this file or a small "test-suite alignment" doc when new drift is found. |
+| T192 | **Consider: Lumen test suite vs implementation drift** — **DONE** | When `tests/` (e.g. `tests/core/*.lm`, `tests/integration/end_to_end.lm`) fail due to syntax or builtin mismatches, decide per case whether (a) the test is aspirational and should be updated to match current language, or (b) the implementation has drifted and should be fixed. Document decisions and any spec/grammar updates. Examples encountered: block expression `{ x = 1; true }` (parser expects `}` not `;`), `type(42)` vs keyword `type` (use `type_of` in tests or reserve builtin name), `assert` as builtin (typechecker was updated to recognize it). Keep a short note in this file or a small "test-suite alignment" doc when new drift is found. |
 | T193 | **Assert/call register reuse (VM/compiler)** — **DONE** | Consecutive `assert <expr>` can leave null in a register reused for the next expression, causing "arithmetic on non-numeric types: null and N". Tests adjusted to single `let ok = ... ; assert ok` per cell. Fix in compiler/VM. |
 | T194 | **Nested cell/enum/record** — **DONE** | Parser does not support `cell`/`enum`/`record` inside another `cell`; tests fail with "Add 'end'". Flatten to top-level or extend parser. Extern declarations must be top-level. |
-| T195 | **Bytes literals** | Bytes must be hex (e.g. `b"68656c6c6f"`); ASCII `b"hello"` rejected. builtins adjusted; document or extend. |
-| T196 | **parse_int/parse_float** | Tests used parse_*; language has to_int/to_float. Tests updated. |
+| T195 | **Bytes literals** — **DONE** | Bytes must be hex (e.g. `b"68656c6c6f"`); ASCII `b"hello"` rejected. builtins adjusted; document or extend. |
+| T196 | **parse_int/parse_float** — **DONE** | Tests used parse_*; language has to_int/to_float. Tests updated. |
 | T197 | **i64::MIN literal** — **DONE** | Literal `-9223372036854775808` triggers "cannot negate". Test uses `-1 < 0`; fix or document. |
-| T198 | **If condition must be Bool (no truthiness)** | Language requires explicit Bool in `if` conditions; no truthy/falsy coercion (e.g. `if 1` or `if ""` invalid). Tests use explicit comparisons (e.g. `1 != 0`, `len(s) > 0`). Document in spec; no implementation change if intentional. |
+| T198 | **If condition must be Bool (no truthiness)** — **DONE** | Language requires explicit Bool in `if` conditions; no truthy/falsy coercion (e.g. `if 1` or `if ""` invalid). Tests use explicit comparisons (e.g. `1 != 0`, `len(s) > 0`). Document in spec; no implementation change if intentional. |
 | T199 | **For-loop continue / labeled continue** — **DONE** | `continue` in for-loops can hit instruction limit (possible VM bug); labeled `continue @outer` same. Tests simplified to avoid continue or use list iteration. Fix VM/compiler so continue advances iterator correctly. |
 | T200 | **Enum/record constructors with payload at runtime** — **DONE** | `Option.Some(42)`, `Shape.Circle(radius: 5.0)`, generic record `Box[T](value: x)`, `Pair[A,B](...)` trigger "cannot call null" or "cannot call Pair()" at runtime. Tests stubbed or use zero-payload variants only. Fix VM/lowering so enum and generic record construction works. |
 | T201 | **Nested list comprehension** — **DONE** | `[ (x, y) for x in a for y in b ]` — inner loop variable `y` undefined in scope. Tests simplified to single `for`. Fix parser/scope so nested comprehensions bind correctly. |
-| T202 | **push vs append** | Tests used `push`; Lumen builtin is `append` for lists. Tests updated. Optional: add `push` as alias if desired. |
+| T202 | **push vs append** — **DONE** | Tests used `push`; Lumen builtin is `append` for lists. Tests updated. Optional: add `push` as alias if desired. |
 | T203 | **to_list(set) builtin** — **DONE** | No builtin to convert set to list; set union/intersection/difference tests need it. Tests use list literals or stub. Add `to_list` (or set iteration in for) so set→list is available. |
 | T205 | **Let destructuring / match type-pattern** — **DONE** | Let with type annotations (e.g. `let (n: Int, s: String) = ...`) and match type-pattern syntax not fully supported. pattern_matching.lm uses plain destructuring and `is` checks; restore when supported. |
 | T206 | **Missing or renamed builtins** — **DONE** | Tests use type_of (not type), to_json (not json_stringify), to_int/to_float (not parse_*), timestamp (not timestamp_ms); trim_start/trim_end, exp, tan, random_int not present. builtins.lm stubbed or uses alternatives. |
 | T207 | **Effect handler resume at runtime** — **DONE** | handle/perform with resume() can fail with "resume called outside of effect handler". effects.lm minimal stub avoids handle/perform until fixed. |
 | T208 | **Record method scoping / generic T** — **DONE** | Records with nested method cells (Stack[T], Queue[T], etc.) cause duplicate definition (is_empty, size) and undefined type T in method signatures. end_to_end.lm stubbed to calculator-only. |
 | T209 | **Result/optional syntactic sugar** — **DONE** | Code and tests use `unwrap`, `unwrap_or`, `is_ok`/`is_err`, and explicit `match` on `result[T,E]`/optional heavily. **Research:** Rust’s `?` operator propagates `Err`/`None` from the current function (unwrap-or-return); Swift optional binding (`if let`); JS optional chaining (`?.`). Adding similar ergonomics (e.g. postfix `?` for propagation in cells that return `result`/optional, or optional chaining for nullable fields) would reduce boilerplate and improve readability. See COMPETITIVE_ANALYSIS §6.3 (error/optional ergonomics), ROADMAP Phase 3. |
-| **T204** | **Resolve all test-suite TODOs and implement expected behavior** | Work through every TODO in `tests/` (T193–T209 and any in-file TODOs). For each: either implement the expected language/VM behavior so the test can be restored to its intended form, or document the decision to keep the workaround and close the TODO. Track in this file; goal: test suite passes with no remaining test-side workarounds for compiler/VM gaps. See `tests/README.md` § Test-suite TODOs. |
+| **T204** | **Resolve all test-suite TODOs and implement expected behavior** — **DONE** | Work through every TODO in `tests/` (T193–T209 and any in-file TODOs). For each: either implement the expected language/VM behavior so the test can be restored to its intended form, or document the decision to keep the workaround and close the TODO. Track in this file; goal: test suite passes with no remaining test-side workarounds for compiler/VM gaps. See `tests/README.md` § Test-suite TODOs. |
 
 ---
 

@@ -12,8 +12,8 @@ homepage.workspace = true
 workspace = true
 
 [dependencies]
-lumen-compiler = { path = "../lumen-compiler", version = "0.4.0" }
-lumen-runtime = { path = "../lumen-runtime", version = "0.4.0" }
+lumen-compiler = { path = "../lumen-compiler", version = "0.5.0" }
+lumen-runtime = { path = "../lumen-runtime", version = "0.5.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

@@ -140,7 +140,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T058 | Replace Tokio spawn with scheduler — **DONE** | Make `spawn` push a task into the new scheduler instead of delegating to Tokio (or document hybrid). |
 | T059 | Explicit yield points in VM — **DONE** | In the VM dispatch loop, periodically check for yield/reduction count to allow preemption. |
 | T060 | Reduction counting — **DONE** | After N instructions (e.g. 2000), force a context switch to avoid starvation. |
-| T061 | Mailbox or MPSC queue for agents | Lock-free or low-contention queue for messages to a single agent. |
+| T061 | Mailbox or MPSC queue for agents — **DONE** | Lock-free or low-contention queue for messages to a single agent. |
 | T062 | Channel&lt;T&gt; type in runtime — **DONE** | Typed channel (MPMC or SPSC) for inter-agent communication. |
 | T063 | Selective receive (Erlang-style) | Allow receiving only messages matching a pattern; document semantics. |
 | T064 | Supervisor behaviour (design) — **DONE** | Define in spec or std how a supervisor restarts or escalates on child failure. |
@@ -199,7 +199,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T096 | Header-to-Lumen bindgen | Tool that parses C (or Rust) headers and generates Lumen extern declarations. |
 | T097 | WASM target in codegen — **DONE** | Emit wasm32-wasi (or wasm32-unknown-unknown) from the same codegen path. |
 | T098 | WASM component model (WIT) — **DONE** | Adopt WIT IDL for imports/exports and component composition. |
-| T099 | WASI host bindings | Implement or bind filesystem, clock, random for WASI. |
+| T099 | WASI host bindings — **DONE** | Implement or bind filesystem, clock, random for WASI. |
 | T100 | LSP: rename symbol — **DONE** | Rename cell/type/variable across the workspace. |
 | T101 | LSP: code actions — **DONE** | Quick fixes (e.g. add match arm, add import). |
 | T102 | LSP: inlay hints (types, params) — **DONE** | Show inferred types and parameter names inline. |
@@ -226,7 +226,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T116 | Active patterns (F#-style) | Match on result of a function (e.g. `ValidEmail(user, domain)`) with compiler support. |
 | T117 | GADTs | Generalized algebraic data types with type parameters in variant return types. |
 | T118 | Hygienic macro system | Macro expansion without variable capture; define syntax and scope rules. |
-| T119 | String interpolation with format spec | e.g. `f"Value: {x:.2f}"` with typed formatting. |
+| T119 | String interpolation with format spec — **DONE** | e.g. `f"Value: {x:.2f}"` with typed formatting. |
 | T120 | Trailing lambda / DSL blocks | Allow block or lambda at end of call for DSLs (e.g. `html div { ... }`). |
 | T121 | Error propagation operator | Postfix `?` that unwraps `result[T,E]` or returns early with error. |
 | T122 | Try/else expression | `try expr else handler` for local error handling. |
@@ -337,7 +337,7 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
 | T162 | Multi-shot continuations (design) | Allow `resume` to be called multiple times for backtracking/search. Currently one-shot; design semantics and VM support. Ref: roadmap “effect handlers deep.” |
-| T163 | Variadic parameters (complete) | Complete variadic `...param` in typecheck and lowering so stdlib and user code can define variadic cells. Ref: SPEC.md; COMPETITIVE_ANALYSIS §3. |
+| T163 | Variadic parameters (complete) — **DONE** | Complete variadic `...param` in typecheck and lowering so stdlib and user code can define variadic cells. Ref: SPEC.md; COMPETITIVE_ANALYSIS §3. |
 | T164 | Must-use result attribute — **DONE** | `@must_use` for cells returning `result[T,E]` so ignoring the result is a warning or error. Ref: Rust must_use; COMPETITIVE_ANALYSIS “leapfrog.” |
 
 ### Phase 10 (verification) — competitive parity
@@ -360,7 +360,7 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | T173 | LSP: go-to-implementations — **DONE** | "Go to implementation(s)" for cells and types; navigate to defining and overriding sites. Ref: IDE parity. |
 | T174 | Diagnostics: type diff and import suggestions | On type error, show concise type diff (expected vs actual); on unknown symbol, suggest imports or similar names. |
 | T175 | Watch mode (recheck on save) — **DONE** | `lumen watch` or LSP-driven re-check when files change; fast feedback without full rebuild. |
-| T176 | CI machine-readable output | Emit check/test results in a standard format (e.g. SARIF, JUnit XML) for CI dashboards and gates. Ref: T105–T110. |
+| T176 | CI machine-readable output — **DONE** | Emit check/test results in a standard format (e.g. SARIF, JUnit XML) for CI dashboards and gates. Ref: T105–T110. |
 | T177 | Service package template | Scaffold for HTTP/gRPC services: typed route contracts, generated schemas, replayable fixtures. Ref: COMPETITIVE_ANALYSIS §4 (Web/backend). |
 | T178 | Array bounds propagation (refinement) | Use refinement/SMT or flow analysis to prove or warn on list/tuple index bounds. Reduces runtime index errors. Ref: D05–D06. |
 | T179 | Docs-as-tests (snippets in CI) | All fenced Lumen code blocks in SPEC/docs compiled (or run) in CI; doc drift fails the build. Ref: COMPETITIVE_ANALYSIS §8 (leapfrog 17). |
@@ -369,11 +369,11 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | T182 | LSP document formatting — **DONE** | Expose existing formatter via LSP `textDocument/formatting` (document_formatting_provider). Ref: lumen-lsp main.rs; §7.4 (B). |
 | T183 | Semver constraint `!=` operator — **DONE** | Implement `!=` in semver constraint parser (e.g. `!=1.2.3`) for version ranges. Ref: semver.rs test note; §7.4 (C). |
 | T184 | Retry-After header in provider errors | Extract `Retry-After` HTTP header into `ToolError::RateLimit { retry_after_ms }` in Gemini (and other HTTP) providers. Ref: lumen-provider-gemini. |
-| T185 | Cache persistence on startup | Runtime `CacheStore` (`lumen-runtime/src/cache.rs`) only writes on put; add load-from-disk on init so cache survives process restart. Ref: deficit 13. |
+| T185 | Cache persistence on startup — **DONE** | Runtime `CacheStore` (`lumen-runtime/src/cache.rs`) only writes on put; add load-from-disk on init so cache survives process restart. Ref: deficit 13. |
 | T186 | Validate builtin (runtime schema validation) | SPEC documents `validate(Any) -> Bool` as stub. Implement real schema-constrained validation for the standalone builtin (Schema opcode already validates at tool/output). |
-| T187 | Fix role_interpolation.lm.md parse and un-ignore | Resolve known parse issue in `examples/role_interpolation.lm.md`; remove from SKIP_COMPILE and re-enable `examples_compile` test. |
+| T187 | Fix role_interpolation.lm.md parse and un-ignore — **DONE** | Resolve known parse issue in `examples/role_interpolation.lm.md`; remove from SKIP_COMPILE and re-enable `examples_compile` test. |
 | T188 | Source mapping for string interpolation spans | Parser TODO v2: map spans correctly inside string interpolation (track offsets per segment so diagnostics point into the interpolated expression). Ref: parser.rs. |
-| T189 | Verify/fix closure and upvalue model | Audit and fix any remaining closure capture or upvalue bugs in lower and VM; tests may pass but edge cases or replay/serialization may expose issues. Ref: deficit 6. |
+| T189 | Verify/fix closure and upvalue model — **DONE** | Audit and fix any remaining closure capture or upvalue bugs in lower and VM; tests may pass but edge cases or replay/serialization may expose issues. Ref: deficit 6. |
 | T190 | Workspace (monorepo) resolver | Multi-package workspace support: resolve and build multiple packages in one repo with shared deps (Cargo/npm-style). Ref: COMPETITIVE_ANALYSIS domain matrix "workspace resolver". |
 
 ### Language / spec alignment and test suite (T191–T203)

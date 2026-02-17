@@ -135,6 +135,15 @@ enum Commands {
         #[command(subcommand)]
         sub: BuildCommands,
     },
+    /// Watch files and re-check on changes
+    Watch {
+        /// Path to file or directory to watch (default: current directory)
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Polling interval in milliseconds
+        #[arg(long, default_value_t = 500)]
+        interval: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -361,6 +370,7 @@ fn main() {
         Commands::Build { sub } => match sub {
             BuildCommands::Wasm { target, release } => cmd_build_wasm(&target, release),
         },
+        Commands::Watch { path, interval } => cmd_watch(&path, interval),
     }
 }
 
@@ -758,6 +768,166 @@ fn cmd_check(file: &PathBuf) {
             eprint!("{}", formatted);
             std::process::exit(1);
         }
+    }
+}
+
+fn cmd_watch(path: &Path, interval_ms: u64) {
+    use std::collections::HashMap;
+    use std::time::{Duration, SystemTime};
+
+    // Collect initial set of source files
+    let mut source_files = Vec::new();
+    if path.is_file() {
+        if !is_lumen_source(path) {
+            eprintln!(
+                "{} expected a .lm, .lumen, .lm.md, or .lumen.md file, got '{}'",
+                red("error:"),
+                path.display()
+            );
+            std::process::exit(1);
+        }
+        source_files.push(path.to_path_buf());
+    } else if let Err(e) = collect_lumen_sources(path, &mut source_files) {
+        eprintln!("{} {}", red("error:"), e);
+        std::process::exit(1);
+    }
+
+    if source_files.is_empty() {
+        eprintln!(
+            "{} no .lm/.lumen/.lm.md/.lumen.md files found under {}",
+            red("error:"),
+            path.display()
+        );
+        std::process::exit(1);
+    }
+
+    source_files.sort();
+
+    println!(
+        "{} {} file(s) under {} (polling every {}ms, Ctrl+C to stop)",
+        status_label("Watching"),
+        source_files.len(),
+        bold(&path.display().to_string()),
+        interval_ms
+    );
+
+    // Install Ctrl+C handler
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = running.clone();
+    let _ = ctrlc::set_handler(move || {
+        r.store(false, std::sync::atomic::Ordering::SeqCst);
+    });
+
+    // Build initial mtime map
+    let mut mtimes: HashMap<PathBuf, SystemTime> = HashMap::new();
+    for file in &source_files {
+        if let Ok(meta) = std::fs::metadata(file) {
+            if let Ok(mtime) = meta.modified() {
+                mtimes.insert(file.clone(), mtime);
+            }
+        }
+    }
+
+    // Run initial check
+    run_watch_check(&source_files);
+
+    let poll_duration = Duration::from_millis(interval_ms);
+
+    while running.load(std::sync::atomic::Ordering::SeqCst) {
+        std::thread::sleep(poll_duration);
+
+        // Re-collect sources in case files were added/removed
+        let mut current_files = Vec::new();
+        if path.is_file() {
+            current_files.push(path.to_path_buf());
+        } else {
+            let _ = collect_lumen_sources(path, &mut current_files);
+        }
+        current_files.sort();
+
+        let mut changed = false;
+        for file in &current_files {
+            let current_mtime = std::fs::metadata(file).ok().and_then(|m| m.modified().ok());
+
+            match (mtimes.get(file), current_mtime) {
+                (Some(old), Some(new)) if new > *old => {
+                    changed = true;
+                    mtimes.insert(file.clone(), new);
+                }
+                (None, Some(new)) => {
+                    // New file
+                    changed = true;
+                    mtimes.insert(file.clone(), new);
+                }
+                _ => {}
+            }
+        }
+
+        // Check for deleted files
+        let deleted: Vec<PathBuf> = mtimes
+            .keys()
+            .filter(|k| !current_files.contains(k))
+            .cloned()
+            .collect();
+        for d in &deleted {
+            mtimes.remove(d);
+            changed = true;
+        }
+
+        if changed {
+            run_watch_check(&current_files);
+        }
+    }
+
+    println!("\n{} Watch stopped", gray("info:"));
+}
+
+fn run_watch_check(files: &[PathBuf]) {
+    let now = chrono::Local::now().format("%H:%M:%S");
+    println!(
+        "\n{} [{}] Checking {} file(s)...",
+        status_label("Watch"),
+        now,
+        files.len()
+    );
+
+    let start = std::time::Instant::now();
+    let mut errors = 0usize;
+
+    for file in files {
+        let source = match std::fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{} cannot read '{}': {}", red("error:"), file.display(), e);
+                errors += 1;
+                continue;
+            }
+        };
+
+        let filename = file.display().to_string();
+        if let Err(e) = compile_source_file(file, &source) {
+            let formatted = lumen_compiler::format_error(&e, &source, &filename);
+            eprint!("{}", formatted);
+            errors += 1;
+        }
+    }
+
+    let elapsed = start.elapsed();
+    if errors == 0 {
+        println!(
+            "{} [{}] All clear — {:.2}s",
+            green("✓"),
+            now,
+            elapsed.as_secs_f64()
+        );
+    } else {
+        eprintln!(
+            "{} [{}] {} error(s) — {:.2}s",
+            red("✗"),
+            now,
+            errors,
+            elapsed.as_secs_f64()
+        );
     }
 }
 

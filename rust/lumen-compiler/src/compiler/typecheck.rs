@@ -1072,6 +1072,14 @@ impl<'a> TypeChecker<'a> {
                     self.mutables.insert(rest_name.clone(), true);
                 }
             }
+            Pattern::TypeCheck {
+                name, type_expr, ..
+            } => {
+                let expected = resolve_type_expr(type_expr, self.symbols);
+                self.check_compat(&expected, subject_type, line);
+                self.locals.insert(name.clone(), expected);
+                self.mutables.insert(name.clone(), true);
+            }
             _ => {
                 // Other patterns (Guard, Or, Variant, etc.) not valid in let position
             }
@@ -2037,6 +2045,7 @@ impl<'a> TypeChecker<'a> {
                 body,
                 var,
                 iter,
+                extra_clauses,
                 condition,
                 kind,
                 span: _,
@@ -2048,6 +2057,16 @@ impl<'a> TypeChecker<'a> {
                     _ => Type::Any,
                 };
                 self.locals.insert(var.clone(), elem_type);
+                // Register bindings for extra for-clauses
+                for clause in extra_clauses {
+                    let clause_iter_type = self.infer_expr(&clause.iter);
+                    let clause_elem_type = match &clause_iter_type {
+                        Type::List(inner) => *inner.clone(),
+                        Type::Set(inner) => *inner.clone(),
+                        _ => Type::Any,
+                    };
+                    self.locals.insert(clause.var.clone(), clause_elem_type);
+                }
                 if let Some(ref cond) = condition {
                     let ct = self.infer_expr(cond);
                     self.check_compat(&Type::Bool, &ct, cond.span().line);

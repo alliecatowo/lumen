@@ -61,6 +61,7 @@ open = "5"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 regex = "1"
 humantime = "2"
+ctrlc = "3"
 
 [features]
 default = ["http", "json", "fs", "env", "crypto", "keyring", "ed25519"]

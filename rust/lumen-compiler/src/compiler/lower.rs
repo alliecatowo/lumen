@@ -1801,6 +1801,14 @@ impl<'a> Lowerer<'a> {
                     ));
                 }
             }
+            Pattern::TypeCheck { name, .. } => {
+                // In let position, the typechecker has already verified compatibility.
+                // Just bind the value to the named register.
+                let dest = ra.alloc_named(name);
+                if dest != value_reg {
+                    instrs.push(Instruction::abc(OpCode::Move, dest, value_reg, 0));
+                }
+            }
             _ => {
                 // Unsupported patterns in let position (Guard, Or, Variant, etc.)
                 // are not valid irrefutable patterns — silently ignored.
@@ -3413,11 +3421,19 @@ impl<'a> Lowerer<'a> {
                 body,
                 var,
                 iter,
+                extra_clauses,
                 condition,
                 kind,
                 span: _,
             } => {
-                // Lower as: result = new_collection; for var in iter { if cond { add(result, body) } }
+                // Lower as nested loops:
+                //   result = new_collection
+                //   for var in iter {
+                //     for var2 in iter2 {
+                //       ... (for each extra clause)
+                //       if cond { add(result, body) }
+                //     }
+                //   }
                 // For sets, build as list first (Append only works on lists), then convert using ToSet intrinsic
                 let temp_reg = ra.alloc_temp();
                 let build_as_list = matches!(kind, ComprehensionKind::Set);
@@ -3431,34 +3447,55 @@ impl<'a> Lowerer<'a> {
                     }
                 }
 
-                let iter_reg = self.lower_expr(iter, ra, consts, instrs);
-                let idx_reg = ra.alloc_temp();
-                let len_reg = ra.alloc_temp();
-                let elem_reg = ra.alloc_named(var);
+                // Collect all for-clauses: the primary one plus any extras
+                struct ForClause<'a> {
+                    var: &'a str,
+                    iter: &'a Expr,
+                }
+                let mut all_clauses: Vec<ForClause<'_>> = Vec::new();
+                all_clauses.push(ForClause { var, iter });
+                for clause in extra_clauses {
+                    all_clauses.push(ForClause {
+                        var: &clause.var,
+                        iter: &clause.iter,
+                    });
+                }
 
-                let zero_idx = consts.len() as u16;
-                consts.push(Constant::Int(0));
-                instrs.push(Instruction::abx(OpCode::LoadK, idx_reg, zero_idx));
-                instrs.push(Instruction::abc(
-                    OpCode::Intrinsic,
-                    len_reg,
-                    IntrinsicId::Length as u8,
-                    iter_reg,
-                ));
+                // For each clause, emit: lower iter, init idx, compute len, loop header
+                // Track (loop_start, break_jmp, idx_reg) for each clause to patch later
+                let mut loop_info: Vec<(usize, usize, u8)> = Vec::new();
+                for clause in &all_clauses {
+                    let iter_reg = self.lower_expr(clause.iter, ra, consts, instrs);
+                    let idx_reg = ra.alloc_temp();
+                    let len_reg = ra.alloc_temp();
+                    let elem_reg = ra.alloc_named(clause.var);
 
-                let loop_start = instrs.len();
-                let lt_reg = ra.alloc_temp();
-                instrs.push(Instruction::abc(OpCode::Lt, lt_reg, idx_reg, len_reg));
-                instrs.push(Instruction::abc(OpCode::Test, lt_reg, 0, 0));
-                let break_jmp = instrs.len();
-                instrs.push(Instruction::sax(OpCode::Jmp, 0));
+                    let zero_idx = consts.len() as u16;
+                    consts.push(Constant::Int(0));
+                    instrs.push(Instruction::abx(OpCode::LoadK, idx_reg, zero_idx));
+                    instrs.push(Instruction::abc(
+                        OpCode::Intrinsic,
+                        len_reg,
+                        IntrinsicId::Length as u8,
+                        iter_reg,
+                    ));
 
-                instrs.push(Instruction::abc(
-                    OpCode::GetIndex,
-                    elem_reg,
-                    iter_reg,
-                    idx_reg,
-                ));
+                    let loop_start = instrs.len();
+                    let lt_reg = ra.alloc_temp();
+                    instrs.push(Instruction::abc(OpCode::Lt, lt_reg, idx_reg, len_reg));
+                    instrs.push(Instruction::abc(OpCode::Test, lt_reg, 0, 0));
+                    let break_jmp = instrs.len();
+                    instrs.push(Instruction::sax(OpCode::Jmp, 0));
+
+                    instrs.push(Instruction::abc(
+                        OpCode::GetIndex,
+                        elem_reg,
+                        iter_reg,
+                        idx_reg,
+                    ));
+
+                    loop_info.push((loop_start, break_jmp, idx_reg));
+                }
 
                 // Optional condition
                 let mut cond_jmp = None;
@@ -3515,18 +3552,21 @@ impl<'a> Lowerer<'a> {
                     instrs[cj] = Instruction::sax(OpCode::Jmp, (after_body - cj - 1) as i32);
                 }
 
-                let one_idx = consts.len() as u16;
-                consts.push(Constant::Int(1));
-                let one_reg = ra.alloc_temp();
-                instrs.push(Instruction::abx(OpCode::LoadK, one_reg, one_idx));
-                instrs.push(Instruction::abc(OpCode::Add, idx_reg, idx_reg, one_reg));
+                // Close all loops in reverse order (innermost first)
+                for &(loop_start, break_jmp, idx_reg) in loop_info.iter().rev() {
+                    let one_idx = consts.len() as u16;
+                    consts.push(Constant::Int(1));
+                    let one_reg = ra.alloc_temp();
+                    instrs.push(Instruction::abx(OpCode::LoadK, one_reg, one_idx));
+                    instrs.push(Instruction::abc(OpCode::Add, idx_reg, idx_reg, one_reg));
 
-                let back_offset = loop_start as i32 - instrs.len() as i32 - 1;
-                instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
+                    let back_offset = loop_start as i32 - instrs.len() as i32 - 1;
+                    instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
 
-                let after_loop = instrs.len();
-                instrs[break_jmp] =
-                    Instruction::sax(OpCode::Jmp, (after_loop - break_jmp - 1) as i32);
+                    let after_loop = instrs.len();
+                    instrs[break_jmp] =
+                        Instruction::sax(OpCode::Jmp, (after_loop - break_jmp - 1) as i32);
+                }
 
                 // For set comprehensions, convert the list to a set using ToSet intrinsic
                 if build_as_list {
@@ -4034,11 +4074,15 @@ fn collect_free_idents_expr(expr: &Expr, out: &mut Vec<String>) {
         Expr::Comprehension {
             body,
             iter,
+            extra_clauses,
             condition,
             ..
         } => {
             collect_free_idents_expr(body, out);
             collect_free_idents_expr(iter, out);
+            for clause in extra_clauses {
+                collect_free_idents_expr(&clause.iter, out);
+            }
             if let Some(c) = condition {
                 collect_free_idents_expr(c, out);
             }

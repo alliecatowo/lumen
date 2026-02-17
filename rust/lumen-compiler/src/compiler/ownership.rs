@@ -848,6 +848,7 @@ impl<'a> OwnershipChecker<'a> {
             Expr::Comprehension {
                 body,
                 iter,
+                extra_clauses,
                 condition,
                 var,
                 span,
@@ -864,6 +865,18 @@ impl<'a> OwnershipChecker<'a> {
                 let mode = ownership_mode_for_type(&elem_ty);
                 self.locals.insert(var.clone(), elem_ty);
                 self.declare_var(var, mode, *span);
+                for clause in extra_clauses {
+                    self.check_expr(&clause.iter);
+                    let clause_iter_ty = self.infer_expr_type(&clause.iter);
+                    let clause_elem_ty = match &clause_iter_ty {
+                        Type::List(inner) | Type::Set(inner) => *inner.clone(),
+                        Type::Map(k, _) => *k.clone(),
+                        _ => Type::Any,
+                    };
+                    let clause_mode = ownership_mode_for_type(&clause_elem_ty);
+                    self.locals.insert(clause.var.clone(), clause_elem_ty);
+                    self.declare_var(&clause.var, clause_mode, *span);
+                }
                 if let Some(cond) = condition {
                     self.check_expr(cond);
                 }

@@ -766,6 +766,7 @@ mod tests {
                 is_pub: false,
                 span: span(),
                 doc: None,
+                deprecated: None,
             })],
             span: span(),
         }
@@ -820,6 +821,7 @@ mod tests {
                 where_clauses: vec![wc],
                 span: span(),
                 doc: None,
+                deprecated: None,
             })],
             span: span(),
         };
@@ -890,6 +892,7 @@ mod tests {
                 is_pub: false,
                 span: span(),
                 doc: None,
+                deprecated: None,
             })],
             span: span(),
         };
@@ -937,6 +940,7 @@ mod tests {
             where_clauses,
             span: span(),
             doc: None,
+            deprecated: None,
         }
     }
 

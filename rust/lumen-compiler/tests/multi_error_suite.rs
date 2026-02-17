@@ -28,6 +28,8 @@ fn count_errors(err: &CompileError) -> usize {
         CompileError::Ownership(es) => es.len(),
         CompileError::Multiple(es) => es.iter().map(count_errors).sum(),
         CompileError::Lower(_) => 1,
+        CompileError::Typestate(es) => es.len(),
+        CompileError::Session(es) => es.len(),
     }
 }
 

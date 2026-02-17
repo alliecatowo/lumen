@@ -14,6 +14,42 @@ use std::collections::HashSet;
 
 use thiserror::Error;
 
+// ── Compile options ─────────────────────────────────────────────────
+
+/// Controls when ownership analysis violations are treated as hard errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OwnershipCheckMode {
+    /// Ownership analysis is completely skipped.
+    Off,
+    /// Ownership violations are detected but do not block compilation (default).
+    #[default]
+    Warn,
+    /// Ownership violations are treated as compile errors.
+    Error,
+}
+
+/// Options controlling optional analysis passes in the compile pipeline.
+///
+/// All fields have sensible defaults: ownership analysis defaults to `Warn`
+/// mode, and typestate / session type checking are opt-in (disabled by default
+/// since they require explicit declarations).
+#[derive(Debug, Clone, Default)]
+pub struct CompileOptions {
+    /// Ownership analysis mode. Default: `Warn`.
+    pub ownership_mode: OwnershipCheckMode,
+    /// Typestate declarations to check against (opt-in per type).
+    /// Map from type name → typestate declaration.
+    pub typestate_declarations:
+        std::collections::HashMap<String, compiler::typestate::TypestateDecl>,
+    /// Session protocol declarations to check against (opt-in per protocol).
+    /// Map from protocol name → session type.
+    pub session_protocols: std::collections::HashMap<String, compiler::session::SessionType>,
+    /// Session action sequences to verify (opt-in per protocol).
+    /// Map from protocol name → sequence of (action, span) pairs.
+    pub session_actions:
+        std::collections::HashMap<String, Vec<(compiler::session::Action, compiler::tokens::Span)>>,
+}
+
 #[derive(Debug, Error)]
 pub enum CompileError {
     #[error("lex error: {0}")]
@@ -28,6 +64,10 @@ pub enum CompileError {
     Constraint(Vec<compiler::constraints::ConstraintError>),
     #[error("ownership errors: {0:?}")]
     Ownership(Vec<compiler::ownership::OwnershipError>),
+    #[error("typestate errors: {0:?}")]
+    Typestate(Vec<compiler::typestate::TypestateError>),
+    #[error("session type errors: {0:?}")]
+    Session(Vec<compiler::session::SessionError>),
     #[error("lowering error: {0}")]
     Lower(String),
     #[error("multiple errors: {0:?}")]
@@ -60,6 +100,71 @@ impl From<compiler::parser::ParseError> for CompileError {
     }
 }
 
+/// Run the three optional analysis passes (ownership, typestate, session types).
+///
+/// Returns any hard errors produced by analyses running in `Error` mode.
+/// Analyses in `Warn` mode or `Off` mode do not contribute errors.
+fn run_optional_analyses(
+    program: &compiler::ast::Program,
+    symbols: &SymbolTable,
+    options: &CompileOptions,
+) -> Vec<CompileError> {
+    let mut errors = Vec::new();
+
+    // 1. Ownership analysis
+    if options.ownership_mode != OwnershipCheckMode::Off {
+        let ownership_errors = compiler::ownership::check_program(program, symbols);
+        if !ownership_errors.is_empty() && options.ownership_mode == OwnershipCheckMode::Error {
+            errors.push(CompileError::Ownership(ownership_errors));
+        }
+        // In Warn mode, errors are detected but silently discarded.
+    }
+
+    // 2. Typestate checking (opt-in: only if declarations are provided)
+    if !options.typestate_declarations.is_empty() {
+        let mut all_typestate_errors = Vec::new();
+        for item in &program.items {
+            let cells: Vec<&compiler::ast::CellDef> = match item {
+                Item::Cell(c) => vec![c],
+                Item::Agent(a) => a.cells.iter().collect(),
+                Item::Process(p) => p.cells.iter().collect(),
+                _ => vec![],
+            };
+            for cell in cells {
+                let mut checker = compiler::typestate::TypestateChecker::new();
+                let cell_errors = checker.check_cell(cell, &options.typestate_declarations);
+                all_typestate_errors.extend(cell_errors);
+            }
+        }
+        if !all_typestate_errors.is_empty() {
+            errors.push(CompileError::Typestate(all_typestate_errors));
+        }
+    }
+
+    // 3. Session type checking (opt-in: only if protocols are provided)
+    if !options.session_protocols.is_empty() {
+        let mut all_session_errors = Vec::new();
+        let mut checker = compiler::session::SessionChecker::new();
+        for (name, protocol) in &options.session_protocols {
+            checker.declare_protocol(name, protocol.clone());
+        }
+        // Verify action sequences against declared protocols.
+        for (protocol_name, actions) in &options.session_actions {
+            let end_span = actions
+                .last()
+                .map(|(_, s)| *s)
+                .unwrap_or(compiler::tokens::Span::dummy());
+            let session_errors = checker.check_complete_session(protocol_name, actions, end_span);
+            all_session_errors.extend(session_errors);
+        }
+        if !all_session_errors.is_empty() {
+            errors.push(CompileError::Session(all_session_errors));
+        }
+    }
+
+    errors
+}
+
 /// Safe wrapper around the lowering pass that converts register allocation
 /// panics into proper `CompileError::Lower` errors instead of crashing.
 fn lower_safe(
@@ -90,8 +195,23 @@ pub fn compile_with_imports(
     source: &str,
     resolve_import: &dyn Fn(&str) -> Option<String>,
 ) -> Result<LirModule, CompileError> {
+    compile_with_imports_and_options(source, resolve_import, &CompileOptions::default())
+}
+
+/// Compile with access to external modules and optional analysis passes.
+pub fn compile_with_imports_and_options(
+    source: &str,
+    resolve_import: &dyn Fn(&str) -> Option<String>,
+    options: &CompileOptions,
+) -> Result<LirModule, CompileError> {
     let mut compilation_stack = HashSet::new();
-    compile_with_imports_internal(source, resolve_import, &mut compilation_stack, None)
+    compile_with_imports_internal(
+        source,
+        resolve_import,
+        &mut compilation_stack,
+        None,
+        options,
+    )
 }
 
 /// Internal implementation that tracks the compilation stack for circular import detection
@@ -100,6 +220,7 @@ fn compile_with_imports_internal(
     resolve_import: &dyn Fn(&str) -> Option<String>,
     compilation_stack: &mut HashSet<String>,
     _current_module: Option<&str>,
+    options: &CompileOptions,
 ) -> Result<LirModule, CompileError> {
     // 1. Extract Markdown blocks
     let extracted = markdown::extract::extract_blocks(source);
@@ -204,6 +325,7 @@ fn compile_with_imports_internal(
             resolve_import,
             compilation_stack,
             Some(&module_path),
+            options,
         )?;
 
         // Remove from stack after compilation
@@ -329,12 +451,15 @@ fn compile_with_imports_internal(
         all_errors.push(CompileError::Constraint(constraint_errors));
     }
 
+    // 10. Run optional analysis passes (ownership, typestate, session types)
+    all_errors.extend(run_optional_analyses(&program, &symbols, options));
+
     // If there were any errors, report them all
     if let Some(combined) = CompileError::from_multiple(all_errors) {
         return Err(combined);
     }
 
-    // 10. Lower to LIR
+    // 11. Lower to LIR
     let mut module = lower_safe(&program, &symbols, source)?;
 
     // 11. Merge imported modules
@@ -434,6 +559,7 @@ fn compile_raw_with_imports_internal(
             resolve_import,
             compilation_stack,
             Some(&module_path),
+            &CompileOptions::default(),
         )?;
 
         // Remove from stack after compilation
@@ -577,6 +703,14 @@ fn compile_raw_with_imports_internal(
 /// Compile a `.lm` raw Lumen source file to a LIR module.
 /// This skips markdown extraction and processes the source directly.
 pub fn compile_raw(source: &str) -> Result<LirModule, CompileError> {
+    compile_raw_with_options(source, &CompileOptions::default())
+}
+
+/// Compile a `.lm` raw Lumen source file with optional analysis passes.
+pub fn compile_raw_with_options(
+    source: &str,
+    options: &CompileOptions,
+) -> Result<LirModule, CompileError> {
     if source.trim().is_empty() {
         return Ok(LirModule::new("sha256:empty".to_string()));
     }
@@ -609,18 +743,29 @@ pub fn compile_raw(source: &str) -> Result<LirModule, CompileError> {
         all_errors.push(CompileError::Constraint(constraint_errors));
     }
 
+    // 6. Run optional analysis passes (ownership, typestate, session types)
+    all_errors.extend(run_optional_analyses(&program, &symbols, options));
+
     // If there were any errors, report them all
     if let Some(combined) = CompileError::from_multiple(all_errors) {
         return Err(combined);
     }
 
-    // 6. Lower to LIR
+    // 7. Lower to LIR
     let module = lower_safe(&program, &symbols, source)?;
 
     Ok(module)
 }
 
 pub fn compile(source: &str) -> Result<LirModule, CompileError> {
+    compile_with_options(source, &CompileOptions::default())
+}
+
+/// Compile a markdown Lumen source file with optional analysis passes.
+pub fn compile_with_options(
+    source: &str,
+    options: &CompileOptions,
+) -> Result<LirModule, CompileError> {
     // 1. Extract Markdown blocks
     let extracted = markdown::extract::extract_blocks(source);
 
@@ -681,12 +826,15 @@ pub fn compile(source: &str) -> Result<LirModule, CompileError> {
         all_errors.push(CompileError::Constraint(constraint_errors));
     }
 
+    // 9. Run optional analysis passes (ownership, typestate, session types)
+    all_errors.extend(run_optional_analyses(&program, &symbols, options));
+
     // If there were any errors, report them all
     if let Some(combined) = CompileError::from_multiple(all_errors) {
         return Err(combined);
     }
 
-    // 9. Lower to LIR
+    // 10. Lower to LIR
     let module = lower_safe(&program, &symbols, source)?;
 
     Ok(module)

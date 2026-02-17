@@ -2133,6 +2133,9 @@ impl<'a> TypeChecker<'a> {
                 kind,
                 span: _,
             } => {
+                // Save locals snapshot — comprehension variables must not leak
+                let saved_locals = self.locals.clone();
+
                 let iter_type = self.infer_expr(iter);
                 let elem_type = match &iter_type {
                     Type::List(inner) => *inner.clone(),
@@ -2155,6 +2158,10 @@ impl<'a> TypeChecker<'a> {
                     self.check_compat(&Type::Bool, &ct, cond.span().line);
                 }
                 let body_type = self.infer_expr(body);
+
+                // Restore locals — comprehension variables don't leak to outer scope
+                self.locals = saved_locals;
+
                 match kind {
                     ComprehensionKind::List => Type::List(Box::new(body_type)),
                     ComprehensionKind::Set => Type::Set(Box::new(body_type)),

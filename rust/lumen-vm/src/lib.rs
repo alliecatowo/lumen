@@ -1,4 +1,5 @@
 //! Lumen VM — register-based virtual machine for executing LIR bytecode.
+#![warn(clippy::all)]
 
 pub mod arena;
 pub mod gc;

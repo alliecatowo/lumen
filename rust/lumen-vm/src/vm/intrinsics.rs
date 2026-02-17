@@ -1470,6 +1470,147 @@ impl VM {
                 }
             }
 
+            // ── Wave20 T202: push alias for append ──
+            "push" => {
+                let item = self.registers[base + a + 2].clone();
+                let list = &mut self.registers[base + a + 1];
+                match list {
+                    Value::List(l) => {
+                        let l = std::sync::Arc::make_mut(l);
+                        l.push(item);
+                        Ok(Value::Null)
+                    }
+                    _ => Err(VmError::Runtime(
+                        "push requires a list as first argument".into(),
+                    )),
+                }
+            }
+
+            // ── Wave20 T196: parse_int / parse_float ──
+            "parse_int" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::Int(_) | Value::BigInt(_) => arg.clone(),
+                    Value::Float(f) => Value::Int(*f as i64),
+                    Value::String(sref) => {
+                        let s = match sref {
+                            StringRef::Owned(s) => s.clone(),
+                            StringRef::Interned(id) => {
+                                self.strings.resolve(*id).unwrap_or("").to_string()
+                            }
+                        };
+                        match s.trim().parse::<i64>() {
+                            Ok(n) => Value::Int(n),
+                            Err(_) => Value::Null,
+                        }
+                    }
+                    _ => Value::Null,
+                })
+            }
+            "parse_float" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::Float(_) => arg.clone(),
+                    Value::Int(n) => Value::Float(*n as f64),
+                    Value::BigInt(n) => {
+                        use num_traits::ToPrimitive;
+                        Value::Float(n.to_f64().unwrap_or(f64::NAN))
+                    }
+                    Value::String(sref) => {
+                        let s = match sref {
+                            StringRef::Owned(s) => s.clone(),
+                            StringRef::Interned(id) => {
+                                self.strings.resolve(*id).unwrap_or("").to_string()
+                            }
+                        };
+                        match s.trim().parse::<f64>() {
+                            Ok(f) => Value::Float(f),
+                            Err(_) => Value::Null,
+                        }
+                    }
+                    _ => Value::Null,
+                })
+            }
+
+            // ── Wave20 T195: Bytes builtins ──
+            "bytes_from_ascii" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::String(sref) => {
+                        let s = match sref {
+                            StringRef::Owned(s) => s.clone(),
+                            StringRef::Interned(id) => {
+                                self.strings.resolve(*id).unwrap_or("").to_string()
+                            }
+                        };
+                        Value::Bytes(s.into_bytes())
+                    }
+                    _ => Value::Null,
+                })
+            }
+            "bytes_to_ascii" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::Bytes(b) => match String::from_utf8(b.clone()) {
+                        Ok(s) => Value::String(StringRef::Owned(s)),
+                        Err(_) => Value::Null,
+                    },
+                    _ => Value::Null,
+                })
+            }
+            "bytes_len" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::Bytes(b) => Value::Int(b.len() as i64),
+                    _ => Value::Null,
+                })
+            }
+            "bytes_slice" => {
+                let arg = &self.registers[base + a + 1];
+                let start = &self.registers[base + a + 2];
+                let end = &self.registers[base + a + 3];
+                Ok(match (arg, start, end) {
+                    (Value::Bytes(b), Value::Int(s), Value::Int(e)) => {
+                        let s = *s as usize;
+                        let e = if *e <= 0 { b.len() } else { *e as usize };
+                        if s <= e && e <= b.len() {
+                            Value::Bytes(b[s..e].to_vec())
+                        } else {
+                            Value::Bytes(vec![])
+                        }
+                    }
+                    _ => Value::Null,
+                })
+            }
+            "bytes_concat" => {
+                let arg1 = &self.registers[base + a + 1];
+                let arg2 = &self.registers[base + a + 2];
+                Ok(match (arg1, arg2) {
+                    (Value::Bytes(a_bytes), Value::Bytes(b_bytes)) => {
+                        let mut result = a_bytes.clone();
+                        result.extend_from_slice(b_bytes);
+                        Value::Bytes(result)
+                    }
+                    _ => Value::Null,
+                })
+            }
+
+            // ── Wave20 T186: validate builtin (call_builtin path) ──
+            "validate" => {
+                if nargs < 2 {
+                    let val = &self.registers[base + a + 1];
+                    Ok(Value::Bool(!matches!(val, Value::Null)))
+                } else {
+                    let val = &self.registers[base + a + 1];
+                    let schema_val = &self.registers[base + a + 2];
+                    Ok(Value::Bool(validate_value_against_schema(
+                        val,
+                        schema_val,
+                        &self.strings,
+                    )))
+                }
+            }
+
             _ => Err(VmError::UndefinedCell(name.to_string())),
         }
     }
@@ -1610,8 +1751,20 @@ impl VM {
                 Ok(self.redact_value(arg, fields))
             }
             7 => {
-                // VALIDATE
-                Ok(Value::Bool(true)) // full validation deferred to schema opcode
+                // VALIDATE — 1-arg: not-null check; 2-arg: schema validation
+                let nargs = _a.saturating_sub(arg_reg);
+                if nargs < 2 {
+                    // Single arg: validate(value) => not null
+                    Ok(Value::Bool(!matches!(arg, Value::Null)))
+                } else {
+                    // Two args: validate(value, schema)
+                    let schema_val = &self.registers[base + arg_reg + 1];
+                    Ok(Value::Bool(validate_value_against_schema(
+                        arg,
+                        schema_val,
+                        &self.strings,
+                    )))
+                }
             }
             8 => {
                 // TRACEREF
@@ -2715,4 +2868,62 @@ fn format_value_with_spec(value: &Value, spec: &str) -> Result<String, VmError> 
     }
 
     Ok(formatted)
+}
+
+// ── Wave20 T186: validate helper functions ──
+
+/// Check if a runtime Value matches a type name string.
+fn validate_value_against_type_name(val: &Value, type_name: &str) -> bool {
+    match type_name {
+        "Any" => true,
+        "Int" | "int" => matches!(val, Value::Int(_)),
+        "Float" | "float" => matches!(val, Value::Float(_)),
+        "String" | "string" => matches!(val, Value::String(_)),
+        "Bool" | "bool" => matches!(val, Value::Bool(_)),
+        "Null" | "null" => matches!(val, Value::Null),
+        "List" | "list" => matches!(val, Value::List(_)),
+        "Map" | "map" => matches!(val, Value::Map(_)),
+        "Tuple" | "tuple" => matches!(val, Value::Tuple(_)),
+        "Set" | "set" => matches!(val, Value::Set(_)),
+        "Bytes" | "bytes" => matches!(val, Value::Bytes(_)),
+        _ => false,
+    }
+}
+
+/// Validate a value against a schema. The schema can be:
+/// - A string type name like "Int", "String", etc.
+/// - A map of field names to type name strings (for record/map validation)
+fn validate_value_against_schema(
+    val: &Value,
+    schema: &Value,
+    strings: &crate::strings::StringTable,
+) -> bool {
+    match schema {
+        Value::String(sref) => {
+            let type_name = match sref {
+                StringRef::Owned(s) => s.as_str(),
+                StringRef::Interned(id) => strings.resolve(*id).unwrap_or(""),
+            };
+            validate_value_against_type_name(val, type_name)
+        }
+        Value::Map(schema_map) => {
+            // Schema is a map: validate that val is a map with matching field types
+            if let Value::Map(val_map) = val {
+                for (key, expected_type) in schema_map.iter() {
+                    match val_map.get(key) {
+                        Some(field_val) => {
+                            if !validate_value_against_schema(field_val, expected_type, strings) {
+                                return false;
+                            }
+                        }
+                        None => return false,
+                    }
+                }
+                true
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
 }

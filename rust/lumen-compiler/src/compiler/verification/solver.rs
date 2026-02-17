@@ -206,8 +206,8 @@ impl IntBounds {
     /// Return the effective inclusive lower bound, if any.
     fn effective_lower(&self) -> Option<i64> {
         match (self.lower, self.lower_eq) {
-            (Some(gt), Some(ge)) => Some((gt + 1).max(ge)),
-            (Some(gt), None) => Some(gt + 1),
+            (Some(gt), Some(ge)) => Some(gt.saturating_add(1).max(ge)),
+            (Some(gt), None) => Some(gt.saturating_add(1)),
             (None, Some(ge)) => Some(ge),
             (None, None) => None,
         }
@@ -216,8 +216,8 @@ impl IntBounds {
     /// Return the effective inclusive upper bound, if any.
     fn effective_upper(&self) -> Option<i64> {
         match (self.upper, self.upper_eq) {
-            (Some(lt), Some(le)) => Some((lt - 1).min(le)),
-            (Some(lt), None) => Some(lt - 1),
+            (Some(lt), Some(le)) => Some(lt.saturating_sub(1).min(le)),
+            (Some(lt), None) => Some(lt.saturating_sub(1)),
             (None, Some(le)) => Some(le),
             (None, None) => None,
         }
@@ -253,8 +253,8 @@ impl IntBounds {
                     return SatResult::Unsat;
                 }
                 // Check if all integers in [lo, hi] are forbidden
-                let range_size = hi - lo + 1;
-                if range_size <= self.neq.len() as i64 {
+                let range_size = (hi as i128) - (lo as i128) + 1;
+                if range_size <= self.neq.len() as i128 {
                     // Small range — check exhaustively
                     let all_forbidden = (lo..=hi).all(|v| self.neq.contains(&v));
                     if all_forbidden {
@@ -444,13 +444,13 @@ fn evaluate_conjunction(parts: &[Constraint]) -> SatResult {
                         bounds
                             .entry(var.clone())
                             .or_insert_with(IntBounds::new)
-                            .apply(*cmp_op, *cmp_value - *arith_const);
+                            .apply(*cmp_op, cmp_value.saturating_sub(*arith_const));
                     }
                     ArithOp::Sub => {
                         bounds
                             .entry(var.clone())
                             .or_insert_with(IntBounds::new)
-                            .apply(*cmp_op, *cmp_value + *arith_const);
+                            .apply(*cmp_op, cmp_value.saturating_add(*arith_const));
                     }
                     ArithOp::Mul => {
                         if *arith_const > 0 {
@@ -659,7 +659,7 @@ fn evaluate_conjunction(parts: &[Constraint]) -> SatResult {
                         right_bounds.effective_lower(),
                     ) {
                         let needed = match op {
-                            CmpOp::Gt => right_lo + 1,
+                            CmpOp::Gt => right_lo.saturating_add(1),
                             _ => right_lo,
                         };
                         if left_hi < needed {
@@ -674,7 +674,7 @@ fn evaluate_conjunction(parts: &[Constraint]) -> SatResult {
                         right_bounds.effective_upper(),
                     ) {
                         let needed = match op {
-                            CmpOp::Lt => right_hi - 1,
+                            CmpOp::Lt => right_hi.saturating_sub(1),
                             _ => right_hi,
                         };
                         if left_lo > needed {

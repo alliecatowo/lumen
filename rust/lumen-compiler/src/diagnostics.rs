@@ -319,7 +319,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
     matrix[a_len][b_len]
 }
 
-fn suggest_similar(name: &str, candidates: &[&str], max_distance: usize) -> Vec<String> {
+pub fn suggest_similar(name: &str, candidates: &[&str], max_distance: usize) -> Vec<String> {
     let mut matches: Vec<(usize, String)> = candidates
         .iter()
         .filter_map(|c| {
@@ -1234,6 +1234,308 @@ fn format_ownership_error(error: &OwnershipError, source: &str, filename: &str) 
             }
         }
     }
+}
+
+// =============================================================================
+// Public API: type_diff, suggest_similar_names, format_suggestions
+// =============================================================================
+
+/// Format a concise type diff between expected and actual type strings.
+/// Returns a human-readable description highlighting where types diverge.
+pub fn type_diff(expected: &str, actual: &str) -> String {
+    if expected == actual {
+        return format!("Both types are `{}`", expected);
+    }
+
+    // Try structural diff for parameterized types
+    if let Some(diff) = structural_type_diff(expected, actual) {
+        return diff;
+    }
+
+    // Simple diff
+    format!("Expected `{}`, found `{}`", expected, actual)
+}
+
+fn structural_type_diff(expected: &str, actual: &str) -> Option<String> {
+    // list[T] vs list[U]
+    if let (Some(e_inner), Some(a_inner)) = (
+        strip_wrapper(expected, "list["),
+        strip_wrapper(actual, "list["),
+    ) {
+        let mut result = format!("Expected `{}`, found `{}`", expected, actual);
+        if e_inner != a_inner {
+            result.push_str(&format!(
+                " (list element: Expected `{}`, found `{}`)",
+                e_inner, a_inner
+            ));
+        }
+        return Some(result);
+    }
+
+    // set[T] vs set[U]
+    if let (Some(e_inner), Some(a_inner)) = (
+        strip_wrapper(expected, "set["),
+        strip_wrapper(actual, "set["),
+    ) {
+        let mut result = format!("Expected `{}`, found `{}`", expected, actual);
+        if e_inner != a_inner {
+            result.push_str(&format!(
+                " (set element: Expected `{}`, found `{}`)",
+                e_inner, a_inner
+            ));
+        }
+        return Some(result);
+    }
+
+    // map[K, V] vs map[K2, V2]
+    if let (Some((ek, ev)), Some((ak, av))) = (parse_map_types(expected), parse_map_types(actual)) {
+        let mut result = format!("Expected `{}`, found `{}`", expected, actual);
+        if ek != ak {
+            result.push_str(&format!(" (map key: Expected `{}`, found `{}`)", ek, ak));
+        }
+        if ev != av {
+            result.push_str(&format!(" (map value: Expected `{}`, found `{}`)", ev, av));
+        }
+        return Some(result);
+    }
+
+    // result[T, E] vs result[T2, E2]
+    if let (Some((et, ee)), Some((at, ae))) =
+        (parse_result_types(expected), parse_result_types(actual))
+    {
+        let mut result = format!("Expected `{}`, found `{}`", expected, actual);
+        if et != at {
+            result.push_str(&format!(" (ok type: Expected `{}`, found `{}`)", et, at));
+        }
+        if ee != ae {
+            result.push_str(&format!(" (err type: Expected `{}`, found `{}`)", ee, ae));
+        }
+        return Some(result);
+    }
+
+    // tuple[T1, T2, ...] vs tuple[U1, U2, ...]
+    if let (Some(e_elems), Some(a_elems)) = (parse_tuple_types(expected), parse_tuple_types(actual))
+    {
+        let mut result = format!("Expected `{}`, found `{}`", expected, actual);
+        if e_elems.len() != a_elems.len() {
+            result.push_str(&format!(
+                " (tuple arity: expected {}, found {})",
+                e_elems.len(),
+                a_elems.len()
+            ));
+        } else {
+            for (i, (e, a)) in e_elems.iter().zip(a_elems.iter()).enumerate() {
+                if e != a {
+                    result.push_str(&format!(
+                        " (element {}: Expected `{}`, found `{}`)",
+                        i, e, a
+                    ));
+                }
+            }
+        }
+        return Some(result);
+    }
+
+    None
+}
+
+fn strip_wrapper<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    if s.starts_with(prefix) && s.ends_with(']') {
+        Some(&s[prefix.len()..s.len() - 1])
+    } else {
+        None
+    }
+}
+
+fn parse_map_types(s: &str) -> Option<(String, String)> {
+    let inner = strip_wrapper(s, "map[")?;
+    let (k, v) = split_type_pair(inner)?;
+    Some((k.trim().to_string(), v.trim().to_string()))
+}
+
+fn parse_result_types(s: &str) -> Option<(String, String)> {
+    let inner = strip_wrapper(s, "result[")?;
+    let (t, e) = split_type_pair(inner)?;
+    Some((t.trim().to_string(), e.trim().to_string()))
+}
+
+fn parse_tuple_types(s: &str) -> Option<Vec<String>> {
+    let inner = strip_wrapper(s, "tuple[")?;
+    Some(
+        split_type_list(inner)
+            .into_iter()
+            .map(|t| t.trim().to_string())
+            .collect(),
+    )
+}
+
+fn split_type_pair(s: &str) -> Option<(String, String)> {
+    let parts = split_type_list(s);
+    if parts.len() == 2 {
+        Some((parts[0].clone(), parts[1].clone()))
+    } else {
+        None
+    }
+}
+
+fn split_type_list(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut depth = 0;
+    let mut current = String::new();
+    for ch in s.chars() {
+        match ch {
+            '[' | '(' => {
+                depth += 1;
+                current.push(ch);
+            }
+            ']' | ')' => {
+                depth -= 1;
+                current.push(ch);
+            }
+            ',' if depth == 0 => {
+                parts.push(current.trim().to_string());
+                current = String::new();
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current.trim().to_string());
+    }
+    parts
+}
+
+/// Suggest similar names from a list of candidates (max edit distance 2, at most 3 results).
+/// This is a public wrapper around `suggest_similar`.
+pub fn suggest_similar_names(name: &str, candidates: &[&str]) -> Vec<String> {
+    suggest_similar(name, candidates, 2)
+}
+
+/// Format suggestions for a misspelled name.
+/// Returns `Some("did you mean 'x'?")` if similar names found, `None` otherwise.
+pub fn format_suggestions(name: &str, candidates: &[&str]) -> Option<String> {
+    let suggestions = suggest_similar(name, candidates, 2);
+    if suggestions.is_empty() {
+        return None;
+    }
+    if suggestions.len() == 1 {
+        Some(format!("did you mean '{}'?", suggestions[0]))
+    } else {
+        let quoted: Vec<String> = suggestions.iter().map(|s| format!("'{}'", s)).collect();
+        Some(format!("did you mean one of: {}?", quoted.join(", ")))
+    }
+}
+
+// =============================================================================
+// Public API: Interpolation span mapping (T188)
+// =============================================================================
+
+/// Represents a segment of an interpolated string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterpolationSegmentSpan {
+    /// Offset from the opening quote character (1-based: 1 = first char after quote)
+    pub offset: usize,
+    /// Length in characters
+    pub length: usize,
+    /// True if this segment is an interpolated expression (`{expr}`), false for literal text
+    pub is_expr: bool,
+}
+
+/// Parse a line of source at the given string-start column and return interpolation segments.
+/// `string_start_col` is the 1-based column of the opening `"` character.
+/// Returns empty vec if the column doesn't point to a `"`.
+pub fn map_interpolation_spans(
+    line: &str,
+    string_start_col: usize,
+) -> Vec<InterpolationSegmentSpan> {
+    let chars: Vec<char> = line.chars().collect();
+    let idx = if string_start_col == 0 {
+        0
+    } else {
+        string_start_col.saturating_sub(1)
+    };
+
+    if idx >= chars.len() || chars[idx] != '"' {
+        return vec![];
+    }
+
+    // Parse content between quotes
+    let mut pos = idx + 1; // skip opening quote
+    let mut segments = Vec::new();
+    let mut offset = 1usize; // 1-based offset from the quote
+    let mut literal_start = offset;
+    let mut literal_len = 0usize;
+
+    while pos < chars.len() && chars[pos] != '"' {
+        if chars[pos] == '\\' {
+            // Escape sequence — consume two chars as literal
+            literal_len += 2;
+            pos += 2;
+        } else if chars[pos] == '{' {
+            // Flush any pending literal
+            if literal_len > 0 {
+                segments.push(InterpolationSegmentSpan {
+                    offset: literal_start,
+                    length: literal_len,
+                    is_expr: false,
+                });
+                offset += literal_len;
+                literal_len = 0;
+            }
+
+            // Find matching closing brace, handling nesting
+            let expr_start = pos;
+            let mut depth = 1;
+            pos += 1;
+            while pos < chars.len() && depth > 0 {
+                if chars[pos] == '{' {
+                    depth += 1;
+                } else if chars[pos] == '}' {
+                    depth -= 1;
+                }
+                pos += 1;
+            }
+            let expr_len = pos - expr_start;
+            segments.push(InterpolationSegmentSpan {
+                offset,
+                length: expr_len,
+                is_expr: true,
+            });
+            offset += expr_len;
+            literal_start = offset;
+        } else {
+            literal_len += 1;
+            pos += 1;
+        }
+    }
+
+    // Flush remaining literal
+    if literal_len > 0 {
+        segments.push(InterpolationSegmentSpan {
+            offset: literal_start,
+            length: literal_len,
+            is_expr: false,
+        });
+    }
+
+    segments
+}
+
+/// Get the column range (start, end) of the Nth interpolated expression in a string.
+/// `string_start_col` is the 1-based column of the opening `"`.
+/// `expr_index` is the 0-based index of the expression segment to find.
+/// Returns `Some((start_col, end_col))` or `None` if not found.
+pub fn interpolation_expr_col_range(
+    line: &str,
+    string_start_col: usize,
+    expr_index: usize,
+) -> Option<(usize, usize)> {
+    let spans = map_interpolation_spans(line, string_start_col);
+    let expr_spans: Vec<&InterpolationSegmentSpan> = spans.iter().filter(|s| s.is_expr).collect();
+    let span = expr_spans.get(expr_index)?;
+    let start_col = string_start_col + span.offset;
+    let end_col = start_col + span.length;
+    Some((start_col, end_col))
 }
 
 #[cfg(test)]

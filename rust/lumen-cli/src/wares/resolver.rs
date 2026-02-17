@@ -25,7 +25,6 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-
 /// Final result of the resolution process.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolutionResult {
@@ -36,8 +35,8 @@ pub struct ResolutionResult {
 }
 
 use crate::config::{DependencySpec, FeatureDef};
-use crate::wares::{RegistryClient, RegistryPackageIndex, RegistryVersionMetadata};
 use crate::semver::{Constraint, Version};
+use crate::wares::{RegistryClient, RegistryPackageIndex, RegistryVersionMetadata};
 
 // =============================================================================
 // Core Types - Public API
@@ -54,8 +53,10 @@ pub type FeatureName = String;
 
 /// Dependency kind for resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum DependencyKind {
     /// Normal runtime dependency.
+    #[default]
     Normal,
     /// Development dependency (tests, benchmarks).
     Dev,
@@ -63,14 +64,10 @@ pub enum DependencyKind {
     Build,
 }
 
-impl Default for DependencyKind {
-    fn default() -> Self {
-        Self::Normal
-    }
-}
 
 /// Request for dependency resolution.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct ResolutionRequest {
     /// Root dependencies with version constraints.
     pub root_deps: HashMap<PackageId, DependencySpec>,
@@ -90,20 +87,6 @@ pub struct ResolutionRequest {
     pub include_yanked: bool,
 }
 
-impl Default for ResolutionRequest {
-    fn default() -> Self {
-        Self {
-            root_deps: HashMap::new(),
-            dev_deps: HashMap::new(),
-            build_deps: HashMap::new(),
-            registry_url: String::new(),
-            features: Vec::new(),
-            include_dev: false,
-            include_build: false,
-            include_yanked: false,
-        }
-    }
-}
 
 /// A resolved package with its exact version and dependencies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -598,7 +581,7 @@ impl SatSolver {
         let clause_idx = self.clauses.len();
         self.clauses.push(clause);
 
-        if literals.len() >= 1 {
+        if !literals.is_empty() {
             self.watches
                 .entry(literals[0].negated())
                 .or_default()
@@ -621,7 +604,7 @@ impl SatSolver {
         let clause_idx = self.clauses.len();
         self.clauses.push(clause);
 
-        if literals.len() >= 1 {
+        if !literals.is_empty() {
             self.watches
                 .entry(literals[0].negated())
                 .or_default()
@@ -743,11 +726,10 @@ impl SatSolver {
                 }
 
                 let new_lit = new_lit.unwrap();
-                if clause.literals.len() == 1 || !found_false {
-                    if clause.literals.len() == 1 || self.value(new_lit).is_none() {
+                if (clause.literals.len() == 1 || !found_false)
+                    && (clause.literals.len() == 1 || self.value(new_lit).is_none()) {
                         self.assign(new_lit, Some(clause_idx));
                     }
-                }
             }
         }
 
@@ -1126,7 +1108,7 @@ impl Resolver {
         }
 
         let git_cache_dir = dirs::cache_dir()
-            .unwrap_or_else(|| std::env::temp_dir())
+            .unwrap_or_else(std::env::temp_dir)
             .join("lumen")
             .join("git");
 
@@ -1338,7 +1320,7 @@ impl Resolver {
                     kind,
                 });
             }
-            
+
             return Ok(ResolutionResult {
                 packages,
                 proof: ResolutionProof {
@@ -1388,7 +1370,6 @@ impl Resolver {
         resolver.git_cache_dir = self.git_cache_dir.clone();
         resolver.resolve(request)
     }
-
 
     fn collect_packages(
         &self,
@@ -1726,7 +1707,7 @@ impl Resolver {
             if lit.positive {
                 let pkg_name = &state.pkg_names[lit.pkg];
                 let (_, version_str) = &state.all_versions[lit.pkg][lit.ver];
-                
+
                 let reason = if let Some(node) = solver.implications.get(lit) {
                     if let Some(_clause_idx) = node.reason {
                         format!("Implied by dependency constraints at level {}", node.level)
@@ -2027,7 +2008,7 @@ impl Resolver {
         if conflict.required_by.len() == 2 {
             suggestions.push(ConflictSuggestion::Fork {
                 package: conflict.package.clone(),
-                alias: format!("{}", conflict.package),
+                alias: conflict.package.to_string(),
                 why: "Allow different versions for different parts of the dependency tree"
                     .to_string(),
             });
@@ -2373,7 +2354,7 @@ pub fn format_resolution_error(error: &ResolutionError) -> String {
             output.push_str(&format!("Dependency chain: {}\n\n", chain.join(" -> ")));
 
             if let Some((first, rest)) = chain.split_first() {
-                if rest.contains(&first) {
+                if rest.contains(first) {
                     output.push_str(&format!(
                         "Package '{first}' transitively depends on itself.\n"
                     ));

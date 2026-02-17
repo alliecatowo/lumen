@@ -1,12 +1,12 @@
 //! Builtin function dispatch, intrinsic opcodes, and closure calls for the VM.
 
 use super::*;
-use std::collections::{BTreeMap, BTreeSet};
-use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use lumen_compiler::compile_raw;
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
+use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 impl VM {
     /// Execute a built-in function by name.
@@ -604,28 +604,32 @@ impl VM {
                         }
                     }
                     (Value::Int(x), Value::BigInt(y)) => {
-                         // Huge exponent?
-                         // If y fits in u32, we can pow. Else it's too big.
-                         if let Some(exp) = y.to_u32() {
-                             Value::BigInt(BigInt::from(*x).pow(exp))
-                         } else {
-                             // Too big. Infinity or zero?
-                             // x ^ huge
-                             Value::Float(f64::INFINITY) // Approximation
-                         }
+                        // Huge exponent?
+                        // If y fits in u32, we can pow. Else it's too big.
+                        if let Some(exp) = y.to_u32() {
+                            Value::BigInt(BigInt::from(*x).pow(exp))
+                        } else {
+                            // Too big. Infinity or zero?
+                            // x ^ huge
+                            Value::Float(f64::INFINITY) // Approximation
+                        }
                     }
                     (Value::BigInt(x), Value::BigInt(y)) => {
-                         if let Some(exp) = y.to_u32() {
-                             Value::BigInt(x.pow(exp))
-                         } else {
-                             Value::Float(f64::INFINITY)
-                         }
+                        if let Some(exp) = y.to_u32() {
+                            Value::BigInt(x.pow(exp))
+                        } else {
+                            Value::Float(f64::INFINITY)
+                        }
                     }
                     (Value::Float(x), Value::Float(y)) => Value::Float(x.powf(*y)),
                     (Value::Int(x), Value::Float(y)) => Value::Float((*x as f64).powf(*y)),
                     (Value::Float(x), Value::Int(y)) => Value::Float(x.powf(*y as f64)),
-                    (Value::BigInt(x), Value::Float(y)) => Value::Float(x.to_f64().unwrap_or(f64::NAN).powf(*y)),
-                    (Value::Float(x), Value::BigInt(y)) => Value::Float(x.powf(y.to_f64().unwrap_or(f64::NAN))),
+                    (Value::BigInt(x), Value::Float(y)) => {
+                        Value::Float(x.to_f64().unwrap_or(f64::NAN).powf(*y))
+                    }
+                    (Value::Float(x), Value::BigInt(y)) => {
+                        Value::Float(x.powf(y.to_f64().unwrap_or(f64::NAN)))
+                    }
                     _ => Value::Null,
                 })
             }
@@ -662,7 +666,9 @@ impl VM {
                 let hi = &self.registers[base + a + 3];
                 Ok(match (val, lo, hi) {
                     (Value::Int(v), Value::Int(l), Value::Int(h)) => Value::Int(*v.max(l).min(h)),
-                    (Value::BigInt(v), Value::BigInt(l), Value::BigInt(h)) => Value::BigInt(v.max(l).min(h).clone()),
+                    (Value::BigInt(v), Value::BigInt(l), Value::BigInt(h)) => {
+                        Value::BigInt(v.max(l).min(h).clone())
+                    }
                     (Value::Float(v), Value::Float(l), Value::Float(h)) => {
                         Value::Float(v.max(*l).min(*h))
                     }
@@ -1130,7 +1136,9 @@ impl VM {
                         let key = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
                         let key_str = key.as_string();
                         match groups.get_mut(&key_str) {
-                            Some(Value::List(ref mut list)) => Rc::make_mut(list).push(item.clone()),
+                            Some(Value::List(ref mut list)) => {
+                                Rc::make_mut(list).push(item.clone())
+                            }
                             _ => {
                                 groups.insert(key_str, Value::new_list(vec![item.clone()]));
                             }
@@ -1161,7 +1169,7 @@ impl VM {
             "random" => {
                 use std::cell::Cell;
                 thread_local! {
-                    static RNG_STATE: Cell<u64> = Cell::new(0);
+                    static RNG_STATE: Cell<u64> = const { Cell::new(0) };
                 }
                 RNG_STATE.with(|state| {
                     let mut s = state.get();
@@ -1199,7 +1207,8 @@ impl VM {
                     if ch == '{' && chars.peek() == Some(&'}') {
                         chars.next();
                         if arg_idx < nargs - 1 {
-                            result.push_str(&self.registers[base + a + 2 + arg_idx].display_pretty());
+                            result
+                                .push_str(&self.registers[base + a + 2 + arg_idx].display_pretty());
                             arg_idx += 1;
                         } else {
                             result.push_str("{}");
@@ -1213,23 +1222,19 @@ impl VM {
             "partition" => {
                 let list = self.registers[base + a].clone();
                 let predicate = self.registers[base + a + 1].clone();
-                
+
                 let closure_opt = match predicate {
                     Value::Closure(cv) => Some(cv),
                     Value::String(ref s) => {
-                         let name_str = match s {
-                             StringRef::Owned(s) => s.as_str(),
-                             StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
-                         };
-                         let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                         if let Some(idx) = module.cells.iter().position(|c| c.name == name_str) {
-                             Some(ClosureValue {
-                                 cell_idx: idx,
-                                 captures: vec![],
-                             })
-                         } else {
-                             None
-                         }
+                        let name_str = match s {
+                            StringRef::Owned(s) => s.as_str(),
+                            StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                        };
+                        let module = self.module.as_ref().ok_or(VmError::NoModule)?;
+                        module.cells.iter().position(|c| c.name == name_str).map(|idx| ClosureValue {
+                                cell_idx: idx,
+                                captures: vec![],
+                            })
                     }
                     _ => None,
                 };
@@ -1250,7 +1255,10 @@ impl VM {
                         Value::new_list(non_matching),
                     ]))
                 } else {
-                    Ok(Value::new_tuple(vec![Value::new_list(vec![]), Value::new_list(vec![])]))
+                    Ok(Value::new_tuple(vec![
+                        Value::new_list(vec![]),
+                        Value::new_list(vec![]),
+                    ]))
                 }
             }
             "read_dir" => {
@@ -1258,12 +1266,10 @@ impl VM {
                 match std::fs::read_dir(&path) {
                     Ok(entries) => {
                         let mut result = Vec::new();
-                        for entry in entries {
-                            if let Ok(e) = entry {
-                                result.push(Value::String(StringRef::Owned(
-                                    e.file_name().to_string_lossy().to_string(),
-                                )));
-                            }
+                        for e in entries.flatten() {
+                            result.push(Value::String(StringRef::Owned(
+                                e.file_name().to_string_lossy().to_string(),
+                            )));
                         }
                         Ok(Value::new_list(result))
                     }
@@ -1820,7 +1826,9 @@ impl VM {
                         let key = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
                         let key_str = key.as_string();
                         match groups.get_mut(&key_str) {
-                            Some(Value::List(ref mut list)) => Rc::make_mut(list).push(item.clone()),
+                            Some(Value::List(ref mut list)) => {
+                                Rc::make_mut(list).push(item.clone())
+                            }
                             _ => {
                                 groups.insert(key_str, Value::new_list(vec![item.clone()]));
                             }
@@ -2015,43 +2023,49 @@ impl VM {
                         }
                     }
                     (Value::BigInt(x), Value::Int(y)) => {
-                         if *y >= 0 {
-                             if let Ok(y_u32) = std::convert::TryFrom::try_from(*y) {
-                                 Value::BigInt(x.pow(y_u32))
-                             } else {
-                                 Value::Null
-                             }
+                        if *y >= 0 {
+                            if let Ok(y_u32) = std::convert::TryFrom::try_from(*y) {
+                                Value::BigInt(x.pow(y_u32))
+                            } else {
+                                Value::Null
+                            }
                         } else {
-                             Value::Float(x.to_f64().unwrap_or(f64::INFINITY).powf(*y as f64))
+                            Value::Float(x.to_f64().unwrap_or(f64::INFINITY).powf(*y as f64))
                         }
                     }
                     (Value::Int(x), Value::BigInt(y)) => {
                         if let Some(y_u32) = y.to_u32() {
                             Value::BigInt(BigInt::from(*x).pow(y_u32))
+                        } else if y.sign() == num_bigint::Sign::Minus {
+                            Value::Float(
+                                (*x as f64).powf(y.to_f64().unwrap_or(f64::NEG_INFINITY)),
+                            )
                         } else {
-                             if y.sign() == num_bigint::Sign::Minus {
-                                  Value::Float((*x as f64).powf(y.to_f64().unwrap_or(f64::NEG_INFINITY)))
-                             } else {
-                                  Value::Null
-                             }
+                            Value::Null
                         }
                     }
                     (Value::BigInt(x), Value::BigInt(y)) => {
-                         if let Some(y_u32) = y.to_u32() {
-                             Value::BigInt(x.pow(y_u32))
-                         } else {
-                             if y.sign() == num_bigint::Sign::Minus {
-                                  Value::Float(x.to_f64().unwrap_or(f64::INFINITY).powf(y.to_f64().unwrap_or(f64::NEG_INFINITY)))
-                             } else {
-                                  Value::Null
-                             }
-                         }
+                        if let Some(y_u32) = y.to_u32() {
+                            Value::BigInt(x.pow(y_u32))
+                        } else if y.sign() == num_bigint::Sign::Minus {
+                            Value::Float(
+                                x.to_f64()
+                                    .unwrap_or(f64::INFINITY)
+                                    .powf(y.to_f64().unwrap_or(f64::NEG_INFINITY)),
+                            )
+                        } else {
+                            Value::Null
+                        }
                     }
                     (Value::Float(x), Value::Float(y)) => Value::Float(x.powf(*y)),
                     (Value::Int(x), Value::Float(y)) => Value::Float((*x as f64).powf(*y)),
                     (Value::Float(x), Value::Int(y)) => Value::Float(x.powf(*y as f64)),
-                    (Value::BigInt(x), Value::Float(y)) => Value::Float(x.to_f64().unwrap_or(f64::INFINITY).powf(*y)),
-                    (Value::Float(x), Value::BigInt(y)) => Value::Float(x.powf(y.to_f64().unwrap_or(f64::INFINITY))),
+                    (Value::BigInt(x), Value::Float(y)) => {
+                        Value::Float(x.to_f64().unwrap_or(f64::INFINITY).powf(*y))
+                    }
+                    (Value::Float(x), Value::BigInt(y)) => {
+                        Value::Float(x.powf(y.to_f64().unwrap_or(f64::INFINITY)))
+                    }
                     _ => Value::Null,
                 })
             }
@@ -2227,30 +2241,27 @@ impl VM {
             78 => {
                 // PARTITION: split list by predicate into (matching, non_matching)
                 let closure_val = self.registers[base + arg_reg + 1].clone();
-                println!("DEBUG: exec_intrinsic partition. arg_reg={}, closure_val={:?}", arg_reg, closure_val);
-                
+                println!(
+                    "DEBUG: exec_intrinsic partition. arg_reg={}, closure_val={:?}",
+                    arg_reg, closure_val
+                );
+
                 let closure_opt = match closure_val {
                     Value::Closure(cv) => Some(cv),
                     Value::String(ref s) => {
-                         let name_str = match s {
-                             StringRef::Owned(s) => s.as_str(),
-                             StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
-                         };
+                        let name_str = match s {
+                            StringRef::Owned(s) => s.as_str(),
+                            StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                        };
 
-                         let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                         
+                        let module = self.module.as_ref().ok_or(VmError::NoModule)?;
 
-
-                         if let Some(idx) = module.cells.iter().position(|c| c.name == name_str) {
-                             Some(ClosureValue {
-                                 cell_idx: idx,
-                                 captures: vec![],
-                             })
-                         } else {
-                             None
-                         }
+                        module.cells.iter().position(|c| c.name == name_str).map(|idx| ClosureValue {
+                                cell_idx: idx,
+                                captures: vec![],
+                            })
                     }
-                    _ => None
+                    _ => None,
                 };
 
                 if let (Value::List(l), Some(cv)) = (arg.clone(), closure_opt) {
@@ -2269,7 +2280,10 @@ impl VM {
                         Value::new_list(non_matching),
                     ]))
                 } else {
-                    Ok(Value::new_tuple(vec![Value::new_list(vec![]), Value::new_list(vec![])]))
+                    Ok(Value::new_tuple(vec![
+                        Value::new_list(vec![]),
+                        Value::new_list(vec![]),
+                    ]))
                 }
             }
             79 => {
@@ -2278,12 +2292,10 @@ impl VM {
                 match std::fs::read_dir(&path) {
                     Ok(entries) => {
                         let mut result = Vec::new();
-                        for entry in entries {
-                            if let Ok(e) = entry {
-                                result.push(Value::String(StringRef::Owned(
-                                    e.file_name().to_string_lossy().to_string(),
-                                )));
-                            }
+                        for e in entries.flatten() {
+                            result.push(Value::String(StringRef::Owned(
+                                e.file_name().to_string_lossy().to_string(),
+                            )));
                         }
                         Ok(Value::new_list(result))
                     }
@@ -2312,7 +2324,7 @@ impl VM {
                     .as_nanos();
                 let cell_name = format!("__eval_{}", now);
                 let wrapped_src = format!("cell {}() -> Any\n  {}\nend", cell_name, source);
-                
+
                 match compile_raw(&wrapped_src) {
                     Ok(new_module) => {
                         if let Some(current_mod) = self.module.as_mut() {

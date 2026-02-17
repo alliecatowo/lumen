@@ -267,7 +267,9 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                             ConstValue::Int(n) => n.to_string(),
                             ConstValue::BigInt(n) => n.to_string(),
                             ConstValue::Float(f) => f.to_string(),
-                            ConstValue::String(s) => serde_json::to_string(&s).unwrap_or_else(|_| format!("\"{}\"", s)),
+                            ConstValue::String(s) => {
+                                serde_json::to_string(&s).unwrap_or_else(|_| format!("\"{}\"", s))
+                            }
                             ConstValue::Bool(b) => b.to_string(),
                             ConstValue::Null => "null".to_string(),
                         }
@@ -280,8 +282,7 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                     });
                 }
                 if !p.pipeline_stages.is_empty() {
-                    let stages_json =
-                        serde_json::to_string(&p.pipeline_stages).unwrap_or_default();
+                    let stages_json = serde_json::to_string(&p.pipeline_stages).unwrap_or_default();
                     module.addons.push(LirAddon {
                         kind: "pipeline.stages".to_string(),
                         name: Some(format!("{}={}", p.name, stages_json)),
@@ -1401,13 +1402,14 @@ impl<'a> Lowerer<'a> {
                                 let callee_reg = ra.alloc_temp();
                                 let callee_idx = consts.len() as u16;
                                 consts.push(Constant::String(name.to_string()));
-                                instrs
-                                    .push(Instruction::abx(OpCode::LoadK, callee_reg, callee_idx));
+                                instrs.push(Instruction::abx(
+                                    OpCode::LoadK,
+                                    callee_reg,
+                                    callee_idx,
+                                ));
                                 let arg_regs =
                                     self.lower_call_arg_regs(args, None, ra, consts, instrs);
-                                self.emit_tail_call_with_regs(
-                                    callee_reg, &arg_regs, ra, instrs,
-                                );
+                                self.emit_tail_call_with_regs(callee_reg, &arg_regs, ra, instrs);
                                 return;
                             }
                         }
@@ -1579,8 +1581,6 @@ impl<'a> Lowerer<'a> {
             }
         }
     }
-
-
 
     fn push_const_int(
         &mut self,
@@ -2023,11 +2023,11 @@ impl<'a> Lowerer<'a> {
                 dest
             }
             Expr::BigIntLit(n, _) => {
-                 let dest = ra.alloc_temp();
-                 let kidx = consts.len() as u16;
-                 consts.push(Constant::BigInt(n.clone()));
-                 instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
-                 dest
+                let dest = ra.alloc_temp();
+                let kidx = consts.len() as u16;
+                consts.push(Constant::BigInt(n.clone()));
+                instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
+                dest
             }
             Expr::FloatLit(f, _) => {
                 let dest = ra.alloc_temp();
@@ -2317,22 +2317,37 @@ impl<'a> Lowerer<'a> {
                     // Register layout: r0 = capture f, r1 = capture g, r2 = param x
                     let lambda_name = format!("<compose/{}>", self.lambda_cells.len());
                     let lparams = vec![
-                        LirParam { name: "__capture_f".into(), ty: "Any".into(), register: 0, variadic: false },
-                        LirParam { name: "__capture_g".into(), ty: "Any".into(), register: 1, variadic: false },
-                        LirParam { name: "__compose_x".into(), ty: "Any".into(), register: 2, variadic: false },
+                        LirParam {
+                            name: "__capture_f".into(),
+                            ty: "Any".into(),
+                            register: 0,
+                            variadic: false,
+                        },
+                        LirParam {
+                            name: "__capture_g".into(),
+                            ty: "Any".into(),
+                            register: 1,
+                            variadic: false,
+                        },
+                        LirParam {
+                            name: "__compose_x".into(),
+                            ty: "Any".into(),
+                            register: 2,
+                            variadic: false,
+                        },
                     ];
                     let linstrs = vec![
                         Instruction::abc(OpCode::GetUpval, 0, 0, 0), // r0 = capture f
                         Instruction::abc(OpCode::GetUpval, 1, 1, 0), // r1 = capture g
                         // Call f(x): callee at r3, arg at r4
-                        Instruction::abc(OpCode::Move, 3, 0, 0),    // r3 = f
-                        Instruction::abc(OpCode::Move, 4, 2, 0),    // r4 = x
-                        Instruction::abc(OpCode::Call, 3, 1, 1),     // r3 = f(x)
+                        Instruction::abc(OpCode::Move, 3, 0, 0), // r3 = f
+                        Instruction::abc(OpCode::Move, 4, 2, 0), // r4 = x
+                        Instruction::abc(OpCode::Call, 3, 1, 1), // r3 = f(x)
                         // Call g(f(x)): callee at r5, arg at r6
-                        Instruction::abc(OpCode::Move, 5, 1, 0),    // r5 = g
-                        Instruction::abc(OpCode::Move, 6, 3, 0),    // r6 = f(x) result
-                        Instruction::abc(OpCode::Call, 5, 1, 1),     // r5 = g(f(x))
-                        Instruction::abc(OpCode::Return, 5, 1, 0),   // return g(f(x))
+                        Instruction::abc(OpCode::Move, 5, 1, 0), // r5 = g
+                        Instruction::abc(OpCode::Move, 6, 3, 0), // r6 = f(x) result
+                        Instruction::abc(OpCode::Call, 5, 1, 1), // r5 = g(f(x))
+                        Instruction::abc(OpCode::Return, 5, 1, 0), // return g(f(x))
                     ];
 
                     let proto_idx = self.lambda_cells.len() as u16;
@@ -2641,13 +2656,14 @@ impl<'a> Lowerer<'a> {
                     if let Expr::Ident(agent_name, _) = obj.as_ref() {
                         // Check if this is a local variable (not a process/agent type constructor)
                         let is_local_var = ra.lookup(agent_name).is_some();
-                        let is_ctor_target = !is_local_var && (self.symbols.agents.contains_key(agent_name)
-                            || self
-                                .symbols
-                                .processes
-                                .values()
-                                .any(|p| p.name == *agent_name));
-                        
+                        let is_ctor_target = !is_local_var
+                            && (self.symbols.agents.contains_key(agent_name)
+                                || self
+                                    .symbols
+                                    .processes
+                                    .values()
+                                    .any(|p| p.name == *agent_name));
+
                         if is_ctor_target {
                             // Constructor-style call: Pipeline.run(args) -> construct then call
                             let ctor_reg = ra.alloc_temp();
@@ -2668,7 +2684,7 @@ impl<'a> Lowerer<'a> {
                             let obj_reg = self.lower_expr(obj, ra, consts, instrs);
                             let dest = ra.alloc_temp();
                             self.emit_get_field(dest, obj_reg, field, ra, consts, instrs);
-                            
+
                             let mut arg_regs = vec![obj_reg];
                             for arg in args {
                                 match arg {
@@ -3559,7 +3575,12 @@ impl<'a> Lowerer<'a> {
                     self.lower_expr(inner, ra, consts, instrs)
                 }
             }
-            Expr::Perform { effect_name, operation, args, .. } => {
+            Expr::Perform {
+                effect_name,
+                operation,
+                args,
+                ..
+            } => {
                 let dest = ra.alloc_temp();
                 // Emit args to consecutive registers starting at dest+1
                 for (i, arg) in args.iter().enumerate() {
@@ -3576,7 +3597,12 @@ impl<'a> Lowerer<'a> {
                 consts.push(Constant::String(operation.clone()));
                 // Perform opcode: A=dest, B=effect_name const, C=operation const
                 // We use bx to pack both indices: effect in b, operation in c
-                instrs.push(Instruction::abc(OpCode::Perform, dest, eff_kidx as u8, op_kidx as u8));
+                instrs.push(Instruction::abc(
+                    OpCode::Perform,
+                    dest,
+                    eff_kidx as u8,
+                    op_kidx as u8,
+                ));
                 dest
             }
             Expr::HandleExpr { body, handlers, .. } => {
@@ -3624,7 +3650,8 @@ impl<'a> Lowerer<'a> {
                     let meta_idx = first_meta_idx + i;
 
                     // Patch the HandlePush instruction with the correct offset
-                    instrs[push_idx] = Instruction::abx(OpCode::HandlePush, meta_idx as u8, offset as u16);
+                    instrs[push_idx] =
+                        Instruction::abx(OpCode::HandlePush, meta_idx as u8, offset as u16);
 
                     // Update handler_ip in the metadata (for debugging/serialization)
                     self.effect_handler_metas[meta_idx].handler_ip = handler_code_start;
@@ -4616,7 +4643,9 @@ mod tests {
         let module = lower_src(src);
         let cell = &module.cells[0];
         assert!(
-            cell.constants.iter().any(|c| matches!(c, Constant::Int(20))),
+            cell.constants
+                .iter()
+                .any(|c| matches!(c, Constant::Int(20))),
             "comptime (2 + 3) * 4 should fold to constant Int(20), got constants: {:?}",
             cell.constants
         );
@@ -4656,6 +4685,7 @@ end"#;
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // test asserts literal 3.14 from source, not π
     fn test_comptime_float_literal() {
         let src = "cell main() -> Float\n  return comptime 3.14 end\nend";
         let module = lower_src(src);
@@ -4698,7 +4728,12 @@ end"#;
     fn test_try_const_eval_unit() {
         use crate::compiler::tokens::Span;
 
-        let s = Span { start: 0, end: 0, line: 0, col: 0 };
+        let s = Span {
+            start: 0,
+            end: 0,
+            line: 0,
+            col: 0,
+        };
 
         assert!(matches!(
             try_const_eval(&Expr::IntLit(42, s)),
@@ -4719,7 +4754,10 @@ end"#;
             Box::new(Expr::IntLit(5, s)),
             s,
         );
-        assert!(matches!(try_const_eval(&mul_expr), Some(ConstValue::Int(50))));
+        assert!(matches!(
+            try_const_eval(&mul_expr),
+            Some(ConstValue::Int(50))
+        ));
 
         let str_expr = Expr::BinOp(
             Box::new(Expr::StringLit("a".into(), s)),
@@ -4750,10 +4788,9 @@ end"#;
         );
         // The constant pool should contain PI's float value
         assert!(
-            module.cells[0]
-                .constants
-                .iter()
-                .any(|c| matches!(c, Constant::Float(f) if (*f - std::f64::consts::PI).abs() < 1e-15)),
+            module.cells[0].constants.iter().any(
+                |c| matches!(c, Constant::Float(f) if (*f - std::f64::consts::PI).abs() < 1e-15)
+            ),
             "constant pool should contain PI value"
         );
     }
@@ -4768,10 +4805,13 @@ end"#;
         for (name, expected) in &float_cases {
             let src = format!("cell main() -> Float\n  return {}\nend", name);
             let module = lower_src(&src);
-            let found = module.cells[0].constants.iter().any(|c| match (c, expected) {
-                (Constant::Float(a), Constant::Float(b)) => a.to_bits() == b.to_bits(),
-                _ => false,
-            });
+            let found = module.cells[0]
+                .constants
+                .iter()
+                .any(|c| match (c, expected) {
+                    (Constant::Float(a), Constant::Float(b)) => a.to_bits() == b.to_bits(),
+                    _ => false,
+                });
             assert!(
                 found,
                 "constant pool should contain {} value, got: {:?}",
@@ -4785,10 +4825,13 @@ end"#;
         for (name, expected) in &int_cases {
             let src = format!("cell main() -> Int\n  return {}\nend", name);
             let module = lower_src(&src);
-            let found = module.cells[0].constants.iter().any(|c| match (c, expected) {
-                (Constant::Int(a), Constant::Int(b)) => a == b,
-                _ => false,
-            });
+            let found = module.cells[0]
+                .constants
+                .iter()
+                .any(|c| match (c, expected) {
+                    (Constant::Int(a), Constant::Int(b)) => a == b,
+                    _ => false,
+                });
             assert!(
                 found,
                 "constant pool should contain {} value, got: {:?}",

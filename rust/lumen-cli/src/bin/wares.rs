@@ -1,9 +1,6 @@
 //! Wares CLI — package manager for the Lumen language.
 
-use lumen_cli::{
-    registry_cmd, wares,
-};
-
+use lumen_cli::{registry_cmd, wares};
 
 use clap::{Parser as ClapParser, Subcommand};
 
@@ -129,9 +126,9 @@ enum Commands {
     /// Verify package trust
     TrustCheck {
         /// Ware name or path
-         target: String,
-         #[arg(long)]
-         registry: Option<String>,
+        target: String,
+        #[arg(long)]
+        registry: Option<String>,
     },
     /// Manage trust policies
     Policy {
@@ -160,15 +157,30 @@ enum PolicyCommands {
 #[derive(Subcommand)]
 enum TokenCommands {
     List,
-    Add { registry: String, token: String, name: Option<String> },
-    Remove { registry: String },
+    Add {
+        registry: String,
+        token: String,
+        name: Option<String>,
+    },
+    Remove {
+        registry: String,
+    },
 }
 
 #[derive(Subcommand)]
 enum OwnerCommands {
-    Add { package: String, email: String, role: String },
-    Remove { package: String, email: String },
-    List { package: String },
+    Add {
+        package: String,
+        email: String,
+        role: String,
+    },
+    Remove {
+        package: String,
+        email: String,
+    },
+    List {
+        package: String,
+    },
 }
 
 fn main() {
@@ -178,7 +190,12 @@ fn main() {
         Commands::Init { name } => wares::ops::init(name),
         Commands::Build => wares::ops::build(),
         Commands::Check => wares::ops::check(),
-        Commands::Add { package, path, dev, build } => {
+        Commands::Add {
+            package,
+            path,
+            dev,
+            build,
+        } => {
             let kind = if build {
                 wares::ops::DependencyKind::Build
             } else if dev {
@@ -191,7 +208,7 @@ fn main() {
         Commands::Remove { package } => wares::ops::remove(&package),
         Commands::List => wares::ops::list(),
         Commands::Install { frozen, dev, build } => {
-             let kind = if build {
+            let kind = if build {
                 wares::ops::DependencyKind::Build
             } else if dev {
                 wares::ops::DependencyKind::Dev
@@ -208,41 +225,88 @@ fn main() {
         Commands::Search { query } => wares::ops::search(&query),
         Commands::Pack => wares::ops::pack(),
         Commands::Publish { dry_run } => wares::ops::publish(dry_run),
-        Commands::Login { registry, token, name, provider: _ } => {
-             // For now mapping to registry_cmd logic
-             registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Login {
-                 registry,
-                 token,
-                 name,
-             })
+        Commands::Login {
+            registry,
+            token,
+            name,
+            provider: _,
+        } => {
+            // For now mapping to registry_cmd logic
+            registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Login {
+                registry,
+                token,
+                name,
+            })
         }
         Commands::Logout { registry } => {
-             registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Logout { registry })
+            registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Logout { registry })
         }
         Commands::Whoami { registry } => {
-             registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Whoami { registry })
+            registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Whoami { registry })
         }
-        Commands::Info { target, registry: _ } => {
-             // TODO: expose a cleaner API for info or support registry arg
-             wares::ops::info(&target, None);
+        Commands::Info {
+            target,
+            registry: _,
+        } => {
+            // TODO: expose a cleaner API for info or support registry arg
+            wares::ops::info(&target, None);
         }
-        Commands::TrustCheck { target, registry: _ } => {
-             // Placeholder for trust check
-             println!("Trust check for {}", target);
+        Commands::TrustCheck {
+            target,
+            registry: _,
+        } => {
+            // Placeholder for trust check
+            println!("Trust check for {}", target);
         }
         Commands::Policy { sub: _ } => {
-             // Placeholder
-             println!("Policy command");
+            // Placeholder
+            println!("Policy command");
         }
         Commands::Token { sub } => match sub {
-             TokenCommands::List => registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Token { sub: registry_cmd::TokenCommands::List }),
-             TokenCommands::Add { registry, token, name } => registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Token { sub: registry_cmd::TokenCommands::Add { registry, token, name } }),
-             TokenCommands::Remove { registry } => registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Token { sub: registry_cmd::TokenCommands::Remove { registry } }),
+            TokenCommands::List => {
+                registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Token {
+                    sub: registry_cmd::TokenCommands::List,
+                })
+            }
+            TokenCommands::Add {
+                registry,
+                token,
+                name,
+            } => registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Token {
+                sub: registry_cmd::TokenCommands::Add {
+                    registry,
+                    token,
+                    name,
+                },
+            }),
+            TokenCommands::Remove { registry } => {
+                registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Token {
+                    sub: registry_cmd::TokenCommands::Remove { registry },
+                })
+            }
         },
         Commands::Owner { sub } => match sub {
-             OwnerCommands::Add { package, email, role } => registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Owner { sub: registry_cmd::OwnerCommands::Add { package, email, role: Some(role) } }),
-             OwnerCommands::Remove { package, email } => registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Owner { sub: registry_cmd::OwnerCommands::Remove { package, email } }),
-             OwnerCommands::List { package } => registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Owner { sub: registry_cmd::OwnerCommands::List { package } }),
-        }
+            OwnerCommands::Add {
+                package,
+                email,
+                role,
+            } => registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Owner {
+                sub: registry_cmd::OwnerCommands::Add {
+                    package,
+                    email,
+                    role: Some(role),
+                },
+            }),
+            OwnerCommands::Remove { package, email } => {
+                registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Owner {
+                    sub: registry_cmd::OwnerCommands::Remove { package, email },
+                })
+            }
+            OwnerCommands::List { package } => {
+                registry_cmd::cmd_registry(registry_cmd::RegistryCommands::Owner {
+                    sub: registry_cmd::OwnerCommands::List { package },
+                })
+            }
+        },
     }
 }

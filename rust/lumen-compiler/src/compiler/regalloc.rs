@@ -186,7 +186,7 @@ impl RegAlloc {
         // Any register index >= named_bindings_high_water that's not already in the free list
         // and not a named binding can be freed
         let named_regs: Vec<u8> = self.bindings.values().copied().collect();
-        
+
         for reg in self.named_bindings_high_water..self.next_reg {
             if !named_regs.contains(&reg) && !self.free_temps.contains(&reg) {
                 self.free_temps.push(reg);
@@ -230,28 +230,28 @@ mod tests {
     #[test]
     fn test_temp_recycling() {
         let mut ra = RegAlloc::new("test");
-        
+
         // Allocate some temps
         let t1 = ra.alloc_temp();
         let t2 = ra.alloc_temp();
         let t3 = ra.alloc_temp();
-        
+
         assert_eq!(t1, 0);
         assert_eq!(t2, 1);
         assert_eq!(t3, 2);
         assert_eq!(ra.max_regs(), 3);
         assert_eq!(ra.recycle_count(), 0);
-        
+
         // Free a temp
         ra.free_temp(t2);
         assert_eq!(ra.free_temp_count(), 1);
-        
+
         // Next allocation should reuse t2
         let t4 = ra.alloc_temp();
         assert_eq!(t4, t2); // Reused!
         assert_eq!(ra.recycle_count(), 1);
         assert_eq!(ra.free_temp_count(), 0);
-        
+
         // max_regs should still reflect the high-water mark
         assert_eq!(ra.max_regs(), 3);
     }
@@ -259,19 +259,19 @@ mod tests {
     #[test]
     fn test_temp_recycling_multiple() {
         let mut ra = RegAlloc::new("test");
-        
+
         // Allocate and free several temps
         let t1 = ra.alloc_temp();
-        let t2 = ra.alloc_temp();
+        let _t2 = ra.alloc_temp();
         let t3 = ra.alloc_temp();
-        
+
         ra.free_temp(t1);
         ra.free_temp(t3);
-        
+
         // Next allocations should reuse in LIFO order
         let t4 = ra.alloc_temp();
         let t5 = ra.alloc_temp();
-        
+
         assert_eq!(t4, t3); // Most recently freed first
         assert_eq!(t5, t1);
         assert_eq!(ra.recycle_count(), 2);
@@ -280,16 +280,16 @@ mod tests {
     #[test]
     fn test_named_regs_not_recycled() {
         let mut ra = RegAlloc::new("test");
-        
+
         // Allocate a named register
         let named = ra.alloc_named("x");
-        
+
         // Try to free it (should be a no-op)
         ra.free_temp(named);
-        
+
         // Should still be able to look it up
         assert_eq!(ra.lookup("x"), Some(named));
-        
+
         // Next temp allocation should NOT reuse the named register
         let t1 = ra.alloc_temp();
         assert_ne!(t1, named);
@@ -298,15 +298,15 @@ mod tests {
     #[test]
     fn test_no_duplicate_free() {
         let mut ra = RegAlloc::new("test");
-        
+
         let t1 = ra.alloc_temp();
         ra.free_temp(t1);
         ra.free_temp(t1); // Duplicate free - should be ignored
         ra.free_temp(t1); // Another duplicate - should be ignored
-        
+
         // Should only have one entry in free list
         assert_eq!(ra.free_temp_count(), 1);
-        
+
         // Should only recycle once
         let t2 = ra.alloc_temp();
         assert_eq!(t2, t1);
@@ -316,46 +316,46 @@ mod tests {
     #[test]
     fn test_free_temps_batch() {
         let mut ra = RegAlloc::new("test");
-        
+
         let t1 = ra.alloc_temp();
         let t2 = ra.alloc_temp();
         let t3 = ra.alloc_temp();
-        
+
         ra.free_temps(&[t1, t2, t3]);
-        
+
         assert_eq!(ra.free_temp_count(), 3);
         assert_eq!(ra.recycle_count(), 0); // None recycled yet
-        
+
         // Allocate again - should reuse
         let _ = ra.alloc_temp();
         let _ = ra.alloc_temp();
         let _ = ra.alloc_temp();
-        
+
         assert_eq!(ra.recycle_count(), 3);
     }
 
     #[test]
     fn test_manual_temp_freeing() {
         let mut ra = RegAlloc::new("test");
-        
+
         // Allocate some initial registers
         let _ = ra.alloc_named("x");
-        
+
         // Allocate temps
         let t1 = ra.alloc_temp();
         let t2 = ra.alloc_temp();
-        
+
         assert_eq!(ra.max_regs(), 3); // x, t1, t2
-        
+
         // Free the specific temps manually
         ra.free_specific_temps(&[t1, t2]);
-        
+
         // max_regs should still be 3 (high-water mark)
         assert_eq!(ra.max_regs(), 3);
-        
+
         // Free temps should include t1 and t2
         assert_eq!(ra.free_temp_count(), 2);
-        
+
         // Next allocation should recycle
         let t3 = ra.alloc_temp();
         assert!(t3 == t1 || t3 == t2);
@@ -365,18 +365,18 @@ mod tests {
     #[test]
     fn test_recycling_reduces_register_pressure() {
         let mut ra = RegAlloc::new("test");
-        
+
         // Simulate a complex expression that uses many temps
         for i in 0..100 {
             let t1 = ra.alloc_temp();
             let t2 = ra.alloc_temp();
             let t3 = ra.alloc_temp();
-            
+
             // Free them when done with this iteration
             ra.free_temp(t1);
             ra.free_temp(t2);
             ra.free_temp(t3);
-            
+
             // Without recycling, max_regs would be 300+
             // With recycling, it should stay low
             assert!(
@@ -386,7 +386,7 @@ mod tests {
                 i
             );
         }
-        
+
         // Should have recycled many times
         assert!(ra.recycle_count() > 200);
     }
@@ -394,24 +394,24 @@ mod tests {
     #[test]
     fn test_register_file_size() {
         let mut ra = RegAlloc::new("test");
-        
+
         // Initially empty
         assert_eq!(ra.register_file_size(), 0);
-        
+
         // Allocate some registers
         let _ = ra.alloc_named("x");
         let _ = ra.alloc_named("y");
         let t1 = ra.alloc_temp();
         let t2 = ra.alloc_temp();
-        
+
         // Register file should account for all allocated
         assert_eq!(ra.register_file_size(), 4);
-        
+
         // Free temps - register file size stays the same (high-water mark)
         ra.free_temp(t1);
         ra.free_temp(t2);
         assert_eq!(ra.register_file_size(), 4);
-        
+
         // Recycle - still the same high-water mark
         let _ = ra.alloc_temp();
         assert_eq!(ra.register_file_size(), 4);

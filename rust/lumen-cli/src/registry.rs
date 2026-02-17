@@ -1323,8 +1323,8 @@ impl RegistryBuilder {
 fn parse_package_name(name: &str) -> (Option<&str>, &str) {
     if let Some(idx) = name.find('/') {
         let scope = &name[..idx];
-        if scope.starts_with('@') {
-            (Some(&scope[1..]), &name[idx + 1..])
+        if let Some(stripped) = scope.strip_prefix('@') {
+            (Some(stripped), &name[idx + 1..])
         } else {
             (None, name)
         }

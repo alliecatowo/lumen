@@ -1,15 +1,15 @@
+pub mod cli;
 pub mod client;
+pub mod ops;
 pub mod resolver;
+pub mod storage;
 pub mod trust;
 pub mod types;
-pub mod cli;
-pub mod storage;
-pub mod ops;
 
 pub use client::{ClientConfig, RegistryClient};
 pub use resolver::{
     ResolutionError, ResolutionPolicy, ResolutionRequest, ResolvedPackage, ResolvedSource, Resolver,
 };
+pub use storage::{R2Client, R2Config};
 pub use trust::{TrustClient, TrustError};
 pub use types::*;
-pub use storage::{R2Client, R2Config};

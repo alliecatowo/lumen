@@ -16,7 +16,8 @@ pub fn build_code_actions(
         }
 
         // "unexpected end of input (check for missing 'end' keywords)" -> Add end
-        if diag.message.contains("missing 'end'") || diag.message.contains("unexpected end of input")
+        if diag.message.contains("missing 'end'")
+            || diag.message.contains("unexpected end of input")
         {
             if let Some(edit) = insert_at_end(text, "end\n") {
                 actions.push(CodeAction {
@@ -24,11 +25,7 @@ pub fn build_code_actions(
                     kind: Some(CodeActionKind::QUICKFIX),
                     diagnostics: Some(vec![diag.clone()]),
                     edit: Some(WorkspaceEdit {
-                        changes: Some(
-                            [(uri.clone(), vec![edit])]
-                                .into_iter()
-                                .collect(),
-                        ),
+                        changes: Some([(uri.clone(), vec![edit])].into_iter().collect()),
                         document_changes: None,
                         change_annotations: None,
                     }),
@@ -48,11 +45,7 @@ pub fn build_code_actions(
                     kind: Some(CodeActionKind::QUICKFIX),
                     diagnostics: Some(vec![diag.clone()]),
                     edit: Some(WorkspaceEdit {
-                        changes: Some(
-                            [(uri.clone(), vec![edit])]
-                                .into_iter()
-                                .collect(),
-                        ),
+                        changes: Some([(uri.clone(), vec![edit])].into_iter().collect()),
                         document_changes: None,
                         change_annotations: None,
                     }),
@@ -144,13 +137,7 @@ mod tests {
             parse_did_you_mean("Error: Did you mean `bar`?"),
             Some("bar")
         );
-        assert_eq!(
-            parse_did_you_mean("No hint here."),
-            None
-        );
-        assert_eq!(
-            parse_did_you_mean("Did you mean `broken"),
-            None
-        );
+        assert_eq!(parse_did_you_mean("No hint here."), None);
+        assert_eq!(parse_did_you_mean("Did you mean `broken"), None);
     }
 }

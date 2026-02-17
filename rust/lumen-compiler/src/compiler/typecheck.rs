@@ -663,7 +663,11 @@ impl<'a> TypeChecker<'a> {
     ) {
         // Check if the last parameter is variadic
         let has_variadic = params.last().is_some_and(|(_, _, v)| *v);
-        let fixed_count = if has_variadic { params.len() - 1 } else { params.len() };
+        let fixed_count = if has_variadic {
+            params.len() - 1
+        } else {
+            params.len()
+        };
 
         if !has_variadic && args.len() > params.len() {
             self.errors.push(TypeError::ArgCount {
@@ -1005,9 +1009,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Pattern::RecordDestructure {
-                type_name,
-                fields,
-                ..
+                type_name, fields, ..
             } => {
                 for (field_name, field_pat) in fields {
                     let field_ty = if let Some(ti) = self.symbols.types.get(type_name) {
@@ -1262,14 +1264,15 @@ impl<'a> TypeChecker<'a> {
                 self.locals.insert(name.clone(), expected);
             }
             Pattern::Literal(_) => {}
-            Pattern::Range {
-                start, end, ..
-            } => {
+            Pattern::Range { start, end, .. } => {
                 let start_ty = self.infer_expr(start);
                 let end_ty = self.infer_expr(end);
                 // Validate start and end are same comparable type (Int or Float)
                 match (&start_ty, &end_ty) {
-                    (Type::Int, Type::Int) | (Type::Float, Type::Float) | (Type::Any, _) | (_, Type::Any) => {}
+                    (Type::Int, Type::Int)
+                    | (Type::Float, Type::Float)
+                    | (Type::Any, _)
+                    | (_, Type::Any) => {}
                     _ => {
                         self.errors.push(TypeError::Mismatch {
                             expected: format!("{}", start_ty),
@@ -1595,7 +1598,8 @@ impl<'a> TypeChecker<'a> {
                             let subst = build_subst(&ci.generic_params, &generic_args);
 
                             // Check call with substituted param types
-                            let substituted_params: Vec<(String, TypeExpr, bool)> = ci.params.clone();
+                            let substituted_params: Vec<(String, TypeExpr, bool)> =
+                                ci.params.clone();
                             self.check_call_against_signature_with_subst(
                                 &substituted_params,
                                 &checked_args,
@@ -1608,11 +1612,7 @@ impl<'a> TypeChecker<'a> {
                             }
                         } else {
                             // Non-generic cell: use standard checking
-                            self.check_call_against_signature(
-                                &ci.params,
-                                &checked_args,
-                                span.line,
-                            );
+                            self.check_call_against_signature(&ci.params, &checked_args, span.line);
                             if let Some(ref rt) = ci.return_type {
                                 return resolve_type_expr(rt, self.symbols);
                             }

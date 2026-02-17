@@ -426,15 +426,17 @@ impl Parser {
             }
             // Handle markdown blocks: docstrings or comments
             if matches!(self.peek_kind(), TokenKind::MarkdownBlock(_)) {
-                let doc_content = if let TokenKind::MarkdownBlock(content) = self.peek_kind().clone() {
-                    self.advance();
-                    Some(content)
-                } else {
-                    None
-                };
+                let doc_content =
+                    if let TokenKind::MarkdownBlock(content) = self.peek_kind().clone() {
+                        self.advance();
+                        Some(content)
+                    } else {
+                        None
+                    };
                 self.skip_newlines();
                 // If followed by a declaration keyword, parse item and attach docstring
-                if !self.at_end() && !self.is_top_level_stmt_start()
+                if !self.at_end()
+                    && !self.is_top_level_stmt_start()
                     && !matches!(self.peek_kind(), TokenKind::Eof | TokenKind::End)
                 {
                     match self.parse_item() {
@@ -3515,7 +3517,13 @@ impl Parser {
             self.skip_newlines();
         }
         let span = start.merge(self.current().span);
-        Ok(EffectHandler { effect_name, operation, params, body, span })
+        Ok(EffectHandler {
+            effect_name,
+            operation,
+            params,
+            body,
+            span,
+        })
     }
 
     /// Check if the current position looks like the start of an effect handler arm:
@@ -3527,7 +3535,10 @@ impl Parser {
         // Lookahead: Ident . Ident (
         let mut look = self.pos + 1;
         // Skip any newlines
-        while matches!(self.tokens.get(look).map(|t| &t.kind), Some(TokenKind::Newline)) {
+        while matches!(
+            self.tokens.get(look).map(|t| &t.kind),
+            Some(TokenKind::Newline)
+        ) {
             look += 1;
         }
         if !matches!(self.tokens.get(look).map(|t| &t.kind), Some(TokenKind::Dot)) {
@@ -3535,18 +3546,30 @@ impl Parser {
         }
         look += 1;
         // Skip newlines after dot
-        while matches!(self.tokens.get(look).map(|t| &t.kind), Some(TokenKind::Newline)) {
+        while matches!(
+            self.tokens.get(look).map(|t| &t.kind),
+            Some(TokenKind::Newline)
+        ) {
             look += 1;
         }
-        if !matches!(self.tokens.get(look).map(|t| &t.kind), Some(TokenKind::Ident(_))) {
+        if !matches!(
+            self.tokens.get(look).map(|t| &t.kind),
+            Some(TokenKind::Ident(_))
+        ) {
             return false;
         }
         look += 1;
         // Skip newlines after ident
-        while matches!(self.tokens.get(look).map(|t| &t.kind), Some(TokenKind::Newline)) {
+        while matches!(
+            self.tokens.get(look).map(|t| &t.kind),
+            Some(TokenKind::Newline)
+        ) {
             look += 1;
         }
-        matches!(self.tokens.get(look).map(|t| &t.kind), Some(TokenKind::LParen))
+        matches!(
+            self.tokens.get(look).map(|t| &t.kind),
+            Some(TokenKind::LParen)
+        )
     }
 
     fn consume_parenthesized(&mut self) {
@@ -4601,7 +4624,10 @@ impl Parser {
             // evaluated twice at runtime.
             if matches!(op, BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq) {
                 let next = self.peek_kind();
-                if matches!(next, TokenKind::Lt | TokenKind::LtEq | TokenKind::Gt | TokenKind::GtEq) {
+                if matches!(
+                    next,
+                    TokenKind::Lt | TokenKind::LtEq | TokenKind::Gt | TokenKind::GtEq
+                ) {
                     let op2 = match self.peek_kind() {
                         TokenKind::Lt => BinOp::Lt,
                         TokenKind::LtEq => BinOp::LtEq,
@@ -4615,7 +4641,12 @@ impl Parser {
                     let right_span = rhs.span().merge(rhs2.span());
                     let right_cmp = Expr::BinOp(Box::new(rhs), op2, Box::new(rhs2), right_span);
                     let full_span = left_cmp.span().merge(right_cmp.span());
-                    lhs = Expr::BinOp(Box::new(left_cmp), BinOp::And, Box::new(right_cmp), full_span);
+                    lhs = Expr::BinOp(
+                        Box::new(left_cmp),
+                        BinOp::And,
+                        Box::new(right_cmp),
+                        full_span,
+                    );
                     continue;
                 }
             }
@@ -4783,7 +4814,12 @@ impl Parser {
                 self.bracket_depth -= 1;
                 self.expect(&TokenKind::RParen)?;
                 let span = s.merge(self.current().span);
-                Ok(Expr::Perform { effect_name, operation, args, span })
+                Ok(Expr::Perform {
+                    effect_name,
+                    operation,
+                    args,
+                    span,
+                })
             }
             TokenKind::Handle => {
                 let s = self.advance().span;
@@ -4828,7 +4864,11 @@ impl Parser {
                 }
                 self.expect(&TokenKind::End)?;
                 let span = s.merge(self.current().span);
-                Ok(Expr::HandleExpr { body, handlers, span })
+                Ok(Expr::HandleExpr {
+                    body,
+                    handlers,
+                    span,
+                })
             }
             TokenKind::Resume => {
                 let s = self.advance().span;
@@ -4905,7 +4945,11 @@ impl Parser {
                             self.skip_newlines();
                             let body = self.parse_expr(0)?;
                             let span = arm_start.merge(body.span());
-                            arms.push(WhenArm { condition: cond, body, span });
+                            arms.push(WhenArm {
+                                condition: cond,
+                                body,
+                                span,
+                            });
                             self.skip_newlines();
                             continue;
                         }
@@ -4918,7 +4962,11 @@ impl Parser {
                     self.skip_newlines();
                     let body = self.parse_expr(0)?;
                     let span = arm_start.merge(body.span());
-                    arms.push(WhenArm { condition: cond, body, span });
+                    arms.push(WhenArm {
+                        condition: cond,
+                        body,
+                        span,
+                    });
                     self.skip_newlines();
                 }
                 if has_indent && matches!(self.peek_kind(), TokenKind::Dedent) {
@@ -7379,7 +7427,8 @@ end
     #[test]
     fn test_chained_comparison_mixed_ops() {
         // `a >= b > c` should desugar to `(a >= b) and (b > c)`
-        let prog = parse_src("cell f(a: Int, b: Int, c: Int) -> Bool\n  return a >= b > c\nend").unwrap();
+        let prog =
+            parse_src("cell f(a: Int, b: Int, c: Int) -> Bool\n  return a >= b > c\nend").unwrap();
         let cell = match &prog.items[0] {
             Item::Cell(c) => c,
             _ => panic!("expected cell"),
@@ -7471,7 +7520,10 @@ end
         assert_eq!(prog.items.len(), 1);
         if let Item::Cell(c) = &prog.items[0] {
             assert_eq!(c.name, "main");
-            assert_eq!(c.doc, Some("# Main\nEntry point for the program.".to_string()));
+            assert_eq!(
+                c.doc,
+                Some("# Main\nEntry point for the program.".to_string())
+            );
         } else {
             panic!("expected cell");
         }
@@ -7519,10 +7571,15 @@ end
         if let Item::Cell(c) = &prog.items[0] {
             assert_eq!(c.name, "main");
             // The body should contain an Expr statement with a Perform expression
-            assert!(c.body.len() >= 1);
+            assert!(!c.body.is_empty());
             if let Stmt::Expr(es) = &c.body[0] {
                 match &es.expr {
-                    Expr::Perform { effect_name, operation, args, .. } => {
+                    Expr::Perform {
+                        effect_name,
+                        operation,
+                        args,
+                        ..
+                    } => {
                         assert_eq!(effect_name, "Console");
                         assert_eq!(operation, "log");
                         assert_eq!(args.len(), 1);
@@ -7544,7 +7601,12 @@ end
         if let Item::Cell(c) = &prog.items[0] {
             if let Stmt::Let(ls) = &c.body[0] {
                 match &ls.value {
-                    Expr::Perform { effect_name, operation, args, .. } => {
+                    Expr::Perform {
+                        effect_name,
+                        operation,
+                        args,
+                        ..
+                    } => {
                         assert_eq!(effect_name, "IO");
                         assert_eq!(operation, "read_line");
                         assert_eq!(args.len(), 0);

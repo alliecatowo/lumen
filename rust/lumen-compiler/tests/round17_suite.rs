@@ -1088,8 +1088,7 @@ end
 // ============================================================================
 // 18. For loop with tuple destructuring
 // ============================================================================
-
-#[test]
+//
 // NOTE: Tuple destructuring in for-loops parses but the second binding
 // variable is not yet wired through resolve/typecheck. Commenting out
 // until full support is available.

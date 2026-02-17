@@ -238,7 +238,7 @@ impl Workspace {
     /// Load the workspace lockfile if it exists.
     pub fn load_lockfile(&self) -> Result<LockFile, WorkspaceError> {
         let lock_path = self.lockfile_path();
-        LockFile::load(&lock_path).map_err(|e| WorkspaceError::LockfileError(e))
+        LockFile::load(&lock_path).map_err(WorkspaceError::LockfileError)
     }
 
     /// Save the workspace lockfile.
@@ -246,7 +246,7 @@ impl Workspace {
         let lock_path = self.lockfile_path();
         lockfile
             .save(&lock_path)
-            .map_err(|e| WorkspaceError::LockfileError(e))
+            .map_err(WorkspaceError::LockfileError)
     }
 
     /// Get all workspace member names.
@@ -384,18 +384,16 @@ impl Workspace {
                         }
                     } else if let DependencySpec::Workspace { .. } = spec {
                         // Check if workspace dependency points to another member
-                        if let Some(ws_spec) = self.dependencies.get(&dep_name) {
-                            if let DependencySpec::Path { path } = ws_spec {
-                                let dep_path = self
-                                    .root
-                                    .join(path)
-                                    .canonicalize()
-                                    .unwrap_or_else(|_| self.root.join(path));
+                        if let Some(DependencySpec::Path { path }) = self.dependencies.get(&dep_name) {
+                            let dep_path = self
+                                .root
+                                .join(path)
+                                .canonicalize()
+                                .unwrap_or_else(|_| self.root.join(path));
 
-                                if let Some(dep_member) = self.member_by_path(&dep_path) {
-                                    if let Some(dep_pkg) = &dep_member.package {
-                                        graph.add_edge(member_name.clone(), dep_pkg.name.clone());
-                                    }
+                            if let Some(dep_member) = self.member_by_path(&dep_path) {
+                                if let Some(dep_pkg) = &dep_member.package {
+                                    graph.add_edge(member_name.clone(), dep_pkg.name.clone());
                                 }
                             }
                         }
@@ -797,7 +795,7 @@ impl DependencyGraph {
 
             // Process all nodes that depend on this one
             if let Some(deps) = dependents.get(name) {
-                let mut sorted_deps: Vec<_> = deps.iter().copied().collect();
+                let mut sorted_deps: Vec<_> = deps.to_vec();
                 sorted_deps.sort();
 
                 for dep in sorted_deps {
@@ -874,7 +872,7 @@ fn glob_matches(root: &Path, pattern: &str) -> Result<Vec<PathBuf>, WorkspaceErr
     if pattern.contains("**") {
         // Recursive glob
         let parts: Vec<&str> = pattern.split("**").collect();
-        let prefix = parts.get(0).unwrap_or(&"");
+        let prefix = parts.first().unwrap_or(&"");
         let suffix = parts.get(1).unwrap_or(&"");
 
         let search_root = if prefix.is_empty() {
@@ -889,7 +887,7 @@ fn glob_matches(root: &Path, pattern: &str) -> Result<Vec<PathBuf>, WorkspaceErr
     } else if pattern.contains('*') {
         // Single-level glob
         let parts: Vec<&str> = pattern.split('*').collect();
-        let prefix = parts.get(0).unwrap_or(&"");
+        let prefix = parts.first().unwrap_or(&"");
         let suffix = parts.get(1).unwrap_or(&"");
 
         let search_dir = root.join(prefix.trim_end_matches('/'));
@@ -931,11 +929,10 @@ fn walk_dir_for_manifests(
 
         if path.is_dir() {
             // Check for manifest
-            if path.join("lumen.toml").exists() {
-                if suffix.is_empty() || path.ends_with(suffix.trim_start_matches('/')) {
+            if path.join("lumen.toml").exists()
+                && (suffix.is_empty() || path.ends_with(suffix.trim_start_matches('/'))) {
                     results.push(path.clone());
                 }
-            }
 
             // Recurse into subdirectories
             walk_dir_for_manifests(&path, suffix, results)?;
@@ -1376,20 +1373,18 @@ pub fn cmd_ws_publish(dry_run: bool) {
             errors
         );
         std::process::exit(1);
+    } else if dry_run {
+        println!(
+            "\n{} all packages validated ({} member(s))",
+            crate::colors::green("✓"),
+            members.len()
+        );
     } else {
-        if dry_run {
-            println!(
-                "\n{} all packages validated ({} member(s))",
-                crate::colors::green("✓"),
-                members.len()
-            );
-        } else {
-            println!(
-                "\n{} all packages published ({} member(s))",
-                crate::colors::green("✓"),
-                members.len()
-            );
-        }
+        println!(
+            "\n{} all packages published ({} member(s))",
+            crate::colors::green("✓"),
+            members.len()
+        );
     }
 }
 

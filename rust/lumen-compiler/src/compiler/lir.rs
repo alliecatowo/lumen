@@ -6,7 +6,17 @@ use serde::{Deserialize, Serialize};
 
 /// Opcodes for the Lumen register VM.
 /// Hex values match SPEC section 40.2.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum_macros::EnumIter, strum_macros::EnumCount)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumIter,
+    strum_macros::EnumCount,
+)]
 #[repr(u8)]
 pub enum OpCode {
     // Misc
@@ -87,16 +97,16 @@ pub enum OpCode {
     SetUpval = 0x53, // A, B:  upvalue[B] = R[A]
 
     // Effects
-    ToolCall = 0x60, // A, Bx: tool_call(tool=Bx, args from subsequent regs)
-    Schema = 0x61,   // A, B: validate A against schema type B
-    Emit = 0x62,     // A: emit output R[A]
-    TraceRef = 0x63, // A: R[A] = current trace reference
-    Await = 0x64,       // A, B: R[A] = await future R[B]
-    Spawn = 0x65,       // A, Bx: R[A] = spawn async(proto=Bx)
-    Perform = 0x66,     // A, B, C: perform effect B, operation C, result to A
-    HandlePush = 0x67,  // Ax: push effect handler scope at offset Ax
-    HandlePop = 0x68,   // pop current effect handler scope
-    Resume = 0x69,      // A: resume suspended computation with value in A
+    ToolCall = 0x60,   // A, Bx: tool_call(tool=Bx, args from subsequent regs)
+    Schema = 0x61,     // A, B: validate A against schema type B
+    Emit = 0x62,       // A: emit output R[A]
+    TraceRef = 0x63,   // A: R[A] = current trace reference
+    Await = 0x64,      // A, B: R[A] = await future R[B]
+    Spawn = 0x65,      // A, Bx: R[A] = spawn async(proto=Bx)
+    Perform = 0x66,    // A, B, C: perform effect B, operation C, result to A
+    HandlePush = 0x67, // Ax: push effect handler scope at offset Ax
+    HandlePop = 0x68,  // pop current effect handler scope
+    Resume = 0x69,     // A: resume suspended computation with value in A
 
     // List ops
     Append = 0x70, // A, B: append B to list A
@@ -107,7 +117,17 @@ pub enum OpCode {
 }
 
 /// Intrinsic function IDs
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum_macros::EnumIter, strum_macros::EnumCount)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumIter,
+    strum_macros::EnumCount,
+)]
 #[repr(u8)]
 pub enum IntrinsicId {
     Length = 0,

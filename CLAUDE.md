@@ -89,9 +89,6 @@ The Cargo workspace root is `/Cargo.toml` with members under `rust/`:
 - `continuations.rs` — Multi-shot continuations with ContinuationSnapshot
 - `parity_concurrency.rs` — Concurrency parity checklist (38 items)
 
-**lumen-codegen** new modules:
-- `orc_jit.rs` — Enhanced JIT engine with module management and profiling
-
 **lumen-cli** new modules:
 - `binary_cache.rs` — Content-addressable binary caching with LRU eviction
 - `workspace.rs` — Workspace resolver with topological sort and build planning
@@ -222,10 +219,6 @@ Lumen implements algebraic effects with one-shot delimited continuations:
 - **One-shot semantics**: Each continuation can only be resumed once, ensuring deterministic control flow
 
 The VM maintains an effect handler stack (`EffectScope`) that tracks active handlers. When `perform` is executed, the VM searches up the handler stack for a matching handler. If found, the continuation is captured and the handler is invoked. The handler can call `resume(value)` to continue execution with a value, or return normally to abort the continuation.
-
-### ORC JIT (lumen-codegen)
-
-`lumen-codegen/src/orc_jit.rs` provides an enhanced JIT engine with module management and profiling. Used for ahead-of-time and just-in-time compilation of hot paths.
 
 ### Tool Policy Enforcement
 

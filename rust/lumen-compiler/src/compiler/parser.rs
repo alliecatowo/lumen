@@ -63,6 +63,10 @@ pub struct Parser {
     /// treating them as block terminators.
     block_depth: usize,
     errors: Vec<ParseError>,
+    /// Language edition for forward-compatible parsing. Default: `"2026"`.
+    /// Future editions may alter syntax rules; for now this is threaded
+    /// through but does not change parsing behaviour.
+    pub edition: String,
 }
 
 impl Parser {
@@ -73,6 +77,19 @@ impl Parser {
             bracket_depth: 0,
             block_depth: 0,
             errors: Vec::new(),
+            edition: "2026".to_string(),
+        }
+    }
+
+    /// Create a new parser with a specific language edition.
+    pub fn with_edition(tokens: Vec<Token>, edition: String) -> Self {
+        Self {
+            tokens,
+            pos: 0,
+            bracket_depth: 0,
+            block_depth: 0,
+            errors: Vec::new(),
+            edition,
         }
     }
 
@@ -3891,27 +3908,51 @@ impl Parser {
     }
 
     fn parse_variant_binding_candidate(&mut self) -> Result<Option<Box<Pattern>>, ParseError> {
-        let mut binding = None;
-        if !matches!(self.peek_kind(), TokenKind::RParen) {
-            let save = self.pos;
+        if matches!(self.peek_kind(), TokenKind::RParen) {
+            return Ok(None);
+        }
+        let span = self.current().span;
+        let save = self.pos;
+        let first = match self.parse_pattern() {
+            Ok(pattern) => pattern,
+            Err(_) => {
+                self.pos = save;
+                self.consume_variant_arg_tokens();
+                while !matches!(self.peek_kind(), TokenKind::RParen | TokenKind::Eof) {
+                    if matches!(self.peek_kind(), TokenKind::Comma) {
+                        self.advance();
+                        if matches!(self.peek_kind(), TokenKind::RParen) {
+                            break;
+                        }
+                    }
+                    self.consume_variant_arg_tokens();
+                }
+                return Ok(None);
+            }
+        };
+
+        // Check if there are more comma-separated patterns (multi-field variant)
+        if !matches!(self.peek_kind(), TokenKind::Comma) {
+            return Ok(Some(Box::new(first)));
+        }
+
+        // Multiple fields: collect all patterns and wrap in TupleDestructure
+        let mut elements = vec![first];
+        while matches!(self.peek_kind(), TokenKind::Comma) {
+            self.advance();
+            if matches!(self.peek_kind(), TokenKind::RParen | TokenKind::Eof) {
+                break;
+            }
+            let save2 = self.pos;
             match self.parse_pattern() {
-                Ok(pattern) => binding = Some(Box::new(pattern)),
+                Ok(pattern) => elements.push(pattern),
                 Err(_) => {
-                    self.pos = save;
+                    self.pos = save2;
                     self.consume_variant_arg_tokens();
                 }
             }
-            while !matches!(self.peek_kind(), TokenKind::RParen | TokenKind::Eof) {
-                if matches!(self.peek_kind(), TokenKind::Comma) {
-                    self.advance();
-                    if matches!(self.peek_kind(), TokenKind::RParen) {
-                        break;
-                    }
-                }
-                self.consume_variant_arg_tokens();
-            }
         }
-        Ok(binding)
+        Ok(Some(Box::new(Pattern::TupleDestructure { elements, span })))
     }
 
     fn paren_looks_like_record_destructure(&self) -> bool {
@@ -5015,6 +5056,12 @@ impl Parser {
             TokenKind::If => {
                 // Reuse the statement-level if parser, wrap result as block expr
                 let stmt = self.parse_if()?;
+                let span = stmt.span();
+                Ok(Expr::BlockExpr(vec![stmt], span))
+            }
+            TokenKind::For => {
+                // Reuse the statement-level for parser, wrap result as block expr
+                let stmt = self.parse_for()?;
                 let span = stmt.span();
                 Ok(Expr::BlockExpr(vec![stmt], span))
             }

@@ -23,3 +23,5 @@ uuid = { workspace = true }
 num-bigint = { workspace = true, features = ["serde"] }
 num-traits = { workspace = true }
 regex = "1"
+ureq = "2"
+once_cell = "1"

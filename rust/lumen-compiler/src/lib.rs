@@ -281,7 +281,7 @@ fn compile_with_imports_internal(
     let tokens = lexer.tokenize()?;
 
     // 5. Parse
-    let mut parser = compiler::parser::Parser::new(tokens);
+    let mut parser = compiler::parser::Parser::with_edition(tokens, options.edition.clone());
     let (program, parse_errors) = parser.parse_program_with_recovery(directives);
     if !parse_errors.is_empty() {
         return Err(CompileError::Parse(parse_errors));
@@ -386,7 +386,8 @@ fn compile_with_imports_internal(
         let mut imported_lexer =
             compiler::lexer::Lexer::new(&imported_code, imported_line, imported_offset);
         if let Ok(imported_tokens) = imported_lexer.tokenize() {
-            let mut imported_parser = compiler::parser::Parser::new(imported_tokens);
+            let mut imported_parser =
+                compiler::parser::Parser::with_edition(imported_tokens, options.edition.clone());
             if let Ok(imported_program) = imported_parser.parse_program(imported_directives) {
                 if let Ok(imported_symbols) = compiler::resolve::resolve(&imported_program) {
                     // Import the requested symbols
@@ -737,7 +738,7 @@ pub fn compile_raw_with_options(
     let tokens = lexer.tokenize()?;
 
     // 2. Parse (no directives for raw source)
-    let mut parser = compiler::parser::Parser::new(tokens);
+    let mut parser = compiler::parser::Parser::with_edition(tokens, options.edition.clone());
     let (program, parse_errors) = parser.parse_program_with_recovery(vec![]);
     if !parse_errors.is_empty() {
         return Err(CompileError::Parse(parse_errors));
@@ -820,7 +821,7 @@ pub fn compile_with_options(
     let tokens = lexer.tokenize()?;
 
     // 5. Parse
-    let mut parser = compiler::parser::Parser::new(tokens);
+    let mut parser = compiler::parser::Parser::with_edition(tokens, options.edition.clone());
     let (program, parse_errors) = parser.parse_program_with_recovery(directives);
     if !parse_errors.is_empty() {
         return Err(CompileError::Parse(parse_errors));

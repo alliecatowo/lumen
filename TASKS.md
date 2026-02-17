@@ -196,7 +196,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T093 | OIDC for registry auth — **DONE** | Use OpenID Connect for publisher identity where applicable. |
 | T094 | TUF or similar for repository metadata — **DONE** | The Update Framework (or equivalent) for secure package metadata. |
 | T095 | extern "C" and ABI — **DONE** | Support C calling convention and correct ABI in FFI. |
-| T096 | Header-to-Lumen bindgen | Tool that parses C (or Rust) headers and generates Lumen extern declarations. |
+| T096 | Header-to-Lumen bindgen — **DONE** | Tool that parses C (or Rust) headers and generates Lumen extern declarations. |
 | T097 | WASM target in codegen — **DONE** | Emit wasm32-wasi (or wasm32-unknown-unknown) from the same codegen path. |
 | T098 | WASM component model (WIT) — **DONE** | Adopt WIT IDL for imports/exports and component composition. |
 | T099 | WASI host bindings — **DONE** | Implement or bind filesystem, clock, random for WASI. |
@@ -240,12 +240,12 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
 | T125 | std::simd (or intrinsics) — **DONE** | Expose hardware SIMD where available for hot loops. |
-| T126 | std::crypto | Native or binding for Ed25519, BLAKE3, etc.; avoid unnecessary bindings where feasible. |
+| T126 | std::crypto — **DONE** | Native or binding for Ed25519, BLAKE3, etc.; avoid unnecessary bindings where feasible. |
 | T127 | std::graph — **DONE** | First-class graph structure (e.g. for knowledge graphs). |
 | T128 | std::tensor — **DONE** | N-dimensional array API built on Phase 5 primitives. |
-| T129 | std::fs async | Async file I/O if async runtime is standardized. |
-| T130 | std::net | Async TCP/UDP or equivalent. |
-| T131 | std::http client/server | HTTP using hyper or equivalent; zero-copy where possible. |
+| T129 | std::fs async — **DONE** | Async file I/O if async runtime is standardized. |
+| T130 | std::net — **DONE** | Async TCP/UDP or equivalent. |
+| T131 | std::http client/server — **DONE** | HTTP using hyper or equivalent; zero-copy where possible. |
 | T132 | std::json fast path — **DONE** | High-performance JSON using serde or similar. |
 | T133 | Collections with linear types — **DONE** | Where applicable, offer APIs that consume `self` (e.g. linear vector) for zero-copy pipelines. |
 
@@ -328,7 +328,7 @@ The following tasks add depth and explicit competitive parity. Problem statement
 
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
-| T159 | Recursive sandbox at import | At `import "pkg"`, optionally restrict capabilities (e.g. `granting { none }` so the package cannot access network or disk). Ref: roadmap “Fortress” registry; capability-based security. |
+| T159 | Recursive sandbox at import — **DONE** | At `import "pkg"`, optionally restrict capabilities (e.g. `granting { none }` so the package cannot access network or disk). Ref: roadmap “Fortress” registry; capability-based security. |
 | T160 | Binary caching for packages | Registry serves precompiled artifacts per platform so `ware install` avoids compilation. Ref: npm, cargo build cache; COMPETITIVE_ANALYSIS §3.6. |
 | T161 | LSP: semantic search | “Find all call sites where temperature &gt; 0.7” over AST, not text. Improves refactoring and audit. Ref: roadmap “Agentic LSP.” |
 

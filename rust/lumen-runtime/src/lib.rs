@@ -37,4 +37,5 @@ pub mod supervisor;
 pub mod sync_scheduler;
 pub mod tools;
 pub mod trace;
+pub mod parity_durability;
 pub mod versioning;

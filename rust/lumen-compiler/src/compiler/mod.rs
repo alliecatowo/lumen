@@ -12,6 +12,7 @@ pub mod lir;
 pub mod lower;
 pub mod macros;
 pub mod ownership;
+pub mod parity_memory;
 pub mod parser;
 pub mod probabilistic;
 pub mod prompt_check;

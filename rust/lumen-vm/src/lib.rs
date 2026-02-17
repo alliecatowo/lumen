@@ -4,6 +4,7 @@
 pub mod arena;
 pub mod gc;
 pub mod immix;
+pub mod parity_concurrency;
 pub mod strings;
 pub mod tagged;
 pub mod tlab;

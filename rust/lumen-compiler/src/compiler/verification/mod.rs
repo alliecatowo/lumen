@@ -32,6 +32,7 @@
 pub mod bounds;
 pub mod constraints;
 pub mod counterexample;
+pub mod parity_verification;
 pub mod proof_hints;
 pub mod refinement;
 pub mod smt_solver;

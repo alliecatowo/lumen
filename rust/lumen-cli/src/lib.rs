@@ -4,6 +4,7 @@
 
 pub mod audit;
 pub mod auth;
+pub mod ci;
 pub mod binary_cache;
 pub mod bindgen;
 pub mod build_script;
@@ -26,6 +27,7 @@ pub mod repl;
 pub mod semver;
 pub mod service_template;
 pub mod test_cmd;
+pub mod transparency;
 pub mod tuf;
 pub mod wares;
 pub mod workspace;

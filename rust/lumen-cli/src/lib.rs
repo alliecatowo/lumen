@@ -4,6 +4,7 @@
 
 pub mod audit;
 pub mod auth;
+pub mod binary_cache;
 pub mod bindgen;
 pub mod build_script;
 pub mod cache;
@@ -23,6 +24,7 @@ pub mod registry;
 pub mod registry_cmd;
 pub mod repl;
 pub mod semver;
+pub mod service_template;
 pub mod test_cmd;
 pub mod tuf;
 pub mod wares;

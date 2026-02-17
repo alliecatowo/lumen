@@ -329,8 +329,8 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
 | T159 | Recursive sandbox at import — **DONE** | At `import "pkg"`, optionally restrict capabilities (e.g. `granting { none }` so the package cannot access network or disk). Ref: roadmap “Fortress” registry; capability-based security. |
-| T160 | Binary caching for packages | Registry serves precompiled artifacts per platform so `ware install` avoids compilation. Ref: npm, cargo build cache; COMPETITIVE_ANALYSIS §3.6. |
-| T161 | LSP: semantic search | “Find all call sites where temperature &gt; 0.7” over AST, not text. Improves refactoring and audit. Ref: roadmap “Agentic LSP.” |
+| T160 | Binary caching for packages — **DONE** | Registry serves precompiled artifacts per platform so `ware install` avoids compilation. Ref: npm, cargo build cache; COMPETITIVE_ANALYSIS §3.6. |
+| T161 | LSP: semantic search — **DONE** | “Find all call sites where temperature &gt; 0.7” over AST, not text. Improves refactoring and audit. Ref: roadmap “Agentic LSP.” |
 
 ### Phase 7 (syntax) — additional
 
@@ -361,10 +361,10 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | T174 | Diagnostics: type diff and import suggestions — **DONE** | On type error, show concise type diff (expected vs actual); on unknown symbol, suggest imports or similar names. |
 | T175 | Watch mode (recheck on save) — **DONE** | `lumen watch` or LSP-driven re-check when files change; fast feedback without full rebuild. |
 | T176 | CI machine-readable output — **DONE** | Emit check/test results in a standard format (e.g. SARIF, JUnit XML) for CI dashboards and gates. Ref: T105–T110. |
-| T177 | Service package template | Scaffold for HTTP/gRPC services: typed route contracts, generated schemas, replayable fixtures. Ref: COMPETITIVE_ANALYSIS §4 (Web/backend). |
+| T177 | Service package template — **DONE** | Scaffold for HTTP/gRPC services: typed route contracts, generated schemas, replayable fixtures. Ref: COMPETITIVE_ANALYSIS §4 (Web/backend). |
 | T178 | Array bounds propagation (refinement) — **DONE** | Use refinement/SMT or flow analysis to prove or warn on list/tuple index bounds. Reduces runtime index errors. Ref: D05–D06. |
 | T179 | Docs-as-tests (snippets in CI) | All fenced Lumen code blocks in SPEC/docs compiled (or run) in CI; doc drift fails the build. Ref: COMPETITIVE_ANALYSIS §8 (leapfrog 17). |
-| T180 | Execution graph visualizer | Tool or LSP view that renders execution/trace events as a graph (calls, effects, tool invocations) for debugging and audit. Ref: COMPETITIVE_ANALYSIS §8 (leapfrog 20). |
+| T180 | Execution graph visualizer — **DONE** | Tool or LSP view that renders execution/trace events as a graph (calls, effects, tool invocations) for debugging and audit. Ref: COMPETITIVE_ANALYSIS §8 (leapfrog 20). |
 | T181 | Import path error recovery — **DONE** | Use `parse_program_with_recovery` when compiling imported modules so multiple parse errors in a dependency are reported. Ref: COMPETITIVE_ANALYSIS §7.4 (A). |
 | T182 | LSP document formatting — **DONE** | Expose existing formatter via LSP `textDocument/formatting` (document_formatting_provider). Ref: lumen-lsp main.rs; §7.4 (B). |
 | T183 | Semver constraint `!=` operator — **DONE** | Implement `!=` in semver constraint parser (e.g. `!=1.2.3`) for version ranges. Ref: semver.rs test note; §7.4 (C). |
@@ -374,7 +374,7 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | T187 | Fix role_interpolation.lm.md parse and un-ignore — **DONE** | Resolve known parse issue in `examples/role_interpolation.lm.md`; remove from SKIP_COMPILE and re-enable `examples_compile` test. |
 | T188 | Source mapping for string interpolation spans — **DONE** | Parser TODO v2: map spans correctly inside string interpolation (track offsets per segment so diagnostics point into the interpolated expression). Ref: parser.rs. |
 | T189 | Verify/fix closure and upvalue model — **DONE** | Audit and fix any remaining closure capture or upvalue bugs in lower and VM; tests may pass but edge cases or replay/serialization may expose issues. Ref: deficit 6. |
-| T190 | Workspace (monorepo) resolver | Multi-package workspace support: resolve and build multiple packages in one repo with shared deps (Cargo/npm-style). Ref: COMPETITIVE_ANALYSIS domain matrix "workspace resolver". |
+| T190 | Workspace (monorepo) resolver — **DONE** | Multi-package workspace support: resolve and build multiple packages in one repo with shared deps (Cargo/npm-style). Ref: COMPETITIVE_ANALYSIS domain matrix "workspace resolver". |
 
 ### Language / spec alignment and test suite (T191–T203)
 

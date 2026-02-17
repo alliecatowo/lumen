@@ -8,6 +8,10 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[lib]
+name = "lumen_lsp"
+path = "src/lib.rs"
+
 [[bin]]
 name = "lumen-lsp"
 path = "src/main.rs"

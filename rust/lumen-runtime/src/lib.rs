@@ -11,6 +11,7 @@ pub mod checkpoint;
 pub mod debugger;
 pub mod durability;
 pub mod effect_budget;
+pub mod execution_graph;
 pub mod error_context;
 pub mod fs_async;
 pub mod graph;

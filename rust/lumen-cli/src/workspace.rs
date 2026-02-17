@@ -1443,6 +1443,627 @@ pub fn cmd_ws_list() {
 }
 
 // =============================================================================
+// Workspace Resolver (T190)
+// =============================================================================
+
+/// Configuration for a workspace parsed from TOML, independent of filesystem.
+#[derive(Debug, Clone)]
+pub struct ResolverWorkspaceConfig {
+    /// Root directory of the workspace.
+    pub root_dir: PathBuf,
+    /// Workspace members.
+    pub members: Vec<ResolverWorkspaceMember>,
+    /// Shared dependencies available to all members.
+    pub shared_dependencies: HashMap<String, ResolverDependencySpec>,
+    /// Default member to operate on when none is specified.
+    pub default_member: Option<String>,
+}
+
+/// A member within a resolver workspace.
+#[derive(Debug, Clone)]
+pub struct ResolverWorkspaceMember {
+    /// Member name (unique within the workspace).
+    pub name: String,
+    /// Path relative to workspace root.
+    pub path: PathBuf,
+    /// Semver version string.
+    pub version: String,
+    /// Names of other workspace members this member depends on.
+    pub dependencies: Vec<String>,
+}
+
+/// Dependency specification for shared workspace dependencies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolverDependencySpec {
+    /// Version requirement string.
+    pub version: String,
+    /// Source of the dependency.
+    pub source: ResolverDependencySource,
+}
+
+/// Source from which a dependency is obtained.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolverDependencySource {
+    /// From a package registry.
+    Registry(String),
+    /// Local filesystem path.
+    Path(PathBuf),
+    /// Git repository with optional revision.
+    Git { url: String, rev: Option<String> },
+}
+
+/// A single step in a build plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolverBuildStep {
+    /// Name of the member to build.
+    pub member: String,
+    /// Steps with the same parallel_group can run concurrently.
+    pub parallel_group: usize,
+}
+
+/// Errors specific to the workspace resolver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolverError {
+    /// A referenced member was not found.
+    MemberNotFound(String),
+    /// A cyclic dependency was detected among members.
+    CyclicDependency(Vec<String>),
+    /// Two members share the same name.
+    DuplicateMember(String),
+    /// A member path is invalid (empty or otherwise unusable).
+    InvalidPath(PathBuf),
+    /// TOML parsing failed.
+    ParseError(String),
+    /// Multiple members require different versions of the same shared dependency.
+    VersionConflict {
+        dependency: String,
+        versions: Vec<String>,
+    },
+}
+
+impl std::fmt::Display for ResolverError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MemberNotFound(name) => write!(f, "member not found: {}", name),
+            Self::CyclicDependency(chain) => {
+                write!(f, "cyclic dependency: {}", chain.join(" -> "))
+            }
+            Self::DuplicateMember(name) => write!(f, "duplicate member: {}", name),
+            Self::InvalidPath(p) => write!(f, "invalid path: {}", p.display()),
+            Self::ParseError(msg) => write!(f, "parse error: {}", msg),
+            Self::VersionConflict {
+                dependency,
+                versions,
+            } => write!(
+                f,
+                "version conflict for '{}': [{}]",
+                dependency,
+                versions.join(", ")
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ResolverError {}
+
+/// Resolves workspace members in dependency order and provides build planning.
+#[derive(Debug)]
+pub struct WorkspaceResolver {
+    config: ResolverWorkspaceConfig,
+    resolution_order: Vec<String>,
+}
+
+impl WorkspaceResolver {
+    /// Create a new resolver from a workspace configuration.
+    ///
+    /// Validates the configuration and computes topological ordering.
+    /// Returns an error if there are duplicate members, missing dependencies,
+    /// or cyclic dependencies.
+    pub fn new(config: ResolverWorkspaceConfig) -> Result<Self, ResolverError> {
+        // Validate: check for duplicates
+        let mut seen_names: HashSet<String> = HashSet::new();
+        for member in &config.members {
+            if !seen_names.insert(member.name.clone()) {
+                return Err(ResolverError::DuplicateMember(member.name.clone()));
+            }
+        }
+
+        // Validate: check for invalid paths
+        for member in &config.members {
+            if member.path.as_os_str().is_empty() {
+                return Err(ResolverError::InvalidPath(member.path.clone()));
+            }
+        }
+
+        // Validate: check that all dependencies reference existing members
+        for member in &config.members {
+            for dep in &member.dependencies {
+                if !seen_names.contains(dep) {
+                    return Err(ResolverError::MemberNotFound(format!(
+                        "'{}' (dependency of '{}')",
+                        dep, member.name
+                    )));
+                }
+            }
+        }
+
+        // Detect cycles
+        if let Some(cycle) = Self::find_cycle(&config.members) {
+            return Err(ResolverError::CyclicDependency(cycle));
+        }
+
+        // Compute topological order
+        let resolution_order = Self::topological_sort(&config.members);
+
+        Ok(Self {
+            config,
+            resolution_order,
+        })
+    }
+
+    /// Parse a workspace TOML string into a `ResolverWorkspaceConfig`.
+    ///
+    /// Expected format:
+    /// ```toml
+    /// [workspace]
+    /// root = "/path/to/workspace"
+    /// default_member = "core"
+    ///
+    /// [[workspace.members]]
+    /// name = "core"
+    /// path = "crates/core"
+    /// version = "0.1.0"
+    /// dependencies = []
+    ///
+    /// [[workspace.members]]
+    /// name = "utils"
+    /// path = "crates/utils"
+    /// version = "0.1.0"
+    /// dependencies = ["core"]
+    ///
+    /// [workspace.shared_dependencies.serde]
+    /// version = "1.0"
+    /// source = { registry = "https://crates.io" }
+    /// ```
+    pub fn from_toml(content: &str) -> Result<ResolverWorkspaceConfig, ResolverError> {
+        let raw: toml::Value =
+            toml::from_str(content).map_err(|e| ResolverError::ParseError(e.to_string()))?;
+
+        let ws = raw
+            .get("workspace")
+            .ok_or_else(|| ResolverError::ParseError("missing [workspace] section".to_string()))?;
+
+        // root_dir
+        let root_dir = ws
+            .get("root")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        // default_member
+        let default_member = ws
+            .get("default_member")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        // members
+        let members_val = ws.get("members");
+        let members = if let Some(arr) = members_val.and_then(|v| v.as_array()) {
+            let mut result = Vec::new();
+            for item in arr {
+                let name = item
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ResolverError::ParseError("member missing 'name'".to_string()))?
+                    .to_string();
+                let path = item.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ResolverError::ParseError(format!("member '{}' missing 'path'", name))
+                })?;
+                let version = item
+                    .get("version")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        ResolverError::ParseError(format!("member '{}' missing 'version'", name))
+                    })?
+                    .to_string();
+                let dependencies = item
+                    .get("dependencies")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                result.push(ResolverWorkspaceMember {
+                    name,
+                    path: PathBuf::from(path),
+                    version,
+                    dependencies,
+                });
+            }
+            result
+        } else {
+            Vec::new()
+        };
+
+        // shared_dependencies
+        let shared_dependencies =
+            if let Some(deps) = ws.get("shared_dependencies").and_then(|v| v.as_table()) {
+                let mut map = HashMap::new();
+                for (name, spec_val) in deps {
+                    let version = spec_val
+                        .get("version")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            ResolverError::ParseError(format!(
+                                "shared dependency '{}' missing 'version'",
+                                name
+                            ))
+                        })?
+                        .to_string();
+
+                    let source = if let Some(src) = spec_val.get("source") {
+                        if let Some(registry) = src.get("registry").and_then(|v| v.as_str()) {
+                            ResolverDependencySource::Registry(registry.to_string())
+                        } else if let Some(path) = src.get("path").and_then(|v| v.as_str()) {
+                            ResolverDependencySource::Path(PathBuf::from(path))
+                        } else if let Some(url) = src.get("git").and_then(|v| v.as_str()) {
+                            let rev = src.get("rev").and_then(|v| v.as_str()).map(String::from);
+                            ResolverDependencySource::Git {
+                                url: url.to_string(),
+                                rev,
+                            }
+                        } else {
+                            ResolverDependencySource::Registry("default".to_string())
+                        }
+                    } else {
+                        ResolverDependencySource::Registry("default".to_string())
+                    };
+
+                    map.insert(name.clone(), ResolverDependencySpec { version, source });
+                }
+                map
+            } else {
+                HashMap::new()
+            };
+
+        Ok(ResolverWorkspaceConfig {
+            root_dir,
+            members,
+            shared_dependencies,
+            default_member,
+        })
+    }
+
+    // ---- Resolution queries ----
+
+    /// Return the topologically sorted member names (dependencies before dependents).
+    pub fn resolve_order(&self) -> &[String] {
+        &self.resolution_order
+    }
+
+    /// Look up a member by name.
+    pub fn resolve_member(&self, name: &str) -> Option<&ResolverWorkspaceMember> {
+        self.config.members.iter().find(|m| m.name == name)
+    }
+
+    /// Return the direct dependencies of a member (as `ResolverWorkspaceMember` refs).
+    pub fn member_dependencies(&self, name: &str) -> Vec<&ResolverWorkspaceMember> {
+        let member = match self.resolve_member(name) {
+            Some(m) => m,
+            None => return Vec::new(),
+        };
+        member
+            .dependencies
+            .iter()
+            .filter_map(|dep_name| self.resolve_member(dep_name))
+            .collect()
+    }
+
+    /// Return all members that depend on the given member (reverse deps).
+    pub fn reverse_dependencies(&self, name: &str) -> Vec<&ResolverWorkspaceMember> {
+        self.config
+            .members
+            .iter()
+            .filter(|m| m.dependencies.iter().any(|d| d == name))
+            .collect()
+    }
+
+    // ---- Build planning ----
+
+    /// Produce a build plan with parallel grouping.
+    ///
+    /// Members in the same `parallel_group` have no inter-dependencies and can
+    /// be built concurrently. Groups are numbered starting from 0.
+    pub fn build_plan(&self) -> Vec<ResolverBuildStep> {
+        if self.config.members.is_empty() {
+            return Vec::new();
+        }
+
+        // Map member name -> set of dependency names
+        let dep_map: HashMap<&str, HashSet<&str>> = self
+            .config
+            .members
+            .iter()
+            .map(|m| {
+                let deps: HashSet<&str> = m.dependencies.iter().map(|s| s.as_str()).collect();
+                (m.name.as_str(), deps)
+            })
+            .collect();
+
+        let mut assigned: HashMap<&str, usize> = HashMap::new();
+        let mut steps = Vec::new();
+
+        // Process in topological order; each member's group = max(dep groups) + 1
+        for name in &self.resolution_order {
+            let group = dep_map
+                .get(name.as_str())
+                .map(|deps| {
+                    deps.iter()
+                        .filter_map(|d| assigned.get(d))
+                        .max()
+                        .map(|g| g + 1)
+                        .unwrap_or(0)
+                })
+                .unwrap_or(0);
+
+            assigned.insert(name.as_str(), group);
+            steps.push(ResolverBuildStep {
+                member: name.clone(),
+                parallel_group: group,
+            });
+        }
+
+        steps
+    }
+
+    /// Determine which workspace members are affected by a set of changed files.
+    ///
+    /// A member is affected if any changed file path starts with its path.
+    /// Transitive dependents are also included.
+    pub fn affected_members(&self, changed_files: &[PathBuf]) -> Vec<String> {
+        let mut directly_affected: HashSet<String> = HashSet::new();
+
+        for member in &self.config.members {
+            let member_path = self.config.root_dir.join(&member.path);
+            for file in changed_files {
+                if file.starts_with(&member_path) || file.starts_with(&member.path) {
+                    directly_affected.insert(member.name.clone());
+                    break;
+                }
+            }
+        }
+
+        // Expand to transitive dependents (anything that depends on affected members)
+        let mut all_affected = directly_affected.clone();
+        let mut frontier: Vec<String> = directly_affected.into_iter().collect();
+
+        while let Some(name) = frontier.pop() {
+            for rdep in self.reverse_dependencies(&name) {
+                if all_affected.insert(rdep.name.clone()) {
+                    frontier.push(rdep.name.clone());
+                }
+            }
+        }
+
+        // Return in topological order
+        self.resolution_order
+            .iter()
+            .filter(|n| all_affected.contains(n.as_str()))
+            .cloned()
+            .collect()
+    }
+
+    // ---- Validation ----
+
+    /// Validate the workspace configuration and return all errors found.
+    pub fn validate(&self) -> Vec<ResolverError> {
+        let mut errors = Vec::new();
+
+        // Check for empty member names
+        for member in &self.config.members {
+            if member.name.is_empty() {
+                errors.push(ResolverError::ParseError(
+                    "member has empty name".to_string(),
+                ));
+            }
+            if member.version.is_empty() {
+                errors.push(ResolverError::ParseError(format!(
+                    "member '{}' has empty version",
+                    member.name
+                )));
+            }
+            if member.path.as_os_str().is_empty() {
+                errors.push(ResolverError::InvalidPath(member.path.clone()));
+            }
+        }
+
+        // Check for duplicate member names
+        let mut seen: HashSet<&str> = HashSet::new();
+        for member in &self.config.members {
+            if !member.name.is_empty() && !seen.insert(&member.name) {
+                errors.push(ResolverError::DuplicateMember(member.name.clone()));
+            }
+        }
+
+        // Check for missing dependency references
+        let member_names: HashSet<&str> = self
+            .config
+            .members
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect();
+        for member in &self.config.members {
+            for dep in &member.dependencies {
+                if !member_names.contains(dep.as_str()) {
+                    errors.push(ResolverError::MemberNotFound(format!(
+                        "'{}' (dependency of '{}')",
+                        dep, member.name
+                    )));
+                }
+            }
+        }
+
+        // Check for cycles
+        if let Some(cycle) = Self::find_cycle(&self.config.members) {
+            errors.push(ResolverError::CyclicDependency(cycle));
+        }
+
+        // Check default_member references a real member
+        if let Some(ref default) = self.config.default_member {
+            if !member_names.contains(default.as_str()) {
+                errors.push(ResolverError::MemberNotFound(format!(
+                    "'{}' (default_member)",
+                    default
+                )));
+            }
+        }
+
+        errors
+    }
+
+    /// Detect cycles among members and return the cycle chain if one exists.
+    pub fn detect_cycles(&self) -> Option<Vec<String>> {
+        Self::find_cycle(&self.config.members)
+    }
+
+    /// Return a reference to the underlying config.
+    pub fn config(&self) -> &ResolverWorkspaceConfig {
+        &self.config
+    }
+
+    // ---- Private helpers ----
+
+    /// Kahn's algorithm for topological sort.
+    fn topological_sort(members: &[ResolverWorkspaceMember]) -> Vec<String> {
+        let names: HashSet<&str> = members.iter().map(|m| m.name.as_str()).collect();
+
+        // in-degree: how many dependencies does each member have (within the workspace)
+        let mut in_degree: HashMap<&str, usize> = HashMap::new();
+        // reverse map: dep -> list of members that depend on it
+        let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
+
+        for m in members {
+            in_degree.entry(m.name.as_str()).or_insert(0);
+            for dep in &m.dependencies {
+                if names.contains(dep.as_str()) {
+                    *in_degree.entry(m.name.as_str()).or_insert(0) += 1;
+                    dependents
+                        .entry(dep.as_str())
+                        .or_default()
+                        .push(m.name.as_str());
+                }
+            }
+        }
+
+        // Seed queue with members that have zero in-degree (no workspace deps)
+        let mut queue: Vec<&str> = in_degree
+            .iter()
+            .filter(|(_, &deg)| deg == 0)
+            .map(|(&name, _)| name)
+            .collect();
+        queue.sort(); // deterministic
+
+        let mut result: Vec<String> = Vec::new();
+
+        while let Some(name) = queue.pop() {
+            result.push(name.to_string());
+
+            if let Some(deps) = dependents.get(name) {
+                let mut sorted_deps: Vec<&str> = deps.to_vec();
+                sorted_deps.sort();
+                for dep in sorted_deps {
+                    if let Some(deg) = in_degree.get_mut(dep) {
+                        *deg -= 1;
+                        if *deg == 0 {
+                            // Insert sorted to keep determinism
+                            let pos = queue.binary_search(&dep).unwrap_or_else(|e| e);
+                            queue.insert(pos, dep);
+                        }
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// DFS-based cycle detection. Returns the cycle path if one is found.
+    fn find_cycle(members: &[ResolverWorkspaceMember]) -> Option<Vec<String>> {
+        let names: HashSet<&str> = members.iter().map(|m| m.name.as_str()).collect();
+        let dep_map: HashMap<&str, &[String]> = members
+            .iter()
+            .map(|m| (m.name.as_str(), m.dependencies.as_slice()))
+            .collect();
+
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Color {
+            White,
+            Gray,
+            Black,
+        }
+
+        let mut color: HashMap<&str, Color> = names.iter().map(|&n| (n, Color::White)).collect();
+        let mut path: Vec<&str> = Vec::new();
+
+        fn dfs<'a>(
+            node: &'a str,
+            dep_map: &HashMap<&'a str, &'a [String]>,
+            color: &mut HashMap<&'a str, Color>,
+            path: &mut Vec<&'a str>,
+            names: &HashSet<&'a str>,
+        ) -> Option<Vec<String>> {
+            color.insert(node, Color::Gray);
+            path.push(node);
+
+            if let Some(deps) = dep_map.get(node) {
+                for dep in *deps {
+                    if !names.contains(dep.as_str()) {
+                        continue;
+                    }
+                    match color.get(dep.as_str()) {
+                        Some(Color::Gray) => {
+                            // Found a cycle — extract the cycle portion
+                            let cycle_start = path.iter().position(|&n| n == dep.as_str()).unwrap();
+                            let mut cycle: Vec<String> =
+                                path[cycle_start..].iter().map(|s| s.to_string()).collect();
+                            cycle.push(dep.clone());
+                            return Some(cycle);
+                        }
+                        Some(Color::White) | None => {
+                            if let Some(cycle) = dfs(dep.as_str(), dep_map, color, path, names) {
+                                return Some(cycle);
+                            }
+                        }
+                        Some(Color::Black) => {}
+                    }
+                }
+            }
+
+            path.pop();
+            color.insert(node, Color::Black);
+            None
+        }
+
+        // Process in sorted order for determinism
+        let mut sorted_names: Vec<&str> = names.iter().copied().collect();
+        sorted_names.sort();
+
+        for name in sorted_names {
+            if color.get(name) == Some(&Color::White) {
+                if let Some(cycle) = dfs(name, &dep_map, &mut color, &mut path, &names) {
+                    return Some(cycle);
+                }
+            }
+        }
+
+        None
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 

@@ -2160,7 +2160,7 @@ impl VM {
         let cell_regs = callee_cell.registers;
         let new_base = self.registers.len();
         self.registers
-            .resize(new_base + num_regs.max(256), Value::Null);
+            .resize(new_base + num_regs.max(16), Value::Null);
         // Copy captures into frame registers
         for (i, cap) in cv.captures.iter().enumerate() {
             self.check_register(i, cell_regs)?;

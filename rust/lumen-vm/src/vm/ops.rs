@@ -194,10 +194,11 @@ impl VM {
         c: usize,
         op: BinaryOp,
     ) -> Result<(), VmError> {
-        let lhs = self.registers[base + b].clone();
-        let rhs = self.registers[base + c].clone();
+        // Fast path: borrow registers and handle Copy types (Int, Float) without cloning.
+        // Only clone for BigInt (rare) and error paths.
 
         // Helper for checked int ops
+        #[inline(always)]
         fn int_op(op: BinaryOp, x: i64, y: i64) -> Option<i64> {
             match op {
                 BinaryOp::Add => x.checked_add(y),
@@ -242,6 +243,7 @@ impl VM {
         }
 
         // Helper for float ops — follows IEEE 754: overflow produces infinity, not an error
+        #[inline(always)]
         fn float_op(op: BinaryOp, x: f64, y: f64) -> f64 {
             match op {
                 BinaryOp::Add => x + y,
@@ -290,49 +292,52 @@ impl VM {
             }
         }
 
-        self.registers[base + a] = match (&lhs, &rhs) {
+        // Borrow-based fast path: avoid cloning for Int/Float (Copy types)
+        let lhs_ref = &self.registers[base + b];
+        let rhs_ref = &self.registers[base + c];
+        let result = match (lhs_ref, rhs_ref) {
             (Value::Int(x), Value::Int(y)) => {
-                if let Some(res) = int_op(op, *x, *y) {
-                    Value::Int(res)
+                let (x, y) = (*x, *y);
+                if let Some(res) = int_op(op, x, y) {
+                    Ok(Value::Int(res))
                 } else {
-                    // Integer overflow — return operation-specific error
-                    return Err(VmError::ArithmeticOverflow(op_name(op).to_string()));
+                    Err(VmError::ArithmeticOverflow(op_name(op).to_string()))
                 }
             }
-            (Value::BigInt(x), Value::BigInt(y)) => Value::BigInt(bigint_op(op, x, y)?),
-            (Value::Int(x), Value::BigInt(y)) => {
-                Value::BigInt(bigint_op(op, &BigInt::from(*x), y)?)
-            }
-            (Value::BigInt(x), Value::Int(y)) => {
-                Value::BigInt(bigint_op(op, x, &BigInt::from(*y))?)
-            }
-            (Value::Float(x), Value::Float(y)) => Value::Float(float_op(op, *x, *y)),
-            (Value::Int(x), Value::Float(y)) => {
-                let xf = *x as f64;
-                Value::Float(float_op(op, xf, *y))
-            }
-            (Value::Float(x), Value::Int(y)) => {
-                let yf = *y as f64;
-                Value::Float(float_op(op, *x, yf))
-            }
-            (Value::BigInt(x), Value::Float(y)) => {
-                let xf = x.to_f64().unwrap_or(f64::NAN);
-                Value::Float(float_op(op, xf, *y))
-            }
-            (Value::Float(x), Value::BigInt(y)) => {
-                let yf = y.to_f64().unwrap_or(f64::NAN);
-                Value::Float(float_op(op, *x, yf))
-            }
+            (Value::Float(x), Value::Float(y)) => Ok(Value::Float(float_op(op, *x, *y))),
+            (Value::Int(x), Value::Float(y)) => Ok(Value::Float(float_op(op, *x as f64, *y))),
+            (Value::Float(x), Value::Int(y)) => Ok(Value::Float(float_op(op, *x, *y as f64))),
             _ => {
-                return Err(VmError::TypeError(format!(
-                    "arithmetic on non-numeric types: {} ({}) and {} ({})",
-                    lhs.display_pretty(),
-                    lhs.type_name(),
-                    rhs.display_pretty(),
-                    rhs.type_name()
-                )))
+                // Slow path: clone for BigInt and error cases
+                let lhs = self.registers[base + b].clone();
+                let rhs = self.registers[base + c].clone();
+                match (&lhs, &rhs) {
+                    (Value::BigInt(x), Value::BigInt(y)) => Ok(Value::BigInt(bigint_op(op, x, y)?)),
+                    (Value::Int(x), Value::BigInt(y)) => {
+                        Ok(Value::BigInt(bigint_op(op, &BigInt::from(*x), y)?))
+                    }
+                    (Value::BigInt(x), Value::Int(y)) => {
+                        Ok(Value::BigInt(bigint_op(op, x, &BigInt::from(*y))?))
+                    }
+                    (Value::BigInt(x), Value::Float(y)) => {
+                        let xf = x.to_f64().unwrap_or(f64::NAN);
+                        Ok(Value::Float(float_op(op, xf, *y)))
+                    }
+                    (Value::Float(x), Value::BigInt(y)) => {
+                        let yf = y.to_f64().unwrap_or(f64::NAN);
+                        Ok(Value::Float(float_op(op, *x, yf)))
+                    }
+                    _ => Err(VmError::TypeError(format!(
+                        "arithmetic on non-numeric types: {} ({}) and {} ({})",
+                        lhs.display_pretty(),
+                        lhs.type_name(),
+                        rhs.display_pretty(),
+                        rhs.type_name()
+                    ))),
+                }
             }
         };
+        self.registers[base + a] = result?;
         Ok(())
     }
 }

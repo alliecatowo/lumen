@@ -33,7 +33,7 @@ fn cov_result_full(line: f64, branch: f64, func: f64) -> CoverageResult {
 // =============================================================================
 
 #[test]
-fn wave25_ci_config_default_miri_enabled() {
+fn ci_config_default_miri_enabled() {
     let cfg = CiConfig::default_config();
     assert!(cfg.miri.enabled);
     assert!(cfg.miri.stacked_borrows);
@@ -41,14 +41,14 @@ fn wave25_ci_config_default_miri_enabled() {
 }
 
 #[test]
-fn wave25_ci_config_default_coverage_threshold() {
+fn ci_config_default_coverage_threshold() {
     let cfg = CiConfig::default_config();
     assert!(cfg.coverage.enabled);
     assert!((cfg.coverage.threshold_percent - 80.0).abs() < f64::EPSILON);
 }
 
 #[test]
-fn wave25_ci_config_default_sanitizers_off() {
+fn ci_config_default_sanitizers_off() {
     let cfg = CiConfig::default_config();
     assert!(!cfg.sanitizers.asan);
     assert!(!cfg.sanitizers.msan);
@@ -57,7 +57,7 @@ fn wave25_ci_config_default_sanitizers_off() {
 }
 
 #[test]
-fn wave25_ci_config_strict_all_sanitizers() {
+fn ci_config_strict_all_sanitizers() {
     let cfg = CiConfig::strict_config();
     assert!(cfg.sanitizers.asan);
     assert!(cfg.sanitizers.msan);
@@ -67,26 +67,26 @@ fn wave25_ci_config_strict_all_sanitizers() {
 }
 
 #[test]
-fn wave25_ci_config_strict_high_coverage() {
+fn ci_config_strict_high_coverage() {
     let cfg = CiConfig::strict_config();
     assert!((cfg.coverage.threshold_percent - 90.0).abs() < f64::EPSILON);
     assert!(cfg.coverage.fail_on_decrease);
 }
 
 #[test]
-fn wave25_ci_config_minimal_miri_disabled() {
+fn ci_config_minimal_miri_disabled() {
     let cfg = CiConfig::minimal_config();
     assert!(!cfg.miri.enabled);
 }
 
 #[test]
-fn wave25_ci_config_minimal_low_threshold() {
+fn ci_config_minimal_low_threshold() {
     let cfg = CiConfig::minimal_config();
     assert!((cfg.coverage.threshold_percent - 50.0).abs() < f64::EPSILON);
 }
 
 #[test]
-fn wave25_ci_config_minimal_no_fail_on_decrease() {
+fn ci_config_minimal_no_fail_on_decrease() {
     let cfg = CiConfig::minimal_config();
     assert!(!cfg.coverage.fail_on_decrease);
 }
@@ -96,14 +96,14 @@ fn wave25_ci_config_minimal_no_fail_on_decrease() {
 // =============================================================================
 
 #[test]
-fn wave25_ci_miri_default_has_flags() {
+fn ci_miri_default_has_flags() {
     let m = MiriConfig::default_config();
     assert!(!m.flags.is_empty());
     assert!(m.flags.iter().any(|f| f.contains("symbolic-alignment")));
 }
 
 #[test]
-fn wave25_ci_miri_with_custom_flags() {
+fn ci_miri_with_custom_flags() {
     let m = MiriConfig::with_flags(&["-Zmiri-disable-validation"]);
     assert_eq!(m.flags.len(), 1);
     assert_eq!(m.flags[0], "-Zmiri-disable-validation");
@@ -117,21 +117,21 @@ fn wave25_ci_miri_with_custom_flags() {
 // =============================================================================
 
 #[test]
-fn wave25_ci_miri_command_disabled_returns_empty() {
+fn ci_miri_command_disabled_returns_empty() {
     let mut m = MiriConfig::default_config();
     m.enabled = false;
     assert!(CiRunner::miri_command(&m).is_empty());
 }
 
 #[test]
-fn wave25_ci_miri_command_includes_nightly() {
+fn ci_miri_command_includes_nightly() {
     let m = MiriConfig::default_config();
     let cmds = CiRunner::miri_command(&m);
     assert!(cmds.iter().any(|c| c.contains("nightly")));
 }
 
 #[test]
-fn wave25_ci_miri_command_includes_stacked_borrows_flag() {
+fn ci_miri_command_includes_stacked_borrows_flag() {
     let m = MiriConfig::default_config();
     let cmds = CiRunner::miri_command(&m);
     let env_line = cmds.iter().find(|c| c.starts_with("export")).unwrap();
@@ -139,14 +139,14 @@ fn wave25_ci_miri_command_includes_stacked_borrows_flag() {
 }
 
 #[test]
-fn wave25_ci_miri_command_includes_timeout() {
+fn ci_miri_command_includes_timeout() {
     let m = MiriConfig::default_config();
     let cmds = CiRunner::miri_command(&m);
     assert!(cmds.iter().any(|c| c.starts_with("timeout")));
 }
 
 #[test]
-fn wave25_ci_miri_command_exclusions() {
+fn ci_miri_command_exclusions() {
     let mut m = MiriConfig::default_config();
     m.excluded_tests = vec!["lumen-wasm".to_string()];
     let cmds = CiRunner::miri_command(&m);
@@ -158,14 +158,14 @@ fn wave25_ci_miri_command_exclusions() {
 // =============================================================================
 
 #[test]
-fn wave25_ci_coverage_command_disabled_returns_empty() {
+fn ci_coverage_command_disabled_returns_empty() {
     let mut c = CoverageConfig::default_config();
     c.enabled = false;
     assert!(CiRunner::coverage_command(&c).is_empty());
 }
 
 #[test]
-fn wave25_ci_coverage_command_tarpaulin() {
+fn ci_coverage_command_tarpaulin() {
     let c = CoverageConfig {
         enabled: true,
         threshold_percent: 80.0,
@@ -181,7 +181,7 @@ fn wave25_ci_coverage_command_tarpaulin() {
 }
 
 #[test]
-fn wave25_ci_coverage_command_llvm_cov() {
+fn ci_coverage_command_llvm_cov() {
     let c = CoverageConfig {
         enabled: true,
         threshold_percent: 80.0,
@@ -196,7 +196,7 @@ fn wave25_ci_coverage_command_llvm_cov() {
 }
 
 #[test]
-fn wave25_ci_coverage_command_grcov() {
+fn ci_coverage_command_grcov() {
     let c = CoverageConfig {
         enabled: true,
         threshold_percent: 80.0,
@@ -211,7 +211,7 @@ fn wave25_ci_coverage_command_grcov() {
 }
 
 #[test]
-fn wave25_ci_coverage_command_exclude_patterns() {
+fn ci_coverage_command_exclude_patterns() {
     let c = CoverageConfig {
         enabled: true,
         threshold_percent: 80.0,
@@ -229,13 +229,13 @@ fn wave25_ci_coverage_command_exclude_patterns() {
 // =============================================================================
 
 #[test]
-fn wave25_ci_sanitizer_commands_none_enabled() {
+fn ci_sanitizer_commands_none_enabled() {
     let s = SanitizerConfig::default_config();
     assert!(CiRunner::sanitizer_commands(&s).is_empty());
 }
 
 #[test]
-fn wave25_ci_sanitizer_commands_asan() {
+fn ci_sanitizer_commands_asan() {
     let mut s = SanitizerConfig::default_config();
     s.asan = true;
     let cmds = CiRunner::sanitizer_commands(&s);
@@ -244,7 +244,7 @@ fn wave25_ci_sanitizer_commands_asan() {
 }
 
 #[test]
-fn wave25_ci_sanitizer_commands_multiple() {
+fn ci_sanitizer_commands_multiple() {
     let mut s = SanitizerConfig::default_config();
     s.asan = true;
     s.tsan = true;
@@ -253,7 +253,7 @@ fn wave25_ci_sanitizer_commands_multiple() {
 }
 
 #[test]
-fn wave25_ci_sanitizer_commands_ubsan() {
+fn ci_sanitizer_commands_ubsan() {
     let mut s = SanitizerConfig::default_config();
     s.ubsan = true;
     let cmds = CiRunner::sanitizer_commands(&s);
@@ -265,13 +265,13 @@ fn wave25_ci_sanitizer_commands_ubsan() {
 // =============================================================================
 
 #[test]
-fn wave25_ci_valgrind_command_disabled() {
+fn ci_valgrind_command_disabled() {
     let s = SanitizerConfig::default_config();
     assert!(CiRunner::valgrind_command(&s, "test_bin").is_empty());
 }
 
 #[test]
-fn wave25_ci_valgrind_command_enabled() {
+fn ci_valgrind_command_enabled() {
     let mut s = SanitizerConfig::default_config();
     s.valgrind = true;
     let cmds = CiRunner::valgrind_command(&s, "./target/debug/my_test");
@@ -281,7 +281,7 @@ fn wave25_ci_valgrind_command_enabled() {
 }
 
 #[test]
-fn wave25_ci_valgrind_command_includes_flags() {
+fn ci_valgrind_command_includes_flags() {
     let mut s = SanitizerConfig::default_config();
     s.valgrind = true;
     let cmds = CiRunner::valgrind_command(&s, "test_bin");
@@ -290,7 +290,7 @@ fn wave25_ci_valgrind_command_includes_flags() {
 }
 
 #[test]
-fn wave25_ci_valgrind_command_with_suppressions() {
+fn ci_valgrind_command_with_suppressions() {
     let mut s = SanitizerConfig::default_config();
     s.valgrind = true;
     s.suppressions = vec!["lumen.supp".to_string()];
@@ -303,14 +303,14 @@ fn wave25_ci_valgrind_command_with_suppressions() {
 // =============================================================================
 
 #[test]
-fn wave25_ci_parse_tarpaulin_output() {
+fn ci_parse_tarpaulin_output() {
     let output = "running tests...\n85.32% coverage, 1200/1407 lines covered\n";
     let result = CiRunner::parse_coverage_summary(output).unwrap();
     assert!((result.line_coverage - 85.32).abs() < 0.01);
 }
 
 #[test]
-fn wave25_ci_parse_tarpaulin_integer_coverage() {
+fn ci_parse_tarpaulin_integer_coverage() {
     let output = "100% coverage, 500/500 lines covered";
     let result = CiRunner::parse_coverage_summary(output).unwrap();
     assert!((result.line_coverage - 100.0).abs() < 0.01);
@@ -321,7 +321,7 @@ fn wave25_ci_parse_tarpaulin_integer_coverage() {
 // =============================================================================
 
 #[test]
-fn wave25_ci_parse_llvm_cov_output() {
+fn ci_parse_llvm_cov_output() {
     let output = "Filename  Regions  Functions  Lines\n---\nTOTAL     1234     567        89.7%\n";
     let result = CiRunner::parse_coverage_summary(output).unwrap();
     assert!((result.line_coverage - 89.7).abs() < 0.1);
@@ -332,7 +332,7 @@ fn wave25_ci_parse_llvm_cov_output() {
 // =============================================================================
 
 #[test]
-fn wave25_ci_parse_grcov_output() {
+fn ci_parse_grcov_output() {
     let output = "lines......: 78.5% (1200 of 1528 lines)\nfunctions..: 65.3%\n";
     let result = CiRunner::parse_coverage_summary(output).unwrap();
     assert!((result.line_coverage - 78.5).abs() < 0.1);
@@ -343,7 +343,7 @@ fn wave25_ci_parse_grcov_output() {
 // =============================================================================
 
 #[test]
-fn wave25_ci_parse_coverage_unrecognised_format() {
+fn ci_parse_coverage_unrecognised_format() {
     let output = "some random output with no coverage info";
     assert!(CiRunner::parse_coverage_summary(output).is_none());
 }
@@ -353,7 +353,7 @@ fn wave25_ci_parse_coverage_unrecognised_format() {
 // =============================================================================
 
 #[test]
-fn wave25_ci_coverage_gate_pass() {
+fn ci_coverage_gate_pass() {
     let result = cov_result(85.0);
     let cfg = CoverageConfig::default_config(); // threshold 80
     match CiRunner::check_coverage_gate(&result, &cfg) {
@@ -369,7 +369,7 @@ fn wave25_ci_coverage_gate_pass() {
 }
 
 #[test]
-fn wave25_ci_coverage_gate_fail() {
+fn ci_coverage_gate_fail() {
     let result = cov_result(50.0);
     let cfg = CoverageConfig::default_config();
     match CiRunner::check_coverage_gate(&result, &cfg) {
@@ -384,7 +384,7 @@ fn wave25_ci_coverage_gate_fail() {
 }
 
 #[test]
-fn wave25_ci_coverage_gate_exact_threshold() {
+fn ci_coverage_gate_exact_threshold() {
     let result = cov_result(80.0);
     let cfg = CoverageConfig::default_config();
     let gate = CiRunner::check_coverage_gate(&result, &cfg);
@@ -392,7 +392,7 @@ fn wave25_ci_coverage_gate_exact_threshold() {
 }
 
 #[test]
-fn wave25_ci_coverage_gate_decrease_detection() {
+fn ci_coverage_gate_decrease_detection() {
     let current = cov_result(75.0);
     let mut cfg = CoverageConfig::default_config();
     cfg.fail_on_decrease = true;
@@ -408,7 +408,7 @@ fn wave25_ci_coverage_gate_decrease_detection() {
 }
 
 #[test]
-fn wave25_ci_coverage_gate_no_decrease_when_disabled() {
+fn ci_coverage_gate_no_decrease_when_disabled() {
     let current = cov_result(75.0);
     let mut cfg = CoverageConfig::default_config();
     cfg.fail_on_decrease = false;
@@ -423,7 +423,7 @@ fn wave25_ci_coverage_gate_no_decrease_when_disabled() {
 // =============================================================================
 
 #[test]
-fn wave25_ci_coverage_result_with_uncovered_regions() {
+fn ci_coverage_result_with_uncovered_regions() {
     let result = CoverageResult {
         line_coverage: 75.0,
         branch_coverage: Some(60.0),
@@ -447,7 +447,7 @@ fn wave25_ci_coverage_result_with_uncovered_regions() {
 }
 
 #[test]
-fn wave25_ci_coverage_result_full_metrics() {
+fn ci_coverage_result_full_metrics() {
     let result = cov_result_full(85.0, 70.0, 90.0);
     assert!((result.branch_coverage.unwrap() - 70.0).abs() < f64::EPSILON);
     assert!((result.function_coverage.unwrap() - 90.0).abs() < f64::EPSILON);
@@ -458,13 +458,13 @@ fn wave25_ci_coverage_result_full_metrics() {
 // =============================================================================
 
 #[test]
-fn wave25_ci_report_new_is_empty() {
+fn ci_report_new_is_empty() {
     let report = CiReport::new();
     assert!(report.sections.is_empty());
 }
 
 #[test]
-fn wave25_ci_report_add_section() {
+fn ci_report_add_section() {
     let mut report = CiReport::new();
     report.add_section(CiReportSection {
         name: "test".to_string(),
@@ -476,7 +476,7 @@ fn wave25_ci_report_add_section() {
 }
 
 #[test]
-fn wave25_ci_report_overall_pass() {
+fn ci_report_overall_pass() {
     let mut report = CiReport::new();
     report.add_section(CiReportSection {
         name: "test".to_string(),
@@ -488,7 +488,7 @@ fn wave25_ci_report_overall_pass() {
 }
 
 #[test]
-fn wave25_ci_report_overall_fail() {
+fn ci_report_overall_fail() {
     let mut report = CiReport::new();
     report.add_section(CiReportSection {
         name: "test".to_string(),
@@ -506,7 +506,7 @@ fn wave25_ci_report_overall_fail() {
 }
 
 #[test]
-fn wave25_ci_report_overall_warning() {
+fn ci_report_overall_warning() {
     let mut report = CiReport::new();
     report.add_section(CiReportSection {
         name: "test".to_string(),
@@ -524,7 +524,7 @@ fn wave25_ci_report_overall_warning() {
 }
 
 #[test]
-fn wave25_ci_report_overall_all_skip() {
+fn ci_report_overall_all_skip() {
     let mut report = CiReport::new();
     report.add_section(CiReportSection {
         name: "miri".to_string(),
@@ -536,13 +536,13 @@ fn wave25_ci_report_overall_all_skip() {
 }
 
 #[test]
-fn wave25_ci_report_overall_empty() {
+fn ci_report_overall_empty() {
     let report = CiReport::new();
     assert!(matches!(report.overall_status(), CiStatus::Skip(_)));
 }
 
 #[test]
-fn wave25_ci_report_summary_format() {
+fn ci_report_summary_format() {
     let mut report = CiReport::new();
     report.add_section(CiReportSection {
         name: "test".to_string(),
@@ -567,14 +567,14 @@ fn wave25_ci_report_summary_format() {
 // =============================================================================
 
 #[test]
-fn wave25_ci_report_markdown_has_header() {
+fn ci_report_markdown_has_header() {
     let report = CiReport::new();
     let md = report.to_markdown();
     assert!(md.contains("# CI Report"));
 }
 
 #[test]
-fn wave25_ci_report_markdown_table() {
+fn ci_report_markdown_table() {
     let mut report = CiReport::new();
     report.add_section(CiReportSection {
         name: "test".to_string(),
@@ -587,7 +587,7 @@ fn wave25_ci_report_markdown_table() {
 }
 
 #[test]
-fn wave25_ci_report_markdown_details_section() {
+fn ci_report_markdown_details_section() {
     let mut report = CiReport::new();
     report.add_section(CiReportSection {
         name: "miri".to_string(),
@@ -606,7 +606,7 @@ fn wave25_ci_report_markdown_details_section() {
 // =============================================================================
 
 #[test]
-fn wave25_ci_report_json_valid() {
+fn ci_report_json_valid() {
     let mut report = CiReport::new();
     report.add_section(CiReportSection {
         name: "test".to_string(),
@@ -623,7 +623,7 @@ fn wave25_ci_report_json_valid() {
 }
 
 #[test]
-fn wave25_ci_report_json_escape() {
+fn ci_report_json_escape() {
     let mut report = CiReport::new();
     report.add_section(CiReportSection {
         name: "test".to_string(),
@@ -641,7 +641,7 @@ fn wave25_ci_report_json_escape() {
 // =============================================================================
 
 #[test]
-fn wave25_ci_github_actions_yaml_default() {
+fn ci_github_actions_yaml_default() {
     let cfg = CiConfig::default_config();
     let yaml = CiRunner::github_actions_yaml(&cfg);
     assert!(yaml.contains("name: CI"));
@@ -651,7 +651,7 @@ fn wave25_ci_github_actions_yaml_default() {
 }
 
 #[test]
-fn wave25_ci_github_actions_yaml_miri_job() {
+fn ci_github_actions_yaml_miri_job() {
     let cfg = CiConfig::default_config();
     let yaml = CiRunner::github_actions_yaml(&cfg);
     assert!(yaml.contains("miri:"));
@@ -659,7 +659,7 @@ fn wave25_ci_github_actions_yaml_miri_job() {
 }
 
 #[test]
-fn wave25_ci_github_actions_yaml_coverage_job() {
+fn ci_github_actions_yaml_coverage_job() {
     let cfg = CiConfig::default_config();
     let yaml = CiRunner::github_actions_yaml(&cfg);
     assert!(yaml.contains("coverage:"));
@@ -667,14 +667,14 @@ fn wave25_ci_github_actions_yaml_coverage_job() {
 }
 
 #[test]
-fn wave25_ci_github_actions_yaml_no_sanitizers_when_disabled() {
+fn ci_github_actions_yaml_no_sanitizers_when_disabled() {
     let cfg = CiConfig::default_config();
     let yaml = CiRunner::github_actions_yaml(&cfg);
     assert!(!yaml.contains("sanitizers:"));
 }
 
 #[test]
-fn wave25_ci_github_actions_yaml_sanitizers_when_enabled() {
+fn ci_github_actions_yaml_sanitizers_when_enabled() {
     let cfg = CiConfig::strict_config();
     let yaml = CiRunner::github_actions_yaml(&cfg);
     assert!(yaml.contains("sanitizers:"));
@@ -682,7 +682,7 @@ fn wave25_ci_github_actions_yaml_sanitizers_when_enabled() {
 }
 
 #[test]
-fn wave25_ci_github_actions_yaml_valgrind_when_enabled() {
+fn ci_github_actions_yaml_valgrind_when_enabled() {
     let cfg = CiConfig::strict_config();
     let yaml = CiRunner::github_actions_yaml(&cfg);
     assert!(yaml.contains("valgrind:"));
@@ -694,7 +694,7 @@ fn wave25_ci_github_actions_yaml_valgrind_when_enabled() {
 // =============================================================================
 
 #[test]
-fn wave25_ci_gitlab_ci_yaml_stages() {
+fn ci_gitlab_ci_yaml_stages() {
     let cfg = CiConfig::default_config();
     let yaml = CiRunner::gitlab_ci_yaml(&cfg);
     assert!(yaml.contains("stages:"));
@@ -702,7 +702,7 @@ fn wave25_ci_gitlab_ci_yaml_stages() {
 }
 
 #[test]
-fn wave25_ci_gitlab_ci_yaml_test_job() {
+fn ci_gitlab_ci_yaml_test_job() {
     let cfg = CiConfig::default_config();
     let yaml = CiRunner::gitlab_ci_yaml(&cfg);
     assert!(yaml.contains("test:\n"));
@@ -711,7 +711,7 @@ fn wave25_ci_gitlab_ci_yaml_test_job() {
 }
 
 #[test]
-fn wave25_ci_gitlab_ci_yaml_miri_stage() {
+fn ci_gitlab_ci_yaml_miri_stage() {
     let cfg = CiConfig::default_config();
     let yaml = CiRunner::gitlab_ci_yaml(&cfg);
     assert!(yaml.contains("- miri"));
@@ -720,14 +720,14 @@ fn wave25_ci_gitlab_ci_yaml_miri_stage() {
 }
 
 #[test]
-fn wave25_ci_gitlab_ci_yaml_no_sanitizer_stage_when_disabled() {
+fn ci_gitlab_ci_yaml_no_sanitizer_stage_when_disabled() {
     let cfg = CiConfig::default_config();
     let yaml = CiRunner::gitlab_ci_yaml(&cfg);
     assert!(!yaml.contains("- sanitizers"));
 }
 
 #[test]
-fn wave25_ci_gitlab_ci_yaml_all_stages_strict() {
+fn ci_gitlab_ci_yaml_all_stages_strict() {
     let cfg = CiConfig::strict_config();
     let yaml = CiRunner::gitlab_ci_yaml(&cfg);
     assert!(yaml.contains("- test"));
@@ -741,12 +741,12 @@ fn wave25_ci_gitlab_ci_yaml_all_stages_strict() {
 // =============================================================================
 
 #[test]
-fn wave25_ci_status_display_pass() {
+fn ci_status_display_pass() {
     assert_eq!(format!("{}", CiStatus::Pass), "pass");
 }
 
 #[test]
-fn wave25_ci_status_display_fail() {
+fn ci_status_display_fail() {
     assert_eq!(
         format!("{}", CiStatus::Fail("oops".to_string())),
         "fail: oops"
@@ -754,7 +754,7 @@ fn wave25_ci_status_display_fail() {
 }
 
 #[test]
-fn wave25_ci_status_display_skip() {
+fn ci_status_display_skip() {
     assert_eq!(
         format!("{}", CiStatus::Skip("reason".to_string())),
         "skip: reason"
@@ -762,7 +762,7 @@ fn wave25_ci_status_display_skip() {
 }
 
 #[test]
-fn wave25_ci_status_display_warning() {
+fn ci_status_display_warning() {
     assert_eq!(
         format!("{}", CiStatus::Warning("slow".to_string())),
         "warning: slow"
@@ -774,14 +774,14 @@ fn wave25_ci_status_display_warning() {
 // =============================================================================
 
 #[test]
-fn wave25_ci_coverage_tool_display() {
+fn ci_coverage_tool_display() {
     assert_eq!(format!("{}", CoverageTool::Tarpaulin), "tarpaulin");
     assert_eq!(format!("{}", CoverageTool::LlvmCov), "llvm-cov");
     assert_eq!(format!("{}", CoverageTool::Grcov), "grcov");
 }
 
 #[test]
-fn wave25_ci_coverage_format_display() {
+fn ci_coverage_format_display() {
     assert_eq!(format!("{}", CoverageFormat::Html), "html");
     assert_eq!(format!("{}", CoverageFormat::Lcov), "lcov");
     assert_eq!(format!("{}", CoverageFormat::Json), "json");
@@ -793,7 +793,7 @@ fn wave25_ci_coverage_format_display() {
 // =============================================================================
 
 #[test]
-fn wave25_ci_test_config_defaults() {
+fn ci_test_config_defaults() {
     let tc = TestConfig::default_config();
     assert!(tc.parallel);
     assert_eq!(tc.timeout_secs, 300);
@@ -806,7 +806,7 @@ fn wave25_ci_test_config_defaults() {
 // =============================================================================
 
 #[test]
-fn wave25_ci_coverage_tarpaulin_lcov_format() {
+fn ci_coverage_tarpaulin_lcov_format() {
     let c = CoverageConfig {
         enabled: true,
         threshold_percent: 80.0,
@@ -820,7 +820,7 @@ fn wave25_ci_coverage_tarpaulin_lcov_format() {
 }
 
 #[test]
-fn wave25_ci_coverage_tarpaulin_json_format() {
+fn ci_coverage_tarpaulin_json_format() {
     let c = CoverageConfig {
         enabled: true,
         threshold_percent: 80.0,
@@ -834,7 +834,7 @@ fn wave25_ci_coverage_tarpaulin_json_format() {
 }
 
 #[test]
-fn wave25_ci_coverage_llvm_cov_json_format() {
+fn ci_coverage_llvm_cov_json_format() {
     let c = CoverageConfig {
         enabled: true,
         threshold_percent: 80.0,
@@ -848,7 +848,7 @@ fn wave25_ci_coverage_llvm_cov_json_format() {
 }
 
 #[test]
-fn wave25_ci_coverage_llvm_cov_exclude_patterns() {
+fn ci_coverage_llvm_cov_exclude_patterns() {
     let c = CoverageConfig {
         enabled: true,
         threshold_percent: 80.0,
@@ -866,7 +866,7 @@ fn wave25_ci_coverage_llvm_cov_exclude_patterns() {
 // =============================================================================
 
 #[test]
-fn wave25_ci_miri_command_no_timeout() {
+fn ci_miri_command_no_timeout() {
     let mut m = MiriConfig::default_config();
     m.timeout_secs = 0;
     let cmds = CiRunner::miri_command(&m);
@@ -874,7 +874,7 @@ fn wave25_ci_miri_command_no_timeout() {
 }
 
 #[test]
-fn wave25_ci_coverage_gate_result_is_pass_method() {
+fn ci_coverage_gate_result_is_pass_method() {
     let pass = CoverageGateResult::Pass {
         coverage: 90.0,
         threshold: 80.0,
@@ -894,14 +894,14 @@ fn wave25_ci_coverage_gate_result_is_pass_method() {
 }
 
 #[test]
-fn wave25_ci_github_actions_yaml_minimal_no_miri_job() {
+fn ci_github_actions_yaml_minimal_no_miri_job() {
     let cfg = CiConfig::minimal_config();
     let yaml = CiRunner::github_actions_yaml(&cfg);
     assert!(!yaml.contains("  miri:"));
 }
 
 #[test]
-fn wave25_ci_github_actions_fail_fast_flag() {
+fn ci_github_actions_fail_fast_flag() {
     let mut cfg = CiConfig::default_config();
     cfg.test_config.fail_fast = true;
     let yaml = CiRunner::github_actions_yaml(&cfg);
@@ -909,7 +909,7 @@ fn wave25_ci_github_actions_fail_fast_flag() {
 }
 
 #[test]
-fn wave25_ci_gitlab_ci_fail_fast_flag() {
+fn ci_gitlab_ci_fail_fast_flag() {
     let mut cfg = CiConfig::default_config();
     cfg.test_config.fail_fast = true;
     let yaml = CiRunner::gitlab_ci_yaml(&cfg);
@@ -917,7 +917,7 @@ fn wave25_ci_gitlab_ci_fail_fast_flag() {
 }
 
 #[test]
-fn wave25_ci_report_no_details_section_when_empty() {
+fn ci_report_no_details_section_when_empty() {
     let mut report = CiReport::new();
     report.add_section(CiReportSection {
         name: "test".to_string(),

@@ -10,7 +10,7 @@ use lumen_compiler::compiler::parity_memory::*;
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave26_checklist_has_at_least_30_items() {
+fn checklist_has_at_least_30_items() {
     let cl = MemoryParityChecklist::full_checklist();
     assert!(
         cl.total_count() >= 30,
@@ -20,13 +20,13 @@ fn wave26_checklist_has_at_least_30_items() {
 }
 
 #[test]
-fn wave26_checklist_has_50_items() {
+fn checklist_has_50_items() {
     let cl = MemoryParityChecklist::full_checklist();
     assert_eq!(cl.total_count(), 50, "Expected exactly 50 items");
 }
 
 #[test]
-fn wave26_ids_are_unique() {
+fn ids_are_unique() {
     let cl = MemoryParityChecklist::full_checklist();
     let mut seen = std::collections::HashSet::new();
     for item in &cl.items {
@@ -35,7 +35,7 @@ fn wave26_ids_are_unique() {
 }
 
 #[test]
-fn wave26_ids_follow_mem_prefix_pattern() {
+fn ids_follow_mem_prefix_pattern() {
     let cl = MemoryParityChecklist::full_checklist();
     for item in &cl.items {
         assert!(
@@ -47,7 +47,7 @@ fn wave26_ids_follow_mem_prefix_pattern() {
 }
 
 #[test]
-fn wave26_ids_are_zero_padded_three_digits() {
+fn ids_are_zero_padded_three_digits() {
     let cl = MemoryParityChecklist::full_checklist();
     for item in &cl.items {
         let suffix = &item.id[4..];
@@ -65,7 +65,7 @@ fn wave26_ids_are_zero_padded_three_digits() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave26_by_category_ownership_model() {
+fn by_category_ownership_model() {
     let cl = MemoryParityChecklist::full_checklist();
     let items = cl.by_category(MemoryCategory::OwnershipModel);
     assert!(
@@ -79,7 +79,7 @@ fn wave26_by_category_ownership_model() {
 }
 
 #[test]
-fn wave26_by_category_borrow_checking() {
+fn by_category_borrow_checking() {
     let cl = MemoryParityChecklist::full_checklist();
     let items = cl.by_category(MemoryCategory::BorrowChecking);
     assert!(
@@ -90,7 +90,7 @@ fn wave26_by_category_borrow_checking() {
 }
 
 #[test]
-fn wave26_by_category_arena_allocation() {
+fn by_category_arena_allocation() {
     let cl = MemoryParityChecklist::full_checklist();
     let items = cl.by_category(MemoryCategory::ArenaAllocation);
     assert!(
@@ -101,7 +101,7 @@ fn wave26_by_category_arena_allocation() {
 }
 
 #[test]
-fn wave26_by_category_garbage_collection() {
+fn by_category_garbage_collection() {
     let cl = MemoryParityChecklist::full_checklist();
     let items = cl.by_category(MemoryCategory::GarbageCollection);
     assert!(
@@ -112,7 +112,7 @@ fn wave26_by_category_garbage_collection() {
 }
 
 #[test]
-fn wave26_by_category_linear_types() {
+fn by_category_linear_types() {
     let cl = MemoryParityChecklist::full_checklist();
     let items = cl.by_category(MemoryCategory::LinearTypes);
     assert!(
@@ -123,7 +123,7 @@ fn wave26_by_category_linear_types() {
 }
 
 #[test]
-fn wave26_by_category_affine_types() {
+fn by_category_affine_types() {
     let cl = MemoryParityChecklist::full_checklist();
     let items = cl.by_category(MemoryCategory::AffineTypes);
     assert!(
@@ -134,7 +134,7 @@ fn wave26_by_category_affine_types() {
 }
 
 #[test]
-fn wave26_by_category_escape_analysis() {
+fn by_category_escape_analysis() {
     let cl = MemoryParityChecklist::full_checklist();
     let items = cl.by_category(MemoryCategory::EscapeAnalysis);
     assert!(
@@ -145,7 +145,7 @@ fn wave26_by_category_escape_analysis() {
 }
 
 #[test]
-fn wave26_by_category_returns_empty_for_no_match() {
+fn by_category_returns_empty_for_no_match() {
     // All 15 categories are used, but we can verify filtering works correctly
     // by checking one category and ensuring no cross-contamination.
     let cl = MemoryParityChecklist::full_checklist();
@@ -156,7 +156,7 @@ fn wave26_by_category_returns_empty_for_no_match() {
 }
 
 #[test]
-fn wave26_all_15_categories_represented() {
+fn all_15_categories_represented() {
     let cl = MemoryParityChecklist::full_checklist();
     let cats: std::collections::HashSet<_> = cl.items.iter().map(|i| i.category).collect();
     assert_eq!(
@@ -172,7 +172,7 @@ fn wave26_all_15_categories_represented() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave26_implemented_count_reasonable() {
+fn implemented_count_reasonable() {
     let cl = MemoryParityChecklist::full_checklist();
     // At least 30 items should be Implemented
     assert!(
@@ -183,20 +183,20 @@ fn wave26_implemented_count_reasonable() {
 }
 
 #[test]
-fn wave26_implemented_count_le_total() {
+fn implemented_count_le_total() {
     let cl = MemoryParityChecklist::full_checklist();
     assert!(cl.implemented_count() <= cl.total_count());
 }
 
 #[test]
-fn wave26_coverage_percent_in_range() {
+fn coverage_percent_in_range() {
     let cl = MemoryParityChecklist::full_checklist();
     let pct = cl.coverage_percent();
     assert!(pct > 0.0 && pct <= 100.0, "Coverage {}% out of range", pct);
 }
 
 #[test]
-fn wave26_coverage_percent_matches_ratio() {
+fn coverage_percent_matches_ratio() {
     let cl = MemoryParityChecklist::full_checklist();
     let expected = (cl.implemented_count() as f64 / cl.total_count() as f64) * 100.0;
     let actual = cl.coverage_percent();
@@ -209,7 +209,7 @@ fn wave26_coverage_percent_matches_ratio() {
 }
 
 #[test]
-fn wave26_gaps_plus_implemented_plus_na_equals_total() {
+fn gaps_plus_implemented_plus_na_equals_total() {
     let cl = MemoryParityChecklist::full_checklist();
     let gaps = cl.gaps().len();
     let implemented = cl.implemented_count();
@@ -226,7 +226,7 @@ fn wave26_gaps_plus_implemented_plus_na_equals_total() {
 }
 
 #[test]
-fn wave26_gaps_are_not_implemented() {
+fn gaps_are_not_implemented() {
     let cl = MemoryParityChecklist::full_checklist();
     for gap in cl.gaps() {
         assert!(
@@ -242,33 +242,33 @@ fn wave26_gaps_are_not_implemented() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave26_status_implemented_is_implemented() {
+fn status_implemented_is_implemented() {
     assert!(ParityStatus::Implemented.is_implemented());
     assert!(!ParityStatus::Implemented.is_gap());
 }
 
 #[test]
-fn wave26_status_partially_implemented_is_gap() {
+fn status_partially_implemented_is_gap() {
     let s = ParityStatus::PartiallyImplemented("WIP".into());
     assert!(!s.is_implemented());
     assert!(s.is_gap());
 }
 
 #[test]
-fn wave26_status_designed_is_gap() {
+fn status_designed_is_gap() {
     assert!(!ParityStatus::Designed.is_implemented());
     assert!(ParityStatus::Designed.is_gap());
 }
 
 #[test]
-fn wave26_status_planned_is_gap() {
+fn status_planned_is_gap() {
     let s = ParityStatus::Planned("v2".into());
     assert!(!s.is_implemented());
     assert!(s.is_gap());
 }
 
 #[test]
-fn wave26_status_not_applicable_is_neither() {
+fn status_not_applicable_is_neither() {
     let s = ParityStatus::NotApplicable("different model".into());
     assert!(!s.is_implemented());
     assert!(!s.is_gap());
@@ -279,7 +279,7 @@ fn wave26_status_not_applicable_is_neither() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave26_category_display() {
+fn category_display() {
     assert_eq!(
         format!("{}", MemoryCategory::OwnershipModel),
         "Ownership Model"
@@ -301,12 +301,12 @@ fn wave26_category_display() {
 }
 
 #[test]
-fn wave26_status_display_implemented() {
+fn status_display_implemented() {
     assert_eq!(format!("{}", ParityStatus::Implemented), "Implemented");
 }
 
 #[test]
-fn wave26_status_display_partial() {
+fn status_display_partial() {
     let s = ParityStatus::PartiallyImplemented("no syntax".into());
     let d = format!("{}", s);
     assert!(d.contains("Partially Implemented"));
@@ -314,7 +314,7 @@ fn wave26_status_display_partial() {
 }
 
 #[test]
-fn wave26_status_display_planned() {
+fn status_display_planned() {
     let s = ParityStatus::Planned("v3".into());
     let d = format!("{}", s);
     assert!(d.contains("Planned"));
@@ -322,7 +322,7 @@ fn wave26_status_display_planned() {
 }
 
 #[test]
-fn wave26_status_display_not_applicable() {
+fn status_display_not_applicable() {
     let s = ParityStatus::NotApplicable("no GC in Rust".into());
     let d = format!("{}", s);
     assert!(d.contains("N/A"));
@@ -330,7 +330,7 @@ fn wave26_status_display_not_applicable() {
 }
 
 #[test]
-fn wave26_status_display_designed() {
+fn status_display_designed() {
     assert_eq!(format!("{}", ParityStatus::Designed), "Designed");
 }
 
@@ -339,7 +339,7 @@ fn wave26_status_display_designed() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave26_summary_contains_counts() {
+fn summary_contains_counts() {
     let cl = MemoryParityChecklist::full_checklist();
     let s = cl.summary();
     assert!(s.contains("Memory parity:"), "Summary missing header");
@@ -348,7 +348,7 @@ fn wave26_summary_contains_counts() {
 }
 
 #[test]
-fn wave26_summary_mentions_gaps_if_present() {
+fn summary_mentions_gaps_if_present() {
     let cl = MemoryParityChecklist::full_checklist();
     let s = cl.summary();
     if !cl.gaps().is_empty() {
@@ -359,7 +359,7 @@ fn wave26_summary_mentions_gaps_if_present() {
 }
 
 #[test]
-fn wave26_markdown_has_header_and_table() {
+fn markdown_has_header_and_table() {
     let cl = MemoryParityChecklist::full_checklist();
     let md = cl.to_markdown();
     assert!(md.starts_with("# Lumen Memory Safety Parity Checklist"));
@@ -368,7 +368,7 @@ fn wave26_markdown_has_header_and_table() {
 }
 
 #[test]
-fn wave26_markdown_contains_all_ids() {
+fn markdown_contains_all_ids() {
     let cl = MemoryParityChecklist::full_checklist();
     let md = cl.to_markdown();
     for item in &cl.items {
@@ -377,7 +377,7 @@ fn wave26_markdown_contains_all_ids() {
 }
 
 #[test]
-fn wave26_markdown_gaps_section_if_gaps_exist() {
+fn markdown_gaps_section_if_gaps_exist() {
     let cl = MemoryParityChecklist::full_checklist();
     let md = cl.to_markdown();
     if !cl.gaps().is_empty() {
@@ -390,7 +390,7 @@ fn wave26_markdown_gaps_section_if_gaps_exist() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave26_item_mem001_single_owner() {
+fn item_mem001_single_owner() {
     let cl = MemoryParityChecklist::full_checklist();
     let item = cl.items.iter().find(|i| i.id == "MEM-001").unwrap();
     assert_eq!(item.category, MemoryCategory::OwnershipModel);
@@ -399,7 +399,7 @@ fn wave26_item_mem001_single_owner() {
 }
 
 #[test]
-fn wave26_item_mem025_immix() {
+fn item_mem025_immix() {
     let cl = MemoryParityChecklist::full_checklist();
     let item = cl.items.iter().find(|i| i.id == "MEM-025").unwrap();
     assert_eq!(item.category, MemoryCategory::GarbageCollection);
@@ -408,7 +408,7 @@ fn wave26_item_mem025_immix() {
 }
 
 #[test]
-fn wave26_item_mem033_null_safety() {
+fn item_mem033_null_safety() {
     let cl = MemoryParityChecklist::full_checklist();
     let item = cl.items.iter().find(|i| i.id == "MEM-033").unwrap();
     assert!(item.feature.contains("Null safety"));
@@ -416,7 +416,7 @@ fn wave26_item_mem033_null_safety() {
 }
 
 #[test]
-fn wave26_item_mem034_bounds_checking() {
+fn item_mem034_bounds_checking() {
     let cl = MemoryParityChecklist::full_checklist();
     let item = cl.items.iter().find(|i| i.id == "MEM-034").unwrap();
     assert!(item.feature.contains("bounds"));
@@ -424,7 +424,7 @@ fn wave26_item_mem034_bounds_checking() {
 }
 
 #[test]
-fn wave26_item_mem044_escape_analysis_planned() {
+fn item_mem044_escape_analysis_planned() {
     let cl = MemoryParityChecklist::full_checklist();
     let item = cl.items.iter().find(|i| i.id == "MEM-044").unwrap();
     assert_eq!(item.category, MemoryCategory::EscapeAnalysis);
@@ -436,7 +436,7 @@ fn wave26_item_mem044_escape_analysis_planned() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave26_all_items_have_nonempty_fields() {
+fn all_items_have_nonempty_fields() {
     let cl = MemoryParityChecklist::full_checklist();
     for item in &cl.items {
         assert!(!item.id.is_empty(), "Item has empty id");
@@ -464,7 +464,7 @@ fn wave26_all_items_have_nonempty_fields() {
 }
 
 #[test]
-fn wave26_implemented_items_have_test_coverage() {
+fn implemented_items_have_test_coverage() {
     let cl = MemoryParityChecklist::full_checklist();
     for item in &cl.items {
         if item.status.is_implemented() {
@@ -482,7 +482,7 @@ fn wave26_implemented_items_have_test_coverage() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave26_empty_checklist_coverage_zero() {
+fn empty_checklist_coverage_zero() {
     let cl = MemoryParityChecklist { items: vec![] };
     assert_eq!(cl.coverage_percent(), 0.0);
     assert_eq!(cl.implemented_count(), 0);
@@ -491,7 +491,7 @@ fn wave26_empty_checklist_coverage_zero() {
 }
 
 #[test]
-fn wave26_empty_checklist_summary() {
+fn empty_checklist_summary() {
     let cl = MemoryParityChecklist { items: vec![] };
     let s = cl.summary();
     assert!(s.contains("0/0"));
@@ -499,14 +499,14 @@ fn wave26_empty_checklist_summary() {
 }
 
 #[test]
-fn wave26_empty_checklist_markdown() {
+fn empty_checklist_markdown() {
     let cl = MemoryParityChecklist { items: vec![] };
     let md = cl.to_markdown();
     assert!(md.contains("0/0"));
 }
 
 #[test]
-fn wave26_single_implemented_item() {
+fn single_implemented_item() {
     let cl = MemoryParityChecklist {
         items: vec![ParityItem {
             id: "TEST-001".into(),
@@ -526,7 +526,7 @@ fn wave26_single_implemented_item() {
 }
 
 #[test]
-fn wave26_single_gap_item() {
+fn single_gap_item() {
     let cl = MemoryParityChecklist {
         items: vec![ParityItem {
             id: "TEST-002".into(),
@@ -550,7 +550,7 @@ fn wave26_single_gap_item() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave26_all_category_display_variants() {
+fn all_category_display_variants() {
     // Ensure all MemoryCategory variants have non-empty Display output
     let categories = [
         MemoryCategory::OwnershipModel,
@@ -576,7 +576,7 @@ fn wave26_all_category_display_variants() {
 }
 
 #[test]
-fn wave26_not_applicable_accessor() {
+fn not_applicable_accessor() {
     let cl = MemoryParityChecklist::full_checklist();
     // Our full checklist currently has no N/A items, verify that
     let na = cl.not_applicable();

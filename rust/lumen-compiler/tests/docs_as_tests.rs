@@ -7,12 +7,12 @@ use lumen_compiler::compiler::docs_as_tests::*;
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave25_docs_directive_empty_is_compile_ok() {
+fn docs_directive_empty_is_compile_ok() {
     assert_eq!(DocExtractor::parse_directive(""), DocDirective::CompileOk);
 }
 
 #[test]
-fn wave25_docs_directive_compile_ok_explicit() {
+fn docs_directive_compile_ok_explicit() {
     assert_eq!(
         DocExtractor::parse_directive("compile-ok"),
         DocDirective::CompileOk
@@ -20,7 +20,7 @@ fn wave25_docs_directive_compile_ok_explicit() {
 }
 
 #[test]
-fn wave25_docs_directive_compile_error_with_msg() {
+fn docs_directive_compile_error_with_msg() {
     assert_eq!(
         DocExtractor::parse_directive("compile-error(TypeMismatch)"),
         DocDirective::CompileError("TypeMismatch".to_string())
@@ -28,7 +28,7 @@ fn wave25_docs_directive_compile_error_with_msg() {
 }
 
 #[test]
-fn wave25_docs_directive_compile_error_no_parens() {
+fn docs_directive_compile_error_no_parens() {
     assert_eq!(
         DocExtractor::parse_directive("compile-error"),
         DocDirective::CompileError(String::new())
@@ -36,17 +36,17 @@ fn wave25_docs_directive_compile_error_no_parens() {
 }
 
 #[test]
-fn wave25_docs_directive_run_ok() {
+fn docs_directive_run_ok() {
     assert_eq!(DocExtractor::parse_directive("run-ok"), DocDirective::RunOk);
 }
 
 #[test]
-fn wave25_docs_directive_skip() {
+fn docs_directive_skip() {
     assert_eq!(DocExtractor::parse_directive("skip"), DocDirective::Skip);
 }
 
 #[test]
-fn wave25_docs_directive_no_test() {
+fn docs_directive_no_test() {
     assert_eq!(
         DocExtractor::parse_directive("no-test"),
         DocDirective::NoTest
@@ -54,7 +54,7 @@ fn wave25_docs_directive_no_test() {
 }
 
 #[test]
-fn wave25_docs_directive_unknown_defaults_to_compile_ok() {
+fn docs_directive_unknown_defaults_to_compile_ok() {
     assert_eq!(
         DocExtractor::parse_directive("unknown-thing"),
         DocDirective::CompileOk
@@ -66,7 +66,7 @@ fn wave25_docs_directive_unknown_defaults_to_compile_ok() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave25_docs_extract_single_lumen_block() {
+fn docs_extract_single_lumen_block() {
     let md = r#"# Test
 
 ```lumen
@@ -84,7 +84,7 @@ end
 }
 
 #[test]
-fn wave25_docs_extract_lm_language_tag() {
+fn docs_extract_lm_language_tag() {
     let md = r#"```lm
 cell test() -> Int
   return 1
@@ -97,7 +97,7 @@ end
 }
 
 #[test]
-fn wave25_docs_extract_multiple_blocks() {
+fn docs_extract_multiple_blocks() {
     let md = r#"# Docs
 
 ```lumen
@@ -121,7 +121,7 @@ end
 }
 
 #[test]
-fn wave25_docs_extract_ignores_non_lumen_blocks() {
+fn docs_extract_ignores_non_lumen_blocks() {
     let md = r#"```python
 print("hello")
 ```
@@ -142,7 +142,7 @@ fn main() {}
 }
 
 #[test]
-fn wave25_docs_extract_directive_in_info_string() {
+fn docs_extract_directive_in_info_string() {
     let md = r#"```lumen compile-error(TypeMismatch)
 cell bad() -> Int
   return "not an int"
@@ -158,7 +158,7 @@ end
 }
 
 #[test]
-fn wave25_docs_extract_skip_directive() {
+fn docs_extract_skip_directive() {
     let md = r#"```lumen skip
 cell incomplete()
   # work in progress
@@ -171,7 +171,7 @@ end
 }
 
 #[test]
-fn wave25_docs_extract_no_test_directive() {
+fn docs_extract_no_test_directive() {
     let md = r#"```lumen no-test
 # This is pseudo-code
 do_something_magical()
@@ -183,7 +183,7 @@ do_something_magical()
 }
 
 #[test]
-fn wave25_docs_extract_run_ok_directive() {
+fn docs_extract_run_ok_directive() {
     let md = r#"```lumen run-ok
 cell main() -> Int
   return 42
@@ -196,7 +196,7 @@ end
 }
 
 #[test]
-fn wave25_docs_extract_empty_code_block() {
+fn docs_extract_empty_code_block() {
     let md = "```lumen\n```\n";
     let blocks = DocExtractor::extract_blocks(md, "test.md");
     assert_eq!(blocks.len(), 1);
@@ -204,7 +204,7 @@ fn wave25_docs_extract_empty_code_block() {
 }
 
 #[test]
-fn wave25_docs_extract_line_numbers() {
+fn docs_extract_line_numbers() {
     let md = r#"Line 1
 Line 2
 Line 3
@@ -221,14 +221,14 @@ end
 }
 
 #[test]
-fn wave25_docs_extract_no_blocks() {
+fn docs_extract_no_blocks() {
     let md = "# Just a heading\n\nSome text.\n";
     let blocks = DocExtractor::extract_blocks(md, "test.md");
     assert!(blocks.is_empty());
 }
 
 #[test]
-fn wave25_docs_extract_quad_backtick_fence() {
+fn docs_extract_quad_backtick_fence() {
     let md = "````lumen\ncell test() -> Int\n  return 42\nend\n````\n";
     let blocks = DocExtractor::extract_blocks(md, "test.md");
     assert_eq!(blocks.len(), 1);
@@ -240,7 +240,7 @@ fn wave25_docs_extract_quad_backtick_fence() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave25_docs_run_block_compile_ok_success() {
+fn docs_run_block_compile_ok_success() {
     let block = DocCodeBlock {
         source: "cell main() -> Int\n  return 42\nend".to_string(),
         language: "lumen".to_string(),
@@ -253,7 +253,7 @@ fn wave25_docs_run_block_compile_ok_success() {
 }
 
 #[test]
-fn wave25_docs_run_block_compile_ok_failure() {
+fn docs_run_block_compile_ok_failure() {
     let block = DocCodeBlock {
         source: "cell main( -> Int\n  return 42\nend".to_string(),
         language: "lumen".to_string(),
@@ -266,7 +266,7 @@ fn wave25_docs_run_block_compile_ok_failure() {
 }
 
 #[test]
-fn wave25_docs_run_block_compile_error_expected_match() {
+fn docs_run_block_compile_error_expected_match() {
     let block = DocCodeBlock {
         source: "cell main( -> Int\n  return 42\nend".to_string(),
         language: "lumen".to_string(),
@@ -283,7 +283,7 @@ fn wave25_docs_run_block_compile_error_expected_match() {
 }
 
 #[test]
-fn wave25_docs_run_block_compile_error_unexpected_success() {
+fn docs_run_block_compile_error_unexpected_success() {
     let block = DocCodeBlock {
         source: "cell main() -> Int\n  return 42\nend".to_string(),
         language: "lumen".to_string(),
@@ -299,7 +299,7 @@ fn wave25_docs_run_block_compile_error_unexpected_success() {
 }
 
 #[test]
-fn wave25_docs_run_block_compile_error_wrong_message() {
+fn docs_run_block_compile_error_wrong_message() {
     let block = DocCodeBlock {
         source: "cell main( -> Int\n  return 42\nend".to_string(),
         language: "lumen".to_string(),
@@ -315,7 +315,7 @@ fn wave25_docs_run_block_compile_error_wrong_message() {
 }
 
 #[test]
-fn wave25_docs_run_block_compile_error_any() {
+fn docs_run_block_compile_error_any() {
     let block = DocCodeBlock {
         source: "cell main( -> Int\n  return 42\nend".to_string(),
         language: "lumen".to_string(),
@@ -332,7 +332,7 @@ fn wave25_docs_run_block_compile_error_any() {
 }
 
 #[test]
-fn wave25_docs_run_block_skip() {
+fn docs_run_block_skip() {
     let block = DocCodeBlock {
         source: "this is not valid code at all!!!".to_string(),
         language: "lumen".to_string(),
@@ -346,7 +346,7 @@ fn wave25_docs_run_block_skip() {
 }
 
 #[test]
-fn wave25_docs_run_block_no_test() {
+fn docs_run_block_no_test() {
     let block = DocCodeBlock {
         source: "pseudo code here".to_string(),
         language: "lumen".to_string(),
@@ -359,7 +359,7 @@ fn wave25_docs_run_block_no_test() {
 }
 
 #[test]
-fn wave25_docs_run_block_run_ok_success() {
+fn docs_run_block_run_ok_success() {
     let block = DocCodeBlock {
         source: "cell main() -> Int\n  return 42\nend".to_string(),
         language: "lumen".to_string(),
@@ -380,7 +380,7 @@ fn wave25_docs_run_block_run_ok_success() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave25_docs_run_all_mixed_results() {
+fn docs_run_all_mixed_results() {
     let blocks = vec![
         DocCodeBlock {
             source: "cell a() -> Int\n  return 1\nend".to_string(),
@@ -414,7 +414,7 @@ fn wave25_docs_run_all_mixed_results() {
 }
 
 #[test]
-fn wave25_docs_run_all_empty() {
+fn docs_run_all_empty() {
     let summary = DocTestRunner::run_all(&[]);
     assert_eq!(summary.total, 0);
     assert_eq!(summary.passed, 0);
@@ -423,7 +423,7 @@ fn wave25_docs_run_all_empty() {
 }
 
 #[test]
-fn wave25_docs_format_summary() {
+fn docs_format_summary() {
     let summary = DocTestSummary {
         total: 10,
         passed: 7,
@@ -439,7 +439,7 @@ fn wave25_docs_format_summary() {
 }
 
 #[test]
-fn wave25_docs_format_failures_includes_failing() {
+fn docs_format_failures_includes_failing() {
     let blocks = vec![DocCodeBlock {
         source: "cell bad( -> Int\n  return 1\nend".to_string(),
         language: "lumen".to_string(),
@@ -454,7 +454,7 @@ fn wave25_docs_format_failures_includes_failing() {
 }
 
 #[test]
-fn wave25_docs_format_failures_empty_when_all_pass() {
+fn docs_format_failures_empty_when_all_pass() {
     let blocks = vec![DocCodeBlock {
         source: "cell ok() -> Int\n  return 1\nend".to_string(),
         language: "lumen".to_string(),
@@ -472,7 +472,7 @@ fn wave25_docs_format_failures_empty_when_all_pass() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave25_docs_end_to_end_compile_ok() {
+fn docs_end_to_end_compile_ok() {
     let md = r#"# API Guide
 
 ```lumen
@@ -488,7 +488,7 @@ end
 }
 
 #[test]
-fn wave25_docs_end_to_end_compile_error() {
+fn docs_end_to_end_compile_error() {
     let md = r#"# Error Example
 
 ```lumen compile-error(parse)
@@ -509,7 +509,7 @@ end
 }
 
 #[test]
-fn wave25_docs_end_to_end_mixed() {
+fn docs_end_to_end_mixed() {
     let md = r#"# Mixed Doc
 
 Valid code:
@@ -542,7 +542,7 @@ end
 }
 
 #[test]
-fn wave25_docs_end_to_end_all_skipped() {
+fn docs_end_to_end_all_skipped() {
     let md = r#"```lumen skip
 code1
 ```
@@ -560,7 +560,7 @@ code2
 }
 
 #[test]
-fn wave25_docs_duration_is_recorded() {
+fn docs_duration_is_recorded() {
     let block = DocCodeBlock {
         source: "cell test() -> Int\n  return 1\nend".to_string(),
         language: "lumen".to_string(),
@@ -574,7 +574,7 @@ fn wave25_docs_duration_is_recorded() {
 }
 
 #[test]
-fn wave25_docs_block_clone_and_debug() {
+fn docs_block_clone_and_debug() {
     let block = DocCodeBlock {
         source: "test".to_string(),
         language: "lumen".to_string(),
@@ -589,7 +589,7 @@ fn wave25_docs_block_clone_and_debug() {
 }
 
 #[test]
-fn wave25_docs_result_clone_and_debug() {
+fn docs_result_clone_and_debug() {
     let result = DocTestResult {
         block: DocCodeBlock {
             source: "test".to_string(),
@@ -609,7 +609,7 @@ fn wave25_docs_result_clone_and_debug() {
 }
 
 #[test]
-fn wave25_docs_summary_clone_and_debug() {
+fn docs_summary_clone_and_debug() {
     let summary = DocTestSummary {
         total: 1,
         passed: 1,

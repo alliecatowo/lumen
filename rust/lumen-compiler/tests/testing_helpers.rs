@@ -7,7 +7,7 @@ use lumen_compiler::compiler::testing_helpers::*;
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave25_testing_rng_deterministic_sequence() {
+fn testing_rng_deterministic_sequence() {
     let mut a = SimpleRng::new(42);
     let mut b = SimpleRng::new(42);
     let seq_a: Vec<u64> = (0..200).map(|_| a.next_u64()).collect();
@@ -16,7 +16,7 @@ fn wave25_testing_rng_deterministic_sequence() {
 }
 
 #[test]
-fn wave25_testing_rng_different_seeds_diverge() {
+fn testing_rng_different_seeds_diverge() {
     let mut a = SimpleRng::new(1);
     let mut b = SimpleRng::new(2);
     let matches = (0..20).filter(|_| a.next_u64() == b.next_u64()).count();
@@ -27,7 +27,7 @@ fn wave25_testing_rng_different_seeds_diverge() {
 }
 
 #[test]
-fn wave25_testing_rng_zero_seed_safe() {
+fn testing_rng_zero_seed_safe() {
     let mut rng = SimpleRng::new(0);
     let val = rng.next_u64();
     assert_ne!(
@@ -37,7 +37,7 @@ fn wave25_testing_rng_zero_seed_safe() {
 }
 
 #[test]
-fn wave25_testing_rng_i64_range() {
+fn testing_rng_i64_range() {
     let mut rng = SimpleRng::new(99);
     for _ in 0..500 {
         let val = rng.next_i64_range(-10, 10);
@@ -46,7 +46,7 @@ fn wave25_testing_rng_i64_range() {
 }
 
 #[test]
-fn wave25_testing_rng_i64_range_singleton() {
+fn testing_rng_i64_range_singleton() {
     let mut rng = SimpleRng::new(77);
     for _ in 0..50 {
         assert_eq!(rng.next_i64_range(5, 5), 5);
@@ -54,7 +54,7 @@ fn wave25_testing_rng_i64_range_singleton() {
 }
 
 #[test]
-fn wave25_testing_rng_f64_range() {
+fn testing_rng_f64_range() {
     let mut rng = SimpleRng::new(123);
     for _ in 0..500 {
         let val = rng.next_f64();
@@ -63,7 +63,7 @@ fn wave25_testing_rng_f64_range() {
 }
 
 #[test]
-fn wave25_testing_rng_bool_produces_both() {
+fn testing_rng_bool_produces_both() {
     let mut rng = SimpleRng::new(42);
     let bools: Vec<bool> = (0..200).map(|_| rng.next_bool()).collect();
     assert!(bools.contains(&true), "Should produce true");
@@ -71,7 +71,7 @@ fn wave25_testing_rng_bool_produces_both() {
 }
 
 #[test]
-fn wave25_testing_rng_char_alpha() {
+fn testing_rng_char_alpha() {
     let mut rng = SimpleRng::new(55);
     for _ in 0..200 {
         let c = rng.next_char_alpha();
@@ -84,86 +84,86 @@ fn wave25_testing_rng_char_alpha() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave25_testing_value_display_int() {
+fn testing_value_display_int() {
     assert_eq!(format!("{}", TestValue::Int(42)), "42");
     assert_eq!(format!("{}", TestValue::Int(-7)), "-7");
 }
 
 #[test]
-fn wave25_testing_value_display_float() {
+fn testing_value_display_float() {
     assert_eq!(format!("{}", TestValue::Float(3.14)), "3.14");
 }
 
 #[test]
-fn wave25_testing_value_display_string() {
+fn testing_value_display_string() {
     assert_eq!(format!("{}", TestValue::String("hi".into())), "\"hi\"");
 }
 
 #[test]
-fn wave25_testing_value_display_bool() {
+fn testing_value_display_bool() {
     assert_eq!(format!("{}", TestValue::Bool(true)), "true");
     assert_eq!(format!("{}", TestValue::Bool(false)), "false");
 }
 
 #[test]
-fn wave25_testing_value_display_null() {
+fn testing_value_display_null() {
     assert_eq!(format!("{}", TestValue::Null), "null");
 }
 
 #[test]
-fn wave25_testing_value_display_list() {
+fn testing_value_display_list() {
     let list = TestValue::List(vec![TestValue::Int(1), TestValue::Int(2)]);
     assert_eq!(format!("{list}"), "[1, 2]");
 }
 
 #[test]
-fn wave25_testing_value_lumen_literal_int() {
+fn testing_value_lumen_literal_int() {
     assert_eq!(TestValue::Int(42).to_lumen_literal(), "42");
     assert_eq!(TestValue::Int(-1).to_lumen_literal(), "-1");
 }
 
 #[test]
-fn wave25_testing_value_lumen_literal_float() {
+fn testing_value_lumen_literal_float() {
     let lit = TestValue::Float(2.0).to_lumen_literal();
     assert!(lit.contains('.'), "Float literal should contain '.': {lit}");
 }
 
 #[test]
-fn wave25_testing_value_lumen_literal_string() {
+fn testing_value_lumen_literal_string() {
     assert_eq!(TestValue::String("hi".into()).to_lumen_literal(), "\"hi\"");
 }
 
 #[test]
-fn wave25_testing_value_lumen_literal_list() {
+fn testing_value_lumen_literal_list() {
     let list = TestValue::List(vec![TestValue::Bool(true), TestValue::Null]);
     assert_eq!(list.to_lumen_literal(), "[true, null]");
 }
 
 #[test]
-fn wave25_testing_value_shrink_int_zero() {
+fn testing_value_shrink_int_zero() {
     assert!(TestValue::Int(0).shrink().is_empty());
 }
 
 #[test]
-fn wave25_testing_value_shrink_int_positive() {
+fn testing_value_shrink_int_positive() {
     let shrinks = TestValue::Int(10).shrink();
     assert!(!shrinks.is_empty());
     assert!(shrinks.contains(&TestValue::Int(0)));
 }
 
 #[test]
-fn wave25_testing_value_shrink_int_negative() {
+fn testing_value_shrink_int_negative() {
     let shrinks = TestValue::Int(-5).shrink();
     assert!(shrinks.contains(&TestValue::Int(0)));
 }
 
 #[test]
-fn wave25_testing_value_shrink_string_empty() {
+fn testing_value_shrink_string_empty() {
     assert!(TestValue::String(String::new()).shrink().is_empty());
 }
 
 #[test]
-fn wave25_testing_value_shrink_string_nonempty() {
+fn testing_value_shrink_string_nonempty() {
     let shrinks = TestValue::String("abc".into()).shrink();
     assert!(shrinks.contains(&TestValue::String(String::new())));
     assert!(shrinks.contains(&TestValue::String("ab".into())));
@@ -171,25 +171,25 @@ fn wave25_testing_value_shrink_string_nonempty() {
 }
 
 #[test]
-fn wave25_testing_value_shrink_list_empty() {
+fn testing_value_shrink_list_empty() {
     assert!(TestValue::List(vec![]).shrink().is_empty());
 }
 
 #[test]
-fn wave25_testing_value_shrink_list_nonempty() {
+fn testing_value_shrink_list_nonempty() {
     let list = TestValue::List(vec![TestValue::Int(5), TestValue::Int(10)]);
     let shrinks = list.shrink();
     assert!(shrinks.contains(&TestValue::List(vec![])));
 }
 
 #[test]
-fn wave25_testing_value_shrink_bool() {
+fn testing_value_shrink_bool() {
     let shrinks = TestValue::Bool(true).shrink();
     assert!(shrinks.contains(&TestValue::Bool(false)));
 }
 
 #[test]
-fn wave25_testing_value_shrink_null() {
+fn testing_value_shrink_null() {
     assert!(TestValue::Null.shrink().is_empty());
 }
 
@@ -198,7 +198,7 @@ fn wave25_testing_value_shrink_null() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave25_testing_gen_int_range() {
+fn testing_gen_int_range() {
     let gen = ValueGenerator::IntRange(0, 100);
     let mut rng = SimpleRng::new(42);
     for _ in 0..200 {
@@ -210,7 +210,7 @@ fn wave25_testing_gen_int_range() {
 }
 
 #[test]
-fn wave25_testing_gen_float_range() {
+fn testing_gen_float_range() {
     let gen = ValueGenerator::FloatRange(-1.0, 1.0);
     let mut rng = SimpleRng::new(42);
     for _ in 0..200 {
@@ -222,7 +222,7 @@ fn wave25_testing_gen_float_range() {
 }
 
 #[test]
-fn wave25_testing_gen_string_alpha() {
+fn testing_gen_string_alpha() {
     let gen = ValueGenerator::StringAlpha(10);
     let mut rng = SimpleRng::new(42);
     for _ in 0..100 {
@@ -237,7 +237,7 @@ fn wave25_testing_gen_string_alpha() {
 }
 
 #[test]
-fn wave25_testing_gen_string_any() {
+fn testing_gen_string_any() {
     let gen = ValueGenerator::StringAny(20);
     let mut rng = SimpleRng::new(42);
     for _ in 0..100 {
@@ -252,7 +252,7 @@ fn wave25_testing_gen_string_any() {
 }
 
 #[test]
-fn wave25_testing_gen_bool() {
+fn testing_gen_bool() {
     let gen = ValueGenerator::Bool;
     let mut rng = SimpleRng::new(42);
     let vals: Vec<TestValue> = (0..100).map(|_| gen.generate(&mut rng)).collect();
@@ -261,7 +261,7 @@ fn wave25_testing_gen_bool() {
 }
 
 #[test]
-fn wave25_testing_gen_list_of() {
+fn testing_gen_list_of() {
     let gen = ValueGenerator::ListOf(Box::new(ValueGenerator::IntRange(0, 10)), 5);
     let mut rng = SimpleRng::new(42);
     for _ in 0..100 {
@@ -278,7 +278,7 @@ fn wave25_testing_gen_list_of() {
 }
 
 #[test]
-fn wave25_testing_gen_one_of() {
+fn testing_gen_one_of() {
     let choices = vec![TestValue::Int(1), TestValue::Int(2), TestValue::Int(3)];
     let gen = ValueGenerator::OneOf(choices.clone());
     let mut rng = SimpleRng::new(42);
@@ -289,14 +289,14 @@ fn wave25_testing_gen_one_of() {
 }
 
 #[test]
-fn wave25_testing_gen_one_of_empty() {
+fn testing_gen_one_of_empty() {
     let gen = ValueGenerator::OneOf(vec![]);
     let mut rng = SimpleRng::new(42);
     assert_eq!(gen.generate(&mut rng), TestValue::Null);
 }
 
 #[test]
-fn wave25_testing_gen_constant() {
+fn testing_gen_constant() {
     let gen = ValueGenerator::Constant(TestValue::String("hello".into()));
     let mut rng = SimpleRng::new(42);
     for _ in 0..10 {
@@ -309,7 +309,7 @@ fn wave25_testing_gen_constant() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave25_testing_property_all_pass() {
+fn testing_property_all_pass() {
     let mut pt = PropertyTest::new("all_positive");
     pt.iterations = 50;
     pt.seed = 99;
@@ -324,7 +324,7 @@ fn wave25_testing_property_all_pass() {
 }
 
 #[test]
-fn wave25_testing_property_failure_detected() {
+fn testing_property_failure_detected() {
     let mut pt = PropertyTest::new("find_negative");
     pt.iterations = 1000;
     pt.seed = 42;
@@ -339,7 +339,7 @@ fn wave25_testing_property_failure_detected() {
 }
 
 #[test]
-fn wave25_testing_property_shrinking_finds_smaller_input() {
+fn testing_property_shrinking_finds_smaller_input() {
     let mut pt = PropertyTest::new("shrink_test");
     pt.iterations = 200;
     pt.seed = 42;
@@ -360,7 +360,7 @@ fn wave25_testing_property_shrinking_finds_smaller_input() {
 }
 
 #[test]
-fn wave25_testing_property_failure_display() {
+fn testing_property_failure_display() {
     let failure = PropertyFailure {
         iteration: 3,
         inputs: vec![TestValue::Int(42)],
@@ -374,7 +374,7 @@ fn wave25_testing_property_failure_display() {
 }
 
 #[test]
-fn wave25_testing_property_multiple_generators() {
+fn testing_property_multiple_generators() {
     let mut pt = PropertyTest::new("multi_gen");
     pt.iterations = 100;
     pt.seed = 42;
@@ -397,14 +397,14 @@ fn wave25_testing_property_multiple_generators() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave25_testing_snapshot_register_and_check_match() {
+fn testing_snapshot_register_and_check_match() {
     let mut reg = SnapshotRegistry::new();
     reg.register("test1", "hello world");
     assert_eq!(reg.check("test1", "hello world"), SnapshotResult::Match);
 }
 
 #[test]
-fn wave25_testing_snapshot_check_mismatch() {
+fn testing_snapshot_check_mismatch() {
     let mut reg = SnapshotRegistry::new();
     reg.register("test1", "hello");
     match reg.check("test1", "world") {
@@ -422,7 +422,7 @@ fn wave25_testing_snapshot_check_mismatch() {
 }
 
 #[test]
-fn wave25_testing_snapshot_check_new() {
+fn testing_snapshot_check_new() {
     let reg = SnapshotRegistry::new();
     match reg.check("unknown", "content") {
         SnapshotResult::New(content) => assert_eq!(content, "content"),
@@ -431,7 +431,7 @@ fn wave25_testing_snapshot_check_new() {
 }
 
 #[test]
-fn wave25_testing_snapshot_update() {
+fn testing_snapshot_update() {
     let mut reg = SnapshotRegistry::new();
     reg.register("test1", "old");
     reg.update("test1", "new");
@@ -439,7 +439,7 @@ fn wave25_testing_snapshot_update() {
 }
 
 #[test]
-fn wave25_testing_snapshot_all_sorted() {
+fn testing_snapshot_all_sorted() {
     let mut reg = SnapshotRegistry::new();
     reg.register("z_last", "3");
     reg.register("a_first", "1");
@@ -451,7 +451,7 @@ fn wave25_testing_snapshot_all_sorted() {
 }
 
 #[test]
-fn wave25_testing_snapshot_serialize_round_trip() {
+fn testing_snapshot_serialize_round_trip() {
     let mut reg = SnapshotRegistry::new();
     reg.register("alpha", "line1\nline2");
     reg.register("beta", "single line");
@@ -463,7 +463,7 @@ fn wave25_testing_snapshot_serialize_round_trip() {
 }
 
 #[test]
-fn wave25_testing_snapshot_serialize_empty() {
+fn testing_snapshot_serialize_empty() {
     let reg = SnapshotRegistry::new();
     let serialized = reg.serialize();
     assert_eq!(serialized, "");
@@ -472,19 +472,19 @@ fn wave25_testing_snapshot_serialize_empty() {
 }
 
 #[test]
-fn wave25_testing_snapshot_deserialize_error_nested() {
+fn testing_snapshot_deserialize_error_nested() {
     let bad = "--- snapshot: a\n--- snapshot: b\ncontent\n--- end\n--- end\n";
     assert!(SnapshotRegistry::deserialize(bad).is_err());
 }
 
 #[test]
-fn wave25_testing_snapshot_deserialize_error_orphan_end() {
+fn testing_snapshot_deserialize_error_orphan_end() {
     let bad = "--- end\n";
     assert!(SnapshotRegistry::deserialize(bad).is_err());
 }
 
 #[test]
-fn wave25_testing_snapshot_deserialize_error_unclosed() {
+fn testing_snapshot_deserialize_error_unclosed() {
     let bad = "--- snapshot: a\ncontent\n";
     assert!(SnapshotRegistry::deserialize(bad).is_err());
 }
@@ -494,27 +494,27 @@ fn wave25_testing_snapshot_deserialize_error_unclosed() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave25_testing_diff_identical() {
+fn testing_diff_identical() {
     let diff = compute_diff("hello\nworld", "hello\nworld");
     assert!(!diff.contains('-'));
     assert!(!diff.contains('+'));
 }
 
 #[test]
-fn wave25_testing_diff_single_change() {
+fn testing_diff_single_change() {
     let diff = compute_diff("hello", "world");
     assert!(diff.contains("-hello"));
     assert!(diff.contains("+world"));
 }
 
 #[test]
-fn wave25_testing_diff_added_line() {
+fn testing_diff_added_line() {
     let diff = compute_diff("a", "a\nb");
     assert!(diff.contains("+b"));
 }
 
 #[test]
-fn wave25_testing_diff_removed_line() {
+fn testing_diff_removed_line() {
     let diff = compute_diff("a\nb", "a");
     assert!(diff.contains("-b"));
 }
@@ -524,62 +524,62 @@ fn wave25_testing_diff_removed_line() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave25_testing_assert_compiles_ok() {
+fn testing_assert_compiles_ok() {
     let src = "cell main() -> Int\n  return 42\nend\n";
     assert!(assert_compiles(src).is_ok());
 }
 
 #[test]
-fn wave25_testing_assert_compiles_fail() {
+fn testing_assert_compiles_fail() {
     let src = "cell main( -> Int\n  return 42\nend\n";
     assert!(assert_compiles(src).is_err());
 }
 
 #[test]
-fn wave25_testing_assert_compile_error_found() {
+fn testing_assert_compile_error_found() {
     let src = "cell main( -> Int\n  return 42\nend\n";
     assert!(assert_compile_error(src, "parse").is_ok());
 }
 
 #[test]
-fn wave25_testing_assert_compile_error_wrong_msg() {
+fn testing_assert_compile_error_wrong_msg() {
     let src = "cell main( -> Int\n  return 42\nend\n";
     assert!(assert_compile_error(src, "type mismatch xyz123").is_err());
 }
 
 #[test]
-fn wave25_testing_assert_compile_error_unexpected_success() {
+fn testing_assert_compile_error_unexpected_success() {
     let src = "cell main() -> Int\n  return 42\nend\n";
     assert!(assert_compile_error(src, "anything").is_err());
 }
 
 #[test]
-fn wave25_testing_assert_type_checks_ok() {
+fn testing_assert_type_checks_ok() {
     let src = "cell foo() -> Int\n  return 1\nend\n";
     assert!(assert_type_checks(src).is_ok());
 }
 
 #[test]
-fn wave25_testing_assert_parses_ok() {
+fn testing_assert_parses_ok() {
     let src = "cell main() -> Int\n  return 42\nend\n";
     assert!(assert_parses(src).is_ok());
 }
 
 #[test]
-fn wave25_testing_assert_parses_fail() {
+fn testing_assert_parses_fail() {
     let src = "cell ( ->\nend\n";
     assert!(assert_parses(src).is_err());
 }
 
 #[test]
-fn wave25_testing_assert_parse_error_found() {
+fn testing_assert_parse_error_found() {
     let src = "cell ( ->\nend\n";
     // Should detect some parse error — Debug format shows variant names
     assert!(assert_parse_error(src, "expected").is_ok());
 }
 
 #[test]
-fn wave25_testing_assert_parse_error_unexpected_success() {
+fn testing_assert_parse_error_unexpected_success() {
     let src = "cell main() -> Int\n  return 42\nend\n";
     assert!(assert_parse_error(src, "anything").is_err());
 }
@@ -589,7 +589,7 @@ fn wave25_testing_assert_parse_error_unexpected_success() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave25_testing_snapshot_test_struct() {
+fn testing_snapshot_test_struct() {
     let st = SnapshotTest {
         name: "test1".to_string(),
         input: "cell main() -> Int\n  return 1\nend".to_string(),
@@ -601,7 +601,7 @@ fn wave25_testing_snapshot_test_struct() {
 }
 
 #[test]
-fn wave25_testing_snapshot_default() {
+fn testing_snapshot_default() {
     let reg = SnapshotRegistry::default();
     assert!(reg.all_snapshots().is_empty());
 }
@@ -611,7 +611,7 @@ fn wave25_testing_snapshot_default() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn wave25_testing_property_int_literals_compile() {
+fn testing_property_int_literals_compile() {
     let mut pt = PropertyTest::new("int_literals");
     pt.iterations = 20;
     pt.seed = 42;
@@ -629,7 +629,7 @@ fn wave25_testing_property_int_literals_compile() {
 }
 
 #[test]
-fn wave25_testing_property_bool_literals_compile() {
+fn testing_property_bool_literals_compile() {
     let mut pt = PropertyTest::new("bool_literals");
     pt.iterations = 10;
     pt.seed = 42;
@@ -647,7 +647,7 @@ fn wave25_testing_property_bool_literals_compile() {
 }
 
 #[test]
-fn wave25_testing_snapshot_multiline_content() {
+fn testing_snapshot_multiline_content() {
     let mut reg = SnapshotRegistry::new();
     let content = "line1\nline2\nline3\nline4\nline5";
     reg.register("multi", content);

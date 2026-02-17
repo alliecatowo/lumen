@@ -80,13 +80,15 @@ cell test_return_expression() -> Bool
   return double(5) == 10
 end
 
-cell test_return_early() -> Bool
-  cell absolute_value(x: Int) -> Int
-    if x < 0
-      return -x
-    end
-    return x
+# TODO(T194): Nested cell definitions not supported; absolute_value moved to top level.
+cell absolute_value(x: Int) -> Int
+  if x < 0
+    return -x
   end
+  return x
+end
+
+cell test_return_early() -> Bool
   return absolute_value(-5) == 5 and absolute_value(5) == 5
 end
 

@@ -57,6 +57,10 @@ fn is_builtin_function(name: &str) -> bool {
             | "exists"
             | "mkdir"
             | "exit"
+            | "assert"
+            | "assert_eq"
+            | "assert_ne"
+            | "assert_contains"
     )
 }
 
@@ -121,7 +125,7 @@ fn builtin_return_type(name: &str, arg_types: &[Type]) -> Option<Type> {
         }
         "reduce" => Some(Type::Any),
         "type_of" | "type_name" => Some(Type::String),
-        "assert" | "assert_eq" => Some(Type::Null),
+        "assert" | "assert_eq" | "assert_ne" | "assert_contains" => Some(Type::Null),
         "error" => Some(Type::Null),
         "hash" => Some(Type::Int),
         "not" => Some(Type::Bool),
@@ -2296,6 +2300,13 @@ mod tests {
     fn test_typecheck_undefined_var() {
         let err = typecheck_src("cell bad() -> Int\n  return missing_var\nend").unwrap_err();
         assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn test_typecheck_assert_builtin() {
+        // assert and assert_* are builtins; typecheck should accept them
+        typecheck_src("cell main() -> Null\n  assert 1 + 1 == 2\n  assert_eq(2, 2)\n  assert_ne(1, 2)\n  assert_contains([1, 2, 3], 2)\n  return null\nend")
+            .unwrap();
     }
 
     #[test]

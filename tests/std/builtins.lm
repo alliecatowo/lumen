@@ -698,8 +698,9 @@ cell test_base64_decode() -> Bool
   return true
 end
 
+# TODO(T195): Bytes literals must be hex; b"hello" not supported — use hex for "hello" = 68656c6c6f
 cell test_hex_encode() -> Bool
-  let encoded = hex_encode(b"hello")
+  let encoded = hex_encode(b"68656c6c6f")
   assert encoded == "68656c6c6f"
   return true
 end

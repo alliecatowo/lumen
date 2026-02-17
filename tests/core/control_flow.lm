@@ -458,21 +458,22 @@ cell test_return_in_loop() -> Bool
   return false
 end
 
-cell test_multiple_return_paths() -> Bool
-  cell helper(n: Int) -> String
-    if n < 0
-      return "negative"
-    end
-    if n == 0
-      return "zero"
-    end
-    if n > 0
-      return "positive"
-    end
-    return "unreachable"
+# TODO(T194): Nested cell definitions (cell inside cell) not supported by parser; helper moved to top level.
+cell multiple_return_paths_helper(n: Int) -> String
+  if n < 0
+    return "negative"
   end
-  
-  return helper(-1) == "negative" and helper(0) == "zero" and helper(1) == "positive"
+  if n == 0
+    return "zero"
+  end
+  if n > 0
+    return "positive"
+  end
+  return "unreachable"
+end
+
+cell test_multiple_return_paths() -> Bool
+  return multiple_return_paths_helper(-1) == "negative" and multiple_return_paths_helper(0) == "zero" and multiple_return_paths_helper(1) == "positive"
 end
 
 # =============================================================================

@@ -1017,16 +1017,29 @@ impl<'a> TypeChecker<'a> {
             }
             Stmt::Assign(asgn) => {
                 let val_type = self.infer_expr(&asgn.value);
-                // Check mutability
-                if let Some(&is_mut) = self.mutables.get(&asgn.target) {
-                    if !is_mut {
-                        self.errors.push(TypeError::ImmutableAssign {
-                            name: asgn.target.clone(),
-                            line: asgn.span.line,
-                        });
+                // Check mutability (only for simple variable targets)
+                if let Some(var_name) = asgn.target.as_variable() {
+                    if let Some(&is_mut) = self.mutables.get(var_name) {
+                        if !is_mut {
+                            self.errors.push(TypeError::ImmutableAssign {
+                                name: var_name.to_string(),
+                                line: asgn.span.line,
+                            });
+                        }
                     }
+                    self.locals.insert(var_name.to_string(), val_type);
                 }
-                self.locals.insert(asgn.target.clone(), val_type);
+                // For Index/Field targets, also typecheck the base and index expressions
+                match &asgn.target {
+                    AssignTarget::Index(base, idx) => {
+                        self.infer_expr(base);
+                        self.infer_expr(idx);
+                    }
+                    AssignTarget::Field(base, _) => {
+                        self.infer_expr(base);
+                    }
+                    AssignTarget::Variable(_) => {}
+                }
             }
             Stmt::Expr(es) => {
                 self.infer_expr(&es.expr);
@@ -1073,40 +1086,53 @@ impl<'a> TypeChecker<'a> {
             }
             Stmt::CompoundAssign(ca) => {
                 let val_type = self.infer_expr(&ca.value);
-                // Check mutability
-                if let Some(&is_mut) = self.mutables.get(&ca.target) {
-                    if !is_mut {
-                        self.errors.push(TypeError::ImmutableAssign {
-                            name: ca.target.clone(),
-                            line: ca.span.line,
-                        });
+                // Check mutability (only for simple variable targets)
+                if let Some(var_name) = ca.target.as_variable() {
+                    if let Some(&is_mut) = self.mutables.get(var_name) {
+                        if !is_mut {
+                            self.errors.push(TypeError::ImmutableAssign {
+                                name: var_name.to_string(),
+                                line: ca.span.line,
+                            });
+                        }
+                    }
+                    if let Some(existing) = self.locals.get(var_name).cloned() {
+                        // Bitwise compound assignments require Int operands
+                        match ca.op {
+                            CompoundOp::BitAndAssign
+                            | CompoundOp::BitOrAssign
+                            | CompoundOp::BitXorAssign => {
+                                if existing != Type::Any && existing != Type::Int {
+                                    self.errors.push(TypeError::Mismatch {
+                                        expected: "Int".into(),
+                                        actual: format!("{}", existing),
+                                        line: ca.span.line,
+                                    });
+                                }
+                                if val_type != Type::Any && val_type != Type::Int {
+                                    self.errors.push(TypeError::Mismatch {
+                                        expected: "Int".into(),
+                                        actual: format!("{}", val_type),
+                                        line: ca.span.line,
+                                    });
+                                }
+                            }
+                            _ => {
+                                self.check_compat(&existing, &val_type, ca.span.line);
+                            }
+                        }
                     }
                 }
-                if let Some(existing) = self.locals.get(&ca.target).cloned() {
-                    // Bitwise compound assignments require Int operands
-                    match ca.op {
-                        CompoundOp::BitAndAssign
-                        | CompoundOp::BitOrAssign
-                        | CompoundOp::BitXorAssign => {
-                            if existing != Type::Any && existing != Type::Int {
-                                self.errors.push(TypeError::Mismatch {
-                                    expected: "Int".into(),
-                                    actual: format!("{}", existing),
-                                    line: ca.span.line,
-                                });
-                            }
-                            if val_type != Type::Any && val_type != Type::Int {
-                                self.errors.push(TypeError::Mismatch {
-                                    expected: "Int".into(),
-                                    actual: format!("{}", val_type),
-                                    line: ca.span.line,
-                                });
-                            }
-                        }
-                        _ => {
-                            self.check_compat(&existing, &val_type, ca.span.line);
-                        }
+                // For Index/Field targets, also typecheck the base and index expressions
+                match &ca.target {
+                    AssignTarget::Index(base, idx) => {
+                        self.infer_expr(base);
+                        self.infer_expr(idx);
                     }
+                    AssignTarget::Field(base, _) => {
+                        self.infer_expr(base);
+                    }
+                    AssignTarget::Variable(_) => {}
                 }
             }
             // Local definitions — types/cells are already registered at module level

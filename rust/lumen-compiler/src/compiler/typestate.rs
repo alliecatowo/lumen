@@ -358,10 +358,12 @@ impl TypestateChecker {
                 self.check_expr(&a.value);
 
                 // Reassignment may re-initialize typestate.
-                if let Some(type_name) = self.extract_constructor_type(&a.value) {
-                    if self.declarations.contains_key(&type_name) {
-                        if let Err(e) = self.init_var(&a.target, &type_name) {
-                            self.errors.push(*e);
+                if let Some(var_name) = a.target.as_variable() {
+                    if let Some(type_name) = self.extract_constructor_type(&a.value) {
+                        if self.declarations.contains_key(&type_name) {
+                            if let Err(e) = self.init_var(var_name, &type_name) {
+                                self.errors.push(*e);
+                            }
                         }
                     }
                 }

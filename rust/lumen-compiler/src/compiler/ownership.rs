@@ -490,23 +490,29 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(&a.value);
                 // The target is being *re-assigned*: if it was previously moved,
                 // this restores it (re-binds the name).
-                if let Some(info) = self.vars.get_mut(&a.target) {
-                    // Re-assignment brings the variable back to life.
-                    info.state = VarState::Alive;
-                    info.borrow_count = 0;
-                    info.first_borrow = None;
-                    info.mut_borrowed = false;
-                    info.mut_borrow_span = None;
+                if let Some(var_name) = a.target.as_variable() {
+                    if let Some(info) = self.vars.get_mut(var_name) {
+                        // Re-assignment brings the variable back to life.
+                        info.state = VarState::Alive;
+                        info.borrow_count = 0;
+                        info.first_borrow = None;
+                        info.mut_borrowed = false;
+                        info.mut_borrow_span = None;
+                    }
                 }
             }
             Stmt::CompoundAssign(ca) => {
                 // target op= value — this both reads and writes the target.
                 // The target must be alive for the read.
-                self.use_var(&ca.target, ca.span);
+                if let Some(var_name) = ca.target.as_variable() {
+                    self.use_var(var_name, ca.span);
+                }
                 self.check_expr(&ca.value);
                 // After compound assign, the target is alive again (it holds a new value).
-                if let Some(info) = self.vars.get_mut(&ca.target) {
-                    info.state = VarState::Alive;
+                if let Some(var_name) = ca.target.as_variable() {
+                    if let Some(info) = self.vars.get_mut(var_name) {
+                        info.state = VarState::Alive;
+                    }
                 }
             }
             Stmt::Return(r) => {

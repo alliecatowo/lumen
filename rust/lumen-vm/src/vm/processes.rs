@@ -209,7 +209,7 @@ impl VM {
         let saved_registers = std::mem::take(&mut self.registers);
 
         // Set up a fresh execution context for the target cell
-        self.registers.resize(num_regs.max(256), Value::Null);
+        self.registers.resize(num_regs.max(16), Value::Null);
         for (i, arg) in args.into_iter().enumerate() {
             if i < params.len() {
                 let dst = params[i].register as usize;

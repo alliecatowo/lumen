@@ -145,7 +145,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T063 | Selective receive (Erlang-style) — **DONE** | Allow receiving only messages matching a pattern; document semantics. |
 | T064 | Supervisor behaviour (design) — **DONE** | Define in spec or std how a supervisor restarts or escalates on child failure. |
 | T065 | link / monitor primitives — **DONE** | When process A links to B, A is notified if B crashes; implement or stub in runtime. |
-| T066 | C10K-style test | Spawn many agents and measure latency and memory; establish baseline. |
+| T066 | C10K-style test — **DONE** | Spawn many agents and measure latency and memory; establish baseline. |
 
 ---
 
@@ -193,7 +193,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T090 | Real Ed25519/Sigstore signing — **DONE** | Replace package manager signing stubs with actual cryptographic signing (see COMPETITIVE_ANALYSIS §7.3). |
 | T091 | Transparency log for packages | Append-only log for published artifacts; verification against log. |
 | T092 | Registry deployment | Deploy registry (e.g. Cloudflare Workers + D1/R2) so publish/search/install round-trip works. |
-| T093 | OIDC for registry auth | Use OpenID Connect for publisher identity where applicable. |
+| T093 | OIDC for registry auth — **DONE** | Use OpenID Connect for publisher identity where applicable. |
 | T094 | TUF or similar for repository metadata | The Update Framework (or equivalent) for secure package metadata. |
 | T095 | extern "C" and ABI — **DONE** | Support C calling convention and correct ABI in FFI. |
 | T096 | Header-to-Lumen bindgen | Tool that parses C (or Rust) headers and generates Lumen extern declarations. |
@@ -246,7 +246,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T129 | std::fs async | Async file I/O if async runtime is standardized. |
 | T130 | std::net | Async TCP/UDP or equivalent. |
 | T131 | std::http client/server | HTTP using hyper or equivalent; zero-copy where possible. |
-| T132 | std::json fast path | High-performance JSON using serde or similar. |
+| T132 | std::json fast path — **DONE** | High-performance JSON using serde or similar. |
 | T133 | Collections with linear types | Where applicable, offer APIs that consume `self` (e.g. linear vector) for zero-copy pipelines. |
 
 ---
@@ -273,7 +273,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T142 | Zero clippy warnings | `cargo clippy -- -D warnings` for all crates. |
 | T143 | Coverage gate | Maintain or improve coverage (e.g. >95% for critical paths). |
 | T144 | Valgrind or sanitizers | No leaks; address sanitizer clean where applicable. |
-| T145 | Security audit (cargo audit) | Zero known vulnerabilities in dependencies. |
+| T145 | Security audit (cargo audit) — **DONE** | Zero known vulnerabilities in dependencies. |
 | T146 | Documentation sync | SPEC, CLAUDE.md, and ROADMAP aligned with implementation. |
 | T147 | Release v1.0.0 tag | Tag and release when Phase 0–9 goals are met and gates pass. |
 
@@ -354,7 +354,7 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
 | T169 | Error context chaining — **DONE** | Propagate and display cause chains (e.g. "tool X failed because network unreachable because TLS handshake failed"). Improves debuggability vs single-message errors. |
-| T170 | Panic vs result (halt vs return err) | Define clear boundary: which failures panic (e.g. unreachable, invariant violation) vs return `result[T,E]`; document and enforce so agents can recover predictably. Ref: Rust panic vs Result. |
+| T170 | Panic vs result (halt vs return err) — **DONE** | Define clear boundary: which failures panic (e.g. unreachable, invariant violation) vs return `result[T,E]`; document and enforce so agents can recover predictably. Ref: Rust panic vs Result. |
 | T171 | Inline / property-based / snapshot testing | Built-in or std test helpers: inline unit tests, property-based (e.g. QuickCheck-style), snapshot output comparison. Ref: COMPETITIVE_ANALYSIS §8 (leapfrog 11). |
 | T172 | Mock effects for tests | Test harness to stub effect operations (e.g. `perform HttpGet`) so tests run without real I/O. Complements deterministic replay. |
 | T173 | LSP: go-to-implementations — **DONE** | "Go to implementation(s)" for cells and types; navigate to defining and overriding sites. Ref: IDE parity. |
@@ -383,7 +383,7 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | T191 | **Float literals: scientific notation** — **DONE** | Lexer/parser should accept scientific notation for floats (e.g. `1.5e10`, `2e-3`). Currently `1.5e10` is tokenized as float `1.5` plus identifier `e10`, causing "undefined variable e10". Lexer has a test for `1e10`; ensure full form `[digits].[digits]e[+-]?[digits]` is supported and documented in SPEC.md/GRAMMAR.md. This is intended language support. |
 | T192 | **Consider: Lumen test suite vs implementation drift** | When `tests/` (e.g. `tests/core/*.lm`, `tests/integration/end_to_end.lm`) fail due to syntax or builtin mismatches, decide per case whether (a) the test is aspirational and should be updated to match current language, or (b) the implementation has drifted and should be fixed. Document decisions and any spec/grammar updates. Examples encountered: block expression `{ x = 1; true }` (parser expects `}` not `;`), `type(42)` vs keyword `type` (use `type_of` in tests or reserve builtin name), `assert` as builtin (typechecker was updated to recognize it). Keep a short note in this file or a small "test-suite alignment" doc when new drift is found. |
 | T193 | **Assert/call register reuse (VM/compiler)** — **DONE** | Consecutive `assert <expr>` can leave null in a register reused for the next expression, causing "arithmetic on non-numeric types: null and N". Tests adjusted to single `let ok = ... ; assert ok` per cell. Fix in compiler/VM. |
-| T194 | **Nested cell/enum/record** | Parser does not support `cell`/`enum`/`record` inside another `cell`; tests fail with "Add 'end'". Flatten to top-level or extend parser. Extern declarations must be top-level. |
+| T194 | **Nested cell/enum/record** — **DONE** | Parser does not support `cell`/`enum`/`record` inside another `cell`; tests fail with "Add 'end'". Flatten to top-level or extend parser. Extern declarations must be top-level. |
 | T195 | **Bytes literals** | Bytes must be hex (e.g. `b"68656c6c6f"`); ASCII `b"hello"` rejected. builtins adjusted; document or extend. |
 | T196 | **parse_int/parse_float** | Tests used parse_*; language has to_int/to_float. Tests updated. |
 | T197 | **i64::MIN literal** — **DONE** | Literal `-9223372036854775808` triggers "cannot negate". Test uses `-1 < 0`; fix or document. |
@@ -392,11 +392,11 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | T200 | **Enum/record constructors with payload at runtime** — **DONE** | `Option.Some(42)`, `Shape.Circle(radius: 5.0)`, generic record `Box[T](value: x)`, `Pair[A,B](...)` trigger "cannot call null" or "cannot call Pair()" at runtime. Tests stubbed or use zero-payload variants only. Fix VM/lowering so enum and generic record construction works. |
 | T201 | **Nested list comprehension** — **DONE** | `[ (x, y) for x in a for y in b ]` — inner loop variable `y` undefined in scope. Tests simplified to single `for`. Fix parser/scope so nested comprehensions bind correctly. |
 | T202 | **push vs append** | Tests used `push`; Lumen builtin is `append` for lists. Tests updated. Optional: add `push` as alias if desired. |
-| T203 | **to_list(set) builtin** | No builtin to convert set to list; set union/intersection/difference tests need it. Tests use list literals or stub. Add `to_list` (or set iteration in for) so set→list is available. |
+| T203 | **to_list(set) builtin** — **DONE** | No builtin to convert set to list; set union/intersection/difference tests need it. Tests use list literals or stub. Add `to_list` (or set iteration in for) so set→list is available. |
 | T205 | **Let destructuring / match type-pattern** — **DONE** | Let with type annotations (e.g. `let (n: Int, s: String) = ...`) and match type-pattern syntax not fully supported. pattern_matching.lm uses plain destructuring and `is` checks; restore when supported. |
 | T206 | **Missing or renamed builtins** — **DONE** | Tests use type_of (not type), to_json (not json_stringify), to_int/to_float (not parse_*), timestamp (not timestamp_ms); trim_start/trim_end, exp, tan, random_int not present. builtins.lm stubbed or uses alternatives. |
 | T207 | **Effect handler resume at runtime** — **DONE** | handle/perform with resume() can fail with "resume called outside of effect handler". effects.lm minimal stub avoids handle/perform until fixed. |
-| T208 | **Record method scoping / generic T** | Records with nested method cells (Stack[T], Queue[T], etc.) cause duplicate definition (is_empty, size) and undefined type T in method signatures. end_to_end.lm stubbed to calculator-only. |
+| T208 | **Record method scoping / generic T** — **DONE** | Records with nested method cells (Stack[T], Queue[T], etc.) cause duplicate definition (is_empty, size) and undefined type T in method signatures. end_to_end.lm stubbed to calculator-only. |
 | T209 | **Result/optional syntactic sugar** | Code and tests use `unwrap`, `unwrap_or`, `is_ok`/`is_err`, and explicit `match` on `result[T,E]`/optional heavily. **Research:** Rust’s `?` operator propagates `Err`/`None` from the current function (unwrap-or-return); Swift optional binding (`if let`); JS optional chaining (`?.`). Adding similar ergonomics (e.g. postfix `?` for propagation in cells that return `result`/optional, or optional chaining for nullable fields) would reduce boilerplate and improve readability. See COMPETITIVE_ANALYSIS §6.3 (error/optional ergonomics), ROADMAP Phase 3. |
 | **T204** | **Resolve all test-suite TODOs and implement expected behavior** | Work through every TODO in `tests/` (T193–T209 and any in-file TODOs). For each: either implement the expected language/VM behavior so the test can be restored to its intended form, or document the decision to keep the workaround and close the TODO. Track in this file; goal: test suite passes with no remaining test-side workarounds for compiler/VM gaps. See `tests/README.md` § Test-suite TODOs. |
 

@@ -1,5 +1,6 @@
 //! Register VM dispatch loop for executing LIR bytecode.
 
+pub mod continuations;
 mod helpers;
 mod intrinsics;
 mod ops;

@@ -253,12 +253,14 @@ impl IntBounds {
                     return SatResult::Unsat;
                 }
                 // Check if all integers in [lo, hi] are forbidden
-                let range_size = hi - lo + 1;
-                if range_size <= self.neq.len() as i64 {
-                    // Small range — check exhaustively
-                    let all_forbidden = (lo..=hi).all(|v| self.neq.contains(&v));
-                    if all_forbidden {
-                        return SatResult::Unsat;
+                // Use checked arithmetic to avoid overflow with extreme bounds
+                if let Some(range_size) = hi.checked_sub(lo).and_then(|d| d.checked_add(1)) {
+                    if range_size <= self.neq.len() as i64 {
+                        // Small range — check exhaustively
+                        let all_forbidden = (lo..=hi).all(|v| self.neq.contains(&v));
+                        if all_forbidden {
+                            return SatResult::Unsat;
+                        }
                     }
                 }
                 SatResult::Sat

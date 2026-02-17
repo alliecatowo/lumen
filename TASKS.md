@@ -10,23 +10,23 @@ Use this list to verify whether a given deficiency is still present. Mark items 
 
 | ID | Deficiency | Rationale | Status |
 |----|------------|-----------|--------|
-| D01 | **Memory: Rc&lt;T&gt; only** | Reference counting is not thread-safe; prevents true parallelism. No `Arc` or GC. | IN PROGRESS |
-| D02 | **Memory: No cycle collection** | Simple reference counting cannot reclaim cycles (e.g. doubly linked structures); long-running agents risk leaks. | OPEN |
-| D03 | **Memory: No linear/affine types** | No single-consumption guarantee; zero-copy handoff of large buffers between agents impossible. | OPEN |
-| D04 | **Runtime: Interpreter-only** | Bytecode VM only; no JIT or AOT. High-throughput numeric/tensor workloads are not competitive. | OPEN |
-| D05 | **Types: Constraints are runtime** | `where` clauses and record constraints are asserted at runtime; violations cause production failures instead of compile-time errors. | OPEN |
-| D06 | **Types: No SMT-backed refinement** | Refinement types (e.g. `Int where x > 0`) cannot be proved at compile time. | OPEN |
-| D07 | **Concurrency: Single-threaded scheduler** | No M:N work-stealing; `spawn`/parallel may not utilize multiple cores. | OPEN |
-| D08 | **Concurrency: No typed channels** | No first-class `Channel<T>` or session types for agent-to-agent communication. | IN PROGRESS |
-| D09 | **Concurrency: No supervision** | No hierarchical restart or supervision of failed processes. | OPEN |
-| D10 | **Ecosystem: No zero-cost FFI** | `extern` exists but no bindgen-style generation from C/Rust headers. | OPEN |
-| D11 | **Ecosystem: No WASM component model** | WASM target exists; WIT / component model not adopted. | OPEN |
-| D12 | **AI: No first-class tensors** | No primitive tensor type or differentiable runtime; ML relies on external calls and serialization. | OPEN |
-| D13 | **Durability: No checkpoint/resume** | No serialization of stack/heap or replay; long-running workflows cannot survive process death. | OPEN |
+| D01 | **Memory: Rc&lt;T&gt; only** | Reference counting is not thread-safe; prevents true parallelism. No `Arc` or GC. | RESOLVED (T002, T003, T011-T013) |
+| D02 | **Memory: No cycle collection** | Simple reference counting cannot reclaim cycles (e.g. doubly linked structures); long-running agents risk leaks. | RESOLVED (T003, T012 — Immix GC) |
+| D03 | **Memory: No linear/affine types** | No single-consumption guarantee; zero-copy handoff of large buffers between agents impossible. | RESOLVED (T005-T009 — ownership wired in Wave 19) |
+| D04 | **Runtime: Interpreter-only** | Bytecode VM only; no JIT or AOT. High-throughput numeric/tensor workloads are not competitive. | RESOLVED (T017-T034 — Cranelift AOT+JIT) |
+| D05 | **Types: Constraints are runtime** | `where` clauses and record constraints are asserted at runtime; violations cause production failures instead of compile-time errors. | IN PROGRESS (T040 pending) |
+| D06 | **Types: No SMT-backed refinement** | Refinement types (e.g. `Int where x > 0`) cannot be proved at compile time. | IN PROGRESS (T037-T049 done, T037 real solver pending) |
+| D07 | **Concurrency: Single-threaded scheduler** | No M:N work-stealing; `spawn`/parallel may not utilize multiple cores. | RESOLVED (T053-T060) |
+| D08 | **Concurrency: No typed channels** | No first-class `Channel<T>` or session types for agent-to-agent communication. | RESOLVED (T062, T148) |
+| D09 | **Concurrency: No supervision** | No hierarchical restart or supervision of failed processes. | RESOLVED (T064, T065, T151) |
+| D10 | **Ecosystem: No zero-cost FFI** | `extern` exists but no bindgen-style generation from C/Rust headers. | IN PROGRESS (T095 done, T096 pending) |
+| D11 | **Ecosystem: No WASM component model** | WASM target exists; WIT / component model not adopted. | RESOLVED (T097-T099) |
+| D12 | **AI: No first-class tensors** | No primitive tensor type or differentiable runtime; ML relies on external calls and serialization. | IN PROGRESS (T077-T086 done, integration pending) |
+| D13 | **Durability: No checkpoint/resume** | No serialization of stack/heap or replay; long-running workflows cannot survive process death. | RESOLVED (T067-T076) |
 | D14 | **Tooling: No DAP** | No Debug Adapter Protocol; no breakpoints, stepping, or value inspection. | RESOLVED |
 | D15 | **Tooling: No sampling profiler** | No flamegraph or allocation profiling. | OPEN |
-| D16 | **Metaprogramming: No hygienic macros** | No user-extensible syntax or DSLs; MacroDecl in AST has no documented semantics. | OPEN |
-| D17 | **Arithmetic: Overflow semantics** | Checked vs wrapping arithmetic not consistently defined. | RESOLVED |
+| D16 | **Metaprogramming: No hygienic macros** | No user-extensible syntax or DSLs; MacroDecl in AST has no documented semantics. | OPEN (T118) |
+| D17 | **Arithmetic: Overflow semantics** | Checked vs wrapping arithmetic not consistently defined. | RESOLVED (T123, Wave 19 wrapping builtins) |
 | D18 | **Register limit** | 255-register limit can cause compilation failure in large functions. | RESOLVED |
 
 ---
@@ -269,7 +269,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
-| T141 | All 1365+ tests pass | After any change, full workspace test suite passes. |
+| T141 | All 3021+ tests pass | After any change, full workspace test suite passes. |
 | T142 | Zero clippy warnings | `cargo clippy -- -D warnings` for all crates. |
 | T143 | Coverage gate | Maintain or improve coverage (e.g. >95% for critical paths). |
 | T144 | Valgrind or sanitizers | No leaks; address sanitizer clean where applicable. |

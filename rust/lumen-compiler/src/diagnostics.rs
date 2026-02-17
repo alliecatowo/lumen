@@ -10,6 +10,202 @@ use crate::compiler::resolve::ResolveError;
 use crate::compiler::typecheck::TypeError;
 use crate::CompileError;
 
+// ── Public API: type diffs and suggestions ─────────────────────────
+
+/// Produce a concise type diff string showing expected vs actual.
+///
+/// For simple types: `"Expected `Int`, found `String`"`
+/// For structural types (lists, maps, tuples, results, unions): shows
+/// a structural diff highlighting where the types diverge.
+pub fn type_diff(expected: &str, actual: &str) -> String {
+    if expected == actual {
+        return format!("Both types are `{}`", expected);
+    }
+
+    // Try structural diff for parameterised types
+    if let Some(diff) = structural_type_diff(expected, actual) {
+        return diff;
+    }
+
+    // Default concise diff
+    format!("Expected `{}`, found `{}`", expected, actual)
+}
+
+/// Attempt a structural diff for compound types.
+/// Returns `None` when types are not structurally comparable.
+fn structural_type_diff(expected: &str, actual: &str) -> Option<String> {
+    // list[T] vs list[U]
+    if let (Some(inner_e), Some(inner_a)) = (
+        strip_wrapper(expected, "list"),
+        strip_wrapper(actual, "list"),
+    ) {
+        let inner = type_diff(inner_e, inner_a);
+        return Some(format!(
+            "Expected `{}`, found `{}`\n  list element: {}",
+            expected, actual, inner
+        ));
+    }
+
+    // set[T] vs set[U]
+    if let (Some(inner_e), Some(inner_a)) =
+        (strip_wrapper(expected, "set"), strip_wrapper(actual, "set"))
+    {
+        let inner = type_diff(inner_e, inner_a);
+        return Some(format!(
+            "Expected `{}`, found `{}`\n  set element: {}",
+            expected, actual, inner
+        ));
+    }
+
+    // map[K, V] vs map[K2, V2]
+    if let (Some((ke, ve)), Some((ka, va))) = (strip_map(expected), strip_map(actual)) {
+        let mut parts = vec![format!("Expected `{}`, found `{}`", expected, actual)];
+        if ke != ka {
+            parts.push(format!("  map key: {}", type_diff(ke, ka)));
+        }
+        if ve != va {
+            parts.push(format!("  map value: {}", type_diff(ve, va)));
+        }
+        return Some(parts.join("\n"));
+    }
+
+    // result[Ok, Err] vs result[Ok2, Err2]
+    if let (Some((oe, ee)), Some((oa, ea))) =
+        (strip_pair(expected, "result"), strip_pair(actual, "result"))
+    {
+        let mut parts = vec![format!("Expected `{}`, found `{}`", expected, actual)];
+        if oe != oa {
+            parts.push(format!("  ok type: {}", type_diff(oe, oa)));
+        }
+        if ee != ea {
+            parts.push(format!("  err type: {}", type_diff(ee, ea)));
+        }
+        return Some(parts.join("\n"));
+    }
+
+    // tuple[A, B, ...] vs tuple[X, Y, ...]
+    if let (Some(es), Some(as_)) = (strip_tuple(expected), strip_tuple(actual)) {
+        let mut parts = vec![format!("Expected `{}`, found `{}`", expected, actual)];
+        if es.len() != as_.len() {
+            parts.push(format!(
+                "  tuple arity: expected {} element(s), found {}",
+                es.len(),
+                as_.len()
+            ));
+        } else {
+            for (i, (e, a)) in es.iter().zip(as_.iter()).enumerate() {
+                if e != a {
+                    parts.push(format!("  element {}: {}", i, type_diff(e, a)));
+                }
+            }
+        }
+        return Some(parts.join("\n"));
+    }
+
+    // union A | B vs C | D
+    if expected.contains(" | ") || actual.contains(" | ") {
+        return Some(format!("Expected `{}`, found `{}`", expected, actual));
+    }
+
+    None
+}
+
+/// Strip a wrapper like `list[T]` -> `T`, `set[T]` -> `T`
+fn strip_wrapper<'a>(ty: &'a str, prefix: &str) -> Option<&'a str> {
+    let trimmed = ty.trim();
+    if trimmed.starts_with(prefix) && trimmed.ends_with(']') {
+        let inner_start = prefix.len() + 1; // skip `prefix[`
+        let inner = &trimmed[inner_start..trimmed.len() - 1];
+        Some(inner.trim())
+    } else {
+        None
+    }
+}
+
+/// Strip `map[K, V]` -> (K, V)
+fn strip_map(ty: &str) -> Option<(&str, &str)> {
+    strip_pair(ty, "map")
+}
+
+/// Strip `prefix[A, B]` -> (A, B), handling nested brackets
+fn strip_pair<'a>(ty: &'a str, prefix: &str) -> Option<(&'a str, &'a str)> {
+    let trimmed = ty.trim();
+    if !trimmed.starts_with(prefix) || !trimmed.ends_with(']') {
+        return None;
+    }
+    let inner_start = prefix.len() + 1;
+    let inner = &trimmed[inner_start..trimmed.len() - 1];
+    // Split at top-level comma (respecting bracket nesting)
+    let mut depth = 0;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '[' | '(' => depth += 1,
+            ']' | ')' => depth -= 1,
+            ',' if depth == 0 => {
+                return Some((inner[..i].trim(), inner[i + 1..].trim()));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Strip `tuple[A, B, C]` -> vec!["A", "B", "C"]
+fn strip_tuple(ty: &str) -> Option<Vec<&str>> {
+    let trimmed = ty.trim();
+    if !trimmed.starts_with("tuple[") || !trimmed.ends_with(']') {
+        return None;
+    }
+    let inner = &trimmed[6..trimmed.len() - 1];
+    Some(split_type_list(inner))
+}
+
+/// Split a comma-separated type list respecting bracket nesting
+fn split_type_list(s: &str) -> Vec<&str> {
+    let mut result = Vec::new();
+    let mut depth = 0;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '[' | '(' => depth += 1,
+            ']' | ')' => depth -= 1,
+            ',' if depth == 0 => {
+                result.push(s[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let tail = s[start..].trim();
+    if !tail.is_empty() {
+        result.push(tail);
+    }
+    result
+}
+
+/// Suggest similar names from a list of candidates using Levenshtein distance.
+///
+/// Returns up to 3 candidates within `max_distance` edits, sorted by distance.
+pub fn suggest_similar_names(name: &str, available_names: &[&str]) -> Vec<String> {
+    suggest_similar(name, available_names, 2)
+}
+
+/// Format a diagnostic suggestion from `suggest_similar_names` results.
+///
+/// Returns a formatted "did you mean..." string, or `None` if no suggestions.
+pub fn format_suggestions(name: &str, available_names: &[&str]) -> Option<String> {
+    let suggestions = suggest_similar_names(name, available_names);
+    if suggestions.is_empty() {
+        return None;
+    }
+    if suggestions.len() == 1 {
+        Some(format!("did you mean `{}`?", suggestions[0]))
+    } else {
+        let quoted: Vec<String> = suggestions.iter().map(|s| format!("`{}`", s)).collect();
+        Some(format!("did you mean one of {}?", quoted.join(", ")))
+    }
+}
+
 /// Severity level for diagnostics
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
@@ -957,11 +1153,12 @@ fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnos
         } => {
             let source_line = get_source_line(source, *line);
             let underline = source_line.as_ref().map(|_| make_underline(1, 1));
+            let diff = type_diff(expected, actual);
 
             Diagnostic {
                 severity: Severity::Error,
                 code: Some(code),
-                message: format!("type mismatch: expected {}, got {}", expected, actual),
+                message: format!("type mismatch: {}", diff),
                 file: Some(filename.to_string()),
                 line: Some(*line),
                 col: None,
@@ -983,8 +1180,14 @@ fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnos
             let mut candidates: Vec<&str> = KEYWORDS.to_vec();
             candidates.extend(BUILTINS.iter().copied());
             let suggestions = suggest_similar(name, &candidates, 2);
-            let help = if !suggestions.is_empty() {
-                vec![format!("Did you mean `{}`?", suggestions[0])]
+            let help: Vec<String> = if !suggestions.is_empty() {
+                if suggestions.len() == 1 {
+                    vec![format!("did you mean `{}`?", suggestions[0])]
+                } else {
+                    let quoted: Vec<String> =
+                        suggestions.iter().map(|s| format!("`{}`", s)).collect();
+                    vec![format!("did you mean one of {}?", quoted.join(", "))]
+                }
             } else {
                 vec![]
             };
@@ -1234,6 +1437,135 @@ fn format_ownership_error(error: &OwnershipError, source: &str, filename: &str) 
             }
         }
     }
+}
+
+// ── String interpolation span mapping ──────────────────────────────
+
+/// Describes the position of a segment within an interpolated string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterpolationSegmentSpan {
+    /// Offset from the start of the string literal (after opening quote)
+    pub offset: usize,
+    /// Length of this segment in the source
+    pub length: usize,
+    /// Whether this is an interpolated expression (`{expr}`) or literal text
+    pub is_expr: bool,
+}
+
+/// Given a source line containing an interpolated string and the column of the
+/// string start, compute per-segment spans within the interpolation.
+///
+/// This allows diagnostics for errors inside interpolated expressions to point
+/// to the specific `{...}` segment rather than the whole string.
+///
+/// The `string_start_col` is 1-based column of the opening `"` character.
+pub fn map_interpolation_spans(
+    source_line: &str,
+    string_start_col: usize,
+) -> Vec<InterpolationSegmentSpan> {
+    let start_idx = string_start_col.saturating_sub(1);
+    let chars: Vec<char> = source_line.chars().collect();
+
+    if start_idx >= chars.len() || chars[start_idx] != '"' {
+        return vec![];
+    }
+
+    let mut segments = Vec::new();
+    let mut pos = start_idx + 1; // skip opening quote
+    let mut segment_start = pos;
+
+    while pos < chars.len() {
+        match chars[pos] {
+            '"' => {
+                // End of string
+                if pos > segment_start {
+                    segments.push(InterpolationSegmentSpan {
+                        offset: segment_start - start_idx,
+                        length: pos - segment_start,
+                        is_expr: false,
+                    });
+                }
+                break;
+            }
+            '\\' => {
+                // Escape sequence — skip next char
+                pos += 1;
+                if pos < chars.len() {
+                    pos += 1;
+                }
+            }
+            '{' => {
+                // Flush literal segment before the brace
+                if pos > segment_start {
+                    segments.push(InterpolationSegmentSpan {
+                        offset: segment_start - start_idx,
+                        length: pos - segment_start,
+                        is_expr: false,
+                    });
+                }
+                // Find matching close brace
+                let brace_start = pos;
+                pos += 1;
+                let mut depth = 1;
+                while pos < chars.len() && depth > 0 {
+                    match chars[pos] {
+                        '{' => depth += 1,
+                        '}' => depth -= 1,
+                        '"' => {
+                            // Skip embedded strings
+                            pos += 1;
+                            while pos < chars.len() && chars[pos] != '"' {
+                                if chars[pos] == '\\' {
+                                    pos += 1;
+                                }
+                                pos += 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                    if depth > 0 {
+                        pos += 1;
+                    }
+                }
+                let brace_end = if depth == 0 { pos + 1 } else { pos };
+                segments.push(InterpolationSegmentSpan {
+                    offset: brace_start - start_idx,
+                    length: brace_end - brace_start,
+                    is_expr: true,
+                });
+                pos = brace_end;
+                segment_start = pos;
+            }
+            _ => {
+                pos += 1;
+            }
+        }
+    }
+
+    segments
+}
+
+/// Given a source line and the column of the string start, find the column
+/// range (1-based, inclusive start, exclusive end) of the Nth interpolation
+/// expression segment. Returns `None` if no such segment exists.
+pub fn interpolation_expr_col_range(
+    source_line: &str,
+    string_start_col: usize,
+    expr_index: usize,
+) -> Option<(usize, usize)> {
+    let segments = map_interpolation_spans(source_line, string_start_col);
+    let mut expr_count = 0;
+    for seg in &segments {
+        if seg.is_expr {
+            if expr_count == expr_index {
+                let col_start = string_start_col + seg.offset;
+                let col_end = col_start + seg.length;
+                return Some((col_start, col_end));
+            }
+            expr_count += 1;
+        }
+    }
+    None
 }
 
 #[cfg(test)]

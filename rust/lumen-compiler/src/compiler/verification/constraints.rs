@@ -185,9 +185,9 @@ impl Constraint {
                 cmp_value,
             } if var == var_name => {
                 let computed = match arith_op {
-                    ArithOp::Add => value + arith_const,
-                    ArithOp::Sub => value - arith_const,
-                    ArithOp::Mul => value * arith_const,
+                    ArithOp::Add => value.saturating_add(*arith_const),
+                    ArithOp::Sub => value.saturating_sub(*arith_const),
+                    ArithOp::Mul => value.saturating_mul(*arith_const),
                 };
                 let holds = match cmp_op {
                     CmpOp::Gt => computed > *cmp_value,

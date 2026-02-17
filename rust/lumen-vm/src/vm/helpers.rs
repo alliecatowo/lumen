@@ -360,3 +360,35 @@ pub(crate) fn simple_base64_decode(s: &str) -> Option<Vec<u8>> {
     }
     Some(result)
 }
+
+/// Borrow a `&str` from a `Value` when possible, or produce an owned
+/// conversion via `Cow`. For `StringRef::Owned` this is zero-copy; for
+/// `StringRef::Interned` it resolves via `StringTable`; for non-string
+/// types it falls back to `as_string()`.
+pub(crate) fn value_to_str_cow<'a>(
+    val: &'a Value,
+    strings: &'a crate::strings::StringTable,
+) -> std::borrow::Cow<'a, str> {
+    match val {
+        Value::String(StringRef::Owned(s)) => std::borrow::Cow::Borrowed(s.as_str()),
+        Value::String(StringRef::Interned(id)) => {
+            std::borrow::Cow::Borrowed(strings.resolve(*id).unwrap_or(""))
+        }
+        _ => std::borrow::Cow::Owned(val.as_string()),
+    }
+}
+
+/// Concatenate two Values as strings with a single allocation.
+/// Uses borrowing for `Value::String` to avoid cloning inputs.
+pub(crate) fn concat_string_values(
+    lhs: &Value,
+    rhs: &Value,
+    strings: &crate::strings::StringTable,
+) -> Value {
+    let left = value_to_str_cow(lhs, strings);
+    let right = value_to_str_cow(rhs, strings);
+    let mut result = String::with_capacity(left.len() + right.len());
+    result.push_str(&left);
+    result.push_str(&right);
+    Value::String(StringRef::Owned(result))
+}

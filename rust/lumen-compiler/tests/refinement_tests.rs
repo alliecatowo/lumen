@@ -64,6 +64,7 @@ fn make_cell(name: &str, params: Vec<Param>, where_clauses: Vec<Expr>, body: Vec
         where_clauses,
         span: span(),
         doc: None,
+        deprecated: None,
     }
 }
 
@@ -391,6 +392,7 @@ fn record_field_constraint_always_false_is_violated() {
             is_pub: false,
             span: span(),
             doc: None,
+            deprecated: None,
         })],
         span: span(),
     };
@@ -422,6 +424,7 @@ fn record_field_constraint_always_true_is_verified() {
             is_pub: false,
             span: span(),
             doc: None,
+            deprecated: None,
         })],
         span: span(),
     };
@@ -454,6 +457,7 @@ fn record_field_constraint_comparison_is_not_tautology() {
             is_pub: false,
             span: span(),
             doc: None,
+            deprecated: None,
         })],
         span: span(),
     };
@@ -1002,6 +1006,7 @@ fn mixed_record_and_cell_constraints_collected() {
                 is_pub: false,
                 span: span(),
                 doc: None,
+                deprecated: None,
             }),
             Item::Cell(make_cell(
                 "safe_div",

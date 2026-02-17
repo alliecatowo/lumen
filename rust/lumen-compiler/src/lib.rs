@@ -33,7 +33,7 @@ pub enum OwnershipCheckMode {
 /// All fields have sensible defaults: ownership analysis defaults to `Warn`
 /// mode, and typestate / session type checking are opt-in (disabled by default
 /// since they require explicit declarations).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct CompileOptions {
     /// Ownership analysis mode. Default: `Warn`.
     pub ownership_mode: OwnershipCheckMode,
@@ -48,6 +48,23 @@ pub struct CompileOptions {
     /// Map from protocol name → sequence of (action, span) pairs.
     pub session_actions:
         std::collections::HashMap<String, Vec<(compiler::session::Action, compiler::tokens::Span)>>,
+    /// Allow unstable features without errors. Default: `false`.
+    pub allow_unstable: bool,
+    /// Language edition for forward-compatibility. Default: `"2026"`.
+    pub edition: String,
+}
+
+impl Default for CompileOptions {
+    fn default() -> Self {
+        Self {
+            ownership_mode: OwnershipCheckMode::default(),
+            typestate_declarations: std::collections::HashMap::new(),
+            session_protocols: std::collections::HashMap::new(),
+            session_actions: std::collections::HashMap::new(),
+            allow_unstable: false,
+            edition: "2026".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Error)]

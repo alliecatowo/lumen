@@ -159,6 +159,7 @@ fn cell_where_clause_nonzero_divisor_via_ast() {
             )],
             span,
             doc: None,
+            deprecated: None,
         })],
         span,
     };
@@ -208,6 +209,7 @@ fn cell_where_clause_positive_param_via_ast() {
             )],
             span,
             doc: None,
+            deprecated: None,
         })],
         span,
     };
@@ -281,6 +283,7 @@ fn cell_where_clause_multiple_via_ast() {
             ],
             span,
             doc: None,
+            deprecated: None,
         })],
         span,
     };
@@ -411,6 +414,7 @@ fn collect_cell_where_clause_via_ast() {
             )],
             span,
             doc: None,
+            deprecated: None,
         })],
         span,
     };
@@ -460,6 +464,7 @@ fn verify_record_field_constraint_always_true() {
             is_pub: false,
             span,
             doc: None,
+            deprecated: None,
         })],
         span,
     };
@@ -530,6 +535,7 @@ fn collect_constraints_from_multiple_records() {
                 is_pub: false,
                 span,
                 doc: None,
+                deprecated: None,
             }),
             Item::Record(RecordDef {
                 name: "Bounded".to_string(),
@@ -549,6 +555,7 @@ fn collect_constraints_from_multiple_records() {
                 is_pub: false,
                 span,
                 doc: None,
+                deprecated: None,
             }),
         ],
         span,
@@ -589,6 +596,7 @@ fn collect_no_constraints_from_unconstrained_record() {
             is_pub: false,
             span,
             doc: None,
+            deprecated: None,
         })],
         span,
     };
@@ -651,6 +659,7 @@ fn cell_where_clause_lowers_to_constraint() {
             )],
             span,
             doc: None,
+            deprecated: None,
         })],
         span,
     };

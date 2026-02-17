@@ -2,7 +2,9 @@
 //!
 //! Lowers LIR bytecode modules to native machine code.
 
+pub mod bench_programs;
 pub mod context;
 pub mod emit;
+pub mod jit;
 pub mod lower;
 pub mod types;

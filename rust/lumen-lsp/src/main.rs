@@ -9,6 +9,7 @@ mod completion;
 mod diagnostics;
 mod document_symbols;
 mod folding_ranges;
+mod formatting;
 mod goto_definition;
 mod hover;
 mod inlay_hints;
@@ -79,7 +80,7 @@ fn main() {
         inlay_hint_provider: Some(OneOf::Left(true)),
         code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
-        document_formatting_provider: Some(OneOf::Left(false)), // Formatter not implemented via LSP
+        document_formatting_provider: Some(OneOf::Left(true)),
         references_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
         ..Default::default()
@@ -756,6 +757,24 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
                 let program = cache.get_program(uri);
 
                 let result = folding_ranges::build_folding_ranges(params, text, program);
+
+                let response = Response {
+                    id: req.id.clone(),
+                    result: Some(serde_json::to_value(result).unwrap()),
+                    error: None,
+                };
+                let _ = connection.sender.send(Message::Response(response));
+            }
+        }
+        request::Formatting::METHOD => {
+            if let Ok(params) =
+                serde_json::from_value::<DocumentFormattingParams>(req.params.clone())
+            {
+                let uri = params.text_document.uri.clone();
+                let text = cache.get_text(&uri).map(|s| s.as_str()).unwrap_or("");
+                let uri_path = uri.path().as_str().to_string();
+
+                let result = formatting::build_formatting(params, text, &uri_path);
 
                 let response = Response {
                     id: req.id.clone(),

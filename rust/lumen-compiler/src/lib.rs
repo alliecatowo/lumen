@@ -28,6 +28,28 @@ pub enum CompileError {
     Constraint(Vec<compiler::constraints::ConstraintError>),
     #[error("ownership errors: {0:?}")]
     Ownership(Vec<compiler::ownership::OwnershipError>),
+    #[error("multiple errors: {0:?}")]
+    Multiple(Vec<CompileError>),
+}
+
+impl CompileError {
+    /// Construct a `CompileError` from a list of errors.
+    /// Returns `None` if the list is empty, unwraps single-element lists,
+    /// and flattens nested `Multiple` variants.
+    pub fn from_multiple(errors: Vec<CompileError>) -> Option<CompileError> {
+        let flattened: Vec<CompileError> = errors
+            .into_iter()
+            .flat_map(|e| match e {
+                CompileError::Multiple(inner) => inner,
+                other => vec![other],
+            })
+            .collect();
+        match flattened.len() {
+            0 => None,
+            1 => Some(flattened.into_iter().next().unwrap()),
+            _ => Some(CompileError::Multiple(flattened)),
+        }
+    }
 }
 
 impl From<compiler::parser::ParseError> for CompileError {
@@ -261,20 +283,32 @@ fn compile_with_imports_internal(
         }
     }
 
+    // 7. Resolve with imported symbols pre-populated (collect errors, continue with partial table)
+    // Use resolve_with_base_partial so imported symbols are available during resolution
+    let (symbols, resolve_errors) =
+        compiler::resolve::resolve_with_base_partial(&program, base_symbols);
+    let mut all_errors: Vec<CompileError> = Vec::new();
     if !import_errors.is_empty() {
-        return Err(CompileError::Resolve(import_errors));
+        all_errors.push(CompileError::Resolve(import_errors));
+    }
+    if !resolve_errors.is_empty() {
+        all_errors.push(CompileError::Resolve(resolve_errors));
     }
 
-    // 7. Resolve with imported symbols pre-populated
-    // Use resolve_with_base so imported symbols are available during resolution
-    let symbols = compiler::resolve::resolve_with_base(&program, base_symbols)
-        .map_err(CompileError::Resolve)?;
-
-    // 8. Typecheck
-    compiler::typecheck::typecheck(&program, &symbols).map_err(CompileError::Type)?;
+    // 8. Typecheck (run even if resolve had errors, using partial symbol table)
+    if let Err(type_errors) = compiler::typecheck::typecheck(&program, &symbols) {
+        all_errors.push(CompileError::Type(type_errors));
+    }
 
     // 9. Validate constraints
-    compiler::constraints::validate_constraints(&program).map_err(CompileError::Constraint)?;
+    if let Err(constraint_errors) = compiler::constraints::validate_constraints(&program) {
+        all_errors.push(CompileError::Constraint(constraint_errors));
+    }
+
+    // If there were any errors, report them all
+    if let Some(combined) = CompileError::from_multiple(all_errors) {
+        return Err(combined);
+    }
 
     // 10. Lower to LIR
     let mut module = compiler::lower::lower(&program, &symbols, source);
@@ -479,19 +513,31 @@ fn compile_raw_with_imports_internal(
         }
     }
 
+    // 4. Resolve with imported symbols pre-populated (collect errors, continue with partial table)
+    let (symbols, resolve_errors) =
+        compiler::resolve::resolve_with_base_partial(&program, base_symbols);
+    let mut all_errors: Vec<CompileError> = Vec::new();
     if !import_errors.is_empty() {
-        return Err(CompileError::Resolve(import_errors));
+        all_errors.push(CompileError::Resolve(import_errors));
+    }
+    if !resolve_errors.is_empty() {
+        all_errors.push(CompileError::Resolve(resolve_errors));
     }
 
-    // 4. Resolve with imported symbols pre-populated
-    let symbols = compiler::resolve::resolve_with_base(&program, base_symbols)
-        .map_err(CompileError::Resolve)?;
-
-    // 5. Typecheck
-    compiler::typecheck::typecheck(&program, &symbols).map_err(CompileError::Type)?;
+    // 5. Typecheck (run even if resolve had errors, using partial symbol table)
+    if let Err(type_errors) = compiler::typecheck::typecheck(&program, &symbols) {
+        all_errors.push(CompileError::Type(type_errors));
+    }
 
     // 6. Validate constraints
-    compiler::constraints::validate_constraints(&program).map_err(CompileError::Constraint)?;
+    if let Err(constraint_errors) = compiler::constraints::validate_constraints(&program) {
+        all_errors.push(CompileError::Constraint(constraint_errors));
+    }
+
+    // If there were any errors, report them all
+    if let Some(combined) = CompileError::from_multiple(all_errors) {
+        return Err(combined);
+    }
 
     // 7. Lower to LIR
     let mut module = compiler::lower::lower(&program, &symbols, source);
@@ -522,14 +568,27 @@ pub fn compile_raw(source: &str) -> Result<LirModule, CompileError> {
         return Err(CompileError::Parse(parse_errors));
     }
 
-    // 3. Resolve
-    let symbols = compiler::resolve::resolve(&program).map_err(CompileError::Resolve)?;
+    // 3. Resolve (collect errors but continue with partial symbol table)
+    let (symbols, resolve_errors) = compiler::resolve::resolve_partial(&program);
+    let mut all_errors: Vec<CompileError> = Vec::new();
+    if !resolve_errors.is_empty() {
+        all_errors.push(CompileError::Resolve(resolve_errors));
+    }
 
-    // 4. Typecheck
-    compiler::typecheck::typecheck(&program, &symbols).map_err(CompileError::Type)?;
+    // 4. Typecheck (run even if resolve had errors, using partial symbol table)
+    if let Err(type_errors) = compiler::typecheck::typecheck(&program, &symbols) {
+        all_errors.push(CompileError::Type(type_errors));
+    }
 
     // 5. Validate constraints
-    compiler::constraints::validate_constraints(&program).map_err(CompileError::Constraint)?;
+    if let Err(constraint_errors) = compiler::constraints::validate_constraints(&program) {
+        all_errors.push(CompileError::Constraint(constraint_errors));
+    }
+
+    // If there were any errors, report them all
+    if let Some(combined) = CompileError::from_multiple(all_errors) {
+        return Err(combined);
+    }
 
     // 6. Lower to LIR
     let module = compiler::lower::lower(&program, &symbols, source);
@@ -581,14 +640,27 @@ pub fn compile(source: &str) -> Result<LirModule, CompileError> {
         return Err(CompileError::Parse(parse_errors));
     }
 
-    // 6. Resolve
-    let symbols = compiler::resolve::resolve(&program).map_err(CompileError::Resolve)?;
+    // 6. Resolve (collect errors but continue with partial symbol table)
+    let (symbols, resolve_errors) = compiler::resolve::resolve_partial(&program);
+    let mut all_errors: Vec<CompileError> = Vec::new();
+    if !resolve_errors.is_empty() {
+        all_errors.push(CompileError::Resolve(resolve_errors));
+    }
 
-    // 7. Typecheck
-    compiler::typecheck::typecheck(&program, &symbols).map_err(CompileError::Type)?;
+    // 7. Typecheck (run even if resolve had errors, using partial symbol table)
+    if let Err(type_errors) = compiler::typecheck::typecheck(&program, &symbols) {
+        all_errors.push(CompileError::Type(type_errors));
+    }
 
     // 8. Validate constraints
-    compiler::constraints::validate_constraints(&program).map_err(CompileError::Constraint)?;
+    if let Err(constraint_errors) = compiler::constraints::validate_constraints(&program) {
+        all_errors.push(CompileError::Constraint(constraint_errors));
+    }
+
+    // If there were any errors, report them all
+    if let Some(combined) = CompileError::from_multiple(all_errors) {
+        return Err(combined);
+    }
 
     // 9. Lower to LIR
     let module = compiler::lower::lower(&program, &symbols, source);

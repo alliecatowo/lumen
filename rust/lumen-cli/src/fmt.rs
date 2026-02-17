@@ -825,7 +825,11 @@ impl Formatter {
                 self.writeln(&format!("halt {}", self.fmt_expr(&s.message)));
             }
             Stmt::Assign(s) => {
-                self.writeln(&format!("{} = {}", s.target, self.fmt_expr(&s.value)));
+                self.writeln(&format!(
+                    "{} = {}",
+                    s.target.display_name(),
+                    self.fmt_expr(&s.value)
+                ));
             }
             Stmt::Expr(s) => {
                 self.writeln(&self.fmt_expr(&s.expr));
@@ -887,7 +891,12 @@ impl Formatter {
                     CompoundOp::BitOrAssign => "|=",
                     CompoundOp::BitXorAssign => "^=",
                 };
-                self.writeln(&format!("{} {} {}", s.target, op, self.fmt_expr(&s.value)));
+                self.writeln(&format!(
+                    "{} {} {}",
+                    s.target.display_name(),
+                    op,
+                    self.fmt_expr(&s.value)
+                ));
             }
             Stmt::Defer(s) => {
                 self.writeln("defer");

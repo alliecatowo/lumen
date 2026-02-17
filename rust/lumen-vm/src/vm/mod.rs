@@ -233,7 +233,7 @@ impl VmError {
     }
 }
 
-const MAX_CALL_DEPTH: usize = 256;
+const MAX_CALL_DEPTH: usize = 4096;
 
 /// Call frame on the VM stack.
 #[derive(Debug, Clone)]
@@ -336,10 +336,12 @@ pub struct VM {
     /// Effect budget tracking: maps effect name → (remaining_calls, original_limit).
     /// When a budget is set and remaining reaches 0, further calls are rejected.
     pub(crate) effect_budgets: HashMap<String, (u32, u32)>,
+    /// Cache mapping cell names to their index in module.cells for O(1) dispatch.
+    cell_index_cache: HashMap<String, usize>,
 }
 
 const MAX_AWAIT_RETRIES: u32 = 10_000;
-const DEFAULT_MAX_INSTRUCTIONS: u64 = 10_000_000;
+const DEFAULT_MAX_INSTRUCTIONS: u64 = 10_000_000_000;
 
 impl VM {
     pub fn new() -> Self {
@@ -373,6 +375,7 @@ impl VM {
             trace_id: None,
             trace_seq: 0,
             effect_budgets: HashMap::new(),
+            cell_index_cache: HashMap::new(),
         }
     }
 
@@ -494,6 +497,7 @@ impl VM {
         self.effect_handlers.clear();
         self.suspended_continuation = None;
         self.instruction_count = 0;
+        self.cell_index_cache.clear();
         let mut machine_initials: BTreeMap<String, String> = BTreeMap::new();
         for addon in &module.addons {
             if let Some(name) = &addon.name {
@@ -747,6 +751,7 @@ impl VM {
     }
 
     #[inline]
+    #[allow(dead_code)]
     fn check_register_span(
         &self,
         start: usize,
@@ -809,6 +814,7 @@ impl VM {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn validate_instruction_registers(
         &self,
         instr: Instruction,
@@ -1001,7 +1007,7 @@ impl VM {
                     return Ok(());
                 }
                 let callee_cell = &module.cells[cell_idx];
-                let num_regs = (callee_cell.registers as usize).max(256);
+                let num_regs = (callee_cell.registers as usize).max(16);
                 let params = callee_cell.params.clone();
                 let new_base = self.registers.len();
                 self.registers.resize(new_base + num_regs, Value::Null);
@@ -1032,7 +1038,7 @@ impl VM {
                     return Ok(());
                 }
                 let callee_cell = &module.cells[cv.cell_idx];
-                let num_regs = (callee_cell.registers as usize).max(256);
+                let num_regs = (callee_cell.registers as usize).max(16);
                 let params = callee_cell.params.clone();
                 let new_base = self.registers.len();
                 self.registers.resize(new_base + num_regs, Value::Null);
@@ -1242,7 +1248,7 @@ impl VM {
 
         // Grow register file
         let base = self.registers.len();
-        self.registers.resize(base + num_regs.max(256), Value::Null);
+        self.registers.resize(base + num_regs.max(16), Value::Null);
 
         // Load arguments into parameter registers
         for (i, arg) in args.into_iter().enumerate() {
@@ -1302,6 +1308,7 @@ impl VM {
                 return Ok(Value::Null);
             }
 
+            #[allow(unused_variables)]
             let (cell_idx, base, instr, cell_registers) = {
                 let frame = match self.frames.last() {
                     Some(f) => f,
@@ -1328,8 +1335,9 @@ impl VM {
                 (cell_idx, base, instr, cell.registers)
             };
 
-            self.instruction_count = self.instruction_count.saturating_add(1);
-            if self.instruction_count > self.max_instructions {
+            self.instruction_count += 1;
+            if self.instruction_count & 0x3FF == 0 && self.instruction_count > self.max_instructions
+            {
                 return Err(VmError::InstructionLimitExceeded(self.max_instructions));
             }
 
@@ -1340,13 +1348,15 @@ impl VM {
                 *fuel -= 1;
             }
 
-            let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-            let cell_name = module.cells[cell_idx].name.clone();
-            self.emit_debug_event(DebugEvent::Step {
-                cell_name,
-                ip: self.frames.last().map(|f| f.ip).unwrap_or(0),
-                opcode: format!("{:?}", instr.op),
-            });
+            if self.debug_callback.is_some() {
+                let module = self.module.as_ref().ok_or(VmError::NoModule)?;
+                let cell_name = module.cells[cell_idx].name.clone();
+                self.emit_debug_event(DebugEvent::Step {
+                    cell_name,
+                    ip: self.frames.last().map(|f| f.ip).unwrap_or(0),
+                    opcode: format!("{:?}", instr.op),
+                });
+            }
 
             // Advance IP in the frame
             if let Some(f) = self.frames.last_mut() {
@@ -1356,6 +1366,7 @@ impl VM {
             let a = instr.a as usize;
             let b = instr.b as usize;
             let c = instr.c as usize;
+            #[cfg(debug_assertions)]
             self.validate_instruction_registers(instr, cell_registers)?;
 
             // Handle opcodes that need mutable self first (before borrowing module).
@@ -2489,7 +2500,15 @@ impl VM {
                         .to_string(),
                 };
                 let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                if let Some(idx) = module.cells.iter().position(|c| c.name == name) {
+                let idx_opt = if let Some(&cached) = self.cell_index_cache.get(&name) {
+                    Some(cached)
+                } else if let Some(idx) = module.cells.iter().position(|c| c.name == name) {
+                    self.cell_index_cache.insert(name.clone(), idx);
+                    Some(idx)
+                } else {
+                    None
+                };
+                if let Some(idx) = idx_opt {
                     if self.frames.len() >= MAX_CALL_DEPTH {
                         return Err(VmError::StackOverflow(MAX_CALL_DEPTH));
                     }
@@ -2502,7 +2521,7 @@ impl VM {
                     let _ = module;
                     let new_base = self.registers.len();
                     self.registers
-                        .resize(new_base + num_regs.max(256), Value::Null);
+                        .resize(new_base + num_regs.max(16), Value::Null);
                     self.copy_args_to_params(&params, new_base, base + a + 1, nargs, 0, cell_regs)?;
                     self.frames.push(CallFrame {
                         cell_idx: idx,
@@ -2535,7 +2554,7 @@ impl VM {
                 let _ = module;
                 let new_base = self.registers.len();
                 self.registers
-                    .resize(new_base + num_regs.max(256), Value::Null);
+                    .resize(new_base + num_regs.max(16), Value::Null);
                 for (i, cap) in cv.captures.iter().enumerate() {
                     self.check_register(i, cell_regs)?;
                     self.registers[new_base + i] = cap.clone();
@@ -2613,7 +2632,15 @@ impl VM {
                         .to_string(),
                 };
                 let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                if let Some(idx) = module.cells.iter().position(|c| c.name == name) {
+                let idx_opt = if let Some(&cached) = self.cell_index_cache.get(&name) {
+                    Some(cached)
+                } else if let Some(idx) = module.cells.iter().position(|c| c.name == name) {
+                    self.cell_index_cache.insert(name.clone(), idx);
+                    Some(idx)
+                } else {
+                    None
+                };
+                if let Some(idx) = idx_opt {
                     let callee_cell = module.cells.get(idx).ok_or_else(|| {
                         VmError::Runtime(format!("cell index {} out of bounds", idx))
                     })?;

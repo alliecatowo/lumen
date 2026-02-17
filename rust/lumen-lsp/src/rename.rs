@@ -234,8 +234,10 @@ fn collect_occurrences_in_stmt(stmt: &Stmt, name: &str, out: &mut Vec<SymbolOccu
             collect_occurrences_in_expr(&let_stmt.value, name, out);
         }
         Stmt::Assign(assign) => {
-            if assign.target == name {
-                push_span_occurrence(&assign.span, name, &assign.target, out);
+            if assign.target.as_variable() == Some(name) {
+                if let Some(var_name) = assign.target.as_variable() {
+                    push_span_occurrence(&assign.span, name, var_name, out);
+                }
             }
             collect_occurrences_in_expr(&assign.value, name, out);
         }
@@ -283,8 +285,10 @@ fn collect_occurrences_in_stmt(stmt: &Stmt, name: &str, out: &mut Vec<SymbolOccu
             collect_occurrences_in_expr(&expr_stmt.expr, name, out);
         }
         Stmt::CompoundAssign(ca) => {
-            if ca.target == name {
-                push_span_occurrence(&ca.span, name, &ca.target, out);
+            if ca.target.as_variable() == Some(name) {
+                if let Some(var_name) = ca.target.as_variable() {
+                    push_span_occurrence(&ca.span, name, var_name, out);
+                }
             }
             collect_occurrences_in_expr(&ca.value, name, out);
         }
@@ -619,7 +623,7 @@ fn stmts_contain_name(stmts: &[Stmt], name: &str) -> bool {
     for stmt in stmts {
         match stmt {
             Stmt::Let(let_stmt) if let_stmt.name == name => return true,
-            Stmt::Assign(assign) if assign.target == name => return true,
+            Stmt::Assign(assign) if assign.target.as_variable() == Some(name) => return true,
             Stmt::For(for_stmt) if for_stmt.var == name => return true,
             Stmt::Let(let_stmt) => {
                 if expr_contains_name(&let_stmt.value, name) {

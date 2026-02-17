@@ -23,7 +23,7 @@ use lumen_runtime::tools::{ProviderRegistry, ToolDispatcher, ToolRequest};
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use std::collections::{BTreeMap, VecDeque};
-use std::rc::Rc;
+use std::sync::Arc;
 use thiserror::Error;
 
 /// Type alias for debug callback to simplify type signatures
@@ -907,7 +907,7 @@ impl VM {
         }
         let id = self.next_process_instance_id;
         self.next_process_instance_id += 1;
-        let r_mut = Rc::make_mut(r);
+        let r_mut = Arc::make_mut(r);
         r_mut
             .fields
             .insert("__instance_id".to_string(), Value::Int(id as i64));
@@ -1164,7 +1164,7 @@ impl VM {
             }
             Value::Record(mut record) => {
                 let mut out = BTreeMap::new();
-                for (k, v) in std::mem::take(&mut Rc::make_mut(&mut record).fields) {
+                for (k, v) in std::mem::take(&mut Arc::make_mut(&mut record).fields) {
                     match self.await_value_recursive(v)? {
                         Some(resolved) => {
                             out.insert(k, resolved);
@@ -1172,7 +1172,7 @@ impl VM {
                         None => return Ok(None),
                     }
                 }
-                Rc::make_mut(&mut record).fields = out;
+                Arc::make_mut(&mut record).fields = out;
                 Ok(Some(Value::Record(record)))
             }
             other => Ok(Some(other)),
@@ -1483,7 +1483,7 @@ impl VM {
                         String::new()
                     };
                     if let Value::Record(ref mut r) = self.registers[base + a] {
-                        Rc::make_mut(r).fields.insert(field_name, val);
+                        Arc::make_mut(r).fields.insert(field_name, val);
                     }
                 }
                 OpCode::GetIndex => {
@@ -1541,7 +1541,7 @@ impl VM {
                                         i, len
                                     )));
                                 }
-                                Rc::make_mut(l)[effective as usize] = val;
+                                Arc::make_mut(l)[effective as usize] = val;
                             } else {
                                 return Err(VmError::TypeError(format!(
                                     "list index must be an integer, got {}",
@@ -1550,10 +1550,10 @@ impl VM {
                             }
                         }
                         Value::Map(m) => {
-                            Rc::make_mut(m).insert(key.as_string_resolved(&self.strings), val);
+                            Arc::make_mut(m).insert(key.as_string_resolved(&self.strings), val);
                         }
                         Value::Record(r) => {
-                            Rc::make_mut(r)
+                            Arc::make_mut(r)
                                 .fields
                                 .insert(key.as_string_resolved(&self.strings), val);
                         }
@@ -2249,7 +2249,7 @@ impl VM {
                 OpCode::Append => {
                     let val = self.registers[base + b].clone();
                     if let Value::List(ref mut l) = self.registers[base + a] {
-                        Rc::make_mut(l).push(val);
+                        Arc::make_mut(l).push(val);
                     }
                 }
 

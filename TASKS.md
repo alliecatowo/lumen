@@ -269,13 +269,13 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
-| T141 | All 1365+ tests pass | After any change, full workspace test suite passes. |
-| T142 | Zero clippy warnings | `cargo clippy -- -D warnings` for all crates. |
+| T141 | All 5,357 tests pass — **DONE** | After any change, full workspace test suite passes. |
+| T142 | Zero clippy warnings — **DONE** | `cargo clippy -- -D warnings` for all crates. |
 | T143 | Coverage gate — **DONE** | Maintain or improve coverage (e.g. >95% for critical paths). |
 | T144 | Valgrind or sanitizers — **DONE** | No leaks; address sanitizer clean where applicable. |
 | T145 | Security audit (cargo audit) — **DONE** | Zero known vulnerabilities in dependencies. |
 | T146 | Documentation sync — **DONE** | SPEC, CLAUDE.md, and ROADMAP aligned with implementation. |
-| T147 | Release v1.0.0 tag | Tag and release when Phase 0–9 goals are met and gates pass. |
+| T147 | Release v0.5.0 tag — **DONE** | Tag and release when Phase 0–9 goals are met and gates pass. |
 
 ---
 

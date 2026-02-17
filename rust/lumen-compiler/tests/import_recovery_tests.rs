@@ -4,7 +4,7 @@
 //! dependencies are reported (not just the first), and that the main
 //! module compilation continues as far as possible.
 
-use lumen_compiler::{compile_with_imports, CompileError};
+use lumen_compiler::compile_with_imports;
 
 fn markdown(code: &str) -> String {
     format!("# test\n\n```lumen\n{}\n```\n", code.trim())

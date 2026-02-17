@@ -1,0 +1,1417 @@
+# Huge corpus — 1000+ lines, stress test with many functions, types, patterns
+
+# ════════════════════════════════════════════════════════════════════
+# Part 1: Core data types
+# ════════════════════════════════════════════════════════════════════
+
+record Vec2
+  x: Int
+  y: Int
+end
+
+record Vec3
+  x: Int
+  y: Int
+  z: Int
+end
+
+record Color
+  r: Int
+  g: Int
+  b: Int
+  a: Int
+end
+
+record Bounds
+  min_x: Int
+  min_y: Int
+  max_x: Int
+  max_y: Int
+end
+
+record Particle
+  pos: Vec2
+  vel: Vec2
+  life: Int
+  color: Color
+end
+
+record Viewport
+  width: Int
+  height: Int
+  bounds: Bounds
+end
+
+record Camera
+  position: Vec3
+  target: Vec3
+  fov: Int
+end
+
+record Material
+  name: String
+  diffuse: Color
+  specular: Color
+  shininess: Int
+end
+
+record Light
+  position: Vec3
+  color: Color
+  intensity: Float
+end
+
+record Scene
+  camera: Camera
+  viewport: Viewport
+end
+
+record Matrix2
+  m00: Int
+  m01: Int
+  m10: Int
+  m11: Int
+end
+
+record Transform
+  position: Vec2
+  scale: Vec2
+  rotation: Int
+end
+
+# ════════════════════════════════════════════════════════════════════
+# Part 2: Enums
+# ════════════════════════════════════════════════════════════════════
+
+enum Expr
+  Num(value: Int)
+  Add(left: Expr, right: Expr)
+  Mul(left: Expr, right: Expr)
+  Neg(inner: Expr)
+end
+
+enum Token
+  Number(val: Int)
+  Plus
+  Minus
+  Star
+  Slash
+  LParen
+  RParen
+  Eof
+end
+
+enum TreeNode
+  Leaf(value: Int)
+  Branch(left: TreeNode, right: TreeNode)
+end
+
+enum Ordering
+  Less
+  Equal
+  Greater
+end
+
+enum Suit
+  Hearts
+  Diamonds
+  Clubs
+  Spades
+end
+
+enum Rank
+  Ace
+  Two
+  Three
+  Four
+  Five
+  Six
+  Seven
+  Eight
+  Nine
+  Ten
+  Jack
+  Queen
+  King
+end
+
+enum Day
+  Monday
+  Tuesday
+  Wednesday
+  Thursday
+  Friday
+  Saturday
+  Sunday
+end
+
+enum Month
+  January
+  February
+  March
+  April
+  May
+  June
+  July
+  August
+  September
+  October
+  November
+  December
+end
+
+enum HttpMethod
+  Get
+  Post
+  Put
+  Delete
+  Patch
+end
+
+enum HttpStatus
+  Ok200
+  Created201
+  BadRequest400
+  NotFound404
+  ServerError500
+end
+
+# ════════════════════════════════════════════════════════════════════
+# Part 3: Vec2 operations
+# ════════════════════════════════════════════════════════════════════
+
+cell vec2_add(a: Vec2, b: Vec2) -> Vec2
+  return Vec2(x: a.x + b.x, y: a.y + b.y)
+end
+
+cell vec2_sub(a: Vec2, b: Vec2) -> Vec2
+  return Vec2(x: a.x - b.x, y: a.y - b.y)
+end
+
+cell vec2_scale(v: Vec2, s: Int) -> Vec2
+  return Vec2(x: v.x * s, y: v.y * s)
+end
+
+cell vec2_dot(a: Vec2, b: Vec2) -> Int
+  return a.x * b.x + a.y * b.y
+end
+
+cell vec2_length_sq(v: Vec2) -> Int
+  return v.x * v.x + v.y * v.y
+end
+
+cell vec2_negate(v: Vec2) -> Vec2
+  return Vec2(x: 0 - v.x, y: 0 - v.y)
+end
+
+cell vec2_eq(a: Vec2, b: Vec2) -> Bool
+  return a.x == b.x and a.y == b.y
+end
+
+cell vec2_manhattan(a: Vec2, b: Vec2) -> Int
+  let dx = a.x - b.x
+  let dy = a.y - b.y
+  if dx < 0
+    dx = 0 - dx
+  end
+  if dy < 0
+    dy = 0 - dy
+  end
+  return dx + dy
+end
+
+cell vec2_to_string(v: Vec2) -> String
+  return "(" + to_string(v.x) + ", " + to_string(v.y) + ")"
+end
+
+# ════════════════════════════════════════════════════════════════════
+# Part 4: Vec3 operations
+# ════════════════════════════════════════════════════════════════════
+
+cell vec3_add(a: Vec3, b: Vec3) -> Vec3
+  return Vec3(x: a.x + b.x, y: a.y + b.y, z: a.z + b.z)
+end
+
+cell vec3_sub(a: Vec3, b: Vec3) -> Vec3
+  return Vec3(x: a.x - b.x, y: a.y - b.y, z: a.z - b.z)
+end
+
+cell vec3_scale(v: Vec3, s: Int) -> Vec3
+  return Vec3(x: v.x * s, y: v.y * s, z: v.z * s)
+end
+
+cell vec3_dot(a: Vec3, b: Vec3) -> Int
+  return a.x * b.x + a.y * b.y + a.z * b.z
+end
+
+cell vec3_cross(a: Vec3, b: Vec3) -> Vec3
+  return Vec3(
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x
+  )
+end
+
+cell vec3_length_sq(v: Vec3) -> Int
+  return v.x * v.x + v.y * v.y + v.z * v.z
+end
+
+cell vec3_to_string(v: Vec3) -> String
+  return "(" + to_string(v.x) + ", " + to_string(v.y) + ", " + to_string(v.z) + ")"
+end
+
+# ════════════════════════════════════════════════════════════════════
+# Part 5: Color operations
+# ════════════════════════════════════════════════════════════════════
+
+cell color_blend(a: Color, b: Color) -> Color
+  return Color(
+    r: (a.r + b.r) / 2,
+    g: (a.g + b.g) / 2,
+    b: (a.b + b.b) / 2,
+    a: (a.a + b.a) / 2
+  )
+end
+
+cell color_brighten(c: Color, amount: Int) -> Color
+  let r = c.r + amount
+  let g = c.g + amount
+  let b = c.b + amount
+  if r > 255
+    r = 255
+  end
+  if g > 255
+    g = 255
+  end
+  if b > 255
+    b = 255
+  end
+  return Color(r: r, g: g, b: b, a: c.a)
+end
+
+cell color_darken(c: Color, amount: Int) -> Color
+  let r = c.r - amount
+  let g = c.g - amount
+  let b = c.b - amount
+  if r < 0
+    r = 0
+  end
+  if g < 0
+    g = 0
+  end
+  if b < 0
+    b = 0
+  end
+  return Color(r: r, g: g, b: b, a: c.a)
+end
+
+cell color_to_hex(c: Color) -> String
+  return "#" + to_string(c.r) + to_string(c.g) + to_string(c.b)
+end
+
+cell color_grayscale(c: Color) -> Color
+  let gray = (c.r + c.g + c.b) / 3
+  return Color(r: gray, g: gray, b: gray, a: c.a)
+end
+
+# ════════════════════════════════════════════════════════════════════
+# Part 6: Matrix operations
+# ════════════════════════════════════════════════════════════════════
+
+cell mat2_identity() -> Matrix2
+  return Matrix2(m00: 1, m01: 0, m10: 0, m11: 1)
+end
+
+cell mat2_mul(a: Matrix2, b: Matrix2) -> Matrix2
+  return Matrix2(
+    m00: a.m00 * b.m00 + a.m01 * b.m10,
+    m01: a.m00 * b.m01 + a.m01 * b.m11,
+    m10: a.m10 * b.m00 + a.m11 * b.m10,
+    m11: a.m10 * b.m01 + a.m11 * b.m11
+  )
+end
+
+cell mat2_det(m: Matrix2) -> Int
+  return m.m00 * m.m11 - m.m01 * m.m10
+end
+
+cell mat2_scale(m: Matrix2, s: Int) -> Matrix2
+  return Matrix2(
+    m00: m.m00 * s,
+    m01: m.m01 * s,
+    m10: m.m10 * s,
+    m11: m.m11 * s
+  )
+end
+
+cell mat2_transform_vec2(m: Matrix2, v: Vec2) -> Vec2
+  return Vec2(
+    x: m.m00 * v.x + m.m01 * v.y,
+    y: m.m10 * v.x + m.m11 * v.y
+  )
+end
+
+# ════════════════════════════════════════════════════════════════════
+# Part 7: Expression evaluator
+# ════════════════════════════════════════════════════════════════════
+
+cell eval_expr(e: Expr) -> Int
+  match e
+    Num -> e.value
+    Add -> eval_expr(e.left) + eval_expr(e.right)
+    Mul -> eval_expr(e.left) * eval_expr(e.right)
+    Neg -> 0 - eval_expr(e.inner)
+  end
+end
+
+cell expr_to_string(e: Expr) -> String
+  match e
+    Num -> to_string(e.value)
+    Add -> "(" + expr_to_string(e.left) + " + " + expr_to_string(e.right) + ")"
+    Mul -> "(" + expr_to_string(e.left) + " * " + expr_to_string(e.right) + ")"
+    Neg -> "(-" + expr_to_string(e.inner) + ")"
+  end
+end
+
+cell expr_depth(e: Expr) -> Int
+  match e
+    Num -> 0
+    Add ->
+      let ld = expr_depth(e.left)
+      let rd = expr_depth(e.right)
+      if ld > rd
+        return ld + 1
+      end
+      return rd + 1
+    Mul ->
+      let ld = expr_depth(e.left)
+      let rd = expr_depth(e.right)
+      if ld > rd
+        return ld + 1
+      end
+      return rd + 1
+    Neg -> expr_depth(e.inner) + 1
+  end
+end
+
+cell expr_count_nodes(e: Expr) -> Int
+  match e
+    Num -> 1
+    Add -> 1 + expr_count_nodes(e.left) + expr_count_nodes(e.right)
+    Mul -> 1 + expr_count_nodes(e.left) + expr_count_nodes(e.right)
+    Neg -> 1 + expr_count_nodes(e.inner)
+  end
+end
+
+# ════════════════════════════════════════════════════════════════════
+# Part 8: Binary tree
+# ════════════════════════════════════════════════════════════════════
+
+cell tree_sum(node: TreeNode) -> Int
+  match node
+    Leaf -> node.value
+    Branch -> tree_sum(node.left) + tree_sum(node.right)
+  end
+end
+
+cell tree_depth(node: TreeNode) -> Int
+  match node
+    Leaf -> 0
+    Branch ->
+      let ld = tree_depth(node.left)
+      let rd = tree_depth(node.right)
+      if ld > rd
+        return ld + 1
+      end
+      return rd + 1
+  end
+end
+
+cell tree_count(node: TreeNode) -> Int
+  match node
+    Leaf -> 1
+    Branch -> tree_count(node.left) + tree_count(node.right)
+  end
+end
+
+cell tree_min(node: TreeNode) -> Int
+  match node
+    Leaf -> node.value
+    Branch ->
+      let lm = tree_min(node.left)
+      let rm = tree_min(node.right)
+      if lm < rm
+        return lm
+      end
+      return rm
+  end
+end
+
+cell tree_max(node: TreeNode) -> Int
+  match node
+    Leaf -> node.value
+    Branch ->
+      let lm = tree_max(node.left)
+      let rm = tree_max(node.right)
+      if lm > rm
+        return lm
+      end
+      return rm
+  end
+end
+
+cell tree_contains(node: TreeNode, target: Int) -> Bool
+  match node
+    Leaf -> node.value == target
+    Branch -> tree_contains(node.left, target) or tree_contains(node.right, target)
+  end
+end
+
+cell tree_to_list(node: TreeNode) -> list[Int]
+  match node
+    Leaf -> [node.value]
+    Branch -> append(tree_to_list(node.left), tree_to_list(node.right))
+  end
+end
+
+cell build_balanced_tree(depth: Int, value: Int) -> TreeNode
+  if depth <= 0
+    return Leaf(value: value)
+  end
+  return Branch(
+    left: build_balanced_tree(depth - 1, value * 2),
+    right: build_balanced_tree(depth - 1, value * 2 + 1)
+  )
+end
+
+# ════════════════════════════════════════════════════════════════════
+# Part 9: Sorting algorithms
+# ════════════════════════════════════════════════════════════════════
+
+cell insert_sorted(sorted: list[Int], value: Int) -> list[Int]
+  let n = len(sorted)
+  if n == 0
+    return [value]
+  end
+  let result = []
+  let inserted = false
+  let i = 0
+  while i < n
+    let curr = sorted[i]
+    if not inserted and value <= curr
+      result = append(result, value)
+      inserted = true
+    end
+    result = append(result, curr)
+    i = i + 1
+  end
+  if not inserted
+    result = append(result, value)
+  end
+  return result
+end
+
+cell insertion_sort(items: list[Int]) -> list[Int]
+  let sorted = []
+  for item in items
+    sorted = insert_sorted(sorted, item)
+  end
+  return sorted
+end
+
+cell selection_sort(items: list[Int]) -> list[Int]
+  let n = len(items)
+  if n <= 1
+    return items
+  end
+  let sorted = []
+  let remaining = items
+  while len(remaining) > 0
+    let min_val = remaining[0]
+    let min_idx = 0
+    let j = 1
+    while j < len(remaining)
+      if remaining[j] < min_val
+        min_val = remaining[j]
+        min_idx = j
+      end
+      j = j + 1
+    end
+    sorted = append(sorted, min_val)
+    let new_remaining = []
+    let k = 0
+    let removed = false
+    while k < len(remaining)
+      if k == min_idx and not removed
+        removed = true
+      else
+        new_remaining = append(new_remaining, remaining[k])
+      end
+      k = k + 1
+    end
+    remaining = new_remaining
+  end
+  return sorted
+end
+
+cell bubble_pass(items: list[Int]) -> list[Int]
+  let n = len(items)
+  if n <= 1
+    return items
+  end
+  let result = items
+  let i = 0
+  while i < n - 1
+    if result[i] > result[i + 1]
+      let temp_a = result[i]
+      let temp_b = result[i + 1]
+      let new_list = []
+      let j = 0
+      while j < n
+        if j == i
+          new_list = append(new_list, temp_b)
+        else
+          if j == i + 1
+            new_list = append(new_list, temp_a)
+          else
+            new_list = append(new_list, result[j])
+          end
+        end
+        j = j + 1
+      end
+      result = new_list
+    end
+    i = i + 1
+  end
+  return result
+end
+
+cell is_sorted(items: list[Int]) -> Bool
+  let n = len(items)
+  if n <= 1
+    return true
+  end
+  let i = 0
+  while i < n - 1
+    if items[i] > items[i + 1]
+      return false
+    end
+    i = i + 1
+  end
+  return true
+end
+
+# ════════════════════════════════════════════════════════════════════
+# Part 10: Math utilities
+# ════════════════════════════════════════════════════════════════════
+
+cell fibonacci(n: Int) -> Int
+  if n < 2
+    return n
+  end
+  return fibonacci(n - 1) + fibonacci(n - 2)
+end
+
+cell factorial(n: Int) -> Int
+  if n <= 1
+    return 1
+  end
+  return n * factorial(n - 1)
+end
+
+cell gcd(a: Int, b: Int) -> Int
+  if b == 0
+    return a
+  end
+  return gcd(b, a % b)
+end
+
+cell lcm(a: Int, b: Int) -> Int
+  if a == 0 or b == 0
+    return 0
+  end
+  return (a * b) / gcd(a, b)
+end
+
+cell power(base: Int, exp: Int) -> Int
+  if exp == 0
+    return 1
+  end
+  if exp % 2 == 0
+    let half = power(base, exp / 2)
+    return half * half
+  end
+  return base * power(base, exp - 1)
+end
+
+cell is_prime(n: Int) -> Bool
+  if n < 2
+    return false
+  end
+  if n < 4
+    return true
+  end
+  if n % 2 == 0
+    return false
+  end
+  let i = 3
+  while i * i <= n
+    if n % i == 0
+      return false
+    end
+    i = i + 2
+  end
+  return true
+end
+
+cell count_primes(limit: Int) -> Int
+  let count = 0
+  let n = 2
+  while n < limit
+    if is_prime(n)
+      count = count + 1
+    end
+    n = n + 1
+  end
+  return count
+end
+
+cell sum_divisors(n: Int) -> Int
+  let total = 0
+  let i = 1
+  while i <= n / 2
+    if n % i == 0
+      total = total + i
+    end
+    i = i + 1
+  end
+  return total
+end
+
+cell is_perfect(n: Int) -> Bool
+  return n > 1 and sum_divisors(n) == n
+end
+
+cell collatz_length(n: Int) -> Int
+  let count = 0
+  let val = n
+  while val != 1
+    if val % 2 == 0
+      val = val / 2
+    else
+      val = val * 3 + 1
+    end
+    count = count + 1
+  end
+  return count
+end
+
+cell abs_int(n: Int) -> Int
+  if n < 0
+    return 0 - n
+  end
+  return n
+end
+
+cell max_int(a: Int, b: Int) -> Int
+  if a > b
+    return a
+  end
+  return b
+end
+
+cell min_int(a: Int, b: Int) -> Int
+  if a < b
+    return a
+  end
+  return b
+end
+
+cell clamp(val: Int, lo: Int, hi: Int) -> Int
+  return max_int(lo, min_int(val, hi))
+end
+
+# ════════════════════════════════════════════════════════════════════
+# Part 11: String utilities
+# ════════════════════════════════════════════════════════════════════
+
+cell repeat_str(s: String, n: Int) -> String
+  let result = ""
+  let i = 0
+  while i < n
+    result = result + s
+    i = i + 1
+  end
+  return result
+end
+
+cell count_char(s: String, ch: String) -> Int
+  let count = 0
+  let i = 0
+  while i < len(s)
+    if s[i] == ch
+      count = count + 1
+    end
+    i = i + 1
+  end
+  return count
+end
+
+cell reverse_string(s: String) -> String
+  let result = ""
+  let i = len(s) - 1
+  while i >= 0
+    result = result + s[i]
+    i = i - 1
+  end
+  return result
+end
+
+cell is_palindrome(s: String) -> Bool
+  return s == reverse_string(s)
+end
+
+cell pad_right(s: String, width: Int, ch: String) -> String
+  let padding = width - len(s)
+  if padding <= 0
+    return s
+  end
+  return s + repeat_str(ch, padding)
+end
+
+cell pad_left(s: String, width: Int, ch: String) -> String
+  let padding = width - len(s)
+  if padding <= 0
+    return s
+  end
+  return repeat_str(ch, padding) + s
+end
+
+cell center_text(s: String, width: Int) -> String
+  let total_pad = width - len(s)
+  if total_pad <= 0
+    return s
+  end
+  let left_pad = total_pad / 2
+  let right_pad = total_pad - left_pad
+  return repeat_str(" ", left_pad) + s + repeat_str(" ", right_pad)
+end
+
+cell truncate(s: String, max_len: Int) -> String
+  if len(s) <= max_len
+    return s
+  end
+  let result = ""
+  let i = 0
+  while i < max_len - 3
+    result = result + s[i]
+    i = i + 1
+  end
+  return result + "..."
+end
+
+# ════════════════════════════════════════════════════════════════════
+# Part 12: List operations
+# ════════════════════════════════════════════════════════════════════
+
+cell sum_list(items: list[Int]) -> Int
+  let total = 0
+  for item in items
+    total = total + item
+  end
+  return total
+end
+
+cell product_list(items: list[Int]) -> Int
+  let total = 1
+  for item in items
+    total = total * item
+  end
+  return total
+end
+
+cell max_list(items: list[Int]) -> Int
+  let best = items[0]
+  for item in items
+    if item > best
+      best = item
+    end
+  end
+  return best
+end
+
+cell min_list(items: list[Int]) -> Int
+  let best = items[0]
+  for item in items
+    if item < best
+      best = item
+    end
+  end
+  return best
+end
+
+cell count_if(items: list[Int], threshold: Int) -> Int
+  let count = 0
+  for item in items
+    if item > threshold
+      count = count + 1
+    end
+  end
+  return count
+end
+
+cell filter_range(items: list[Int], lo: Int, hi: Int) -> list[Int]
+  let result = []
+  for item in items
+    if item >= lo and item <= hi
+      result = append(result, item)
+    end
+  end
+  return result
+end
+
+cell map_square(items: list[Int]) -> list[Int]
+  let result = []
+  for item in items
+    result = append(result, item * item)
+  end
+  return result
+end
+
+cell take_while_positive(items: list[Int]) -> list[Int]
+  let result = []
+  for item in items
+    if item <= 0
+      break
+    end
+    result = append(result, item)
+  end
+  return result
+end
+
+cell zip_sum(a: list[Int], b: list[Int]) -> list[Int]
+  let result = []
+  let n = len(a)
+  if len(b) < n
+    n = len(b)
+  end
+  let i = 0
+  while i < n
+    result = append(result, a[i] + b[i])
+    i = i + 1
+  end
+  return result
+end
+
+cell reverse_list(items: list[Int]) -> list[Int]
+  let result = []
+  let i = len(items) - 1
+  while i >= 0
+    result = append(result, items[i])
+    i = i - 1
+  end
+  return result
+end
+
+cell deduplicate(items: list[Int]) -> list[Int]
+  let result = []
+  for item in items
+    let found = false
+    for existing in result
+      if existing == item
+        found = true
+        break
+      end
+    end
+    if not found
+      result = append(result, item)
+    end
+  end
+  return result
+end
+
+cell chunk_list(items: list[Int], size: Int) -> list[list[Int]]
+  let result = []
+  let chunk = []
+  let count = 0
+  for item in items
+    chunk = append(chunk, item)
+    count = count + 1
+    if count >= size
+      result = append(result, chunk)
+      chunk = []
+      count = 0
+    end
+  end
+  if len(chunk) > 0
+    result = append(result, chunk)
+  end
+  return result
+end
+
+# ════════════════════════════════════════════════════════════════════
+# Part 13: Day/Month helpers
+# ════════════════════════════════════════════════════════════════════
+
+cell day_name(d: Day) -> String
+  match d
+    Monday -> "Monday"
+    Tuesday -> "Tuesday"
+    Wednesday -> "Wednesday"
+    Thursday -> "Thursday"
+    Friday -> "Friday"
+    Saturday -> "Saturday"
+    Sunday -> "Sunday"
+  end
+end
+
+cell is_weekend(d: Day) -> Bool
+  match d
+    Saturday -> true
+    Sunday -> true
+    _ -> false
+  end
+end
+
+cell month_name(m: Month) -> String
+  match m
+    January -> "January"
+    February -> "February"
+    March -> "March"
+    April -> "April"
+    May -> "May"
+    June -> "June"
+    July -> "July"
+    August -> "August"
+    September -> "September"
+    October -> "October"
+    November -> "November"
+    December -> "December"
+  end
+end
+
+cell month_days(m: Month) -> Int
+  match m
+    January -> 31
+    February -> 28
+    March -> 31
+    April -> 30
+    May -> 31
+    June -> 30
+    July -> 31
+    August -> 31
+    September -> 30
+    October -> 31
+    November -> 30
+    December -> 31
+  end
+end
+
+cell is_long_month(m: Month) -> Bool
+  return month_days(m) == 31
+end
+
+# ════════════════════════════════════════════════════════════════════
+# Part 14: Card utilities
+# ════════════════════════════════════════════════════════════════════
+
+cell suit_name(s: Suit) -> String
+  match s
+    Hearts -> "Hearts"
+    Diamonds -> "Diamonds"
+    Clubs -> "Clubs"
+    Spades -> "Spades"
+  end
+end
+
+cell suit_symbol(s: Suit) -> String
+  match s
+    Hearts -> "H"
+    Diamonds -> "D"
+    Clubs -> "C"
+    Spades -> "S"
+  end
+end
+
+cell rank_name(r: Rank) -> String
+  match r
+    Ace -> "Ace"
+    Two -> "2"
+    Three -> "3"
+    Four -> "4"
+    Five -> "5"
+    Six -> "6"
+    Seven -> "7"
+    Eight -> "8"
+    Nine -> "9"
+    Ten -> "10"
+    Jack -> "Jack"
+    Queen -> "Queen"
+    King -> "King"
+  end
+end
+
+cell rank_value(r: Rank) -> Int
+  match r
+    Ace -> 14
+    Two -> 2
+    Three -> 3
+    Four -> 4
+    Five -> 5
+    Six -> 6
+    Seven -> 7
+    Eight -> 8
+    Nine -> 9
+    Ten -> 10
+    Jack -> 11
+    Queen -> 12
+    King -> 13
+  end
+end
+
+cell is_face_card(r: Rank) -> Bool
+  return rank_value(r) > 10
+end
+
+# ════════════════════════════════════════════════════════════════════
+# Part 15: HTTP helpers
+# ════════════════════════════════════════════════════════════════════
+
+cell method_name(m: HttpMethod) -> String
+  match m
+    Get -> "GET"
+    Post -> "POST"
+    Put -> "PUT"
+    Delete -> "DELETE"
+    Patch -> "PATCH"
+  end
+end
+
+cell method_has_body(m: HttpMethod) -> Bool
+  match m
+    Get -> false
+    Post -> true
+    Put -> true
+    Delete -> false
+    Patch -> true
+  end
+end
+
+cell status_text(s: HttpStatus) -> String
+  match s
+    Ok200 -> "200 OK"
+    Created201 -> "201 Created"
+    BadRequest400 -> "400 Bad Request"
+    NotFound404 -> "404 Not Found"
+    ServerError500 -> "500 Internal Server Error"
+  end
+end
+
+cell status_is_success(s: HttpStatus) -> Bool
+  match s
+    Ok200 -> true
+    Created201 -> true
+    _ -> false
+  end
+end
+
+cell status_is_error(s: HttpStatus) -> Bool
+  match s
+    BadRequest400 -> true
+    NotFound404 -> true
+    ServerError500 -> true
+    _ -> false
+  end
+end
+
+# ════════════════════════════════════════════════════════════════════
+# Part 16: Ordering helpers
+# ════════════════════════════════════════════════════════════════════
+
+cell compare_ints(a: Int, b: Int) -> Ordering
+  if a < b
+    return Less
+  end
+  if a > b
+    return Greater
+  end
+  return Equal
+end
+
+cell ordering_name(o: Ordering) -> String
+  match o
+    Less -> "Less"
+    Equal -> "Equal"
+    Greater -> "Greater"
+  end
+end
+
+cell ordering_reverse(o: Ordering) -> Ordering
+  match o
+    Less -> Greater
+    Greater -> Less
+    Equal -> Equal
+  end
+end
+
+# ════════════════════════════════════════════════════════════════════
+# Part 17: Particle simulation
+# ════════════════════════════════════════════════════════════════════
+
+cell make_particle(x: Int, y: Int, vx: Int, vy: Int, life: Int) -> Particle
+  return Particle(
+    pos: Vec2(x: x, y: y),
+    vel: Vec2(x: vx, y: vy),
+    life: life,
+    color: Color(r: 255, g: 255, b: 255, a: 255)
+  )
+end
+
+cell update_particle(p: Particle) -> Particle
+  let new_pos = vec2_add(p.pos, p.vel)
+  return Particle(
+    pos: new_pos,
+    vel: p.vel,
+    life: p.life - 1,
+    color: p.color
+  )
+end
+
+cell is_alive(p: Particle) -> Bool
+  return p.life > 0
+end
+
+cell simulate_particles(particles: list[Particle], steps: Int) -> list[Particle]
+  let current = particles
+  let idx = 0
+  while idx < steps
+    let next = []
+    for p in current
+      let updated = update_particle(p)
+      if is_alive(updated)
+        next = append(next, updated)
+      end
+    end
+    current = next
+    idx = idx + 1
+  end
+  return current
+end
+
+# ════════════════════════════════════════════════════════════════════
+# Part 18: Bounds checking
+# ════════════════════════════════════════════════════════════════════
+
+cell bounds_contains(b: Bounds, p: Vec2) -> Bool
+  return p.x >= b.min_x and p.x <= b.max_x and p.y >= b.min_y and p.y <= b.max_y
+end
+
+cell bounds_width(b: Bounds) -> Int
+  return b.max_x - b.min_x
+end
+
+cell bounds_height(b: Bounds) -> Int
+  return b.max_y - b.min_y
+end
+
+cell bounds_area(b: Bounds) -> Int
+  return bounds_width(b) * bounds_height(b)
+end
+
+cell bounds_center(b: Bounds) -> Vec2
+  return Vec2(x: (b.min_x + b.max_x) / 2, y: (b.min_y + b.max_y) / 2)
+end
+
+cell bounds_intersects(a: Bounds, b: Bounds) -> Bool
+  return a.min_x <= b.max_x and a.max_x >= b.min_x and a.min_y <= b.max_y and a.max_y >= b.min_y
+end
+
+# ════════════════════════════════════════════════════════════════════
+# Part 19: Transform operations
+# ════════════════════════════════════════════════════════════════════
+
+cell transform_identity() -> Transform
+  return Transform(
+    position: Vec2(x: 0, y: 0),
+    scale: Vec2(x: 1, y: 1),
+    rotation: 0
+  )
+end
+
+cell transform_translate(t: Transform, dx: Int, dy: Int) -> Transform
+  return Transform(
+    position: Vec2(x: t.position.x + dx, y: t.position.y + dy),
+    scale: t.scale,
+    rotation: t.rotation
+  )
+end
+
+cell transform_apply(t: Transform, p: Vec2) -> Vec2
+  let scaled = Vec2(x: p.x * t.scale.x, y: p.y * t.scale.y)
+  return Vec2(x: scaled.x + t.position.x, y: scaled.y + t.position.y)
+end
+
+# ════════════════════════════════════════════════════════════════════
+# Part 20: Main — exercise everything (split to avoid register limits)
+# ════════════════════════════════════════════════════════════════════
+
+cell test_vectors() -> Null
+  let a = Vec2(x: 3, y: 4)
+  let b = Vec2(x: 1, y: 2)
+  let c = vec2_add(a, b)
+  print("Vec2 add: " + vec2_to_string(c))
+  print("Vec2 dot: " + to_string(vec2_dot(a, b)))
+  print("Vec2 manhattan: " + to_string(vec2_manhattan(a, b)))
+  let v1 = Vec3(x: 1, y: 0, z: 0)
+  let v2 = Vec3(x: 0, y: 1, z: 0)
+  let cross = vec3_cross(v1, v2)
+  print("Vec3 cross: " + vec3_to_string(cross))
+  return null
+end
+
+cell test_colors() -> Null
+  let red = Color(r: 255, g: 0, b: 0, a: 255)
+  let blue = Color(r: 0, g: 0, b: 255, a: 255)
+  let blended = color_blend(red, blue)
+  print("Blended: " + color_to_hex(blended))
+  let gray = color_grayscale(red)
+  print("Grayscale: " + color_to_hex(gray))
+  return null
+end
+
+cell test_matrices() -> Null
+  let id = mat2_identity()
+  let m = Matrix2(m00: 2, m01: 1, m10: 1, m11: 3)
+  let prod = mat2_mul(id, m)
+  print("Mat det: " + to_string(mat2_det(m)))
+  return null
+end
+
+cell test_expressions() -> Null
+  let expr = Add(
+    left: Num(value: 10),
+    right: Mul(left: Num(value: 3), right: Num(value: 4))
+  )
+  print("Expr: " + expr_to_string(expr) + " = " + to_string(eval_expr(expr)))
+  print("Expr depth: " + to_string(expr_depth(expr)))
+  print("Expr nodes: " + to_string(expr_count_nodes(expr)))
+  return null
+end
+
+cell test_trees() -> Null
+  let tree = build_balanced_tree(4, 1)
+  print("Tree sum: " + to_string(tree_sum(tree)))
+  print("Tree depth: " + to_string(tree_depth(tree)))
+  print("Tree count: " + to_string(tree_count(tree)))
+  print("Tree contains 5: " + to_string(tree_contains(tree, 5)))
+  return null
+end
+
+cell test_sorting() -> Null
+  let nums = [64, 34, 25, 12, 22, 11, 90, 45, 78, 3]
+  let sorted_ins = insertion_sort(nums)
+  let sorted_sel = selection_sort(nums)
+  print("Insertion sorted: " + to_string(is_sorted(sorted_ins)))
+  print("Selection sorted: " + to_string(is_sorted(sorted_sel)))
+  return null
+end
+
+cell test_math() -> Null
+  print("fib(15) = " + to_string(fibonacci(15)))
+  print("10! = " + to_string(factorial(10)))
+  print("gcd(48, 18) = " + to_string(gcd(48, 18)))
+  print("lcm(12, 18) = " + to_string(lcm(12, 18)))
+  print("2^16 = " + to_string(power(2, 16)))
+  print("Primes < 100: " + to_string(count_primes(100)))
+  print("is_perfect(28) = " + to_string(is_perfect(28)))
+  print("collatz(27) = " + to_string(collatz_length(27)))
+  return null
+end
+
+cell test_strings() -> Null
+  print("Repeat: " + repeat_str("ab", 5))
+  print("Palindrome 'racecar': " + to_string(is_palindrome("racecar")))
+  print("Palindrome 'hello': " + to_string(is_palindrome("hello")))
+  print("Center: [" + center_text("hi", 10) + "]")
+  print("Truncate: " + truncate("Hello, World!", 8))
+  return null
+end
+
+cell test_lists() -> Null
+  let data = [5, 3, 8, 1, 9, 2, 7, 4, 6]
+  print("Sum: " + to_string(sum_list(data)))
+  print("Product: " + to_string(product_list(data)))
+  print("Max: " + to_string(max_list(data)))
+  print("Min: " + to_string(min_list(data)))
+  print("Count > 5: " + to_string(count_if(data, 5)))
+  let filtered = filter_range(data, 3, 7)
+  print("In [3,7]: " + to_string(len(filtered)))
+  let deduped = deduplicate([1, 2, 3, 2, 1, 4, 3, 5])
+  print("Deduped len: " + to_string(len(deduped)))
+  return null
+end
+
+cell test_enums_misc() -> Null
+  let days = [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday]
+  for d in days
+    let weekend = is_weekend(d)
+    if weekend
+      print(day_name(d) + " is weekend")
+    end
+  end
+  print("January has " + to_string(month_days(January)) + " days")
+  print("February has " + to_string(month_days(February)) + " days")
+  print("Ace of Spades: " + rank_name(Ace) + " of " + suit_name(Spades))
+  print("Is face card (King): " + to_string(is_face_card(King)))
+  print("Is face card (Five): " + to_string(is_face_card(Five)))
+  return null
+end
+
+cell test_http_ordering() -> Null
+  print("GET has body: " + to_string(method_has_body(Get)))
+  print("POST has body: " + to_string(method_has_body(Post)))
+  print("200 OK: " + status_text(Ok200))
+  print("404 is error: " + to_string(status_is_error(NotFound404)))
+  let cmp = compare_ints(5, 10)
+  print("5 vs 10: " + ordering_name(cmp))
+  print("Reversed: " + ordering_name(ordering_reverse(cmp)))
+  return null
+end
+
+cell test_simulation() -> Null
+  let particles = [
+    make_particle(0, 0, 1, 2, 5),
+    make_particle(10, 10, 0 - 1, 1, 3),
+    make_particle(5, 5, 2, 0 - 1, 10)
+  ]
+  let survivors = simulate_particles(particles, 4)
+  print("Survivors after 4 steps: " + to_string(len(survivors)))
+  let bounds = Bounds(min_x: 0, min_y: 0, max_x: 100, max_y: 100)
+  let inside = Vec2(x: 50, y: 50)
+  let outside = Vec2(x: 150, y: 50)
+  print("Inside: " + to_string(bounds_contains(bounds, inside)))
+  print("Outside: " + to_string(bounds_contains(bounds, outside)))
+  print("Bounds area: " + to_string(bounds_area(bounds)))
+  let tf = transform_identity()
+  let tf2 = transform_translate(tf, 10, 20)
+  let pt = Vec2(x: 5, y: 5)
+  let moved = transform_apply(tf2, pt)
+  print("Transformed: " + vec2_to_string(moved))
+  return null
+end
+
+cell main() -> Null
+  test_vectors()
+  test_colors()
+  test_matrices()
+  test_expressions()
+  test_trees()
+  test_sorting()
+  test_math()
+  test_strings()
+  test_lists()
+  test_enums_misc()
+  test_http_ordering()
+  test_simulation()
+  return null
+end

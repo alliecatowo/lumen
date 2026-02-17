@@ -1,0 +1,11 @@
+# Tiny corpus — ~10 lines, hello world
+cell greet(name: String) -> String
+  let msg = "Hello, " + name + "!"
+  return msg
+end
+
+cell main() -> Null
+  let result = greet("World")
+  print(result)
+  return null
+end

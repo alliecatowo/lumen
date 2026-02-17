@@ -1,0 +1,37 @@
+# JSON-like data structure manipulation
+record Entry
+  key: String
+  value: String
+end
+
+cell build_entries(count: Int) -> list[Entry]
+  let result = []
+  let i = 0
+  while i < count
+    let e = Entry(key: "key_" + to_string(i), value: "value_" + to_string(i))
+    result = append(result, e)
+    i = i + 1
+  end
+  return result
+end
+
+cell find_entry(entries: list[Entry], target: String) -> String
+  for e in entries
+    if e.key == target
+      return e.value
+    end
+  end
+  return ""
+end
+
+cell count_entries(entries: list[Entry]) -> Int
+  return len(entries)
+end
+
+cell main() -> Null
+  let entries = build_entries(10000)
+  let found = find_entry(entries, "key_9999")
+  print("Found: " + found)
+  print("Count: " + to_string(count_entries(entries)))
+  return null
+end

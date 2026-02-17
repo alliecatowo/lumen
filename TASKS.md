@@ -72,7 +72,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T011 | Arena or region allocator for process-local data — **DONE** | In `rust/lumen-vm/src/` (e.g. new `memory.rs`), implement an arena or region allocator for values that are local to a single process/agent to reduce global heap pressure. |
 | T012 | Optional: Immix-style block/line allocator — **DONE** | For a concurrent GC, implement the block/line layout and allocation interface; can be behind a feature flag until scheduler and GC are integrated. |
 | T013 | Thread-local allocation buffers (TLAB) — **DONE** | If moving to a GC, provide per-thread allocation buffers to reduce contention on the global allocator. |
-| T014 | Copy optimization for small scalars | In the VM or lowering, avoid allocating for small scalars (Int, Bool, Float) when copying; keep them in registers or immediate form. |
+| T014 | Copy optimization for small scalars — **DONE** | In the VM or lowering, avoid allocating for small scalars (Int, Bool, Float) when copying; keep them in registers or immediate form. |
 | T015 | String representation: SmolStr or interning — **DONE** (pre-existing StringRef) | In `rust/lumen-vm/src/strings.rs`, consider SmolStr or interned IDs for string comparison and to reduce allocations. |
 | T016 | Optional: 64-bit packed LIR instructions | In `rust/lumen-compiler/src/compiler/lir.rs`, evaluate 64-bit instruction encoding to reduce cache pressure; document tradeoffs vs 32-bit. |
 
@@ -322,7 +322,7 @@ The following tasks add depth and explicit competitive parity. Problem statement
 |---|------|-----------------------------|
 | T156 | Probabilistic type (Prob&lt;T&gt;) (design) | Value representing a distribution; “if x” on Prob&lt;Bool&gt; could weight both branches. Enables Bayesian agents. Ref: roadmap “probabilistic type system.” |
 | T157 | Schema drift detector | Fail build or test when tool/API response schema diverges from declared Lumen types. Closes “silent breakage” gap vs ad-hoc SDKs. |
-| T158 | Effect-budget enforcement at runtime | If effect row says `network(max_calls: 5)`, runtime (or compiled check) enforces the bound and fails fast. Complements T048 (compile-time proof). |
+| T158 | Effect-budget enforcement at runtime — **DONE** | If effect row says `network(max_calls: 5)`, runtime (or compiled check) enforces the bound and fails fast. Complements T048 (compile-time proof). |
 
 ### Phase 6 (ecosystem) — additional
 
@@ -357,9 +357,9 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | T170 | Panic vs result (halt vs return err) | Define clear boundary: which failures panic (e.g. unreachable, invariant violation) vs return `result[T,E]`; document and enforce so agents can recover predictably. Ref: Rust panic vs Result. |
 | T171 | Inline / property-based / snapshot testing | Built-in or std test helpers: inline unit tests, property-based (e.g. QuickCheck-style), snapshot output comparison. Ref: COMPETITIVE_ANALYSIS §8 (leapfrog 11). |
 | T172 | Mock effects for tests | Test harness to stub effect operations (e.g. `perform HttpGet`) so tests run without real I/O. Complements deterministic replay. |
-| T173 | LSP: go-to-implementations | "Go to implementation(s)" for cells and types; navigate to defining and overriding sites. Ref: IDE parity. |
+| T173 | LSP: go-to-implementations — **DONE** | "Go to implementation(s)" for cells and types; navigate to defining and overriding sites. Ref: IDE parity. |
 | T174 | Diagnostics: type diff and import suggestions | On type error, show concise type diff (expected vs actual); on unknown symbol, suggest imports or similar names. |
-| T175 | Watch mode (recheck on save) | `lumen watch` or LSP-driven re-check when files change; fast feedback without full rebuild. |
+| T175 | Watch mode (recheck on save) — **DONE** | `lumen watch` or LSP-driven re-check when files change; fast feedback without full rebuild. |
 | T176 | CI machine-readable output | Emit check/test results in a standard format (e.g. SARIF, JUnit XML) for CI dashboards and gates. Ref: T105–T110. |
 | T177 | Service package template | Scaffold for HTTP/gRPC services: typed route contracts, generated schemas, replayable fixtures. Ref: COMPETITIVE_ANALYSIS §4 (Web/backend). |
 | T178 | Array bounds propagation (refinement) | Use refinement/SMT or flow analysis to prove or warn on list/tuple index bounds. Reduces runtime index errors. Ref: D05–D06. |
@@ -367,7 +367,7 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | T180 | Execution graph visualizer | Tool or LSP view that renders execution/trace events as a graph (calls, effects, tool invocations) for debugging and audit. Ref: COMPETITIVE_ANALYSIS §8 (leapfrog 20). |
 | T181 | Import path error recovery | Use `parse_program_with_recovery` when compiling imported modules so multiple parse errors in a dependency are reported. Ref: COMPETITIVE_ANALYSIS §7.4 (A). |
 | T182 | LSP document formatting — **DONE** | Expose existing formatter via LSP `textDocument/formatting` (document_formatting_provider). Ref: lumen-lsp main.rs; §7.4 (B). |
-| T183 | Semver constraint `!=` operator | Implement `!=` in semver constraint parser (e.g. `!=1.2.3`) for version ranges. Ref: semver.rs test note; §7.4 (C). |
+| T183 | Semver constraint `!=` operator — **DONE** | Implement `!=` in semver constraint parser (e.g. `!=1.2.3`) for version ranges. Ref: semver.rs test note; §7.4 (C). |
 | T184 | Retry-After header in provider errors | Extract `Retry-After` HTTP header into `ToolError::RateLimit { retry_after_ms }` in Gemini (and other HTTP) providers. Ref: lumen-provider-gemini. |
 | T185 | Cache persistence on startup | Runtime `CacheStore` (`lumen-runtime/src/cache.rs`) only writes on put; add load-from-disk on init so cache survives process restart. Ref: deficit 13. |
 | T186 | Validate builtin (runtime schema validation) | SPEC documents `validate(Any) -> Bool` as stub. Implement real schema-constrained validation for the standalone builtin (Schema opcode already validates at tool/output). |
@@ -390,11 +390,11 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | T198 | **If condition must be Bool (no truthiness)** | Language requires explicit Bool in `if` conditions; no truthy/falsy coercion (e.g. `if 1` or `if ""` invalid). Tests use explicit comparisons (e.g. `1 != 0`, `len(s) > 0`). Document in spec; no implementation change if intentional. |
 | T199 | **For-loop continue / labeled continue** — **DONE** | `continue` in for-loops can hit instruction limit (possible VM bug); labeled `continue @outer` same. Tests simplified to avoid continue or use list iteration. Fix VM/compiler so continue advances iterator correctly. |
 | T200 | **Enum/record constructors with payload at runtime** — **DONE** | `Option.Some(42)`, `Shape.Circle(radius: 5.0)`, generic record `Box[T](value: x)`, `Pair[A,B](...)` trigger "cannot call null" or "cannot call Pair()" at runtime. Tests stubbed or use zero-payload variants only. Fix VM/lowering so enum and generic record construction works. |
-| T201 | **Nested list comprehension** | `[ (x, y) for x in a for y in b ]` — inner loop variable `y` undefined in scope. Tests simplified to single `for`. Fix parser/scope so nested comprehensions bind correctly. |
+| T201 | **Nested list comprehension** — **DONE** | `[ (x, y) for x in a for y in b ]` — inner loop variable `y` undefined in scope. Tests simplified to single `for`. Fix parser/scope so nested comprehensions bind correctly. |
 | T202 | **push vs append** | Tests used `push`; Lumen builtin is `append` for lists. Tests updated. Optional: add `push` as alias if desired. |
 | T203 | **to_list(set) builtin** | No builtin to convert set to list; set union/intersection/difference tests need it. Tests use list literals or stub. Add `to_list` (or set iteration in for) so set→list is available. |
-| T205 | **Let destructuring / match type-pattern** | Let with type annotations (e.g. `let (n: Int, s: String) = ...`) and match type-pattern syntax not fully supported. pattern_matching.lm uses plain destructuring and `is` checks; restore when supported. |
-| T206 | **Missing or renamed builtins** | Tests use type_of (not type), to_json (not json_stringify), to_int/to_float (not parse_*), timestamp (not timestamp_ms); trim_start/trim_end, exp, tan, random_int not present. builtins.lm stubbed or uses alternatives. |
+| T205 | **Let destructuring / match type-pattern** — **DONE** | Let with type annotations (e.g. `let (n: Int, s: String) = ...`) and match type-pattern syntax not fully supported. pattern_matching.lm uses plain destructuring and `is` checks; restore when supported. |
+| T206 | **Missing or renamed builtins** — **DONE** | Tests use type_of (not type), to_json (not json_stringify), to_int/to_float (not parse_*), timestamp (not timestamp_ms); trim_start/trim_end, exp, tan, random_int not present. builtins.lm stubbed or uses alternatives. |
 | T207 | **Effect handler resume at runtime** — **DONE** | handle/perform with resume() can fail with "resume called outside of effect handler". effects.lm minimal stub avoids handle/perform until fixed. |
 | T208 | **Record method scoping / generic T** | Records with nested method cells (Stack[T], Queue[T], etc.) cause duplicate definition (is_empty, size) and undefined type T in method signatures. end_to_end.lm stubbed to calculator-only. |
 | T209 | **Result/optional syntactic sugar** | Code and tests use `unwrap`, `unwrap_or`, `is_ok`/`is_err`, and explicit `match` on `result[T,E]`/optional heavily. **Research:** Rust’s `?` operator propagates `Err`/`None` from the current function (unwrap-or-return); Swift optional binding (`if let`); JS optional chaining (`?.`). Adding similar ergonomics (e.g. postfix `?` for propagation in cells that return `result`/optional, or optional chaining for nullable fields) would reduce boilerplate and improve readability. See COMPETITIVE_ANALYSIS §6.3 (error/optional ergonomics), ROADMAP Phase 3. |

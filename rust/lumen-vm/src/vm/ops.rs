@@ -207,7 +207,7 @@ impl VM {
                     if y == 0 {
                         None
                     } else {
-                        Some(x / y)
+                        x.checked_div(y)
                     }
                 }
                 BinaryOp::FloorDiv => {
@@ -241,9 +241,9 @@ impl VM {
             }
         }
 
-        // Helper for float ops that checks for overflow (infinite results)
-        fn float_op_checked(op: BinaryOp, x: f64, y: f64) -> Option<f64> {
-            let result = match op {
+        // Helper for float ops — follows IEEE 754: overflow produces infinity, not an error
+        fn float_op(op: BinaryOp, x: f64, y: f64) -> f64 {
+            match op {
                 BinaryOp::Add => x + y,
                 BinaryOp::Sub => x - y,
                 BinaryOp::Mul => x * y,
@@ -252,12 +252,20 @@ impl VM {
                 BinaryOp::Mod => x.rem_euclid(y),
                 BinaryOp::Rem => x % y,
                 BinaryOp::Pow => x.powf(y),
-            };
-            // Check for overflow - if result is infinite but inputs were finite, it's overflow
-            if result.is_infinite() && x.is_finite() && y.is_finite() {
-                None
-            } else {
-                Some(result)
+            }
+        }
+
+        /// Return a descriptive name for the operation, used in error messages.
+        fn op_name(op: BinaryOp) -> &'static str {
+            match op {
+                BinaryOp::Add => "addition",
+                BinaryOp::Sub => "subtraction",
+                BinaryOp::Mul => "multiplication",
+                BinaryOp::Div => "division",
+                BinaryOp::FloorDiv => "floor division",
+                BinaryOp::Mod => "modulo",
+                BinaryOp::Rem => "remainder",
+                BinaryOp::Pow => "exponentiation",
             }
         }
 
@@ -287,8 +295,8 @@ impl VM {
                 if let Some(res) = int_op(op, *x, *y) {
                     Value::Int(res)
                 } else {
-                    // Integer overflow - return ArithmeticOverflow error
-                    return Err(VmError::ArithmeticOverflow);
+                    // Integer overflow — return operation-specific error
+                    return Err(VmError::ArithmeticOverflow(op_name(op).to_string()));
                 }
             }
             (Value::BigInt(x), Value::BigInt(y)) => Value::BigInt(bigint_op(op, x, y)?),
@@ -298,44 +306,22 @@ impl VM {
             (Value::BigInt(x), Value::Int(y)) => {
                 Value::BigInt(bigint_op(op, x, &BigInt::from(*y))?)
             }
-            (Value::Float(x), Value::Float(y)) => {
-                if let Some(res) = float_op_checked(op, *x, *y) {
-                    Value::Float(res)
-                } else {
-                    return Err(VmError::ArithmeticOverflow);
-                }
-            }
+            (Value::Float(x), Value::Float(y)) => Value::Float(float_op(op, *x, *y)),
             (Value::Int(x), Value::Float(y)) => {
                 let xf = *x as f64;
-                if let Some(res) = float_op_checked(op, xf, *y) {
-                    Value::Float(res)
-                } else {
-                    return Err(VmError::ArithmeticOverflow);
-                }
+                Value::Float(float_op(op, xf, *y))
             }
             (Value::Float(x), Value::Int(y)) => {
                 let yf = *y as f64;
-                if let Some(res) = float_op_checked(op, *x, yf) {
-                    Value::Float(res)
-                } else {
-                    return Err(VmError::ArithmeticOverflow);
-                }
+                Value::Float(float_op(op, *x, yf))
             }
             (Value::BigInt(x), Value::Float(y)) => {
                 let xf = x.to_f64().unwrap_or(f64::NAN);
-                if let Some(res) = float_op_checked(op, xf, *y) {
-                    Value::Float(res)
-                } else {
-                    return Err(VmError::ArithmeticOverflow);
-                }
+                Value::Float(float_op(op, xf, *y))
             }
             (Value::Float(x), Value::BigInt(y)) => {
                 let yf = y.to_f64().unwrap_or(f64::NAN);
-                if let Some(res) = float_op_checked(op, *x, yf) {
-                    Value::Float(res)
-                } else {
-                    return Err(VmError::ArithmeticOverflow);
-                }
+                Value::Float(float_op(op, *x, yf))
             }
             _ => {
                 return Err(VmError::TypeError(format!(

@@ -26,6 +26,12 @@ pub fn compile_error_to_diagnostics(error: &CompileError, _source: &str) -> Vec<
             .iter()
             .flat_map(|e| compile_error_to_diagnostics(e, _source))
             .collect(),
+        CompileError::Lower(msg) => vec![Diagnostic {
+            range: lsp_types::Range::default(),
+            severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+            message: msg.clone(),
+            ..Default::default()
+        }],
     }
 }
 

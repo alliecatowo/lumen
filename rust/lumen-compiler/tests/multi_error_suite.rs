@@ -27,6 +27,7 @@ fn count_errors(err: &CompileError) -> usize {
         CompileError::Constraint(es) => es.len(),
         CompileError::Ownership(es) => es.len(),
         CompileError::Multiple(es) => es.iter().map(count_errors).sum(),
+        CompileError::Lower(_) => 1,
     }
 }
 

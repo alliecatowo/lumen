@@ -6,6 +6,7 @@
 mod cache;
 mod code_actions;
 mod completion;
+pub mod dap;
 mod diagnostics;
 mod document_symbols;
 mod folding_ranges;

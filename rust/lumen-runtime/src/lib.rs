@@ -3,6 +3,7 @@
 //! Provides trace, cache, tool dispatch, process management, scheduling, and
 //! inter-process communication infrastructure.
 
+pub mod actor;
 pub mod cache;
 pub mod channel;
 pub mod checkpoint;

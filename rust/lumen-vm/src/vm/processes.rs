@@ -408,7 +408,8 @@ impl VM {
                 match op.as_str() {
                     "-" => match value {
                         Value::Int(n) => Ok(Value::Int(
-                            n.checked_neg().ok_or(VmError::ArithmeticOverflow)?,
+                            n.checked_neg()
+                                .ok_or(VmError::ArithmeticOverflow("negation".to_string()))?,
                         )),
                         Value::Float(f) => Ok(Value::Float(-f)),
                         _ => Ok(Value::Null),
@@ -427,7 +428,8 @@ impl VM {
                 match op.as_str() {
                     "+" => match (left, right) {
                         (Value::Int(a), Value::Int(b)) => Ok(Value::Int(
-                            a.checked_add(b).ok_or(VmError::ArithmeticOverflow)?,
+                            a.checked_add(b)
+                                .ok_or(VmError::ArithmeticOverflow("addition".to_string()))?,
                         )),
                         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
                         (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 + b)),
@@ -436,7 +438,8 @@ impl VM {
                     },
                     "-" => match (left, right) {
                         (Value::Int(a), Value::Int(b)) => Ok(Value::Int(
-                            a.checked_sub(b).ok_or(VmError::ArithmeticOverflow)?,
+                            a.checked_sub(b)
+                                .ok_or(VmError::ArithmeticOverflow("subtraction".to_string()))?,
                         )),
                         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
                         (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 - b)),
@@ -445,7 +448,8 @@ impl VM {
                     },
                     "*" => match (left, right) {
                         (Value::Int(a), Value::Int(b)) => Ok(Value::Int(
-                            a.checked_mul(b).ok_or(VmError::ArithmeticOverflow)?,
+                            a.checked_mul(b)
+                                .ok_or(VmError::ArithmeticOverflow("multiplication".to_string()))?,
                         )),
                         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
                         (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 * b)),
@@ -455,7 +459,8 @@ impl VM {
                     "/" => match (left, right) {
                         (Value::Int(_), Value::Int(0)) => Err(VmError::DivisionByZero),
                         (Value::Int(a), Value::Int(b)) => Ok(Value::Int(
-                            a.checked_div(b).ok_or(VmError::ArithmeticOverflow)?,
+                            a.checked_div(b)
+                                .ok_or(VmError::ArithmeticOverflow("division".to_string()))?,
                         )),
                         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
                         (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 / b)),
@@ -465,7 +470,8 @@ impl VM {
                     "%" => match (left, right) {
                         (Value::Int(_), Value::Int(0)) => Err(VmError::DivisionByZero),
                         (Value::Int(a), Value::Int(b)) => Ok(Value::Int(
-                            a.checked_rem(b).ok_or(VmError::ArithmeticOverflow)?,
+                            a.checked_rem(b)
+                                .ok_or(VmError::ArithmeticOverflow("remainder".to_string()))?,
                         )),
                         _ => Ok(Value::Null),
                     },

@@ -50,6 +50,10 @@ enum Commands {
         /// Output format: text (default), junit, json
         #[arg(long, default_value = "text")]
         output_format: String,
+
+        /// Allow unstable features without errors
+        #[arg(long)]
+        allow_unstable: bool,
     },
     /// Compile and run a `.lm`, `.lumen`, `.lm.md`, or `.lumen.md` file
     Run {
@@ -64,6 +68,10 @@ enum Commands {
         /// Emit trace to the given directory
         #[arg(long)]
         trace_dir: Option<PathBuf>,
+
+        /// Allow unstable features without errors
+        #[arg(long)]
+        allow_unstable: bool,
     },
     /// Compile a `.lm`, `.lumen`, `.lm.md`, or `.lumen.md` file to LIR JSON
     Emit {
@@ -74,6 +82,10 @@ enum Commands {
         /// Output path (default: stdout)
         #[arg(short, long)]
         output: Option<PathBuf>,
+
+        /// Allow unstable features without errors
+        #[arg(long)]
+        allow_unstable: bool,
     },
     /// Show trace for a run
     Trace {
@@ -356,13 +368,19 @@ fn main() {
         Commands::Check {
             file,
             output_format,
-        } => cmd_check(&file, &output_format),
+            allow_unstable,
+        } => cmd_check(&file, &output_format, allow_unstable),
         Commands::Run {
             file,
             cell,
             trace_dir,
-        } => cmd_run(&file, &cell, trace_dir),
-        Commands::Emit { file, output } => cmd_emit(&file, output),
+            allow_unstable,
+        } => cmd_run(&file, &cell, trace_dir, allow_unstable),
+        Commands::Emit {
+            file,
+            output,
+            allow_unstable,
+        } => cmd_emit(&file, output, allow_unstable),
         Commands::Trace { sub } => match sub {
             TraceCommands::Show {
                 run_id,
@@ -593,7 +611,7 @@ fn gate_check_sources(files: &[PathBuf]) -> bool {
         };
 
         let filename = file.display().to_string();
-        if let Err(e) = compile_source_file(file, &source) {
+        if let Err(e) = compile_source_file(file, &source, false) {
             let formatted = lumen_compiler::format_error(&e, &source, &filename);
             eprint!("{}", formatted);
             failures += 1;
@@ -746,6 +764,7 @@ fn find_project_root(start: &Path) -> Option<PathBuf> {
 fn compile_source_file(
     path: &Path,
     source: &str,
+    allow_unstable: bool,
 ) -> Result<lumen_compiler::compiler::lir::LirModule, lumen_compiler::CompileError> {
     let source_dir = path
         .parent()
@@ -766,10 +785,14 @@ fn compile_source_file(
     let resolver = RefCell::new(resolver);
     let resolve_import = |module_path: &str| resolver.borrow_mut().resolve(module_path);
 
-    lumen_compiler::compile_with_imports(source, &resolve_import)
+    let opts = lumen_compiler::CompileOptions {
+        allow_unstable,
+        ..Default::default()
+    };
+    lumen_compiler::compile_with_imports_and_options(source, &resolve_import, &opts)
 }
 
-fn cmd_check(file: &PathBuf, output_format: &str) {
+fn cmd_check(file: &PathBuf, output_format: &str, allow_unstable: bool) {
     let format = ci_output::OutputFormat::from_str_name(output_format).unwrap_or_else(|| {
         eprintln!(
             "{} unknown output format '{}'. Valid formats: {}",
@@ -789,7 +812,7 @@ fn cmd_check(file: &PathBuf, output_format: &str) {
         ci_output::OutputFormat::Text => {
             // Original human-readable output.
             println!("{} {}", status_label("Checking"), bold(&filename));
-            match compile_source_file(file, &source) {
+            match compile_source_file(file, &source, allow_unstable) {
                 Ok(_module) => {
                     let elapsed = start.elapsed();
                     println!(
@@ -809,7 +832,7 @@ fn cmd_check(file: &PathBuf, output_format: &str) {
             let mut report = ci_output::CheckReport::new("lumen-check");
             let file_start = std::time::Instant::now();
 
-            let result = match compile_source_file(file, &source) {
+            let result = match compile_source_file(file, &source, allow_unstable) {
                 Ok(_module) => ci_output::FileCheckResult {
                     file: filename.clone(),
                     passed: true,
@@ -979,7 +1002,7 @@ fn run_watch_check(files: &[PathBuf]) {
         };
 
         let filename = file.display().to_string();
-        if let Err(e) = compile_source_file(file, &source) {
+        if let Err(e) = compile_source_file(file, &source, false) {
             let formatted = lumen_compiler::format_error(&e, &source, &filename);
             eprint!("{}", formatted);
             errors += 1;
@@ -1005,13 +1028,13 @@ fn run_watch_check(files: &[PathBuf]) {
     }
 }
 
-fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
+fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>, allow_unstable: bool) {
     let source = read_source(file);
     let filename = file.display().to_string();
 
     println!("{} {}", status_label("Compiling"), bold(&filename));
     let start = std::time::Instant::now();
-    let module = match compile_source_file(file, &source) {
+    let module = match compile_source_file(file, &source, allow_unstable) {
         Ok(m) => m,
         Err(e) => {
             let chain = error_chain::ErrorChain::new("compilation failed")
@@ -1118,12 +1141,12 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
     }
 }
 
-fn cmd_emit(file: &PathBuf, output: Option<PathBuf>) {
+fn cmd_emit(file: &PathBuf, output: Option<PathBuf>, allow_unstable: bool) {
     let source = read_source(file);
     let filename = file.display().to_string();
 
     println!("{} {}", status_label("Compiling"), filename);
-    let module = match compile_source_file(file, &source) {
+    let module = match compile_source_file(file, &source, allow_unstable) {
         Ok(m) => m,
         Err(e) => {
             let chain = error_chain::ErrorChain::new("compilation failed")

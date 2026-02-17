@@ -104,6 +104,27 @@ fn get_intrinsic_id(name: &str) -> Option<IntrinsicId> {
         "guardrail" => Some(IntrinsicId::Guardrail),
         "pattern" => Some(IntrinsicId::Pattern),
         "exit" => Some(IntrinsicId::Exit),
+        "read_lines" => Some(IntrinsicId::ReadLines),
+        "walk_dir" => Some(IntrinsicId::WalkDir),
+        "glob" => Some(IntrinsicId::GlobMatch),
+        "path_join" => Some(IntrinsicId::PathJoin),
+        "path_parent" => Some(IntrinsicId::PathParent),
+        "path_extension" => Some(IntrinsicId::PathExtension),
+        "path_filename" => Some(IntrinsicId::PathFilename),
+        "path_stem" => Some(IntrinsicId::PathStem),
+        "exec" => Some(IntrinsicId::Exec),
+        "read_stdin" => Some(IntrinsicId::ReadStdin),
+        "eprint" => Some(IntrinsicId::Eprint),
+        "eprintln" => Some(IntrinsicId::Eprintln),
+        "csv_parse" => Some(IntrinsicId::CsvParse),
+        "csv_encode" => Some(IntrinsicId::CsvEncode),
+        "toml_parse" => Some(IntrinsicId::TomlParse),
+        "toml_encode" => Some(IntrinsicId::TomlEncode),
+        "regex_match" => Some(IntrinsicId::RegexMatch),
+        "regex_replace" => Some(IntrinsicId::RegexReplace),
+        "regex_find_all" => Some(IntrinsicId::RegexFindAll),
+        "read_line" => Some(IntrinsicId::ReadLine),
+        "string_concat" => Some(IntrinsicId::StringConcat),
         _ => None,
     }
 }
@@ -431,6 +452,7 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                         where_clauses: vec![],
                         span,
                         doc: None,
+                        deprecated: None,
                     };
                     module.cells.push(lowerer.lower_cell(&generated));
                 }

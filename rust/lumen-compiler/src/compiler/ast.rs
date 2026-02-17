@@ -128,6 +128,7 @@ pub struct RecordDef {
     pub is_pub: bool,
     pub span: Span,
     pub doc: Option<String>,
+    pub deprecated: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,6 +151,7 @@ pub struct EnumDef {
     pub is_pub: bool,
     pub span: Span,
     pub doc: Option<String>,
+    pub deprecated: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,6 +178,7 @@ pub struct CellDef {
     pub where_clauses: Vec<Expr>,
     pub span: Span,
     pub doc: Option<String>,
+    pub deprecated: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

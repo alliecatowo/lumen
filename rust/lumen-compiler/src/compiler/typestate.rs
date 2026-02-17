@@ -1136,6 +1136,7 @@ mod tests {
             where_clauses: vec![],
             span: span(1),
             doc: None,
+            deprecated: None,
         }
     }
 

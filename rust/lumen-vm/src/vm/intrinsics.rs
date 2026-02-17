@@ -1611,6 +1611,253 @@ impl VM {
                 }
             }
 
+            // ── Filesystem: read_lines, walk_dir, glob ──
+            "read_lines" => {
+                let path = self.registers[base + a + 1].as_string();
+                match std::fs::read_to_string(&path) {
+                    Ok(contents) => {
+                        let lines: Vec<Value> = contents
+                            .lines()
+                            .map(|l| Value::String(StringRef::Owned(l.to_string())))
+                            .collect();
+                        Ok(Value::new_list(lines))
+                    }
+                    Err(e) => Err(VmError::Runtime(format!("read_lines failed: {}", e))),
+                }
+            }
+            "walk_dir" => {
+                let path = self.registers[base + a + 1].as_string();
+                fn walk_recursive_cb(
+                    dir: &std::path::Path,
+                    result: &mut Vec<Value>,
+                ) -> Result<(), VmError> {
+                    let entries = std::fs::read_dir(dir)
+                        .map_err(|e| VmError::Runtime(format!("walk_dir failed: {}", e)))?;
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        result.push(Value::String(StringRef::Owned(
+                            p.to_string_lossy().to_string(),
+                        )));
+                        if p.is_dir() {
+                            walk_recursive_cb(&p, result)?;
+                        }
+                    }
+                    Ok(())
+                }
+                let mut result = Vec::new();
+                walk_recursive_cb(std::path::Path::new(&path), &mut result)?;
+                Ok(Value::new_list(result))
+            }
+            "glob" => {
+                let pattern = self.registers[base + a + 1].as_string();
+                let mut result = Vec::new();
+                glob_walk(std::path::Path::new("."), &pattern, &mut result)?;
+                Ok(Value::new_list(result))
+            }
+
+            // ── Path operations ──
+            "path_join" => {
+                let a_str = self.registers[base + a + 1].as_string();
+                let b_str = self.registers[base + a + 2].as_string();
+                let joined = std::path::Path::new(&a_str)
+                    .join(&b_str)
+                    .to_string_lossy()
+                    .to_string();
+                Ok(Value::String(StringRef::Owned(joined)))
+            }
+            "path_parent" => {
+                let p_str = self.registers[base + a + 1].as_string();
+                let parent = std::path::Path::new(&p_str)
+                    .parent()
+                    .map(|pp| pp.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                Ok(Value::String(StringRef::Owned(parent)))
+            }
+            "path_extension" => {
+                let p_str = self.registers[base + a + 1].as_string();
+                let ext = std::path::Path::new(&p_str)
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                Ok(Value::String(StringRef::Owned(ext)))
+            }
+            "path_filename" => {
+                let p_str = self.registers[base + a + 1].as_string();
+                let name = std::path::Path::new(&p_str)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                Ok(Value::String(StringRef::Owned(name)))
+            }
+            "path_stem" => {
+                let p_str = self.registers[base + a + 1].as_string();
+                let stem = std::path::Path::new(&p_str)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                Ok(Value::String(StringRef::Owned(stem)))
+            }
+
+            // ── Process execution ──
+            "exec" => {
+                let cmd = self.registers[base + a + 1].as_string();
+                match std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&cmd)
+                    .output()
+                {
+                    Ok(output) => {
+                        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                        let status = output.status.code().unwrap_or(-1) as i64;
+                        let mut map = BTreeMap::new();
+                        map.insert(
+                            "stdout".to_string(),
+                            Value::String(StringRef::Owned(stdout)),
+                        );
+                        map.insert(
+                            "stderr".to_string(),
+                            Value::String(StringRef::Owned(stderr)),
+                        );
+                        map.insert("status".to_string(), Value::Int(status));
+                        Ok(Value::new_map(map))
+                    }
+                    Err(e) => Err(VmError::Runtime(format!("exec failed: {}", e))),
+                }
+            }
+
+            // ── Stdin reading ──
+            "read_stdin" => {
+                use std::io::Read;
+                let mut buf = String::new();
+                std::io::stdin()
+                    .lock()
+                    .read_to_string(&mut buf)
+                    .map_err(|e| VmError::Runtime(format!("read_stdin failed: {}", e)))?;
+                Ok(Value::String(StringRef::Owned(buf)))
+            }
+            "read_line" => {
+                use std::io::BufRead;
+                let mut line = String::new();
+                std::io::stdin()
+                    .lock()
+                    .read_line(&mut line)
+                    .map_err(|e| VmError::Runtime(format!("read_line failed: {}", e)))?;
+                if line.ends_with('\n') {
+                    line.pop();
+                    if line.ends_with('\r') {
+                        line.pop();
+                    }
+                }
+                Ok(Value::String(StringRef::Owned(line)))
+            }
+
+            // ── Stderr output ──
+            "eprint" => {
+                let msg = self.registers[base + a + 1].display_pretty();
+                eprint!("{}", msg);
+                Ok(Value::Null)
+            }
+            "eprintln" => {
+                let msg = self.registers[base + a + 1].display_pretty();
+                eprintln!("{}", msg);
+                Ok(Value::Null)
+            }
+
+            // ── CSV ──
+            "csv_parse" => {
+                let text = self.registers[base + a + 1].as_string();
+                Ok(csv_parse_text(&text))
+            }
+            "csv_encode" => {
+                let val = &self.registers[base + a + 1];
+                Ok(Value::String(StringRef::Owned(csv_encode_value(val))))
+            }
+
+            // ── TOML ──
+            "toml_parse" => {
+                let text = self.registers[base + a + 1].as_string();
+                Ok(toml_parse_text(&text))
+            }
+            "toml_encode" => {
+                let val = &self.registers[base + a + 1];
+                Ok(Value::String(StringRef::Owned(toml_encode_value(val, ""))))
+            }
+
+            // ── Regex ──
+            "regex_match" => {
+                let pattern = self.registers[base + a + 1].as_string();
+                let text = self.registers[base + a + 2].as_string();
+                match regex::Regex::new(&pattern) {
+                    Ok(re) => {
+                        if let Some(caps) = re.captures(&text) {
+                            let groups: Vec<Value> = caps
+                                .iter()
+                                .map(|m| match m {
+                                    Some(m) => {
+                                        Value::String(StringRef::Owned(m.as_str().to_string()))
+                                    }
+                                    None => Value::Null,
+                                })
+                                .collect();
+                            Ok(Value::new_list(groups))
+                        } else {
+                            Ok(Value::new_list(vec![]))
+                        }
+                    }
+                    Err(e) => Err(VmError::Runtime(format!(
+                        "regex_match: invalid pattern: {}",
+                        e
+                    ))),
+                }
+            }
+            "regex_replace" => {
+                let pattern = self.registers[base + a + 1].as_string();
+                let text = self.registers[base + a + 2].as_string();
+                let replacement = self.registers[base + a + 3].as_string();
+                match regex::Regex::new(&pattern) {
+                    Ok(re) => {
+                        let result = re.replace_all(&text, replacement.as_str());
+                        Ok(Value::String(StringRef::Owned(result.to_string())))
+                    }
+                    Err(e) => Err(VmError::Runtime(format!(
+                        "regex_replace: invalid pattern: {}",
+                        e
+                    ))),
+                }
+            }
+            "regex_find_all" => {
+                let pattern = self.registers[base + a + 1].as_string();
+                let text = self.registers[base + a + 2].as_string();
+                match regex::Regex::new(&pattern) {
+                    Ok(re) => {
+                        let matches: Vec<Value> = re
+                            .find_iter(&text)
+                            .map(|m| Value::String(StringRef::Owned(m.as_str().to_string())))
+                            .collect();
+                        Ok(Value::new_list(matches))
+                    }
+                    Err(e) => Err(VmError::Runtime(format!(
+                        "regex_find_all: invalid pattern: {}",
+                        e
+                    ))),
+                }
+            }
+
+            // ── String concat ──
+            "string_concat" => {
+                let arg = &self.registers[base + a + 1];
+                if let Value::List(l) = arg {
+                    let mut buf = String::new();
+                    for item in l.iter() {
+                        buf.push_str(&item.display_pretty());
+                    }
+                    Ok(Value::String(StringRef::Owned(buf)))
+                } else {
+                    Ok(Value::String(StringRef::Owned(arg.display_pretty())))
+                }
+            }
+
             _ => Err(VmError::UndefinedCell(name.to_string())),
         }
     }
@@ -2690,6 +2937,258 @@ impl VM {
                 let code = arg.as_int().unwrap_or(0);
                 std::process::exit(code as i32);
             }
+            86 => {
+                // READ_LINES: read file and split by newline
+                let path = arg.as_string();
+                match std::fs::read_to_string(&path) {
+                    Ok(contents) => {
+                        let lines: Vec<Value> = contents
+                            .lines()
+                            .map(|l| Value::String(StringRef::Owned(l.to_string())))
+                            .collect();
+                        Ok(Value::new_list(lines))
+                    }
+                    Err(e) => Err(VmError::Runtime(format!("read_lines failed: {}", e))),
+                }
+            }
+            87 => {
+                // WALK_DIR: recursively list all file paths
+                let path = arg.as_string();
+                fn walk_recursive(
+                    dir: &std::path::Path,
+                    result: &mut Vec<Value>,
+                ) -> Result<(), VmError> {
+                    let entries = std::fs::read_dir(dir)
+                        .map_err(|e| VmError::Runtime(format!("walk_dir failed: {}", e)))?;
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        result.push(Value::String(StringRef::Owned(
+                            p.to_string_lossy().to_string(),
+                        )));
+                        if p.is_dir() {
+                            walk_recursive(&p, result)?;
+                        }
+                    }
+                    Ok(())
+                }
+                let mut result = Vec::new();
+                walk_recursive(std::path::Path::new(&path), &mut result)?;
+                Ok(Value::new_list(result))
+            }
+            88 => {
+                // GLOB: simple glob matching over current directory
+                let pattern = arg.as_string();
+                let mut result = Vec::new();
+                glob_walk(std::path::Path::new("."), &pattern, &mut result)?;
+                Ok(Value::new_list(result))
+            }
+            89 => {
+                // PATH_JOIN: join two path components
+                let other = self.registers[base + arg_reg + 1].as_string();
+                let joined = std::path::Path::new(&arg.as_string())
+                    .join(&other)
+                    .to_string_lossy()
+                    .to_string();
+                Ok(Value::String(StringRef::Owned(joined)))
+            }
+            90 => {
+                // PATH_PARENT
+                let s = arg.as_string();
+                let p = std::path::Path::new(&s);
+                let parent = p
+                    .parent()
+                    .map(|pp| pp.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                Ok(Value::String(StringRef::Owned(parent)))
+            }
+            91 => {
+                // PATH_EXTENSION
+                let s = arg.as_string();
+                let p = std::path::Path::new(&s);
+                let ext = p
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                Ok(Value::String(StringRef::Owned(ext)))
+            }
+            92 => {
+                // PATH_FILENAME
+                let s = arg.as_string();
+                let p = std::path::Path::new(&s);
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                Ok(Value::String(StringRef::Owned(name)))
+            }
+            93 => {
+                // PATH_STEM
+                let s = arg.as_string();
+                let p = std::path::Path::new(&s);
+                let stem = p
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                Ok(Value::String(StringRef::Owned(stem)))
+            }
+            94 => {
+                // EXEC: run shell command
+                let cmd = arg.as_string();
+                match std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&cmd)
+                    .output()
+                {
+                    Ok(output) => {
+                        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                        let status = output.status.code().unwrap_or(-1) as i64;
+                        let mut map = BTreeMap::new();
+                        map.insert(
+                            "stdout".to_string(),
+                            Value::String(StringRef::Owned(stdout)),
+                        );
+                        map.insert(
+                            "stderr".to_string(),
+                            Value::String(StringRef::Owned(stderr)),
+                        );
+                        map.insert("status".to_string(), Value::Int(status));
+                        Ok(Value::new_map(map))
+                    }
+                    Err(e) => Err(VmError::Runtime(format!("exec failed: {}", e))),
+                }
+            }
+            95 => {
+                // READ_STDIN: read all of stdin to string
+                use std::io::Read;
+                let mut buf = String::new();
+                std::io::stdin()
+                    .lock()
+                    .read_to_string(&mut buf)
+                    .map_err(|e| VmError::Runtime(format!("read_stdin failed: {}", e)))?;
+                Ok(Value::String(StringRef::Owned(buf)))
+            }
+            96 => {
+                // EPRINT
+                eprint!("{}", arg.display_pretty());
+                Ok(Value::Null)
+            }
+            97 => {
+                // EPRINTLN
+                eprintln!("{}", arg.display_pretty());
+                Ok(Value::Null)
+            }
+            98 => {
+                // CSV_PARSE: parse CSV text into list of lists of strings
+                let text = arg.as_string();
+                let rows = csv_parse_text(&text);
+                Ok(rows)
+            }
+            99 => {
+                // CSV_ENCODE: convert list of lists to CSV string
+                let encoded = csv_encode_value(arg);
+                Ok(Value::String(StringRef::Owned(encoded)))
+            }
+            100 => {
+                // TOML_PARSE: parse TOML text into map
+                let text = arg.as_string();
+                Ok(toml_parse_text(&text))
+            }
+            101 => {
+                // TOML_ENCODE: convert map to TOML string
+                let encoded = toml_encode_value(arg, "");
+                Ok(Value::String(StringRef::Owned(encoded)))
+            }
+            102 => {
+                // REGEX_MATCH: return capture groups for first match
+                let pattern = arg.as_string();
+                let text = self.registers[base + arg_reg + 1].as_string();
+                match regex::Regex::new(&pattern) {
+                    Ok(re) => {
+                        if let Some(caps) = re.captures(&text) {
+                            let groups: Vec<Value> = caps
+                                .iter()
+                                .map(|m| match m {
+                                    Some(m) => {
+                                        Value::String(StringRef::Owned(m.as_str().to_string()))
+                                    }
+                                    None => Value::Null,
+                                })
+                                .collect();
+                            Ok(Value::new_list(groups))
+                        } else {
+                            Ok(Value::new_list(vec![]))
+                        }
+                    }
+                    Err(e) => Err(VmError::Runtime(format!(
+                        "regex_match: invalid pattern: {}",
+                        e
+                    ))),
+                }
+            }
+            103 => {
+                // REGEX_REPLACE: replace all matches
+                let pattern = arg.as_string();
+                let text = self.registers[base + arg_reg + 1].as_string();
+                let replacement = self.registers[base + arg_reg + 2].as_string();
+                match regex::Regex::new(&pattern) {
+                    Ok(re) => {
+                        let result = re.replace_all(&text, replacement.as_str());
+                        Ok(Value::String(StringRef::Owned(result.to_string())))
+                    }
+                    Err(e) => Err(VmError::Runtime(format!(
+                        "regex_replace: invalid pattern: {}",
+                        e
+                    ))),
+                }
+            }
+            104 => {
+                // REGEX_FIND_ALL: return all matches
+                let pattern = arg.as_string();
+                let text = self.registers[base + arg_reg + 1].as_string();
+                match regex::Regex::new(&pattern) {
+                    Ok(re) => {
+                        let matches: Vec<Value> = re
+                            .find_iter(&text)
+                            .map(|m| Value::String(StringRef::Owned(m.as_str().to_string())))
+                            .collect();
+                        Ok(Value::new_list(matches))
+                    }
+                    Err(e) => Err(VmError::Runtime(format!(
+                        "regex_find_all: invalid pattern: {}",
+                        e
+                    ))),
+                }
+            }
+            105 => {
+                // READ_LINE: read a single line from stdin
+                use std::io::BufRead;
+                let mut line = String::new();
+                std::io::stdin()
+                    .lock()
+                    .read_line(&mut line)
+                    .map_err(|e| VmError::Runtime(format!("read_line failed: {}", e)))?;
+                // Trim trailing newline
+                if line.ends_with('\n') {
+                    line.pop();
+                    if line.ends_with('\r') {
+                        line.pop();
+                    }
+                }
+                Ok(Value::String(StringRef::Owned(line)))
+            }
+            106 => {
+                // STRING_CONCAT: concatenate a list of values into a string
+                if let Value::List(l) = arg {
+                    let mut buf = String::new();
+                    for item in l.iter() {
+                        buf.push_str(&item.display_pretty());
+                    }
+                    Ok(Value::String(StringRef::Owned(buf)))
+                } else {
+                    Ok(Value::String(StringRef::Owned(arg.display_pretty())))
+                }
+            }
             _ => Err(VmError::Runtime(format!(
                 "Unknown intrinsic ID {} - this is a compiler/VM mismatch bug",
                 func_id
@@ -2925,5 +3424,427 @@ fn validate_value_against_schema(
             }
         }
         _ => false,
+    }
+}
+
+// ── Glob matching helper ──
+
+/// Walk a directory tree and collect paths matching a simple glob pattern.
+/// Supports `*` (match any segment component) and `**` (match zero or more directories).
+fn glob_walk(
+    base: &std::path::Path,
+    pattern: &str,
+    result: &mut Vec<Value>,
+) -> Result<(), VmError> {
+    let segments: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+    glob_walk_recursive(base, &segments, result)
+}
+
+fn glob_walk_recursive(
+    dir: &std::path::Path,
+    segments: &[&str],
+    result: &mut Vec<Value>,
+) -> Result<(), VmError> {
+    if segments.is_empty() {
+        return Ok(());
+    }
+
+    let seg = segments[0];
+    let rest = &segments[1..];
+
+    if seg == "**" {
+        // Match zero directories (skip **)
+        glob_walk_recursive(dir, rest, result)?;
+        // Match one or more directories
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return Ok(()),
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                // Try matching rest in this subdirectory
+                glob_walk_recursive(&path, rest, result)?;
+                // Continue recursing with ** still active
+                glob_walk_recursive(&path, segments, result)?;
+            } else if rest.is_empty() {
+                result.push(Value::String(StringRef::Owned(
+                    path.to_string_lossy().to_string(),
+                )));
+            }
+        }
+    } else {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return Ok(()),
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if glob_match_segment(seg, &name) {
+                if rest.is_empty() {
+                    result.push(Value::String(StringRef::Owned(
+                        path.to_string_lossy().to_string(),
+                    )));
+                } else if path.is_dir() {
+                    glob_walk_recursive(&path, rest, result)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Match a single glob segment against a filename. Supports `*` as a wildcard
+/// that matches any sequence of characters, and `?` matching a single character.
+fn glob_match_segment(pattern: &str, name: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+    glob_match_chars(&p, &n)
+}
+
+fn glob_match_chars(pattern: &[char], name: &[char]) -> bool {
+    let mut pi = 0;
+    let mut ni = 0;
+    let mut star_pi = usize::MAX;
+    let mut star_ni = 0;
+
+    while ni < name.len() {
+        if pi < pattern.len() && (pattern[pi] == '?' || pattern[pi] == name[ni]) {
+            pi += 1;
+            ni += 1;
+        } else if pi < pattern.len() && pattern[pi] == '*' {
+            star_pi = pi;
+            star_ni = ni;
+            pi += 1;
+        } else if star_pi != usize::MAX {
+            pi = star_pi + 1;
+            star_ni += 1;
+            ni = star_ni;
+        } else {
+            return false;
+        }
+    }
+    while pi < pattern.len() && pattern[pi] == '*' {
+        pi += 1;
+    }
+    pi == pattern.len()
+}
+
+// ── CSV parsing helpers ──
+
+/// Parse CSV text into a Value::List of Value::List of Value::String.
+/// Handles quoted fields with escaped quotes ("").
+fn csv_parse_text(text: &str) -> Value {
+    let mut rows: Vec<Value> = Vec::new();
+    for line in text.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let fields = csv_parse_line(line);
+        let row: Vec<Value> = fields
+            .into_iter()
+            .map(|f| Value::String(StringRef::Owned(f)))
+            .collect();
+        rows.push(Value::new_list(row));
+    }
+    Value::new_list(rows)
+}
+
+fn csv_parse_line(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if in_quotes {
+            if c == '"' {
+                if chars.peek() == Some(&'"') {
+                    // Escaped quote
+                    chars.next();
+                    current.push('"');
+                } else {
+                    // End of quoted field
+                    in_quotes = false;
+                }
+            } else {
+                current.push(c);
+            }
+        } else {
+            match c {
+                ',' => {
+                    fields.push(current.clone());
+                    current.clear();
+                }
+                '"' => {
+                    in_quotes = true;
+                }
+                _ => {
+                    current.push(c);
+                }
+            }
+        }
+    }
+    fields.push(current);
+    fields
+}
+
+/// Encode a list of lists into a CSV string with proper quoting.
+fn csv_encode_value(val: &Value) -> String {
+    let mut output = String::new();
+    if let Value::List(rows) = val {
+        for row in rows.iter() {
+            if let Value::List(fields) = row {
+                let line: Vec<String> = fields
+                    .iter()
+                    .map(|f| {
+                        let s = f.display_pretty();
+                        if s.contains(',') || s.contains('"') || s.contains('\n') {
+                            format!("\"{}\"", s.replace('"', "\"\""))
+                        } else {
+                            s
+                        }
+                    })
+                    .collect();
+                output.push_str(&line.join(","));
+            }
+            output.push('\n');
+        }
+    }
+    output
+}
+
+// ── TOML parsing helpers ──
+
+/// Parse a basic TOML string into a Value::Map.
+/// Supports key=value pairs, [sections], nested tables,
+/// quoted strings, integers, floats, booleans, and arrays.
+fn toml_parse_text(text: &str) -> Value {
+    let mut root: BTreeMap<String, Value> = BTreeMap::new();
+    let mut current_section: Vec<String> = Vec::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        // Skip empty lines and comments
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        // Section header
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            let inner = trimmed[1..trimmed.len() - 1].trim();
+            current_section = inner.split('.').map(|s| s.trim().to_string()).collect();
+            // Ensure the section exists
+            ensure_section(&mut root, &current_section);
+            continue;
+        }
+        // Key = value
+        if let Some(eq_pos) = trimmed.find('=') {
+            let key = trimmed[..eq_pos].trim().to_string();
+            let val_str = trimmed[eq_pos + 1..].trim();
+            let value = toml_parse_value(val_str);
+
+            if current_section.is_empty() {
+                root.insert(key, value);
+            } else {
+                insert_at_section(&mut root, &current_section, &key, value);
+            }
+        }
+    }
+
+    Value::new_map(root)
+}
+
+fn ensure_section(root: &mut BTreeMap<String, Value>, path: &[String]) {
+    let mut current = root;
+    for seg in path {
+        let entry = current
+            .entry(seg.clone())
+            .or_insert_with(|| Value::new_map(BTreeMap::new()));
+        if let Value::Map(ref mut m) = entry {
+            current = Arc::make_mut(m);
+        } else {
+            return;
+        }
+    }
+}
+
+fn insert_at_section(root: &mut BTreeMap<String, Value>, path: &[String], key: &str, value: Value) {
+    let mut current = root;
+    for seg in path {
+        let entry = current
+            .entry(seg.clone())
+            .or_insert_with(|| Value::new_map(BTreeMap::new()));
+        if let Value::Map(ref mut m) = entry {
+            current = Arc::make_mut(m);
+        } else {
+            return;
+        }
+    }
+    current.insert(key.to_string(), value);
+}
+
+fn toml_parse_value(s: &str) -> Value {
+    let s = s.trim();
+
+    // Boolean
+    if s == "true" {
+        return Value::Bool(true);
+    }
+    if s == "false" {
+        return Value::Bool(false);
+    }
+
+    // Quoted string (double quotes)
+    if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+        let inner = &s[1..s.len() - 1];
+        let unescaped = inner
+            .replace("\\n", "\n")
+            .replace("\\t", "\t")
+            .replace("\\\\", "\\")
+            .replace("\\\"", "\"");
+        return Value::String(StringRef::Owned(unescaped));
+    }
+
+    // Single-quoted string (literal)
+    if s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2 {
+        return Value::String(StringRef::Owned(s[1..s.len() - 1].to_string()));
+    }
+
+    // Array
+    if s.starts_with('[') && s.ends_with(']') {
+        let inner = &s[1..s.len() - 1];
+        if inner.trim().is_empty() {
+            return Value::new_list(vec![]);
+        }
+        let items: Vec<Value> = split_toml_array(inner)
+            .iter()
+            .map(|item| toml_parse_value(item.trim()))
+            .collect();
+        return Value::new_list(items);
+    }
+
+    // Integer
+    if let Ok(n) = s.parse::<i64>() {
+        return Value::Int(n);
+    }
+
+    // Float
+    if let Ok(f) = s.parse::<f64>() {
+        return Value::Float(f);
+    }
+
+    // Bare string fallback
+    Value::String(StringRef::Owned(s.to_string()))
+}
+
+/// Split a TOML array string by commas, respecting nested brackets and quotes.
+fn split_toml_array(s: &str) -> Vec<String> {
+    let mut items = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0i32;
+    let mut in_quotes = false;
+    let mut quote_char = '"';
+
+    for c in s.chars() {
+        if in_quotes {
+            current.push(c);
+            if c == quote_char {
+                in_quotes = false;
+            }
+        } else {
+            match c {
+                '"' | '\'' => {
+                    in_quotes = true;
+                    quote_char = c;
+                    current.push(c);
+                }
+                '[' => {
+                    depth += 1;
+                    current.push(c);
+                }
+                ']' => {
+                    depth -= 1;
+                    current.push(c);
+                }
+                ',' if depth == 0 => {
+                    let trimmed = current.trim().to_string();
+                    if !trimmed.is_empty() {
+                        items.push(trimmed);
+                    }
+                    current.clear();
+                }
+                _ => {
+                    current.push(c);
+                }
+            }
+        }
+    }
+    let trimmed = current.trim().to_string();
+    if !trimmed.is_empty() {
+        items.push(trimmed);
+    }
+    items
+}
+
+/// Encode a Value (typically a map) to TOML string format.
+fn toml_encode_value(val: &Value, prefix: &str) -> String {
+    let mut output = String::new();
+    match val {
+        Value::Map(m) => {
+            // First pass: simple key-value pairs (non-map values)
+            for (k, v) in m.iter() {
+                if !matches!(v, Value::Map(_)) {
+                    output.push_str(&format!("{} = {}\n", k, toml_format_scalar(v)));
+                }
+            }
+            // Second pass: nested tables
+            for (k, v) in m.iter() {
+                if let Value::Map(_) = v {
+                    let section = if prefix.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{}.{}", prefix, k)
+                    };
+                    output.push_str(&format!("\n[{}]\n", section));
+                    output.push_str(&toml_encode_value(v, &section));
+                }
+            }
+        }
+        _ => {
+            output.push_str(&toml_format_scalar(val));
+            output.push('\n');
+        }
+    }
+    output
+}
+
+fn toml_format_scalar(val: &Value) -> String {
+    match val {
+        Value::String(StringRef::Owned(s)) => {
+            format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+        }
+        Value::String(StringRef::Interned(_)) => {
+            format!(
+                "\"{}\"",
+                val.as_string().replace('\\', "\\\\").replace('"', "\\\"")
+            )
+        }
+        Value::Int(n) => n.to_string(),
+        Value::Float(f) => {
+            let s = f.to_string();
+            if s.contains('.') {
+                s
+            } else {
+                format!("{}.0", s)
+            }
+        }
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "\"\"".to_string(),
+        Value::List(l) => {
+            let items: Vec<String> = l.iter().map(toml_format_scalar).collect();
+            format!("[{}]", items.join(", "))
+        }
+        _ => format!("\"{}\"", val.display_pretty().replace('"', "\\\"")),
     }
 }

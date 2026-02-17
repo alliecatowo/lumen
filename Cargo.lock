@@ -1728,6 +1728,7 @@ dependencies = [
  "lumen-runtime",
  "num-bigint",
  "num-traits",
+ "regex",
  "serde",
  "serde_json",
  "sha2",

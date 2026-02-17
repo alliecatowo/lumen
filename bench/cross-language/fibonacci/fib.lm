@@ -1,0 +1,13 @@
+# Fibonacci — recursive fib(35)
+cell fibonacci(n: Int) -> Int
+  if n < 2
+    return n
+  end
+  return fibonacci(n - 1) + fibonacci(n - 2)
+end
+
+cell main() -> Null
+  let result = fibonacci(35)
+  print("fib(35) = " + to_string(result))
+  return null
+end

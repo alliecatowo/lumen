@@ -486,6 +486,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    #[cfg(target_arch = "x86_64")]
     fn systemv_calling_convention_on_linux_target() {
         let ctx = CodegenContext::new_with_target("x86_64-unknown-linux-gnu")
             .expect("linux target context");

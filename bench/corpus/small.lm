@@ -1,0 +1,51 @@
+# Small corpus — ~50 lines, fibonacci + factorial
+
+cell fibonacci(n: Int) -> Int
+  if n < 2
+    return n
+  end
+  let a = fibonacci(n - 1)
+  let b = fibonacci(n - 2)
+  return a + b
+end
+
+cell factorial(n: Int) -> Int
+  if n <= 1
+    return 1
+  end
+  return n * factorial(n - 1)
+end
+
+cell fib_iterative(n: Int) -> Int
+  if n < 2
+    return n
+  end
+  let prev = 0
+  let curr = 1
+  for _ in range(2, n + 1)
+    let next = prev + curr
+    prev = curr
+    curr = next
+  end
+  return curr
+end
+
+cell is_even(n: Int) -> Bool
+  return n % 2 == 0
+end
+
+cell abs_val(n: Int) -> Int
+  if n < 0
+    return 0 - n
+  end
+  return n
+end
+
+cell main() -> Null
+  print("Fibonacci(10) = " + to_string(fibonacci(10)))
+  print("Factorial(10) = " + to_string(factorial(10)))
+  print("Fib iterative(20) = " + to_string(fib_iterative(20)))
+  print("is_even(42) = " + to_string(is_even(42)))
+  print("abs(-7) = " + to_string(abs_val(0 - 7)))
+  return null
+end

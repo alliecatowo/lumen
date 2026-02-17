@@ -505,9 +505,51 @@ pub struct ExprStmt {
     pub span: Span,
 }
 
+/// Target of an assignment: simple variable, indexed, or field access.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AssignTarget {
+    /// Simple variable assignment: `x = ...`
+    Variable(String),
+    /// Index assignment: `list[i] = ...` or `map[key] = ...`
+    Index(Box<Expr>, Box<Expr>),
+    /// Field assignment: `record.field = ...`
+    Field(Box<Expr>, String),
+}
+
+impl AssignTarget {
+    /// If this target is a simple variable, return its name.
+    pub fn as_variable(&self) -> Option<&str> {
+        match self {
+            AssignTarget::Variable(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// Display name for error messages.
+    pub fn display_name(&self) -> String {
+        match self {
+            AssignTarget::Variable(name) => name.clone(),
+            AssignTarget::Index(base, idx) => {
+                format!("{}[{}]", expr_display(base), expr_display(idx))
+            }
+            AssignTarget::Field(base, field) => format!("{}.{}", expr_display(base), field),
+        }
+    }
+}
+
+/// Helper for displaying expressions in assignment targets.
+fn expr_display(expr: &Expr) -> String {
+    match expr {
+        Expr::Ident(name, _) => name.clone(),
+        Expr::IntLit(n, _) => n.to_string(),
+        Expr::StringLit(s, _) => format!("\"{}\"", s),
+        _ => "<expr>".to_string(),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssignStmt {
-    pub target: String,
+    pub target: AssignTarget,
     pub value: Expr,
     pub span: Span,
 }
@@ -548,7 +590,7 @@ pub struct EmitStmt {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompoundAssignStmt {
-    pub target: String,
+    pub target: AssignTarget,
     pub op: CompoundOp,
     pub value: Expr,
     pub span: Span,

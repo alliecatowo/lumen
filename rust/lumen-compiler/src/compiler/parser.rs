@@ -2345,7 +2345,7 @@ impl Parser {
         let value = self.parse_expr(0)?;
         let span = start.merge(value.span());
         Ok(Stmt::CompoundAssign(CompoundAssignStmt {
-            target: name,
+            target: AssignTarget::Variable(name),
             op,
             value,
             span,
@@ -4122,7 +4122,7 @@ impl Parser {
         let value = self.parse_expr(0)?;
         let span = start.merge(value.span());
         Ok(Stmt::Assign(AssignStmt {
-            target: name,
+            target: AssignTarget::Variable(name),
             value,
             span,
         }))

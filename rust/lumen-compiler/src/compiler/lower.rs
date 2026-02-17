@@ -448,7 +448,7 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                             span,
                         );
                         body.push(Stmt::Assign(AssignStmt {
-                            target: value_name.clone(),
+                            target: AssignTarget::Variable(value_name.clone()),
                             value: call,
                             span,
                         }));
@@ -1344,6 +1344,20 @@ impl<'a> Lowerer<'a> {
                     instructions.push(Instruction::abc(OpCode::Return, result_reg, 1, 0));
                     continue;
                 }
+                // Support if/else as implicit return value
+                if let Stmt::If(ifs) = stmt {
+                    let result_reg = ra.alloc_temp();
+                    self.lower_if_as_tail(
+                        ifs,
+                        result_reg,
+                        &mut ra,
+                        &mut constants,
+                        &mut instructions,
+                    );
+                    self.emit_defers(&mut ra, &mut constants, &mut instructions);
+                    instructions.push(Instruction::abc(OpCode::Return, result_reg, 1, 0));
+                    continue;
+                }
             }
             self.lower_stmt(stmt, &mut ra, &mut constants, &mut instructions);
         }
@@ -1632,14 +1646,38 @@ impl<'a> Lowerer<'a> {
             }
             Stmt::Assign(asgn) => {
                 let val_reg = self.lower_expr(&asgn.value, ra, consts, instrs);
-                if let Some(dest) = ra.lookup(&asgn.target) {
-                    if dest != val_reg {
-                        instrs.push(Instruction::abc(OpCode::Move, dest, val_reg, 0));
+                match &asgn.target {
+                    AssignTarget::Variable(name) => {
+                        if let Some(dest) = ra.lookup(name) {
+                            if dest != val_reg {
+                                instrs.push(Instruction::abc(OpCode::Move, dest, val_reg, 0));
+                            }
+                        } else {
+                            let dest = ra.alloc_named(name);
+                            if dest != val_reg {
+                                instrs.push(Instruction::abc(OpCode::Move, dest, val_reg, 0));
+                            }
+                        }
                     }
-                } else {
-                    let dest = ra.alloc_named(&asgn.target);
-                    if dest != val_reg {
-                        instrs.push(Instruction::abc(OpCode::Move, dest, val_reg, 0));
+                    AssignTarget::Index(base_expr, index_expr) => {
+                        let base_reg = self.lower_expr(base_expr, ra, consts, instrs);
+                        let idx_reg = self.lower_expr(index_expr, ra, consts, instrs);
+                        instrs.push(Instruction::abc(
+                            OpCode::SetIndex,
+                            base_reg,
+                            idx_reg,
+                            val_reg,
+                        ));
+                    }
+                    AssignTarget::Field(base_expr, field_name) => {
+                        let base_reg = self.lower_expr(base_expr, ra, consts, instrs);
+                        let field_idx = self.intern_string(field_name);
+                        instrs.push(Instruction::abc(
+                            OpCode::SetField,
+                            base_reg,
+                            field_idx as u8,
+                            val_reg,
+                        ));
                     }
                 }
             }
@@ -1748,11 +1786,6 @@ impl<'a> Lowerer<'a> {
             }
             Stmt::CompoundAssign(ca) => {
                 let val_reg = self.lower_expr(&ca.value, ra, consts, instrs);
-                let target_reg = if let Some(r) = ra.lookup(&ca.target) {
-                    r
-                } else {
-                    ra.alloc_named(&ca.target)
-                };
                 let opcode = match ca.op {
                     CompoundOp::AddAssign => OpCode::Add,
                     CompoundOp::SubAssign => OpCode::Sub,
@@ -1765,7 +1798,54 @@ impl<'a> Lowerer<'a> {
                     CompoundOp::BitOrAssign => OpCode::BitOr,
                     CompoundOp::BitXorAssign => OpCode::BitXor,
                 };
-                instrs.push(Instruction::abc(opcode, target_reg, target_reg, val_reg));
+                match &ca.target {
+                    AssignTarget::Variable(name) => {
+                        let target_reg = if let Some(r) = ra.lookup(name) {
+                            r
+                        } else {
+                            ra.alloc_named(name)
+                        };
+                        instrs.push(Instruction::abc(opcode, target_reg, target_reg, val_reg));
+                    }
+                    AssignTarget::Index(base_expr, index_expr) => {
+                        let base_reg = self.lower_expr(base_expr, ra, consts, instrs);
+                        let idx_reg = self.lower_expr(index_expr, ra, consts, instrs);
+                        // Load current value, apply op, store back
+                        let cur_reg = ra.alloc_temp();
+                        instrs.push(Instruction::abc(
+                            OpCode::GetIndex,
+                            cur_reg,
+                            base_reg,
+                            idx_reg,
+                        ));
+                        instrs.push(Instruction::abc(opcode, cur_reg, cur_reg, val_reg));
+                        instrs.push(Instruction::abc(
+                            OpCode::SetIndex,
+                            base_reg,
+                            idx_reg,
+                            cur_reg,
+                        ));
+                    }
+                    AssignTarget::Field(base_expr, field_name) => {
+                        let base_reg = self.lower_expr(base_expr, ra, consts, instrs);
+                        let field_idx = self.intern_string(field_name);
+                        // Load current value, apply op, store back
+                        let cur_reg = ra.alloc_temp();
+                        instrs.push(Instruction::abc(
+                            OpCode::GetField,
+                            cur_reg,
+                            base_reg,
+                            field_idx as u8,
+                        ));
+                        instrs.push(Instruction::abc(opcode, cur_reg, cur_reg, val_reg));
+                        instrs.push(Instruction::abc(
+                            OpCode::SetField,
+                            base_reg,
+                            field_idx as u8,
+                            cur_reg,
+                        ));
+                    }
+                }
             }
             Stmt::Defer(ds) => {
                 // Collect defer block body for emission before returns (LIFO order)
@@ -1778,6 +1858,108 @@ impl<'a> Lowerer<'a> {
             // Local definitions are lifted to module level during lower();
             // nothing to emit inline.
             Stmt::LocalRecord(_) | Stmt::LocalEnum(_) | Stmt::LocalCell(_) => {}
+        }
+    }
+
+    /// Lower an if/else statement as a tail expression, storing the result
+    /// of whichever branch is taken into `result_reg`.
+    fn lower_if_as_tail(
+        &mut self,
+        ifs: &IfStmt,
+        result_reg: u8,
+        ra: &mut RegAlloc,
+        consts: &mut Vec<Constant>,
+        instrs: &mut Vec<Instruction>,
+    ) {
+        let cond_reg = self.lower_expr(&ifs.condition, ra, consts, instrs);
+        let true_reg = ra.alloc_temp();
+        instrs.push(Instruction::abc(OpCode::LoadBool, true_reg, 1, 0));
+        let cmp_dest = ra.alloc_temp();
+        instrs.push(Instruction::abc(OpCode::Eq, cmp_dest, cond_reg, true_reg));
+        instrs.push(Instruction::abc(OpCode::Test, cmp_dest, 0, 0));
+        let jmp_to_else = instrs.len();
+        instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+
+        // Then branch
+        self.lower_branch_as_tail(&ifs.then_body, result_reg, ra, consts, instrs);
+        let jmp_over_else = instrs.len();
+        instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+
+        // Else branch
+        let else_start = instrs.len();
+        instrs[jmp_to_else] = Instruction::sax(OpCode::Jmp, (else_start - jmp_to_else - 1) as i32);
+
+        if let Some(ref else_body) = ifs.else_body {
+            // Check if else body is a single Stmt::If (else-if chain)
+            if else_body.len() == 1 {
+                if let Stmt::If(nested_ifs) = &else_body[0] {
+                    self.lower_if_as_tail(nested_ifs, result_reg, ra, consts, instrs);
+                } else {
+                    self.lower_branch_as_tail(else_body, result_reg, ra, consts, instrs);
+                }
+            } else {
+                self.lower_branch_as_tail(else_body, result_reg, ra, consts, instrs);
+            }
+        } else {
+            // No else: result is null
+            instrs.push(Instruction::abc(OpCode::LoadNil, result_reg, 0, 0));
+        }
+
+        let end = instrs.len();
+        instrs[jmp_over_else] = Instruction::sax(OpCode::Jmp, (end - jmp_over_else - 1) as i32);
+    }
+
+    /// Lower a branch body (then or else), storing the last expression's value
+    /// into `result_reg`.
+    fn lower_branch_as_tail(
+        &mut self,
+        body: &[Stmt],
+        result_reg: u8,
+        ra: &mut RegAlloc,
+        consts: &mut Vec<Constant>,
+        instrs: &mut Vec<Instruction>,
+    ) {
+        if body.is_empty() {
+            instrs.push(Instruction::abc(OpCode::LoadNil, result_reg, 0, 0));
+            return;
+        }
+        let last_idx = body.len() - 1;
+        for (i, stmt) in body.iter().enumerate() {
+            if i == last_idx {
+                // Last statement: try to capture its value
+                match stmt {
+                    Stmt::Expr(es) => {
+                        let val = self.lower_expr(&es.expr, ra, consts, instrs);
+                        if val != result_reg {
+                            instrs.push(Instruction::abc(OpCode::Move, result_reg, val, 0));
+                        }
+                        return;
+                    }
+                    Stmt::If(nested_ifs) => {
+                        self.lower_if_as_tail(nested_ifs, result_reg, ra, consts, instrs);
+                        return;
+                    }
+                    Stmt::Match(ms) => {
+                        let match_expr = Expr::MatchExpr {
+                            subject: Box::new(ms.subject.clone()),
+                            arms: ms.arms.clone(),
+                            span: ms.span,
+                        };
+                        let val = self.lower_expr(&match_expr, ra, consts, instrs);
+                        if val != result_reg {
+                            instrs.push(Instruction::abc(OpCode::Move, result_reg, val, 0));
+                        }
+                        return;
+                    }
+                    _ => {
+                        // Non-expression last statement: lower normally, result is null
+                        self.lower_stmt(stmt, ra, consts, instrs);
+                        instrs.push(Instruction::abc(OpCode::LoadNil, result_reg, 0, 0));
+                        return;
+                    }
+                }
+            }
+            self.lower_stmt(stmt, ra, consts, instrs);
         }
     }
 
@@ -4701,7 +4883,20 @@ fn collect_free_idents_expr(expr: &Expr, out: &mut Vec<String>) {
 fn collect_free_idents_stmt(stmt: &Stmt, out: &mut Vec<String>) {
     match stmt {
         Stmt::Let(ls) => collect_free_idents_expr(&ls.value, out),
-        Stmt::Assign(a) => collect_free_idents_expr(&a.value, out),
+        Stmt::Assign(a) => {
+            collect_free_idents_expr(&a.value, out);
+            // Also collect free idents from Index/Field target base expressions
+            match &a.target {
+                AssignTarget::Index(base, idx) => {
+                    collect_free_idents_expr(base, out);
+                    collect_free_idents_expr(idx, out);
+                }
+                AssignTarget::Field(base, _) => {
+                    collect_free_idents_expr(base, out);
+                }
+                AssignTarget::Variable(_) => {}
+            }
+        }
         Stmt::Return(r) => collect_free_idents_expr(&r.value, out),
         Stmt::Halt(h) => collect_free_idents_expr(&h.message, out),
         Stmt::Expr(e) => collect_free_idents_expr(&e.expr, out),
@@ -4745,7 +4940,19 @@ fn collect_free_idents_stmt(stmt: &Stmt, out: &mut Vec<String>) {
                 }
             }
         }
-        Stmt::CompoundAssign(ca) => collect_free_idents_expr(&ca.value, out),
+        Stmt::CompoundAssign(ca) => {
+            collect_free_idents_expr(&ca.value, out);
+            match &ca.target {
+                AssignTarget::Index(base, idx) => {
+                    collect_free_idents_expr(base, out);
+                    collect_free_idents_expr(idx, out);
+                }
+                AssignTarget::Field(base, _) => {
+                    collect_free_idents_expr(base, out);
+                }
+                AssignTarget::Variable(_) => {}
+            }
+        }
         Stmt::Defer(ds) => {
             for s in &ds.body {
                 collect_free_idents_stmt(s, out);

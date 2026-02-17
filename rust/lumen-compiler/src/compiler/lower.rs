@@ -2725,6 +2725,47 @@ impl<'a> Lowerer<'a> {
                     if let Expr::Ident(agent_name, _) = obj.as_ref() {
                         // Check if this is a local variable (not a process/agent type constructor)
                         let is_local_var = ra.lookup(agent_name).is_some();
+
+                        // Check if this is an Enum.Variant(payload) constructor call
+                        let is_enum_dot_variant = !is_local_var && self.symbols.types.values().any(|t| {
+                            matches!(&t.kind, crate::compiler::resolve::TypeInfoKind::Enum(e)
+                                if e.name == *agent_name && e.variants.iter().any(|v| v.name == *field))
+                        });
+
+                        if is_enum_dot_variant {
+                            // Emit inline NewUnion for Enum.Variant(payload) constructor
+                            let payload_reg = if args.is_empty() {
+                                let r = ra.alloc_temp();
+                                instrs.push(Instruction::abc(OpCode::LoadNil, r, 0, 0));
+                                r
+                            } else {
+                                match &args[0] {
+                                    CallArg::Positional(e) | CallArg::Named(_, e, _) => {
+                                        self.lower_expr(e, ra, consts, instrs)
+                                    }
+                                    _ => {
+                                        let r = ra.alloc_temp();
+                                        instrs.push(Instruction::abc(OpCode::LoadNil, r, 0, 0));
+                                        r
+                                    }
+                                }
+                            };
+
+                            let dest = ra.alloc_temp();
+                            let tag_reg = ra.alloc_temp();
+                            let kidx = consts.len() as u16;
+                            consts.push(Constant::String(field.clone()));
+                            instrs.push(Instruction::abx(OpCode::LoadK, tag_reg, kidx));
+
+                            instrs.push(Instruction::abc(
+                                OpCode::NewUnion,
+                                dest,
+                                tag_reg,
+                                payload_reg,
+                            ));
+                            return dest;
+                        }
+
                         let is_ctor_target = !is_local_var
                             && (self.symbols.agents.contains_key(agent_name)
                                 || self
@@ -2876,6 +2917,27 @@ impl<'a> Lowerer<'a> {
                 self.lower_tool_call(alias, args, ra, consts, instrs)
             }
             Expr::DotAccess(obj, field, _) => {
+                // Check for Enum.Variant access (bare, no call)
+                if let Expr::Ident(enum_name, _) = obj.as_ref() {
+                    let is_enum_dot_variant = self.symbols.types.values().any(|t| {
+                        matches!(&t.kind, crate::compiler::resolve::TypeInfoKind::Enum(e)
+                            if e.name == *enum_name && e.variants.iter().any(|v| v.name == *field))
+                    });
+                    if is_enum_dot_variant {
+                        // Emit NewUnion with nil payload (no-payload variant)
+                        let dest = ra.alloc_temp();
+                        let tag_reg = ra.alloc_temp();
+                        let kidx = consts.len() as u16;
+                        consts.push(Constant::String(field.clone()));
+                        instrs.push(Instruction::abx(OpCode::LoadK, tag_reg, kidx));
+
+                        let nil_reg = ra.alloc_temp();
+                        instrs.push(Instruction::abc(OpCode::LoadNil, nil_reg, 0, 0));
+
+                        instrs.push(Instruction::abc(OpCode::NewUnion, dest, tag_reg, nil_reg));
+                        return dest;
+                    }
+                }
                 let or = self.lower_expr(obj, ra, consts, instrs);
                 let dest = ra.alloc_temp();
                 self.emit_get_field(dest, or, field, ra, consts, instrs);
@@ -3695,9 +3757,20 @@ impl<'a> Lowerer<'a> {
                     handle_push_indices.push(push_idx);
                 }
 
-                // Emit body code
-                for stmt in body {
-                    self.lower_stmt(stmt, ra, consts, instrs);
+                // Emit body code; capture the last expression's value into dest
+                for (idx, stmt) in body.iter().enumerate() {
+                    if idx == body.len() - 1 {
+                        if let Stmt::Expr(es) = stmt {
+                            let val = self.lower_expr(&es.expr, ra, consts, instrs);
+                            if val != dest {
+                                instrs.push(Instruction::abc(OpCode::Move, dest, val, 0));
+                            }
+                        } else {
+                            self.lower_stmt(stmt, ra, consts, instrs);
+                        }
+                    } else {
+                        self.lower_stmt(stmt, ra, consts, instrs);
+                    }
                 }
 
                 // Emit HandlePop for each handler (in reverse order — LIFO)

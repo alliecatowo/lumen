@@ -1641,6 +1641,185 @@ end
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Enum dot-access construction: Enum.Variant and Enum.Variant(payload)
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn e2e_enum_dot_access_no_payload() {
+    // Regression: Color.Red should produce Union("Red", Null), not Null
+    let result = run_main(
+        r#"
+enum Color
+  Red
+  Green
+  Blue
+end
+
+cell main() -> Int
+  let c = Color.Red
+  match c
+    Red() -> return 1
+    Green() -> return 2
+    Blue() -> return 3
+  end
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(1));
+}
+
+#[test]
+fn e2e_enum_dot_access_with_payload() {
+    // Regression: Shape.Circle(radius: 5) produced "cannot call null"
+    let result = run_main(
+        r#"
+enum Shape
+  Circle(radius: Int)
+  Square(side: Int)
+end
+
+cell main() -> Int
+  let s = Shape.Circle(radius: 5)
+  match s
+    Circle(r) -> return r
+    Square(side) -> return side
+  end
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(5));
+}
+
+#[test]
+fn e2e_enum_dot_access_multiple_variants() {
+    // Ensure all variants work with dot access
+    let result = run_main(
+        r#"
+enum Shape
+  Circle(radius: Int)
+  Square(side: Int)
+end
+
+cell area(s: Shape) -> Int
+  match s
+    Circle(r) -> return r * r * 3
+    Square(side) -> return side * side
+  end
+end
+
+cell main() -> Int
+  let c = Shape.Circle(radius: 5)
+  let s = Shape.Square(side: 4)
+  return area(c) + area(s)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(91)); // 75 + 16
+}
+
+#[test]
+fn e2e_enum_dot_access_mixed_with_bare() {
+    // Mix dot-access and bare variant construction
+    let result = run_main(
+        r#"
+enum Shape
+  Circle(radius: Int)
+  Square(side: Int)
+end
+
+cell main() -> Int
+  let c = Shape.Circle(radius: 5)
+  let s = Square(side: 4)
+  match c
+    Circle(r) ->
+      match s
+        Circle(r2) -> return r + r2
+        Square(side) -> return r + side
+      end
+    Square(side) -> return side
+  end
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(9)); // 5 + 4
+}
+
+#[test]
+fn e2e_enum_dot_access_no_payload_all_variants() {
+    // Test all no-payload variants via dot access
+    let result = run_main(
+        r#"
+enum Color
+  Red
+  Green
+  Blue
+end
+
+cell to_num(c: Color) -> Int
+  match c
+    Red() -> return 1
+    Green() -> return 2
+    Blue() -> return 3
+  end
+end
+
+cell main() -> Int
+  return to_num(Color.Red) + to_num(Color.Green) + to_num(Color.Blue)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(6)); // 1 + 2 + 3
+}
+
+#[test]
+fn e2e_enum_dot_access_in_function_return() {
+    // Return dot-access constructed enum from a function
+    let result = run_main(
+        r#"
+enum Result
+  Ok(value: Int)
+  Err(message: String)
+end
+
+cell make_ok(x: Int) -> Result
+  return Result.Ok(value: x)
+end
+
+cell main() -> Int
+  let r = make_ok(42)
+  match r
+    Ok(v) -> return v
+    Err(e) -> return 0
+  end
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(42));
+}
+
+#[test]
+fn e2e_enum_dot_access_positional_arg() {
+    // Dot access with positional argument
+    let result = run_main(
+        r#"
+enum Option
+  Some(value: Int)
+  None
+end
+
+cell main() -> Int
+  let x = Option.Some(42)
+  match x
+    Some(v) -> return v
+    None() -> return 0
+  end
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(42));
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // For loop with ranges
 // ═══════════════════════════════════════════════════════════════════
 
@@ -1901,5 +2080,213 @@ end
         assert_eq!(items[4], Value::Int(21)); // (1+2) * (3+4)
     } else {
         panic!("expected list, got {:?}", result);
+    }
+}
+
+// ─── Algebraic Effects ───
+
+#[test]
+fn e2e_effect_handle_resume_basic() {
+    // Minimal handle/perform/resume: perform an effect, handler resumes with a value
+    let result = run_main(
+        r#"
+effect Ask
+  cell ask(prompt: String) -> String
+end
+
+cell main() -> String / {Ask}
+  let result = handle
+    perform Ask.ask("name?")
+  with
+    Ask.ask(prompt) =>
+      resume("Alice")
+  end
+  return result
+end
+"#,
+    );
+    match &result {
+        Value::String(StringRef::Owned(s)) => assert_eq!(s, "Alice"),
+        other => panic!("expected String(\"Alice\"), got {:?}", other),
+    }
+}
+
+#[test]
+fn e2e_effect_resume_with_int() {
+    // Resume with an integer value
+    let result = run_main(
+        r#"
+effect Counter
+  cell next() -> Int
+end
+
+cell main() -> Int / {Counter}
+  let result = handle
+    perform Counter.next()
+  with
+    Counter.next() =>
+      resume(42)
+  end
+  return result
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(42));
+}
+
+#[test]
+fn e2e_effect_multiple_performs() {
+    // Multiple performs in sequence — each should be handled and resumed
+    let result = run_main(
+        r#"
+effect Ask
+  cell ask(prompt: String) -> String
+end
+
+cell main() -> String / {Ask}
+  let result = handle
+    let first = perform Ask.ask("name?")
+    let second = perform Ask.ask("age?")
+    first
+  with
+    Ask.ask(prompt) =>
+      resume("answered")
+  end
+  return result
+end
+"#,
+    );
+    match &result {
+        Value::String(StringRef::Owned(s)) => assert_eq!(s, "answered"),
+        other => panic!("expected String(\"answered\"), got {:?}", other),
+    }
+}
+
+#[test]
+fn e2e_effect_resume_value_used_in_computation() {
+    // The resumed value is used in further computation
+    let result = run_main(
+        r#"
+effect Get
+  cell get() -> Int
+end
+
+cell main() -> Int / {Get}
+  let result = handle
+    let x = perform Get.get()
+    x + 10
+  with
+    Get.get() =>
+      resume(32)
+  end
+  return result
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(42));
+}
+
+#[test]
+fn e2e_effect_handler_with_multiple_operations() {
+    // Handle expression with two different operations on the same effect
+    let result = run_main(
+        r#"
+effect Console
+  cell log(message: String) -> Null
+  cell read_line() -> String
+end
+
+cell main() -> String / {Console}
+  let result = handle
+    perform Console.log("hello")
+    perform Console.read_line()
+  with
+    Console.log(message) =>
+      resume(null)
+    Console.read_line() =>
+      resume("user input")
+  end
+  return result
+end
+"#,
+    );
+    match &result {
+        Value::String(StringRef::Owned(s)) => assert_eq!(s, "user input"),
+        other => panic!("expected String(\"user input\"), got {:?}", other),
+    }
+}
+
+#[test]
+fn e2e_effect_resume_null() {
+    // Resuming with null (common for side-effectful operations like logging)
+    let result = run_main(
+        r#"
+effect Logger
+  cell log(msg: String) -> Null
+end
+
+cell main() -> Int / {Logger}
+  let result = handle
+    perform Logger.log("hello")
+    100
+  with
+    Logger.log(msg) =>
+      resume(null)
+  end
+  return result
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(100));
+}
+
+#[test]
+fn e2e_effect_resume_bool() {
+    // Resume with a boolean value
+    let result = run_main(
+        r#"
+effect Check
+  cell is_valid(x: Int) -> Bool
+end
+
+cell main() -> Bool / {Check}
+  let result = handle
+    perform Check.is_valid(42)
+  with
+    Check.is_valid(x) =>
+      resume(true)
+  end
+  return result
+end
+"#,
+    );
+    assert_eq!(result, Value::Bool(true));
+}
+
+#[test]
+fn e2e_effect_body_is_let_binding() {
+    // Handle body that uses let binding before performing
+    let result = run_main(
+        r#"
+effect Ask
+  cell ask(prompt: String) -> String
+end
+
+cell main() -> String / {Ask}
+  let result = handle
+    let greeting = "Hello"
+    let name = perform Ask.ask("name?")
+    greeting
+  with
+    Ask.ask(prompt) =>
+      resume("World")
+  end
+  return result
+end
+"#,
+    );
+    match &result {
+        Value::String(StringRef::Owned(s)) => assert_eq!(s, "Hello"),
+        other => panic!("expected String(\"Hello\"), got {:?}", other),
     }
 }

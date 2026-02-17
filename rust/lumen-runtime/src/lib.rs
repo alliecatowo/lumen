@@ -11,6 +11,7 @@ pub mod injection;
 pub mod nursery;
 pub mod process;
 pub mod reduction;
+pub mod select;
 pub mod scheduler;
 pub mod snapshot;
 pub mod supervisor;

@@ -1,6 +1,7 @@
 pub mod ad;
 pub mod dtype;
 pub mod ops;
+pub mod optim;
 pub mod shape;
 pub mod tensor;
 

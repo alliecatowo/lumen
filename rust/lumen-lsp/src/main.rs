@@ -1,7 +1,7 @@
 //! Lumen Language Server Protocol implementation
 //!
 //! Provides IDE features: diagnostics, completion, hover, go-to-definition,
-//! semantic tokens, inlay hints, and more.
+//! semantic tokens, inlay hints, rename, code actions, and more.
 
 mod cache;
 mod code_actions;
@@ -13,6 +13,7 @@ mod formatting;
 mod goto_definition;
 mod hover;
 mod inlay_hints;
+mod rename;
 mod semantic_tokens;
 mod signature_help;
 
@@ -81,6 +82,10 @@ fn main() {
         code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
         document_formatting_provider: Some(OneOf::Left(true)),
+        rename_provider: Some(OneOf::Right(RenameOptions {
+            prepare_provider: Some(true),
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+        })),
         references_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
         ..Default::default()
@@ -796,6 +801,44 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
             let response = Response {
                 id: req.id.clone(),
                 result: Some(serde_json::to_value(Vec::<SymbolInformation>::new()).unwrap()),
+                error: None,
+            };
+            let _ = connection.sender.send(Message::Response(response));
+        }
+        request::Rename::METHOD => {
+            let result =
+                if let Ok(params) = serde_json::from_value::<RenameParams>(req.params.clone()) {
+                    let uri = params.text_document_position.text_document.uri.clone();
+                    let text = cache.get_text(&uri).cloned().unwrap_or_default();
+                    let program = cache.get_program(&uri);
+                    let position = params.text_document_position.position;
+
+                    rename::rename_symbol(&uri, &text, position, &params.new_name, program)
+                } else {
+                    None
+                };
+            let response = Response {
+                id: req.id.clone(),
+                result: Some(serde_json::to_value(result).unwrap()),
+                error: None,
+            };
+            let _ = connection.sender.send(Message::Response(response));
+        }
+        request::PrepareRenameRequest::METHOD => {
+            let result = if let Ok(params) =
+                serde_json::from_value::<TextDocumentPositionParams>(req.params.clone())
+            {
+                let uri = params.text_document.uri.clone();
+                let text = cache.get_text(&uri).cloned().unwrap_or_default();
+                let program = cache.get_program(&uri);
+
+                rename::prepare_rename(&text, params.position, program)
+            } else {
+                None
+            };
+            let response = Response {
+                id: req.id.clone(),
+                result: Some(serde_json::to_value(result).unwrap()),
                 error: None,
             };
             let _ = connection.sender.send(Message::Response(response));

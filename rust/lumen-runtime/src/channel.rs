@@ -132,7 +132,7 @@ impl<T> Sender<T> {
 /// Cloning a [`Receiver`] creates an additional consumer; each message is
 /// delivered to exactly one receiver (MPMC semantics from crossbeam).
 pub struct Receiver<T> {
-    inner: cb::Receiver<T>,
+    pub(crate) inner: cb::Receiver<T>,
 }
 
 impl<T> Clone for Receiver<T> {

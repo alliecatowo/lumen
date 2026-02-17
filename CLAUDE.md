@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build --release                    # Build all crates
-cargo test --workspace                   # Run all tests (~2,900 passing)
+cargo test --workspace                   # Run all tests (~5,300+ passing)
 cargo test -p lumen-compiler             # Tests for compiler only
 cargo test -p lumen-vm                   # Tests for VM only
 cargo test -p lumen-runtime              # Tests for runtime only
@@ -56,6 +56,53 @@ The Cargo workspace root is `/Cargo.toml` with members under `rust/`:
 - **lumen-provider-json** — JSON provider for tool calls
 - **lumen-provider-fs** — Filesystem provider for tool calls
 - **lumen-provider-mcp** — MCP (Model Context Protocol) provider bridge
+- **lumen-codegen** — Code generation backends (ORC JIT)
+
+### Notable New Modules (Waves 19–26)
+
+**lumen-compiler** new modules:
+- `verification/smt_solver.rs` — SMT solver abstraction (SmtSolver trait, Z3/CVC5 process bindings, BuiltinSmtSolver fallback)
+- `verification/counterexample.rs` — Counter-example generation with boundary value analysis
+- `verification/proof_hints.rs` — Proof hints (Assert, Assume, LoopInvariant, Decreases, Lemma, Unfold)
+- `verification/bounds.rs` — Array bounds propagation with flow-sensitive index checking
+- `verification/parity_verification.rs` — Verification parity checklist (42 items)
+- `active_patterns.rs` — Active pattern definitions and validation
+- `gadts.rs` — GADTs with type refinement in branches
+- `macros.rs` — Hygienic macro registry with name mangling
+- `probabilistic.rs` — Prob<T> type design with distribution kinds
+- `sandbox.rs` — Recursive capability sandbox with parent intersection
+- `parity_memory.rs` — Memory safety parity checklist (50 items)
+- `testing_helpers.rs` — Property-based testing, snapshot testing, assertion helpers
+- `docs_as_tests.rs` — Documentation code block extraction and validation
+
+**lumen-runtime** new modules:
+- `schema_drift.rs` — Schema drift detector with recursive type comparison
+- `execution_graph.rs` — Execution graph with DOT/Mermaid/JSON rendering
+- `retry.rs` — Retry-After with backoff strategies (exponential/fibonacci)
+- `crypto.rs` — Pure-Rust SHA-256, BLAKE3, HMAC-SHA256, HKDF, Base64
+- `http.rs` — HTTP method types, RequestBuilder, Router with path params
+- `fs_async.rs` — Async file operations, batch operations, file watcher
+- `net.rs` — IP/Socket addresses, TCP/UDP config, DNS resolution
+- `parity_durability.rs` — Durability parity checklist (36 items)
+
+**lumen-vm** new modules:
+- `continuations.rs` — Multi-shot continuations with ContinuationSnapshot
+- `parity_concurrency.rs` — Concurrency parity checklist (38 items)
+
+**lumen-codegen** new modules:
+- `orc_jit.rs` — Enhanced JIT engine with module management and profiling
+
+**lumen-cli** new modules:
+- `binary_cache.rs` — Content-addressable binary caching with LRU eviction
+- `workspace.rs` — Workspace resolver with topological sort and build planning
+- `service_template.rs` — Service project scaffolding (REST, WebSocket, CRUD)
+- `ci.rs` — CI configuration (Miri, coverage gates, sanitizers)
+- `transparency.rs` — Merkle tree transparency log for packages
+- `registry.rs` — Package registry client with version resolution
+- `bindgen.rs` — C-to-Lumen bindgen
+
+**lumen-lsp** new modules:
+- `semantic_search.rs` — Symbol index with trigram/fuzzy search
 
 Other key paths:
 - `SPEC.md` — Implementation-accurate language specification (source of truth)
@@ -75,6 +122,8 @@ Entry point: `lumen_compiler::compile(source: &str) -> Result<LirModule, Compile
 **Multi-file compilation**: Use `lumen_compiler::compile_with_imports(source, imports)` to compile with import resolution. The `imports` map provides module sources by path.
 
 **Error formatting**: `lumen_compiler::format_error(err, source, filename)` produces human-readable diagnostics with source context and location info.
+
+**Advanced compilation**: `lumen_compiler::compile_with_options(source, CompileOptions)` is the preferred entry point for advanced compilation. `CompileOptions` supports `OwnershipCheckMode` (`Off`, `Warn`, `Error`) for controlling ownership/borrow checking strictness.
 
 Seven sequential stages:
 1. **Markdown extraction** (`markdown/extract.rs`) — Pulls code blocks and `@directives` from `.lm.md` and `.lumen` files
@@ -139,6 +188,7 @@ The VM has been split into modules under `vm/`:
 - `vm/processes.rs` — memory/machine/pipeline runtimes
 - `vm/ops.rs` — arithmetic operations
 - `vm/helpers.rs` — utility functions
+- `vm/continuations.rs` — Multi-shot continuations with `ContinuationSnapshot` for capturing and replaying execution state
 
 The VM is a register-based interpreter with a call-frame stack (max depth 256). Runtime values include scalars, collections, records, unions, closures, futures, and trace refs.
 
@@ -172,6 +222,10 @@ Lumen implements algebraic effects with one-shot delimited continuations:
 - **One-shot semantics**: Each continuation can only be resumed once, ensuring deterministic control flow
 
 The VM maintains an effect handler stack (`EffectScope`) that tracks active handlers. When `perform` is executed, the VM searches up the handler stack for a matching handler. If found, the continuation is captured and the handler is invoked. The handler can call `resume(value)` to continue execution with a value, or return normally to abort the continuation.
+
+### ORC JIT (lumen-codegen)
+
+`lumen-codegen/src/orc_jit.rs` provides an enhanced JIT engine with module management and profiling. Used for ahead-of-time and just-in-time compilation of hot paths.
 
 ### Tool Policy Enforcement
 
@@ -296,7 +350,7 @@ Providers implement `capabilities()` method to advertise supported features. The
 - `rust/lumen-compiler/tests/spec_markdown_sweep.rs` — Compiles every code block in `SPEC.md` (auto-stubs undefined types)
 - `rust/lumen-compiler/tests/spec_suite.rs` — Semantic compiler tests (compile-ok and compile-err cases)
 - Unit tests inline in source files across all crates
-- **Test counts**: ~2,900 passing, 22 ignored (ignored tests are integration tests requiring external services: Gemini API, MCP servers, provider registry)
+- **Test counts**: ~5,300+ passing, 22 ignored (ignored tests are integration tests requiring external services: Gemini API, MCP servers, provider registry)
 - All 30 examples type-check successfully; most run end-to-end
 
 ## Security Infrastructure
@@ -317,6 +371,10 @@ The CLI includes supply-chain security features for the package manager:
 - Target verification: package content hash and size checked against signed metadata
 
 **Audit logging** (`rust/lumen-cli/src/audit.rs`): Structured audit log for security-relevant operations.
+
+**Transparency log** (`rust/lumen-cli/src/transparency.rs`): Merkle tree transparency log for package publishing. Provides tamper-evident append-only record of all published package versions.
+
+**Registry client** (`rust/lumen-cli/src/registry.rs`): Package registry client with version resolution. Handles package publishing, fetching, and dependency resolution against the registry API.
 
 **Error chains** (`rust/lumen-cli/src/error_chain.rs`): Structured error chain formatting for CLI diagnostics.
 

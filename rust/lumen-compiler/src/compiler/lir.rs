@@ -254,6 +254,25 @@ pub enum IntrinsicId {
     UdpSend = 117,
     UdpRecv = 118,
     TcpClose = 119,
+    // Wave 4A: stdlib completeness (T361-T370)
+    MapSortedKeys = 120,
+    ParseInt = 121,
+    ParseFloat = 122,
+    Log2 = 123,
+    Log10 = 124,
+    IsNan = 125,
+    IsInfinite = 126,
+    MathPi = 127,
+    MathE = 128,
+    SortAsc = 129,
+    SortDesc = 130,
+    SortBy = 131,
+    BinarySearch = 132,
+    Hrtime = 133,
+    FormatTime = 134,
+    Args = 135,
+    SetEnv = 136,
+    EnvVars = 137,
 }
 
 /// A 32-bit instruction

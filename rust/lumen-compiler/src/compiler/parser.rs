@@ -5692,7 +5692,96 @@ impl Parser {
         self.bracket_depth -= 1;
         let end = self.expect(&TokenKind::RParen)?.span;
 
-        Ok(Expr::Call(Box::new(callee), args, start.merge(end)))
+        // T120: Trailing lambda / DSL block — `foo() do |params| ... end`
+        let (final_args, final_span) = self.try_parse_trailing_lambda(args, start.merge(end))?;
+
+        Ok(Expr::Call(Box::new(callee), final_args, final_span))
+    }
+
+    /// T120: Parse an optional trailing `do ... end` block after a call.
+    ///
+    /// Syntax: `call(...) do |params| body end`  or  `call(...) do body end`
+    ///
+    /// The block is desugared into a `Lambda` and appended as the last
+    /// positional argument.
+    fn try_parse_trailing_lambda(
+        &mut self,
+        mut args: Vec<CallArg>,
+        span: Span,
+    ) -> Result<(Vec<CallArg>, Span), ParseError> {
+        // Skip whitespace but NOT newlines — trailing do must be on same line
+        // or immediately after call.
+        let save = self.pos;
+        // Also skip a single newline + optional indent (for next-line do blocks)
+        while matches!(
+            self.peek_kind(),
+            TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent
+        ) {
+            self.advance();
+        }
+
+        if !matches!(self.peek_kind(), TokenKind::Ident(ref s) if s == "do") {
+            self.pos = save;
+            return Ok((args, span));
+        }
+
+        // Check that this isn't a `do` that's the start of a new statement
+        // by looking at context — if we're inside parens/brackets, don't parse trailing do
+        if self.bracket_depth > 0 {
+            self.pos = save;
+            return Ok((args, span));
+        }
+
+        // It's worth trying to peek further to check ambiguity, but for now
+        // we commit: consume the `do` keyword
+        let do_span = self.advance().span; // consume "do"
+
+        // Parse optional parameters: `|param1, param2|`
+        let params = if matches!(self.peek_kind(), TokenKind::Pipe) {
+            self.advance(); // consume `|`
+            let mut params = Vec::new();
+            while !matches!(self.peek_kind(), TokenKind::Pipe | TokenKind::Eof) {
+                if !params.is_empty() {
+                    self.expect(&TokenKind::Comma)?;
+                }
+                let ps = self.current().span;
+                let pname = self.expect_ident()?;
+                let pty = if matches!(self.peek_kind(), TokenKind::Colon) {
+                    self.advance();
+                    // Use parse_base_type instead of parse_type to avoid
+                    // consuming `|` as a union type delimiter.
+                    self.parse_base_type()?
+                } else {
+                    TypeExpr::Named("Any".into(), ps)
+                };
+                params.push(Param {
+                    name: pname,
+                    ty: pty,
+                    default_value: None,
+                    variadic: false,
+                    span: ps,
+                });
+            }
+            self.expect(&TokenKind::Pipe)?; // consume closing `|`
+            params
+        } else {
+            Vec::new()
+        };
+
+        // Parse body until `end`
+        self.skip_newlines();
+        let body = self.parse_block()?;
+        let end_span = self.expect(&TokenKind::End)?.span;
+
+        let lambda = Expr::Lambda {
+            params,
+            return_type: None,
+            body: LambdaBody::Block(body),
+            span: do_span.merge(end_span),
+        };
+
+        args.push(CallArg::Positional(lambda));
+        Ok((args, span.merge(end_span)))
     }
 
     fn parse_map_lit(&mut self) -> Result<Expr, ParseError> {

@@ -23,5 +23,6 @@ pub mod registry_cmd;
 pub mod repl;
 pub mod semver;
 pub mod test_cmd;
+pub mod tuf;
 pub mod wares;
 pub mod workspace;

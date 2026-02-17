@@ -3430,7 +3430,47 @@ impl<'a> Lowerer<'a> {
                 let lr = self.lower_expr(lhs, ra, consts, instrs);
                 let rr = self.lower_expr(rhs, ra, consts, instrs);
                 let dest = ra.alloc_temp();
+
+                // T209: Check if lhs is a result err variant → use rhs
+                let err_idx = self.intern_string("err");
+                instrs.push(Instruction::abx(OpCode::IsVariant, lr, err_idx));
+                // IsVariant: if matched (is err), skip next instruction
+                let jmp_not_err = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+
+                // Err path: use default (rhs)
+                instrs.push(Instruction::abc(OpCode::Move, dest, rr, 0));
+                let jmp_end_err = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder: jump to end
+
+                // Not-err path:
+                let not_err_start = instrs.len();
+                instrs[jmp_not_err] =
+                    Instruction::sax(OpCode::Jmp, (not_err_start - jmp_not_err - 1) as i32);
+
+                // Check if lhs is ok variant → unbox payload
+                let ok_idx = self.intern_string("ok");
+                instrs.push(Instruction::abx(OpCode::IsVariant, lr, ok_idx));
+                // IsVariant: if matched (is ok), skip next instruction
+                let jmp_not_ok = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+
+                // Ok path: unbox payload
+                instrs.push(Instruction::abc(OpCode::Unbox, dest, lr, 0));
+                let jmp_end_ok = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder: jump to end
+
+                // Neither ok nor err: fall through to original NullCo behavior
+                let neither_start = instrs.len();
+                instrs[jmp_not_ok] =
+                    Instruction::sax(OpCode::Jmp, (neither_start - jmp_not_ok - 1) as i32);
                 instrs.push(Instruction::abc(OpCode::NullCo, dest, lr, rr));
+
+                // End: patch all jumps
+                let end = instrs.len();
+                instrs[jmp_end_err] = Instruction::sax(OpCode::Jmp, (end - jmp_end_err - 1) as i32);
+                instrs[jmp_end_ok] = Instruction::sax(OpCode::Jmp, (end - jmp_end_ok - 1) as i32);
+
                 dest
             }
             Expr::NullSafeAccess(obj, field, _) => {
@@ -3484,13 +3524,55 @@ impl<'a> Lowerer<'a> {
             }
             Expr::NullAssert(inner, _) => {
                 let ir = self.lower_expr(inner, ra, consts, instrs);
+                let dest = ra.alloc_temp();
+
+                // T209: Check if value is a result err variant first
+                let err_idx = self.intern_string("err");
+                instrs.push(Instruction::abx(OpCode::IsVariant, ir, err_idx));
+                // IsVariant: if matched (is err), skip next instruction
+                // If err: skip Jmp -> go to halt
+                // If ok-or-other: execute Jmp -> jump past err halt
+                let jmp_not_err = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+
+                // Err path: halt with error
+                let err_msg_idx = consts.len() as u16;
+                consts.push(Constant::String(
+                    "result unwrap failed: value is err".to_string(),
+                ));
+                let err_msg_reg = ra.alloc_temp();
+                instrs.push(Instruction::abx(OpCode::LoadK, err_msg_reg, err_msg_idx));
+                instrs.push(Instruction::abc(OpCode::Halt, err_msg_reg, 0, 0));
+
+                // Patch jump past err halt
+                let after_err = instrs.len();
+                instrs[jmp_not_err] =
+                    Instruction::sax(OpCode::Jmp, (after_err - jmp_not_err - 1) as i32);
+
+                // Check if value is ok variant → unbox it
+                let ok_idx = self.intern_string("ok");
+                instrs.push(Instruction::abx(OpCode::IsVariant, ir, ok_idx));
+                // IsVariant: if matched (is ok), skip next instruction
+                let jmp_not_ok = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+
+                // Ok path: unbox payload
+                instrs.push(Instruction::abc(OpCode::Unbox, dest, ir, 0));
+                let jmp_done = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder: jump to end
+
+                // Not-ok path: check for null (original NullAssert behavior)
+                let not_ok_start = instrs.len();
+                instrs[jmp_not_ok] =
+                    Instruction::sax(OpCode::Jmp, (not_ok_start - jmp_not_ok - 1) as i32);
+
                 // If null, halt with error
                 let nil_reg = ra.alloc_temp();
                 instrs.push(Instruction::abc(OpCode::LoadNil, nil_reg, 0, 0));
                 let cmp = ra.alloc_temp();
                 instrs.push(Instruction::abc(OpCode::Eq, cmp, ir, nil_reg));
                 instrs.push(Instruction::abc(OpCode::Test, cmp, 0, 0));
-                let jmp_ok = instrs.len();
+                let jmp_ok2 = instrs.len();
                 instrs.push(Instruction::sax(OpCode::Jmp, 0));
                 // Null case: halt
                 let msg_idx = consts.len() as u16;
@@ -3498,10 +3580,16 @@ impl<'a> Lowerer<'a> {
                 let msg_reg = ra.alloc_temp();
                 instrs.push(Instruction::abx(OpCode::LoadK, msg_reg, msg_idx));
                 instrs.push(Instruction::abc(OpCode::Halt, msg_reg, 0, 0));
-                // Patch jump
-                let after = instrs.len();
-                instrs[jmp_ok] = Instruction::sax(OpCode::Jmp, (after - jmp_ok - 1) as i32);
-                ir
+                // Not null: just use the value as-is
+                let after_null = instrs.len();
+                instrs[jmp_ok2] = Instruction::sax(OpCode::Jmp, (after_null - jmp_ok2 - 1) as i32);
+                instrs.push(Instruction::abc(OpCode::Move, dest, ir, 0));
+
+                // Patch jmp_done
+                let end = instrs.len();
+                instrs[jmp_done] = Instruction::sax(OpCode::Jmp, (end - jmp_done - 1) as i32);
+
+                dest
             }
             Expr::SpreadExpr(inner, _) => {
                 // Spread produces a list by iterating the inner value.

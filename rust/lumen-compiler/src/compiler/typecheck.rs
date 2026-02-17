@@ -904,6 +904,11 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
+
+                // T049: Exhaustiveness check for integer refinement ranges
+                if subject_type == Type::Int && !has_catchall {
+                    check_int_match_exhaustiveness(&ms.arms, ms.span.line, &mut self.errors);
+                }
             }
             Stmt::Return(rs) => {
                 let val_type = self.infer_expr(&rs.value);
@@ -1980,6 +1985,8 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     Type::Null => rt,
+                    // T209: result[T, E] ?? default → T
+                    Type::Result(ok, _err) => *ok,
                     _ => lt,
                 }
             }
@@ -2045,6 +2052,8 @@ impl<'a> TypeChecker<'a> {
                             Type::Union(non_null)
                         }
                     }
+                    // T209: Unwrap result[T, E] — expr! returns T
+                    Type::Result(ok, _err) => *ok,
                     _ => t,
                 }
             }
@@ -2202,6 +2211,11 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     }
+                }
+
+                // T049: Exhaustiveness check for integer refinement ranges
+                if subject_type == Type::Int && !has_catchall {
+                    check_int_match_exhaustiveness(arms, span.line, &mut self.errors);
                 }
 
                 result_type
@@ -2371,6 +2385,163 @@ fn parse_directive_bool(program: &Program, name: &str) -> Option<bool> {
         Some(true)
     } else {
         None
+    }
+}
+
+/// T049: Check exhaustiveness of integer match arms.
+///
+/// Extracts literal and range patterns from match arms and checks whether they
+/// cover a contiguous range.  If the overall range exceeds 256 values, the
+/// match is considered incomplete (a wildcard/catchall is required).  For
+/// smaller ranges we verify every value is covered.
+fn check_int_match_exhaustiveness(arms: &[MatchArm], line: usize, errors: &mut Vec<TypeError>) {
+    use std::collections::BTreeSet;
+
+    // Collect covered integer values and ranges from patterns.
+    let mut covered: BTreeSet<i64> = BTreeSet::new();
+    let mut ranges: Vec<(i64, i64)> = Vec::new(); // (lo, hi) inclusive
+    let mut has_non_int_pattern = false;
+
+    for arm in arms {
+        collect_int_patterns(
+            &arm.pattern,
+            &mut covered,
+            &mut ranges,
+            &mut has_non_int_pattern,
+        );
+    }
+
+    // If any arm has a non-integer, non-range pattern (e.g. identifier binding
+    // that wasn't detected as catchall, or guard), skip the check.
+    if has_non_int_pattern {
+        return;
+    }
+
+    // If there are no literal/range patterns at all, skip.
+    if covered.is_empty() && ranges.is_empty() {
+        return;
+    }
+
+    // Determine the full range [lo..=hi] from the patterns themselves.
+    let mut lo = i64::MAX;
+    let mut hi = i64::MIN;
+    for &v in &covered {
+        lo = lo.min(v);
+        hi = hi.max(v);
+    }
+    for &(rlo, rhi) in &ranges {
+        lo = lo.min(rlo);
+        hi = hi.max(rhi);
+    }
+
+    // If range exceeds 256 values, just require a wildcard.
+    let span_size = (hi as i128) - (lo as i128) + 1;
+    if span_size > 256 || span_size <= 0 {
+        errors.push(TypeError::IncompleteMatch {
+            enum_name: "Int".to_string(),
+            missing: vec!["_ (wildcard required for large integer ranges)".to_string()],
+            line,
+        });
+        return;
+    }
+
+    // Build the full covered set.
+    for &(rlo, rhi) in &ranges {
+        for v in rlo..=rhi {
+            covered.insert(v);
+        }
+    }
+
+    // Check for missing values.
+    let mut missing_vals = Vec::new();
+    for v in lo..=hi {
+        if !covered.contains(&v) {
+            missing_vals.push(v.to_string());
+            if missing_vals.len() >= 5 {
+                missing_vals.push("...".to_string());
+                break;
+            }
+        }
+    }
+
+    if !missing_vals.is_empty() {
+        errors.push(TypeError::IncompleteMatch {
+            enum_name: "Int".to_string(),
+            missing: missing_vals,
+            line,
+        });
+    }
+}
+
+/// Extract integer literal and range patterns from a match pattern.
+fn collect_int_patterns(
+    pattern: &Pattern,
+    covered: &mut std::collections::BTreeSet<i64>,
+    ranges: &mut Vec<(i64, i64)>,
+    has_non_int: &mut bool,
+) {
+    match pattern {
+        Pattern::Literal(Expr::IntLit(v, _)) => {
+            covered.insert(*v);
+        }
+        Pattern::Literal(Expr::UnaryOp(UnaryOp::Neg, inner, _)) => {
+            if let Expr::IntLit(v, _) = inner.as_ref() {
+                covered.insert(-v);
+            } else {
+                *has_non_int = true;
+            }
+        }
+        Pattern::Range {
+            start,
+            end,
+            inclusive,
+            ..
+        } => {
+            if let (Some(lo), Some(hi)) = (extract_int_lit(start), extract_int_lit(end)) {
+                let hi_val = if *inclusive { hi } else { hi - 1 };
+                if lo <= hi_val {
+                    ranges.push((lo, hi_val));
+                }
+            } else {
+                *has_non_int = true;
+            }
+        }
+        Pattern::Or { patterns, .. } => {
+            for p in patterns {
+                collect_int_patterns(p, covered, ranges, has_non_int);
+            }
+        }
+        Pattern::Guard { inner, .. } => {
+            // Guards don't contribute to exhaustiveness but we still
+            // collect the inner pattern's literals so we can determine
+            // the range (the overall check already requires a catchall
+            // due to the guard being excluded from has_catchall).
+            collect_int_patterns(inner, covered, ranges, has_non_int);
+        }
+        Pattern::Wildcard(_) | Pattern::Ident(_, _) => {
+            // These should have set has_catchall = true already;
+            // reaching here means the caller should have bailed.
+            // But if we do reach here, treat as non-int to skip.
+            *has_non_int = true;
+        }
+        _ => {
+            *has_non_int = true;
+        }
+    }
+}
+
+/// Extract an integer literal value from an expression (handles negation).
+fn extract_int_lit(expr: &Expr) -> Option<i64> {
+    match expr {
+        Expr::IntLit(v, _) => Some(*v),
+        Expr::UnaryOp(UnaryOp::Neg, inner, _) => {
+            if let Expr::IntLit(v, _) = inner.as_ref() {
+                Some(-v)
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }
 

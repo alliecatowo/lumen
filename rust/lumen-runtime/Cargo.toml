@@ -15,6 +15,10 @@ sha2 = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
+bincode = "1"
+crossbeam-deque = "0.8"
+crossbeam-channel = "0.5"
+num_cpus = "1.16"
 
 [dev-dependencies]
 lumen-provider-crypto = { path = "../lumen-provider-crypto" }

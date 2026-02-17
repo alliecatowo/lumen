@@ -61,6 +61,27 @@ fn is_builtin_function(name: &str) -> bool {
             | "assert_eq"
             | "assert_ne"
             | "assert_contains"
+            | "read_lines"
+            | "walk_dir"
+            | "glob"
+            | "path_join"
+            | "path_parent"
+            | "path_extension"
+            | "path_filename"
+            | "path_stem"
+            | "exec"
+            | "read_stdin"
+            | "read_line"
+            | "eprint"
+            | "eprintln"
+            | "csv_parse"
+            | "csv_encode"
+            | "toml_parse"
+            | "toml_encode"
+            | "regex_match"
+            | "regex_replace"
+            | "regex_find_all"
+            | "string_concat"
     )
 }
 
@@ -157,6 +178,27 @@ fn builtin_return_type(name: &str, arg_types: &[Type]) -> Option<Type> {
         "exists" => Some(Type::Bool),
         "mkdir" => Some(Type::Null),
         "exit" => Some(Type::Null),
+        "read_lines" => Some(Type::List(Box::new(Type::String))),
+        "walk_dir" => Some(Type::List(Box::new(Type::String))),
+        "glob" => Some(Type::List(Box::new(Type::String))),
+        "path_join" => Some(Type::String),
+        "path_parent" => Some(Type::String),
+        "path_extension" => Some(Type::String),
+        "path_filename" => Some(Type::String),
+        "path_stem" => Some(Type::String),
+        "exec" => Some(Type::Any),
+        "read_stdin" => Some(Type::String),
+        "read_line" => Some(Type::String),
+        "eprint" => Some(Type::Null),
+        "eprintln" => Some(Type::Null),
+        "csv_parse" => Some(Type::List(Box::new(Type::List(Box::new(Type::String))))),
+        "csv_encode" => Some(Type::String),
+        "toml_parse" => Some(Type::Any),
+        "toml_encode" => Some(Type::String),
+        "regex_match" => Some(Type::List(Box::new(Type::String))),
+        "regex_replace" => Some(Type::String),
+        "regex_find_all" => Some(Type::List(Box::new(Type::String))),
+        "string_concat" => Some(Type::String),
         _ => None,
     }
 }

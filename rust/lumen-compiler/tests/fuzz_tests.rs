@@ -354,6 +354,7 @@ fn fuzz_verification_no_panic() {
                 is_pub: false,
                 span,
                 doc: None,
+                deprecated: None,
             })],
             span,
         };
@@ -598,6 +599,7 @@ fn fuzz_cell_contracts_no_panic() {
             where_clauses: vec![where_clause],
             span,
             doc: None,
+            deprecated: None,
         };
 
         let caller = CellDef {
@@ -621,6 +623,7 @@ fn fuzz_cell_contracts_no_panic() {
             where_clauses: vec![],
             span,
             doc: None,
+            deprecated: None,
         };
 
         let program = Program {

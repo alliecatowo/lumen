@@ -470,6 +470,7 @@ fn all_analyses_enabled_clean_code_passes() {
         typestate_declarations: decls,
         session_protocols: protocols,
         session_actions: actions,
+        ..Default::default()
     };
     // Clean code with no File usage and a complete session — should pass all three.
     let result = compile_raw_with_options(CLEAN_CODE, &opts);

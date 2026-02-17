@@ -4,6 +4,126 @@ use crate::compiler::ast::*;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use thiserror::Error;
 
+// ── Feature maturity registry ──────────────────────────────────────
+
+/// Feature maturity levels for gating unstable/experimental features.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeatureMaturity {
+    /// Guaranteed stable across semver-compatible releases.
+    Stable,
+    /// Semantics stable but API may change in minor versions.
+    Unstable,
+    /// May change or be removed entirely.
+    Experimental,
+}
+
+/// Returns the maturity level of a language feature by name.
+pub fn feature_maturity(name: &str) -> FeatureMaturity {
+    match name {
+        // Stable features — guaranteed semver-stable
+        "cells"
+        | "records"
+        | "enums"
+        | "match"
+        | "if"
+        | "while"
+        | "for"
+        | "let"
+        | "builtins"
+        | "pipe_operator"
+        | "string_interpolation"
+        | "range_expressions"
+        | "imports"
+        | "processes"
+        | "memory_process"
+        | "machine_process"
+        | "pipeline_process"
+        | "print"
+        | "assert"
+        | "type_annotations"
+        | "record_construction"
+        | "enum_variants"
+        | "list_literals"
+        | "map_literals"
+        | "set_literals"
+        | "tuple_literals"
+        | "closures"
+        | "higher_order_functions"
+        | "pattern_matching"
+        | "destructuring"
+        | "compound_assignment"
+        | "comparison_operators"
+        | "logical_operators"
+        | "arithmetic"
+        | "string_operations"
+        | "optional_types" => FeatureMaturity::Stable,
+
+        // Unstable features — semantics stable, API may change
+        "effects" | "algebraic_effects" | "macros" | "session_types" | "typestate"
+        | "labeled_loops" | "defer" | "comptime" | "yield" | "generators" | "compose_operator"
+        | "floor_division" | "shift_operators" | "bitwise_operators" | "variadic_params"
+        | "extern_ffi" | "for_filters" => FeatureMaturity::Unstable,
+
+        // Experimental features — may change or be removed
+        "gadts"
+        | "active_patterns"
+        | "prob_types"
+        | "multi_shot_continuations"
+        | "tensor_types"
+        | "linear_types"
+        | "dependent_types"
+        | "refinement_types"
+        | "effect_polymorphism" => FeatureMaturity::Experimental,
+
+        // Unknown features default to experimental (conservative)
+        _ => FeatureMaturity::Experimental,
+    }
+}
+
+/// Returns all registered features and their maturity levels.
+pub fn feature_registry() -> Vec<(&'static str, FeatureMaturity)> {
+    vec![
+        // Stable
+        ("cells", FeatureMaturity::Stable),
+        ("records", FeatureMaturity::Stable),
+        ("enums", FeatureMaturity::Stable),
+        ("match", FeatureMaturity::Stable),
+        ("if", FeatureMaturity::Stable),
+        ("while", FeatureMaturity::Stable),
+        ("for", FeatureMaturity::Stable),
+        ("let", FeatureMaturity::Stable),
+        ("builtins", FeatureMaturity::Stable),
+        ("pipe_operator", FeatureMaturity::Stable),
+        ("string_interpolation", FeatureMaturity::Stable),
+        ("range_expressions", FeatureMaturity::Stable),
+        ("imports", FeatureMaturity::Stable),
+        ("processes", FeatureMaturity::Stable),
+        ("closures", FeatureMaturity::Stable),
+        ("pattern_matching", FeatureMaturity::Stable),
+        ("destructuring", FeatureMaturity::Stable),
+        ("optional_types", FeatureMaturity::Stable),
+        // Unstable
+        ("effects", FeatureMaturity::Unstable),
+        ("algebraic_effects", FeatureMaturity::Unstable),
+        ("macros", FeatureMaturity::Unstable),
+        ("session_types", FeatureMaturity::Unstable),
+        ("typestate", FeatureMaturity::Unstable),
+        ("labeled_loops", FeatureMaturity::Unstable),
+        ("defer", FeatureMaturity::Unstable),
+        ("comptime", FeatureMaturity::Unstable),
+        ("yield", FeatureMaturity::Unstable),
+        ("generators", FeatureMaturity::Unstable),
+        ("compose_operator", FeatureMaturity::Unstable),
+        // Experimental
+        ("gadts", FeatureMaturity::Experimental),
+        ("active_patterns", FeatureMaturity::Experimental),
+        ("prob_types", FeatureMaturity::Experimental),
+        ("multi_shot_continuations", FeatureMaturity::Experimental),
+        ("tensor_types", FeatureMaturity::Experimental),
+        ("linear_types", FeatureMaturity::Experimental),
+    ]
+}
+
 #[derive(Debug, Error)]
 pub enum ResolveError {
     #[error("undefined type '{name}' at line {line}")]
@@ -165,6 +285,21 @@ pub enum ResolveError {
         reason: String,
         expected: String,
         actual: String,
+        line: usize,
+    },
+    #[error(
+        "unstable feature '{feature}' requires opt-in (stability level: {level}) at line {line}"
+    )]
+    UnstableFeature {
+        feature: String,
+        level: String,
+        line: usize,
+    },
+    #[error("use of deprecated {kind} '{name}' at line {line}: {message}")]
+    DeprecatedUsage {
+        name: String,
+        kind: String,
+        message: String,
         line: usize,
     },
 }
@@ -638,6 +773,7 @@ fn resolve_with_base_inner(
                                 is_pub: true,
                                 span: a.span,
                                 doc: None,
+                                deprecated: None,
                             }),
                             generic_params: vec![],
                         });
@@ -767,6 +903,7 @@ fn resolve_with_base_inner(
                                 is_pub: true,
                                 span: p.span,
                                 doc: None,
+                                deprecated: None,
                             }),
                             generic_params: vec![],
                         });
@@ -4145,6 +4282,7 @@ mod tests {
                 must_use: false,
                 span: sp,
                 doc: None,
+                deprecated: None,
             })],
             span: sp,
         };
@@ -4185,6 +4323,7 @@ mod tests {
                 where_clauses: vec![],
                 span: sp,
                 doc: None,
+                deprecated: None,
             })],
             span: sp,
         };

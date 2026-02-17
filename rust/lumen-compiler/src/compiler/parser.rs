@@ -538,6 +538,7 @@ impl Parser {
                 where_clauses: vec![],
                 span: span_start.merge(end_span),
                 doc: None,
+                deprecated: None,
             }));
         }
         let span = if items.is_empty() {
@@ -822,6 +823,7 @@ impl Parser {
             is_pub: false,
             span: start.merge(end_span),
             doc: None,
+            deprecated: None,
         })
     }
 
@@ -994,6 +996,7 @@ impl Parser {
             is_pub: false,
             span: start.merge(end_span),
             doc: None,
+            deprecated: None,
         })
     }
 
@@ -1069,6 +1072,7 @@ impl Parser {
                 where_clauses: vec![],
                 span,
                 doc: None,
+                deprecated: None,
             });
         }
 
@@ -1106,6 +1110,7 @@ impl Parser {
                     where_clauses: vec![],
                     span: start.merge(end_span),
                     doc: None,
+                    deprecated: None,
                 });
             }
         }
@@ -1129,6 +1134,7 @@ impl Parser {
             where_clauses: vec![],
             span: start.merge(end_span),
             doc: None,
+            deprecated: None,
         })
     }
 
@@ -3483,6 +3489,7 @@ impl Parser {
                 where_clauses: vec![],
                 span,
                 doc: None,
+                deprecated: None,
             });
         }
 
@@ -3516,6 +3523,7 @@ impl Parser {
                     where_clauses: vec![],
                     span: start.merge(end_span),
                     doc: None,
+                    deprecated: None,
                 });
             }
         }
@@ -3537,6 +3545,7 @@ impl Parser {
             where_clauses: vec![],
             span: start.merge(end_span),
             doc: None,
+            deprecated: None,
         })
     }
 

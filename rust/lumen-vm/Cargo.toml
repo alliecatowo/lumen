@@ -22,3 +22,4 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 num-bigint = { workspace = true, features = ["serde"] }
 num-traits = { workspace = true }
+regex = "1"

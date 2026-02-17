@@ -82,6 +82,19 @@ fn is_builtin_function(name: &str) -> bool {
             | "regex_replace"
             | "regex_find_all"
             | "string_concat"
+            | "http_get"
+            | "http_post"
+            | "http_put"
+            | "http_delete"
+            | "http_request"
+            | "tcp_connect"
+            | "tcp_listen"
+            | "tcp_send"
+            | "tcp_recv"
+            | "udp_bind"
+            | "udp_send"
+            | "udp_recv"
+            | "tcp_close"
     )
 }
 
@@ -199,6 +212,14 @@ fn builtin_return_type(name: &str, arg_types: &[Type]) -> Option<Type> {
         "regex_replace" => Some(Type::String),
         "regex_find_all" => Some(Type::List(Box::new(Type::String))),
         "string_concat" => Some(Type::String),
+        // HTTP client builtins — return maps with status, body, ok fields
+        "http_get" | "http_post" | "http_put" | "http_delete" | "http_request" => Some(Type::Any),
+        // TCP/UDP networking builtins
+        "tcp_connect" | "tcp_listen" | "udp_bind" => Some(Type::Any),
+        "tcp_send" | "udp_send" => Some(Type::Any),
+        "tcp_recv" => Some(Type::Any),
+        "udp_recv" => Some(Type::Any),
+        "tcp_close" => Some(Type::Null),
         _ => None,
     }
 }

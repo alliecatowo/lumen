@@ -239,6 +239,21 @@ pub enum IntrinsicId {
     RegexFindAll = 104,
     ReadLine = 105,
     StringConcat = 106,
+    // HTTP client builtins
+    HttpGet = 107,
+    HttpPost = 108,
+    HttpPut = 109,
+    HttpDelete = 110,
+    HttpRequest = 111,
+    // TCP/UDP networking builtins
+    TcpConnect = 112,
+    TcpListen = 113,
+    TcpSend = 114,
+    TcpRecv = 115,
+    UdpBind = 116,
+    UdpSend = 117,
+    UdpRecv = 118,
+    TcpClose = 119,
 }
 
 /// A 32-bit instruction

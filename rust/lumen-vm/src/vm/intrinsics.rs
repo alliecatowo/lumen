@@ -1858,6 +1858,97 @@ impl VM {
                 }
             }
 
+            // ----- HTTP client builtins -----
+            "http_get" => {
+                let url = self.registers[base + a + 1].as_string();
+                Ok(http_builtin_get(&url))
+            }
+            "http_post" => {
+                let url = self.registers[base + a + 1].as_string();
+                let body = if nargs > 1 {
+                    self.registers[base + a + 2].as_string()
+                } else {
+                    String::new()
+                };
+                Ok(http_builtin_post(&url, &body))
+            }
+            "http_put" => {
+                let url = self.registers[base + a + 1].as_string();
+                let body = if nargs > 1 {
+                    self.registers[base + a + 2].as_string()
+                } else {
+                    String::new()
+                };
+                Ok(http_builtin_put(&url, &body))
+            }
+            "http_delete" => {
+                let url = self.registers[base + a + 1].as_string();
+                Ok(http_builtin_delete(&url))
+            }
+            "http_request" => {
+                let method = self.registers[base + a + 1].as_string();
+                let url = self.registers[base + a + 2].as_string();
+                let body = if nargs > 2 {
+                    self.registers[base + a + 3].as_string()
+                } else {
+                    String::new()
+                };
+                let headers = if nargs > 3 {
+                    extract_headers_map(&self.registers[base + a + 4])
+                } else {
+                    Vec::new()
+                };
+                Ok(http_builtin_request(&method, &url, &body, &headers))
+            }
+
+            // ----- TCP/UDP networking builtins -----
+            "tcp_connect" => {
+                let addr = self.registers[base + a + 1].as_string();
+                Ok(net_tcp_connect(&addr))
+            }
+            "tcp_listen" => {
+                let addr = self.registers[base + a + 1].as_string();
+                Ok(net_tcp_listen(&addr))
+            }
+            "tcp_send" => {
+                let handle = self.registers[base + a + 1].as_int().unwrap_or(-1);
+                let data = self.registers[base + a + 2].as_string();
+                Ok(net_tcp_send(handle, &data))
+            }
+            "tcp_recv" => {
+                let handle = self.registers[base + a + 1].as_int().unwrap_or(-1);
+                let max_bytes = if nargs > 1 {
+                    self.registers[base + a + 2].as_int().unwrap_or(4096)
+                } else {
+                    4096
+                };
+                Ok(net_tcp_recv(handle, max_bytes))
+            }
+            "tcp_close" => {
+                let handle = self.registers[base + a + 1].as_int().unwrap_or(-1);
+                net_tcp_close(handle);
+                Ok(Value::Null)
+            }
+            "udp_bind" => {
+                let addr = self.registers[base + a + 1].as_string();
+                Ok(net_udp_bind(&addr))
+            }
+            "udp_send" => {
+                let handle = self.registers[base + a + 1].as_int().unwrap_or(-1);
+                let addr = self.registers[base + a + 2].as_string();
+                let data = self.registers[base + a + 3].as_string();
+                Ok(net_udp_send(handle, &addr, &data))
+            }
+            "udp_recv" => {
+                let handle = self.registers[base + a + 1].as_int().unwrap_or(-1);
+                let max_bytes = if nargs > 1 {
+                    self.registers[base + a + 2].as_int().unwrap_or(4096)
+                } else {
+                    4096
+                };
+                Ok(net_udp_recv(handle, max_bytes))
+            }
+
             _ => Err(VmError::UndefinedCell(name.to_string())),
         }
     }
@@ -3189,6 +3280,82 @@ impl VM {
                     Ok(Value::String(StringRef::Owned(arg.display_pretty())))
                 }
             }
+            107 => {
+                // HTTP_GET
+                let url = arg.as_string();
+                Ok(http_builtin_get(&url))
+            }
+            108 => {
+                // HTTP_POST
+                let url = arg.as_string();
+                let body = self.registers[base + arg_reg + 1].as_string();
+                Ok(http_builtin_post(&url, &body))
+            }
+            109 => {
+                // HTTP_PUT
+                let url = arg.as_string();
+                let body = self.registers[base + arg_reg + 1].as_string();
+                Ok(http_builtin_put(&url, &body))
+            }
+            110 => {
+                // HTTP_DELETE
+                let url = arg.as_string();
+                Ok(http_builtin_delete(&url))
+            }
+            111 => {
+                // HTTP_REQUEST
+                let method = arg.as_string();
+                let url = self.registers[base + arg_reg + 1].as_string();
+                let body = self.registers[base + arg_reg + 2].as_string();
+                let headers = extract_headers_map(&self.registers[base + arg_reg + 3]);
+                Ok(http_builtin_request(&method, &url, &body, &headers))
+            }
+            112 => {
+                // TCP_CONNECT
+                let addr = arg.as_string();
+                Ok(net_tcp_connect(&addr))
+            }
+            113 => {
+                // TCP_LISTEN
+                let addr = arg.as_string();
+                Ok(net_tcp_listen(&addr))
+            }
+            114 => {
+                // TCP_SEND
+                let handle = arg.as_int().unwrap_or(-1);
+                let data = self.registers[base + arg_reg + 1].as_string();
+                Ok(net_tcp_send(handle, &data))
+            }
+            115 => {
+                // TCP_RECV
+                let handle = arg.as_int().unwrap_or(-1);
+                let max_bytes = self.registers[base + arg_reg + 1].as_int().unwrap_or(4096);
+                Ok(net_tcp_recv(handle, max_bytes))
+            }
+            116 => {
+                // UDP_BIND
+                let addr = arg.as_string();
+                Ok(net_udp_bind(&addr))
+            }
+            117 => {
+                // UDP_SEND
+                let handle = arg.as_int().unwrap_or(-1);
+                let addr = self.registers[base + arg_reg + 1].as_string();
+                let data = self.registers[base + arg_reg + 2].as_string();
+                Ok(net_udp_send(handle, &addr, &data))
+            }
+            118 => {
+                // UDP_RECV
+                let handle = arg.as_int().unwrap_or(-1);
+                let max_bytes = self.registers[base + arg_reg + 1].as_int().unwrap_or(4096);
+                Ok(net_udp_recv(handle, max_bytes))
+            }
+            119 => {
+                // TCP_CLOSE
+                let handle = arg.as_int().unwrap_or(-1);
+                net_tcp_close(handle);
+                Ok(Value::Null)
+            }
             _ => Err(VmError::Runtime(format!(
                 "Unknown intrinsic ID {} - this is a compiler/VM mismatch bug",
                 func_id
@@ -3199,14 +3366,15 @@ impl VM {
 
 /// Format a Value according to a format specifier string.
 ///
-/// Supported specifiers:
+/// Supported specifiers (Python-style):
+/// - `<fill><align><width>`  — fill char + alignment + width (e.g., `*^10`)
+/// - `>N`   — right-align in width N (fill defaults to space)
+/// - `<N`   — left-align in width N
+/// - `^N`   — center-align in width N
 /// - `.Nf`  — float with N decimal places (e.g., ".2f")
 /// - `#x`   — hexadecimal (lowercase)
 /// - `#o`   — octal
 /// - `#b`   — binary
-/// - `>N`   — right-align in width N
-/// - `<N`   — left-align in width N
-/// - `^N`   — center-align in width N
 /// - `0N`   — zero-pad to width N
 /// - `+`    — always show sign for numbers
 fn format_value_with_spec(value: &Value, spec: &str) -> Result<String, VmError> {
@@ -3217,12 +3385,20 @@ fn format_value_with_spec(value: &Value, spec: &str) -> Result<String, VmError> 
     // Parse the spec into components
     let mut sign_plus = false;
     let mut zero_pad: Option<usize> = None;
+    let mut fill_char: char = ' ';
     let mut align: Option<(char, usize)> = None; // (alignment_char, width)
     let mut precision: Option<usize> = None;
     let mut radix: Option<char> = None; // 'x', 'o', 'b'
 
     let chars: Vec<char> = spec.chars().collect();
     let mut i = 0;
+
+    // Check for fill+align at the start: if chars[1] is an alignment char,
+    // then chars[0] is the fill character.
+    if chars.len() >= 2 && matches!(chars[1], '>' | '<' | '^') {
+        fill_char = chars[0];
+        i = 1; // skip the fill char, let the alignment arm handle chars[1]
+    }
 
     while i < chars.len() {
         match chars[i] {
@@ -3354,13 +3530,26 @@ fn format_value_with_spec(value: &Value, spec: &str) -> Result<String, VmError> 
         }
     }
 
-    // Apply alignment
+    // Apply alignment with fill character
     if let Some((align_char, width)) = align {
         if formatted.len() < width {
+            let pad_len = width - formatted.len();
             match align_char {
-                '>' => formatted = format!("{:>width$}", formatted, width = width),
-                '<' => formatted = format!("{:<width$}", formatted, width = width),
-                '^' => formatted = format!("{:^width$}", formatted, width = width),
+                '>' => {
+                    let padding: String = std::iter::repeat_n(fill_char, pad_len).collect();
+                    formatted = format!("{}{}", padding, formatted);
+                }
+                '<' => {
+                    let padding: String = std::iter::repeat_n(fill_char, pad_len).collect();
+                    formatted = format!("{}{}", formatted, padding);
+                }
+                '^' => {
+                    let left_pad = pad_len / 2;
+                    let right_pad = pad_len - left_pad;
+                    let left: String = std::iter::repeat_n(fill_char, left_pad).collect();
+                    let right: String = std::iter::repeat_n(fill_char, right_pad).collect();
+                    formatted = format!("{}{}{}", left, formatted, right);
+                }
                 _ => {}
             }
         }
@@ -3846,5 +4035,424 @@ fn toml_format_scalar(val: &Value) -> String {
             format!("[{}]", items.join(", "))
         }
         _ => format!("\"{}\"", val.display_pretty().replace('"', "\\\"")),
+    }
+}
+
+// ===========================================================================
+// HTTP client builtins (backed by ureq)
+// ===========================================================================
+
+/// Build a response map from a successful ureq response.
+fn http_response_to_value(resp: ureq::Response) -> Value {
+    let status = resp.status() as i64;
+    let ok = (200..300).contains(&(status as u16));
+    let body = resp.into_string().unwrap_or_default();
+
+    let mut map = BTreeMap::new();
+    map.insert("ok".to_string(), Value::Bool(ok));
+    map.insert("status".to_string(), Value::Int(status));
+    map.insert("body".to_string(), Value::String(StringRef::Owned(body)));
+    Value::new_map(map)
+}
+
+/// Build an error response map from a ureq error.
+fn http_error_to_value(err: ureq::Error) -> Value {
+    let mut map = BTreeMap::new();
+    map.insert("ok".to_string(), Value::Bool(false));
+    match err {
+        ureq::Error::Status(code, resp) => {
+            map.insert("status".to_string(), Value::Int(code as i64));
+            let body = resp.into_string().unwrap_or_default();
+            map.insert("body".to_string(), Value::String(StringRef::Owned(body)));
+        }
+        ureq::Error::Transport(transport) => {
+            map.insert("status".to_string(), Value::Int(0));
+            map.insert(
+                "error".to_string(),
+                Value::String(StringRef::Owned(transport.to_string())),
+            );
+            map.insert(
+                "body".to_string(),
+                Value::String(StringRef::Owned(String::new())),
+            );
+        }
+    }
+    Value::new_map(map)
+}
+
+fn http_builtin_get(url: &str) -> Value {
+    match ureq::get(url).call() {
+        Ok(resp) => http_response_to_value(resp),
+        Err(err) => http_error_to_value(err),
+    }
+}
+
+fn http_builtin_post(url: &str, body: &str) -> Value {
+    match ureq::post(url)
+        .set("Content-Type", "application/json")
+        .send_string(body)
+    {
+        Ok(resp) => http_response_to_value(resp),
+        Err(err) => http_error_to_value(err),
+    }
+}
+
+fn http_builtin_put(url: &str, body: &str) -> Value {
+    match ureq::put(url)
+        .set("Content-Type", "application/json")
+        .send_string(body)
+    {
+        Ok(resp) => http_response_to_value(resp),
+        Err(err) => http_error_to_value(err),
+    }
+}
+
+fn http_builtin_delete(url: &str) -> Value {
+    match ureq::delete(url).call() {
+        Ok(resp) => http_response_to_value(resp),
+        Err(err) => http_error_to_value(err),
+    }
+}
+
+fn http_builtin_request(
+    method: &str,
+    url: &str,
+    body: &str,
+    headers: &[(String, String)],
+) -> Value {
+    let mut req = match method.to_uppercase().as_str() {
+        "GET" => ureq::get(url),
+        "POST" => ureq::post(url),
+        "PUT" => ureq::put(url),
+        "DELETE" => ureq::delete(url),
+        "PATCH" => ureq::patch(url),
+        "HEAD" => ureq::head(url),
+        _ => {
+            let mut map = BTreeMap::new();
+            map.insert("ok".to_string(), Value::Bool(false));
+            map.insert("status".to_string(), Value::Int(0));
+            map.insert(
+                "error".to_string(),
+                Value::String(StringRef::Owned(format!(
+                    "unsupported HTTP method: {}",
+                    method
+                ))),
+            );
+            map.insert(
+                "body".to_string(),
+                Value::String(StringRef::Owned(String::new())),
+            );
+            return Value::new_map(map);
+        }
+    };
+
+    for (name, value) in headers {
+        req = req.set(name, value);
+    }
+
+    let result = if body.is_empty() {
+        req.call()
+    } else {
+        req.send_string(body)
+    };
+
+    match result {
+        Ok(resp) => http_response_to_value(resp),
+        Err(err) => http_error_to_value(err),
+    }
+}
+
+/// Extract headers from a Value::Map into a Vec of (name, value) pairs.
+fn extract_headers_map(val: &Value) -> Vec<(String, String)> {
+    match val {
+        Value::Map(m) => m.iter().map(|(k, v)| (k.clone(), v.as_string())).collect(),
+        _ => Vec::new(),
+    }
+}
+
+// ===========================================================================
+// TCP/UDP networking builtins (backed by std::net)
+// ===========================================================================
+
+use once_cell::sync::Lazy;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream, UdpSocket};
+use std::sync::Mutex;
+
+/// Enum that can hold a TCP stream or a UDP socket.
+enum NetHandle {
+    TcpStream(TcpStream),
+    UdpSocket(UdpSocket),
+}
+
+/// Global registry of network handles, keyed by monotonic integer IDs.
+struct HandleRegistry {
+    handles: HashMap<i64, NetHandle>,
+    next_id: i64,
+}
+
+impl HandleRegistry {
+    fn new() -> Self {
+        Self {
+            handles: HashMap::new(),
+            next_id: 1,
+        }
+    }
+
+    fn insert(&mut self, handle: NetHandle) -> i64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.handles.insert(id, handle);
+        id
+    }
+
+    fn remove(&mut self, id: i64) -> Option<NetHandle> {
+        self.handles.remove(&id)
+    }
+}
+
+static NET_HANDLES: Lazy<Mutex<HandleRegistry>> = Lazy::new(|| Mutex::new(HandleRegistry::new()));
+
+fn net_tcp_connect(addr: &str) -> Value {
+    match TcpStream::connect(addr) {
+        Ok(stream) => {
+            let id = NET_HANDLES
+                .lock()
+                .expect("NET_HANDLES lock poisoned")
+                .insert(NetHandle::TcpStream(stream));
+            let mut map = BTreeMap::new();
+            map.insert("ok".to_string(), Value::Bool(true));
+            map.insert("handle".to_string(), Value::Int(id));
+            Value::new_map(map)
+        }
+        Err(e) => {
+            let mut map = BTreeMap::new();
+            map.insert("ok".to_string(), Value::Bool(false));
+            map.insert(
+                "error".to_string(),
+                Value::String(StringRef::Owned(e.to_string())),
+            );
+            Value::new_map(map)
+        }
+    }
+}
+
+fn net_tcp_listen(addr: &str) -> Value {
+    match TcpListener::bind(addr) {
+        Ok(listener) => {
+            // Accept one incoming connection (blocking).
+            match listener.accept() {
+                Ok((stream, peer_addr)) => {
+                    let id = NET_HANDLES
+                        .lock()
+                        .expect("NET_HANDLES lock poisoned")
+                        .insert(NetHandle::TcpStream(stream));
+                    let mut map = BTreeMap::new();
+                    map.insert("ok".to_string(), Value::Bool(true));
+                    map.insert("handle".to_string(), Value::Int(id));
+                    map.insert(
+                        "peer".to_string(),
+                        Value::String(StringRef::Owned(peer_addr.to_string())),
+                    );
+                    Value::new_map(map)
+                }
+                Err(e) => {
+                    let mut map = BTreeMap::new();
+                    map.insert("ok".to_string(), Value::Bool(false));
+                    map.insert(
+                        "error".to_string(),
+                        Value::String(StringRef::Owned(format!("accept failed: {}", e))),
+                    );
+                    Value::new_map(map)
+                }
+            }
+        }
+        Err(e) => {
+            let mut map = BTreeMap::new();
+            map.insert("ok".to_string(), Value::Bool(false));
+            map.insert(
+                "error".to_string(),
+                Value::String(StringRef::Owned(e.to_string())),
+            );
+            Value::new_map(map)
+        }
+    }
+}
+
+fn net_tcp_send(handle: i64, data: &str) -> Value {
+    let mut registry = NET_HANDLES.lock().expect("NET_HANDLES lock poisoned");
+    match registry.handles.get_mut(&handle) {
+        Some(NetHandle::TcpStream(ref mut stream)) => match stream.write_all(data.as_bytes()) {
+            Ok(()) => Value::Int(data.len() as i64),
+            Err(e) => {
+                let mut map = BTreeMap::new();
+                map.insert("ok".to_string(), Value::Bool(false));
+                map.insert(
+                    "error".to_string(),
+                    Value::String(StringRef::Owned(e.to_string())),
+                );
+                Value::new_map(map)
+            }
+        },
+        _ => {
+            let mut map = BTreeMap::new();
+            map.insert("ok".to_string(), Value::Bool(false));
+            map.insert(
+                "error".to_string(),
+                Value::String(StringRef::Owned(format!(
+                    "invalid TCP stream handle: {}",
+                    handle
+                ))),
+            );
+            Value::new_map(map)
+        }
+    }
+}
+
+fn net_tcp_recv(handle: i64, max_bytes: i64) -> Value {
+    let mut registry = NET_HANDLES.lock().expect("NET_HANDLES lock poisoned");
+    match registry.handles.get_mut(&handle) {
+        Some(NetHandle::TcpStream(ref mut stream)) => {
+            let buf_size = max_bytes.clamp(1, 1_048_576) as usize;
+            let mut buf = vec![0u8; buf_size];
+            match stream.read(&mut buf) {
+                Ok(n) => {
+                    buf.truncate(n);
+                    let data = String::from_utf8_lossy(&buf).to_string();
+                    let mut map = BTreeMap::new();
+                    map.insert("ok".to_string(), Value::Bool(true));
+                    map.insert("data".to_string(), Value::String(StringRef::Owned(data)));
+                    map.insert("bytes_read".to_string(), Value::Int(n as i64));
+                    Value::new_map(map)
+                }
+                Err(e) => {
+                    let mut map = BTreeMap::new();
+                    map.insert("ok".to_string(), Value::Bool(false));
+                    map.insert(
+                        "error".to_string(),
+                        Value::String(StringRef::Owned(e.to_string())),
+                    );
+                    Value::new_map(map)
+                }
+            }
+        }
+        _ => {
+            let mut map = BTreeMap::new();
+            map.insert("ok".to_string(), Value::Bool(false));
+            map.insert(
+                "error".to_string(),
+                Value::String(StringRef::Owned(format!(
+                    "invalid TCP stream handle: {}",
+                    handle
+                ))),
+            );
+            Value::new_map(map)
+        }
+    }
+}
+
+fn net_tcp_close(handle: i64) {
+    let mut registry = NET_HANDLES.lock().expect("NET_HANDLES lock poisoned");
+    // Dropping the handle closes the underlying socket.
+    registry.remove(handle);
+}
+
+fn net_udp_bind(addr: &str) -> Value {
+    match UdpSocket::bind(addr) {
+        Ok(socket) => {
+            let id = NET_HANDLES
+                .lock()
+                .expect("NET_HANDLES lock poisoned")
+                .insert(NetHandle::UdpSocket(socket));
+            let mut map = BTreeMap::new();
+            map.insert("ok".to_string(), Value::Bool(true));
+            map.insert("handle".to_string(), Value::Int(id));
+            Value::new_map(map)
+        }
+        Err(e) => {
+            let mut map = BTreeMap::new();
+            map.insert("ok".to_string(), Value::Bool(false));
+            map.insert(
+                "error".to_string(),
+                Value::String(StringRef::Owned(e.to_string())),
+            );
+            Value::new_map(map)
+        }
+    }
+}
+
+fn net_udp_send(handle: i64, addr: &str, data: &str) -> Value {
+    let registry = NET_HANDLES.lock().expect("NET_HANDLES lock poisoned");
+    match registry.handles.get(&handle) {
+        Some(NetHandle::UdpSocket(ref socket)) => match socket.send_to(data.as_bytes(), addr) {
+            Ok(n) => Value::Int(n as i64),
+            Err(e) => {
+                let mut map = BTreeMap::new();
+                map.insert("ok".to_string(), Value::Bool(false));
+                map.insert(
+                    "error".to_string(),
+                    Value::String(StringRef::Owned(e.to_string())),
+                );
+                Value::new_map(map)
+            }
+        },
+        _ => {
+            let mut map = BTreeMap::new();
+            map.insert("ok".to_string(), Value::Bool(false));
+            map.insert(
+                "error".to_string(),
+                Value::String(StringRef::Owned(format!(
+                    "invalid UDP socket handle: {}",
+                    handle
+                ))),
+            );
+            Value::new_map(map)
+        }
+    }
+}
+
+fn net_udp_recv(handle: i64, max_bytes: i64) -> Value {
+    let registry = NET_HANDLES.lock().expect("NET_HANDLES lock poisoned");
+    match registry.handles.get(&handle) {
+        Some(NetHandle::UdpSocket(ref socket)) => {
+            let buf_size = max_bytes.clamp(1, 1_048_576) as usize;
+            let mut buf = vec![0u8; buf_size];
+            match socket.recv_from(&mut buf) {
+                Ok((n, from_addr)) => {
+                    buf.truncate(n);
+                    let data = String::from_utf8_lossy(&buf).to_string();
+                    let mut map = BTreeMap::new();
+                    map.insert("ok".to_string(), Value::Bool(true));
+                    map.insert("data".to_string(), Value::String(StringRef::Owned(data)));
+                    map.insert(
+                        "from".to_string(),
+                        Value::String(StringRef::Owned(from_addr.to_string())),
+                    );
+                    map.insert("bytes_read".to_string(), Value::Int(n as i64));
+                    Value::new_map(map)
+                }
+                Err(e) => {
+                    let mut map = BTreeMap::new();
+                    map.insert("ok".to_string(), Value::Bool(false));
+                    map.insert(
+                        "error".to_string(),
+                        Value::String(StringRef::Owned(e.to_string())),
+                    );
+                    Value::new_map(map)
+                }
+            }
+        }
+        _ => {
+            let mut map = BTreeMap::new();
+            map.insert("ok".to_string(), Value::Bool(false));
+            map.insert(
+                "error".to_string(),
+                Value::String(StringRef::Owned(format!(
+                    "invalid UDP socket handle: {}",
+                    handle
+                ))),
+            );
+            Value::new_map(map)
+        }
     }
 }

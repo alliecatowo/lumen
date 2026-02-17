@@ -1,0 +1,16 @@
+# String operations — 100K concatenations
+cell string_concat(count: Int) -> String
+  let result = ""
+  let i = 0
+  while i < count
+    result = result + "x"
+    i = i + 1
+  end
+  return result
+end
+
+cell main() -> Null
+  let s = string_concat(100000)
+  print("Length: " + to_string(len(s)))
+  return null
+end

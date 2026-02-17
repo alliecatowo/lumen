@@ -2,7 +2,6 @@
 
 use lumen_runtime::fs_async::*;
 use std::fs;
-use std::path::Path;
 
 /// Helper: create a fresh temporary directory for a test.
 fn tmp_dir(name: &str) -> std::path::PathBuf {

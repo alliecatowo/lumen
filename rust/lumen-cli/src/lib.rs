@@ -4,11 +4,11 @@
 
 pub mod audit;
 pub mod auth;
-pub mod ci;
 pub mod binary_cache;
 pub mod bindgen;
 pub mod build_script;
 pub mod cache;
+pub mod ci;
 pub mod ci_output;
 pub mod colors;
 pub mod config;

@@ -449,18 +449,20 @@ impl LockedPackage {
     pub fn verify_integrity(&self) -> Result<(), LockIntegrityError> {
         // Check required fields based on source type
         if self.is_registry_dependency()
-            && self.resolved.is_none() && self.checksum.is_none() && self.integrity.is_none() {
-                return Err(LockIntegrityError::MissingIntegrity {
-                    package: self.name.clone(),
-                });
-            }
+            && self.resolved.is_none()
+            && self.checksum.is_none()
+            && self.integrity.is_none()
+        {
+            return Err(LockIntegrityError::MissingIntegrity {
+                package: self.name.clone(),
+            });
+        }
 
-        if self.is_git_dependency()
-            && self.resolved.is_none() {
-                return Err(LockIntegrityError::MissingGitRevision {
-                    package: self.name.clone(),
-                });
-            }
+        if self.is_git_dependency() && self.resolved.is_none() {
+            return Err(LockIntegrityError::MissingGitRevision {
+                package: self.name.clone(),
+            });
+        }
 
         // Verify artifact hashes match declared integrity
         for artifact in &self.artifacts {

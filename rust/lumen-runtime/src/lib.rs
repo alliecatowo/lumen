@@ -6,11 +6,13 @@
 pub mod cache;
 pub mod channel;
 pub mod checkpoint;
+pub mod debugger;
 pub mod durability;
 pub mod injection;
 pub mod nursery;
 pub mod process;
 pub mod reduction;
+pub mod replay;
 pub mod select;
 pub mod scheduler;
 pub mod snapshot;

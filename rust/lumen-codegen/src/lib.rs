@@ -9,3 +9,5 @@ pub mod ffi;
 pub mod jit;
 pub mod lower;
 pub mod types;
+pub mod wasm;
+pub mod wit;

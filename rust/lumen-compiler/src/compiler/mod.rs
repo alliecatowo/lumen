@@ -1,11 +1,13 @@
 pub mod ast;
 pub mod constraints;
 pub mod emit;
+pub mod grammar;
 pub mod lexer;
 pub mod lir;
 pub mod lower;
 pub mod ownership;
 pub mod parser;
+pub mod prompt_check;
 pub mod regalloc;
 pub mod resolve;
 pub mod session;

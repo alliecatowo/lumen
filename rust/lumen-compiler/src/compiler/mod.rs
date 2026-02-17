@@ -1,6 +1,8 @@
 pub mod ast;
 pub mod constraints;
 pub mod emit;
+pub mod error_codes;
+pub mod fixit;
 pub mod grammar;
 pub mod lexer;
 pub mod lir;

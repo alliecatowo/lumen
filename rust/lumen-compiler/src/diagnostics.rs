@@ -1,6 +1,8 @@
 //! Rich error diagnostics with source snippets, colors, and suggestions.
 
 use crate::compiler::constraints::ConstraintError;
+use crate::compiler::error_codes;
+use crate::compiler::fixit;
 use crate::compiler::lexer::LexError;
 use crate::compiler::ownership::OwnershipError;
 use crate::compiler::parser::ParseError;
@@ -38,21 +40,29 @@ impl Diagnostic {
         // Build the error category title
         let error_category = match self.severity {
             Severity::Error => match self.code.as_deref() {
-                Some("E010") | Some("E011") | Some("E012") | Some("E013") | Some("E014")
-                | Some("E015") | Some("E016") => "PARSE ERROR",
-                Some("E040") => "TYPE MISMATCH",
-                Some("E041") => "UNDEFINED VARIABLE",
-                Some("E042") => "UNKNOWN FIELD",
-                Some("E043") => "INCOMPLETE MATCH",
-                Some("E020") => "UNDEFINED TYPE",
-                Some("E021") => "UNDEFINED CELL",
-                Some("E022") => "UNDEFINED TOOL",
-                Some("E023") => "DUPLICATE DEFINITION",
-                Some("E030") => "UNDECLARED EFFECT",
-                Some("E001") | Some("E002") | Some("E003") | Some("E004") | Some("E005")
-                | Some("E006") => "LEX ERROR",
-                Some("E050") => "CONSTRAINT ERROR",
-                Some("E060") | Some("E061") | Some("E062") | Some("E063") => "OWNERSHIP ERROR",
+                Some(c) if c.starts_with("E000") => "LEX ERROR",
+                Some(c) if c.starts_with("E001") && c.len() == 5 => "PARSE ERROR",
+                Some("E0010") | Some("E0011") | Some("E0012") | Some("E0013") | Some("E0014")
+                | Some("E0015") | Some("E0016") => "PARSE ERROR",
+                Some("E0100") | Some("E0102") | Some("E0103") | Some("E0104") | Some("E0105") => {
+                    "RESOLVE ERROR"
+                }
+                Some("E0107") | Some("E0108") | Some("E0109") => "UNDECLARED EFFECT",
+                Some(c) if c.starts_with("E011") => "MACHINE ERROR",
+                Some(c) if c.starts_with("E012") => "IMPORT ERROR",
+                Some("E0200") => "TYPE MISMATCH",
+                Some("E0201") => "UNDEFINED VARIABLE",
+                Some("E0202") => "NOT CALLABLE",
+                Some("E0203") => "ARGUMENT COUNT",
+                Some("E0204") => "UNKNOWN FIELD",
+                Some("E0205") => "UNDEFINED TYPE",
+                Some("E0206") => "MISSING RETURN",
+                Some("E0207") => "IMMUTABLE ASSIGN",
+                Some("E0208") => "INCOMPLETE MATCH",
+                Some("E0209") => "MUST USE",
+                Some("E0300") => "CONSTRAINT ERROR",
+                Some(c) if c.starts_with("E04") => "OWNERSHIP ERROR",
+                Some("E0500") => "LOWERING ERROR",
                 _ => "ERROR",
             },
             Severity::Warning => "WARNING",
@@ -129,7 +139,7 @@ impl Diagnostic {
     /// Generate a friendly, plain-language explanation of the error
     fn generate_explanation(&self) -> String {
         match self.code.as_deref() {
-            Some("E041") => {
+            Some("E0201") => {
                 // Extract variable name from message
                 let var_name = self
                     .message
@@ -137,46 +147,46 @@ impl Diagnostic {
                     .trim_end_matches('\'');
                 format!("I cannot find a variable named `{}`:", var_name)
             }
-            Some("E040") => {
+            Some("E0200") => {
                 // Type mismatch
                 format!(
                     "I found a type mismatch:\n\n  {}",
                     self.message.trim_start_matches("type mismatch: ")
                 )
             }
-            Some("E042") => {
+            Some("E0204") => {
                 // Unknown field
                 format!("I cannot find this field:\n\n  {}", self.message)
             }
-            Some("E043") => {
+            Some("E0208") => {
                 // Incomplete match
                 format!(
                     "This match expression is not complete:\n\n  {}",
                     self.message
                 )
             }
-            Some("E020") => {
+            Some("E0100") | Some("E0205") => {
                 let type_name = self
                     .message
                     .trim_start_matches("undefined type '")
                     .trim_end_matches('\'');
                 format!("I cannot find a type named `{}`:", type_name)
             }
-            Some("E021") => {
+            Some("E0102") => {
                 let cell_name = self
                     .message
                     .trim_start_matches("undefined cell '")
                     .trim_end_matches('\'');
                 format!("I cannot find a cell named `{}`:", cell_name)
             }
-            Some("E010") | Some("E011") | Some("E012") | Some("E013") | Some("E014")
-            | Some("E015") | Some("E016") => {
+            Some("E0010") | Some("E0011") | Some("E0012") | Some("E0013") | Some("E0014")
+            | Some("E0015") | Some("E0016") => {
                 format!(
                     "I found something unexpected while parsing:\n\n  {}",
                     self.message
                 )
             }
-            Some("E030") => {
+            Some("E0107") => {
                 format!(
                     "This cell is performing an effect that it hasn't declared:\n\n  {}",
                     self.message
@@ -383,7 +393,11 @@ const BUILTINS: &[&str] = &[
 
 /// Convert a CompileError + source text into a list of Diagnostics
 pub fn format_compile_error(error: &CompileError, source: &str, filename: &str) -> Vec<Diagnostic> {
-    match error {
+    // Generate fix-it hints for the whole error up front.
+    let fixit_hints = fixit::suggest_fixit(error, source);
+    let hint_lines = fixit::render_hints(&fixit_hints);
+
+    let mut diagnostics = match error {
         CompileError::Lex(e) => vec![format_lex_error(e, source, filename)],
         CompileError::Parse(errors) => errors
             .iter()
@@ -407,7 +421,7 @@ pub fn format_compile_error(error: &CompileError, source: &str, filename: &str) 
             .collect(),
         CompileError::Lower(msg) => vec![Diagnostic {
             severity: Severity::Error,
-            code: Some("E100".to_string()),
+            code: Some("E0500".to_string()),
             message: msg.clone(),
             file: Some(filename.to_string()),
             line: None,
@@ -422,10 +436,26 @@ pub fn format_compile_error(error: &CompileError, source: &str, filename: &str) 
             .iter()
             .flat_map(|e| format_compile_error(e, source, filename))
             .collect(),
+    };
+
+    // Append fix-it hint lines to the *first* diagnostic (if any).
+    // This avoids duplicating hints across every sub-diagnostic while
+    // still making them visible in the rendered output.
+    if !hint_lines.is_empty() {
+        if let Some(first) = diagnostics.first_mut() {
+            for line in &hint_lines {
+                if !first.suggestions.iter().any(|s| s == line) {
+                    first.suggestions.push(line.clone());
+                }
+            }
+        }
     }
+
+    diagnostics
 }
 
 fn format_lex_error(error: &LexError, source: &str, filename: &str) -> Diagnostic {
+    let code = error_codes::lex_code(error).to_string();
     match error {
         LexError::UnexpectedChar { ch, line, col } => {
             let source_line = get_source_line(source, *line);
@@ -433,7 +463,7 @@ fn format_lex_error(error: &LexError, source: &str, filename: &str) -> Diagnosti
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E001".to_string()),
+                code: Some(code),
                 message: format!("unexpected character '{}'", ch),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -451,7 +481,7 @@ fn format_lex_error(error: &LexError, source: &str, filename: &str) -> Diagnosti
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E002".to_string()),
+                code: Some(code),
                 message: "unterminated string literal".to_string(),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -470,7 +500,7 @@ fn format_lex_error(error: &LexError, source: &str, filename: &str) -> Diagnosti
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E003".to_string()),
+                code: Some(code),
                 message: "inconsistent indentation".to_string(),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -488,7 +518,7 @@ fn format_lex_error(error: &LexError, source: &str, filename: &str) -> Diagnosti
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E004".to_string()),
+                code: Some(code),
                 message: "invalid number literal".to_string(),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -504,7 +534,7 @@ fn format_lex_error(error: &LexError, source: &str, filename: &str) -> Diagnosti
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E005".to_string()),
+                code: Some(code),
                 message: "invalid bytes literal".to_string(),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -520,7 +550,7 @@ fn format_lex_error(error: &LexError, source: &str, filename: &str) -> Diagnosti
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E006".to_string()),
+                code: Some(code),
                 message: "invalid unicode escape sequence".to_string(),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -536,7 +566,7 @@ fn format_lex_error(error: &LexError, source: &str, filename: &str) -> Diagnosti
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E007".to_string()),
+                code: Some(code),
                 message: "unterminated markdown block".to_string(),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -550,6 +580,7 @@ fn format_lex_error(error: &LexError, source: &str, filename: &str) -> Diagnosti
 }
 
 fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagnostic {
+    let code = error_codes::parse_code(error).to_string();
     match error {
         ParseError::Unexpected {
             found,
@@ -603,7 +634,7 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E010".to_string()),
+                code: Some(code),
                 message: friendly_message,
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -615,7 +646,7 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
         }
         ParseError::UnexpectedEof => Diagnostic {
             severity: Severity::Error,
-            code: Some("E011".to_string()),
+            code: Some(code),
             message: "unexpected end of input".to_string(),
             file: Some(filename.to_string()),
             line: None,
@@ -635,7 +666,7 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
             let underline = source_line.as_ref().map(|_| make_underline(*open_col, 1));
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E012".to_string()),
+                code: Some(code.clone()),
                 message: format!(
                     "unclosed '{}' opened at line {}, col {}",
                     bracket, open_line, open_col
@@ -667,7 +698,7 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
             let underline = source_line.as_ref().map(|_| make_underline(*open_col, 1));
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E013".to_string()),
+                code: Some(code.clone()),
                 message: format!(
                     "expected 'end' to close '{}' at line {}, col {}",
                     construct, open_line, open_col
@@ -685,7 +716,7 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
             let underline = source_line.as_ref().map(|_| make_underline(*col, 1));
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E014".to_string()),
+                code: Some(code),
                 message: "missing type annotation".to_string(),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -700,7 +731,7 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
             let underline = source_line.as_ref().map(|_| make_underline(*col, 1));
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E015".to_string()),
+                code: Some(code),
                 message: "incomplete expression".to_string(),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -715,7 +746,7 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
             let underline = source_line.as_ref().map(|_| make_underline(*col, 1));
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E016".to_string()),
+                code: Some(code),
                 message: "malformed construct".to_string(),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -729,6 +760,7 @@ fn format_parse_error(error: &ParseError, source: &str, filename: &str) -> Diagn
 }
 
 fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> Diagnostic {
+    let code = error_codes::resolve_code(error).to_string();
     match error {
         ResolveError::UndefinedType {
             name,
@@ -752,7 +784,7 @@ fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> D
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E020".to_string()),
+                code: Some(code),
                 message: format!("undefined type '{}'", name),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -784,7 +816,7 @@ fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> D
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E021".to_string()),
+                code: Some(code.clone()),
                 message: format!("undefined cell '{}'", name),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -806,7 +838,7 @@ fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> D
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E022".to_string()),
+                code: Some(code),
                 message: format!("undefined tool alias '{}'", name),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -828,7 +860,7 @@ fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> D
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E023".to_string()),
+                code: Some(code),
                 message: format!("duplicate definition '{}'", name),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -857,7 +889,7 @@ fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> D
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E030".to_string()),
+                code: Some(code),
                 message: format!(
                     "cell '{}' performs effect '{}' but it is not declared in its effect row",
                     cell, effect
@@ -874,7 +906,7 @@ fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> D
             // Fallback for other resolve errors
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E099".to_string()),
+                code: Some(code),
                 message: error.to_string(),
                 file: Some(filename.to_string()),
                 line: None,
@@ -888,6 +920,7 @@ fn format_resolve_error(error: &ResolveError, source: &str, filename: &str) -> D
 }
 
 fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnostic {
+    let code = error_codes::type_code(error).to_string();
     match error {
         TypeError::Mismatch {
             expected,
@@ -899,7 +932,7 @@ fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnos
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E040".to_string()),
+                code: Some(code),
                 message: format!("type mismatch: expected {}, got {}", expected, actual),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -930,7 +963,7 @@ fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnos
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E041".to_string()),
+                code: Some(code),
                 message: format!("undefined variable '{}'", name),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -963,7 +996,7 @@ fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnos
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E042".to_string()),
+                code: Some(code),
                 message: format!("unknown field '{}' on type '{}'", field, ty),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -989,7 +1022,7 @@ fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnos
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E043".to_string()),
+                code: Some(code),
                 message: format!(
                     "incomplete match on enum '{}': missing variants [{}]",
                     enum_name, missing_list
@@ -1019,7 +1052,7 @@ fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnos
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E049".to_string()),
+                code: Some(code),
                 message: error.to_string(),
                 file: Some(filename.to_string()),
                 line,
@@ -1033,6 +1066,7 @@ fn format_type_error(error: &TypeError, source: &str, filename: &str) -> Diagnos
 }
 
 fn format_constraint_error(error: &ConstraintError, source: &str, filename: &str) -> Diagnostic {
+    let code = error_codes::constraint_code(error).to_string();
     match error {
         ConstraintError::Invalid {
             field,
@@ -1044,7 +1078,7 @@ fn format_constraint_error(error: &ConstraintError, source: &str, filename: &str
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E050".to_string()),
+                code: Some(code),
                 message: format!("invalid constraint on field '{}': {}", field, message),
                 file: Some(filename.to_string()),
                 line: Some(*line),
@@ -1058,6 +1092,7 @@ fn format_constraint_error(error: &ConstraintError, source: &str, filename: &str
 }
 
 fn format_ownership_error(error: &OwnershipError, source: &str, filename: &str) -> Diagnostic {
+    let code = error_codes::ownership_code(error).to_string();
     match error {
         OwnershipError::UseAfterMove {
             variable,
@@ -1071,7 +1106,7 @@ fn format_ownership_error(error: &OwnershipError, source: &str, filename: &str) 
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E060".to_string()),
+                code: Some(code),
                 message: format!(
                     "use of moved variable '{}' (moved at line {})",
                     variable, moved_at.line
@@ -1098,7 +1133,7 @@ fn format_ownership_error(error: &OwnershipError, source: &str, filename: &str) 
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E061".to_string()),
+                code: Some(code.clone()),
                 message: format!(
                     "owned variable '{}' was never consumed",
                     variable
@@ -1126,7 +1161,7 @@ fn format_ownership_error(error: &OwnershipError, source: &str, filename: &str) 
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E062".to_string()),
+                code: Some(code.clone()),
                 message: format!(
                     "variable '{}' already borrowed at line {}",
                     variable, first_borrow.line
@@ -1154,7 +1189,7 @@ fn format_ownership_error(error: &OwnershipError, source: &str, filename: &str) 
 
             Diagnostic {
                 severity: Severity::Error,
-                code: Some("E063".to_string()),
+                code: Some(code),
                 message: format!(
                     "cannot move '{}' while it is borrowed (borrowed at line {})",
                     variable, borrow_at.line
@@ -1226,7 +1261,7 @@ mod tests {
         let diag = format_parse_error(&error, source, "test.lm.md");
 
         assert_eq!(diag.severity, Severity::Error);
-        assert_eq!(diag.code, Some("E010".to_string()));
+        assert_eq!(diag.code, Some("E0010".to_string()));
         assert!(diag.message.contains("expecting") || diag.message.contains("found"));
         assert_eq!(diag.line, Some(5));
     }
@@ -1241,7 +1276,7 @@ mod tests {
         let diag = format_type_error(&error, source, "test.lm.md");
 
         assert_eq!(diag.severity, Severity::Error);
-        assert_eq!(diag.code, Some("E041".to_string()));
+        assert_eq!(diag.code, Some("E0201".to_string()));
         assert!(diag.message.contains("undefined variable"));
         assert!(!diag.suggestions.is_empty());
         // Should suggest "for" since edit distance is 1
@@ -1255,7 +1290,7 @@ mod tests {
     fn test_render_plain() {
         let diag = Diagnostic {
             severity: Severity::Error,
-            code: Some("E041".to_string()),
+            code: Some("E0201".to_string()),
             message: "undefined variable 'foo'".to_string(),
             file: Some("test.lm.md".to_string()),
             line: Some(10),
@@ -1266,7 +1301,7 @@ mod tests {
         };
 
         let output = diag.render_plain();
-        assert!(output.contains("error[E041]"));
+        assert!(output.contains("error[E0201]"));
         assert!(output.contains("undefined variable"));
         assert!(output.contains("test.lm.md:10:5"));
         assert!(output.contains("let x = foo"));
@@ -1278,7 +1313,7 @@ mod tests {
     fn test_render_ansi() {
         let diag = Diagnostic {
             severity: Severity::Error,
-            code: Some("E041".to_string()),
+            code: Some("E0201".to_string()),
             message: "undefined variable 'foo'".to_string(),
             file: Some("test.lm.md".to_string()),
             line: Some(10),

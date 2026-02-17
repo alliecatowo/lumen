@@ -1,4 +1,5 @@
 use crate::shape::{Shape, ShapeError};
+use crate::simd;
 use crate::tensor::Tensor;
 
 /// Error type for tensor operations.
@@ -182,25 +183,21 @@ pub fn matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, OpError> {
 
     match (a.ndim(), b.ndim()) {
         (1, 1) => {
-            // Dot product
-            let dot: f64 = a
-                .data()
-                .iter()
-                .zip(b.data().iter())
-                .map(|(&x, &y)| x * y)
-                .sum();
+            // Dot product — SIMD-accelerated
+            let dot = simd::simd_dot_product(a.data(), b.data());
             Ok(Tensor::scalar(dot))
         }
         (2, 1) => {
+            // Matrix-vector: each output element is a dot product of a row of A
+            // with the vector B — SIMD-accelerated.
             let m = a.shape().dims()[0];
             let k = a.shape().dims()[1];
             let mut data = vec![0.0; m];
+            let a_data = a.data();
+            let b_data = b.data();
             for (i, data_i) in data.iter_mut().enumerate() {
-                let mut s = 0.0;
-                for j in 0..k {
-                    s += a.data()[i * k + j] * b.data()[j];
-                }
-                *data_i = s;
+                let row = &a_data[i * k..(i + 1) * k];
+                *data_i = simd::simd_dot_product(row, b_data);
             }
             Ok(Tensor::from_vec(data, out_shape)?)
         }
@@ -218,17 +215,28 @@ pub fn matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, OpError> {
             Ok(Tensor::from_vec(data, out_shape)?)
         }
         (2, 2) => {
+            // General matmul: use SIMD for each (row_A · col_B) dot product.
+            // We transpose B so columns become contiguous rows, then dot-product.
             let m = a.shape().dims()[0];
             let k = a.shape().dims()[1];
             let n = b.shape().dims()[1];
+            let a_data = a.data();
+
+            // Transpose B into column-major layout for contiguous column access.
+            let b_data = b.data();
+            let mut bt = vec![0.0f64; k * n];
+            for r in 0..k {
+                for c in 0..n {
+                    bt[c * k + r] = b_data[r * n + c];
+                }
+            }
+
             let mut data = vec![0.0; m * n];
             for i in 0..m {
+                let row_a = &a_data[i * k..(i + 1) * k];
                 for j in 0..n {
-                    let mut s = 0.0;
-                    for p in 0..k {
-                        s += a.data()[i * k + p] * b.data()[p * n + j];
-                    }
-                    data[i * n + j] = s;
+                    let col_b = &bt[j * k..(j + 1) * k];
+                    data[i * n + j] = simd::simd_dot_product(row_a, col_b);
                 }
             }
             Ok(Tensor::from_vec(data, out_shape)?)

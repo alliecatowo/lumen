@@ -3,7 +3,7 @@
 # Compiles and runs each benchmark in each language, records wall-clock time.
 # Usage: bash bench/run_all.sh [--csv output.csv] [--runs N]
 #
-# Requires: gcc, go, python3, npx (for ts-node/tsx), cargo (for Lumen)
+# Requires: gcc, go, python3, npx (for ts-node/tsx), zig, cargo (for Lumen)
 # Missing compilers are skipped gracefully.
 
 set -euo pipefail
@@ -39,6 +39,7 @@ HAS_GO=false;  command -v go  &>/dev/null && HAS_GO=true
 HAS_PY=false;  command -v python3 &>/dev/null && HAS_PY=true
 HAS_TS=false;  (command -v npx &>/dev/null || command -v tsx &>/dev/null) && HAS_TS=true
 HAS_LUMEN=false; (command -v lumen &>/dev/null || [ -f "$REPO_ROOT/target/release/lumen" ]) && HAS_LUMEN=true
+HAS_ZIG=false;   command -v zig &>/dev/null && HAS_ZIG=true
 
 LUMEN_BIN="lumen"
 if ! command -v lumen &>/dev/null && [ -f "$REPO_ROOT/target/release/lumen" ]; then
@@ -47,7 +48,7 @@ fi
 
 echo "=== Cross-Language Benchmark Runner ==="
 echo "Runs per benchmark: $RUNS"
-echo "Compilers: gcc=$HAS_GCC go=$HAS_GO python3=$HAS_PY ts=$HAS_TS lumen=$HAS_LUMEN"
+echo "Compilers: gcc=$HAS_GCC go=$HAS_GO python3=$HAS_PY ts=$HAS_TS zig=$HAS_ZIG lumen=$HAS_LUMEN"
 echo ""
 
 BENCHMARKS=("fibonacci" "json_parse" "string_ops" "tree" "sort")
@@ -111,6 +112,13 @@ for bench in "${BENCHMARKS[@]}"; do
       echo "  $bench go: COMPILE ERROR"
   fi
 
+  # Zig
+  if $HAS_ZIG && [ -f "$CROSS_DIR/$bench/$prefix.zig" ]; then
+    zig build-exe "$CROSS_DIR/$bench/$prefix.zig" -O ReleaseFast -femit-bin="$BUILD_DIR/${bench}_zig" 2>/dev/null && \
+      run_benchmark "$bench" "zig" "$BUILD_DIR/${bench}_zig" || \
+      echo "  $bench zig: COMPILE ERROR"
+  fi
+
   # Python
   if $HAS_PY && [ -f "$CROSS_DIR/$bench/$prefix.py" ]; then
     run_benchmark "$bench" "python" "python3 $CROSS_DIR/$bench/$prefix.py"
@@ -145,7 +153,7 @@ fi
 # Print summary table (median of runs)
 echo "=== Summary (median of $RUNS runs, in ms) ==="
 printf "%-14s" "benchmark"
-LANGS=("c" "go" "python" "typescript" "lumen")
+LANGS=("c" "go" "zig" "python" "typescript" "lumen")
 for lang in "${LANGS[@]}"; do
   printf "%-12s" "$lang"
 done

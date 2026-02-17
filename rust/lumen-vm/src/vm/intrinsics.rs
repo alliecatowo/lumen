@@ -1488,48 +1488,42 @@ impl VM {
 
             // ── String-to-number parsing: parse_int / parse_float ──
             "parse_int" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(match arg {
-                    Value::Int(_) | Value::BigInt(_) => arg.clone(),
-                    Value::Float(f) => Value::Int(*f as i64),
-                    Value::String(sref) => {
-                        let s = match sref {
-                            StringRef::Owned(s) => s.clone(),
-                            StringRef::Interned(id) => {
-                                self.strings.resolve(*id).unwrap_or("").to_string()
-                            }
-                        };
-                        match s.trim().parse::<i64>() {
-                            Ok(n) => Value::Int(n),
-                            Err(_) => Value::Null,
-                        }
-                    }
-                    _ => Value::Null,
-                })
+                let s = self.registers[base + a + 1].as_string();
+                match s.trim().parse::<i64>() {
+                    Ok(n) => Ok(Value::Union(UnionValue {
+                        tag: "ok".to_string(),
+                        payload: Box::new(Value::Int(n)),
+                    })),
+                    Err(_) => match s.trim().parse::<BigInt>() {
+                        Ok(n) => Ok(Value::Union(UnionValue {
+                            tag: "ok".to_string(),
+                            payload: Box::new(Value::BigInt(n)),
+                        })),
+                        Err(_) => Ok(Value::Union(UnionValue {
+                            tag: "err".to_string(),
+                            payload: Box::new(Value::String(StringRef::Owned(format!(
+                                "invalid integer: {}",
+                                s
+                            )))),
+                        })),
+                    },
+                }
             }
             "parse_float" => {
-                let arg = &self.registers[base + a + 1];
-                Ok(match arg {
-                    Value::Float(_) => arg.clone(),
-                    Value::Int(n) => Value::Float(*n as f64),
-                    Value::BigInt(n) => {
-                        use num_traits::ToPrimitive;
-                        Value::Float(n.to_f64().unwrap_or(f64::NAN))
-                    }
-                    Value::String(sref) => {
-                        let s = match sref {
-                            StringRef::Owned(s) => s.clone(),
-                            StringRef::Interned(id) => {
-                                self.strings.resolve(*id).unwrap_or("").to_string()
-                            }
-                        };
-                        match s.trim().parse::<f64>() {
-                            Ok(f) => Value::Float(f),
-                            Err(_) => Value::Null,
-                        }
-                    }
-                    _ => Value::Null,
-                })
+                let s = self.registers[base + a + 1].as_string();
+                match s.trim().parse::<f64>() {
+                    Ok(f) => Ok(Value::Union(UnionValue {
+                        tag: "ok".to_string(),
+                        payload: Box::new(Value::Float(f)),
+                    })),
+                    Err(_) => Ok(Value::Union(UnionValue {
+                        tag: "err".to_string(),
+                        payload: Box::new(Value::String(StringRef::Owned(format!(
+                            "invalid float: {}",
+                            s
+                        )))),
+                    })),
+                }
             }
 
             // ── Bytes builtins: ASCII/hex conversion and slicing ──
@@ -1947,6 +1941,193 @@ impl VM {
                     4096
                 };
                 Ok(net_udp_recv(handle, max_bytes))
+            }
+
+            // Wave 4A: stdlib completeness (T361-T370)
+            "map_sorted_keys" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::Map(m) => Value::new_list(
+                        m.keys()
+                            .map(|k| Value::String(StringRef::Owned(k.clone())))
+                            .collect(),
+                    ),
+                    _ => Value::new_list(vec![]),
+                })
+            }
+            "log2" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.log2()),
+                    Value::Int(n) => Value::Float((*n as f64).log2()),
+                    Value::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::INFINITY).log2()),
+                    _ => Value::Null,
+                })
+            }
+            "log10" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.log10()),
+                    Value::Int(n) => Value::Float((*n as f64).log10()),
+                    Value::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::INFINITY).log10()),
+                    _ => Value::Null,
+                })
+            }
+            "is_nan" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::Float(f) => Value::Bool(f.is_nan()),
+                    _ => Value::Bool(false),
+                })
+            }
+            "is_infinite" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::Float(f) => Value::Bool(f.is_infinite()),
+                    _ => Value::Bool(false),
+                })
+            }
+            "math_pi" => Ok(Value::Float(std::f64::consts::PI)),
+            "math_e" => Ok(Value::Float(std::f64::consts::E)),
+            "sort_asc" => {
+                let arg = &self.registers[base + a + 1];
+                if let Value::List(l) = arg {
+                    let mut s: Vec<Value> = (**l).clone();
+                    s.sort();
+                    Ok(Value::new_list(s))
+                } else {
+                    Ok(arg.clone())
+                }
+            }
+            "sort_desc" => {
+                let arg = &self.registers[base + a + 1];
+                if let Value::List(l) = arg {
+                    let mut s: Vec<Value> = (**l).clone();
+                    s.sort();
+                    s.reverse();
+                    Ok(Value::new_list(s))
+                } else {
+                    Ok(arg.clone())
+                }
+            }
+            "sort_by" => {
+                let arg = self.registers[base + a + 1].clone();
+                let closure_val = self.registers[base + a + 2].clone();
+                if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
+                    let mut items: Vec<Value> = (**l).to_vec();
+                    let len = items.len();
+                    for i in 1..len {
+                        let mut j = i;
+                        while j > 0 {
+                            let cmp_result = self.call_closure_sync(
+                                &cv,
+                                &[items[j - 1].clone(), items[j].clone()],
+                            )?;
+                            let cmp_val = cmp_result.as_int().unwrap_or(0);
+                            if cmp_val > 0 {
+                                items.swap(j - 1, j);
+                                j -= 1;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    Ok(Value::new_list(items))
+                } else {
+                    Ok(arg)
+                }
+            }
+            "binary_search" => {
+                let arg = &self.registers[base + a + 1];
+                let target = self.registers[base + a + 2].clone();
+                if let Value::List(l) = arg {
+                    match l.binary_search(&target) {
+                        Ok(idx) => Ok(Value::Union(UnionValue {
+                            tag: "ok".to_string(),
+                            payload: Box::new(Value::Int(idx as i64)),
+                        })),
+                        Err(idx) => Ok(Value::Union(UnionValue {
+                            tag: "err".to_string(),
+                            payload: Box::new(Value::Int(idx as i64)),
+                        })),
+                    }
+                } else {
+                    Ok(Value::Union(UnionValue {
+                        tag: "err".to_string(),
+                        payload: Box::new(Value::Int(0)),
+                    }))
+                }
+            }
+            "hrtime" => {
+                use std::sync::OnceLock;
+                use std::time::Instant;
+                static EPOCH: OnceLock<Instant> = OnceLock::new();
+                let epoch = EPOCH.get_or_init(Instant::now);
+                let elapsed = epoch.elapsed();
+                Ok(Value::Int(elapsed.as_nanos() as i64))
+            }
+            "format_time" => {
+                let timestamp_secs = match &self.registers[base + a + 1] {
+                    Value::Float(f) => *f,
+                    Value::Int(n) => *n as f64,
+                    _ => 0.0,
+                };
+                let format_str = self.registers[base + a + 2].as_string();
+                let total_secs = timestamp_secs as i64;
+                let frac = timestamp_secs - total_secs as f64;
+                let (year, month, day, hour, minute, second) = epoch_to_datetime(total_secs);
+                let result = if format_str == "iso8601"
+                    || format_str == "ISO8601"
+                    || format_str.is_empty()
+                {
+                    if frac.abs() < 0.001 {
+                        format!(
+                            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+                            year, month, day, hour, minute, second
+                        )
+                    } else {
+                        format!(
+                            "{:04}-{:02}-{:02}T{:02}:{:02}:{:06.3}Z",
+                            year,
+                            month,
+                            day,
+                            hour,
+                            minute,
+                            second as f64 + frac
+                        )
+                    }
+                } else {
+                    format_str
+                        .replace("%Y", &format!("{:04}", year))
+                        .replace("%m", &format!("{:02}", month))
+                        .replace("%d", &format!("{:02}", day))
+                        .replace("%H", &format!("{:02}", hour))
+                        .replace("%M", &format!("{:02}", minute))
+                        .replace("%S", &format!("{:02}", second))
+                };
+                Ok(Value::String(StringRef::Owned(result)))
+            }
+            "args" => {
+                let args: Vec<Value> = std::env::args()
+                    .map(|a| Value::String(StringRef::Owned(a)))
+                    .collect();
+                Ok(Value::new_list(args))
+            }
+            "set_env" => {
+                let key = self.registers[base + a + 1].as_string();
+                let value = self.registers[base + a + 2].as_string();
+                #[allow(unused_unsafe)]
+                unsafe {
+                    std::env::set_var(&key, &value);
+                }
+                Ok(Value::Null)
+            }
+            "env_vars" => {
+                let mut map = BTreeMap::new();
+                for (key, value) in std::env::vars() {
+                    map.insert(key, Value::String(StringRef::Owned(value)));
+                }
+                Ok(Value::new_map(map))
             }
 
             _ => Err(VmError::UndefinedCell(name.to_string())),
@@ -3356,6 +3537,254 @@ impl VM {
                 net_tcp_close(handle);
                 Ok(Value::Null)
             }
+            // Wave 4A: stdlib completeness (T361-T370)
+            120 => {
+                // MAP_SORTED_KEYS: return map keys in sorted order
+                Ok(match arg {
+                    Value::Map(m) => Value::new_list(
+                        m.keys()
+                            .map(|k| Value::String(StringRef::Owned(k.clone())))
+                            .collect(),
+                    ),
+                    _ => Value::new_list(vec![]),
+                })
+            }
+            121 => {
+                // PARSE_INT: parse string to int, return result type
+                let s = arg.as_string();
+                match s.trim().parse::<i64>() {
+                    Ok(n) => Ok(Value::Union(UnionValue {
+                        tag: "ok".to_string(),
+                        payload: Box::new(Value::Int(n)),
+                    })),
+                    Err(_) => {
+                        // Try BigInt
+                        match s.trim().parse::<BigInt>() {
+                            Ok(n) => Ok(Value::Union(UnionValue {
+                                tag: "ok".to_string(),
+                                payload: Box::new(Value::BigInt(n)),
+                            })),
+                            Err(_) => Ok(Value::Union(UnionValue {
+                                tag: "err".to_string(),
+                                payload: Box::new(Value::String(StringRef::Owned(format!(
+                                    "invalid integer: {}",
+                                    s
+                                )))),
+                            })),
+                        }
+                    }
+                }
+            }
+            122 => {
+                // PARSE_FLOAT: parse string to float, return result type
+                let s = arg.as_string();
+                match s.trim().parse::<f64>() {
+                    Ok(f) => Ok(Value::Union(UnionValue {
+                        tag: "ok".to_string(),
+                        payload: Box::new(Value::Float(f)),
+                    })),
+                    Err(_) => Ok(Value::Union(UnionValue {
+                        tag: "err".to_string(),
+                        payload: Box::new(Value::String(StringRef::Owned(format!(
+                            "invalid float: {}",
+                            s
+                        )))),
+                    })),
+                }
+            }
+            123 => {
+                // LOG2
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.log2()),
+                    Value::Int(n) => Value::Float((*n as f64).log2()),
+                    Value::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::INFINITY).log2()),
+                    _ => Value::Null,
+                })
+            }
+            124 => {
+                // LOG10
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.log10()),
+                    Value::Int(n) => Value::Float((*n as f64).log10()),
+                    Value::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::INFINITY).log10()),
+                    _ => Value::Null,
+                })
+            }
+            125 => {
+                // IS_NAN
+                Ok(match arg {
+                    Value::Float(f) => Value::Bool(f.is_nan()),
+                    _ => Value::Bool(false),
+                })
+            }
+            126 => {
+                // IS_INFINITE
+                Ok(match arg {
+                    Value::Float(f) => Value::Bool(f.is_infinite()),
+                    _ => Value::Bool(false),
+                })
+            }
+            127 => {
+                // MATH_PI
+                Ok(Value::Float(std::f64::consts::PI))
+            }
+            128 => {
+                // MATH_E
+                Ok(Value::Float(std::f64::consts::E))
+            }
+            129 => {
+                // SORT_ASC: sort list in ascending order
+                if let Value::List(l) = arg {
+                    let mut s: Vec<Value> = (**l).clone();
+                    s.sort();
+                    Ok(Value::new_list(s))
+                } else {
+                    Ok(arg.clone())
+                }
+            }
+            130 => {
+                // SORT_DESC: sort list in descending order
+                if let Value::List(l) = arg {
+                    let mut s: Vec<Value> = (**l).clone();
+                    s.sort();
+                    s.reverse();
+                    Ok(Value::new_list(s))
+                } else {
+                    Ok(arg.clone())
+                }
+            }
+            131 => {
+                // SORT_BY: sort using a comparator closure (a, b) -> Int
+                let closure_val = self.registers[base + arg_reg + 1].clone();
+                if let (Value::List(l), Value::Closure(cv)) = (arg.clone(), closure_val) {
+                    let mut items: Vec<Value> = l.as_ref().clone();
+                    // Use a simple stable insertion sort to avoid issues with closures in sort
+                    let len = items.len();
+                    for i in 1..len {
+                        let mut j = i;
+                        while j > 0 {
+                            let cmp_result = self.call_closure_sync(
+                                &cv,
+                                &[items[j - 1].clone(), items[j].clone()],
+                            )?;
+                            let cmp_val = cmp_result.as_int().unwrap_or(0);
+                            if cmp_val > 0 {
+                                items.swap(j - 1, j);
+                                j -= 1;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    Ok(Value::new_list(items))
+                } else {
+                    Ok(arg.clone())
+                }
+            }
+            132 => {
+                // BINARY_SEARCH: binary search sorted list, return result[Int, Int]
+                let target = self.registers[base + arg_reg + 1].clone();
+                if let Value::List(l) = arg {
+                    match l.binary_search(&target) {
+                        Ok(idx) => Ok(Value::Union(UnionValue {
+                            tag: "ok".to_string(),
+                            payload: Box::new(Value::Int(idx as i64)),
+                        })),
+                        Err(idx) => Ok(Value::Union(UnionValue {
+                            tag: "err".to_string(),
+                            payload: Box::new(Value::Int(idx as i64)),
+                        })),
+                    }
+                } else {
+                    Ok(Value::Union(UnionValue {
+                        tag: "err".to_string(),
+                        payload: Box::new(Value::Int(0)),
+                    }))
+                }
+            }
+            133 => {
+                // HRTIME: high-resolution monotonic timer in nanoseconds
+                use std::sync::OnceLock;
+                use std::time::Instant;
+                static EPOCH: OnceLock<Instant> = OnceLock::new();
+                let epoch = EPOCH.get_or_init(Instant::now);
+                let elapsed = epoch.elapsed();
+                Ok(Value::Int(elapsed.as_nanos() as i64))
+            }
+            134 => {
+                // FORMAT_TIME: format epoch timestamp with format string
+                let timestamp_secs = match arg {
+                    Value::Float(f) => *f,
+                    Value::Int(n) => *n as f64,
+                    _ => 0.0,
+                };
+                let format_str = self.registers[base + arg_reg + 1].as_string();
+
+                // Manual ISO 8601 formatting from epoch seconds
+                let total_secs = timestamp_secs as i64;
+                let frac = timestamp_secs - total_secs as f64;
+
+                // Convert epoch seconds to date/time components
+                let (year, month, day, hour, minute, second) = epoch_to_datetime(total_secs);
+
+                let result = if format_str == "iso8601"
+                    || format_str == "ISO8601"
+                    || format_str.is_empty()
+                {
+                    if frac.abs() < 0.001 {
+                        format!(
+                            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+                            year, month, day, hour, minute, second
+                        )
+                    } else {
+                        format!(
+                            "{:04}-{:02}-{:02}T{:02}:{:02}:{:06.3}Z",
+                            year,
+                            month,
+                            day,
+                            hour,
+                            minute,
+                            second as f64 + frac
+                        )
+                    }
+                } else {
+                    // Simple substitution: %Y, %m, %d, %H, %M, %S
+                    format_str
+                        .replace("%Y", &format!("{:04}", year))
+                        .replace("%m", &format!("{:02}", month))
+                        .replace("%d", &format!("{:02}", day))
+                        .replace("%H", &format!("{:02}", hour))
+                        .replace("%M", &format!("{:02}", minute))
+                        .replace("%S", &format!("{:02}", second))
+                };
+                Ok(Value::String(StringRef::Owned(result)))
+            }
+            135 => {
+                // ARGS: return command-line arguments
+                let args: Vec<Value> = std::env::args()
+                    .map(|a| Value::String(StringRef::Owned(a)))
+                    .collect();
+                Ok(Value::new_list(args))
+            }
+            136 => {
+                // SET_ENV: set environment variable
+                let key = arg.as_string();
+                let value = self.registers[base + arg_reg + 1].as_string();
+                // SAFETY: This is intentional; Lumen programs run single-threaded.
+                #[allow(unused_unsafe)]
+                unsafe {
+                    std::env::set_var(&key, &value);
+                }
+                Ok(Value::Null)
+            }
+            137 => {
+                // ENV_VARS: return all environment variables as a map
+                let mut map = BTreeMap::new();
+                for (key, value) in std::env::vars() {
+                    map.insert(key, Value::String(StringRef::Owned(value)));
+                }
+                Ok(Value::new_map(map))
+            }
             _ => Err(VmError::Runtime(format!(
                 "Unknown intrinsic ID {} - this is a compiler/VM mismatch bug",
                 func_id
@@ -3617,6 +4046,36 @@ fn validate_value_against_schema(
 }
 
 // ── Glob matching helper ──
+
+/// Convert Unix epoch seconds to (year, month, day, hour, minute, second).
+/// Handles dates from 1970 onwards. Leap years are accounted for.
+fn epoch_to_datetime(epoch_secs: i64) -> (i64, u32, u32, u32, u32, u32) {
+    let secs_per_day: i64 = 86400;
+    let mut days = epoch_secs / secs_per_day;
+    let mut time_of_day = (epoch_secs % secs_per_day) as u32;
+    if epoch_secs < 0 && time_of_day != 0 {
+        days -= 1;
+        time_of_day = (secs_per_day as u32) - (((-epoch_secs) % secs_per_day) as u32);
+    }
+    let hour = time_of_day / 3600;
+    let minute = (time_of_day % 3600) / 60;
+    let second = time_of_day % 60;
+
+    // Days since 1970-01-01
+    // Algorithm from http://howardhinnant.github.io/date_algorithms.html
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32; // day of era [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // year of era [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day of year [0, 365]
+    let mp = (5 * doy + 2) / 153; // month index [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    (y, m, d, hour, minute, second)
+}
 
 /// Walk a directory tree and collect paths matching a simple glob pattern.
 /// Supports `*` (match any segment component) and `**` (match zero or more directories).

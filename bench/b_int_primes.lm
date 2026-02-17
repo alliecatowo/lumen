@@ -1,0 +1,40 @@
+# Benchmark: Prime counting up to 100,000 via trial division
+# Tests: nested loops, integer arithmetic, modulo, branching
+# Expected result: 9592 primes below 100,000
+
+cell is_prime(n: Int) -> Bool
+  if n < 2
+    false
+  else
+    if n < 4
+      true
+    else
+      if n % 2 == 0
+        false
+      else
+        let mut d = 3
+        let mut prime = true
+        while d * d <= n and prime
+          if n % d == 0
+            prime = false
+          end
+          d = d + 2
+        end
+        prime
+      end
+    end
+  end
+end
+
+cell main() -> Int
+  let n = 100000
+  let mut count = 0
+  let mut i = 2
+  while i < n
+    if is_prime(i)
+      count = count + 1
+    end
+    i = i + 1
+  end
+  count
+end

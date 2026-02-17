@@ -1115,6 +1115,9 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>, allow_unstabl
 
     println!("{} {}", status_label("Running"), cyan(cell));
     let mut vm = lumen_vm::vm::VM::new();
+    // Enable tiered JIT: the interpreter will track call counts and compile
+    // hot cells to native code after 10 calls (default threshold).
+    vm.enable_jit(10);
     if let Some(run_id) = trace_run_id.as_ref() {
         vm.set_trace_id(run_id.clone());
     }
@@ -1172,7 +1175,19 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>, allow_unstabl
                 }
             }
             println!("\n{}", result);
-            println!("{} Finished in {:.2}s", green("✓"), elapsed.as_secs_f64());
+            // Show tiered JIT stats if any cells were compiled at runtime
+            let jit_stats = vm.jit_stats();
+            if jit_stats.cells_compiled > 0 {
+                println!(
+                    "{} Finished in {:.4}s (tiered JIT: {} cells compiled, {} native calls)",
+                    green("✓"),
+                    elapsed.as_secs_f64(),
+                    jit_stats.cells_compiled,
+                    jit_stats.jit_executions,
+                );
+            } else {
+                println!("{} Finished in {:.2}s", green("✓"), elapsed.as_secs_f64());
+            }
         }
         Err(e) => {
             if let Some(trace_store) = trace_store.as_ref() {

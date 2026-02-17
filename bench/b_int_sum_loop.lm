@@ -1,0 +1,13 @@
+# Benchmark: Integer sum in a tight while loop
+# Tests: loop overhead, integer addition, mutable variable updates
+# Expected result: sum(1..10_000_000) = 50000005000000
+
+cell main() -> Int
+  let mut sum = 0
+  let mut i = 1
+  while i <= 10000000
+    sum = sum + i
+    i = i + 1
+  end
+  sum
+end

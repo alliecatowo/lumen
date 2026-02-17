@@ -376,6 +376,18 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | T189 | Verify/fix closure and upvalue model | Audit and fix any remaining closure capture or upvalue bugs in lower and VM; tests may pass but edge cases or replay/serialization may expose issues. Ref: deficit 6. |
 | T190 | Workspace (monorepo) resolver | Multi-package workspace support: resolve and build multiple packages in one repo with shared deps (Cargo/npm-style). Ref: COMPETITIVE_ANALYSIS domain matrix "workspace resolver". |
 
+### Language / spec alignment and test suite (T191–T197)
+
+| # | Task | Problem statement / context |
+|---|------|-----------------------------|
+| T191 | **Float literals: scientific notation** | Lexer/parser should accept scientific notation for floats (e.g. `1.5e10`, `2e-3`). Currently `1.5e10` is tokenized as float `1.5` plus identifier `e10`, causing "undefined variable e10". Lexer has a test for `1e10`; ensure full form `[digits].[digits]e[+-]?[digits]` is supported and documented in SPEC.md/GRAMMAR.md. This is intended language support. |
+| T192 | **Consider: Lumen test suite vs implementation drift** | When `tests/` (e.g. `tests/core/*.lm`, `tests/integration/end_to_end.lm`) fail due to syntax or builtin mismatches, decide per case whether (a) the test is aspirational and should be updated to match current language, or (b) the implementation has drifted and should be fixed. Document decisions and any spec/grammar updates. Examples encountered: block expression `{ x = 1; true }` (parser expects `}` not `;`), `type(42)` vs keyword `type` (use `type_of` in tests or reserve builtin name), `assert` as builtin (typechecker was updated to recognize it). Keep a short note in this file or a small "test-suite alignment" doc when new drift is found. |
+| T193 | **Assert/call register reuse (VM/compiler)** | Consecutive `assert <expr>` can leave null in a register reused for the next expression, causing "arithmetic on non-numeric types: null and N". Tests adjusted to single `let ok = ... ; assert ok` per cell. Fix in compiler/VM. |
+| T194 | **Nested cell/enum/record** | Parser does not support `cell`/`enum`/`record` inside another `cell`; tests fail with "Add 'end'". Flatten to top-level or extend parser. |
+| T195 | **Bytes literals** | Bytes must be hex (e.g. `b"68656c6c6f"`); ASCII `b"hello"` rejected. builtins adjusted; document or extend. |
+| T196 | **parse_int/parse_float** | Tests used parse_*; language has to_int/to_float. Tests updated. |
+| T197 | **i64::MIN literal** | Literal `-9223372036854775808` triggers "cannot negate". Test uses `-1 < 0`; fix or document. |
+
 ---
 
 ## 6. Maintenance

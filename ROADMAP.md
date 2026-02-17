@@ -110,6 +110,7 @@ Long-term direction: move from interpreted scripting to **verified, durable, sys
 - **Objective:** Ergonomic and consistent syntax: null-safety, ranges, error propagation, checked arithmetic, macros.
 - **Goals:** `?.`, `??`, `<=>`, `in`; active patterns; GADTs; hygienic macros; f-strings; trailing lambdas; `?` and try/else; checked arithmetic; virtual registers or higher register limit; multi-shot continuations (design); variadic parameters; @must_use for result.
 - **Tasks:** T111–T124, T162–T164.
+- **Work item (language):** **Scientific notation for float literals** — Support `1.5e10`, `2e-3` etc. in lexer/parser (see TASKS.md T191). Currently only `1e10`-style is exercised; full form is desired.
 - **Competitive context:** TypeScript, Kotlin, Swift, Rust set expectations for null-safety and error handling (COMPETITIVE_ANALYSIS §3.3, §4). Matching these reduces friction for adoption; multi-shot continuations (T162) enable logic-programming-style search.
 
 ### Standard library
@@ -134,7 +135,7 @@ Long-term direction: move from interpreted scripting to **verified, durable, sys
 ## References
 
 - **Competitive analysis:** docs/research/COMPETITIVE_ANALYSIS.md — dimensions, 50-language matrix, gap matrix, references.
-- **Task list and deficiencies:** TASKS.md — D01–D18, T001–T190, protocol, rationale.
+- **Task list and deficiencies:** TASKS.md — D01–D18, T001–T192, protocol, rationale.
 - **Competitive analysis:** docs/research/COMPETITIVE_ANALYSIS.md — completion/parity (§3), domain matrix (§4), dimensions (§5–6), deficits and gaps-by-priority (§7, §7.3), leapfrog (§8), 50-language matrix (§9), gap matrix (§10), execution backlog (§11), refs [1]–[29].
 
 ---
@@ -145,4 +146,4 @@ Long-term direction: move from interpreted scripting to **verified, durable, sys
 - **In progress:** Production hardening (crypto, registry, WASM, performance, ownership, stdlib).
 - **Planned:** Full strategic trajectory in TASKS.md: memory model, AOT/JIT, verification, scheduler, durability, tensors/AD, ecosystem, syntax, stdlib, self-hosting, release gates. Extended tasks T148–T180 add session types, structured concurrency, parity checklists, diagnostics, testing, IDE, CI, and service templates.
 
-The granular task list (T001–T190), deficiency checklist (D01–D18), protocol, and competitive rationale are in **TASKS.md**. The 50-language comparison and gap matrix are in **docs/research/COMPETITIVE_ANALYSIS.md**.
+The granular task list (T001–T192), deficiency checklist (D01–D18), protocol, and competitive rationale are in **TASKS.md**. The 50-language comparison and gap matrix are in **docs/research/COMPETITIVE_ANALYSIS.md**.

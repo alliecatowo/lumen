@@ -10,7 +10,7 @@ use lumen_vm::parity_concurrency::*;
 // ===========================================================================
 
 #[test]
-fn wave26_parity_category_display_task_scheduling() {
+fn parity_category_display_task_scheduling() {
     assert_eq!(
         ConcurrencyCategory::TaskScheduling.to_string(),
         "Task Scheduling"
@@ -18,7 +18,7 @@ fn wave26_parity_category_display_task_scheduling() {
 }
 
 #[test]
-fn wave26_parity_category_display_work_stealing() {
+fn parity_category_display_work_stealing() {
     assert_eq!(
         ConcurrencyCategory::WorkStealing.to_string(),
         "Work Stealing"
@@ -26,7 +26,7 @@ fn wave26_parity_category_display_work_stealing() {
 }
 
 #[test]
-fn wave26_parity_category_display_channel_communication() {
+fn parity_category_display_channel_communication() {
     assert_eq!(
         ConcurrencyCategory::ChannelCommunication.to_string(),
         "Channel Communication"
@@ -34,12 +34,12 @@ fn wave26_parity_category_display_channel_communication() {
 }
 
 #[test]
-fn wave26_parity_category_display_actor_model() {
+fn parity_category_display_actor_model() {
     assert_eq!(ConcurrencyCategory::ActorModel.to_string(), "Actor Model");
 }
 
 #[test]
-fn wave26_parity_category_display_all_variants() {
+fn parity_category_display_all_variants() {
     // Ensures every variant has a non-empty Display impl.
     let cats = [
         ConcurrencyCategory::TaskScheduling,
@@ -69,7 +69,7 @@ fn wave26_parity_category_display_all_variants() {
 // ===========================================================================
 
 #[test]
-fn wave26_parity_category_clone_eq() {
+fn parity_category_clone_eq() {
     let a = ConcurrencyCategory::FutureExecution;
     let b = a;
     assert_eq!(a, b);
@@ -79,7 +79,7 @@ fn wave26_parity_category_clone_eq() {
 }
 
 #[test]
-fn wave26_parity_category_debug() {
+fn parity_category_debug() {
     let dbg = format!("{:?}", ConcurrencyCategory::DeadlockPrevention);
     assert!(dbg.contains("DeadlockPrevention"));
 }
@@ -89,29 +89,29 @@ fn wave26_parity_category_debug() {
 // ===========================================================================
 
 #[test]
-fn wave26_parity_status_display_implemented() {
+fn parity_status_display_implemented() {
     assert_eq!(ConcParityStatus::Implemented.to_string(), "Implemented");
 }
 
 #[test]
-fn wave26_parity_status_display_partial() {
+fn parity_status_display_partial() {
     let s = ConcParityStatus::Partial("needs XYZ".into());
     assert_eq!(s.to_string(), "Partial — needs XYZ");
 }
 
 #[test]
-fn wave26_parity_status_display_designed() {
+fn parity_status_display_designed() {
     assert_eq!(ConcParityStatus::Designed.to_string(), "Designed");
 }
 
 #[test]
-fn wave26_parity_status_display_not_applicable() {
+fn parity_status_display_not_applicable() {
     let s = ConcParityStatus::NotApplicable("no shared state".into());
     assert_eq!(s.to_string(), "N/A — no shared state");
 }
 
 #[test]
-fn wave26_parity_status_is_implemented() {
+fn parity_status_is_implemented() {
     assert!(ConcParityStatus::Implemented.is_implemented());
     assert!(!ConcParityStatus::Designed.is_implemented());
     assert!(!ConcParityStatus::Partial("x".into()).is_implemented());
@@ -119,7 +119,7 @@ fn wave26_parity_status_is_implemented() {
 }
 
 #[test]
-fn wave26_parity_status_is_gap() {
+fn parity_status_is_gap() {
     assert!(!ConcParityStatus::Implemented.is_gap());
     assert!(ConcParityStatus::Designed.is_gap());
     assert!(ConcParityStatus::Partial("wip".into()).is_gap());
@@ -127,7 +127,7 @@ fn wave26_parity_status_is_gap() {
 }
 
 #[test]
-fn wave26_parity_status_clone_eq() {
+fn parity_status_clone_eq() {
     let a = ConcParityStatus::Partial("test".into());
     let b = a.clone();
     assert_eq!(a, b);
@@ -150,7 +150,7 @@ fn make_item(id: &str, status: ConcParityStatus) -> ConcurrencyParityItem {
 }
 
 #[test]
-fn wave26_parity_item_display_contains_id_and_feature() {
+fn parity_item_display_contains_id_and_feature() {
     let item = make_item("CONC-099", ConcParityStatus::Implemented);
     let s = item.to_string();
     assert!(s.contains("CONC-099"), "missing id in: {s}");
@@ -159,14 +159,14 @@ fn wave26_parity_item_display_contains_id_and_feature() {
 }
 
 #[test]
-fn wave26_parity_item_clone_eq() {
+fn parity_item_clone_eq() {
     let a = make_item("X", ConcParityStatus::Designed);
     let b = a.clone();
     assert_eq!(a, b);
 }
 
 #[test]
-fn wave26_parity_item_debug() {
+fn parity_item_debug() {
     let item = make_item("D", ConcParityStatus::Implemented);
     let dbg = format!("{:?}", item);
     assert!(dbg.contains("ConcurrencyParityItem"));
@@ -177,13 +177,13 @@ fn wave26_parity_item_debug() {
 // ===========================================================================
 
 #[test]
-fn wave26_parity_full_checklist_at_least_30() {
+fn parity_full_checklist_at_least_30() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     assert!(cl.total_count() >= 30, "got {}", cl.total_count());
 }
 
 #[test]
-fn wave26_parity_all_ids_unique() {
+fn parity_all_ids_unique() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     let mut seen = std::collections::HashSet::new();
     for item in &cl.items {
@@ -192,7 +192,7 @@ fn wave26_parity_all_ids_unique() {
 }
 
 #[test]
-fn wave26_parity_all_ids_start_with_conc() {
+fn parity_all_ids_start_with_conc() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     for item in &cl.items {
         assert!(item.id.starts_with("CONC-"), "bad id prefix: {}", item.id);
@@ -200,7 +200,7 @@ fn wave26_parity_all_ids_start_with_conc() {
 }
 
 #[test]
-fn wave26_parity_no_empty_fields() {
+fn parity_no_empty_fields() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     for item in &cl.items {
         assert!(!item.feature.is_empty(), "empty feature on {}", item.id);
@@ -227,7 +227,7 @@ fn wave26_parity_no_empty_fields() {
 // ===========================================================================
 
 #[test]
-fn wave26_parity_by_category_task_scheduling() {
+fn parity_by_category_task_scheduling() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     let items = cl.by_category(ConcurrencyCategory::TaskScheduling);
     assert!(!items.is_empty());
@@ -237,7 +237,7 @@ fn wave26_parity_by_category_task_scheduling() {
 }
 
 #[test]
-fn wave26_parity_by_category_future_execution() {
+fn parity_by_category_future_execution() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     let items = cl.by_category(ConcurrencyCategory::FutureExecution);
     assert!(
@@ -248,7 +248,7 @@ fn wave26_parity_by_category_future_execution() {
 }
 
 #[test]
-fn wave26_parity_by_category_parallel_primitives() {
+fn parity_by_category_parallel_primitives() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     let items = cl.by_category(ConcurrencyCategory::ParallelPrimitives);
     assert!(
@@ -259,7 +259,7 @@ fn wave26_parity_by_category_parallel_primitives() {
 }
 
 #[test]
-fn wave26_parity_by_category_returns_empty_for_unused() {
+fn parity_by_category_returns_empty_for_unused() {
     // Build a checklist with a single item in one category.
     let cl = ConcurrencyParityChecklist {
         items: vec![make_item("T", ConcParityStatus::Implemented)],
@@ -273,20 +273,20 @@ fn wave26_parity_by_category_returns_empty_for_unused() {
 // ===========================================================================
 
 #[test]
-fn wave26_parity_implemented_count_le_total() {
+fn parity_implemented_count_le_total() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     assert!(cl.implemented_count() <= cl.total_count());
 }
 
 #[test]
-fn wave26_parity_coverage_percent_in_range() {
+fn parity_coverage_percent_in_range() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     let pct = cl.coverage_percent();
     assert!((0.0..=100.0).contains(&pct));
 }
 
 #[test]
-fn wave26_parity_coverage_100_when_all_implemented() {
+fn parity_coverage_100_when_all_implemented() {
     let cl = ConcurrencyParityChecklist {
         items: vec![
             make_item("A", ConcParityStatus::Implemented),
@@ -297,7 +297,7 @@ fn wave26_parity_coverage_100_when_all_implemented() {
 }
 
 #[test]
-fn wave26_parity_coverage_0_when_none_implemented() {
+fn parity_coverage_0_when_none_implemented() {
     let cl = ConcurrencyParityChecklist {
         items: vec![
             make_item("A", ConcParityStatus::Designed),
@@ -308,7 +308,7 @@ fn wave26_parity_coverage_0_when_none_implemented() {
 }
 
 #[test]
-fn wave26_parity_coverage_0_when_empty() {
+fn parity_coverage_0_when_empty() {
     let cl = ConcurrencyParityChecklist { items: vec![] };
     assert!(cl.coverage_percent().abs() < f64::EPSILON);
     assert_eq!(cl.implemented_count(), 0);
@@ -320,7 +320,7 @@ fn wave26_parity_coverage_0_when_empty() {
 // ===========================================================================
 
 #[test]
-fn wave26_parity_gaps_excludes_implemented() {
+fn parity_gaps_excludes_implemented() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     let gaps = cl.gaps();
     for item in &gaps {
@@ -333,7 +333,7 @@ fn wave26_parity_gaps_excludes_implemented() {
 }
 
 #[test]
-fn wave26_parity_gaps_excludes_not_applicable() {
+fn parity_gaps_excludes_not_applicable() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     let gaps = cl.gaps();
     for item in &gaps {
@@ -346,7 +346,7 @@ fn wave26_parity_gaps_excludes_not_applicable() {
 }
 
 #[test]
-fn wave26_parity_gaps_plus_implemented_plus_na_equals_total() {
+fn parity_gaps_plus_implemented_plus_na_equals_total() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     let gap_count = cl.gaps().len();
     let impl_count = cl.implemented_count();
@@ -363,14 +363,14 @@ fn wave26_parity_gaps_plus_implemented_plus_na_equals_total() {
 // ===========================================================================
 
 #[test]
-fn wave26_parity_to_markdown_contains_header() {
+fn parity_to_markdown_contains_header() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     let md = cl.to_markdown();
     assert!(md.contains("# Concurrency Safety Parity Checklist"));
 }
 
 #[test]
-fn wave26_parity_to_markdown_contains_table_header() {
+fn parity_to_markdown_contains_table_header() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     let md = cl.to_markdown();
     assert!(md.contains("| ID |"));
@@ -378,7 +378,7 @@ fn wave26_parity_to_markdown_contains_table_header() {
 }
 
 #[test]
-fn wave26_parity_to_markdown_contains_all_ids() {
+fn parity_to_markdown_contains_all_ids() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     let md = cl.to_markdown();
     for item in &cl.items {
@@ -387,7 +387,7 @@ fn wave26_parity_to_markdown_contains_all_ids() {
 }
 
 #[test]
-fn wave26_parity_to_markdown_contains_coverage_stat() {
+fn parity_to_markdown_contains_coverage_stat() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     let md = cl.to_markdown();
     assert!(
@@ -401,7 +401,7 @@ fn wave26_parity_to_markdown_contains_coverage_stat() {
 // ===========================================================================
 
 #[test]
-fn wave26_parity_summary_contains_counts() {
+fn parity_summary_contains_counts() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     let s = cl.summary();
     assert!(s.contains("Concurrency parity:"));
@@ -411,7 +411,7 @@ fn wave26_parity_summary_contains_counts() {
 }
 
 #[test]
-fn wave26_parity_summary_matches_numbers() {
+fn parity_summary_matches_numbers() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     let s = cl.summary();
     let impl_str = format!("{}/{}", cl.implemented_count(), cl.total_count());
@@ -426,7 +426,7 @@ fn wave26_parity_summary_matches_numbers() {
 // ===========================================================================
 
 #[test]
-fn wave26_parity_every_category_has_items() {
+fn parity_every_category_has_items() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     let cats = [
         ConcurrencyCategory::TaskScheduling,
@@ -456,7 +456,7 @@ fn wave26_parity_every_category_has_items() {
 // ===========================================================================
 
 #[test]
-fn wave26_parity_has_parallel_combinator() {
+fn parity_has_parallel_combinator() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     assert!(
         cl.items.iter().any(|i| i.feature.contains("parallel")),
@@ -465,7 +465,7 @@ fn wave26_parity_has_parallel_combinator() {
 }
 
 #[test]
-fn wave26_parity_has_race_combinator() {
+fn parity_has_race_combinator() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     assert!(
         cl.items.iter().any(|i| i.feature.contains("race")),
@@ -474,7 +474,7 @@ fn wave26_parity_has_race_combinator() {
 }
 
 #[test]
-fn wave26_parity_has_vote_combinator() {
+fn parity_has_vote_combinator() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     assert!(
         cl.items.iter().any(|i| i.feature.contains("vote")),
@@ -483,7 +483,7 @@ fn wave26_parity_has_vote_combinator() {
 }
 
 #[test]
-fn wave26_parity_has_timeout_combinator() {
+fn parity_has_timeout_combinator() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     assert!(
         cl.items.iter().any(|i| i.feature.contains("timeout")),
@@ -492,7 +492,7 @@ fn wave26_parity_has_timeout_combinator() {
 }
 
 #[test]
-fn wave26_parity_has_deterministic_scheduling() {
+fn parity_has_deterministic_scheduling() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     assert!(
         cl.items
@@ -503,7 +503,7 @@ fn wave26_parity_has_deterministic_scheduling() {
 }
 
 #[test]
-fn wave26_parity_has_process_isolation() {
+fn parity_has_process_isolation() {
     let cl = ConcurrencyParityChecklist::full_checklist();
     assert!(
         cl.items

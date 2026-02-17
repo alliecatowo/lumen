@@ -35,7 +35,7 @@ fn assert_compiles_to_lir(label: &str, source: &str) -> lumen_compiler::compiler
 // ============================================================================
 
 #[test]
-fn wave20_range_exclusive_basic() {
+fn range_exclusive_basic() {
     assert_compiles(
         "range_exclusive_basic",
         r#"
@@ -51,7 +51,7 @@ end
 }
 
 #[test]
-fn wave20_range_exclusive_expression() {
+fn range_exclusive_expression() {
     // Range as a standalone expression (produces a list)
     assert_compiles(
         "range_exclusive_expr",
@@ -65,7 +65,7 @@ end
 }
 
 #[test]
-fn wave20_range_exclusive_in_let() {
+fn range_exclusive_in_let() {
     assert_compiles(
         "range_exclusive_let",
         r#"
@@ -82,7 +82,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_range_inclusive_basic() {
+fn range_inclusive_basic() {
     assert_compiles(
         "range_inclusive_basic",
         r#"
@@ -98,7 +98,7 @@ end
 }
 
 #[test]
-fn wave20_range_inclusive_expression() {
+fn range_inclusive_expression() {
     assert_compiles(
         "range_inclusive_expr",
         r#"
@@ -111,7 +111,7 @@ end
 }
 
 #[test]
-fn wave20_range_inclusive_in_let() {
+fn range_inclusive_in_let() {
     assert_compiles(
         "range_inclusive_let",
         r#"
@@ -128,7 +128,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_range_for_loop_exclusive() {
+fn range_for_loop_exclusive() {
     assert_compiles(
         "range_for_exclusive",
         r#"
@@ -144,7 +144,7 @@ end
 }
 
 #[test]
-fn wave20_range_for_loop_inclusive() {
+fn range_for_loop_inclusive() {
     assert_compiles(
         "range_for_inclusive",
         r#"
@@ -160,7 +160,7 @@ end
 }
 
 #[test]
-fn wave20_range_for_loop_nested() {
+fn range_for_loop_nested() {
     assert_compiles(
         "range_for_nested",
         r#"
@@ -182,7 +182,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_range_with_variable_start() {
+fn range_with_variable_start() {
     assert_compiles(
         "range_var_start",
         r#"
@@ -199,7 +199,7 @@ end
 }
 
 #[test]
-fn wave20_range_with_variable_end() {
+fn range_with_variable_end() {
     assert_compiles(
         "range_var_end",
         r#"
@@ -216,7 +216,7 @@ end
 }
 
 #[test]
-fn wave20_range_with_variable_both() {
+fn range_with_variable_both() {
     assert_compiles(
         "range_var_both",
         r#"
@@ -234,7 +234,7 @@ end
 }
 
 #[test]
-fn wave20_range_inclusive_with_variables() {
+fn range_inclusive_with_variables() {
     assert_compiles(
         "range_incl_vars",
         r#"
@@ -256,7 +256,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_range_expression_bounds() {
+fn range_expression_bounds() {
     assert_compiles(
         "range_expr_bounds",
         r#"
@@ -276,7 +276,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_range_type_is_list_int() {
+fn range_type_is_list_int() {
     // Range expressions should infer as list[Int]
     assert_compiles(
         "range_type_inference",
@@ -297,7 +297,7 @@ end
 }
 
 #[test]
-fn wave20_range_len() {
+fn range_len() {
     assert_compiles(
         "range_len",
         r#"
@@ -314,7 +314,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_range_pattern_exclusive() {
+fn range_pattern_exclusive() {
     assert_compiles(
         "range_pattern_exclusive",
         r#"
@@ -333,7 +333,7 @@ end
 }
 
 #[test]
-fn wave20_range_pattern_inclusive() {
+fn range_pattern_inclusive() {
     assert_compiles(
         "range_pattern_inclusive",
         r#"
@@ -356,7 +356,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_range_exclusive_emits_intrinsic() {
+fn range_exclusive_emits_intrinsic() {
     use lumen_compiler::compiler::lir::{IntrinsicId, OpCode};
 
     let module = assert_compiles_to_lir(
@@ -378,7 +378,7 @@ end
 }
 
 #[test]
-fn wave20_range_inclusive_emits_add() {
+fn range_inclusive_emits_add() {
     use lumen_compiler::compiler::lir::OpCode;
 
     let module = assert_compiles_to_lir(
@@ -404,7 +404,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_range_zero_length() {
+fn range_zero_length() {
     assert_compiles(
         "range_zero_len",
         r#"
@@ -424,7 +424,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_range_assigned_to_variable() {
+fn range_assigned_to_variable() {
     assert_compiles(
         "range_assign_var",
         r#"
@@ -437,7 +437,7 @@ end
 }
 
 #[test]
-fn wave20_range_as_function_argument() {
+fn range_as_function_argument() {
     assert_compiles(
         "range_func_arg",
         r#"
@@ -461,7 +461,7 @@ end
 // ============================================================================
 
 #[test]
-fn wave20_range_negative_start() {
+fn range_negative_start() {
     assert_compiles(
         "range_neg_start",
         r#"
@@ -477,7 +477,7 @@ end
 }
 
 #[test]
-fn wave20_range_with_negative_numbers() {
+fn range_with_negative_numbers() {
     assert_compiles(
         "range_neg_nums",
         r#"
@@ -494,7 +494,7 @@ end
 }
 
 #[test]
-fn wave20_range_inverted() {
+fn range_inverted() {
     // An inverted range (start > end) should compile fine (empty list at runtime)
     assert_compiles(
         "range_inverted",

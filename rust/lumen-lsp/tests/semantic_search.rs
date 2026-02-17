@@ -60,20 +60,20 @@ fn build_sample_index() -> SymbolIndex {
 // ===========================================================================
 
 #[test]
-fn wave24_semantic_search_new_index_is_empty() {
+fn semantic_search_new_index_is_empty() {
     let idx = SymbolIndex::new();
     assert_eq!(idx.symbol_count(), 0);
     assert_eq!(idx.file_count(), 0);
 }
 
 #[test]
-fn wave24_semantic_search_default_is_empty() {
+fn semantic_search_default_is_empty() {
     let idx = SymbolIndex::default();
     assert_eq!(idx.symbol_count(), 0);
 }
 
 #[test]
-fn wave24_semantic_search_add_increments_count() {
+fn semantic_search_add_increments_count() {
     let mut idx = SymbolIndex::new();
     idx.add_symbol(sym("foo", SymbolKind::Cell));
     assert_eq!(idx.symbol_count(), 1);
@@ -86,7 +86,7 @@ fn wave24_semantic_search_add_increments_count() {
 // ===========================================================================
 
 #[test]
-fn wave24_semantic_search_exact_finds_symbol() {
+fn semantic_search_exact_finds_symbol() {
     let idx = build_sample_index();
     let results = idx.search_exact("Point");
     assert_eq!(results.len(), 1);
@@ -94,13 +94,13 @@ fn wave24_semantic_search_exact_finds_symbol() {
 }
 
 #[test]
-fn wave24_semantic_search_exact_missing_returns_empty() {
+fn semantic_search_exact_missing_returns_empty() {
     let idx = build_sample_index();
     assert!(idx.search_exact("nonexistent").is_empty());
 }
 
 #[test]
-fn wave24_semantic_search_exact_is_case_sensitive() {
+fn semantic_search_exact_is_case_sensitive() {
     let idx = build_sample_index();
     assert!(idx.search_exact("point").is_empty());
     assert_eq!(idx.search_exact("Point").len(), 1);
@@ -111,7 +111,7 @@ fn wave24_semantic_search_exact_is_case_sensitive() {
 // ===========================================================================
 
 #[test]
-fn wave24_semantic_search_exact_match_scores_1() {
+fn semantic_search_exact_match_scores_1() {
     let idx = build_sample_index();
     let results = idx.search("main", 10);
     assert!(!results.is_empty());
@@ -121,7 +121,7 @@ fn wave24_semantic_search_exact_match_scores_1() {
 }
 
 #[test]
-fn wave24_semantic_search_prefix_match_scores_0_9() {
+fn semantic_search_prefix_match_scores_0_9() {
     let idx = build_sample_index();
     let results = idx.search("pars", 10);
     assert!(!results.is_empty());
@@ -131,7 +131,7 @@ fn wave24_semantic_search_prefix_match_scores_0_9() {
 }
 
 #[test]
-fn wave24_semantic_search_substring_match_found() {
+fn semantic_search_substring_match_found() {
     let idx = build_sample_index();
     let results = idx.search("json", 10);
     let found = results.iter().any(|r| r.symbol.name == "parse_json");
@@ -139,7 +139,7 @@ fn wave24_semantic_search_substring_match_found() {
 }
 
 #[test]
-fn wave24_semantic_search_ordering_exact_gt_prefix_gt_substring() {
+fn semantic_search_ordering_exact_gt_prefix_gt_substring() {
     let mut idx = SymbolIndex::new();
     idx.add_symbol(sym("foo", SymbolKind::Cell));
     idx.add_symbol(sym("foobar", SymbolKind::Cell));
@@ -157,7 +157,7 @@ fn wave24_semantic_search_ordering_exact_gt_prefix_gt_substring() {
 // ===========================================================================
 
 #[test]
-fn wave24_semantic_search_case_insensitive_by_default() {
+fn semantic_search_case_insensitive_by_default() {
     let idx = build_sample_index();
     let results = idx.search("MAIN", 10);
     assert!(!results.is_empty());
@@ -165,7 +165,7 @@ fn wave24_semantic_search_case_insensitive_by_default() {
 }
 
 #[test]
-fn wave24_semantic_search_case_sensitive_prefix() {
+fn semantic_search_case_sensitive_prefix() {
     let mut idx = SymbolIndex::new();
     idx.add_symbol(sym("MyType", SymbolKind::Record));
     idx.add_symbol(sym("mytype", SymbolKind::Record));
@@ -180,7 +180,7 @@ fn wave24_semantic_search_case_sensitive_prefix() {
 // ===========================================================================
 
 #[test]
-fn wave24_semantic_search_camel_case_boundary() {
+fn semantic_search_camel_case_boundary() {
     let idx = build_sample_index();
     let results = idx.search("BS", 10);
     let found = results.iter().any(|r| r.symbol.name == "BinarySearch");
@@ -188,7 +188,7 @@ fn wave24_semantic_search_camel_case_boundary() {
 }
 
 #[test]
-fn wave24_semantic_search_snake_case_boundary() {
+fn semantic_search_snake_case_boundary() {
     let idx = build_sample_index();
     let results = idx.search("pj", 10);
     let found = results.iter().any(|r| r.symbol.name == "parse_json");
@@ -200,7 +200,7 @@ fn wave24_semantic_search_snake_case_boundary() {
 // ===========================================================================
 
 #[test]
-fn wave24_semantic_search_fuzzy_subsequence() {
+fn semantic_search_fuzzy_subsequence() {
     let idx = build_sample_index();
     let results = idx.fuzzy_search("bnsr", 10);
     let found = results.iter().any(|r| r.symbol.name == "BinarySearch");
@@ -208,7 +208,7 @@ fn wave24_semantic_search_fuzzy_subsequence() {
 }
 
 #[test]
-fn wave24_semantic_search_fuzzy_no_match() {
+fn semantic_search_fuzzy_no_match() {
     let idx = build_sample_index();
     let results = idx.fuzzy_search("zzzzz", 10);
     assert!(results.is_empty());
@@ -219,7 +219,7 @@ fn wave24_semantic_search_fuzzy_no_match() {
 // ===========================================================================
 
 #[test]
-fn wave24_semantic_search_trigram_in_index_after_add() {
+fn semantic_search_trigram_in_index_after_add() {
     let mut idx = SymbolIndex::new();
     idx.add_symbol(sym("transform", SymbolKind::Cell));
     // "tra" should exist.
@@ -228,7 +228,7 @@ fn wave24_semantic_search_trigram_in_index_after_add() {
 }
 
 #[test]
-fn wave24_semantic_search_rebuild_trigram_preserves_results() {
+fn semantic_search_rebuild_trigram_preserves_results() {
     let mut idx = build_sample_index();
     idx.rebuild_trigram_index();
     let results = idx.search("parse_json", 10);
@@ -241,7 +241,7 @@ fn wave24_semantic_search_rebuild_trigram_preserves_results() {
 // ===========================================================================
 
 #[test]
-fn wave24_semantic_search_by_kind_cells_only() {
+fn semantic_search_by_kind_cells_only() {
     let idx = build_sample_index();
     let results = idx.search_by_kind("a", SymbolKind::Cell, 20);
     for r in &results {
@@ -250,7 +250,7 @@ fn wave24_semantic_search_by_kind_cells_only() {
 }
 
 #[test]
-fn wave24_semantic_search_by_kind_no_match() {
+fn semantic_search_by_kind_no_match() {
     let idx = build_sample_index();
     let results = idx.search_by_kind("Point", SymbolKind::Cell, 10);
     // Point is a Record, not a Cell.
@@ -262,14 +262,14 @@ fn wave24_semantic_search_by_kind_no_match() {
 // ===========================================================================
 
 #[test]
-fn wave24_semantic_search_symbols_in_file() {
+fn semantic_search_symbols_in_file() {
     let idx = build_sample_index();
     let results = idx.symbols_in_file("utils.lm");
     assert_eq!(results.len(), 2);
 }
 
 #[test]
-fn wave24_semantic_search_symbols_in_nonexistent_file() {
+fn semantic_search_symbols_in_nonexistent_file() {
     let idx = build_sample_index();
     assert!(idx.symbols_in_file("nope.lm").is_empty());
 }
@@ -279,7 +279,7 @@ fn wave24_semantic_search_symbols_in_nonexistent_file() {
 // ===========================================================================
 
 #[test]
-fn wave24_semantic_search_symbols_by_kind_variant() {
+fn semantic_search_symbols_by_kind_variant() {
     let idx = build_sample_index();
     let variants = idx.symbols_by_kind(SymbolKind::Variant);
     assert_eq!(variants.len(), 2);
@@ -290,13 +290,13 @@ fn wave24_semantic_search_symbols_by_kind_variant() {
 // ===========================================================================
 
 #[test]
-fn wave24_semantic_search_file_count() {
+fn semantic_search_file_count() {
     let idx = build_sample_index();
     assert_eq!(idx.file_count(), 2); // test.lm and utils.lm
 }
 
 #[test]
-fn wave24_semantic_search_symbol_count() {
+fn semantic_search_symbol_count() {
     let idx = build_sample_index();
     assert_eq!(idx.symbol_count(), 12);
 }
@@ -306,7 +306,7 @@ fn wave24_semantic_search_symbol_count() {
 // ===========================================================================
 
 #[test]
-fn wave24_semantic_search_clear_empties_everything() {
+fn semantic_search_clear_empties_everything() {
     let mut idx = build_sample_index();
     idx.clear();
     assert_eq!(idx.symbol_count(), 0);
@@ -319,7 +319,7 @@ fn wave24_semantic_search_clear_empties_everything() {
 // ===========================================================================
 
 #[test]
-fn wave24_semantic_search_max_results_respected() {
+fn semantic_search_max_results_respected() {
     let idx = build_sample_index();
     let results = idx.fuzzy_search("a", 2);
     assert!(results.len() <= 2);
@@ -330,7 +330,7 @@ fn wave24_semantic_search_max_results_respected() {
 // ===========================================================================
 
 #[test]
-fn wave24_semantic_search_empty_query_returns_nothing() {
+fn semantic_search_empty_query_returns_nothing() {
     let idx = build_sample_index();
     assert!(idx.search("", 10).is_empty());
     assert!(idx.fuzzy_search("", 10).is_empty());
@@ -341,7 +341,7 @@ fn wave24_semantic_search_empty_query_returns_nothing() {
 // ===========================================================================
 
 #[test]
-fn wave24_semantic_search_query_parse_plain() {
+fn semantic_search_query_parse_plain() {
     let q = SearchQuery::parse("foo");
     assert_eq!(q.text, "foo");
     assert_eq!(q.kind_filter, None);
@@ -350,42 +350,42 @@ fn wave24_semantic_search_query_parse_plain() {
 }
 
 #[test]
-fn wave24_semantic_search_query_parse_cell() {
+fn semantic_search_query_parse_cell() {
     let q = SearchQuery::parse("cell:main");
     assert_eq!(q.text, "main");
     assert_eq!(q.kind_filter, Some(SymbolKind::Cell));
 }
 
 #[test]
-fn wave24_semantic_search_query_parse_record() {
+fn semantic_search_query_parse_record() {
     let q = SearchQuery::parse("record:Point");
     assert_eq!(q.text, "Point");
     assert_eq!(q.kind_filter, Some(SymbolKind::Record));
 }
 
 #[test]
-fn wave24_semantic_search_query_parse_file_filter() {
+fn semantic_search_query_parse_file_filter() {
     let q = SearchQuery::parse("file:utils.lm helper");
     assert_eq!(q.file_filter, Some("utils.lm".to_string()));
     assert_eq!(q.text, "helper");
 }
 
 #[test]
-fn wave24_semantic_search_query_parse_case_sensitive() {
+fn semantic_search_query_parse_case_sensitive() {
     let q = SearchQuery::parse("CS:Name");
     assert!(q.case_sensitive);
     assert_eq!(q.text, "Name");
 }
 
 #[test]
-fn wave24_semantic_search_query_parse_empty() {
+fn semantic_search_query_parse_empty() {
     let q = SearchQuery::parse("");
     assert_eq!(q.text, "");
     assert_eq!(q.kind_filter, None);
 }
 
 #[test]
-fn wave24_semantic_search_query_all_kind_prefixes() {
+fn semantic_search_query_all_kind_prefixes() {
     let cases = vec![
         ("cell:", SymbolKind::Cell),
         ("record:", SymbolKind::Record),
@@ -410,7 +410,7 @@ fn wave24_semantic_search_query_all_kind_prefixes() {
 // ===========================================================================
 
 #[test]
-fn wave24_semantic_search_integrated_kind_filter() {
+fn semantic_search_integrated_kind_filter() {
     let idx = build_sample_index();
     let results = idx.search("cell:main", 10);
     assert!(!results.is_empty());
@@ -423,7 +423,7 @@ fn wave24_semantic_search_integrated_kind_filter() {
 // ===========================================================================
 
 #[test]
-fn wave24_semantic_search_integrated_file_filter() {
+fn semantic_search_integrated_file_filter() {
     let idx = build_sample_index();
     let results = idx.search("file:utils.lm helper", 10);
     assert!(!results.is_empty());
@@ -437,7 +437,7 @@ fn wave24_semantic_search_integrated_file_filter() {
 // ===========================================================================
 
 #[test]
-fn wave24_semantic_search_symbol_metadata() {
+fn semantic_search_symbol_metadata() {
     let mut idx = SymbolIndex::new();
     idx.add_symbol(IndexedSymbol {
         name: "add".to_string(),
@@ -462,7 +462,7 @@ fn wave24_semantic_search_symbol_metadata() {
 // ===========================================================================
 
 #[test]
-fn wave24_semantic_search_duplicate_names_different_files() {
+fn semantic_search_duplicate_names_different_files() {
     let mut idx = SymbolIndex::new();
     idx.add_symbol(sym_in("init", SymbolKind::Cell, "a.lm", 1));
     idx.add_symbol(sym_in("init", SymbolKind::Cell, "b.lm", 1));
@@ -475,7 +475,7 @@ fn wave24_semantic_search_duplicate_names_different_files() {
 // ===========================================================================
 
 #[test]
-fn wave24_semantic_search_symbol_kind_display() {
+fn semantic_search_symbol_kind_display() {
     assert_eq!(format!("{}", SymbolKind::Cell), "cell");
     assert_eq!(format!("{}", SymbolKind::Record), "record");
     assert_eq!(format!("{}", SymbolKind::Enum), "enum");
@@ -493,7 +493,7 @@ fn wave24_semantic_search_symbol_kind_display() {
 // ===========================================================================
 
 #[test]
-fn wave24_semantic_search_results_sorted_descending() {
+fn semantic_search_results_sorted_descending() {
     let idx = build_sample_index();
     let results = idx.search("main", 10);
     for w in results.windows(2) {

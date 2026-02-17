@@ -1,0 +1,82 @@
+# Sort benchmark — insertion sort on 10,000 integers
+# (Lumen lacks mutable arrays, so we use functional insertion sort
+#  on a smaller N to keep runtime comparable)
+
+cell insert_sorted(sorted: list[Int], value: Int) -> list[Int]
+  let n = len(sorted)
+  if n == 0
+    return [value]
+  end
+
+  let result = []
+  let inserted = false
+  let i = 0
+
+  while i < n
+    let curr = sorted[i]
+    if not inserted and value <= curr
+      result = append(result, value)
+      inserted = true
+    end
+    result = append(result, curr)
+    i = i + 1
+  end
+
+  if not inserted
+    result = append(result, value)
+  end
+
+  return result
+end
+
+cell insertion_sort(items: list[Int]) -> list[Int]
+  let n = len(items)
+  if n <= 1
+    return items
+  end
+
+  let sorted = []
+  let i = 0
+  while i < n
+    sorted = insert_sorted(sorted, items[i])
+    i = i + 1
+  end
+  return sorted
+end
+
+# Simple linear congruential generator for deterministic "random" data
+cell make_data(count: Int) -> list[Int]
+  let data = []
+  let val = 42
+  let i = 0
+  while i < count
+    val = (val * 1103515245 + 12345) % 2147483648
+    data = append(data, val % 100000)
+    i = i + 1
+  end
+  return data
+end
+
+cell is_sorted(items: list[Int]) -> Bool
+  let n = len(items)
+  if n <= 1
+    return true
+  end
+  let i = 0
+  while i < n - 1
+    if items[i] > items[i + 1]
+      return false
+    end
+    i = i + 1
+  end
+  return true
+end
+
+cell main() -> Null
+  let n = 10000
+  let data = make_data(n)
+  let sorted = insertion_sort(data)
+  let ok = is_sorted(sorted)
+  print("sort(" + to_string(n) + ") sorted=" + to_string(ok))
+  return null
+end

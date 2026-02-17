@@ -142,7 +142,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T060 | Reduction counting — **DONE** | After N instructions (e.g. 2000), force a context switch to avoid starvation. |
 | T061 | Mailbox or MPSC queue for agents — **DONE** | Lock-free or low-contention queue for messages to a single agent. |
 | T062 | Channel&lt;T&gt; type in runtime — **DONE** | Typed channel (MPMC or SPSC) for inter-agent communication. |
-| T063 | Selective receive (Erlang-style) | Allow receiving only messages matching a pattern; document semantics. |
+| T063 | Selective receive (Erlang-style) — **DONE** | Allow receiving only messages matching a pattern; document semantics. |
 | T064 | Supervisor behaviour (design) — **DONE** | Define in spec or std how a supervisor restarts or escalates on child failure. |
 | T065 | link / monitor primitives — **DONE** | When process A links to B, A is notified if B crashes; implement or stub in runtime. |
 | T066 | C10K-style test | Spawn many agents and measure latency and memory; establish baseline. |
@@ -190,7 +190,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
-| T090 | Real Ed25519/Sigstore signing | Replace package manager signing stubs with actual cryptographic signing (see COMPETITIVE_ANALYSIS §7.3). |
+| T090 | Real Ed25519/Sigstore signing — **DONE** | Replace package manager signing stubs with actual cryptographic signing (see COMPETITIVE_ANALYSIS §7.3). |
 | T091 | Transparency log for packages | Append-only log for published artifacts; verification against log. |
 | T092 | Registry deployment | Deploy registry (e.g. Cloudflare Workers + D1/R2) so publish/search/install round-trip works. |
 | T093 | OIDC for registry auth | Use OpenID Connect for publisher identity where applicable. |
@@ -210,7 +210,7 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T107 | Error codes and documentation — **DONE** | Assign codes to errors and link to documentation. |
 | T108 | Clippy: deny warnings in CI | Ensure `cargo clippy -- -D warnings` passes. |
 | T109 | Miri in CI | Run tests under Miri where applicable to catch UB. |
-| T110 | Benchmark suite and regression gate | Formal benchmark suite; CI fails on performance regression beyond a threshold. |
+| T110 | Benchmark suite and regression gate — **DONE** | Formal benchmark suite; CI fails on performance regression beyond a threshold. |
 
 ---
 
@@ -228,8 +228,8 @@ Each entry: **Task ID**, **Title**, **Problem statement / context**. Rationale a
 | T118 | Hygienic macro system | Macro expansion without variable capture; define syntax and scope rules. |
 | T119 | String interpolation with format spec — **DONE** | e.g. `f"Value: {x:.2f}"` with typed formatting. |
 | T120 | Trailing lambda / DSL blocks | Allow block or lambda at end of call for DSLs (e.g. `html div { ... }`). |
-| T121 | Error propagation operator | Postfix `?` that unwraps `result[T,E]` or returns early with error. |
-| T122 | Try/else expression | `try expr else handler` for local error handling. |
+| T121 | Error propagation operator — **DONE** | Postfix `?` that unwraps `result[T,E]` or returns early with error. |
+| T122 | Try/else expression — **DONE** | `try expr else handler` for local error handling. |
 | T123 | Checked arithmetic by default — **DONE** | `+`, `-`, `*` check overflow; provide wrapping variants (e.g. `+%`). |
 | T124 | Register limit fix — **DONE** | Increase register set or use virtual registers and allocation so large functions compile. |
 
@@ -313,8 +313,8 @@ The following tasks add depth and explicit competitive parity. Problem statement
 
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
-| T154 | Idempotency keys for side effects | When replaying, reuse cached results for side effects (e.g. HTTP) keyed by idempotency key so replay is deterministic and does not re-execute external calls. Ref: Temporal, durable workflows. |
-| T155 | Snapshot compression and pruning | Limit snapshot size by compressing or pruning old stack frames/heap so long-running agents do not exhaust storage. |
+| T154 | Idempotency keys for side effects — **DONE** | When replaying, reuse cached results for side effects (e.g. HTTP) keyed by idempotency key so replay is deterministic and does not re-execute external calls. Ref: Temporal, durable workflows. |
+| T155 | Snapshot compression and pruning — **DONE** | Limit snapshot size by compressing or pruning old stack frames/heap so long-running agents do not exhaust storage. |
 
 ### Phase 5 (AI-native) — additional
 
@@ -353,7 +353,7 @@ The following tasks add depth and explicit competitive parity. Problem statement
 
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
-| T169 | Error context chaining | Propagate and display cause chains (e.g. "tool X failed because network unreachable because TLS handshake failed"). Improves debuggability vs single-message errors. |
+| T169 | Error context chaining — **DONE** | Propagate and display cause chains (e.g. "tool X failed because network unreachable because TLS handshake failed"). Improves debuggability vs single-message errors. |
 | T170 | Panic vs result (halt vs return err) | Define clear boundary: which failures panic (e.g. unreachable, invariant violation) vs return `result[T,E]`; document and enforce so agents can recover predictably. Ref: Rust panic vs Result. |
 | T171 | Inline / property-based / snapshot testing | Built-in or std test helpers: inline unit tests, property-based (e.g. QuickCheck-style), snapshot output comparison. Ref: COMPETITIVE_ANALYSIS §8 (leapfrog 11). |
 | T172 | Mock effects for tests | Test harness to stub effect operations (e.g. `perform HttpGet`) so tests run without real I/O. Complements deterministic replay. |

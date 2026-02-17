@@ -22,7 +22,7 @@ use lumen_compiler::compiler::lir::*;
 use lumen_runtime::tools::{ProviderRegistry, ToolDispatcher, ToolRequest};
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -332,6 +332,9 @@ pub struct VM {
     pub(crate) fuel: Option<u64>,
     pub(crate) trace_id: Option<String>,
     pub(crate) trace_seq: u64,
+    /// Effect budget tracking: maps effect name → (remaining_calls, original_limit).
+    /// When a budget is set and remaining reaches 0, further calls are rejected.
+    pub(crate) effect_budgets: HashMap<String, (u32, u32)>,
 }
 
 const MAX_AWAIT_RETRIES: u32 = 10_000;
@@ -368,6 +371,7 @@ impl VM {
             fuel: None,
             trace_id: None,
             trace_seq: 0,
+            effect_budgets: HashMap::new(),
         }
     }
 
@@ -662,6 +666,32 @@ impl VM {
     /// When fuel reaches 0, execution stops with a "fuel exhausted" error.
     pub fn set_fuel(&mut self, fuel: u64) {
         self.fuel = Some(fuel);
+    }
+
+    /// Set an effect budget — the maximum number of times `effect` may be
+    /// invoked (via `perform` or tool-call) before the VM rejects further
+    /// calls with a `BudgetExhausted` error.
+    pub fn set_effect_budget(&mut self, effect: &str, limit: u32) {
+        self.effect_budgets
+            .insert(effect.to_string(), (limit, limit));
+    }
+
+    /// Check (and decrement) the budget for `effect`.  Returns `Ok(())` when
+    /// the call is allowed, or `Err(message)` when the budget is exhausted.
+    pub fn check_effect_budget(&mut self, effect: &str) -> Result<(), String> {
+        if let Some((remaining, limit)) = self.effect_budgets.get_mut(effect) {
+            if *remaining == 0 {
+                return Err(format!(
+                    "effect budget exhausted for '{}': limit {} reached",
+                    effect, limit
+                ));
+            }
+            *remaining -= 1;
+            Ok(())
+        } else {
+            // No budget configured for this effect — always allowed.
+            Ok(())
+        }
     }
 
     /// Capture the current call stack for error reporting.
@@ -2126,6 +2156,23 @@ impl VM {
                         return Err(VmError::ToolError(err_msg));
                     }
 
+                    // ── Effect-budget enforcement (T158) ──
+                    // Check budgets against both the tool alias and the tool_id
+                    // prefix (e.g. "http" from "http.get") so callers can set
+                    // budgets at either granularity.
+                    for budget_key in [tool_alias.as_str(), tool_id.split('.').next().unwrap_or("")]
+                    {
+                        if let Some((remaining, limit)) = self.effect_budgets.get_mut(budget_key) {
+                            if *remaining == 0 {
+                                return Err(VmError::ToolError(format!(
+                                    "effect budget exceeded for '{}': limit {} reached",
+                                    budget_key, limit
+                                )));
+                            }
+                            *remaining -= 1;
+                        }
+                    }
+
                     let request = ToolRequest {
                         tool_id: tool_id.clone(),
                         version: tool_version.clone(),
@@ -2325,6 +2372,14 @@ impl VM {
                             ))
                         }
                     };
+
+                    // ── Effect-budget enforcement (T158) ──
+                    if let Err(msg) = self.check_effect_budget(&eff_name) {
+                        return Err(VmError::Runtime(format!(
+                            "effect budget exceeded for '{}.{}': {}",
+                            eff_name, op_name, msg
+                        )));
+                    }
 
                     // Search effect_handlers stack (top to bottom) for matching handler
                     let handler_scope = self
@@ -6461,5 +6516,424 @@ end
             "for subtraction: expected 'subtraction' in message, got: {}",
             msg
         );
+    }
+
+    // ── T206: new builtin tests ──────────────────────────────────────
+
+    #[test]
+    fn test_builtin_trim_start() {
+        let result = run_main(
+            r#"
+cell main() -> String
+  trim_start("  hello  ")
+end
+"#,
+        );
+        assert_eq!(result, Value::String(StringRef::Owned("hello  ".into())));
+    }
+
+    #[test]
+    fn test_builtin_trim_end() {
+        let result = run_main(
+            r#"
+cell main() -> String
+  trim_end("  hello  ")
+end
+"#,
+        );
+        assert_eq!(result, Value::String(StringRef::Owned("  hello".into())));
+    }
+
+    #[test]
+    fn test_builtin_trim_start_no_leading_whitespace() {
+        let result = run_main(
+            r#"
+cell main() -> String
+  trim_start("hello")
+end
+"#,
+        );
+        assert_eq!(result, Value::String(StringRef::Owned("hello".into())));
+    }
+
+    #[test]
+    fn test_builtin_trim_end_no_trailing_whitespace() {
+        let result = run_main(
+            r#"
+cell main() -> String
+  trim_end("hello")
+end
+"#,
+        );
+        assert_eq!(result, Value::String(StringRef::Owned("hello".into())));
+    }
+
+    #[test]
+    fn test_builtin_exp_float() {
+        let result = run_main(
+            r#"
+cell main() -> Float
+  exp(0.0)
+end
+"#,
+        );
+        assert_eq!(result, Value::Float(1.0));
+    }
+
+    #[test]
+    fn test_builtin_exp_int() {
+        let result = run_main(
+            r#"
+cell main() -> Float
+  exp(0)
+end
+"#,
+        );
+        assert_eq!(result, Value::Float(1.0));
+    }
+
+    #[test]
+    fn test_builtin_exp_one() {
+        let result = run_main(
+            r#"
+cell main() -> Float
+  exp(1.0)
+end
+"#,
+        );
+        match result {
+            Value::Float(f) => {
+                assert!(
+                    (f - std::f64::consts::E).abs() < 1e-10,
+                    "exp(1.0) should be e (~2.718), got {}",
+                    f
+                );
+            }
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_builtin_tan_zero() {
+        let result = run_main(
+            r#"
+cell main() -> Float
+  tan(0.0)
+end
+"#,
+        );
+        assert_eq!(result, Value::Float(0.0));
+    }
+
+    #[test]
+    fn test_builtin_tan_int() {
+        let result = run_main(
+            r#"
+cell main() -> Float
+  tan(0)
+end
+"#,
+        );
+        assert_eq!(result, Value::Float(0.0));
+    }
+
+    #[test]
+    fn test_builtin_tan_pi_over_4() {
+        // tan(pi/4) ≈ 1.0
+        let result = run_main(
+            r#"
+cell main() -> Float
+  tan(0.7853981633974483)
+end
+"#,
+        );
+        match result {
+            Value::Float(f) => {
+                assert!(
+                    (f - 1.0).abs() < 1e-10,
+                    "tan(pi/4) should be ~1.0, got {}",
+                    f
+                );
+            }
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_builtin_random_int_returns_in_range() {
+        let result = run_main(
+            r#"
+cell main() -> Bool
+  let r = random_int(1, 10)
+  r >= 1 and r <= 10
+end
+"#,
+        );
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_builtin_random_int_same_min_max() {
+        let result = run_main(
+            r#"
+cell main() -> Int
+  random_int(5, 5)
+end
+"#,
+        );
+        assert_eq!(result, Value::Int(5));
+    }
+
+    #[test]
+    fn test_builtin_random_int_negative_range() {
+        let result = run_main(
+            r#"
+cell main() -> Bool
+  let r = random_int(-10, -1)
+  r >= -10 and r <= -1
+end
+"#,
+        );
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_builtin_random_int_min_greater_than_max_errors() {
+        let err = try_run_main(
+            r#"
+cell main() -> Int
+  random_int(10, 1)
+end
+"#,
+        );
+        assert!(err.is_err(), "random_int(10, 1) should fail");
+        let msg = err.unwrap_err().to_string();
+        assert!(
+            msg.contains("min") && msg.contains("max"),
+            "error should mention min/max, got: {}",
+            msg
+        );
+    }
+
+    // ── T158: effect-budget enforcement tests ────────────────────────
+
+    #[test]
+    fn test_effect_budget_unit_check_and_decrement() {
+        let mut vm = VM::new();
+        vm.set_effect_budget("http", 2);
+
+        // Two calls should succeed
+        assert!(vm.check_effect_budget("http").is_ok());
+        assert!(vm.check_effect_budget("http").is_ok());
+        // Third call should fail
+        assert!(vm.check_effect_budget("http").is_err());
+    }
+
+    #[test]
+    fn test_effect_budget_untracked_effect_always_allowed() {
+        let mut vm = VM::new();
+        vm.set_effect_budget("http", 1);
+
+        // An effect with no budget configured is always allowed
+        assert!(vm.check_effect_budget("fs").is_ok());
+        assert!(vm.check_effect_budget("fs").is_ok());
+    }
+
+    #[test]
+    fn test_effect_budget_zero_immediately_rejects() {
+        let mut vm = VM::new();
+        vm.set_effect_budget("network", 0);
+
+        let err = vm.check_effect_budget("network");
+        assert!(err.is_err());
+        let msg = err.unwrap_err();
+        assert!(
+            msg.contains("budget exhausted") && msg.contains("network"),
+            "expected budget exhausted message for network, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_effect_budget_error_message_contains_limit() {
+        let mut vm = VM::new();
+        vm.set_effect_budget("api", 3);
+        // Drain the budget
+        for _ in 0..3 {
+            vm.check_effect_budget("api").unwrap();
+        }
+        let msg = vm.check_effect_budget("api").unwrap_err();
+        assert!(
+            msg.contains("3"),
+            "error should mention the limit (3), got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_effect_budget_toolcall_enforcement() {
+        // Build a module that calls a tool twice via ToolCall opcode.
+        // Set a budget of 1 — first call succeeds, second should fail.
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec!["String".into()],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("String".into()),
+                registers: 4,
+                constants: vec![],
+                instructions: vec![
+                    // First tool call
+                    Instruction::abx(OpCode::ToolCall, 0, 0),
+                    // Second tool call (should exceed budget)
+                    Instruction::abx(OpCode::ToolCall, 1, 0),
+                    Instruction::abc(OpCode::Return, 1, 1, 0),
+                ],
+                effect_handler_metas: vec![],
+            }],
+            tools: vec![LirTool {
+                alias: "HttpGet".into(),
+                tool_id: "http.get".into(),
+                version: "1.0.0".into(),
+                mcp_url: None,
+            }],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut dispatcher = StubDispatcher::new();
+        dispatcher.set_response("http.get", serde_json::json!("response-data"));
+
+        let mut vm = VM::new();
+        vm.tool_dispatcher = Some(Box::new(dispatcher));
+        // Set budget by alias — only 1 call allowed
+        vm.set_effect_budget("HttpGet", 1);
+        vm.load(module);
+
+        let err = vm
+            .execute("main", vec![])
+            .expect_err("second tool call should exceed budget");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("budget exceeded") || msg.contains("budget exhausted"),
+            "expected budget error, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("HttpGet"),
+            "error should mention tool alias, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_effect_budget_toolcall_by_id_prefix() {
+        // Budget keyed by tool_id prefix ("http") should also block.
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec!["String".into()],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("String".into()),
+                registers: 4,
+                constants: vec![],
+                instructions: vec![
+                    Instruction::abx(OpCode::ToolCall, 0, 0),
+                    Instruction::abx(OpCode::ToolCall, 1, 0),
+                    Instruction::abc(OpCode::Return, 1, 1, 0),
+                ],
+                effect_handler_metas: vec![],
+            }],
+            tools: vec![LirTool {
+                alias: "MyHttp".into(),
+                tool_id: "http.get".into(),
+                version: "1.0.0".into(),
+                mcp_url: None,
+            }],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut dispatcher = StubDispatcher::new();
+        dispatcher.set_response("http.get", serde_json::json!("ok"));
+
+        let mut vm = VM::new();
+        vm.tool_dispatcher = Some(Box::new(dispatcher));
+        // Budget by tool_id prefix "http" — only 1 call allowed
+        vm.set_effect_budget("http", 1);
+        vm.load(module);
+
+        let err = vm
+            .execute("main", vec![])
+            .expect_err("second call should exceed http budget");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("budget exceeded"),
+            "expected budget error, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_effect_budget_toolcall_within_limit_succeeds() {
+        // Budget of 2, exactly 2 calls — should succeed.
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec!["String".into()],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("String".into()),
+                registers: 4,
+                constants: vec![],
+                instructions: vec![
+                    Instruction::abx(OpCode::ToolCall, 0, 0),
+                    Instruction::abx(OpCode::ToolCall, 1, 0),
+                    Instruction::abc(OpCode::Return, 1, 1, 0),
+                ],
+                effect_handler_metas: vec![],
+            }],
+            tools: vec![LirTool {
+                alias: "HttpGet".into(),
+                tool_id: "http.get".into(),
+                version: "1.0.0".into(),
+                mcp_url: None,
+            }],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut dispatcher = StubDispatcher::new();
+        dispatcher.set_response("http.get", serde_json::json!("ok"));
+
+        let mut vm = VM::new();
+        vm.tool_dispatcher = Some(Box::new(dispatcher));
+        vm.set_effect_budget("HttpGet", 2);
+        vm.load(module);
+
+        let result = vm
+            .execute("main", vec![])
+            .expect("2 calls within budget of 2 should succeed");
+        assert_eq!(result, Value::String(StringRef::Owned("ok".into())));
     }
 }

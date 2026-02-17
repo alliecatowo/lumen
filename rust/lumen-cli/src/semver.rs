@@ -337,6 +337,8 @@ pub enum Constraint {
     Or(Vec<Constraint>),
     /// Logical AND of constraints: `>=1.0.0 <2.0.0`
     And(Vec<Constraint>),
+    /// Not equal: `!=1.2.3` (matches any version except the specified one)
+    NotEqual(Version),
     /// Matches any version
     Any,
     /// Matches no version
@@ -370,6 +372,8 @@ impl Constraint {
     pub fn matches_pre(&self, version: &Version, include_prerelease: bool) -> bool {
         match self {
             Constraint::Exact(v) => version == v,
+
+            Constraint::NotEqual(v) => version != v,
 
             Constraint::Caret(v) => {
                 // ^1.2.3 := >=1.2.3 <2.0.0
@@ -491,6 +495,11 @@ impl Constraint {
         match (self, other) {
             (Constraint::Any, _) | (_, Constraint::Any) => return true,
             (Constraint::None, _) | (_, Constraint::None) => return false,
+            // NotEqual is compatible with Exact only if they differ
+            (Constraint::NotEqual(v), Constraint::Exact(e))
+            | (Constraint::Exact(e), Constraint::NotEqual(v)) => return v != e,
+            // Two NotEqual constraints are always compatible (infinite versions exist)
+            (Constraint::NotEqual(_), Constraint::NotEqual(_)) => return true,
             _ => {}
         }
 
@@ -527,6 +536,10 @@ impl Constraint {
                 min_inclusive: true,
                 max_inclusive: true,
             },
+            Constraint::NotEqual(_) => {
+                // NotEqual matches everything except one point, so bounds are unbounded
+                VersionBounds::unbounded()
+            }
             Constraint::Caret(v) => {
                 if v.major > 0 {
                     VersionBounds {
@@ -745,6 +758,7 @@ impl fmt::Display for Constraint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Constraint::Exact(v) => write!(f, "={}", v),
+            Constraint::NotEqual(v) => write!(f, "!={}", v),
             Constraint::Caret(v) => write!(f, "^{}", v),
             Constraint::Tilde(v) => write!(f, "~{}", v),
             Constraint::GreaterThan(v, true) => write!(f, ">={}", v),
@@ -862,6 +876,7 @@ fn tokenize_constraint(s: &str) -> Vec<String> {
                 if remaining.starts_with('<')
                     || remaining.starts_with('>')
                     || remaining.starts_with('=')
+                    || remaining.starts_with('!')
                     || remaining.starts_with('~')
                     || remaining.starts_with('^')
                 {
@@ -871,15 +886,15 @@ fn tokenize_constraint(s: &str) -> Vec<String> {
                     current.push(c);
                 }
             }
-        } else if c == '<' || c == '>' || c == '=' || c == '~' || c == '^' {
+        } else if c == '<' || c == '>' || c == '=' || c == '!' || c == '~' || c == '^' {
             if !current.is_empty() {
                 tokens.push(current.clone());
                 current.clear();
             }
             current.push(c);
-            // Check for >=, <=
+            // Check for >=, <=, !=
             if let Some(&next) = chars.peek() {
-                if next == '=' && (c == '<' || c == '>' || c == '=') {
+                if next == '=' && (c == '<' || c == '>' || c == '=' || c == '!') {
                     current.push(chars.next().unwrap());
                 }
             }
@@ -903,7 +918,12 @@ fn tokenize_constraint(s: &str) -> Vec<String> {
         }
 
         // If this is an operator and the next token is a version, combine them
-        if (token == ">=" || token == ">" || token == "<=" || token == "<" || token == "=")
+        if (token == ">="
+            || token == ">"
+            || token == "<="
+            || token == "<"
+            || token == "="
+            || token == "!=")
             && i + 1 < tokens.len()
         {
             let combined = format!("{}{}", token, tokens[i + 1].trim());
@@ -944,6 +964,12 @@ fn parse_single_constraint(s: &str) -> Result<Constraint, SemverError> {
     if let Some(rest) = s.strip_prefix('~') {
         let version = Version::from_str(rest.trim())?;
         return Ok(Constraint::Tilde(version));
+    }
+
+    // Handle not-equal constraint
+    if let Some(rest) = s.strip_prefix("!=") {
+        let version = Version::from_str(rest.trim())?;
+        return Ok(Constraint::NotEqual(version));
     }
 
     // Handle exact version with =
@@ -1914,5 +1940,102 @@ mod tests {
         // With prerelease, 1.1.0-alpha could be found if we filtered for it
         let c_alpha = Constraint::parse(">=1.1.0-alpha").unwrap();
         assert!(c_alpha.matches_pre(&"1.1.0-alpha".parse().unwrap(), true));
+    }
+
+    // ==================== NotEqual Constraint Tests ====================
+
+    #[test]
+    fn test_not_equal_parse() {
+        let c = Constraint::parse("!=1.2.3").unwrap();
+        assert!(matches!(c, Constraint::NotEqual(_)));
+        if let Constraint::NotEqual(v) = &c {
+            assert_eq!(v.major, 1);
+            assert_eq!(v.minor, 2);
+            assert_eq!(v.patch, 3);
+        }
+    }
+
+    #[test]
+    fn test_not_equal_display() {
+        let c = Constraint::parse("!=1.2.3").unwrap();
+        assert_eq!(c.to_string(), "!=1.2.3");
+    }
+
+    #[test]
+    fn test_not_equal_matches() {
+        let c = Constraint::parse("!=1.2.3").unwrap();
+        // Different versions should match
+        assert!(c.matches(&"1.2.4".parse().unwrap()));
+        assert!(c.matches(&"1.3.0".parse().unwrap()));
+        assert!(c.matches(&"2.0.0".parse().unwrap()));
+        assert!(c.matches(&"0.0.1".parse().unwrap()));
+        assert!(c.matches(&"1.2.2".parse().unwrap()));
+        // The excluded version should not match
+        assert!(!c.matches(&"1.2.3".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_not_equal_with_prerelease() {
+        let c = Constraint::parse("!=1.2.3-alpha.1").unwrap();
+        // The exact pre-release should not match
+        assert!(!c.matches(&"1.2.3-alpha.1".parse().unwrap()));
+        // Other pre-releases should match
+        assert!(c.matches(&"1.2.3-alpha.2".parse().unwrap()));
+        assert!(c.matches(&"1.2.3-beta".parse().unwrap()));
+        // Release versions should match
+        assert!(c.matches(&"1.2.3".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_not_equal_compatible_with_exact() {
+        let ne = Constraint::parse("!=1.2.3").unwrap();
+        // Compatible with different exact version
+        let exact_diff = Constraint::parse("=1.2.4").unwrap();
+        assert!(ne.is_compatible(&exact_diff));
+        // Not compatible with same exact version
+        let exact_same = Constraint::parse("=1.2.3").unwrap();
+        assert!(!ne.is_compatible(&exact_same));
+    }
+
+    #[test]
+    fn test_not_equal_compatible_with_not_equal() {
+        let ne1 = Constraint::parse("!=1.2.3").unwrap();
+        let ne2 = Constraint::parse("!=1.2.4").unwrap();
+        assert!(ne1.is_compatible(&ne2));
+    }
+
+    #[test]
+    fn test_not_equal_compatible_with_range() {
+        let ne = Constraint::parse("!=1.2.3").unwrap();
+        let caret = Constraint::parse("^1.0.0").unwrap();
+        // They overlap: 1.0.0, 1.2.4, etc. all satisfy both
+        assert!(ne.is_compatible(&caret));
+    }
+
+    #[test]
+    fn test_not_equal_in_compound() {
+        // NotEqual combined with another constraint via AND
+        let c = Constraint::parse("!=1.2.3 >=1.0.0").unwrap();
+        assert!(c.matches(&"1.0.0".parse().unwrap()));
+        assert!(c.matches(&"1.2.4".parse().unwrap()));
+        assert!(!c.matches(&"1.2.3".parse().unwrap()));
+        assert!(!c.matches(&"0.9.0".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_not_equal_in_or() {
+        let c = Constraint::parse("!=1.2.3 || =2.0.0").unwrap();
+        assert!(c.matches(&"1.0.0".parse().unwrap()));
+        assert!(c.matches(&"2.0.0".parse().unwrap()));
+        // 1.2.3 doesn't match !=1.2.3, but it also doesn't match =2.0.0
+        assert!(!c.matches(&"1.2.3".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_not_equal_parse_with_space() {
+        let c = Constraint::parse("!= 1.2.3").unwrap();
+        assert!(matches!(c, Constraint::NotEqual(_)));
+        assert!(!c.matches(&"1.2.3".parse().unwrap()));
+        assert!(c.matches(&"1.2.4".parse().unwrap()));
     }
 }

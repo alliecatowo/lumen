@@ -2288,10 +2288,14 @@ fn collect_expr_call_requirements(
         Expr::Comprehension {
             body,
             iter,
+            extra_clauses,
             condition,
             ..
         } => {
             collect_expr_call_requirements(iter, table, out);
+            for clause in extra_clauses {
+                collect_expr_call_requirements(&clause.iter, table, out);
+            }
             if let Some(c) = condition {
                 collect_expr_call_requirements(c, table, out);
             }
@@ -2689,10 +2693,14 @@ fn collect_expr_effect_evidence(
         Expr::Comprehension {
             body,
             iter,
+            extra_clauses,
             condition,
             ..
         } => {
             collect_expr_effect_evidence(iter, table, current, out);
+            for clause in extra_clauses {
+                collect_expr_effect_evidence(&clause.iter, table, current, out);
+            }
             if let Some(c) = condition {
                 collect_expr_effect_evidence(c, table, current, out);
             }
@@ -3044,10 +3052,14 @@ fn infer_expr_effects(
         Expr::Comprehension {
             body,
             iter,
+            extra_clauses,
             condition,
             ..
         } => {
             infer_expr_effects(iter, table, current, out);
+            for clause in extra_clauses {
+                infer_expr_effects(&clause.iter, table, current, out);
+            }
             if let Some(c) = condition {
                 infer_expr_effects(c, table, current, out);
             }

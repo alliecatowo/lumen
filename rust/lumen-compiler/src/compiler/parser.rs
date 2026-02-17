@@ -5232,11 +5232,16 @@ impl Parser {
                     let var = self.expect_ident()?;
                     self.expect(&TokenKind::In)?;
                     let iter = self.parse_expr(0)?;
+                    let mut extra_clauses = Vec::new();
                     while matches!(self.peek_kind(), TokenKind::For) {
                         self.advance();
-                        let _ = self.expect_ident()?;
+                        let inner_var = self.expect_ident()?;
                         self.expect(&TokenKind::In)?;
-                        let _ = self.parse_expr(0)?;
+                        let inner_iter = self.parse_expr(0)?;
+                        extra_clauses.push(ComprehensionClause {
+                            var: inner_var,
+                            iter: inner_iter,
+                        });
                     }
                     let condition = if matches!(self.peek_kind(), TokenKind::If) {
                         self.advance();
@@ -5251,6 +5256,7 @@ impl Parser {
                         body: Box::new(first),
                         var,
                         iter: Box::new(iter),
+                        extra_clauses,
                         condition,
                         kind: ComprehensionKind::Set,
                         span: s.merge(end),
@@ -5481,21 +5487,28 @@ impl Parser {
             self.expect(&TokenKind::In)?;
             let iter = self.parse_expr(0)?;
             self.skip_whitespace_tokens();
+            let mut extra_clauses = Vec::new();
             while matches!(self.peek_kind(), TokenKind::For) {
                 self.advance();
-                if matches!(self.peek_kind(), TokenKind::LParen) {
+                let inner_var = if matches!(self.peek_kind(), TokenKind::LParen) {
                     self.advance();
+                    let first_ident = self.expect_ident()?;
                     while !matches!(self.peek_kind(), TokenKind::RParen | TokenKind::Eof) {
                         self.advance();
                     }
                     if matches!(self.peek_kind(), TokenKind::RParen) {
                         self.advance();
                     }
+                    first_ident
                 } else {
-                    let _ = self.expect_ident()?;
-                }
+                    self.expect_ident()?
+                };
                 self.expect(&TokenKind::In)?;
-                let _ = self.parse_expr(0)?;
+                let inner_iter = self.parse_expr(0)?;
+                extra_clauses.push(ComprehensionClause {
+                    var: inner_var,
+                    iter: inner_iter,
+                });
                 self.skip_whitespace_tokens();
             }
             let condition = if matches!(self.peek_kind(), TokenKind::If) {
@@ -5511,6 +5524,7 @@ impl Parser {
                 body: Box::new(first),
                 var,
                 iter: Box::new(iter),
+                extra_clauses,
                 condition,
                 kind: ComprehensionKind::List,
                 span: start.merge(end),
@@ -5703,11 +5717,16 @@ impl Parser {
                 let var = self.expect_ident()?;
                 self.expect(&TokenKind::In)?;
                 let iter = self.parse_expr(0)?;
+                let mut extra_clauses = Vec::new();
                 while matches!(self.peek_kind(), TokenKind::For) {
                     self.advance();
-                    let _ = self.expect_ident()?;
+                    let inner_var = self.expect_ident()?;
                     self.expect(&TokenKind::In)?;
-                    let _ = self.parse_expr(0)?;
+                    let inner_iter = self.parse_expr(0)?;
+                    extra_clauses.push(ComprehensionClause {
+                        var: inner_var,
+                        iter: inner_iter,
+                    });
                 }
                 let condition = if matches!(self.peek_kind(), TokenKind::If) {
                     self.advance();
@@ -5731,6 +5750,7 @@ impl Parser {
                     body: Box::new(first),
                     var,
                     iter: Box::new(iter),
+                    extra_clauses,
                     condition,
                     kind,
                     span: start.merge(end),
@@ -6279,6 +6299,7 @@ impl Parser {
             body: Box::new(spawn_body),
             var,
             iter: Box::new(iter),
+            extra_clauses: Vec::new(),
             condition: None,
             kind: ComprehensionKind::List,
             span: call_span.merge(end_span),

@@ -1295,6 +1295,85 @@ impl VM {
                 let code = self.registers[base + a].as_int().unwrap_or(0);
                 std::process::exit(code as i32);
             }
+            // String trimming variants
+            "trim_start" => {
+                let s = self.registers[base + a + 1].as_string();
+                Ok(Value::String(StringRef::Owned(s.trim_start().to_string())))
+            }
+            "trim_end" => {
+                let s = self.registers[base + a + 1].as_string();
+                Ok(Value::String(StringRef::Owned(s.trim_end().to_string())))
+            }
+            // Math: exponential
+            "exp" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.exp()),
+                    Value::Int(n) => Value::Float((*n as f64).exp()),
+                    Value::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::NAN).exp()),
+                    _ => Value::Null,
+                })
+            }
+            // Math: tangent
+            "tan" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.tan()),
+                    Value::Int(n) => Value::Float((*n as f64).tan()),
+                    Value::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::NAN).tan()),
+                    _ => Value::Null,
+                })
+            }
+            // Random integer in range [min, max]
+            "random_int" => {
+                let min_val = match &self.registers[base + a + 1] {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(VmError::Runtime(format!(
+                            "random_int: min must be Int, got {}",
+                            other.type_name()
+                        )));
+                    }
+                };
+                let max_val = match &self.registers[base + a + 2] {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(VmError::Runtime(format!(
+                            "random_int: max must be Int, got {}",
+                            other.type_name()
+                        )));
+                    }
+                };
+                if min_val > max_val {
+                    return Err(VmError::Runtime(format!(
+                        "random_int: min ({}) must be <= max ({})",
+                        min_val, max_val
+                    )));
+                }
+                use std::cell::Cell;
+                thread_local! {
+                    static RNG_STATE_INT: Cell<u64> = const { Cell::new(0) };
+                }
+                RNG_STATE_INT.with(|state| {
+                    let mut s = state.get();
+                    if s == 0 {
+                        s = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos() as u64;
+                        if s == 0 {
+                            s = 1;
+                        }
+                    }
+                    s ^= s << 13;
+                    s ^= s >> 7;
+                    s ^= s << 17;
+                    state.set(s);
+                    let range = (max_val - min_val + 1) as u64;
+                    let result = min_val + (s % range) as i64;
+                    Ok(Value::Int(result))
+                })
+            }
             _ => Err(VmError::UndefinedCell(name.to_string())),
         }
     }

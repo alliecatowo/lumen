@@ -571,6 +571,13 @@ pub enum ComprehensionKind {
     Set,
 }
 
+/// An additional `for var in iter` clause in a comprehension.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComprehensionClause {
+    pub var: String,
+    pub iter: Expr,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Expr {
     /// Integer literal
@@ -655,11 +662,12 @@ pub enum Expr {
     },
     /// Await expression: await expr
     AwaitExpr(Box<Expr>, Span),
-    /// Comprehension: [expr for pat in iter if cond]
+    /// Comprehension: [expr for pat in iter (for pat2 in iter2)* if cond]
     Comprehension {
         body: Box<Expr>,
         var: String,
         iter: Box<Expr>,
+        extra_clauses: Vec<ComprehensionClause>,
         condition: Option<Box<Expr>>,
         kind: ComprehensionKind,
         span: Span,

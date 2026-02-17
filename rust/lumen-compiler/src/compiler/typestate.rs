@@ -666,10 +666,14 @@ impl TypestateChecker {
             Expr::Comprehension {
                 body,
                 iter,
+                extra_clauses,
                 condition,
                 ..
             } => {
                 self.check_expr(iter);
+                for clause in extra_clauses {
+                    self.check_expr(&clause.iter);
+                }
                 if let Some(cond) = condition {
                     self.check_expr(cond);
                 }

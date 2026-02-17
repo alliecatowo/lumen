@@ -13,6 +13,7 @@ mod folding_ranges;
 mod formatting;
 mod goto_definition;
 mod hover;
+mod implementations;
 mod inlay_hints;
 mod rename;
 mod semantic_tokens;
@@ -88,6 +89,7 @@ fn main() {
             work_done_progress_options: WorkDoneProgressOptions::default(),
         })),
         references_provider: Some(OneOf::Left(true)),
+        implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
         ..Default::default()
     };
@@ -632,6 +634,27 @@ fn handle_request(req: &Request, connection: &Connection, cache: &CompilationCac
                 let program = cache.get_program(&uri);
 
                 let result = goto_definition::build_goto_definition(params, text, program, &uri);
+
+                let response = Response {
+                    id: req.id.clone(),
+                    result: serde_json::to_value(result).ok(),
+                    error: None,
+                };
+                let _ = connection.sender.send(Message::Response(response));
+            }
+        }
+        request::GotoImplementation::METHOD => {
+            if let Ok(params) = serde_json::from_value::<GotoDefinitionParams>(req.params.clone()) {
+                let uri = params
+                    .text_document_position_params
+                    .text_document
+                    .uri
+                    .clone();
+                let position = params.text_document_position_params.position;
+                let text = cache.get_text(&uri).map(|s| s.as_str()).unwrap_or("");
+                let program = cache.get_program(&uri);
+
+                let result = implementations::build_implementations(position, text, program, &uri);
 
                 let response = Response {
                     id: req.id.clone(),

@@ -1303,96 +1303,235 @@ impl VM {
     }
 
     pub fn run_until(&mut self, limit: usize) -> Result<Value, VmError> {
+        // --- Hot loop optimization ---
+        // Cache module pointer to avoid Option check every instruction.
+        // SAFETY: self.module is never modified during run_until execution.
+        // The module is loaded before execute() and remains immutable throughout.
+        let module_ptr = self.module.as_ref().ok_or(VmError::NoModule)? as *const LirModule;
+        let module = unsafe { &*module_ptr };
+
+        // Check if we have a frame to run
+        if self.frames.len() <= limit {
+            return Ok(Value::Null);
+        }
+
+        // Cache current frame state in locals to avoid repeated Vec::last() calls
+        let frame = self.frames.last().unwrap();
+        let mut cell_idx = frame.cell_idx;
+        let mut base = frame.base_register;
+        let mut ip = frame.ip;
+        let mut cell = &module.cells[cell_idx];
+
+        // Pre-check: do we have debug or fuel active? Branch once, not per-instruction.
+        let has_debug = self.debug_callback.is_some();
+        let has_fuel = self.fuel.is_some();
+
+        // Local instruction counter — only sync to self every batch to avoid cache-line writes
+        let mut local_count: u64 = 0;
+        const BATCH_SIZE: u64 = 4096;
+
         loop {
-            if self.frames.len() <= limit {
-                return Ok(Value::Null);
+            // Check if IP is past end of instructions (implicit return)
+            if ip >= cell.instructions.len() {
+                self.frames.pop();
+                if self.frames.len() <= limit {
+                    return Ok(Value::Null);
+                }
+                let frame = self.frames.last().unwrap();
+                cell_idx = frame.cell_idx;
+                base = frame.base_register;
+                ip = frame.ip;
+                cell = &module.cells[cell_idx];
+                continue;
             }
 
-            #[allow(unused_variables)]
-            let (cell_idx, base, instr, cell_registers) = {
-                let frame = match self.frames.last() {
-                    Some(f) => f,
-                    None => return Ok(Value::Null),
-                };
-                let cell_idx = frame.cell_idx;
-                let base = frame.base_register;
-                let ip = frame.ip;
+            let instr = cell.instructions[ip];
+            ip += 1;
 
-                let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                let cell = module.cells.get(cell_idx).ok_or_else(|| {
-                    VmError::Runtime(format!("cell index {} out of bounds", cell_idx))
-                })?;
-
-                if ip >= cell.instructions.len() {
-                    self.frames.pop();
-                    if self.frames.is_empty() {
-                        return Ok(Value::Null);
+            // Lightweight instruction counting — use local counter, sync periodically
+            local_count += 1;
+            if local_count >= BATCH_SIZE {
+                self.instruction_count += local_count;
+                local_count = 0;
+                if self.instruction_count > self.max_instructions {
+                    // Sync IP back before returning error
+                    if let Some(f) = self.frames.last_mut() {
+                        f.ip = ip;
                     }
-                    continue;
+                    return Err(VmError::InstructionLimitExceeded(self.max_instructions));
                 }
-
-                let instr = cell.instructions[ip];
-                (cell_idx, base, instr, cell.registers)
-            };
-
-            self.instruction_count += 1;
-            if self.instruction_count & 0x3FF == 0 && self.instruction_count > self.max_instructions
-            {
-                return Err(VmError::InstructionLimitExceeded(self.max_instructions));
             }
 
-            if let Some(ref mut fuel) = self.fuel {
-                if *fuel == 0 {
-                    return Err(VmError::Runtime("fuel exhausted".into()));
+            // Fuel check — only if fuel was set (rare)
+            if has_fuel {
+                if let Some(ref mut fuel) = self.fuel {
+                    if *fuel == 0 {
+                        if let Some(f) = self.frames.last_mut() {
+                            f.ip = ip;
+                        }
+                        return Err(VmError::Runtime("fuel exhausted".into()));
+                    }
+                    *fuel -= 1;
                 }
-                *fuel -= 1;
             }
 
-            if self.debug_callback.is_some() {
-                let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                let cell_name = module.cells[cell_idx].name.clone();
+            // Debug step event — only if debug callback is set (rare)
+            if has_debug {
+                let cell_name = cell.name.clone();
                 self.emit_debug_event(DebugEvent::Step {
                     cell_name,
-                    ip: self.frames.last().map(|f| f.ip).unwrap_or(0),
+                    ip: ip.wrapping_sub(1),
                     opcode: format!("{:?}", instr.op),
                 });
-            }
-
-            // Advance IP in the frame
-            if let Some(f) = self.frames.last_mut() {
-                f.ip += 1;
             }
 
             let a = instr.a as usize;
             let b = instr.b as usize;
             let c = instr.c as usize;
+
             #[cfg(debug_assertions)]
-            self.validate_instruction_registers(instr, cell_registers)?;
+            {
+                let cell_registers = cell.registers;
+                self.validate_instruction_registers(instr, cell_registers)?;
+            }
 
             // Handle opcodes that need mutable self first (before borrowing module).
             if matches!(
                 instr.op,
                 OpCode::Call | OpCode::TailCall | OpCode::Intrinsic
             ) {
+                // Sync IP back to frame before dispatch (call/return needs it)
+                if let Some(f) = self.frames.last_mut() {
+                    f.ip = ip;
+                }
                 match instr.op {
                     OpCode::Call => {
-                        let _callee = &self.registers[base + a];
+                        // === FAST PATH: inline cell call ===
+                        // Resolve cell index from callee register WITHOUT cloning.
+                        // This avoids heap-allocating a String clone on every call.
+                        let callee_reg = base + a;
+                        let nargs = b;
+                        let fast_cell_idx = match &self.registers[callee_reg] {
+                            Value::String(sr) => {
+                                let name_str = match sr {
+                                    StringRef::Owned(s) => s.as_str(),
+                                    StringRef::Interned(id) => {
+                                        self.strings.resolve(*id).unwrap_or("")
+                                    }
+                                };
+                                // Fast check: is this a self-recursive call?
+                                // Compare against current cell name to skip HashMap lookup.
+                                if name_str == cell.name {
+                                    Some(cell_idx)
+                                } else if let Some(&cached) = self.cell_index_cache.get(name_str) {
+                                    Some(cached)
+                                } else if let Some(idx) =
+                                    module.cells.iter().position(|c| c.name == name_str)
+                                {
+                                    self.cell_index_cache.insert(name_str.to_string(), idx);
+                                    Some(idx)
+                                } else {
+                                    None // builtin — fall through to dispatch_call
+                                }
+                            }
+                            _ => None, // closure or other — fall through to dispatch_call
+                        };
 
+                        if let Some(target_idx) = fast_cell_idx {
+                            // Fast path: direct cell call — no cloning, no dispatch_call overhead
+                            if self.frames.len() >= MAX_CALL_DEPTH {
+                                return Err(VmError::StackOverflow(MAX_CALL_DEPTH));
+                            }
+                            let callee_cell = &module.cells[target_idx];
+                            let num_regs = callee_cell.registers as usize;
+                            let new_base = self.registers.len();
+                            self.registers
+                                .resize(new_base + num_regs.max(16), Value::Null);
+
+                            // Inline arg copy — avoid cloning params Vec.
+                            // Use raw pointer to access params from module (no borrow conflict).
+                            let callee_cell_ptr = &module.cells[target_idx] as *const LirCell;
+                            let params_ptr = unsafe { &(*callee_cell_ptr).params };
+                            let cell_regs = callee_cell.registers;
+                            for i in 0..nargs {
+                                if i < params_ptr.len() {
+                                    let dst = params_ptr[i].register as usize;
+                                    debug_assert!(
+                                        (dst as u8) < cell_regs,
+                                        "register OOB in fast call"
+                                    );
+                                    self.registers[new_base + dst] =
+                                        self.registers[base + a + 1 + i].clone();
+                                }
+                            }
+
+                            self.frames.push(CallFrame {
+                                cell_idx: target_idx,
+                                base_register: new_base,
+                                ip: 0,
+                                return_register: callee_reg,
+                                future_id: None,
+                            });
+
+                            if has_debug {
+                                self.emit_debug_event(DebugEvent::CallEnter {
+                                    cell_name: module.cells[target_idx].name.clone(),
+                                });
+                            }
+
+                            // Reload frame state
+                            cell_idx = target_idx;
+                            base = new_base;
+                            ip = 0;
+                            cell = &module.cells[cell_idx];
+                            continue;
+                        }
+
+                        // Slow path: closures, builtins, other callable values
                         if let Err(err) = self.dispatch_call(base, a, b) {
                             if self.fail_current_future(err.to_string()) {
+                                // Reload frame state after future failure
+                                if self.frames.len() <= limit {
+                                    return Ok(Value::Null);
+                                }
+                                let frame = self.frames.last().unwrap();
+                                cell_idx = frame.cell_idx;
+                                base = frame.base_register;
+                                ip = frame.ip;
+                                cell = &module.cells[cell_idx];
                                 continue;
                             }
                             return Err(err);
                         }
+                        // Reload frame state after call (new frame pushed)
+                        let frame = self.frames.last().unwrap();
+                        cell_idx = frame.cell_idx;
+                        base = frame.base_register;
+                        ip = frame.ip;
+                        cell = &module.cells[cell_idx];
                         continue;
                     }
                     OpCode::TailCall => {
                         if let Err(err) = self.dispatch_tailcall(base, a, b) {
                             if self.fail_current_future(err.to_string()) {
+                                if self.frames.len() <= limit {
+                                    return Ok(Value::Null);
+                                }
+                                let frame = self.frames.last().unwrap();
+                                cell_idx = frame.cell_idx;
+                                base = frame.base_register;
+                                ip = frame.ip;
+                                cell = &module.cells[cell_idx];
                                 continue;
                             }
                             return Err(err);
                         }
+                        // Reload frame state after tailcall (frame reused)
+                        let frame = self.frames.last().unwrap();
+                        cell_idx = frame.cell_idx;
+                        base = frame.base_register;
+                        ip = frame.ip;
+                        cell = &module.cells[cell_idx];
                         continue;
                     }
                     OpCode::Intrinsic => {
@@ -1400,6 +1539,14 @@ impl VM {
                             Ok(v) => v,
                             Err(err) => {
                                 if self.fail_current_future(err.to_string()) {
+                                    if self.frames.len() <= limit {
+                                        return Ok(Value::Null);
+                                    }
+                                    let frame = self.frames.last().unwrap();
+                                    cell_idx = frame.cell_idx;
+                                    base = frame.base_register;
+                                    ip = frame.ip;
+                                    cell = &module.cells[cell_idx];
                                     continue;
                                 }
                                 return Err(err);
@@ -1412,8 +1559,8 @@ impl VM {
                 }
             }
 
-            let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-            let cell = &module.cells[cell_idx];
+            // For all other opcodes, use the cached module/cell references directly
+            // No need to re-borrow self.module
 
             match instr.op {
                 OpCode::Nop => { /* no operation */ }
@@ -1438,9 +1585,7 @@ impl VM {
                 OpCode::LoadBool => {
                     self.registers[base + a] = Value::Bool(b != 0);
                     if c != 0 {
-                        if let Some(f) = self.frames.last_mut() {
-                            f.ip += 1;
-                        }
+                        ip += 1;
                     }
                 }
                 OpCode::LoadInt => {
@@ -1948,53 +2093,81 @@ impl VM {
                 OpCode::Test => {
                     let truthy = self.value_is_truthy(&self.registers[base + a]);
                     if truthy != (c != 0) {
-                        if let Some(f) = self.frames.last_mut() {
-                            f.ip += 1;
-                        }
+                        ip += 1;
                     }
                 }
 
                 // Control flow
                 OpCode::Jmp => {
                     let offset = instr.sax_val();
-                    if let Some(f) = self.frames.last_mut() {
-                        f.ip = (f.ip as i32 + offset) as usize;
-                    }
+                    ip = (ip as i32 + offset) as usize;
                 }
                 // Call and TailCall are handled in the pre-match above
                 OpCode::Call | OpCode::TailCall => {
                     unreachable!()
                 }
                 OpCode::Return => {
-                    let mut return_val = self.registers[base + a].clone();
+                    // Take the return value instead of cloning when possible.
+                    let mut return_val =
+                        std::mem::replace(&mut self.registers[base + a], Value::Null);
                     self.ensure_process_instance(&mut return_val);
                     let frame = self
                         .frames
                         .pop()
                         .ok_or_else(|| VmError::Runtime("call stack underflow".into()))?;
 
-                    let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                    let cell_name = module.cells[frame.cell_idx].name.clone();
-                    self.emit_debug_event(DebugEvent::CallExit {
-                        cell_name,
-                        result: return_val.clone(),
-                    });
+                    if has_debug {
+                        let cell_name = module.cells[frame.cell_idx].name.clone();
+                        self.emit_debug_event(DebugEvent::CallExit {
+                            cell_name,
+                            result: return_val.clone(),
+                        });
+                    }
+
+                    // Truncate register file back to caller's frame.
+                    // This prevents unbounded register growth from deep recursion
+                    // and avoids massive memory overhead from abandoned callee registers.
+                    self.registers.truncate(frame.base_register);
 
                     if let Some(fid) = frame.future_id {
                         self.future_states
                             .insert(fid, FutureState::Completed(return_val));
+                        // Reload frame state after future completion
+                        if self.frames.len() <= limit {
+                            return Ok(Value::Null);
+                        }
+                        let f = self.frames.last().unwrap();
+                        cell_idx = f.cell_idx;
+                        base = f.base_register;
+                        ip = f.ip;
+                        cell = &module.cells[cell_idx];
                         continue;
                     }
-                    if self.frames.is_empty() {
+                    if self.frames.len() <= limit {
                         return Ok(return_val);
                     }
                     self.registers[frame.return_register] = return_val;
+                    // Reload frame state after return
+                    let f = self.frames.last().unwrap();
+                    cell_idx = f.cell_idx;
+                    base = f.base_register;
+                    ip = f.ip;
+                    cell = &module.cells[cell_idx];
                 }
                 OpCode::Halt => {
                     let msg = self.registers[base + a].as_string();
                     if let Some(fid) = self.current_future_id() {
                         let _ = self.frames.pop();
                         self.future_states.insert(fid, FutureState::Error(msg));
+                        // Reload frame state
+                        if self.frames.len() <= limit {
+                            return Ok(Value::Null);
+                        }
+                        let f = self.frames.last().unwrap();
+                        cell_idx = f.cell_idx;
+                        base = f.base_register;
+                        ip = f.ip;
+                        cell = &module.cells[cell_idx];
                         continue;
                     }
                     return Err(VmError::Halt(msg));
@@ -2005,9 +2178,7 @@ impl VM {
                     if let Value::Int(ref mut n) = self.registers[base + a] {
                         *n -= 1;
                         if *n > 0 {
-                            if let Some(f) = self.frames.last_mut() {
-                                f.ip = (f.ip as i32 + sb) as usize;
-                            }
+                            ip = (ip as i32 + sb) as usize;
                         }
                     }
                 }
@@ -2021,9 +2192,7 @@ impl VM {
                         _ => 0,
                     };
                     if len == 0 {
-                        if let Some(f) = self.frames.last_mut() {
-                            f.ip += bx;
-                        }
+                        ip += bx;
                     }
                     self.registers[base + a + 1] = Value::Int(0);
                     self.registers[base + a + 2] = Value::Int(len as i64);
@@ -2044,9 +2213,7 @@ impl VM {
                         };
                         self.registers[base + a + 3] = elem;
                         self.registers[base + a + 1] = Value::Int(idx + 1);
-                        if let Some(f) = self.frames.last_mut() {
-                            f.ip = (f.ip as i32 - bx as i32) as usize;
-                        }
+                        ip = (ip as i32 - bx as i32) as usize;
                     }
                 }
                 OpCode::ForIn => {
@@ -2095,16 +2262,12 @@ impl VM {
                 OpCode::Break => {
                     // Jump to loop end (offset in Ax)
                     let offset = instr.sax_val();
-                    if let Some(f) = self.frames.last_mut() {
-                        f.ip = (f.ip as i32 + offset) as usize;
-                    }
+                    ip = (ip as i32 + offset) as usize;
                 }
                 OpCode::Continue => {
                     // Jump to loop start (offset in Ax)
                     let offset = instr.sax_val();
-                    if let Some(f) = self.frames.last_mut() {
-                        f.ip = (f.ip as i32 + offset) as usize;
-                    }
+                    ip = (ip as i32 + offset) as usize;
                 }
 
                 // Intrinsic is handled in the pre-match above
@@ -2125,14 +2288,9 @@ impl VM {
                 OpCode::GetUpval => {
                     // Get upvalue from current closure's captures
                     // The current frame must be running a closure
-                    let frame = self
-                        .frames
-                        .last()
-                        .ok_or_else(|| VmError::Runtime("no frame for GetUpval".into()))?;
-                    let closure_reg = frame.base_register;
-                    // Captures are stored at the beginning of the frame's registers
+                    // base == current frame's base_register
                     if b < 256 {
-                        self.registers[base + a] = self.registers[closure_reg + b].clone();
+                        self.registers[base + a] = self.registers[base + b].clone();
                     }
                 }
                 OpCode::SetUpval => {
@@ -2313,12 +2471,23 @@ impl VM {
                     self.registers[base + a] = Value::TraceRef(self.next_trace_ref());
                 }
                 OpCode::Await => {
-                    let caller_frame_idx = self.frames.len().saturating_sub(1);
+                    // Save the Await instruction's IP (rewound) so that when we
+                    // return to this frame after running a deferred future, we
+                    // re-execute the Await to check the result.
+                    let await_ip = ip - 1; // IP of the current Await instruction
+                    if let Some(f) = self.frames.last_mut() {
+                        f.ip = await_ip;
+                    }
                     let awaited = self.await_value_recursive(self.registers[base + b].clone())?;
                     match awaited {
                         Some(value) => {
                             self.registers[base + a] = value;
                             self.await_fuel = MAX_AWAIT_RETRIES;
+                            // Advance IP past the Await instruction (already done by ip += 1)
+                            // Restore the advanced IP in the frame
+                            if let Some(f) = self.frames.last_mut() {
+                                f.ip = ip;
+                            }
                         }
                         None => {
                             if self.await_fuel == 0 {
@@ -2327,17 +2496,32 @@ impl VM {
                                 ));
                             }
                             self.await_fuel -= 1;
-                            if let Some(frame) = self.frames.get_mut(caller_frame_idx) {
-                                frame.ip = frame.ip.saturating_sub(1);
-                            }
+                            // The frame's IP is already set to await_ip (rewound).
+                            // A deferred future may have been started (pushing a new frame).
+                            // Reload local state from the current top frame.
+                            let f = self.frames.last().unwrap();
+                            cell_idx = f.cell_idx;
+                            base = f.base_register;
+                            ip = f.ip;
+                            cell = &module.cells[cell_idx];
                             continue;
                         }
                     }
                 }
                 OpCode::Spawn => {
+                    // Sync IP before spawn (which may push frames in Eager mode)
+                    if let Some(f) = self.frames.last_mut() {
+                        f.ip = ip;
+                    }
                     let bx = instr.bx() as usize;
                     self.registers[base + a] =
                         self.spawn_future(FutureTarget::Cell(bx), Vec::new())?;
+                    // Reload frame state (spawn may have pushed a new frame)
+                    let f = self.frames.last().unwrap();
+                    cell_idx = f.cell_idx;
+                    base = f.base_register;
+                    ip = f.ip;
+                    cell = &module.cells[cell_idx];
                 }
 
                 // List ops
@@ -2357,9 +2541,7 @@ impl VM {
                         _ => false,
                     };
                     if matched {
-                        if let Some(f) = self.frames.last_mut() {
-                            f.ip += 1;
-                        }
+                        ip += 1;
                     }
                 }
                 OpCode::Unbox => {
@@ -2375,8 +2557,7 @@ impl VM {
                 OpCode::HandlePush => {
                     let meta_idx = a;
                     let offset = instr.bx() as usize;
-                    let frame = self.frames.last().unwrap();
-                    let handler_ip = frame.ip.saturating_sub(1) + offset;
+                    let handler_ip = ip.saturating_sub(1) + offset;
 
                     let (eff_name, op_name) = if meta_idx < cell.effect_handler_metas.len() {
                         let meta = &cell.effect_handler_metas[meta_idx];
@@ -2399,8 +2580,7 @@ impl VM {
                     self.effect_handlers.pop();
                 }
                 OpCode::Perform => {
-                    let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                    let cell = &module.cells[cell_idx];
+                    // Use cached cell reference directly (no re-borrow needed)
                     let eff_name = match &cell.constants[b] {
                         Constant::String(s) => s.clone(),
                         _ => {
@@ -2435,11 +2615,15 @@ impl VM {
                         .cloned();
 
                     if let Some(scope) = handler_scope {
+                        // Sync IP back before saving continuation
+                        if let Some(f) = self.frames.last_mut() {
+                            f.ip = ip;
+                        }
                         // Save continuation: snapshot current execution state
                         let cont = SuspendedContinuation {
                             frames: self.frames.clone(),
                             registers: self.registers.clone(),
-                            resume_ip: self.frames.last().map(|f| f.ip).unwrap_or(0),
+                            resume_ip: ip,
                             resume_frame_count: self.frames.len(),
                             result_reg: base + a,
                         };
@@ -2450,9 +2634,12 @@ impl VM {
                             f.ip = scope.handler_ip;
                         }
 
-                        // Pass perform args to handler by storing them in the handler's registers
-                        // The args start at base + a + 1 (set by lowerer)
-                        // For now, the handler can read them from the same register region
+                        // Reload frame state after handler jump
+                        let f = self.frames.last().unwrap();
+                        cell_idx = f.cell_idx;
+                        base = f.base_register;
+                        ip = f.ip;
+                        cell = &module.cells[cell_idx];
                     } else {
                         return Err(VmError::Runtime(format!(
                             "unhandled effect: {}.{}",
@@ -2470,7 +2657,12 @@ impl VM {
                         self.registers = cont.registers;
                         // Put the resume value into the result register
                         self.registers[cont.result_reg] = resume_value;
-                        // Execution continues from the saved IP (already set in frames)
+                        // Reload frame state after restoration
+                        let f = self.frames.last().unwrap();
+                        cell_idx = f.cell_idx;
+                        base = f.base_register;
+                        ip = f.ip;
+                        cell = &module.cells[cell_idx];
                     } else {
                         return Err(VmError::Runtime(
                             "resume called outside of effect handler".into(),
@@ -2512,9 +2704,7 @@ impl VM {
                     if self.frames.len() >= MAX_CALL_DEPTH {
                         return Err(VmError::StackOverflow(MAX_CALL_DEPTH));
                     }
-                    let callee_cell = module.cells.get(idx).ok_or_else(|| {
-                        VmError::Runtime(format!("cell index {} out of bounds", idx))
-                    })?;
+                    let callee_cell = &module.cells[idx];
                     let num_regs = callee_cell.registers as usize;
                     let params: Vec<LirParam> = callee_cell.params.clone();
                     let cell_regs = callee_cell.registers;
@@ -2530,9 +2720,11 @@ impl VM {
                         return_register: base + a,
                         future_id: None,
                     });
-                    self.emit_debug_event(DebugEvent::CallEnter {
-                        cell_name: name.clone(),
-                    });
+                    if self.debug_callback.is_some() {
+                        self.emit_debug_event(DebugEvent::CallEnter {
+                            cell_name: name.clone(),
+                        });
+                    }
                 } else {
                     let _ = module;
                     let result = self.call_builtin(&name, base, a, nargs)?;
@@ -2545,9 +2737,7 @@ impl VM {
                 }
                 let cv = cv.clone();
                 let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                let callee_cell = module.cells.get(cv.cell_idx).ok_or_else(|| {
-                    VmError::Runtime(format!("closure cell index {} out of bounds", cv.cell_idx))
-                })?;
+                let callee_cell = &module.cells[cv.cell_idx];
                 let num_regs = callee_cell.registers as usize;
                 let params: Vec<LirParam> = callee_cell.params.clone();
                 let cell_regs = callee_cell.registers;
@@ -2575,19 +2765,15 @@ impl VM {
                     return_register: base + a,
                     future_id: None,
                 });
-                let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                let cell_name = module
-                    .cells
-                    .get(cv.cell_idx)
-                    .ok_or_else(|| {
-                        VmError::Runtime(format!(
-                            "closure cell index {} out of bounds",
-                            cv.cell_idx
-                        ))
-                    })?
-                    .name
-                    .clone();
-                self.emit_debug_event(DebugEvent::CallEnter { cell_name });
+                if self.debug_callback.is_some() {
+                    let module = self.module.as_ref().ok_or(VmError::NoModule)?;
+                    let cell_name = module
+                        .cells
+                        .get(cv.cell_idx)
+                        .map(|c| c.name.clone())
+                        .unwrap_or_default();
+                    self.emit_debug_event(DebugEvent::CallEnter { cell_name });
+                }
             }
             _ => {
                 println!(
@@ -2641,9 +2827,7 @@ impl VM {
                     None
                 };
                 if let Some(idx) = idx_opt {
-                    let callee_cell = module.cells.get(idx).ok_or_else(|| {
-                        VmError::Runtime(format!("cell index {} out of bounds", idx))
-                    })?;
+                    let callee_cell = &module.cells[idx];
                     let params: Vec<LirParam> = callee_cell.params.clone();
                     let cell_regs = callee_cell.registers;
                     let _ = module;
@@ -2661,9 +2845,7 @@ impl VM {
             Value::Closure(ref cv) => {
                 let cv = cv.clone();
                 let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                let callee_cell = module.cells.get(cv.cell_idx).ok_or_else(|| {
-                    VmError::Runtime(format!("closure cell index {} out of bounds", cv.cell_idx))
-                })?;
+                let callee_cell = &module.cells[cv.cell_idx];
                 let params: Vec<LirParam> = callee_cell.params.clone();
                 let cell_regs = callee_cell.registers;
                 let _ = module;

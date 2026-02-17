@@ -8,8 +8,43 @@
 use std::collections::VecDeque;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Instant;
+
+// ---------------------------------------------------------------------------
+// Panic Policy
+// ---------------------------------------------------------------------------
+//
+// The Lumen runtime draws a clear boundary between **panics** (which indicate
+// compiler/infrastructure bugs) and **results** (which represent user-facing
+// errors that must be reported gracefully).
+//
+//   **Panics (compiler/infrastructure bugs)**
+//     - Invariant violations that should never occur in correct code
+//     - Exhausted pattern matches on internal enums
+//     - OS thread spawn failures (unrecoverable)
+//
+//   **Results (user-facing errors)**
+//     - Division by zero, index out of bounds, type mismatches
+//     - Resource exhaustion (task limits, memory)
+//     - Mutex poisoning — another thread panicked while holding the lock;
+//       we surface this as a `Result::Err` so callers can report the error
+//       rather than tearing down the whole runtime.
+//
+// All `Mutex::lock()` calls in this module use the `lock_inner` helper to
+// convert `PoisonError` into a descriptive `Result::Err(String)`.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Lock helper
+// ---------------------------------------------------------------------------
+
+/// Acquire a mutex lock, converting a `PoisonError` into `Err(String)`
+/// instead of panicking. This keeps mutex poisoning in the **result**
+/// category rather than the **panic** category.
+fn lock_inner<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>, String> {
+    mutex.lock().map_err(|e| format!("Mutex poisoned: {}", e))
+}
 
 // ---------------------------------------------------------------------------
 // ProcessId
@@ -167,43 +202,64 @@ impl ProcessControlBlock {
     // -- status -----------------------------------------------------------
 
     /// Read the current status.
-    pub fn status(&self) -> ProcessStatus {
-        self.inner.lock().unwrap().status
+    ///
+    /// Returns `Err` if the inner mutex is poisoned.
+    pub fn status(&self) -> Result<ProcessStatus, String> {
+        lock_inner(&self.inner).map(|guard| guard.status)
     }
 
     /// Transition to a new status.
-    pub fn set_status(&self, status: ProcessStatus) {
-        self.inner.lock().unwrap().status = status;
+    ///
+    /// Returns `Err` if the inner mutex is poisoned.
+    pub fn set_status(&self, status: ProcessStatus) -> Result<(), String> {
+        lock_inner(&self.inner).map(|mut guard| {
+            guard.status = status;
+        })
     }
 
     // -- mailbox ----------------------------------------------------------
 
     /// Enqueue a message into this process's mailbox.
-    pub fn send_message(&self, msg: Message) {
-        self.inner.lock().unwrap().mailbox.push_back(msg);
+    ///
+    /// Returns `Err` if the inner mutex is poisoned.
+    pub fn send_message(&self, msg: Message) -> Result<(), String> {
+        lock_inner(&self.inner).map(|mut guard| {
+            guard.mailbox.push_back(msg);
+        })
     }
 
     /// Dequeue the oldest message, if any.
-    pub fn receive_message(&self) -> Option<Message> {
-        self.inner.lock().unwrap().mailbox.pop_front()
+    ///
+    /// Returns `Err` if the inner mutex is poisoned.
+    pub fn receive_message(&self) -> Result<Option<Message>, String> {
+        lock_inner(&self.inner).map(|mut guard| guard.mailbox.pop_front())
     }
 
     /// Number of pending messages in the mailbox.
-    pub fn mailbox_len(&self) -> usize {
-        self.inner.lock().unwrap().mailbox.len()
+    ///
+    /// Returns `Err` if the inner mutex is poisoned.
+    pub fn mailbox_len(&self) -> Result<usize, String> {
+        lock_inner(&self.inner).map(|guard| guard.mailbox.len())
     }
 }
 
 impl fmt::Debug for ProcessControlBlock {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let inner = self.inner.lock().unwrap();
-        f.debug_struct("ProcessControlBlock")
-            .field("id", &self.id)
-            .field("status", &inner.status)
-            .field("priority", &self.priority)
-            .field("name", &self.name)
-            .field("mailbox_len", &inner.mailbox.len())
-            .finish()
+        match lock_inner(&self.inner) {
+            Ok(inner) => f
+                .debug_struct("ProcessControlBlock")
+                .field("id", &self.id)
+                .field("status", &inner.status)
+                .field("priority", &self.priority)
+                .field("name", &self.name)
+                .field("mailbox_len", &inner.mailbox.len())
+                .finish(),
+            Err(e) => f
+                .debug_struct("ProcessControlBlock")
+                .field("id", &self.id)
+                .field("error", &e)
+                .finish(),
+        }
     }
 }
 
@@ -239,55 +295,55 @@ mod tests {
     #[test]
     fn pcb_default_state() {
         let pcb = ProcessControlBlock::new(10, Some("worker".to_string()));
-        assert_eq!(pcb.status(), ProcessStatus::Ready);
+        assert_eq!(pcb.status().unwrap(), ProcessStatus::Ready);
         assert_eq!(pcb.priority(), 10);
         assert_eq!(pcb.name(), Some("worker"));
-        assert_eq!(pcb.mailbox_len(), 0);
-        assert!(pcb.receive_message().is_none());
+        assert_eq!(pcb.mailbox_len().unwrap(), 0);
+        assert!(pcb.receive_message().unwrap().is_none());
     }
 
     #[test]
     fn pcb_status_transitions() {
         let pcb = ProcessControlBlock::new(0, None);
-        assert_eq!(pcb.status(), ProcessStatus::Ready);
+        assert_eq!(pcb.status().unwrap(), ProcessStatus::Ready);
 
-        pcb.set_status(ProcessStatus::Running);
-        assert_eq!(pcb.status(), ProcessStatus::Running);
+        pcb.set_status(ProcessStatus::Running).unwrap();
+        assert_eq!(pcb.status().unwrap(), ProcessStatus::Running);
 
-        pcb.set_status(ProcessStatus::Suspended);
-        assert_eq!(pcb.status(), ProcessStatus::Suspended);
+        pcb.set_status(ProcessStatus::Suspended).unwrap();
+        assert_eq!(pcb.status().unwrap(), ProcessStatus::Suspended);
 
-        pcb.set_status(ProcessStatus::Completed);
-        assert_eq!(pcb.status(), ProcessStatus::Completed);
+        pcb.set_status(ProcessStatus::Completed).unwrap();
+        assert_eq!(pcb.status().unwrap(), ProcessStatus::Completed);
     }
 
     #[test]
     fn pcb_mailbox_fifo() {
         let pcb = ProcessControlBlock::new(5, None);
 
-        pcb.send_message(Message::new(json!(1)));
-        pcb.send_message(Message::new(json!(2)));
-        pcb.send_message(Message::new(json!(3)));
+        pcb.send_message(Message::new(json!(1))).unwrap();
+        pcb.send_message(Message::new(json!(2))).unwrap();
+        pcb.send_message(Message::new(json!(3))).unwrap();
 
-        assert_eq!(pcb.mailbox_len(), 3);
+        assert_eq!(pcb.mailbox_len().unwrap(), 3);
 
-        let m1 = pcb.receive_message().unwrap();
+        let m1 = pcb.receive_message().unwrap().unwrap();
         assert_eq!(m1.payload, json!(1));
 
-        let m2 = pcb.receive_message().unwrap();
+        let m2 = pcb.receive_message().unwrap().unwrap();
         assert_eq!(m2.payload, json!(2));
 
-        let m3 = pcb.receive_message().unwrap();
+        let m3 = pcb.receive_message().unwrap().unwrap();
         assert_eq!(m3.payload, json!(3));
 
-        assert!(pcb.receive_message().is_none());
-        assert_eq!(pcb.mailbox_len(), 0);
+        assert!(pcb.receive_message().unwrap().is_none());
+        assert_eq!(pcb.mailbox_len().unwrap(), 0);
     }
 
     #[test]
     fn pcb_debug_format() {
         let pcb = ProcessControlBlock::new(7, Some("test-proc".to_string()));
-        pcb.send_message(Message::new(json!("hello")));
+        pcb.send_message(Message::new(json!("hello"))).unwrap();
         let dbg = format!("{:?}", pcb);
         assert!(dbg.contains("test-proc"));
         assert!(dbg.contains("mailbox_len: 1"));
@@ -330,7 +386,8 @@ mod tests {
             let pcb = Arc::clone(&pcb);
             handles.push(thread::spawn(move || {
                 for i in 0..100 {
-                    pcb.send_message(Message::new(json!({ "thread": t, "seq": i })));
+                    pcb.send_message(Message::new(json!({ "thread": t, "seq": i })))
+                        .unwrap();
                 }
             }));
         }
@@ -339,11 +396,11 @@ mod tests {
             h.join().unwrap();
         }
 
-        assert_eq!(pcb.mailbox_len(), 1000);
+        assert_eq!(pcb.mailbox_len().unwrap(), 1000);
 
         // Drain and verify count.
         let mut count = 0;
-        while pcb.receive_message().is_some() {
+        while pcb.receive_message().unwrap().is_some() {
             count += 1;
         }
         assert_eq!(count, 1000);

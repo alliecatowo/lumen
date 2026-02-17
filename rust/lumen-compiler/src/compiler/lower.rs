@@ -184,6 +184,42 @@ fn desugar_pipe_application(input: &Expr, stage: &Expr, span: Span) -> Expr {
     }
 }
 
+/// Recursively scan a cell body for local definitions and lift them to module
+/// level. Local records/enums become LIR types; local cells become LIR cells.
+fn lift_local_defs(body: &[Stmt], module: &mut LirModule, lowerer: &mut Lowerer) {
+    for stmt in body {
+        match stmt {
+            Stmt::LocalRecord(r) => {
+                module.types.push(lowerer.lower_record(r));
+            }
+            Stmt::LocalEnum(e) => {
+                module.types.push(lowerer.lower_enum(e));
+            }
+            Stmt::LocalCell(c) => {
+                module.cells.push(lowerer.lower_cell(c));
+                // Recurse into the nested cell's body
+                lift_local_defs(&c.body, module, lowerer);
+            }
+            Stmt::If(s) => {
+                lift_local_defs(&s.then_body, module, lowerer);
+                if let Some(ref eb) = s.else_body {
+                    lift_local_defs(eb, module, lowerer);
+                }
+            }
+            Stmt::For(s) => lift_local_defs(&s.body, module, lowerer),
+            Stmt::While(s) => lift_local_defs(&s.body, module, lowerer),
+            Stmt::Loop(s) => lift_local_defs(&s.body, module, lowerer),
+            Stmt::Match(s) => {
+                for arm in &s.arms {
+                    lift_local_defs(&arm.body, module, lowerer);
+                }
+            }
+            Stmt::Defer(s) => lift_local_defs(&s.body, module, lowerer),
+            _ => {}
+        }
+    }
+}
+
 /// Lower an entire program to a LIR module.
 pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModule {
     let doc_hash = format!("sha256:{:x}", Sha256::digest(source.as_bytes()));
@@ -456,10 +492,18 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                 kind: "trait".into(),
                 name: Some(t.name.clone()),
             }),
-            Item::Impl(i) => module.addons.push(LirAddon {
-                kind: "impl".into(),
-                name: Some(format!("{} for {}", i.trait_name, i.target_type)),
-            }),
+            Item::Impl(i) => {
+                module.addons.push(LirAddon {
+                    kind: "impl".into(),
+                    name: Some(format!("{} for {}", i.trait_name, i.target_type)),
+                });
+                // T208: lower each impl method as a module-level cell
+                for method in &i.cells {
+                    let mut lifted = method.clone();
+                    lifted.name = format!("{}.{}", i.target_type, method.name);
+                    module.cells.push(lowerer.lower_cell(&lifted));
+                }
+            }
             Item::Import(i) => module.addons.push(LirAddon {
                 kind: "import".into(),
                 name: Some(i.path.join(".")),
@@ -472,6 +516,20 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                 kind: "macro_decl".into(),
                 name: Some(m.name.clone()),
             }),
+        }
+    }
+
+    // Lift local definitions (nested records, enums, cells) from cell bodies
+    // to module level.
+    for item in &program.items {
+        let bodies: Vec<&[Stmt]> = match item {
+            Item::Cell(c) => vec![&c.body],
+            Item::Process(p) => p.cells.iter().map(|c| c.body.as_slice()).collect(),
+            Item::Agent(a) => a.cells.iter().map(|c| c.body.as_slice()).collect(),
+            _ => vec![],
+        };
+        for body in bodies {
+            lift_local_defs(body, &mut module, &mut lowerer);
         }
     }
 
@@ -1633,6 +1691,9 @@ impl<'a> Lowerer<'a> {
                 let val_reg = self.lower_expr(&ys.value, ra, consts, instrs);
                 instrs.push(Instruction::abc(OpCode::Emit, val_reg, 0, 0));
             }
+            // Local definitions are lifted to module level during lower();
+            // nothing to emit inline.
+            Stmt::LocalRecord(_) | Stmt::LocalEnum(_) | Stmt::LocalCell(_) => {}
         }
     }
 
@@ -4313,6 +4374,8 @@ fn collect_free_idents_stmt(stmt: &Stmt, out: &mut Vec<String>) {
         Stmt::Break(_) | Stmt::Continue(_) => {
             // Control flow statements with no sub-expressions to scan.
         }
+        // Local definitions contain no free identifiers to capture.
+        Stmt::LocalRecord(_) | Stmt::LocalEnum(_) | Stmt::LocalCell(_) => {}
     }
 }
 

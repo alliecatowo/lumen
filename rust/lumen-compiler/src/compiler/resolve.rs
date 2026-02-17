@@ -383,6 +383,123 @@ pub fn resolve_with_base(
     }
 }
 
+/// Recursively scan a cell body for local definitions (LocalRecord, LocalEnum,
+/// LocalCell) and register them in the symbol table as if they were top-level
+/// definitions. This allows them to be referenced within the enclosing cell
+/// and supports nested function/type patterns.
+fn register_local_defs_in_body(
+    body: &[Stmt],
+    table: &mut SymbolTable,
+    errors: &mut Vec<ResolveError>,
+) {
+    use std::collections::hash_map::Entry;
+    for stmt in body {
+        match stmt {
+            Stmt::LocalRecord(r) => {
+                if table.type_aliases.contains_key(&r.name) {
+                    errors.push(ResolveError::Duplicate {
+                        name: r.name.clone(),
+                        line: r.span.line,
+                    });
+                } else {
+                    match table.types.entry(r.name.clone()) {
+                        Entry::Occupied(_) => {
+                            errors.push(ResolveError::Duplicate {
+                                name: r.name.clone(),
+                                line: r.span.line,
+                            });
+                        }
+                        Entry::Vacant(entry) => {
+                            entry.insert(TypeInfo {
+                                kind: TypeInfoKind::Record(r.clone()),
+                                generic_params: r
+                                    .generic_params
+                                    .iter()
+                                    .map(|gp| gp.name.clone())
+                                    .collect(),
+                            });
+                        }
+                    }
+                }
+            }
+            Stmt::LocalEnum(e) => {
+                if table.type_aliases.contains_key(&e.name) {
+                    errors.push(ResolveError::Duplicate {
+                        name: e.name.clone(),
+                        line: e.span.line,
+                    });
+                } else {
+                    match table.types.entry(e.name.clone()) {
+                        Entry::Occupied(_) => {
+                            errors.push(ResolveError::Duplicate {
+                                name: e.name.clone(),
+                                line: e.span.line,
+                            });
+                        }
+                        Entry::Vacant(entry) => {
+                            entry.insert(TypeInfo {
+                                kind: TypeInfoKind::Enum(e.clone()),
+                                generic_params: e
+                                    .generic_params
+                                    .iter()
+                                    .map(|gp| gp.name.clone())
+                                    .collect(),
+                            });
+                        }
+                    }
+                }
+            }
+            Stmt::LocalCell(c) => {
+                match table.cells.entry(c.name.clone()) {
+                    Entry::Occupied(_) => {
+                        errors.push(ResolveError::Duplicate {
+                            name: c.name.clone(),
+                            line: c.span.line,
+                        });
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(CellInfo {
+                            params: c
+                                .params
+                                .iter()
+                                .map(|p| (p.name.clone(), p.ty.clone(), p.variadic))
+                                .collect(),
+                            return_type: c.return_type.clone(),
+                            effects: c.effects.clone(),
+                            generic_params: c
+                                .generic_params
+                                .iter()
+                                .map(|gp| gp.name.clone())
+                                .collect(),
+                            must_use: c.must_use,
+                        });
+                    }
+                }
+                // Recurse into the nested cell's body for deeper nesting
+                register_local_defs_in_body(&c.body, table, errors);
+            }
+            // Recurse into block-containing statements so we catch nested defs
+            // inside if/for/while/loop/match/defer bodies.
+            Stmt::If(s) => {
+                register_local_defs_in_body(&s.then_body, table, errors);
+                if let Some(ref eb) = s.else_body {
+                    register_local_defs_in_body(eb, table, errors);
+                }
+            }
+            Stmt::For(s) => register_local_defs_in_body(&s.body, table, errors),
+            Stmt::While(s) => register_local_defs_in_body(&s.body, table, errors),
+            Stmt::Loop(s) => register_local_defs_in_body(&s.body, table, errors),
+            Stmt::Match(s) => {
+                for arm in &s.arms {
+                    register_local_defs_in_body(&arm.body, table, errors);
+                }
+            }
+            Stmt::Defer(s) => register_local_defs_in_body(&s.body, table, errors),
+            _ => {}
+        }
+    }
+}
+
 /// Internal implementation that always returns the (possibly partial) symbol table and any errors.
 fn resolve_with_base_inner(
     program: &Program,
@@ -852,6 +969,59 @@ fn resolve_with_base_inner(
         }
     }
 
+    // Register local definitions (nested records, enums, cells inside cell bodies)
+    // by scanning all cell bodies for LocalRecord/LocalEnum/LocalCell statements.
+    for item in &program.items {
+        let bodies: Vec<&[Stmt]> = match item {
+            Item::Cell(c) => vec![&c.body],
+            Item::Process(p) => p.cells.iter().map(|c| c.body.as_slice()).collect(),
+            Item::Agent(a) => a.cells.iter().map(|c| c.body.as_slice()).collect(),
+            _ => vec![],
+        };
+        for body in bodies {
+            register_local_defs_in_body(body, &mut table, &mut errors);
+        }
+    }
+
+    // T208: Register impl block methods as cells in the symbol table so they
+    // can be typechecked and referenced. Each method is registered as
+    // "TargetType.method_name".
+    for item in &program.items {
+        if let Item::Impl(i) = item {
+            // Collect generics from the impl block itself
+            let impl_generics: Vec<String> =
+                i.generic_params.iter().map(|g| g.name.clone()).collect();
+            for method in &i.cells {
+                let method_name = format!("{}.{}", i.target_type, method.name);
+                use std::collections::hash_map::Entry;
+                match table.cells.entry(method_name.clone()) {
+                    Entry::Occupied(_) => {
+                        errors.push(ResolveError::Duplicate {
+                            name: method_name,
+                            line: method.span.line,
+                        });
+                    }
+                    Entry::Vacant(entry) => {
+                        let mut method_generic_params = impl_generics.clone();
+                        method_generic_params
+                            .extend(method.generic_params.iter().map(|gp| gp.name.clone()));
+                        entry.insert(CellInfo {
+                            params: method
+                                .params
+                                .iter()
+                                .map(|p| (p.name.clone(), p.ty.clone(), p.variadic))
+                                .collect(),
+                            return_type: method.return_type.clone(),
+                            effects: method.effects.clone(),
+                            generic_params: method_generic_params,
+                            must_use: method.must_use,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     table.cell_policies = build_cell_policies(program);
     let type_alias_arities = collect_type_alias_arities(program);
     let trait_defs = collect_trait_defs(program);
@@ -1271,7 +1441,22 @@ fn check_impl_target_type_refs(
         });
     }
 
-    let target = TypeExpr::Named(impl_decl.target_type.clone(), impl_decl.span);
+    // The target_type may include generic parameters, e.g. "Box[T]".
+    // Parse it into the appropriate TypeExpr variant so type-ref checking
+    // validates the base name ("Box") and treats the parameters as generics.
+    let target_type = &impl_decl.target_type;
+    let target = if let Some(bracket_pos) = target_type.find('[') {
+        let base_name = target_type[..bracket_pos].to_string();
+        // Extract the contents between [ and ]
+        let inner = &target_type[bracket_pos + 1..target_type.len() - 1];
+        let args: Vec<TypeExpr> = inner
+            .split(',')
+            .map(|s| TypeExpr::Named(s.trim().to_string(), impl_decl.span))
+            .collect();
+        TypeExpr::Generic(base_name, args, impl_decl.span)
+    } else {
+        TypeExpr::Named(target_type.clone(), impl_decl.span)
+    };
     check_type_refs_with_generics(&target, table, type_alias_arities, errors, generics);
 }
 
@@ -2182,6 +2367,8 @@ fn collect_stmt_call_requirements(
                 collect_stmt_call_requirements(stmt, table, out);
             }
         }
+        // Local definitions — no call requirements to collect.
+        Stmt::LocalRecord(_) | Stmt::LocalEnum(_) | Stmt::LocalCell(_) => {}
     }
 }
 
@@ -2485,6 +2672,8 @@ fn collect_stmt_effect_evidence(
                 collect_stmt_effect_evidence(stmt, table, current, out);
             }
         }
+        // Local definitions — no effect evidence to collect.
+        Stmt::LocalRecord(_) | Stmt::LocalEnum(_) | Stmt::LocalCell(_) => {}
     }
 }
 
@@ -2893,6 +3082,8 @@ fn infer_stmt_effects(
                 infer_stmt_effects(stmt, table, current, out);
             }
         }
+        // Local definitions — no effects to infer.
+        Stmt::LocalRecord(_) | Stmt::LocalEnum(_) | Stmt::LocalCell(_) => {}
     }
 }
 

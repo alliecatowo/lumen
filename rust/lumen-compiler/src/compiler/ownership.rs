@@ -649,6 +649,8 @@ impl<'a> OwnershipChecker<'a> {
             Stmt::Emit(e) => {
                 self.check_expr(&e.value);
             }
+            // Local definitions — no ownership implications for the outer scope.
+            Stmt::LocalRecord(_) | Stmt::LocalEnum(_) | Stmt::LocalCell(_) => {}
             Stmt::Defer(d) => {
                 self.enter_scope();
                 for s in &d.body {

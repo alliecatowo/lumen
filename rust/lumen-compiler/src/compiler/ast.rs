@@ -359,6 +359,12 @@ pub enum Stmt {
     CompoundAssign(CompoundAssignStmt),
     Defer(DeferStmt),
     Yield(YieldStmt),
+    /// Local record definition inside a cell body
+    LocalRecord(RecordDef),
+    /// Local enum definition inside a cell body
+    LocalEnum(EnumDef),
+    /// Local cell (nested function) definition inside a cell body
+    LocalCell(CellDef),
 }
 
 impl Stmt {
@@ -380,6 +386,9 @@ impl Stmt {
             Stmt::CompoundAssign(s) => s.span,
             Stmt::Defer(s) => s.span,
             Stmt::Yield(s) => s.span,
+            Stmt::LocalRecord(r) => r.span,
+            Stmt::LocalEnum(e) => e.span,
+            Stmt::LocalCell(c) => c.span,
         }
     }
 }

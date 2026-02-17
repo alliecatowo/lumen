@@ -21,9 +21,18 @@ use crossbeam_deque::{Injector, Steal, Stealer, Worker};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
+
+// ---------------------------------------------------------------------------
+// Lock helper — see Panic Policy in process.rs for rationale.
+// ---------------------------------------------------------------------------
+
+/// Acquire a mutex lock, converting a `PoisonError` into `Err(String)`.
+fn lock_inner<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>, String> {
+    mutex.lock().map_err(|e| format!("Mutex poisoned: {}", e))
+}
 
 // ---------------------------------------------------------------------------
 // Task
@@ -219,17 +228,16 @@ impl Scheduler {
 
         // Register the PCB before pushing the task so lookups are valid
         // immediately after this call returns.
-        self.process_registry
-            .lock()
-            .unwrap()
-            .insert(pid, Arc::clone(&pcb));
+        if let Ok(mut registry) = lock_inner(&self.process_registry) {
+            registry.insert(pid, Arc::clone(&pcb));
+        }
 
         // Wrap the user's closure so we transition the PCB status.
         let pcb_inner = Arc::clone(&pcb);
         let task = Task::new(pid, move || {
-            pcb_inner.set_status(ProcessStatus::Running);
+            let _ = pcb_inner.set_status(ProcessStatus::Running);
             work();
-            pcb_inner.set_status(ProcessStatus::Completed);
+            let _ = pcb_inner.set_status(ProcessStatus::Completed);
         });
 
         self.global_queue.push(task);
@@ -238,12 +246,16 @@ impl Scheduler {
 
     /// Look up a process by its [`ProcessId`].
     pub fn get_process(&self, pid: ProcessId) -> Option<Arc<ProcessControlBlock>> {
-        self.process_registry.lock().unwrap().get(&pid).cloned()
+        lock_inner(&self.process_registry)
+            .ok()
+            .and_then(|guard| guard.get(&pid).cloned())
     }
 
     /// Return the number of processes in the registry.
     pub fn process_count(&self) -> usize {
-        self.process_registry.lock().unwrap().len()
+        lock_inner(&self.process_registry)
+            .map(|guard| guard.len())
+            .unwrap_or(0)
     }
 
     /// Block until at least `expected` tasks have completed, or `timeout`
@@ -612,7 +624,7 @@ mod tests {
         sched.shutdown();
 
         assert_eq!(counter.load(Ordering::Relaxed), 1);
-        assert_eq!(pcb.status(), ProcessStatus::Completed);
+        assert_eq!(pcb.status().unwrap(), ProcessStatus::Completed);
     }
 
     #[test]
@@ -647,12 +659,12 @@ mod tests {
 
         let pcb = sched.get_process(pid).unwrap();
         // Status should be Ready before execution.
-        assert_eq!(pcb.status(), ProcessStatus::Ready);
+        assert_eq!(pcb.status().unwrap(), ProcessStatus::Ready);
 
         let _ = sched.wait_for_completion(1, Duration::from_secs(5));
         sched.shutdown();
 
-        assert_eq!(pcb.status(), ProcessStatus::Completed);
+        assert_eq!(pcb.status().unwrap(), ProcessStatus::Completed);
     }
 
     #[test]
@@ -661,5 +673,58 @@ mod tests {
         let fake_pid = ProcessId::next();
         assert!(sched.get_process(fake_pid).is_none());
         sched.shutdown();
+    }
+
+    // -- T066: C10K stress tests ------------------------------------------
+
+    #[test]
+    #[ignore]
+    fn stress_10k_tasks_atomic_counter() {
+        // Spawn 10,000 tasks, each incrementing an atomic counter.
+        let mut sched = Scheduler::new(4);
+        let counter = Arc::new(AtomicUsize::new(0));
+        let n = 10_000usize;
+
+        for _ in 0..n {
+            let ctr = Arc::clone(&counter);
+            sched.spawn_fn(move || {
+                ctr.fetch_add(1, Ordering::Relaxed);
+            });
+        }
+
+        let completed = sched.wait_for_completion(n, Duration::from_secs(30));
+        sched.shutdown();
+
+        assert_eq!(completed, n);
+        assert_eq!(counter.load(Ordering::SeqCst), n);
+    }
+
+    // -- T170: graceful error handling tests --------------------------------
+
+    #[test]
+    fn process_status_returns_result() {
+        // Verify that status() returns Ok on a healthy PCB.
+        let pcb = ProcessControlBlock::new(0, None);
+        assert!(pcb.status().is_ok());
+        assert_eq!(pcb.status().unwrap(), ProcessStatus::Ready);
+    }
+
+    #[test]
+    fn process_set_status_returns_result() {
+        let pcb = ProcessControlBlock::new(0, None);
+        assert!(pcb.set_status(ProcessStatus::Running).is_ok());
+        assert_eq!(pcb.status().unwrap(), ProcessStatus::Running);
+    }
+
+    #[test]
+    fn process_mailbox_returns_results() {
+        use crate::process::Message;
+        use serde_json::json;
+        let pcb = ProcessControlBlock::new(0, None);
+        assert!(pcb.send_message(Message::new(json!(42))).is_ok());
+        assert_eq!(pcb.mailbox_len().unwrap(), 1);
+        let msg = pcb.receive_message().unwrap();
+        assert!(msg.is_some());
+        assert_eq!(msg.unwrap().payload, json!(42));
     }
 }

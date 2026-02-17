@@ -1008,6 +1008,9 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+            // Local definitions — types/cells are already registered at module level
+            // by the resolver. Nothing extra to check inline here.
+            Stmt::LocalRecord(_) | Stmt::LocalEnum(_) | Stmt::LocalCell(_) => {}
         }
     }
 
@@ -2398,6 +2401,12 @@ pub fn typecheck(program: &Program, symbols: &SymbolTable) -> Result<(), Vec<Typ
             Item::Handler(h) => {
                 for handle in &h.handles {
                     checker.check_cell(handle);
+                }
+            }
+            Item::Impl(i) => {
+                // T208: typecheck each impl method with its own scope.
+                for method in &i.cells {
+                    checker.check_cell(method);
                 }
             }
             _ => {}

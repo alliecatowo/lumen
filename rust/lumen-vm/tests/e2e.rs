@@ -2697,3 +2697,117 @@ end
     // Skip 3, 6, 9 => count 7 elements
     assert_eq!(result, Value::Int(7));
 }
+
+// -- T203: to_list builtin and set iteration ------------------------------
+
+#[test]
+fn e2e_to_list_from_list_identity() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  let xs = [1, 2, 3]
+  return to_list(xs)
+end
+"#,
+    );
+    match &result {
+        Value::List(l) => {
+            assert_eq!(l.len(), 3);
+            assert_eq!(l[0], Value::Int(1));
+            assert_eq!(l[1], Value::Int(2));
+            assert_eq!(l[2], Value::Int(3));
+        }
+        other => panic!("expected list, got {:?}", other),
+    }
+}
+
+#[test]
+fn e2e_to_list_from_set() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  let s = {3, 1, 2}
+  return to_list(s)
+end
+"#,
+    );
+    // BTreeSet is sorted, so expect [1, 2, 3]
+    match &result {
+        Value::List(l) => {
+            assert_eq!(l.len(), 3);
+            assert_eq!(l[0], Value::Int(1));
+            assert_eq!(l[1], Value::Int(2));
+            assert_eq!(l[2], Value::Int(3));
+        }
+        other => panic!("expected list, got {:?}", other),
+    }
+}
+
+#[test]
+fn e2e_to_list_from_tuple() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  let t = (10, 20, 30)
+  return to_list(t)
+end
+"#,
+    );
+    match &result {
+        Value::List(l) => {
+            assert_eq!(l.len(), 3);
+            assert_eq!(l[0], Value::Int(10));
+            assert_eq!(l[1], Value::Int(20));
+            assert_eq!(l[2], Value::Int(30));
+        }
+        other => panic!("expected list, got {:?}", other),
+    }
+}
+
+#[test]
+fn e2e_to_list_from_string() {
+    let result = run_main(
+        r#"
+cell main() -> list[String]
+  return to_list("abc")
+end
+"#,
+    );
+    match &result {
+        Value::List(l) => {
+            assert_eq!(l.len(), 3);
+        }
+        other => panic!("expected list, got {:?}", other),
+    }
+}
+
+#[test]
+fn e2e_to_list_from_map() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let m = {"a": 1}
+  let pairs = to_list(m)
+  return len(pairs)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(1));
+}
+
+#[test]
+fn e2e_for_in_set_iteration() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let s = {10, 20, 30}
+  let mut total = 0
+  for x in s
+    total = total + x
+  end
+  return total
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(60));
+}

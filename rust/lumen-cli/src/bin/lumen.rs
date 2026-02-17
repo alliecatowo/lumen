@@ -1076,6 +1076,23 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>, allow_unstabl
         }
     };
 
+    // ─── JIT fast path ───────────────────────────────────────────────
+    #[cfg(feature = "jit")]
+    {
+        if let Some(result) = try_jit_execute(&module, cell) {
+            let elapsed = start.elapsed();
+            println!("{} {}", status_label("Running"), cyan(cell));
+            println!("\n{}", result);
+            println!(
+                "{} Finished in {:.4}s (JIT)",
+                green("✓"),
+                elapsed.as_secs_f64()
+            );
+            return;
+        }
+    }
+    // ─── End JIT fast path ───────────────────────────────────────────
+
     // Load project config and build provider registry
     let config = config::LumenConfig::load();
     let mut registry = lumen_runtime::tools::ProviderRegistry::new();
@@ -1168,6 +1185,62 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>, allow_unstabl
             eprintln!("{}", chain.format_with_prefix(&red("✗ Error:")));
             std::process::exit(1);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JIT fast-path helper
+// ---------------------------------------------------------------------------
+
+/// Attempt JIT compilation and execution of the target cell.
+///
+/// Returns `Some(result_string)` if the cell was successfully JIT-compiled and
+/// executed as native code. Returns `None` if the cell is not JIT-eligible or
+/// if compilation/execution fails — the caller should fall back to the
+/// interpreter.
+#[cfg(feature = "jit")]
+fn try_jit_execute(
+    module: &lumen_compiler::compiler::lir::LirModule,
+    cell: &str,
+) -> Option<String> {
+    use lumen_codegen::jit::{CodegenSettings, JitEngine};
+
+    // Find the target cell in the module.
+    let cell_def = module.cells.iter().find(|c| c.name == cell)?;
+
+    // JIT eligibility: all params must be Int, return type must be Int.
+    let all_int_params = cell_def.params.iter().all(|p| p.ty == "Int");
+    let returns_int = cell_def.returns.as_deref() == Some("Int");
+
+    if !all_int_params || !returns_int {
+        return None; // Not JIT-eligible — fall back to interpreter
+    }
+
+    // Also verify that all cells in the module are Int-only (cross-cell calls
+    // must be homogeneous for the i64-only JIT backend).
+    let all_cells_int = module.cells.iter().all(|c| {
+        let params_ok = c.params.iter().all(|p| p.ty == "Int");
+        let ret_ok = c.returns.as_deref() == Some("Int");
+        params_ok && ret_ok
+    });
+    if !all_cells_int {
+        return None;
+    }
+
+    let settings = CodegenSettings::default();
+    let mut engine = JitEngine::new(settings, 0); // threshold=0: compile immediately
+
+    // Try to compile the entire module so cross-cell calls work.
+    if engine.compile_module(module).is_err() {
+        return None; // Fall back to interpreter
+    }
+
+    // Build argument list (the target cell's params — for main() this is empty).
+    let args: Vec<i64> = vec![0; cell_def.params.len()];
+
+    match engine.execute_jit(cell, &args) {
+        Ok(result) => Some(result.to_string()),
+        Err(_) => None, // Fall back to interpreter
     }
 }
 

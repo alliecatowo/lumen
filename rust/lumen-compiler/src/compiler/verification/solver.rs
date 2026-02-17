@@ -3,10 +3,11 @@
 //! Defines a `Solver` trait that future backends (Z3, CVC5) will implement.
 //! Ships with a `ToyConstraintSolver` that handles the subset of constraints
 //! that can be decided without a full SMT engine: simple numeric interval
-//! checks, boolean constant propagation, and conjunction/disjunction of
-//! such constraints.
+//! checks, boolean constant propagation, conjunction/disjunction of
+//! such constraints, variable-to-variable comparisons via transitivity,
+//! and arithmetic constraints.
 
-use super::constraints::{CmpOp, Constraint};
+use super::constraints::{ArithOp, CmpOp, Constraint};
 
 // ── Solver trait ────────────────────────────────────────────────────
 
@@ -38,6 +39,25 @@ pub trait Solver {
     fn pop(&mut self);
     /// Reset the solver to a clean state.
     fn reset(&mut self);
+
+    /// Check whether `premise => conclusion` is valid.
+    ///
+    /// Strategy: assert `premise AND NOT(conclusion)` and check for
+    /// unsatisfiability.  If Unsat, the implication holds universally.
+    /// If Sat, there exists a counterexample where premise holds but
+    /// conclusion does not.
+    fn check_implication(&mut self, premise: &Constraint, conclusion: &Constraint) -> SatResult {
+        self.push();
+        self.assert_constraint(premise);
+        self.assert_constraint(&Constraint::Not(Box::new(conclusion.clone())));
+        let result = match self.check_sat() {
+            SatResult::Unsat => SatResult::Unsat, // implication holds (Valid)
+            SatResult::Sat => SatResult::Sat,     // counterexample exists
+            SatResult::Unknown => SatResult::Unknown,
+        };
+        self.pop();
+        result
+    }
 }
 
 // ── ToyConstraintSolver ─────────────────────────────────────────────
@@ -51,6 +71,9 @@ pub trait Solver {
 /// - Conjunction (`And`) of supported constraints
 /// - Disjunction (`Or`) of supported constraints (any-branch-sat)
 /// - Negation of supported constraints
+/// - Variable-to-variable comparisons (via transitivity reasoning)
+/// - Arithmetic constraints (`var + const <op> value`)
+/// - Effect budget constraints
 ///
 /// Returns `SatResult::Unknown` for anything outside its capabilities.
 #[derive(Debug, Default)]
@@ -107,6 +130,18 @@ impl Solver for ToyConstraintSolver {
 }
 
 // ── Evaluation engine ───────────────────────────────────────────────
+
+/// Negate a comparison operator.
+fn negate_cmp_op(op: CmpOp) -> CmpOp {
+    match op {
+        CmpOp::Gt => CmpOp::LtEq,
+        CmpOp::GtEq => CmpOp::Lt,
+        CmpOp::Lt => CmpOp::GtEq,
+        CmpOp::LtEq => CmpOp::Gt,
+        CmpOp::Eq => CmpOp::NotEq,
+        CmpOp::NotEq => CmpOp::Eq,
+    }
+}
 
 /// Tracks integer bounds per variable for interval reasoning.
 #[derive(Debug, Clone)]
@@ -172,22 +207,30 @@ impl IntBounds {
         }
     }
 
-    /// Check if the accumulated bounds have any satisfying integer.
-    fn is_satisfiable(&self) -> SatResult {
-        // Effective lower bound (inclusive)
-        let lo = match (self.lower, self.lower_eq) {
+    /// Return the effective inclusive lower bound, if any.
+    fn effective_lower(&self) -> Option<i64> {
+        match (self.lower, self.lower_eq) {
             (Some(gt), Some(ge)) => Some((gt + 1).max(ge)),
             (Some(gt), None) => Some(gt + 1),
             (None, Some(ge)) => Some(ge),
             (None, None) => None,
-        };
-        // Effective upper bound (inclusive)
-        let hi = match (self.upper, self.upper_eq) {
+        }
+    }
+
+    /// Return the effective inclusive upper bound, if any.
+    fn effective_upper(&self) -> Option<i64> {
+        match (self.upper, self.upper_eq) {
             (Some(lt), Some(le)) => Some((lt - 1).min(le)),
             (Some(lt), None) => Some(lt - 1),
             (None, Some(le)) => Some(le),
             (None, None) => None,
-        };
+        }
+    }
+
+    /// Check if the accumulated bounds have any satisfying integer.
+    fn is_satisfiable(&self) -> SatResult {
+        let lo = self.effective_lower();
+        let hi = self.effective_upper();
 
         // If there's an equality constraint, the value must be in bounds
         if let Some(eq_val) = self.eq {
@@ -235,6 +278,7 @@ fn evaluate_constraint(c: &Constraint) -> SatResult {
         Constraint::BoolConst(true) => SatResult::Sat,
         Constraint::BoolConst(false) => SatResult::Unsat,
         Constraint::BoolVar(_) => SatResult::Unknown,
+        Constraint::Var(_) => SatResult::Unknown,
 
         Constraint::IntComparison { .. } => {
             // A single comparison on one variable is always satisfiable
@@ -247,14 +291,87 @@ fn evaluate_constraint(c: &Constraint) -> SatResult {
             SatResult::Sat
         }
 
+        Constraint::VarComparison { left, op, right } => {
+            if left == right {
+                // x <op> x — decidable
+                match op {
+                    CmpOp::Eq | CmpOp::LtEq | CmpOp::GtEq => SatResult::Sat,
+                    CmpOp::NotEq | CmpOp::Lt | CmpOp::Gt => SatResult::Unsat,
+                }
+            } else {
+                // Two different variables — satisfiable (pick appropriate values)
+                SatResult::Sat
+            }
+        }
+
+        Constraint::Arithmetic {
+            var: _,
+            arith_op,
+            arith_const,
+            cmp_op,
+            cmp_value,
+        } => {
+            // A single arithmetic constraint is satisfiable if there exists
+            // an integer x such that (x arith_op arith_const) cmp_op cmp_value.
+            // For add/sub, this is always satisfiable (integers are unbounded).
+            // For mul by 0, check if 0 cmp_op cmp_value.
+            match arith_op {
+                ArithOp::Mul if *arith_const == 0 => {
+                    let result = 0_i64;
+                    let holds = match cmp_op {
+                        CmpOp::Gt => result > *cmp_value,
+                        CmpOp::GtEq => result >= *cmp_value,
+                        CmpOp::Lt => result < *cmp_value,
+                        CmpOp::LtEq => result <= *cmp_value,
+                        CmpOp::Eq => result == *cmp_value,
+                        CmpOp::NotEq => result != *cmp_value,
+                    };
+                    if holds {
+                        SatResult::Sat
+                    } else {
+                        SatResult::Unsat
+                    }
+                }
+                _ => SatResult::Sat,
+            }
+        }
+
+        Constraint::EffectBudget {
+            max_calls,
+            actual_calls,
+            ..
+        } => {
+            if *actual_calls <= *max_calls {
+                SatResult::Sat
+            } else {
+                SatResult::Unsat
+            }
+        }
+
         Constraint::Not(inner) => match evaluate_constraint(inner) {
             SatResult::Sat => {
                 // not(sat) might still be sat if the inner is not a tautology.
-                // We can't decide in general, so Unknown.
                 // Exception: not(true) = false, not(false) = true.
                 match inner.as_ref() {
                     Constraint::BoolConst(true) => SatResult::Unsat,
                     Constraint::BoolConst(false) => SatResult::Sat,
+                    // Not of an effect budget: invert the check
+                    Constraint::EffectBudget {
+                        max_calls,
+                        actual_calls,
+                        ..
+                    } => {
+                        if *actual_calls > *max_calls {
+                            SatResult::Sat
+                        } else {
+                            SatResult::Unsat
+                        }
+                    }
+                    // Not of a VarComparison where left == right
+                    Constraint::VarComparison { left, op, right } if left == right => match op {
+                        CmpOp::Eq | CmpOp::LtEq | CmpOp::GtEq => SatResult::Unsat,
+                        CmpOp::NotEq | CmpOp::Lt | CmpOp::Gt => SatResult::Sat,
+                    },
                     _ => SatResult::Unknown,
                 }
             }
@@ -293,12 +410,15 @@ fn evaluate_constraint(c: &Constraint) -> SatResult {
     }
 }
 
-/// Evaluate a conjunction by collecting integer bounds per variable.
+/// Evaluate a conjunction by collecting integer bounds per variable,
+/// with support for arithmetic constraints and transitivity.
 fn evaluate_conjunction(parts: &[Constraint]) -> SatResult {
     use std::collections::HashMap;
 
     let mut bounds: HashMap<String, IntBounds> = HashMap::new();
     let mut has_unknown = false;
+    // Collect variable ordering facts for transitivity reasoning.
+    let mut var_relations: Vec<(String, CmpOp, String)> = Vec::new();
 
     for part in parts {
         match part {
@@ -312,12 +432,142 @@ fn evaluate_conjunction(parts: &[Constraint]) -> SatResult {
                     .apply(*op, *value);
             }
 
-            // For nested And, flatten into the same bounds set.
-            Constraint::And(inner) => match evaluate_conjunction(inner) {
-                SatResult::Unsat => return SatResult::Unsat,
-                SatResult::Unknown => has_unknown = true,
-                SatResult::Sat => {}
-            },
+            Constraint::Arithmetic {
+                var,
+                arith_op,
+                arith_const,
+                cmp_op,
+                cmp_value,
+            } => {
+                // Reduce to an IntComparison by solving for var.
+                // (var + c) cmp v  ↔  var cmp (v - c)
+                // (var - c) cmp v  ↔  var cmp (v + c)
+                // (var * c) cmp v  → harder, handle simple cases
+                match arith_op {
+                    ArithOp::Add => {
+                        bounds
+                            .entry(var.clone())
+                            .or_insert_with(IntBounds::new)
+                            .apply(*cmp_op, *cmp_value - *arith_const);
+                    }
+                    ArithOp::Sub => {
+                        bounds
+                            .entry(var.clone())
+                            .or_insert_with(IntBounds::new)
+                            .apply(*cmp_op, *cmp_value + *arith_const);
+                    }
+                    ArithOp::Mul => {
+                        if *arith_const > 0 {
+                            if *cmp_value % *arith_const == 0 {
+                                bounds
+                                    .entry(var.clone())
+                                    .or_insert_with(IntBounds::new)
+                                    .apply(*cmp_op, *cmp_value / *arith_const);
+                            } else {
+                                has_unknown = true;
+                            }
+                        } else if *arith_const < 0 {
+                            if *cmp_value % arith_const.abs() == 0 {
+                                let flipped = match cmp_op {
+                                    CmpOp::Gt => CmpOp::Lt,
+                                    CmpOp::GtEq => CmpOp::LtEq,
+                                    CmpOp::Lt => CmpOp::Gt,
+                                    CmpOp::LtEq => CmpOp::GtEq,
+                                    CmpOp::Eq => CmpOp::Eq,
+                                    CmpOp::NotEq => CmpOp::NotEq,
+                                };
+                                bounds
+                                    .entry(var.clone())
+                                    .or_insert_with(IntBounds::new)
+                                    .apply(flipped, *cmp_value / *arith_const);
+                            } else {
+                                has_unknown = true;
+                            }
+                        } else {
+                            // Multiply by 0: 0 <cmp_op> cmp_value
+                            let holds = match cmp_op {
+                                CmpOp::Gt => 0 > *cmp_value,
+                                CmpOp::GtEq => 0 >= *cmp_value,
+                                CmpOp::Lt => 0 < *cmp_value,
+                                CmpOp::LtEq => 0 <= *cmp_value,
+                                CmpOp::Eq => 0 == *cmp_value,
+                                CmpOp::NotEq => 0 != *cmp_value,
+                            };
+                            if !holds {
+                                return SatResult::Unsat;
+                            }
+                        }
+                    }
+                }
+            }
+
+            Constraint::VarComparison { left, op, right } => {
+                if left == right {
+                    // x <op> x
+                    match op {
+                        CmpOp::Lt | CmpOp::Gt | CmpOp::NotEq => return SatResult::Unsat,
+                        _ => {} // tautology
+                    }
+                } else {
+                    var_relations.push((left.clone(), *op, right.clone()));
+                }
+            }
+
+            Constraint::EffectBudget {
+                max_calls,
+                actual_calls,
+                ..
+            } => {
+                if *actual_calls > *max_calls {
+                    return SatResult::Unsat;
+                }
+            }
+
+            // For nested And, flatten the contents into this conjunction.
+            Constraint::And(inner) => {
+                // Recursively process inner parts as if they were at this level.
+                for inner_part in inner {
+                    // We create a single-element slice to process through the
+                    // same match logic. But it's simpler to just flatten:
+                    match inner_part {
+                        Constraint::BoolConst(false) => return SatResult::Unsat,
+                        Constraint::BoolConst(true) => {}
+                        Constraint::IntComparison { var, op, value } => {
+                            bounds
+                                .entry(var.clone())
+                                .or_insert_with(IntBounds::new)
+                                .apply(*op, *value);
+                        }
+                        Constraint::VarComparison { left, op, right } => {
+                            if left == right {
+                                match op {
+                                    CmpOp::Lt | CmpOp::Gt | CmpOp::NotEq => {
+                                        return SatResult::Unsat
+                                    }
+                                    _ => {}
+                                }
+                            } else {
+                                var_relations.push((left.clone(), *op, right.clone()));
+                            }
+                        }
+                        Constraint::EffectBudget {
+                            max_calls,
+                            actual_calls,
+                            ..
+                        } => {
+                            if *actual_calls > *max_calls {
+                                return SatResult::Unsat;
+                            }
+                        }
+                        // For complex inner parts, recurse.
+                        other => match evaluate_constraint(other) {
+                            SatResult::Unsat => return SatResult::Unsat,
+                            SatResult::Unknown => has_unknown = true,
+                            SatResult::Sat => {}
+                        },
+                    }
+                }
+            }
 
             // A disjunction inside a conjunction — evaluate it separately.
             Constraint::Or(_) => match evaluate_constraint(part) {
@@ -326,7 +576,68 @@ fn evaluate_conjunction(parts: &[Constraint]) -> SatResult {
                 SatResult::Sat => {}
             },
 
-            // Not / float / bool var — we can't decide.
+            // Negation — handle decidable cases, mark unknown otherwise.
+            Constraint::Not(inner) => match inner.as_ref() {
+                Constraint::BoolConst(true) => return SatResult::Unsat,
+                Constraint::BoolConst(false) => {} // not(false) = true, no-op
+                Constraint::IntComparison { var, op, value } => {
+                    // not(x > 0) → x <= 0
+                    let negated_op = negate_cmp_op(*op);
+                    bounds
+                        .entry(var.clone())
+                        .or_insert_with(IntBounds::new)
+                        .apply(negated_op, *value);
+                }
+                Constraint::VarComparison { left, op, right } => {
+                    if left == right {
+                        let negated = negate_cmp_op(*op);
+                        match negated {
+                            CmpOp::Lt | CmpOp::Gt | CmpOp::NotEq => return SatResult::Unsat,
+                            _ => {} // tautology
+                        }
+                    } else {
+                        let negated = negate_cmp_op(*op);
+                        var_relations.push((left.clone(), negated, right.clone()));
+                    }
+                }
+                Constraint::Arithmetic {
+                    var,
+                    arith_op,
+                    arith_const,
+                    cmp_op,
+                    cmp_value,
+                } => {
+                    // Negate the comparison part, then reduce like normal Arithmetic.
+                    let negated_cmp = negate_cmp_op(*cmp_op);
+                    let negated = Constraint::Arithmetic {
+                        var: var.clone(),
+                        arith_op: *arith_op,
+                        arith_const: *arith_const,
+                        cmp_op: negated_cmp,
+                        cmp_value: *cmp_value,
+                    };
+                    // Re-evaluate as if it were a top-level conjunction member.
+                    // We recurse through evaluate_conjunction with a single element.
+                    match evaluate_conjunction(&[negated]) {
+                        SatResult::Unsat => return SatResult::Unsat,
+                        SatResult::Unknown => has_unknown = true,
+                        SatResult::Sat => {}
+                    }
+                }
+                Constraint::EffectBudget {
+                    max_calls,
+                    actual_calls,
+                    ..
+                } => {
+                    // not(actual <= max) → actual > max
+                    if *actual_calls <= *max_calls {
+                        return SatResult::Unsat;
+                    }
+                }
+                _ => has_unknown = true,
+            },
+
+            // Float / bool var / Var — we can't decide.
             _ => has_unknown = true,
         }
     }
@@ -337,6 +648,75 @@ fn evaluate_conjunction(parts: &[Constraint]) -> SatResult {
             SatResult::Unsat => return SatResult::Unsat,
             SatResult::Unknown => has_unknown = true,
             SatResult::Sat => {}
+        }
+    }
+
+    // Transitivity reasoning on variable relations.
+    // If we know x > y (or x >= y) and have bounds on y, propagate to x.
+    for (left, op, right) in &var_relations {
+        if let (Some(left_bounds), Some(right_bounds)) = (bounds.get(left), bounds.get(right)) {
+            match op {
+                CmpOp::Gt | CmpOp::GtEq => {
+                    // left > right: left's upper must accommodate right's lower
+                    if let (Some(left_hi), Some(right_lo)) = (
+                        left_bounds.effective_upper(),
+                        right_bounds.effective_lower(),
+                    ) {
+                        let needed = match op {
+                            CmpOp::Gt => right_lo + 1,
+                            _ => right_lo,
+                        };
+                        if left_hi < needed {
+                            return SatResult::Unsat;
+                        }
+                    }
+                }
+                CmpOp::Lt | CmpOp::LtEq => {
+                    // left < right: left's lower must be below right's upper
+                    if let (Some(left_lo), Some(right_hi)) = (
+                        left_bounds.effective_lower(),
+                        right_bounds.effective_upper(),
+                    ) {
+                        let needed = match op {
+                            CmpOp::Lt => right_hi - 1,
+                            _ => right_hi,
+                        };
+                        if left_lo > needed {
+                            return SatResult::Unsat;
+                        }
+                    }
+                }
+                CmpOp::Eq => {
+                    // Ranges must overlap.
+                    let l_lo = left_bounds.effective_lower();
+                    let l_hi = left_bounds.effective_upper();
+                    let r_lo = right_bounds.effective_lower();
+                    let r_hi = right_bounds.effective_upper();
+                    let combined_lo = match (l_lo, r_lo) {
+                        (Some(a), Some(b)) => Some(a.max(b)),
+                        (Some(a), None) | (None, Some(a)) => Some(a),
+                        (None, None) => None,
+                    };
+                    let combined_hi = match (l_hi, r_hi) {
+                        (Some(a), Some(b)) => Some(a.min(b)),
+                        (Some(a), None) | (None, Some(a)) => Some(a),
+                        (None, None) => None,
+                    };
+                    if let (Some(lo), Some(hi)) = (combined_lo, combined_hi) {
+                        if lo > hi {
+                            return SatResult::Unsat;
+                        }
+                    }
+                }
+                CmpOp::NotEq => {
+                    // Always satisfiable unless both are forced to the same value.
+                    if let (Some(l_eq), Some(r_eq)) = (left_bounds.eq, right_bounds.eq) {
+                        if l_eq == r_eq {
+                            return SatResult::Unsat;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -529,5 +909,149 @@ mod tests {
         let mut solver = ToyConstraintSolver::new();
         solver.assert_constraint(&Constraint::BoolVar("flag".to_string()));
         assert_eq!(solver.check_sat(), SatResult::Unknown);
+    }
+
+    // ── Implication tests ───────────────────────────────────────
+
+    #[test]
+    fn implication_x_gt5_implies_x_gt0() {
+        // x > 5 → x > 0 is valid.
+        // Assert x > 5 AND NOT(x > 0).
+        // x > 5 AND x <= 0 → Unsat → implication holds.
+        let mut solver = ToyConstraintSolver::new();
+        let premise = int_cmp("x", CmpOp::Gt, 5);
+        let conclusion = int_cmp("x", CmpOp::Gt, 0);
+        let result = solver.check_implication(&premise, &conclusion);
+        assert_eq!(result, SatResult::Unsat); // Unsat means implication is valid
+    }
+
+    #[test]
+    fn implication_x_gt0_does_not_imply_x_gt5() {
+        // x > 0 → x > 5 is NOT valid (e.g. x = 3).
+        let mut solver = ToyConstraintSolver::new();
+        let premise = int_cmp("x", CmpOp::Gt, 0);
+        let conclusion = int_cmp("x", CmpOp::Gt, 5);
+        let result = solver.check_implication(&premise, &conclusion);
+        assert_eq!(result, SatResult::Sat); // Sat means counterexample exists
+    }
+
+    #[test]
+    fn implication_conjunction_implies_weaker() {
+        // (x > 0 AND x < 10) → x >= 0 is valid.
+        let mut solver = ToyConstraintSolver::new();
+        let premise = Constraint::And(vec![
+            int_cmp("x", CmpOp::Gt, 0),
+            int_cmp("x", CmpOp::Lt, 10),
+        ]);
+        let conclusion = int_cmp("x", CmpOp::GtEq, 0);
+        let result = solver.check_implication(&premise, &conclusion);
+        assert_eq!(result, SatResult::Unsat); // valid
+    }
+
+    // ── Variable comparison tests ───────────────────────────────
+
+    #[test]
+    fn var_comparison_same_var_eq() {
+        // x == x is always true (tautology)
+        let mut solver = ToyConstraintSolver::new();
+        solver.assert_constraint(&Constraint::VarComparison {
+            left: "x".to_string(),
+            op: CmpOp::Eq,
+            right: "x".to_string(),
+        });
+        assert_eq!(solver.check_sat(), SatResult::Sat);
+    }
+
+    #[test]
+    fn var_comparison_same_var_lt() {
+        // x < x is always false
+        let mut solver = ToyConstraintSolver::new();
+        solver.assert_constraint(&Constraint::VarComparison {
+            left: "x".to_string(),
+            op: CmpOp::Lt,
+            right: "x".to_string(),
+        });
+        assert_eq!(solver.check_sat(), SatResult::Unsat);
+    }
+
+    #[test]
+    fn var_comparison_transitivity_contradiction() {
+        // x > y AND x < 5 AND y > 10 → Unsat
+        // Because x > y > 10 implies x > 10, but x < 5 contradicts.
+        let mut solver = ToyConstraintSolver::new();
+        solver.assert_constraint(&Constraint::VarComparison {
+            left: "x".to_string(),
+            op: CmpOp::Gt,
+            right: "y".to_string(),
+        });
+        solver.assert_constraint(&int_cmp("x", CmpOp::Lt, 5));
+        solver.assert_constraint(&int_cmp("y", CmpOp::Gt, 10));
+        assert_eq!(solver.check_sat(), SatResult::Unsat);
+    }
+
+    // ── Arithmetic constraint tests ─────────────────────────────
+
+    #[test]
+    fn arithmetic_add_satisfiable() {
+        // (x + 1) > 0 → satisfiable (e.g. x = 0)
+        let mut solver = ToyConstraintSolver::new();
+        solver.assert_constraint(&Constraint::Arithmetic {
+            var: "x".to_string(),
+            arith_op: ArithOp::Add,
+            arith_const: 1,
+            cmp_op: CmpOp::Gt,
+            cmp_value: 0,
+        });
+        assert_eq!(solver.check_sat(), SatResult::Sat);
+    }
+
+    #[test]
+    fn arithmetic_add_with_bounds_unsat() {
+        // (x + 1) > 5 AND x < 3 → x > 4 AND x < 3 → Unsat
+        let mut solver = ToyConstraintSolver::new();
+        solver.assert_constraint(&Constraint::Arithmetic {
+            var: "x".to_string(),
+            arith_op: ArithOp::Add,
+            arith_const: 1,
+            cmp_op: CmpOp::Gt,
+            cmp_value: 5,
+        });
+        solver.assert_constraint(&int_cmp("x", CmpOp::Lt, 3));
+        assert_eq!(solver.check_sat(), SatResult::Unsat);
+    }
+
+    // ── Effect budget tests ─────────────────────────────────────
+
+    #[test]
+    fn effect_budget_within_limit() {
+        let mut solver = ToyConstraintSolver::new();
+        solver.assert_constraint(&Constraint::EffectBudget {
+            effect_name: "network".to_string(),
+            max_calls: 3,
+            actual_calls: 2,
+        });
+        assert_eq!(solver.check_sat(), SatResult::Sat);
+    }
+
+    #[test]
+    fn effect_budget_exceeded() {
+        let mut solver = ToyConstraintSolver::new();
+        solver.assert_constraint(&Constraint::EffectBudget {
+            effect_name: "network".to_string(),
+            max_calls: 3,
+            actual_calls: 4,
+        });
+        assert_eq!(solver.check_sat(), SatResult::Unsat);
+    }
+
+    #[test]
+    fn effect_budget_exact_limit() {
+        let mut solver = ToyConstraintSolver::new();
+        solver.assert_constraint(&Constraint::EffectBudget {
+            effect_name: "network".to_string(),
+            max_calls: 3,
+            actual_calls: 3,
+        });
+        assert_eq!(solver.check_sat(), SatResult::Sat);
     }
 }

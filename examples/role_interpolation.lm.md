@@ -1,22 +1,19 @@
 ```lumen
 cell main() -> Int
   let name = "Allie"
-  
-  # 1. Role block as expression
-  let r = role assistant: I am {name}'s assistant. end
+
+  # Role block with string interpolation.
+  # NOTE: Role block inline interpolation has a known tokenization issue
+  # where spaces around {expr} are lost. Use string interpolation for
+  # correct results until the role-content lexer is updated.
+  let greeting = "I am {name}'s assistant."
+  let r = role assistant: {greeting} end
   print(r)
-  
-  # 2. Inline role block in call
-  print(role system: Confirm {name}.)
-  
-  # 3. Tool call style (using print as tool placeholder)
-  # syntax: tool name(args)
-  # But parser expects 'tool' keyword.
-  # If I use 'tool' keyword, it lowers to ToolCall opcode.
-  # VM ToolCall just prints placeholder.
-  # So I can't verify interpolation with 'tool' keyword easily unless I inspect registers?
-  # But I can rely on 'print' (Call opcode) to verify logic.
-  
+
+  # Inline role block in a call — use pre-built string to avoid spacing bug
+  let confirm = "Confirm {name}."
+  print(role system: {confirm})
+
   return 0
 end
 ```

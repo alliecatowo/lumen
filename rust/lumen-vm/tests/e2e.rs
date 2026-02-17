@@ -598,7 +598,9 @@ end
     assert!(result.is_err(), "deep recursion should return an error");
     let err_msg = result.unwrap_err().to_string();
     assert!(
-        err_msg.contains("stack overflow") || err_msg.contains("call depth") || err_msg.contains("instruction limit"),
+        err_msg.contains("stack overflow")
+            || err_msg.contains("call depth")
+            || err_msg.contains("instruction limit"),
         "error should mention stack overflow, got: {}",
         err_msg
     );
@@ -1295,6 +1297,205 @@ end
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Closure / upvalue model — comprehensive edge-case tests (T189)
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn e2e_closure_returned_from_function() {
+    // A closure returned from a function retains its captured variable.
+    let result = run_main(
+        r#"
+cell make_greeter(prefix: String) -> fn(String) -> String
+  return fn(name: String) => prefix + " " + name
+end
+
+cell main() -> String
+  let greet = make_greeter("Hello")
+  return greet("World")
+end
+"#,
+    );
+    assert_eq!(
+        result,
+        Value::String(StringRef::Owned("Hello World".into()))
+    );
+}
+
+#[test]
+fn e2e_closure_captures_multiple_variables() {
+    // A closure captures multiple variables from its enclosing scope.
+    let result = run_main(
+        r#"
+cell make_linear(a: Int, b: Int) -> fn(Int) -> Int
+  return fn(x: Int) => a * x + b
+end
+
+cell main() -> Int
+  let f = make_linear(3, 7)
+  return f(10)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(37)); // 3*10 + 7
+}
+
+#[test]
+fn e2e_multiple_closures_share_captures() {
+    // Multiple closures created in the same scope each get their own copy
+    // of the captured value (value semantics — not shared reference).
+    let result = run_main(
+        r#"
+cell make_pair(n: Int) -> (fn() -> Int, fn() -> Int)
+  let add_one = fn() => n + 1
+  let add_two = fn() => n + 2
+  return (add_one, add_two)
+end
+
+cell main() -> Int
+  let (f, g) = make_pair(10)
+  return f() + g()
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(23)); // 11 + 12
+}
+
+#[test]
+fn e2e_closure_inside_closure() {
+    // Nested closure: inner closure captures from outer closure's scope.
+    let result = run_main(
+        r#"
+cell make_curried_add(a: Int) -> fn(Int) -> fn(Int) -> Int
+  return fn(b: Int) => fn(c: Int) => a + b + c
+end
+
+cell main() -> Int
+  let add1 = make_curried_add(1)
+  let add1_2 = add1(2)
+  return add1_2(3)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(6)); // 1 + 2 + 3
+}
+
+#[test]
+fn e2e_closure_captures_loop_variable() {
+    // Closures created from different function calls each capture
+    // their own value (value capture, not reference capture).
+    let result = run_main(
+        r#"
+cell make_const(n: Int) -> fn() -> Int
+  return fn() => n
+end
+
+cell main() -> Int
+  let f1 = make_const(10)
+  let f2 = make_const(20)
+  let f3 = make_const(30)
+  return f1() + f2() + f3()
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(60)); // 10 + 20 + 30
+}
+
+#[test]
+fn e2e_closure_captures_bool_and_string() {
+    // Closures can capture non-integer types.
+    let result = run_main(
+        r#"
+cell make_checker(label: String) -> fn() -> String
+  return fn() => label + "!"
+end
+
+cell main() -> String
+  let check = make_checker("YES")
+  return check()
+end
+"#,
+    );
+    assert_eq!(result, Value::String(StringRef::Owned("YES!".into())));
+}
+
+#[test]
+fn e2e_closure_captures_list() {
+    // Closure captures a list value.
+    let result = run_main(
+        r#"
+cell wrap(items: list[Int]) -> fn() -> Int
+  return fn() => items[0] + items[1]
+end
+
+cell main() -> Int
+  let f = wrap([100, 200])
+  return f()
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(300));
+}
+
+#[test]
+fn e2e_closure_as_callback() {
+    // Pass a closure as a callback argument to another function.
+    let result = run_main(
+        r#"
+cell apply(f: fn(Int) -> Int, x: Int) -> Int
+  return f(x)
+end
+
+cell main() -> Int
+  let offset = 100
+  let add_offset = fn(x: Int) => x + offset
+  return apply(add_offset, 42)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(142));
+}
+
+#[test]
+fn e2e_closure_called_multiple_times() {
+    // Calling the same closure multiple times works correctly.
+    let result = run_main(
+        r#"
+cell make_counter_fn(base: Int) -> fn(Int) -> Int
+  return fn(n: Int) => base + n
+end
+
+cell main() -> Int
+  let f = make_counter_fn(10)
+  let a = f(1)
+  let b = f(2)
+  let c = f(3)
+  return a + b + c
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(36)); // 11 + 12 + 13
+}
+
+#[test]
+fn e2e_closure_value_capture_snapshot() {
+    // Verify value-capture semantics: closure sees the value at capture time,
+    // not later mutations. In Lumen, let bindings are immutable by default,
+    // so we test by creating the closure before a shadowing let.
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let x = 10
+  let f = fn() => x
+  let x = 999
+  return f()
+end
+"#,
+    );
+    // The closure captured x=10 before the shadowing, so it should return 10.
+    assert_eq!(result, Value::Int(10));
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Recursive function calls
 // ═══════════════════════════════════════════════════════════════════
 
@@ -1639,6 +1840,185 @@ end
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Enum dot-access construction: Enum.Variant and Enum.Variant(payload)
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn e2e_enum_dot_access_no_payload() {
+    // Regression: Color.Red should produce Union("Red", Null), not Null
+    let result = run_main(
+        r#"
+enum Color
+  Red
+  Green
+  Blue
+end
+
+cell main() -> Int
+  let c = Color.Red
+  match c
+    Red() -> return 1
+    Green() -> return 2
+    Blue() -> return 3
+  end
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(1));
+}
+
+#[test]
+fn e2e_enum_dot_access_with_payload() {
+    // Regression: Shape.Circle(radius: 5) produced "cannot call null"
+    let result = run_main(
+        r#"
+enum Shape
+  Circle(radius: Int)
+  Square(side: Int)
+end
+
+cell main() -> Int
+  let s = Shape.Circle(radius: 5)
+  match s
+    Circle(r) -> return r
+    Square(side) -> return side
+  end
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(5));
+}
+
+#[test]
+fn e2e_enum_dot_access_multiple_variants() {
+    // Ensure all variants work with dot access
+    let result = run_main(
+        r#"
+enum Shape
+  Circle(radius: Int)
+  Square(side: Int)
+end
+
+cell area(s: Shape) -> Int
+  match s
+    Circle(r) -> return r * r * 3
+    Square(side) -> return side * side
+  end
+end
+
+cell main() -> Int
+  let c = Shape.Circle(radius: 5)
+  let s = Shape.Square(side: 4)
+  return area(c) + area(s)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(91)); // 75 + 16
+}
+
+#[test]
+fn e2e_enum_dot_access_mixed_with_bare() {
+    // Mix dot-access and bare variant construction
+    let result = run_main(
+        r#"
+enum Shape
+  Circle(radius: Int)
+  Square(side: Int)
+end
+
+cell main() -> Int
+  let c = Shape.Circle(radius: 5)
+  let s = Square(side: 4)
+  match c
+    Circle(r) ->
+      match s
+        Circle(r2) -> return r + r2
+        Square(side) -> return r + side
+      end
+    Square(side) -> return side
+  end
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(9)); // 5 + 4
+}
+
+#[test]
+fn e2e_enum_dot_access_no_payload_all_variants() {
+    // Test all no-payload variants via dot access
+    let result = run_main(
+        r#"
+enum Color
+  Red
+  Green
+  Blue
+end
+
+cell to_num(c: Color) -> Int
+  match c
+    Red() -> return 1
+    Green() -> return 2
+    Blue() -> return 3
+  end
+end
+
+cell main() -> Int
+  return to_num(Color.Red) + to_num(Color.Green) + to_num(Color.Blue)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(6)); // 1 + 2 + 3
+}
+
+#[test]
+fn e2e_enum_dot_access_in_function_return() {
+    // Return dot-access constructed enum from a function
+    let result = run_main(
+        r#"
+enum Result
+  Ok(value: Int)
+  Err(message: String)
+end
+
+cell make_ok(x: Int) -> Result
+  return Result.Ok(value: x)
+end
+
+cell main() -> Int
+  let r = make_ok(42)
+  match r
+    Ok(v) -> return v
+    Err(e) -> return 0
+  end
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(42));
+}
+
+#[test]
+fn e2e_enum_dot_access_positional_arg() {
+    // Dot access with positional argument
+    let result = run_main(
+        r#"
+enum Option
+  Some(value: Int)
+  None
+end
+
+cell main() -> Int
+  let x = Option.Some(42)
+  match x
+    Some(v) -> return v
+    None() -> return 0
+  end
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(42));
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // For loop with ranges
 // ═══════════════════════════════════════════════════════════════════
 
@@ -1900,4 +2280,534 @@ end
     } else {
         panic!("expected list, got {:?}", result);
     }
+}
+
+// ─── Algebraic Effects ───
+
+#[test]
+fn e2e_effect_handle_resume_basic() {
+    // Minimal handle/perform/resume: perform an effect, handler resumes with a value
+    let result = run_main(
+        r#"
+effect Ask
+  cell ask(prompt: String) -> String
+end
+
+cell main() -> String / {Ask}
+  let result = handle
+    perform Ask.ask("name?")
+  with
+    Ask.ask(prompt) =>
+      resume("Alice")
+  end
+  return result
+end
+"#,
+    );
+    match &result {
+        Value::String(StringRef::Owned(s)) => assert_eq!(s, "Alice"),
+        other => panic!("expected String(\"Alice\"), got {:?}", other),
+    }
+}
+
+#[test]
+fn e2e_effect_resume_with_int() {
+    // Resume with an integer value
+    let result = run_main(
+        r#"
+effect Counter
+  cell next() -> Int
+end
+
+cell main() -> Int / {Counter}
+  let result = handle
+    perform Counter.next()
+  with
+    Counter.next() =>
+      resume(42)
+  end
+  return result
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(42));
+}
+
+#[test]
+fn e2e_effect_multiple_performs() {
+    // Multiple performs in sequence — each should be handled and resumed
+    let result = run_main(
+        r#"
+effect Ask
+  cell ask(prompt: String) -> String
+end
+
+cell main() -> String / {Ask}
+  let result = handle
+    let first = perform Ask.ask("name?")
+    let second = perform Ask.ask("age?")
+    first
+  with
+    Ask.ask(prompt) =>
+      resume("answered")
+  end
+  return result
+end
+"#,
+    );
+    match &result {
+        Value::String(StringRef::Owned(s)) => assert_eq!(s, "answered"),
+        other => panic!("expected String(\"answered\"), got {:?}", other),
+    }
+}
+
+#[test]
+fn e2e_effect_resume_value_used_in_computation() {
+    // The resumed value is used in further computation
+    let result = run_main(
+        r#"
+effect Get
+  cell get() -> Int
+end
+
+cell main() -> Int / {Get}
+  let result = handle
+    let x = perform Get.get()
+    x + 10
+  with
+    Get.get() =>
+      resume(32)
+  end
+  return result
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(42));
+}
+
+#[test]
+fn e2e_effect_handler_with_multiple_operations() {
+    // Handle expression with two different operations on the same effect
+    let result = run_main(
+        r#"
+effect Console
+  cell log(message: String) -> Null
+  cell read_line() -> String
+end
+
+cell main() -> String / {Console}
+  let result = handle
+    perform Console.log("hello")
+    perform Console.read_line()
+  with
+    Console.log(message) =>
+      resume(null)
+    Console.read_line() =>
+      resume("user input")
+  end
+  return result
+end
+"#,
+    );
+    match &result {
+        Value::String(StringRef::Owned(s)) => assert_eq!(s, "user input"),
+        other => panic!("expected String(\"user input\"), got {:?}", other),
+    }
+}
+
+#[test]
+fn e2e_effect_resume_null() {
+    // Resuming with null (common for side-effectful operations like logging)
+    let result = run_main(
+        r#"
+effect Logger
+  cell log(msg: String) -> Null
+end
+
+cell main() -> Int / {Logger}
+  let result = handle
+    perform Logger.log("hello")
+    100
+  with
+    Logger.log(msg) =>
+      resume(null)
+  end
+  return result
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(100));
+}
+
+#[test]
+fn e2e_effect_resume_bool() {
+    // Resume with a boolean value
+    let result = run_main(
+        r#"
+effect Check
+  cell is_valid(x: Int) -> Bool
+end
+
+cell main() -> Bool / {Check}
+  let result = handle
+    perform Check.is_valid(42)
+  with
+    Check.is_valid(x) =>
+      resume(true)
+  end
+  return result
+end
+"#,
+    );
+    assert_eq!(result, Value::Bool(true));
+}
+
+#[test]
+fn e2e_effect_body_is_let_binding() {
+    // Handle body that uses let binding before performing
+    let result = run_main(
+        r#"
+effect Ask
+  cell ask(prompt: String) -> String
+end
+
+cell main() -> String / {Ask}
+  let result = handle
+    let greeting = "Hello"
+    let name = perform Ask.ask("name?")
+    greeting
+  with
+    Ask.ask(prompt) =>
+      resume("World")
+  end
+  return result
+end
+"#,
+    );
+    match &result {
+        Value::String(StringRef::Owned(s)) => assert_eq!(s, "Hello"),
+        other => panic!("expected String(\"Hello\"), got {:?}", other),
+    }
+}
+
+// ─── For-loop continue (T199) ───
+
+/// Basic continue in a for-loop: skip element 2, collect the rest.
+#[test]
+fn e2e_for_loop_continue_basic() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  let mut results: list[Int] = []
+  for x in [1, 2, 3, 4, 5]
+    if x == 2
+      continue
+    end
+    results = append(results, x)
+  end
+  return results
+end
+"#,
+    );
+    assert_eq!(
+        result,
+        Value::new_list(vec![
+            Value::Int(1),
+            Value::Int(3),
+            Value::Int(4),
+            Value::Int(5),
+        ])
+    );
+}
+
+/// Continue with filter: filter removes even numbers, continue skips 3.
+#[test]
+fn e2e_for_loop_continue_with_filter() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  let mut results: list[Int] = []
+  for x in [1, 2, 3, 4, 5, 6] if x % 2 != 0
+    if x == 3
+      continue
+    end
+    results = append(results, x)
+  end
+  return results
+end
+"#,
+    );
+    assert_eq!(result, Value::new_list(vec![Value::Int(1), Value::Int(5)]));
+}
+
+/// Continue in nested loops: inner continue should not affect outer loop.
+#[test]
+fn e2e_for_loop_continue_nested() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  let mut results: list[Int] = []
+  for i in [1, 2]
+    for j in [10, 20, 30]
+      if j == 20
+        continue
+      end
+      results = append(results, i * 100 + j)
+    end
+  end
+  return results
+end
+"#,
+    );
+    // i=1: j=10 -> 110, j=20 skip, j=30 -> 130
+    // i=2: j=10 -> 210, j=20 skip, j=30 -> 230
+    assert_eq!(
+        result,
+        Value::new_list(vec![
+            Value::Int(110),
+            Value::Int(130),
+            Value::Int(210),
+            Value::Int(230),
+        ])
+    );
+}
+
+/// Labeled continue: continue outer for-loop from inside inner loop.
+#[test]
+fn e2e_for_loop_labeled_continue() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  let mut results: list[Int] = []
+  for @outer i in [1, 2, 3]
+    for j in [10, 20]
+      if i == 2
+        continue @outer
+      end
+      results = append(results, i * 100 + j)
+    end
+  end
+  return results
+end
+"#,
+    );
+    // i=1: j=10 -> 110, j=20 -> 120
+    // i=2: j=10 -> continue @outer (skip rest of i=2 entirely)
+    // i=3: j=10 -> 310, j=20 -> 320
+    assert_eq!(
+        result,
+        Value::new_list(vec![
+            Value::Int(110),
+            Value::Int(120),
+            Value::Int(310),
+            Value::Int(320),
+        ])
+    );
+}
+
+/// Continue as first statement in for-loop body (skip every element).
+#[test]
+fn e2e_for_loop_continue_first_statement() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  let mut results: list[Int] = []
+  for x in [1, 2, 3]
+    continue
+    results = append(results, x)
+  end
+  return results
+end
+"#,
+    );
+    // Every element is skipped, so the list stays empty.
+    assert_eq!(result, Value::new_list(vec![]));
+}
+
+/// Continue with accumulator: sum all elements except the skipped one.
+#[test]
+fn e2e_for_loop_continue_with_accumulator() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let mut sum = 0
+  for x in [10, 20, 30, 40, 50]
+    if x == 30
+      continue
+    end
+    sum = sum + x
+  end
+  return sum
+end
+"#,
+    );
+    // 10 + 20 + 40 + 50 = 120 (skip 30)
+    assert_eq!(result, Value::Int(120));
+}
+
+/// Multiple continues in a single for-loop body.
+#[test]
+fn e2e_for_loop_multiple_continues() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  let mut results: list[Int] = []
+  for x in [1, 2, 3, 4, 5, 6]
+    if x == 2
+      continue
+    end
+    if x == 5
+      continue
+    end
+    results = append(results, x)
+  end
+  return results
+end
+"#,
+    );
+    assert_eq!(
+        result,
+        Value::new_list(vec![
+            Value::Int(1),
+            Value::Int(3),
+            Value::Int(4),
+            Value::Int(6),
+        ])
+    );
+}
+
+/// Continue in a for-loop with range-like list, verifying all elements after
+/// the skipped one are still processed (regression: ensures iterator advances).
+#[test]
+fn e2e_for_loop_continue_no_infinite_loop() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let mut count = 0
+  for x in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    if x % 3 == 0
+      continue
+    end
+    count = count + 1
+  end
+  return count
+end
+"#,
+    );
+    // Skip 3, 6, 9 => count 7 elements
+    assert_eq!(result, Value::Int(7));
+}
+
+// -- T203: to_list builtin and set iteration ------------------------------
+
+#[test]
+fn e2e_to_list_from_list_identity() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  let xs = [1, 2, 3]
+  return to_list(xs)
+end
+"#,
+    );
+    match &result {
+        Value::List(l) => {
+            assert_eq!(l.len(), 3);
+            assert_eq!(l[0], Value::Int(1));
+            assert_eq!(l[1], Value::Int(2));
+            assert_eq!(l[2], Value::Int(3));
+        }
+        other => panic!("expected list, got {:?}", other),
+    }
+}
+
+#[test]
+fn e2e_to_list_from_set() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  let s = {3, 1, 2}
+  return to_list(s)
+end
+"#,
+    );
+    // BTreeSet is sorted, so expect [1, 2, 3]
+    match &result {
+        Value::List(l) => {
+            assert_eq!(l.len(), 3);
+            assert_eq!(l[0], Value::Int(1));
+            assert_eq!(l[1], Value::Int(2));
+            assert_eq!(l[2], Value::Int(3));
+        }
+        other => panic!("expected list, got {:?}", other),
+    }
+}
+
+#[test]
+fn e2e_to_list_from_tuple() {
+    let result = run_main(
+        r#"
+cell main() -> list[Int]
+  let t = (10, 20, 30)
+  return to_list(t)
+end
+"#,
+    );
+    match &result {
+        Value::List(l) => {
+            assert_eq!(l.len(), 3);
+            assert_eq!(l[0], Value::Int(10));
+            assert_eq!(l[1], Value::Int(20));
+            assert_eq!(l[2], Value::Int(30));
+        }
+        other => panic!("expected list, got {:?}", other),
+    }
+}
+
+#[test]
+fn e2e_to_list_from_string() {
+    let result = run_main(
+        r#"
+cell main() -> list[String]
+  return to_list("abc")
+end
+"#,
+    );
+    match &result {
+        Value::List(l) => {
+            assert_eq!(l.len(), 3);
+        }
+        other => panic!("expected list, got {:?}", other),
+    }
+}
+
+#[test]
+fn e2e_to_list_from_map() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let m = {"a": 1}
+  let pairs = to_list(m)
+  return len(pairs)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(1));
+}
+
+#[test]
+fn e2e_for_in_set_iteration() {
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let s = {10, 20, 30}
+  let mut total = 0
+  for x in s
+    total = total + x
+  end
+  return total
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(60));
 }

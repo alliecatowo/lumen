@@ -1,3 +1,28 @@
+# =============================================================================
+# Lumen CI Pipeline
+# =============================================================================
+#
+# CI requirements (all jobs must pass for merge to main):
+#
+#   1. check       — `cargo check --workspace` on Linux, macOS, Windows.
+#                    Also checks lumen-wasm compiles for wasm32-unknown-unknown.
+#   2. test        — `cargo test --workspace` on Linux, macOS, Windows.
+#   3. fmt         — `cargo fmt --all -- --check` enforces consistent formatting.
+#   4. clippy      — `cargo clippy --workspace -- -D warnings` enforces zero
+#                    clippy warnings across all crates. Any new warning is a
+#                    build failure.
+#   5. examples    — Type-checks all examples/*.lm.md files with release build.
+#   6. lang-ref    — Verifies `lumen lang-ref` generates without errors.
+#   7. diag-latency-gate — LSP diagnostic latency benchmark must stay under
+#                    the p95 threshold (currently 8ms, 120 iterations).
+#
+# Adding a new CI job:
+#   - Add a new job below following the existing pattern.
+#   - Use dtolnay/rust-toolchain@stable and Swatinem/rust-cache@v2.
+#   - Document the job's purpose in this header block.
+#
+# =============================================================================
+
 name: CI
 on:
   push:
@@ -6,6 +31,9 @@ on:
     branches: [main]
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Compilation check (cross-platform)
+  # ---------------------------------------------------------------------------
   check:
     name: Check
     runs-on: ${{ matrix.os }}
@@ -19,6 +47,9 @@ jobs:
       - run: cargo check --workspace
       - run: cargo check -p lumen-wasm --target wasm32-unknown-unknown
 
+  # ---------------------------------------------------------------------------
+  # Test suite (cross-platform)
+  # ---------------------------------------------------------------------------
   test:
     name: Test
     runs-on: ${{ matrix.os }}
@@ -31,6 +62,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
 
+  # ---------------------------------------------------------------------------
+  # Formatting (rustfmt)
+  # ---------------------------------------------------------------------------
   fmt:
     name: Formatting
     runs-on: ubuntu-latest
@@ -41,6 +75,9 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # ---------------------------------------------------------------------------
+  # Lint (clippy) — zero warnings policy
+  # ---------------------------------------------------------------------------
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -52,6 +89,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace -- -D warnings
 
+  # ---------------------------------------------------------------------------
+  # Example programs type-check
+  # ---------------------------------------------------------------------------
   examples:
     name: Examples
     runs-on: ubuntu-latest
@@ -66,6 +106,9 @@ jobs:
             cargo run --release --bin lumen -- check "$f" || true
           done
 
+  # ---------------------------------------------------------------------------
+  # Language reference generation
+  # ---------------------------------------------------------------------------
   lang-ref:
     name: Language Reference
     runs-on: ubuntu-latest
@@ -76,6 +119,9 @@ jobs:
       - name: Verify lang-ref generates
         run: cargo run --release --bin lumen -- lang-ref > /dev/null
 
+  # ---------------------------------------------------------------------------
+  # LSP diagnostic latency gate (performance regression check)
+  # ---------------------------------------------------------------------------
   diag-latency-gate:
     name: LSP Diag Latency Gate
     runs-on: ubuntu-latest

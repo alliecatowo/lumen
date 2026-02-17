@@ -65,7 +65,7 @@ pub struct CacheConfig {
 impl Default for CacheConfig {
     fn default() -> Self {
         let cache_dir = dirs::cache_dir()
-            .unwrap_or_else(|| std::env::temp_dir())
+            .unwrap_or_else(std::env::temp_dir)
             .join("lumen");
 
         Self {
@@ -96,10 +96,10 @@ pub enum CacheKey {
 impl CacheKey {
     /// Create a key from a content hash.
     pub fn from_hash(hash: &str) -> Self {
-        if hash.starts_with("sha256:") {
-            Self::Sha256(hash[7..].to_string())
-        } else if hash.starts_with("git:") {
-            Self::GitSha(hash[4..].to_string())
+        if let Some(stripped) = hash.strip_prefix("sha256:") {
+            Self::Sha256(stripped.to_string())
+        } else if let Some(stripped) = hash.strip_prefix("git:") {
+            Self::GitSha(stripped.to_string())
         } else {
             Self::Sha256(hash.to_string())
         }

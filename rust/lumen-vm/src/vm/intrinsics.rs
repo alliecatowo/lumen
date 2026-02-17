@@ -1,12 +1,12 @@
 //! Builtin function dispatch, intrinsic opcodes, and closure calls for the VM.
 
 use super::*;
-use std::collections::{BTreeMap, BTreeSet};
-use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use lumen_compiler::compile_raw;
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 impl VM {
     /// Execute a built-in function by name.
@@ -48,7 +48,7 @@ impl VM {
                 let list = self.registers[base + a + 1].clone();
                 let elem = self.registers[base + a + 2].clone();
                 if let Value::List(mut l) = list {
-                    Rc::make_mut(&mut l).push(elem);
+                    Arc::make_mut(&mut l).push(elem);
                     Ok(Value::List(l))
                 } else {
                     Ok(Value::new_list(vec![elem]))
@@ -396,7 +396,7 @@ impl VM {
             "sort" => {
                 let arg = self.registers[base + a + 1].clone();
                 if let Value::List(mut l) = arg {
-                    Rc::make_mut(&mut l).sort();
+                    Arc::make_mut(&mut l).sort();
                     Ok(Value::List(l))
                 } else {
                     Ok(arg)
@@ -405,7 +405,7 @@ impl VM {
             "reverse" => {
                 let arg = self.registers[base + a + 1].clone();
                 if let Value::List(mut l) = arg {
-                    Rc::make_mut(&mut l).reverse();
+                    Arc::make_mut(&mut l).reverse();
                     Ok(Value::List(l))
                 } else {
                     Ok(arg)
@@ -604,28 +604,32 @@ impl VM {
                         }
                     }
                     (Value::Int(x), Value::BigInt(y)) => {
-                         // Huge exponent?
-                         // If y fits in u32, we can pow. Else it's too big.
-                         if let Some(exp) = y.to_u32() {
-                             Value::BigInt(BigInt::from(*x).pow(exp))
-                         } else {
-                             // Too big. Infinity or zero?
-                             // x ^ huge
-                             Value::Float(f64::INFINITY) // Approximation
-                         }
+                        // Huge exponent?
+                        // If y fits in u32, we can pow. Else it's too big.
+                        if let Some(exp) = y.to_u32() {
+                            Value::BigInt(BigInt::from(*x).pow(exp))
+                        } else {
+                            // Too big. Infinity or zero?
+                            // x ^ huge
+                            Value::Float(f64::INFINITY) // Approximation
+                        }
                     }
                     (Value::BigInt(x), Value::BigInt(y)) => {
-                         if let Some(exp) = y.to_u32() {
-                             Value::BigInt(x.pow(exp))
-                         } else {
-                             Value::Float(f64::INFINITY)
-                         }
+                        if let Some(exp) = y.to_u32() {
+                            Value::BigInt(x.pow(exp))
+                        } else {
+                            Value::Float(f64::INFINITY)
+                        }
                     }
                     (Value::Float(x), Value::Float(y)) => Value::Float(x.powf(*y)),
                     (Value::Int(x), Value::Float(y)) => Value::Float((*x as f64).powf(*y)),
                     (Value::Float(x), Value::Int(y)) => Value::Float(x.powf(*y as f64)),
-                    (Value::BigInt(x), Value::Float(y)) => Value::Float(x.to_f64().unwrap_or(f64::NAN).powf(*y)),
-                    (Value::Float(x), Value::BigInt(y)) => Value::Float(x.powf(y.to_f64().unwrap_or(f64::NAN))),
+                    (Value::BigInt(x), Value::Float(y)) => {
+                        Value::Float(x.to_f64().unwrap_or(f64::NAN).powf(*y))
+                    }
+                    (Value::Float(x), Value::BigInt(y)) => {
+                        Value::Float(x.powf(y.to_f64().unwrap_or(f64::NAN)))
+                    }
                     _ => Value::Null,
                 })
             }
@@ -662,7 +666,9 @@ impl VM {
                 let hi = &self.registers[base + a + 3];
                 Ok(match (val, lo, hi) {
                     (Value::Int(v), Value::Int(l), Value::Int(h)) => Value::Int(*v.max(l).min(h)),
-                    (Value::BigInt(v), Value::BigInt(l), Value::BigInt(h)) => Value::BigInt(v.max(l).min(h).clone()),
+                    (Value::BigInt(v), Value::BigInt(l), Value::BigInt(h)) => {
+                        Value::BigInt(v.max(l).min(h).clone())
+                    }
                     (Value::Float(v), Value::Float(l), Value::Float(h)) => {
                         Value::Float(v.max(*l).min(*h))
                     }
@@ -1130,7 +1136,9 @@ impl VM {
                         let key = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
                         let key_str = key.as_string();
                         match groups.get_mut(&key_str) {
-                            Some(Value::List(ref mut list)) => Rc::make_mut(list).push(item.clone()),
+                            Some(Value::List(ref mut list)) => {
+                                Arc::make_mut(list).push(item.clone())
+                            }
                             _ => {
                                 groups.insert(key_str, Value::new_list(vec![item.clone()]));
                             }
@@ -1161,7 +1169,7 @@ impl VM {
             "random" => {
                 use std::cell::Cell;
                 thread_local! {
-                    static RNG_STATE: Cell<u64> = Cell::new(0);
+                    static RNG_STATE: Cell<u64> = const { Cell::new(0) };
                 }
                 RNG_STATE.with(|state| {
                     let mut s = state.get();
@@ -1199,7 +1207,8 @@ impl VM {
                     if ch == '{' && chars.peek() == Some(&'}') {
                         chars.next();
                         if arg_idx < nargs - 1 {
-                            result.push_str(&self.registers[base + a + 2 + arg_idx].display_pretty());
+                            result
+                                .push_str(&self.registers[base + a + 2 + arg_idx].display_pretty());
                             arg_idx += 1;
                         } else {
                             result.push_str("{}");
@@ -1213,23 +1222,23 @@ impl VM {
             "partition" => {
                 let list = self.registers[base + a].clone();
                 let predicate = self.registers[base + a + 1].clone();
-                
+
                 let closure_opt = match predicate {
                     Value::Closure(cv) => Some(cv),
                     Value::String(ref s) => {
-                         let name_str = match s {
-                             StringRef::Owned(s) => s.as_str(),
-                             StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
-                         };
-                         let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                         if let Some(idx) = module.cells.iter().position(|c| c.name == name_str) {
-                             Some(ClosureValue {
-                                 cell_idx: idx,
-                                 captures: vec![],
-                             })
-                         } else {
-                             None
-                         }
+                        let name_str = match s {
+                            StringRef::Owned(s) => s.as_str(),
+                            StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                        };
+                        let module = self.module.as_ref().ok_or(VmError::NoModule)?;
+                        module
+                            .cells
+                            .iter()
+                            .position(|c| c.name == name_str)
+                            .map(|idx| ClosureValue {
+                                cell_idx: idx,
+                                captures: vec![],
+                            })
                     }
                     _ => None,
                 };
@@ -1250,7 +1259,10 @@ impl VM {
                         Value::new_list(non_matching),
                     ]))
                 } else {
-                    Ok(Value::new_tuple(vec![Value::new_list(vec![]), Value::new_list(vec![])]))
+                    Ok(Value::new_tuple(vec![
+                        Value::new_list(vec![]),
+                        Value::new_list(vec![]),
+                    ]))
                 }
             }
             "read_dir" => {
@@ -1258,12 +1270,10 @@ impl VM {
                 match std::fs::read_dir(&path) {
                     Ok(entries) => {
                         let mut result = Vec::new();
-                        for entry in entries {
-                            if let Ok(e) = entry {
-                                result.push(Value::String(StringRef::Owned(
-                                    e.file_name().to_string_lossy().to_string(),
-                                )));
-                            }
+                        for e in entries.flatten() {
+                            result.push(Value::String(StringRef::Owned(
+                                e.file_name().to_string_lossy().to_string(),
+                            )));
                         }
                         Ok(Value::new_list(result))
                     }
@@ -1285,6 +1295,322 @@ impl VM {
                 let code = self.registers[base + a].as_int().unwrap_or(0);
                 std::process::exit(code as i32);
             }
+            // String trimming variants
+            "trim_start" => {
+                let s = self.registers[base + a + 1].as_string();
+                Ok(Value::String(StringRef::Owned(s.trim_start().to_string())))
+            }
+            "trim_end" => {
+                let s = self.registers[base + a + 1].as_string();
+                Ok(Value::String(StringRef::Owned(s.trim_end().to_string())))
+            }
+            // Math: exponential
+            "exp" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.exp()),
+                    Value::Int(n) => Value::Float((*n as f64).exp()),
+                    Value::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::NAN).exp()),
+                    _ => Value::Null,
+                })
+            }
+            // Math: tangent
+            "tan" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.tan()),
+                    Value::Int(n) => Value::Float((*n as f64).tan()),
+                    Value::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::NAN).tan()),
+                    _ => Value::Null,
+                })
+            }
+            // Random integer in range [min, max]
+            "random_int" => {
+                let min_val = match &self.registers[base + a + 1] {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(VmError::Runtime(format!(
+                            "random_int: min must be Int, got {}",
+                            other.type_name()
+                        )));
+                    }
+                };
+                let max_val = match &self.registers[base + a + 2] {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(VmError::Runtime(format!(
+                            "random_int: max must be Int, got {}",
+                            other.type_name()
+                        )));
+                    }
+                };
+                if min_val > max_val {
+                    return Err(VmError::Runtime(format!(
+                        "random_int: min ({}) must be <= max ({})",
+                        min_val, max_val
+                    )));
+                }
+                use std::cell::Cell;
+                thread_local! {
+                    static RNG_STATE_INT: Cell<u64> = const { Cell::new(0) };
+                }
+                RNG_STATE_INT.with(|state| {
+                    let mut s = state.get();
+                    if s == 0 {
+                        s = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos() as u64;
+                        if s == 0 {
+                            s = 1;
+                        }
+                    }
+                    s ^= s << 13;
+                    s ^= s >> 7;
+                    s ^= s << 17;
+                    state.set(s);
+                    let range = (max_val - min_val + 1) as u64;
+                    let result = min_val + (s % range) as i64;
+                    Ok(Value::Int(result))
+                })
+            }
+            "to_list" => {
+                let arg = self.registers[base + a + 1].clone();
+                match arg {
+                    Value::List(_) => Ok(arg),
+                    Value::Set(s) => {
+                        let sorted: Vec<Value> = s.iter().cloned().collect();
+                        Ok(Value::new_list(sorted))
+                    }
+                    Value::Map(m) => {
+                        let pairs: Vec<Value> = m
+                            .iter()
+                            .map(|(k, v)| {
+                                Value::new_list(vec![
+                                    Value::String(StringRef::Owned(k.clone())),
+                                    v.clone(),
+                                ])
+                            })
+                            .collect();
+                        Ok(Value::new_list(pairs))
+                    }
+                    Value::Tuple(t) => Ok(Value::new_list(t.to_vec())),
+                    Value::String(ref sr) => {
+                        let s = match sr {
+                            StringRef::Owned(s) => s.as_str(),
+                            StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                        };
+                        let chars: Vec<Value> = s
+                            .chars()
+                            .map(|c| Value::String(StringRef::Owned(c.to_string())))
+                            .collect();
+                        Ok(Value::new_list(chars))
+                    }
+                    other => Err(VmError::Runtime(format!(
+                        "to_list: cannot convert {} to list",
+                        other.type_name()
+                    ))),
+                }
+            }
+            // ── T216: Format specifier builtin ──
+            "__format_spec" => {
+                if nargs != 2 {
+                    return Err(VmError::Runtime(
+                        "__format_spec requires 2 arguments".into(),
+                    ));
+                }
+                let value = self.registers[base + a + 1].clone();
+                let fmt_str = match &self.registers[base + a + 2] {
+                    Value::String(StringRef::Owned(s)) => s.clone(),
+                    Value::String(StringRef::Interned(id)) => {
+                        self.strings.resolve(*id).unwrap_or("").to_string()
+                    }
+                    _ => {
+                        return Err(VmError::Runtime(
+                            "__format_spec: format spec must be a string".into(),
+                        ))
+                    }
+                };
+                let result = format_value_with_spec(&value, &fmt_str)?;
+                Ok(Value::String(StringRef::Owned(result)))
+            }
+
+            // ── T123: Wrapping arithmetic builtins ──
+            "wrapping_add" => {
+                if nargs != 2 {
+                    return Err(VmError::Runtime("wrapping_add requires 2 arguments".into()));
+                }
+                match (&self.registers[base + a + 1], &self.registers[base + a + 2]) {
+                    (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.wrapping_add(*b))),
+                    _ => Err(VmError::Runtime(
+                        "wrapping_add requires two integers".into(),
+                    )),
+                }
+            }
+            "wrapping_sub" => {
+                if nargs != 2 {
+                    return Err(VmError::Runtime("wrapping_sub requires 2 arguments".into()));
+                }
+                match (&self.registers[base + a + 1], &self.registers[base + a + 2]) {
+                    (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.wrapping_sub(*b))),
+                    _ => Err(VmError::Runtime(
+                        "wrapping_sub requires two integers".into(),
+                    )),
+                }
+            }
+            "wrapping_mul" => {
+                if nargs != 2 {
+                    return Err(VmError::Runtime("wrapping_mul requires 2 arguments".into()));
+                }
+                match (&self.registers[base + a + 1], &self.registers[base + a + 2]) {
+                    (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.wrapping_mul(*b))),
+                    _ => Err(VmError::Runtime(
+                        "wrapping_mul requires two integers".into(),
+                    )),
+                }
+            }
+
+            // ── Wave20 T202: push alias for append ──
+            "push" => {
+                let item = self.registers[base + a + 2].clone();
+                let list = &mut self.registers[base + a + 1];
+                match list {
+                    Value::List(l) => {
+                        let l = std::sync::Arc::make_mut(l);
+                        l.push(item);
+                        Ok(Value::Null)
+                    }
+                    _ => Err(VmError::Runtime(
+                        "push requires a list as first argument".into(),
+                    )),
+                }
+            }
+
+            // ── Wave20 T196: parse_int / parse_float ──
+            "parse_int" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::Int(_) | Value::BigInt(_) => arg.clone(),
+                    Value::Float(f) => Value::Int(*f as i64),
+                    Value::String(sref) => {
+                        let s = match sref {
+                            StringRef::Owned(s) => s.clone(),
+                            StringRef::Interned(id) => {
+                                self.strings.resolve(*id).unwrap_or("").to_string()
+                            }
+                        };
+                        match s.trim().parse::<i64>() {
+                            Ok(n) => Value::Int(n),
+                            Err(_) => Value::Null,
+                        }
+                    }
+                    _ => Value::Null,
+                })
+            }
+            "parse_float" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::Float(_) => arg.clone(),
+                    Value::Int(n) => Value::Float(*n as f64),
+                    Value::BigInt(n) => {
+                        use num_traits::ToPrimitive;
+                        Value::Float(n.to_f64().unwrap_or(f64::NAN))
+                    }
+                    Value::String(sref) => {
+                        let s = match sref {
+                            StringRef::Owned(s) => s.clone(),
+                            StringRef::Interned(id) => {
+                                self.strings.resolve(*id).unwrap_or("").to_string()
+                            }
+                        };
+                        match s.trim().parse::<f64>() {
+                            Ok(f) => Value::Float(f),
+                            Err(_) => Value::Null,
+                        }
+                    }
+                    _ => Value::Null,
+                })
+            }
+
+            // ── Wave20 T195: Bytes builtins ──
+            "bytes_from_ascii" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::String(sref) => {
+                        let s = match sref {
+                            StringRef::Owned(s) => s.clone(),
+                            StringRef::Interned(id) => {
+                                self.strings.resolve(*id).unwrap_or("").to_string()
+                            }
+                        };
+                        Value::Bytes(s.into_bytes())
+                    }
+                    _ => Value::Null,
+                })
+            }
+            "bytes_to_ascii" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::Bytes(b) => match String::from_utf8(b.clone()) {
+                        Ok(s) => Value::String(StringRef::Owned(s)),
+                        Err(_) => Value::Null,
+                    },
+                    _ => Value::Null,
+                })
+            }
+            "bytes_len" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::Bytes(b) => Value::Int(b.len() as i64),
+                    _ => Value::Null,
+                })
+            }
+            "bytes_slice" => {
+                let arg = &self.registers[base + a + 1];
+                let start = &self.registers[base + a + 2];
+                let end = &self.registers[base + a + 3];
+                Ok(match (arg, start, end) {
+                    (Value::Bytes(b), Value::Int(s), Value::Int(e)) => {
+                        let s = *s as usize;
+                        let e = if *e <= 0 { b.len() } else { *e as usize };
+                        if s <= e && e <= b.len() {
+                            Value::Bytes(b[s..e].to_vec())
+                        } else {
+                            Value::Bytes(vec![])
+                        }
+                    }
+                    _ => Value::Null,
+                })
+            }
+            "bytes_concat" => {
+                let arg1 = &self.registers[base + a + 1];
+                let arg2 = &self.registers[base + a + 2];
+                Ok(match (arg1, arg2) {
+                    (Value::Bytes(a_bytes), Value::Bytes(b_bytes)) => {
+                        let mut result = a_bytes.clone();
+                        result.extend_from_slice(b_bytes);
+                        Value::Bytes(result)
+                    }
+                    _ => Value::Null,
+                })
+            }
+
+            // ── Wave20 T186: validate builtin (call_builtin path) ──
+            "validate" => {
+                if nargs < 2 {
+                    let val = &self.registers[base + a + 1];
+                    Ok(Value::Bool(!matches!(val, Value::Null)))
+                } else {
+                    let val = &self.registers[base + a + 1];
+                    let schema_val = &self.registers[base + a + 2];
+                    Ok(Value::Bool(validate_value_against_schema(
+                        val,
+                        schema_val,
+                        &self.strings,
+                    )))
+                }
+            }
+
             _ => Err(VmError::UndefinedCell(name.to_string())),
         }
     }
@@ -1425,8 +1751,20 @@ impl VM {
                 Ok(self.redact_value(arg, fields))
             }
             7 => {
-                // VALIDATE
-                Ok(Value::Bool(true)) // full validation deferred to schema opcode
+                // VALIDATE — 1-arg: not-null check; 2-arg: schema validation
+                let nargs = _a.saturating_sub(arg_reg);
+                if nargs < 2 {
+                    // Single arg: validate(value) => not null
+                    Ok(Value::Bool(!matches!(arg, Value::Null)))
+                } else {
+                    // Two args: validate(value, schema)
+                    let schema_val = &self.registers[base + arg_reg + 1];
+                    Ok(Value::Bool(validate_value_against_schema(
+                        arg,
+                        schema_val,
+                        &self.strings,
+                    )))
+                }
             }
             8 => {
                 // TRACEREF
@@ -1820,7 +2158,9 @@ impl VM {
                         let key = self.call_closure_sync(&cv, std::slice::from_ref(item))?;
                         let key_str = key.as_string();
                         match groups.get_mut(&key_str) {
-                            Some(Value::List(ref mut list)) => Rc::make_mut(list).push(item.clone()),
+                            Some(Value::List(ref mut list)) => {
+                                Arc::make_mut(list).push(item.clone())
+                            }
                             _ => {
                                 groups.insert(key_str, Value::new_list(vec![item.clone()]));
                             }
@@ -2015,43 +2355,47 @@ impl VM {
                         }
                     }
                     (Value::BigInt(x), Value::Int(y)) => {
-                         if *y >= 0 {
-                             if let Ok(y_u32) = std::convert::TryFrom::try_from(*y) {
-                                 Value::BigInt(x.pow(y_u32))
-                             } else {
-                                 Value::Null
-                             }
+                        if *y >= 0 {
+                            if let Ok(y_u32) = std::convert::TryFrom::try_from(*y) {
+                                Value::BigInt(x.pow(y_u32))
+                            } else {
+                                Value::Null
+                            }
                         } else {
-                             Value::Float(x.to_f64().unwrap_or(f64::INFINITY).powf(*y as f64))
+                            Value::Float(x.to_f64().unwrap_or(f64::INFINITY).powf(*y as f64))
                         }
                     }
                     (Value::Int(x), Value::BigInt(y)) => {
                         if let Some(y_u32) = y.to_u32() {
                             Value::BigInt(BigInt::from(*x).pow(y_u32))
+                        } else if y.sign() == num_bigint::Sign::Minus {
+                            Value::Float((*x as f64).powf(y.to_f64().unwrap_or(f64::NEG_INFINITY)))
                         } else {
-                             if y.sign() == num_bigint::Sign::Minus {
-                                  Value::Float((*x as f64).powf(y.to_f64().unwrap_or(f64::NEG_INFINITY)))
-                             } else {
-                                  Value::Null
-                             }
+                            Value::Null
                         }
                     }
                     (Value::BigInt(x), Value::BigInt(y)) => {
-                         if let Some(y_u32) = y.to_u32() {
-                             Value::BigInt(x.pow(y_u32))
-                         } else {
-                             if y.sign() == num_bigint::Sign::Minus {
-                                  Value::Float(x.to_f64().unwrap_or(f64::INFINITY).powf(y.to_f64().unwrap_or(f64::NEG_INFINITY)))
-                             } else {
-                                  Value::Null
-                             }
-                         }
+                        if let Some(y_u32) = y.to_u32() {
+                            Value::BigInt(x.pow(y_u32))
+                        } else if y.sign() == num_bigint::Sign::Minus {
+                            Value::Float(
+                                x.to_f64()
+                                    .unwrap_or(f64::INFINITY)
+                                    .powf(y.to_f64().unwrap_or(f64::NEG_INFINITY)),
+                            )
+                        } else {
+                            Value::Null
+                        }
                     }
                     (Value::Float(x), Value::Float(y)) => Value::Float(x.powf(*y)),
                     (Value::Int(x), Value::Float(y)) => Value::Float((*x as f64).powf(*y)),
                     (Value::Float(x), Value::Int(y)) => Value::Float(x.powf(*y as f64)),
-                    (Value::BigInt(x), Value::Float(y)) => Value::Float(x.to_f64().unwrap_or(f64::INFINITY).powf(*y)),
-                    (Value::Float(x), Value::BigInt(y)) => Value::Float(x.powf(y.to_f64().unwrap_or(f64::INFINITY))),
+                    (Value::BigInt(x), Value::Float(y)) => {
+                        Value::Float(x.to_f64().unwrap_or(f64::INFINITY).powf(*y))
+                    }
+                    (Value::Float(x), Value::BigInt(y)) => {
+                        Value::Float(x.powf(y.to_f64().unwrap_or(f64::INFINITY)))
+                    }
                     _ => Value::Null,
                 })
             }
@@ -2227,30 +2571,31 @@ impl VM {
             78 => {
                 // PARTITION: split list by predicate into (matching, non_matching)
                 let closure_val = self.registers[base + arg_reg + 1].clone();
-                println!("DEBUG: exec_intrinsic partition. arg_reg={}, closure_val={:?}", arg_reg, closure_val);
-                
+                println!(
+                    "DEBUG: exec_intrinsic partition. arg_reg={}, closure_val={:?}",
+                    arg_reg, closure_val
+                );
+
                 let closure_opt = match closure_val {
                     Value::Closure(cv) => Some(cv),
                     Value::String(ref s) => {
-                         let name_str = match s {
-                             StringRef::Owned(s) => s.as_str(),
-                             StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
-                         };
+                        let name_str = match s {
+                            StringRef::Owned(s) => s.as_str(),
+                            StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                        };
 
-                         let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                         
+                        let module = self.module.as_ref().ok_or(VmError::NoModule)?;
 
-
-                         if let Some(idx) = module.cells.iter().position(|c| c.name == name_str) {
-                             Some(ClosureValue {
-                                 cell_idx: idx,
-                                 captures: vec![],
-                             })
-                         } else {
-                             None
-                         }
+                        module
+                            .cells
+                            .iter()
+                            .position(|c| c.name == name_str)
+                            .map(|idx| ClosureValue {
+                                cell_idx: idx,
+                                captures: vec![],
+                            })
                     }
-                    _ => None
+                    _ => None,
                 };
 
                 if let (Value::List(l), Some(cv)) = (arg.clone(), closure_opt) {
@@ -2269,7 +2614,10 @@ impl VM {
                         Value::new_list(non_matching),
                     ]))
                 } else {
-                    Ok(Value::new_tuple(vec![Value::new_list(vec![]), Value::new_list(vec![])]))
+                    Ok(Value::new_tuple(vec![
+                        Value::new_list(vec![]),
+                        Value::new_list(vec![]),
+                    ]))
                 }
             }
             79 => {
@@ -2278,12 +2626,10 @@ impl VM {
                 match std::fs::read_dir(&path) {
                     Ok(entries) => {
                         let mut result = Vec::new();
-                        for entry in entries {
-                            if let Ok(e) = entry {
-                                result.push(Value::String(StringRef::Owned(
-                                    e.file_name().to_string_lossy().to_string(),
-                                )));
-                            }
+                        for e in entries.flatten() {
+                            result.push(Value::String(StringRef::Owned(
+                                e.file_name().to_string_lossy().to_string(),
+                            )));
                         }
                         Ok(Value::new_list(result))
                     }
@@ -2312,7 +2658,7 @@ impl VM {
                     .as_nanos();
                 let cell_name = format!("__eval_{}", now);
                 let wrapped_src = format!("cell {}() -> Any\n  {}\nend", cell_name, source);
-                
+
                 match compile_raw(&wrapped_src) {
                     Ok(new_module) => {
                         if let Some(current_mod) = self.module.as_mut() {
@@ -2349,5 +2695,235 @@ impl VM {
                 func_id
             ))),
         }
+    }
+}
+
+/// Format a Value according to a format specifier string.
+///
+/// Supported specifiers:
+/// - `.Nf`  — float with N decimal places (e.g., ".2f")
+/// - `#x`   — hexadecimal (lowercase)
+/// - `#o`   — octal
+/// - `#b`   — binary
+/// - `>N`   — right-align in width N
+/// - `<N`   — left-align in width N
+/// - `^N`   — center-align in width N
+/// - `0N`   — zero-pad to width N
+/// - `+`    — always show sign for numbers
+fn format_value_with_spec(value: &Value, spec: &str) -> Result<String, VmError> {
+    if spec.is_empty() {
+        return Ok(value.display_pretty());
+    }
+
+    // Parse the spec into components
+    let mut sign_plus = false;
+    let mut zero_pad: Option<usize> = None;
+    let mut align: Option<(char, usize)> = None; // (alignment_char, width)
+    let mut precision: Option<usize> = None;
+    let mut radix: Option<char> = None; // 'x', 'o', 'b'
+
+    let chars: Vec<char> = spec.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        match chars[i] {
+            '+' => {
+                sign_plus = true;
+                i += 1;
+            }
+            '#' if i + 1 < chars.len() => {
+                radix = Some(chars[i + 1]);
+                i += 2;
+            }
+            '.' => {
+                // Parse .Nf
+                i += 1;
+                let start = i;
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+                if i > start {
+                    if let Ok(n) = spec[start..i].parse::<usize>() {
+                        precision = Some(n);
+                    }
+                }
+                // Skip trailing 'f' if present
+                if i < chars.len() && chars[i] == 'f' {
+                    i += 1;
+                }
+            }
+            '>' | '<' | '^' => {
+                let align_char = chars[i];
+                i += 1;
+                let start = i;
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+                if i > start {
+                    if let Ok(width) = spec[start..i].parse::<usize>() {
+                        align = Some((align_char, width));
+                    }
+                }
+            }
+            '0' if i + 1 < chars.len() && chars[i + 1].is_ascii_digit() => {
+                i += 1; // skip the '0'
+                let start = i;
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+                if i > start {
+                    if let Ok(width) = spec[start..i].parse::<usize>() {
+                        zero_pad = Some(width);
+                    }
+                }
+            }
+            _ => {
+                i += 1; // skip unrecognized
+            }
+        }
+    }
+
+    // Format the base string
+    let mut formatted = if let Some(r) = radix {
+        match (r, value) {
+            ('x', Value::Int(n)) => format!("{:#x}", n),
+            ('o', Value::Int(n)) => format!("{:#o}", n),
+            ('b', Value::Int(n)) => format!("{:#b}", n),
+            ('x', _) => {
+                return Err(VmError::Runtime(
+                    "__format_spec: #x requires an integer value".into(),
+                ))
+            }
+            ('o', _) => {
+                return Err(VmError::Runtime(
+                    "__format_spec: #o requires an integer value".into(),
+                ))
+            }
+            ('b', _) => {
+                return Err(VmError::Runtime(
+                    "__format_spec: #b requires an integer value".into(),
+                ))
+            }
+            _ => {
+                return Err(VmError::Runtime(format!(
+                    "__format_spec: unknown radix specifier '#{}' ",
+                    r
+                )))
+            }
+        }
+    } else if let Some(prec) = precision {
+        match value {
+            Value::Float(f) => format!("{:.prec$}", f, prec = prec),
+            Value::Int(n) => format!("{:.prec$}", *n as f64, prec = prec),
+            _ => {
+                return Err(VmError::Runtime(
+                    "__format_spec: precision format requires a numeric value".into(),
+                ))
+            }
+        }
+    } else {
+        value.display_pretty()
+    };
+
+    // Apply sign
+    if sign_plus {
+        match value {
+            Value::Int(n) if *n >= 0 && radix.is_none() => {
+                formatted = format!("+{}", formatted);
+            }
+            Value::Float(f) if *f >= 0.0 && radix.is_none() => {
+                formatted = format!("+{}", formatted);
+            }
+            _ => {} // negative numbers already have sign, or non-numeric
+        }
+    }
+
+    // Apply zero-padding
+    if let Some(width) = zero_pad {
+        if formatted.len() < width {
+            let is_negative = formatted.starts_with('-');
+            let is_positive_sign = formatted.starts_with('+');
+            if is_negative || is_positive_sign {
+                let sign = &formatted[..1];
+                let rest = &formatted[1..];
+                let pad_len = width.saturating_sub(formatted.len());
+                formatted = format!("{}{}{}", sign, "0".repeat(pad_len), rest);
+            } else {
+                let pad_len = width.saturating_sub(formatted.len());
+                formatted = format!("{}{}", "0".repeat(pad_len), formatted);
+            }
+        }
+    }
+
+    // Apply alignment
+    if let Some((align_char, width)) = align {
+        if formatted.len() < width {
+            match align_char {
+                '>' => formatted = format!("{:>width$}", formatted, width = width),
+                '<' => formatted = format!("{:<width$}", formatted, width = width),
+                '^' => formatted = format!("{:^width$}", formatted, width = width),
+                _ => {}
+            }
+        }
+    }
+
+    Ok(formatted)
+}
+
+// ── Wave20 T186: validate helper functions ──
+
+/// Check if a runtime Value matches a type name string.
+fn validate_value_against_type_name(val: &Value, type_name: &str) -> bool {
+    match type_name {
+        "Any" => true,
+        "Int" | "int" => matches!(val, Value::Int(_)),
+        "Float" | "float" => matches!(val, Value::Float(_)),
+        "String" | "string" => matches!(val, Value::String(_)),
+        "Bool" | "bool" => matches!(val, Value::Bool(_)),
+        "Null" | "null" => matches!(val, Value::Null),
+        "List" | "list" => matches!(val, Value::List(_)),
+        "Map" | "map" => matches!(val, Value::Map(_)),
+        "Tuple" | "tuple" => matches!(val, Value::Tuple(_)),
+        "Set" | "set" => matches!(val, Value::Set(_)),
+        "Bytes" | "bytes" => matches!(val, Value::Bytes(_)),
+        _ => false,
+    }
+}
+
+/// Validate a value against a schema. The schema can be:
+/// - A string type name like "Int", "String", etc.
+/// - A map of field names to type name strings (for record/map validation)
+fn validate_value_against_schema(
+    val: &Value,
+    schema: &Value,
+    strings: &crate::strings::StringTable,
+) -> bool {
+    match schema {
+        Value::String(sref) => {
+            let type_name = match sref {
+                StringRef::Owned(s) => s.as_str(),
+                StringRef::Interned(id) => strings.resolve(*id).unwrap_or(""),
+            };
+            validate_value_against_type_name(val, type_name)
+        }
+        Value::Map(schema_map) => {
+            // Schema is a map: validate that val is a map with matching field types
+            if let Value::Map(val_map) = val {
+                for (key, expected_type) in schema_map.iter() {
+                    match val_map.get(key) {
+                        Some(field_val) => {
+                            if !validate_value_against_schema(field_val, expected_type, strings) {
+                                return false;
+                            }
+                        }
+                        None => return false,
+                    }
+                }
+                true
+            } else {
+                false
+            }
+        }
+        _ => false,
     }
 }

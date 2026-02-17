@@ -184,6 +184,42 @@ fn desugar_pipe_application(input: &Expr, stage: &Expr, span: Span) -> Expr {
     }
 }
 
+/// Recursively scan a cell body for local definitions and lift them to module
+/// level. Local records/enums become LIR types; local cells become LIR cells.
+fn lift_local_defs(body: &[Stmt], module: &mut LirModule, lowerer: &mut Lowerer) {
+    for stmt in body {
+        match stmt {
+            Stmt::LocalRecord(r) => {
+                module.types.push(lowerer.lower_record(r));
+            }
+            Stmt::LocalEnum(e) => {
+                module.types.push(lowerer.lower_enum(e));
+            }
+            Stmt::LocalCell(c) => {
+                module.cells.push(lowerer.lower_cell(c));
+                // Recurse into the nested cell's body
+                lift_local_defs(&c.body, module, lowerer);
+            }
+            Stmt::If(s) => {
+                lift_local_defs(&s.then_body, module, lowerer);
+                if let Some(ref eb) = s.else_body {
+                    lift_local_defs(eb, module, lowerer);
+                }
+            }
+            Stmt::For(s) => lift_local_defs(&s.body, module, lowerer),
+            Stmt::While(s) => lift_local_defs(&s.body, module, lowerer),
+            Stmt::Loop(s) => lift_local_defs(&s.body, module, lowerer),
+            Stmt::Match(s) => {
+                for arm in &s.arms {
+                    lift_local_defs(&arm.body, module, lowerer);
+                }
+            }
+            Stmt::Defer(s) => lift_local_defs(&s.body, module, lowerer),
+            _ => {}
+        }
+    }
+}
+
 /// Lower an entire program to a LIR module.
 pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModule {
     let doc_hash = format!("sha256:{:x}", Sha256::digest(source.as_bytes()));
@@ -267,7 +303,9 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                             ConstValue::Int(n) => n.to_string(),
                             ConstValue::BigInt(n) => n.to_string(),
                             ConstValue::Float(f) => f.to_string(),
-                            ConstValue::String(s) => serde_json::to_string(&s).unwrap_or_else(|_| format!("\"{}\"", s)),
+                            ConstValue::String(s) => {
+                                serde_json::to_string(&s).unwrap_or_else(|_| format!("\"{}\"", s))
+                            }
                             ConstValue::Bool(b) => b.to_string(),
                             ConstValue::Null => "null".to_string(),
                         }
@@ -280,8 +318,7 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                     });
                 }
                 if !p.pipeline_stages.is_empty() {
-                    let stages_json =
-                        serde_json::to_string(&p.pipeline_stages).unwrap_or_default();
+                    let stages_json = serde_json::to_string(&p.pipeline_stages).unwrap_or_default();
                     module.addons.push(LirAddon {
                         kind: "pipeline.stages".to_string(),
                         name: Some(format!("{}={}", p.name, stages_json)),
@@ -390,6 +427,7 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                         is_pub: false,
                         is_async: false,
                         is_extern: false,
+                        must_use: false,
                         where_clauses: vec![],
                         span,
                         doc: None,
@@ -454,10 +492,18 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                 kind: "trait".into(),
                 name: Some(t.name.clone()),
             }),
-            Item::Impl(i) => module.addons.push(LirAddon {
-                kind: "impl".into(),
-                name: Some(format!("{} for {}", i.trait_name, i.target_type)),
-            }),
+            Item::Impl(i) => {
+                module.addons.push(LirAddon {
+                    kind: "impl".into(),
+                    name: Some(format!("{} for {}", i.trait_name, i.target_type)),
+                });
+                // T208: lower each impl method as a module-level cell
+                for method in &i.cells {
+                    let mut lifted = method.clone();
+                    lifted.name = format!("{}.{}", i.target_type, method.name);
+                    module.cells.push(lowerer.lower_cell(&lifted));
+                }
+            }
             Item::Import(i) => module.addons.push(LirAddon {
                 kind: "import".into(),
                 name: Some(i.path.join(".")),
@@ -470,6 +516,20 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                 kind: "macro_decl".into(),
                 name: Some(m.name.clone()),
             }),
+        }
+    }
+
+    // Lift local definitions (nested records, enums, cells) from cell bodies
+    // to module level.
+    for item in &program.items {
+        let bodies: Vec<&[Stmt]> = match item {
+            Item::Cell(c) => vec![&c.body],
+            Item::Process(p) => p.cells.iter().map(|c| c.body.as_slice()).collect(),
+            Item::Agent(a) => a.cells.iter().map(|c| c.body.as_slice()).collect(),
+            _ => vec![],
+        };
+        for body in bodies {
+            lift_local_defs(body, &mut module, &mut lowerer);
         }
     }
 
@@ -518,8 +578,18 @@ fn try_const_eval(expr: &Expr) -> Option<ConstValue> {
         Expr::UnaryOp(op, inner, _) => {
             let val = try_const_eval(inner)?;
             match (op, val) {
-                (UnaryOp::Neg, ConstValue::Int(n)) => Some(ConstValue::Int(-n)),
+                (UnaryOp::Neg, ConstValue::Int(n)) => Some(ConstValue::Int(n.wrapping_neg())),
                 (UnaryOp::Neg, ConstValue::Float(f)) => Some(ConstValue::Float(-f)),
+                (UnaryOp::Neg, ConstValue::BigInt(n)) => {
+                    let negated = -n;
+                    // If the negated BigInt fits in i64, fold to Int
+                    use num_traits::ToPrimitive;
+                    if let Some(i) = negated.to_i64() {
+                        Some(ConstValue::Int(i))
+                    } else {
+                        Some(ConstValue::BigInt(negated))
+                    }
+                }
                 (UnaryOp::Not, ConstValue::Bool(b)) => Some(ConstValue::Bool(!b)),
                 (UnaryOp::BitNot, ConstValue::Int(n)) => Some(ConstValue::Int(!n)),
                 _ => None,
@@ -648,6 +718,17 @@ fn try_const_eval(expr: &Expr) -> Option<ConstValue> {
                     Some(ConstValue::Bool(a || b))
                 }
 
+                // Spaceship (Int)
+                (ConstValue::Int(a), BinOp::Spaceship, ConstValue::Int(b)) => {
+                    Some(ConstValue::Int(if a < b {
+                        -1
+                    } else if a == b {
+                        0
+                    } else {
+                        1
+                    }))
+                }
+
                 _ => None,
             }
         }
@@ -676,8 +757,12 @@ fn try_const_eval(expr: &Expr) -> Option<ConstValue> {
 /// Tracks a loop for break/continue patching
 struct LoopContext {
     label: Option<String>,
-    start: usize,
     break_jumps: Vec<usize>,
+    /// Indices of continue Jmp instructions that need forward-patching.
+    /// For for-loops, these jump to the iterator-advance (idx += 1) section
+    /// rather than to `start` (which would skip the increment and cause
+    /// infinite loops).
+    continue_jumps: Vec<usize>,
 }
 
 struct Lowerer<'a> {
@@ -859,7 +944,39 @@ impl<'a> Lowerer<'a> {
         consts.push(Constant::String(callee_name.to_string()));
         instrs.push(Instruction::abx(OpCode::LoadK, callee_reg, callee_idx));
         let arg_regs = self.lower_call_arg_regs(args, implicit_self_arg, ra, consts, instrs);
+        let arg_regs = self.pack_variadic_args(callee_name, arg_regs, ra, consts, instrs);
         self.emit_call_with_regs(callee_reg, &arg_regs, ra, instrs)
+    }
+
+    /// If `callee_name` refers to a cell with a variadic last parameter,
+    /// pack the extra arguments beyond the fixed params into a list.
+    fn pack_variadic_args(
+        &self,
+        callee_name: &str,
+        arg_regs: Vec<u8>,
+        ra: &mut RegAlloc,
+        _consts: &mut Vec<Constant>,
+        instrs: &mut Vec<Instruction>,
+    ) -> Vec<u8> {
+        if let Some(cell_info) = self.symbols.cells.get(callee_name) {
+            let has_variadic = cell_info.params.last().is_some_and(|(_, _, v)| *v);
+            if has_variadic && !cell_info.params.is_empty() {
+                let fixed_count = cell_info.params.len() - 1;
+                if arg_regs.len() >= fixed_count {
+                    let mut result = arg_regs[..fixed_count].to_vec();
+                    let variadic_regs = &arg_regs[fixed_count..];
+                    // Create a new list and append each variadic arg
+                    let list_reg = ra.alloc_temp();
+                    instrs.push(Instruction::abc(OpCode::NewList, list_reg, 0, 0));
+                    for &reg in variadic_regs {
+                        instrs.push(Instruction::abc(OpCode::Append, list_reg, reg, 0));
+                    }
+                    result.push(list_reg);
+                    return result;
+                }
+            }
+        }
+        arg_regs
     }
 
     fn lower_record(&mut self, r: &RecordDef) -> LirType {
@@ -1286,8 +1403,8 @@ impl<'a> Lowerer<'a> {
 
                 self.loop_stack.push(LoopContext {
                     label: fs.label.clone(),
-                    start: loop_start,
                     break_jumps: Vec::new(),
+                    continue_jumps: Vec::new(),
                 });
 
                 // If there's a filter condition, skip the body if it's false
@@ -1317,6 +1434,8 @@ impl<'a> Lowerer<'a> {
                 }
 
                 // idx = idx + 1
+                // Continue jumps target this increment section (not loop_start)
+                let increment_start = instrs.len();
                 let one_idx = consts.len() as u16;
                 consts.push(Constant::Int(1));
                 let one_reg = ra.alloc_temp();
@@ -1336,6 +1455,10 @@ impl<'a> Lowerer<'a> {
                 let ctx = self.loop_stack.pop().unwrap();
                 for bj in ctx.break_jumps {
                     instrs[bj] = Instruction::sax(OpCode::Jmp, (after_loop - bj - 1) as i32);
+                }
+                // Patch continue jumps to the increment section
+                for cj in ctx.continue_jumps {
+                    instrs[cj] = Instruction::sax(OpCode::Jmp, (increment_start - cj - 1) as i32);
                 }
                 // After for loop completes, free any temps used for iteration
                 ra.free_statement_temps();
@@ -1401,13 +1524,14 @@ impl<'a> Lowerer<'a> {
                                 let callee_reg = ra.alloc_temp();
                                 let callee_idx = consts.len() as u16;
                                 consts.push(Constant::String(name.to_string()));
-                                instrs
-                                    .push(Instruction::abx(OpCode::LoadK, callee_reg, callee_idx));
+                                instrs.push(Instruction::abx(
+                                    OpCode::LoadK,
+                                    callee_reg,
+                                    callee_idx,
+                                ));
                                 let arg_regs =
                                     self.lower_call_arg_regs(args, None, ra, consts, instrs);
-                                self.emit_tail_call_with_regs(
-                                    callee_reg, &arg_regs, ra, instrs,
-                                );
+                                self.emit_tail_call_with_regs(callee_reg, &arg_regs, ra, instrs);
                                 return;
                             }
                         }
@@ -1445,8 +1569,8 @@ impl<'a> Lowerer<'a> {
                 let loop_start = instrs.len();
                 self.loop_stack.push(LoopContext {
                     label: ws.label.clone(),
-                    start: loop_start,
                     break_jumps: Vec::new(),
+                    continue_jumps: Vec::new(),
                 });
 
                 let cond_reg = self.lower_expr(&ws.condition, ra, consts, instrs);
@@ -1473,6 +1597,10 @@ impl<'a> Lowerer<'a> {
                 for bj in ctx.break_jumps {
                     instrs[bj] = Instruction::sax(OpCode::Jmp, (after - bj - 1) as i32);
                 }
+                // Patch continue jumps back to loop start (re-evaluate condition)
+                for cj in ctx.continue_jumps {
+                    instrs[cj] = Instruction::sax(OpCode::Jmp, loop_start as i32 - cj as i32 - 1);
+                }
                 // After while loop completes, free any temps used for condition
                 ra.free_statement_temps();
             }
@@ -1480,8 +1608,8 @@ impl<'a> Lowerer<'a> {
                 let loop_start = instrs.len();
                 self.loop_stack.push(LoopContext {
                     label: ls.label.clone(),
-                    start: loop_start,
                     break_jumps: Vec::new(),
+                    continue_jumps: Vec::new(),
                 });
 
                 for s in &ls.body {
@@ -1494,6 +1622,10 @@ impl<'a> Lowerer<'a> {
                 let ctx = self.loop_stack.pop().unwrap();
                 for bj in ctx.break_jumps {
                     instrs[bj] = Instruction::sax(OpCode::Jmp, (after - bj - 1) as i32);
+                }
+                // Patch continue jumps back to loop start
+                for cj in ctx.continue_jumps {
+                    instrs[cj] = Instruction::sax(OpCode::Jmp, loop_start as i32 - cj as i32 - 1);
                 }
             }
             Stmt::Break(bs) => {
@@ -1512,19 +1644,18 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Stmt::Continue(cs) => {
+                let jmp_idx = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
                 let target = if let Some(label) = &cs.label {
                     self.loop_stack
-                        .iter()
+                        .iter_mut()
                         .rev()
                         .find(|ctx| ctx.label.as_deref() == Some(label))
                 } else {
-                    self.loop_stack.last()
+                    self.loop_stack.last_mut()
                 };
                 if let Some(ctx) = target {
-                    let back_offset = ctx.start as i32 - instrs.len() as i32 - 1;
-                    instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
-                } else {
-                    instrs.push(Instruction::sax(OpCode::Jmp, 0));
+                    ctx.continue_jumps.push(jmp_idx);
                 }
             }
             Stmt::Emit(es) => {
@@ -1560,6 +1691,9 @@ impl<'a> Lowerer<'a> {
                 let val_reg = self.lower_expr(&ys.value, ra, consts, instrs);
                 instrs.push(Instruction::abc(OpCode::Emit, val_reg, 0, 0));
             }
+            // Local definitions are lifted to module level during lower();
+            // nothing to emit inline.
+            Stmt::LocalRecord(_) | Stmt::LocalEnum(_) | Stmt::LocalCell(_) => {}
         }
     }
 
@@ -1579,8 +1713,6 @@ impl<'a> Lowerer<'a> {
             }
         }
     }
-
-
 
     fn push_const_int(
         &mut self,
@@ -1760,6 +1892,14 @@ impl<'a> Lowerer<'a> {
                         IntrinsicId::Drop as u8,
                         list_arg,
                     ));
+                }
+            }
+            Pattern::TypeCheck { name, .. } => {
+                // In let position, the typechecker has already verified compatibility.
+                // Just bind the value to the named register.
+                let dest = ra.alloc_named(name);
+                if dest != value_reg {
+                    instrs.push(Instruction::abc(OpCode::Move, dest, value_reg, 0));
                 }
             }
             _ => {
@@ -2023,11 +2163,11 @@ impl<'a> Lowerer<'a> {
                 dest
             }
             Expr::BigIntLit(n, _) => {
-                 let dest = ra.alloc_temp();
-                 let kidx = consts.len() as u16;
-                 consts.push(Constant::BigInt(n.clone()));
-                 instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
-                 dest
+                let dest = ra.alloc_temp();
+                let kidx = consts.len() as u16;
+                consts.push(Constant::BigInt(n.clone()));
+                instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
+                dest
             }
             Expr::FloatLit(f, _) => {
                 let dest = ra.alloc_temp();
@@ -2082,6 +2222,38 @@ impl<'a> Lowerer<'a> {
                                 first = false;
                             } else {
                                 instrs.push(Instruction::abc(OpCode::Concat, dest, dest, expr_reg));
+                            }
+                        }
+                        StringSegment::FormattedInterpolation(expr, spec) => {
+                            // Lower the expression, then call __format_spec(value, spec_string)
+                            let expr_reg = self.lower_expr(expr, ra, consts, instrs);
+                            // Build format spec string from the FormatSpec
+                            let spec_str = format_spec_to_string(spec);
+                            let spec_reg = ra.alloc_temp();
+                            let kidx = consts.len() as u16;
+                            consts.push(Constant::String(spec_str));
+                            instrs.push(Instruction::abx(OpCode::LoadK, spec_reg, kidx));
+                            // Call __format_spec(expr_reg, spec_reg)
+                            let callee_reg = ra.alloc_temp();
+                            let callee_idx = consts.len() as u16;
+                            consts.push(Constant::String("__format_spec".to_string()));
+                            instrs.push(Instruction::abx(OpCode::LoadK, callee_reg, callee_idx));
+                            let formatted_reg = self.emit_call_with_regs(
+                                callee_reg,
+                                &[expr_reg, spec_reg],
+                                ra,
+                                instrs,
+                            );
+                            if first {
+                                instrs.push(Instruction::abc(OpCode::Move, dest, formatted_reg, 0));
+                                first = false;
+                            } else {
+                                instrs.push(Instruction::abc(
+                                    OpCode::Concat,
+                                    dest,
+                                    dest,
+                                    formatted_reg,
+                                ));
                             }
                         }
                     }
@@ -2308,6 +2480,62 @@ impl<'a> Lowerer<'a> {
                     return self.emit_call_with_regs(fn_reg, &[piped_val], ra, instrs);
                 }
 
+                // Spaceship operator <=>: emit a < b ? -1 : a == b ? 0 : 1
+                if *op == BinOp::Spaceship {
+                    let lr = self.lower_expr(lhs, ra, consts, instrs);
+                    let rr = self.lower_expr(rhs, ra, consts, instrs);
+                    let dest = ra.alloc_temp();
+                    let tmp = ra.alloc_temp();
+
+                    // tmp = (a < b)
+                    instrs.push(Instruction::abc(OpCode::Lt, tmp, lr, rr));
+                    // Test tmp: if truthy (a < b), skip next Jmp (fall through to load -1)
+                    instrs.push(Instruction::abc(OpCode::Test, tmp, 0, 0));
+                    let jmp_not_lt = instrs.len();
+                    instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+                                                                   // a < b: load -1
+                    consts.push(Constant::Int(-1));
+                    let neg1_idx = (consts.len() - 1) as u16;
+                    instrs.push(Instruction::abx(OpCode::LoadK, dest, neg1_idx));
+                    let jmp_done1 = instrs.len();
+                    instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+
+                    // patch jmp_not_lt to here
+                    let here1 = instrs.len();
+                    instrs[jmp_not_lt] =
+                        Instruction::sax(OpCode::Jmp, (here1 - jmp_not_lt - 1) as i32);
+
+                    // tmp = (a == b)
+                    instrs.push(Instruction::abc(OpCode::Eq, tmp, lr, rr));
+                    // Test tmp: if truthy (a == b), skip next Jmp (fall through to load 0)
+                    instrs.push(Instruction::abc(OpCode::Test, tmp, 0, 0));
+                    let jmp_not_eq = instrs.len();
+                    instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+                                                                   // a == b: load 0
+                    consts.push(Constant::Int(0));
+                    let zero_idx = (consts.len() - 1) as u16;
+                    instrs.push(Instruction::abx(OpCode::LoadK, dest, zero_idx));
+                    let jmp_done2 = instrs.len();
+                    instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+
+                    // patch jmp_not_eq to here
+                    let here2 = instrs.len();
+                    instrs[jmp_not_eq] =
+                        Instruction::sax(OpCode::Jmp, (here2 - jmp_not_eq - 1) as i32);
+
+                    // a > b: load 1
+                    consts.push(Constant::Int(1));
+                    let one_idx = (consts.len() - 1) as u16;
+                    instrs.push(Instruction::abx(OpCode::LoadK, dest, one_idx));
+
+                    // patch jmp_done1 and jmp_done2 to here
+                    let end = instrs.len();
+                    instrs[jmp_done1] = Instruction::sax(OpCode::Jmp, (end - jmp_done1 - 1) as i32);
+                    instrs[jmp_done2] = Instruction::sax(OpCode::Jmp, (end - jmp_done2 - 1) as i32);
+
+                    return dest;
+                }
+
                 // Compose operator f ~> g creates a closure: fn(x) => g(f(x))
                 if *op == BinOp::Compose {
                     let lr = self.lower_expr(lhs, ra, consts, instrs);
@@ -2317,22 +2545,37 @@ impl<'a> Lowerer<'a> {
                     // Register layout: r0 = capture f, r1 = capture g, r2 = param x
                     let lambda_name = format!("<compose/{}>", self.lambda_cells.len());
                     let lparams = vec![
-                        LirParam { name: "__capture_f".into(), ty: "Any".into(), register: 0, variadic: false },
-                        LirParam { name: "__capture_g".into(), ty: "Any".into(), register: 1, variadic: false },
-                        LirParam { name: "__compose_x".into(), ty: "Any".into(), register: 2, variadic: false },
+                        LirParam {
+                            name: "__capture_f".into(),
+                            ty: "Any".into(),
+                            register: 0,
+                            variadic: false,
+                        },
+                        LirParam {
+                            name: "__capture_g".into(),
+                            ty: "Any".into(),
+                            register: 1,
+                            variadic: false,
+                        },
+                        LirParam {
+                            name: "__compose_x".into(),
+                            ty: "Any".into(),
+                            register: 2,
+                            variadic: false,
+                        },
                     ];
                     let linstrs = vec![
                         Instruction::abc(OpCode::GetUpval, 0, 0, 0), // r0 = capture f
                         Instruction::abc(OpCode::GetUpval, 1, 1, 0), // r1 = capture g
                         // Call f(x): callee at r3, arg at r4
-                        Instruction::abc(OpCode::Move, 3, 0, 0),    // r3 = f
-                        Instruction::abc(OpCode::Move, 4, 2, 0),    // r4 = x
-                        Instruction::abc(OpCode::Call, 3, 1, 1),     // r3 = f(x)
+                        Instruction::abc(OpCode::Move, 3, 0, 0), // r3 = f
+                        Instruction::abc(OpCode::Move, 4, 2, 0), // r4 = x
+                        Instruction::abc(OpCode::Call, 3, 1, 1), // r3 = f(x)
                         // Call g(f(x)): callee at r5, arg at r6
-                        Instruction::abc(OpCode::Move, 5, 1, 0),    // r5 = g
-                        Instruction::abc(OpCode::Move, 6, 3, 0),    // r6 = f(x) result
-                        Instruction::abc(OpCode::Call, 5, 1, 1),     // r5 = g(f(x))
-                        Instruction::abc(OpCode::Return, 5, 1, 0),   // return g(f(x))
+                        Instruction::abc(OpCode::Move, 5, 1, 0), // r5 = g
+                        Instruction::abc(OpCode::Move, 6, 3, 0), // r6 = f(x) result
+                        Instruction::abc(OpCode::Call, 5, 1, 1), // r5 = g(f(x))
+                        Instruction::abc(OpCode::Return, 5, 1, 0), // return g(f(x))
                     ];
 
                     let proto_idx = self.lambda_cells.len() as u16;
@@ -2382,6 +2625,7 @@ impl<'a> Lowerer<'a> {
                     BinOp::Shr => OpCode::Shr,
                     BinOp::PipeForward => unreachable!(), // handled above
                     BinOp::Compose => unreachable!(),     // handled above
+                    BinOp::Spaceship => unreachable!(),   // handled above
                 };
                 match op {
                     BinOp::Gt => instrs.push(Instruction::abc(opcode, dest, rr, lr)),
@@ -2641,13 +2885,55 @@ impl<'a> Lowerer<'a> {
                     if let Expr::Ident(agent_name, _) = obj.as_ref() {
                         // Check if this is a local variable (not a process/agent type constructor)
                         let is_local_var = ra.lookup(agent_name).is_some();
-                        let is_ctor_target = !is_local_var && (self.symbols.agents.contains_key(agent_name)
-                            || self
-                                .symbols
-                                .processes
-                                .values()
-                                .any(|p| p.name == *agent_name));
-                        
+
+                        // Check if this is an Enum.Variant(payload) constructor call
+                        let is_enum_dot_variant = !is_local_var && self.symbols.types.values().any(|t| {
+                            matches!(&t.kind, crate::compiler::resolve::TypeInfoKind::Enum(e)
+                                if e.name == *agent_name && e.variants.iter().any(|v| v.name == *field))
+                        });
+
+                        if is_enum_dot_variant {
+                            // Emit inline NewUnion for Enum.Variant(payload) constructor
+                            let payload_reg = if args.is_empty() {
+                                let r = ra.alloc_temp();
+                                instrs.push(Instruction::abc(OpCode::LoadNil, r, 0, 0));
+                                r
+                            } else {
+                                match &args[0] {
+                                    CallArg::Positional(e) | CallArg::Named(_, e, _) => {
+                                        self.lower_expr(e, ra, consts, instrs)
+                                    }
+                                    _ => {
+                                        let r = ra.alloc_temp();
+                                        instrs.push(Instruction::abc(OpCode::LoadNil, r, 0, 0));
+                                        r
+                                    }
+                                }
+                            };
+
+                            let dest = ra.alloc_temp();
+                            let tag_reg = ra.alloc_temp();
+                            let kidx = consts.len() as u16;
+                            consts.push(Constant::String(field.clone()));
+                            instrs.push(Instruction::abx(OpCode::LoadK, tag_reg, kidx));
+
+                            instrs.push(Instruction::abc(
+                                OpCode::NewUnion,
+                                dest,
+                                tag_reg,
+                                payload_reg,
+                            ));
+                            return dest;
+                        }
+
+                        let is_ctor_target = !is_local_var
+                            && (self.symbols.agents.contains_key(agent_name)
+                                || self
+                                    .symbols
+                                    .processes
+                                    .values()
+                                    .any(|p| p.name == *agent_name));
+
                         if is_ctor_target {
                             // Constructor-style call: Pipeline.run(args) -> construct then call
                             let ctor_reg = ra.alloc_temp();
@@ -2668,7 +2954,7 @@ impl<'a> Lowerer<'a> {
                             let obj_reg = self.lower_expr(obj, ra, consts, instrs);
                             let dest = ra.alloc_temp();
                             self.emit_get_field(dest, obj_reg, field, ra, consts, instrs);
-                            
+
                             let mut arg_regs = vec![obj_reg];
                             for arg in args {
                                 match arg {
@@ -2781,6 +3067,17 @@ impl<'a> Lowerer<'a> {
 
                 let arg_regs =
                     self.lower_call_arg_regs(args, implicit_self_arg, ra, consts, instrs);
+                // Pack variadic args if the callee is a known cell with variadic params
+                let callee_name = if let Expr::Ident(ref name, _) = **callee {
+                    Some(name.as_str())
+                } else {
+                    None
+                };
+                let arg_regs = if let Some(name) = callee_name {
+                    self.pack_variadic_args(name, arg_regs, ra, consts, instrs)
+                } else {
+                    arg_regs
+                };
                 self.emit_call_with_regs(callee_reg, &arg_regs, ra, instrs)
             }
             Expr::ToolCall(callee, args, _) => {
@@ -2791,6 +3088,27 @@ impl<'a> Lowerer<'a> {
                 self.lower_tool_call(alias, args, ra, consts, instrs)
             }
             Expr::DotAccess(obj, field, _) => {
+                // Check for Enum.Variant access (bare, no call)
+                if let Expr::Ident(enum_name, _) = obj.as_ref() {
+                    let is_enum_dot_variant = self.symbols.types.values().any(|t| {
+                        matches!(&t.kind, crate::compiler::resolve::TypeInfoKind::Enum(e)
+                            if e.name == *enum_name && e.variants.iter().any(|v| v.name == *field))
+                    });
+                    if is_enum_dot_variant {
+                        // Emit NewUnion with nil payload (no-payload variant)
+                        let dest = ra.alloc_temp();
+                        let tag_reg = ra.alloc_temp();
+                        let kidx = consts.len() as u16;
+                        consts.push(Constant::String(field.clone()));
+                        instrs.push(Instruction::abx(OpCode::LoadK, tag_reg, kidx));
+
+                        let nil_reg = ra.alloc_temp();
+                        instrs.push(Instruction::abc(OpCode::LoadNil, nil_reg, 0, 0));
+
+                        instrs.push(Instruction::abc(OpCode::NewUnion, dest, tag_reg, nil_reg));
+                        return dest;
+                    }
+                }
                 let or = self.lower_expr(obj, ra, consts, instrs);
                 let dest = ra.alloc_temp();
                 self.emit_get_field(dest, or, field, ra, consts, instrs);
@@ -3012,7 +3330,12 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::abc(OpCode::NewSet, dest, elems.len() as u8, 0));
                 dest
             }
-            Expr::RangeExpr { start, end, .. } => {
+            Expr::RangeExpr {
+                start,
+                end,
+                inclusive,
+                ..
+            } => {
                 // Lower as range(start, end) intrinsic call
                 let sr = if let Some(s) = start {
                     self.lower_expr(s, ra, consts, instrs)
@@ -3024,7 +3347,21 @@ impl<'a> Lowerer<'a> {
                     r
                 };
                 let er = if let Some(e) = end {
-                    self.lower_expr(e, ra, consts, instrs)
+                    let base = self.lower_expr(e, ra, consts, instrs);
+                    if *inclusive {
+                        // For inclusive ranges (..=), emit end + 1 so the Range
+                        // intrinsic (which uses exclusive upper bound) includes
+                        // the endpoint.
+                        let one_reg = ra.alloc_temp();
+                        let one_kidx = consts.len() as u16;
+                        consts.push(Constant::Int(1));
+                        instrs.push(Instruction::abx(OpCode::LoadK, one_reg, one_kidx));
+                        let inc_reg = ra.alloc_temp();
+                        instrs.push(Instruction::abc(OpCode::Add, inc_reg, base, one_reg));
+                        inc_reg
+                    } else {
+                        base
+                    }
                 } else {
                     let r = ra.alloc_temp();
                     let kidx = consts.len() as u16;
@@ -3033,13 +3370,16 @@ impl<'a> Lowerer<'a> {
                     r
                 };
                 let dest = ra.alloc_temp();
-                let start_reg = ra.alloc_temp();
-                ra.alloc_temp(); // for end
+                // Allocate a contiguous block of 2 for [start, end] args to avoid
+                // clobbering live registers when temps are recycled (T193).
+                let arg_block = ra.alloc_block(2);
+                let start_reg = arg_block;
+                let end_reg = arg_block + 1;
                 if sr != start_reg {
                     instrs.push(Instruction::abc(OpCode::Move, start_reg, sr, 0));
                 }
-                if er != start_reg + 1 {
-                    instrs.push(Instruction::abc(OpCode::Move, start_reg + 1, er, 0));
+                if er != end_reg {
+                    instrs.push(Instruction::abc(OpCode::Move, end_reg, er, 0));
                 }
                 instrs.push(Instruction::abc(
                     OpCode::Intrinsic,
@@ -3069,11 +3409,87 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::abc(OpCode::Unbox, dest, ir, 0));
                 dest
             }
+            Expr::TryElse {
+                expr,
+                error_binding,
+                handler,
+                ..
+            } => {
+                let ir = self.lower_expr(expr, ra, consts, instrs);
+                let dest = ra.alloc_temp();
+                // Check if result is err variant
+                let err_idx = self.intern_string("err");
+                instrs.push(Instruction::abx(OpCode::IsVariant, ir, err_idx));
+                // IsVariant: if matched (is err), skip next instruction
+                // If err: skip Jmp -> go to handler
+                // If ok: execute Jmp -> jump to unbox ok
+                let jmp_ok = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder: jump to ok path
+                                                               // Err path: unbox err value, bind to error_binding, eval handler
+                let err_val = ra.alloc_temp();
+                instrs.push(Instruction::abc(OpCode::Unbox, err_val, ir, 0));
+                // Bind the error value to the error_binding name
+                let binding_reg = ra.alloc_named(error_binding);
+                instrs.push(Instruction::abc(OpCode::Move, binding_reg, err_val, 0));
+                let hr = self.lower_expr(handler, ra, consts, instrs);
+                instrs.push(Instruction::abc(OpCode::Move, dest, hr, 0));
+                let jmp_end = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder: jump past ok path
+                                                               // Patch jmp_ok to here (ok path)
+                let ok_start = instrs.len();
+                instrs[jmp_ok] = Instruction::sax(OpCode::Jmp, (ok_start - jmp_ok - 1) as i32);
+                // Ok path: unbox ok value
+                instrs.push(Instruction::abc(OpCode::Unbox, dest, ir, 0));
+                // Patch jmp_end to here
+                let after = instrs.len();
+                instrs[jmp_end] = Instruction::sax(OpCode::Jmp, (after - jmp_end - 1) as i32);
+                dest
+            }
             Expr::NullCoalesce(lhs, rhs, _) => {
                 let lr = self.lower_expr(lhs, ra, consts, instrs);
                 let rr = self.lower_expr(rhs, ra, consts, instrs);
                 let dest = ra.alloc_temp();
+
+                // T209: Check if lhs is a result err variant → use rhs
+                let err_idx = self.intern_string("err");
+                instrs.push(Instruction::abx(OpCode::IsVariant, lr, err_idx));
+                // IsVariant: if matched (is err), skip next instruction
+                let jmp_not_err = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+
+                // Err path: use default (rhs)
+                instrs.push(Instruction::abc(OpCode::Move, dest, rr, 0));
+                let jmp_end_err = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder: jump to end
+
+                // Not-err path:
+                let not_err_start = instrs.len();
+                instrs[jmp_not_err] =
+                    Instruction::sax(OpCode::Jmp, (not_err_start - jmp_not_err - 1) as i32);
+
+                // Check if lhs is ok variant → unbox payload
+                let ok_idx = self.intern_string("ok");
+                instrs.push(Instruction::abx(OpCode::IsVariant, lr, ok_idx));
+                // IsVariant: if matched (is ok), skip next instruction
+                let jmp_not_ok = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+
+                // Ok path: unbox payload
+                instrs.push(Instruction::abc(OpCode::Unbox, dest, lr, 0));
+                let jmp_end_ok = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder: jump to end
+
+                // Neither ok nor err: fall through to original NullCo behavior
+                let neither_start = instrs.len();
+                instrs[jmp_not_ok] =
+                    Instruction::sax(OpCode::Jmp, (neither_start - jmp_not_ok - 1) as i32);
                 instrs.push(Instruction::abc(OpCode::NullCo, dest, lr, rr));
+
+                // End: patch all jumps
+                let end = instrs.len();
+                instrs[jmp_end_err] = Instruction::sax(OpCode::Jmp, (end - jmp_end_err - 1) as i32);
+                instrs[jmp_end_ok] = Instruction::sax(OpCode::Jmp, (end - jmp_end_ok - 1) as i32);
+
                 dest
             }
             Expr::NullSafeAccess(obj, field, _) => {
@@ -3127,13 +3543,55 @@ impl<'a> Lowerer<'a> {
             }
             Expr::NullAssert(inner, _) => {
                 let ir = self.lower_expr(inner, ra, consts, instrs);
+                let dest = ra.alloc_temp();
+
+                // T209: Check if value is a result err variant first
+                let err_idx = self.intern_string("err");
+                instrs.push(Instruction::abx(OpCode::IsVariant, ir, err_idx));
+                // IsVariant: if matched (is err), skip next instruction
+                // If err: skip Jmp -> go to halt
+                // If ok-or-other: execute Jmp -> jump past err halt
+                let jmp_not_err = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+
+                // Err path: halt with error
+                let err_msg_idx = consts.len() as u16;
+                consts.push(Constant::String(
+                    "result unwrap failed: value is err".to_string(),
+                ));
+                let err_msg_reg = ra.alloc_temp();
+                instrs.push(Instruction::abx(OpCode::LoadK, err_msg_reg, err_msg_idx));
+                instrs.push(Instruction::abc(OpCode::Halt, err_msg_reg, 0, 0));
+
+                // Patch jump past err halt
+                let after_err = instrs.len();
+                instrs[jmp_not_err] =
+                    Instruction::sax(OpCode::Jmp, (after_err - jmp_not_err - 1) as i32);
+
+                // Check if value is ok variant → unbox it
+                let ok_idx = self.intern_string("ok");
+                instrs.push(Instruction::abx(OpCode::IsVariant, ir, ok_idx));
+                // IsVariant: if matched (is ok), skip next instruction
+                let jmp_not_ok = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+
+                // Ok path: unbox payload
+                instrs.push(Instruction::abc(OpCode::Unbox, dest, ir, 0));
+                let jmp_done = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder: jump to end
+
+                // Not-ok path: check for null (original NullAssert behavior)
+                let not_ok_start = instrs.len();
+                instrs[jmp_not_ok] =
+                    Instruction::sax(OpCode::Jmp, (not_ok_start - jmp_not_ok - 1) as i32);
+
                 // If null, halt with error
                 let nil_reg = ra.alloc_temp();
                 instrs.push(Instruction::abc(OpCode::LoadNil, nil_reg, 0, 0));
                 let cmp = ra.alloc_temp();
                 instrs.push(Instruction::abc(OpCode::Eq, cmp, ir, nil_reg));
                 instrs.push(Instruction::abc(OpCode::Test, cmp, 0, 0));
-                let jmp_ok = instrs.len();
+                let jmp_ok2 = instrs.len();
                 instrs.push(Instruction::sax(OpCode::Jmp, 0));
                 // Null case: halt
                 let msg_idx = consts.len() as u16;
@@ -3141,10 +3599,16 @@ impl<'a> Lowerer<'a> {
                 let msg_reg = ra.alloc_temp();
                 instrs.push(Instruction::abx(OpCode::LoadK, msg_reg, msg_idx));
                 instrs.push(Instruction::abc(OpCode::Halt, msg_reg, 0, 0));
-                // Patch jump
-                let after = instrs.len();
-                instrs[jmp_ok] = Instruction::sax(OpCode::Jmp, (after - jmp_ok - 1) as i32);
-                ir
+                // Not null: just use the value as-is
+                let after_null = instrs.len();
+                instrs[jmp_ok2] = Instruction::sax(OpCode::Jmp, (after_null - jmp_ok2 - 1) as i32);
+                instrs.push(Instruction::abc(OpCode::Move, dest, ir, 0));
+
+                // Patch jmp_done
+                let end = instrs.len();
+                instrs[jmp_done] = Instruction::sax(OpCode::Jmp, (end - jmp_done - 1) as i32);
+
+                dest
             }
             Expr::SpreadExpr(inner, _) => {
                 // Spread produces a list by iterating the inner value.
@@ -3236,11 +3700,19 @@ impl<'a> Lowerer<'a> {
                 body,
                 var,
                 iter,
+                extra_clauses,
                 condition,
                 kind,
                 span: _,
             } => {
-                // Lower as: result = new_collection; for var in iter { if cond { add(result, body) } }
+                // Lower as nested loops:
+                //   result = new_collection
+                //   for var in iter {
+                //     for var2 in iter2 {
+                //       ... (for each extra clause)
+                //       if cond { add(result, body) }
+                //     }
+                //   }
                 // For sets, build as list first (Append only works on lists), then convert using ToSet intrinsic
                 let temp_reg = ra.alloc_temp();
                 let build_as_list = matches!(kind, ComprehensionKind::Set);
@@ -3254,34 +3726,55 @@ impl<'a> Lowerer<'a> {
                     }
                 }
 
-                let iter_reg = self.lower_expr(iter, ra, consts, instrs);
-                let idx_reg = ra.alloc_temp();
-                let len_reg = ra.alloc_temp();
-                let elem_reg = ra.alloc_named(var);
+                // Collect all for-clauses: the primary one plus any extras
+                struct ForClause<'a> {
+                    var: &'a str,
+                    iter: &'a Expr,
+                }
+                let mut all_clauses: Vec<ForClause<'_>> = Vec::new();
+                all_clauses.push(ForClause { var, iter });
+                for clause in extra_clauses {
+                    all_clauses.push(ForClause {
+                        var: &clause.var,
+                        iter: &clause.iter,
+                    });
+                }
 
-                let zero_idx = consts.len() as u16;
-                consts.push(Constant::Int(0));
-                instrs.push(Instruction::abx(OpCode::LoadK, idx_reg, zero_idx));
-                instrs.push(Instruction::abc(
-                    OpCode::Intrinsic,
-                    len_reg,
-                    IntrinsicId::Length as u8,
-                    iter_reg,
-                ));
+                // For each clause, emit: lower iter, init idx, compute len, loop header
+                // Track (loop_start, break_jmp, idx_reg) for each clause to patch later
+                let mut loop_info: Vec<(usize, usize, u8)> = Vec::new();
+                for clause in &all_clauses {
+                    let iter_reg = self.lower_expr(clause.iter, ra, consts, instrs);
+                    let idx_reg = ra.alloc_temp();
+                    let len_reg = ra.alloc_temp();
+                    let elem_reg = ra.alloc_named(clause.var);
 
-                let loop_start = instrs.len();
-                let lt_reg = ra.alloc_temp();
-                instrs.push(Instruction::abc(OpCode::Lt, lt_reg, idx_reg, len_reg));
-                instrs.push(Instruction::abc(OpCode::Test, lt_reg, 0, 0));
-                let break_jmp = instrs.len();
-                instrs.push(Instruction::sax(OpCode::Jmp, 0));
+                    let zero_idx = consts.len() as u16;
+                    consts.push(Constant::Int(0));
+                    instrs.push(Instruction::abx(OpCode::LoadK, idx_reg, zero_idx));
+                    instrs.push(Instruction::abc(
+                        OpCode::Intrinsic,
+                        len_reg,
+                        IntrinsicId::Length as u8,
+                        iter_reg,
+                    ));
 
-                instrs.push(Instruction::abc(
-                    OpCode::GetIndex,
-                    elem_reg,
-                    iter_reg,
-                    idx_reg,
-                ));
+                    let loop_start = instrs.len();
+                    let lt_reg = ra.alloc_temp();
+                    instrs.push(Instruction::abc(OpCode::Lt, lt_reg, idx_reg, len_reg));
+                    instrs.push(Instruction::abc(OpCode::Test, lt_reg, 0, 0));
+                    let break_jmp = instrs.len();
+                    instrs.push(Instruction::sax(OpCode::Jmp, 0));
+
+                    instrs.push(Instruction::abc(
+                        OpCode::GetIndex,
+                        elem_reg,
+                        iter_reg,
+                        idx_reg,
+                    ));
+
+                    loop_info.push((loop_start, break_jmp, idx_reg));
+                }
 
                 // Optional condition
                 let mut cond_jmp = None;
@@ -3338,18 +3831,21 @@ impl<'a> Lowerer<'a> {
                     instrs[cj] = Instruction::sax(OpCode::Jmp, (after_body - cj - 1) as i32);
                 }
 
-                let one_idx = consts.len() as u16;
-                consts.push(Constant::Int(1));
-                let one_reg = ra.alloc_temp();
-                instrs.push(Instruction::abx(OpCode::LoadK, one_reg, one_idx));
-                instrs.push(Instruction::abc(OpCode::Add, idx_reg, idx_reg, one_reg));
+                // Close all loops in reverse order (innermost first)
+                for &(loop_start, break_jmp, idx_reg) in loop_info.iter().rev() {
+                    let one_idx = consts.len() as u16;
+                    consts.push(Constant::Int(1));
+                    let one_reg = ra.alloc_temp();
+                    instrs.push(Instruction::abx(OpCode::LoadK, one_reg, one_idx));
+                    instrs.push(Instruction::abc(OpCode::Add, idx_reg, idx_reg, one_reg));
 
-                let back_offset = loop_start as i32 - instrs.len() as i32 - 1;
-                instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
+                    let back_offset = loop_start as i32 - instrs.len() as i32 - 1;
+                    instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
 
-                let after_loop = instrs.len();
-                instrs[break_jmp] =
-                    Instruction::sax(OpCode::Jmp, (after_loop - break_jmp - 1) as i32);
+                    let after_loop = instrs.len();
+                    instrs[break_jmp] =
+                        Instruction::sax(OpCode::Jmp, (after_loop - break_jmp - 1) as i32);
+                }
 
                 // For set comprehensions, convert the list to a set using ToSet intrinsic
                 if build_as_list {
@@ -3432,35 +3928,44 @@ impl<'a> Lowerer<'a> {
                 ..
             } => {
                 let val_reg = self.lower_expr(inner, ra, consts, instrs);
-                let dest = ra.alloc_temp();
-                let intrinsic = match target_type.as_str() {
-                    "Int" => IntrinsicId::ToInt,
-                    "Float" => IntrinsicId::ToFloat,
-                    "String" => IntrinsicId::ToString,
+                match target_type.as_str() {
                     "Bool" => {
                         // Truthiness check: not(not(val))
+                        let dest = ra.alloc_temp();
                         instrs.push(Instruction::abc(OpCode::Not, dest, val_reg, 0));
                         instrs.push(Instruction::abc(OpCode::Not, dest, dest, 0));
-                        return dest;
+                        dest
+                    }
+                    "Int" | "Float" | "String" => {
+                        let intrinsic = match target_type.as_str() {
+                            "Int" => IntrinsicId::ToInt,
+                            "Float" => IntrinsicId::ToFloat,
+                            _ => IntrinsicId::ToString,
+                        };
+                        // Allocate a contiguous block of 2 registers [dest, arg_start]
+                        // to avoid clobbering a live register when a recycled temp
+                        // is adjacent to an unrelated named binding (T193).
+                        let block = ra.alloc_block(2);
+                        let dest = block;
+                        let arg_start = block + 1;
+                        if val_reg != arg_start {
+                            instrs.push(Instruction::abc(OpCode::Move, arg_start, val_reg, 0));
+                        }
+                        instrs.push(Instruction::abc(
+                            OpCode::Intrinsic,
+                            dest,
+                            intrinsic as u8,
+                            arg_start,
+                        ));
+                        dest
                     }
                     _ => {
                         // Unknown cast: just move the value through
+                        let dest = ra.alloc_temp();
                         instrs.push(Instruction::abc(OpCode::Move, dest, val_reg, 0));
-                        return dest;
+                        dest
                     }
-                };
-                // Emit intrinsic call: dest = intrinsic(val_reg)
-                let arg_start = dest + 1;
-                if val_reg != arg_start {
-                    instrs.push(Instruction::abc(OpCode::Move, arg_start, val_reg, 0));
                 }
-                instrs.push(Instruction::abc(
-                    OpCode::Intrinsic,
-                    dest,
-                    intrinsic as u8,
-                    arg_start,
-                ));
-                dest
             }
             Expr::BlockExpr(stmts, _) => {
                 let dest = ra.alloc_temp();
@@ -3559,14 +4064,27 @@ impl<'a> Lowerer<'a> {
                     self.lower_expr(inner, ra, consts, instrs)
                 }
             }
-            Expr::Perform { effect_name, operation, args, .. } => {
-                let dest = ra.alloc_temp();
-                // Emit args to consecutive registers starting at dest+1
-                for (i, arg) in args.iter().enumerate() {
+            Expr::Perform {
+                effect_name,
+                operation,
+                args,
+                ..
+            } => {
+                // First, lower all args to get their register locations
+                let mut arg_regs = Vec::new();
+                for arg in args {
                     let ar = self.lower_expr(arg, ra, consts, instrs);
+                    arg_regs.push(ar);
+                }
+                // Allocate a contiguous block [dest, arg1, arg2, ...] to avoid
+                // clobbering live registers when dest comes from the free list (T193).
+                let block = ra.alloc_block(1 + args.len() as u8);
+                let dest = block;
+                // Move args into consecutive registers starting at dest+1
+                for (i, ar) in arg_regs.iter().enumerate() {
                     let target = dest + 1 + i as u8;
-                    if ar != target {
-                        instrs.push(Instruction::abc(OpCode::Move, target, ar, 0));
+                    if *ar != target {
+                        instrs.push(Instruction::abc(OpCode::Move, target, *ar, 0));
                     }
                 }
                 // Load effect_name and operation as constants
@@ -3576,7 +4094,12 @@ impl<'a> Lowerer<'a> {
                 consts.push(Constant::String(operation.clone()));
                 // Perform opcode: A=dest, B=effect_name const, C=operation const
                 // We use bx to pack both indices: effect in b, operation in c
-                instrs.push(Instruction::abc(OpCode::Perform, dest, eff_kidx as u8, op_kidx as u8));
+                instrs.push(Instruction::abc(
+                    OpCode::Perform,
+                    dest,
+                    eff_kidx as u8,
+                    op_kidx as u8,
+                ));
                 dest
             }
             Expr::HandleExpr { body, handlers, .. } => {
@@ -3600,9 +4123,20 @@ impl<'a> Lowerer<'a> {
                     handle_push_indices.push(push_idx);
                 }
 
-                // Emit body code
-                for stmt in body {
-                    self.lower_stmt(stmt, ra, consts, instrs);
+                // Emit body code; capture the last expression's value into dest
+                for (idx, stmt) in body.iter().enumerate() {
+                    if idx == body.len() - 1 {
+                        if let Stmt::Expr(es) = stmt {
+                            let val = self.lower_expr(&es.expr, ra, consts, instrs);
+                            if val != dest {
+                                instrs.push(Instruction::abc(OpCode::Move, dest, val, 0));
+                            }
+                        } else {
+                            self.lower_stmt(stmt, ra, consts, instrs);
+                        }
+                    } else {
+                        self.lower_stmt(stmt, ra, consts, instrs);
+                    }
                 }
 
                 // Emit HandlePop for each handler (in reverse order — LIFO)
@@ -3624,7 +4158,8 @@ impl<'a> Lowerer<'a> {
                     let meta_idx = first_meta_idx + i;
 
                     // Patch the HandlePush instruction with the correct offset
-                    instrs[push_idx] = Instruction::abx(OpCode::HandlePush, meta_idx as u8, offset as u16);
+                    instrs[push_idx] =
+                        Instruction::abx(OpCode::HandlePush, meta_idx as u8, offset as u16);
 
                     // Update handler_ip in the metadata (for debugging/serialization)
                     self.effect_handler_metas[meta_idx].handler_ip = handler_code_start;
@@ -3772,8 +4307,14 @@ fn collect_free_idents_expr(expr: &Expr, out: &mut Vec<String>) {
         }
         Expr::StringInterp(segs, _) => {
             for seg in segs {
-                if let StringSegment::Interpolation(e) = seg {
-                    collect_free_idents_expr(e, out);
+                match seg {
+                    StringSegment::Interpolation(e) => {
+                        collect_free_idents_expr(e, out);
+                    }
+                    StringSegment::FormattedInterpolation(e, _) => {
+                        collect_free_idents_expr(e, out);
+                    }
+                    StringSegment::Literal(_) => {}
                 }
             }
         }
@@ -3802,6 +4343,14 @@ fn collect_free_idents_expr(expr: &Expr, out: &mut Vec<String>) {
         | Expr::AwaitExpr(inner, _) => {
             collect_free_idents_expr(inner, out);
         }
+        Expr::TryElse {
+            expr: inner,
+            handler,
+            ..
+        } => {
+            collect_free_idents_expr(inner, out);
+            collect_free_idents_expr(handler, out);
+        }
         Expr::ExpectSchema(inner, _, _) => collect_free_idents_expr(inner, out),
         Expr::IsType { expr: inner, .. } | Expr::TypeCast { expr: inner, .. } => {
             collect_free_idents_expr(inner, out);
@@ -3818,11 +4367,15 @@ fn collect_free_idents_expr(expr: &Expr, out: &mut Vec<String>) {
         Expr::Comprehension {
             body,
             iter,
+            extra_clauses,
             condition,
             ..
         } => {
             collect_free_idents_expr(body, out);
             collect_free_idents_expr(iter, out);
+            for clause in extra_clauses {
+                collect_free_idents_expr(&clause.iter, out);
+            }
             if let Some(c) = condition {
                 collect_free_idents_expr(c, out);
             }
@@ -3928,7 +4481,55 @@ fn collect_free_idents_stmt(stmt: &Stmt, out: &mut Vec<String>) {
         Stmt::Break(_) | Stmt::Continue(_) => {
             // Control flow statements with no sub-expressions to scan.
         }
+        // Local definitions contain no free identifiers to capture.
+        Stmt::LocalRecord(_) | Stmt::LocalEnum(_) | Stmt::LocalCell(_) => {}
     }
+}
+
+/// Convert a FormatSpec AST node back into the string representation
+/// that the VM __format_spec builtin expects.
+fn format_spec_to_string(spec: &FormatSpec) -> String {
+    let mut s = String::new();
+    if let Some(fill) = spec.fill {
+        s.push(fill);
+    }
+    if let Some(ref align) = spec.align {
+        match align {
+            FormatAlign::Left => s.push('<'),
+            FormatAlign::Right => s.push('>'),
+            FormatAlign::Center => s.push('^'),
+        }
+    }
+    if let Some(sign) = spec.sign {
+        s.push(sign);
+    }
+    if spec.alternate {
+        s.push('#');
+    }
+    if spec.zero_pad {
+        s.push('0');
+    }
+    if let Some(w) = spec.width {
+        s.push_str(&format!("{}", w));
+    }
+    if let Some(p) = spec.precision {
+        s.push('.');
+        s.push_str(&format!("{}", p));
+    }
+    if let Some(ref ft) = spec.fmt_type {
+        match ft {
+            FormatType::Decimal => s.push('d'),
+            FormatType::Hex => s.push('x'),
+            FormatType::HexUpper => s.push('X'),
+            FormatType::Octal => s.push('o'),
+            FormatType::Binary => s.push('b'),
+            FormatType::Fixed => s.push('f'),
+            FormatType::Scientific => s.push('e'),
+            FormatType::ScientificUpper => s.push('E'),
+            FormatType::Str => s.push('s'),
+        }
+    }
+    s
 }
 
 fn format_type_expr(ty: &TypeExpr) -> String {
@@ -4017,6 +4618,7 @@ fn encode_machine_expr(expr: &Expr) -> Option<serde_json::Value> {
                 BinOp::Shr => ">>",
                 BinOp::PipeForward => "|>",
                 BinOp::Compose => "~>",
+                BinOp::Spaceship => "<=>",
             };
             Some(serde_json::json!({
                 "kind": "bin",
@@ -4616,7 +5218,9 @@ mod tests {
         let module = lower_src(src);
         let cell = &module.cells[0];
         assert!(
-            cell.constants.iter().any(|c| matches!(c, Constant::Int(20))),
+            cell.constants
+                .iter()
+                .any(|c| matches!(c, Constant::Int(20))),
             "comptime (2 + 3) * 4 should fold to constant Int(20), got constants: {:?}",
             cell.constants
         );
@@ -4656,6 +5260,7 @@ end"#;
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // test asserts literal 3.14 from source, not π
     fn test_comptime_float_literal() {
         let src = "cell main() -> Float\n  return comptime 3.14 end\nend";
         let module = lower_src(src);
@@ -4698,7 +5303,12 @@ end"#;
     fn test_try_const_eval_unit() {
         use crate::compiler::tokens::Span;
 
-        let s = Span { start: 0, end: 0, line: 0, col: 0 };
+        let s = Span {
+            start: 0,
+            end: 0,
+            line: 0,
+            col: 0,
+        };
 
         assert!(matches!(
             try_const_eval(&Expr::IntLit(42, s)),
@@ -4719,7 +5329,10 @@ end"#;
             Box::new(Expr::IntLit(5, s)),
             s,
         );
-        assert!(matches!(try_const_eval(&mul_expr), Some(ConstValue::Int(50))));
+        assert!(matches!(
+            try_const_eval(&mul_expr),
+            Some(ConstValue::Int(50))
+        ));
 
         let str_expr = Expr::BinOp(
             Box::new(Expr::StringLit("a".into(), s)),
@@ -4750,10 +5363,9 @@ end"#;
         );
         // The constant pool should contain PI's float value
         assert!(
-            module.cells[0]
-                .constants
-                .iter()
-                .any(|c| matches!(c, Constant::Float(f) if (*f - std::f64::consts::PI).abs() < 1e-15)),
+            module.cells[0].constants.iter().any(
+                |c| matches!(c, Constant::Float(f) if (*f - std::f64::consts::PI).abs() < 1e-15)
+            ),
             "constant pool should contain PI value"
         );
     }
@@ -4768,10 +5380,13 @@ end"#;
         for (name, expected) in &float_cases {
             let src = format!("cell main() -> Float\n  return {}\nend", name);
             let module = lower_src(&src);
-            let found = module.cells[0].constants.iter().any(|c| match (c, expected) {
-                (Constant::Float(a), Constant::Float(b)) => a.to_bits() == b.to_bits(),
-                _ => false,
-            });
+            let found = module.cells[0]
+                .constants
+                .iter()
+                .any(|c| match (c, expected) {
+                    (Constant::Float(a), Constant::Float(b)) => a.to_bits() == b.to_bits(),
+                    _ => false,
+                });
             assert!(
                 found,
                 "constant pool should contain {} value, got: {:?}",
@@ -4785,10 +5400,13 @@ end"#;
         for (name, expected) in &int_cases {
             let src = format!("cell main() -> Int\n  return {}\nend", name);
             let module = lower_src(&src);
-            let found = module.cells[0].constants.iter().any(|c| match (c, expected) {
-                (Constant::Int(a), Constant::Int(b)) => a == b,
-                _ => false,
-            });
+            let found = module.cells[0]
+                .constants
+                .iter()
+                .any(|c| match (c, expected) {
+                    (Constant::Int(a), Constant::Int(b)) => a == b,
+                    _ => false,
+                });
             assert!(
                 found,
                 "constant pool should contain {} value, got: {:?}",

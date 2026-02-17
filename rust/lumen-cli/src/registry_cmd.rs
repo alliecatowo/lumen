@@ -9,8 +9,8 @@
 //! - `lumen registry owner list <package>` - List owners
 
 use crate::auth::{
-    mask_token, validate_token_format, AuthError, AuthenticatedClient,
-    CredentialManager, OwnerRole, PackageOwner,
+    mask_token, validate_token_format, AuthError, AuthenticatedClient, CredentialManager,
+    OwnerRole, PackageOwner,
 };
 use crate::config::LumenConfig;
 use std::collections::HashMap;
@@ -522,9 +522,9 @@ fn cmd_owner_add(package: String, email: String, role: Option<String>) {
     }
 
     let role = match role {
-        Some(r) => match OwnerRole::from_str(&r) {
-            Some(role) => role,
-            None => {
+        Some(r) => match r.parse::<OwnerRole>() {
+            Ok(role) => role,
+            Err(_) => {
                 eprintln!(
                     "{} Invalid role '{}'. Use 'maintainer' or 'owner'",
                     red("error:"),

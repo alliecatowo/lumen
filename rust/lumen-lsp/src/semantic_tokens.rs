@@ -170,7 +170,11 @@ pub fn build_semantic_tokens(text: &str, is_markdown: bool) -> Option<SemanticTo
                 for (i, md_line) in lines.iter().enumerate() {
                     let line = base_line + i as u32;
                     let char_start = if i == 0 { base_char } else { 0 };
-                    let length = if md_line.is_empty() { 1 } else { md_line.len() as u32 };
+                    let length = if md_line.is_empty() {
+                        1
+                    } else {
+                        md_line.len() as u32
+                    };
 
                     let delta_line = line.saturating_sub(prev_line);
                     let delta_char = if delta_line == 0 && char_start >= prev_char {

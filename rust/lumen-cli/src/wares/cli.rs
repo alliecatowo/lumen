@@ -30,7 +30,7 @@ Examples:
 pub struct Cli {
     #[command(subcommand)]
     pub command: WaresCommands,
-    
+
     /// Registry URL (defaults to WARES_REGISTRY env var or https://wares.lumen-lang.com/api/v1)
     #[arg(long, global = true)]
     pub registry: Option<String>,
@@ -43,13 +43,13 @@ pub enum WaresCommands {
         /// Ware name (creates a subdirectory; omit to init in current dir)
         name: Option<String>,
     },
-    
+
     /// Build ware and dependencies
     Build,
-    
+
     /// Type-check ware
     Check,
-    
+
     /// Add a dependency
     Add {
         /// Ware name
@@ -61,16 +61,16 @@ pub enum WaresCommands {
         #[arg(long)]
         dev: bool,
     },
-    
+
     /// Remove a dependency
     Remove {
         /// Ware name
         package: String,
     },
-    
+
     /// List dependencies
     List,
-    
+
     /// Install dependencies from lumen.toml
     Install {
         /// Use lockfile as-is without running the resolver (error if missing)
@@ -85,7 +85,7 @@ pub enum WaresCommands {
         #[arg(long, default_value = "normal")]
         trust: String,
     },
-    
+
     /// Update dependencies to latest compatible versions
     Update {
         /// Use lockfile as-is without running the resolver
@@ -95,39 +95,39 @@ pub enum WaresCommands {
         #[arg(long)]
         locked: bool,
     },
-    
+
     /// Search for ware in the registry
     Search {
         /// Search query
         query: String,
     },
-    
+
     /// Inspect ware metadata
     Info {
         /// Ware name or path
         target: String,
     },
-    
+
     /// Create a deterministic package archive
     Pack {
         /// Output directory (default: dist/)
         #[arg(long, default_value = "dist")]
         output: PathBuf,
     },
-    
+
     /// Authenticate with the registry using OIDC (GitHub, GitLab, etc.)
     Login {
         /// Identity provider (github, gitlab, google)
         #[arg(long, default_value = "github")]
         provider: String,
     },
-    
+
     /// Logout and clear authentication
     Logout,
-    
+
     /// Show current authentication status
     Whoami,
-    
+
     /// Sign and publish ware to registry with keyless signing
     Publish {
         /// Validate/package locally without uploading
@@ -140,7 +140,7 @@ pub enum WaresCommands {
         #[arg(long)]
         no_log: bool,
     },
-    
+
     /// Verify package trust and show detailed information
     TrustCheck {
         /// Package name (optionally with version: package@1.0.0)
@@ -152,7 +152,7 @@ pub enum WaresCommands {
         #[arg(long, default_value = "human")]
         format: String,
     },
-    
+
     /// Manage trust policies
     Policy {
         #[command(subcommand)]
@@ -176,7 +176,7 @@ pub async fn run_command(command: WaresCommands, registry_arg: Option<String>) {
     let registry_url = registry_arg
         .or_else(|| std::env::var("WARES_REGISTRY").ok())
         .unwrap_or_else(|| "https://wares.lumen-lang.com/api/v1".to_string());
-    
+
     match command {
         WaresCommands::Init { name } => cmd_init(name),
         WaresCommands::Build => cmd_build(),
@@ -184,7 +184,12 @@ pub async fn run_command(command: WaresCommands, registry_arg: Option<String>) {
         WaresCommands::Add { package, path, dev } => cmd_add(&package, path.as_deref(), dev),
         WaresCommands::Remove { package } => cmd_remove(&package),
         WaresCommands::List => cmd_list(),
-        WaresCommands::Install { frozen, locked, package, trust } => {
+        WaresCommands::Install {
+            frozen,
+            locked,
+            package,
+            trust,
+        } => {
             if let Some(pkg) = package {
                 cmd_install_package(&pkg, frozen, locked, &trust, &registry_url).await;
             } else {
@@ -198,15 +203,25 @@ pub async fn run_command(command: WaresCommands, registry_arg: Option<String>) {
         WaresCommands::Login { provider } => cmd_login(&provider, &registry_url).await,
         WaresCommands::Logout => cmd_logout(&registry_url).await,
         WaresCommands::Whoami => cmd_whoami(&registry_url).await,
-        WaresCommands::Publish { dry_run, provenance, no_log } => {
+        WaresCommands::Publish {
+            dry_run,
+            provenance,
+            no_log,
+        } => {
             cmd_publish(dry_run, provenance, no_log, &registry_url).await;
         }
-        WaresCommands::TrustCheck { package, log, format } => {
+        WaresCommands::TrustCheck {
+            package,
+            log,
+            format,
+        } => {
             cmd_trust_check(&package, log, &format, &registry_url).await;
         }
         WaresCommands::Policy { sub } => match sub {
             PolicyCommands::Show => cmd_policy_show(&registry_url).await,
-            PolicyCommands::Permissive => cmd_policy_set(&registry_url, TrustPolicy::permissive()).await,
+            PolicyCommands::Permissive => {
+                cmd_policy_set(&registry_url, TrustPolicy::permissive()).await
+            }
             PolicyCommands::Normal => cmd_policy_set(&registry_url, TrustPolicy::default()).await,
             PolicyCommands::Strict => cmd_policy_set(&registry_url, TrustPolicy::strict()).await,
         },
@@ -230,17 +245,17 @@ fn cmd_check() {
 }
 
 fn cmd_add(package: &str, path: Option<&str>, _dev: bool) {
-    // Note: older pkg code might not have path support exposed exactly like this, 
+    // Note: older pkg code might not have path support exposed exactly like this,
     // but assuming pkg logic handles it.
-    // crate::pkg::cmd_pkg_add(package, path); 
+    // crate::pkg::cmd_pkg_add(package, path);
     // Checking pkg.rs, cmd_pkg_add takes slightly different args?
     // Based on main.rs: cmd_pkg_add_with_kind(&package, path.as_deref(), kind)
     // I should adapt or call appropriate function.
     // For now I'll stub it to match main.rs usage style if needed, or assume existing pkg module has been updated.
-    
+
     // Actually, I'll check pkg.rs in main.rs again.
     // pkg::cmd_pkg_add_with_kind(&package, path.as_deref(), kind)
-    
+
     let kind = crate::wares::ops::DependencyKind::Normal; // Default for now
     crate::wares::ops::add_with_kind(package, path, kind);
 }
@@ -254,7 +269,10 @@ fn cmd_list() {
 }
 
 async fn cmd_install(frozen: bool, locked: bool, trust_level: &str, registry_url: &str) {
-    println!("{} Installing dependencies...", colors::status_label("Trust"));
+    println!(
+        "{} Installing dependencies...",
+        colors::status_label("Trust")
+    );
     println!("  Policy: {}", colors::cyan(trust_level));
     println!("  Registry: {}", colors::gray(registry_url));
 
@@ -263,7 +281,10 @@ async fn cmd_install(frozen: bool, locked: bool, trust_level: &str, registry_url
     // --frozen: use lockfile directly without running resolver
     if frozen {
         if !lock_path.exists() {
-            eprintln!("{} Cannot use --frozen: no lockfile found", colors::red("✗"));
+            eprintln!(
+                "{} Cannot use --frozen: no lockfile found",
+                colors::red("✗")
+            );
             eprintln!("  Run 'wares install' without --frozen first to generate lumen.lock");
             std::process::exit(1);
         }
@@ -287,12 +308,21 @@ async fn cmd_install(frozen: bool, locked: bool, trust_level: &str, registry_url
             let extra: Vec<&&str> = locked_names.difference(&manifest_names).collect();
 
             if !missing.is_empty() || !extra.is_empty() {
-                eprintln!("{} Lockfile does not match manifest dependencies", colors::red("✗"));
+                eprintln!(
+                    "{} Lockfile does not match manifest dependencies",
+                    colors::red("✗")
+                );
                 if !missing.is_empty() {
-                    eprintln!("  Missing from lockfile: {}", missing.iter().map(|s| **s).collect::<Vec<_>>().join(", "));
+                    eprintln!(
+                        "  Missing from lockfile: {}",
+                        missing.iter().map(|s| **s).collect::<Vec<_>>().join(", ")
+                    );
                 }
                 if !extra.is_empty() {
-                    eprintln!("  Extra in lockfile: {}", extra.iter().map(|s| **s).collect::<Vec<_>>().join(", "));
+                    eprintln!(
+                        "  Extra in lockfile: {}",
+                        extra.iter().map(|s| **s).collect::<Vec<_>>().join(", ")
+                    );
                 }
                 eprintln!("  Run 'wares install' without --frozen to update");
                 std::process::exit(1);
@@ -302,14 +332,21 @@ async fn cmd_install(frozen: bool, locked: bool, trust_level: &str, registry_url
         // Verify trust for registry packages
         verify_lockfile_trust(&lockfile, trust_level, registry_url);
 
-        println!("{} Using frozen lockfile ({} packages)", colors::green("✓"), lockfile.packages.len());
+        println!(
+            "{} Using frozen lockfile ({} packages)",
+            colors::green("✓"),
+            lockfile.packages.len()
+        );
         return;
     }
 
     // --locked: run resolver but error if lockfile would change
     if locked {
         if !lock_path.exists() {
-            eprintln!("{} Cannot use --locked: no lockfile found", colors::red("✗"));
+            eprintln!(
+                "{} Cannot use --locked: no lockfile found",
+                colors::red("✗")
+            );
             eprintln!("  Run 'wares install' without --locked first to generate lumen.lock");
             std::process::exit(1);
         }
@@ -330,7 +367,10 @@ async fn cmd_install(frozen: bool, locked: bool, trust_level: &str, registry_url
         if let Ok(new_lockfile) = LockFile::load(lock_path) {
             let diff = existing_lockfile.diff(&new_lockfile);
             if !diff.is_empty() {
-                eprintln!("{} Lockfile would change, run 'wares install' without --locked", colors::red("✗"));
+                eprintln!(
+                    "{} Lockfile would change, run 'wares install' without --locked",
+                    colors::red("✗")
+                );
                 eprintln!("{}", diff.summary());
                 // Restore the original lockfile
                 if let Err(e) = existing_lockfile.save(lock_path) {
@@ -356,8 +396,18 @@ async fn cmd_install(frozen: bool, locked: bool, trust_level: &str, registry_url
     }
 }
 
-async fn cmd_install_package(package: &str, frozen: bool, locked: bool, trust_level: &str, registry_url: &str) {
-    println!("{} Installing {}...", colors::status_label("Trust"), colors::bold(package));
+async fn cmd_install_package(
+    package: &str,
+    frozen: bool,
+    locked: bool,
+    trust_level: &str,
+    registry_url: &str,
+) {
+    println!(
+        "{} Installing {}...",
+        colors::status_label("Trust"),
+        colors::bold(package)
+    );
     println!("  Policy: {}", colors::cyan(trust_level));
 
     // Validate: package must be namespaced
@@ -387,7 +437,10 @@ async fn cmd_install_package(package: &str, frozen: bool, locked: bool, trust_le
 
     if frozen {
         if !lock_path.exists() {
-            eprintln!("{} Cannot use --frozen: no lockfile found", colors::red("✗"));
+            eprintln!(
+                "{} Cannot use --frozen: no lockfile found",
+                colors::red("✗")
+            );
             std::process::exit(1);
         }
         let lockfile = match LockFile::load(lock_path) {
@@ -398,24 +451,38 @@ async fn cmd_install_package(package: &str, frozen: bool, locked: bool, trust_le
             }
         };
         if !lockfile.packages.iter().any(|p| p.name == name) {
-            eprintln!("{} Package '{}' not found in lockfile", colors::red("✗"), name);
+            eprintln!(
+                "{} Package '{}' not found in lockfile",
+                colors::red("✗"),
+                name
+            );
             eprintln!("  Run 'wares install {}' without --frozen first", name);
             std::process::exit(1);
         }
         verify_lockfile_trust(&lockfile, trust_level, registry_url);
-        println!("{} Using frozen lockfile for '{}'", colors::green("✓"), name);
+        println!(
+            "{} Using frozen lockfile for '{}'",
+            colors::green("✓"),
+            name
+        );
         return;
     }
 
     if locked {
-        let existing = lock_path.exists().then(|| LockFile::load(lock_path).ok()).flatten();
+        let existing = lock_path
+            .exists()
+            .then(|| LockFile::load(lock_path).ok())
+            .flatten();
         crate::wares::ops::add_with_kind(name, None, crate::wares::ops::DependencyKind::Normal);
 
         if let Some(existing_lockfile) = existing {
             if let Ok(new_lockfile) = LockFile::load(lock_path) {
                 let diff = existing_lockfile.diff(&new_lockfile);
                 if !diff.is_empty() {
-                    eprintln!("{} Lockfile would change, run without --locked", colors::red("✗"));
+                    eprintln!(
+                        "{} Lockfile would change, run without --locked",
+                        colors::red("✗")
+                    );
                     eprintln!("{}", diff.summary());
                     if let Err(e) = existing_lockfile.save(lock_path) {
                         eprintln!("{} Failed to restore lockfile: {}", colors::red("✗"), e);
@@ -444,22 +511,34 @@ fn cmd_update(frozen: bool, locked: bool) {
 
     if frozen {
         if !lock_path.exists() {
-            eprintln!("{} Cannot use --frozen: no lockfile found", colors::red("✗"));
+            eprintln!(
+                "{} Cannot use --frozen: no lockfile found",
+                colors::red("✗")
+            );
             std::process::exit(1);
         }
-        println!("{} Using frozen lockfile, skipping update", colors::green("✓"));
+        println!(
+            "{} Using frozen lockfile, skipping update",
+            colors::green("✓")
+        );
         return;
     }
 
     if locked {
-        let existing = lock_path.exists().then(|| LockFile::load(lock_path).ok()).flatten();
+        let existing = lock_path
+            .exists()
+            .then(|| LockFile::load(lock_path).ok())
+            .flatten();
         crate::wares::ops::update_with_lock(false);
 
         if let Some(existing_lockfile) = existing {
             if let Ok(new_lockfile) = LockFile::load(lock_path) {
                 let diff = existing_lockfile.diff(&new_lockfile);
                 if !diff.is_empty() {
-                    eprintln!("{} Lockfile would change, run 'wares update' without --locked", colors::red("✗"));
+                    eprintln!(
+                        "{} Lockfile would change, run 'wares update' without --locked",
+                        colors::red("✗")
+                    );
                     eprintln!("{}", diff.summary());
                     if let Err(e) = existing_lockfile.save(lock_path) {
                         eprintln!("{} Failed to restore lockfile: {}", colors::red("✗"), e);
@@ -483,7 +562,11 @@ fn cmd_info(target: &str) {
     if let Some((_path, config)) = LumenConfig::load_with_path() {
         if let Some(ref pkg) = config.package {
             if pkg.name == target || pkg.name.ends_with(&format!("/{}", target)) {
-                println!("{} {} (local)", colors::bold(&pkg.name), colors::cyan(pkg.version.as_deref().unwrap_or("0.0.0")));
+                println!(
+                    "{} {} (local)",
+                    colors::bold(&pkg.name),
+                    colors::cyan(pkg.version.as_deref().unwrap_or("0.0.0"))
+                );
                 if let Some(ref desc) = pkg.description {
                     println!("  {}", desc);
                 }
@@ -512,14 +595,22 @@ fn cmd_info(target: &str) {
                     println!();
                     println!("  Dependencies:");
                     for (dep_name, spec) in &config.dependencies {
-                        println!("    {} {}", colors::cyan(dep_name), colors::gray(&format_dep_spec(spec)));
+                        println!(
+                            "    {} {}",
+                            colors::cyan(dep_name),
+                            colors::gray(&format_dep_spec(spec))
+                        );
                     }
                 }
                 if !config.dev_dependencies.is_empty() {
                     println!();
                     println!("  Dev Dependencies:");
                     for (dep_name, spec) in &config.dev_dependencies {
-                        println!("    {} {}", colors::cyan(dep_name), colors::gray(&format_dep_spec(spec)));
+                        println!(
+                            "    {} {}",
+                            colors::cyan(dep_name),
+                            colors::gray(&format_dep_spec(spec))
+                        );
                     }
                 }
                 return;
@@ -528,7 +619,11 @@ fn cmd_info(target: &str) {
 
         // Check if target is one of the project's dependencies
         if let Some(spec) = config.dependencies.get(target) {
-            println!("{} {} (dependency)", colors::bold(target), colors::gray(&format_dep_spec(spec)));
+            println!(
+                "{} {} (dependency)",
+                colors::bold(target),
+                colors::gray(&format_dep_spec(spec))
+            );
         }
     }
 
@@ -538,8 +633,11 @@ fn cmd_info(target: &str) {
 
     match client.fetch_package_index(target) {
         Ok(pkg_index) => {
-            println!("{} {}", colors::bold(&pkg_index.name),
-                colors::cyan(pkg_index.latest.as_deref().unwrap_or("unknown")));
+            println!(
+                "{} {}",
+                colors::bold(&pkg_index.name),
+                colors::cyan(pkg_index.latest.as_deref().unwrap_or("unknown"))
+            );
 
             if let Some(ref desc) = pkg_index.description {
                 println!("  {}", desc);
@@ -554,7 +652,15 @@ fn cmd_info(target: &str) {
                 println!("  Downloads:  {}", downloads);
             }
             if !pkg_index.yanked.is_empty() {
-                println!("  Yanked:     {}", pkg_index.yanked.keys().cloned().collect::<Vec<_>>().join(", "));
+                println!(
+                    "  Yanked:     {}",
+                    pkg_index
+                        .yanked
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
             }
 
             // Fetch latest version metadata for more details
@@ -572,7 +678,11 @@ fn cmd_info(target: &str) {
                         }
                         if let Some(ref publisher) = meta.publisher {
                             let name = publisher.name.as_deref().unwrap_or("unknown");
-                            let verified = if publisher.verified { " (verified)" } else { "" };
+                            let verified = if publisher.verified {
+                                " (verified)"
+                            } else {
+                                ""
+                            };
                             println!("  Publisher:  {}{}", name, colors::green(verified));
                         }
                         if let Some(ref published) = meta.published_at {
@@ -604,7 +714,11 @@ fn cmd_info(target: &str) {
                         }
                     }
                     Err(e) => {
-                        println!("  {} Could not fetch version details: {}", colors::gray("→"), e);
+                        println!(
+                            "  {} Could not fetch version details: {}",
+                            colors::gray("→"),
+                            e
+                        );
                     }
                 }
             }
@@ -619,7 +733,11 @@ fn cmd_info(target: &str) {
 fn cmd_pack(output: &PathBuf) {
     // Create output directory if needed
     if let Err(e) = std::fs::create_dir_all(output) {
-        eprintln!("{} Failed to create output directory: {}", colors::red("✗"), e);
+        eprintln!(
+            "{} Failed to create output directory: {}",
+            colors::red("✗"),
+            e
+        );
         std::process::exit(1);
     }
     crate::wares::ops::pack();
@@ -634,7 +752,7 @@ async fn cmd_login(provider_str: &str, registry_url: &str) {
             std::process::exit(1);
         }
     };
-    
+
     let mut client = match TrustClient::new(registry_url.to_string()) {
         Ok(c) => c,
         Err(e) => {
@@ -642,7 +760,7 @@ async fn cmd_login(provider_str: &str, registry_url: &str) {
             std::process::exit(1);
         }
     };
-    
+
     if let Err(e) = client.login(provider).await {
         eprintln!("{} {}", colors::red("✗"), e);
         std::process::exit(1);
@@ -657,7 +775,7 @@ async fn cmd_logout(registry_url: &str) {
             std::process::exit(1);
         }
     };
-    
+
     if let Err(e) = client.logout() {
         eprintln!("{} {}", colors::red("✗"), e);
         std::process::exit(1);
@@ -672,7 +790,7 @@ async fn cmd_whoami(registry_url: &str) {
             std::process::exit(1);
         }
     };
-    
+
     match client.current_identity() {
         Some(identity) => {
             println!("{} Logged in to {}", colors::green("✓"), registry_url);
@@ -695,12 +813,15 @@ async fn cmd_publish(dry_run: bool, provenance: bool, no_log: bool, registry_url
             std::process::exit(1);
         }
     };
-    
+
     if !client.is_authenticated() {
-        eprintln!("{} Not authenticated. Run 'wares login' first.", colors::red("✗"));
+        eprintln!(
+            "{} Not authenticated. Run 'wares login' first.",
+            colors::red("✗")
+        );
         std::process::exit(1);
     }
-    
+
     // Get package info
     let (package_name, version) = match read_package_info() {
         Ok(info) => info,
@@ -709,13 +830,18 @@ async fn cmd_publish(dry_run: bool, provenance: bool, no_log: bool, registry_url
             std::process::exit(1);
         }
     };
-    
-    println!("{} Publishing {}@{}...", colors::status_label("Trust"), colors::bold(&package_name), colors::bold(&version));
-    
+
+    println!(
+        "{} Publishing {}@{}...",
+        colors::status_label("Trust"),
+        colors::bold(&package_name),
+        colors::bold(&version)
+    );
+
     if dry_run {
         println!("  {} Dry run mode — not publishing", colors::yellow("!"));
     }
-    
+
     // Build SLSA provenance if requested
     let slsa_provenance = if provenance {
         println!("  {} Including SLSA build provenance...", colors::cyan("→"));
@@ -725,19 +851,22 @@ async fn cmd_publish(dry_run: bool, provenance: bool, no_log: bool, registry_url
                 Some(p)
             }
             None => {
-                eprintln!("  {} Could not generate provenance (not in CI?)", colors::yellow("!"));
+                eprintln!(
+                    "  {} Could not generate provenance (not in CI?)",
+                    colors::yellow("!")
+                );
                 None
             }
         }
     } else {
         None
     };
-    
+
     // Build and pack the package
     println!("  {} Building package archive...", colors::cyan("→"));
     crate::wares::ops::build();
     crate::wares::ops::pack();
-    
+
     // Read the package archive (packed as .tgz by cmd_pkg_pack)
     let archive_path = format!("dist/{}-{}.tgz", package_name, version);
     let content = match std::fs::read(&archive_path) {
@@ -747,24 +876,32 @@ async fn cmd_publish(dry_run: bool, provenance: bool, no_log: bool, registry_url
             std::process::exit(1);
         }
     };
-    
+
     // Sign and publish
     if !dry_run {
-        match client.publish_package(&package_name, &version, &content, slsa_provenance).await {
+        match client
+            .publish_package(&package_name, &version, &content, slsa_provenance)
+            .await
+        {
             Ok(sig) => {
                 println!("  {} Package signed successfully", colors::green("✓"));
                 println!("    Identity: {}", sig.certificate.identity_str());
                 println!("    Content hash: {}", &sig.content_hash[..16]);
-                
+
                 if no_log {
                     println!("  {} Skipping transparency log", colors::yellow("!"));
                 } else {
                     println!("  {} Transparency log entry pending...", colors::cyan("→"));
                 }
-                
+
                 // Upload to registry (this would use the existing publish logic)
                 // TODO: Integrate with actual registry upload
-                println!("{} Published {}@{}", colors::green("✓"), package_name, version);
+                println!(
+                    "{} Published {}@{}",
+                    colors::green("✓"),
+                    package_name,
+                    version
+                );
             }
             Err(e) => {
                 eprintln!("{} Publish failed: {}", colors::red("✗"), e);
@@ -773,7 +910,10 @@ async fn cmd_publish(dry_run: bool, provenance: bool, no_log: bool, registry_url
         }
     } else {
         println!("{} Dry run complete", colors::green("✓"));
-        println!("  Package {}@{} would be signed and published", package_name, version);
+        println!(
+            "  Package {}@{} would be signed and published",
+            package_name, version
+        );
     }
 }
 
@@ -805,7 +945,10 @@ async fn cmd_trust_check(package_spec: &str, show_log: bool, format: &str, regis
         let result = check_single_package(name, ver, lock_path, registry_url, show_log);
 
         if format == "json" {
-            println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".to_string()));
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".to_string())
+            );
             return;
         }
 
@@ -818,7 +961,10 @@ async fn cmd_trust_check(package_spec: &str, show_log: bool, format: &str, regis
         if format == "json" {
             println!("{{\"error\": \"no lockfile found\"}}");
         } else {
-            eprintln!("{} No lockfile found. Run 'wares install' first.", colors::red("✗"));
+            eprintln!(
+                "{} No lockfile found. Run 'wares install' first.",
+                colors::red("✗")
+            );
         }
         std::process::exit(1);
     }
@@ -835,14 +981,21 @@ async fn cmd_trust_check(package_spec: &str, show_log: bool, format: &str, regis
     let packages: Vec<&crate::lockfile::LockedPackage> = if name.is_empty() || name == "*" {
         lockfile.packages.iter().collect()
     } else {
-        lockfile.packages.iter().filter(|p| p.name == name || p.name.ends_with(&format!("/{}", name))).collect()
+        lockfile
+            .packages
+            .iter()
+            .filter(|p| p.name == name || p.name.ends_with(&format!("/{}", name)))
+            .collect()
     };
 
     if packages.is_empty() {
         if format == "json" {
             println!("{{\"error\": \"no matching packages found\"}}");
         } else {
-            eprintln!("{} No matching packages found in lockfile", colors::red("✗"));
+            eprintln!(
+                "{} No matching packages found in lockfile",
+                colors::red("✗")
+            );
         }
         std::process::exit(1);
     }
@@ -857,18 +1010,30 @@ async fn cmd_trust_check(package_spec: &str, show_log: bool, format: &str, regis
             let result = check_locked_package_trust(pkg);
             results.push(result);
         }
-        println!("{}", serde_json::to_string_pretty(&results).unwrap_or_else(|_| "[]".to_string()));
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&results).unwrap_or_else(|_| "[]".to_string())
+        );
         return;
     }
 
-    println!("{} Trust check for {} package(s)", colors::status_label("Trust"), packages.len());
+    println!(
+        "{} Trust check for {} package(s)",
+        colors::status_label("Trust"),
+        packages.len()
+    );
     println!();
 
     // Table header
-    println!("  {:<30} {:<12} {:<12} {:<12} {:<14} {}",
-        colors::bold("Package"), colors::bold("Version"),
-        colors::bold("Integrity"), colors::bold("Signature"),
-        colors::bold("Transparency"), colors::bold("Status"));
+    println!(
+        "  {:<30} {:<12} {:<12} {:<12} {:<14} {}",
+        colors::bold("Package"),
+        colors::bold("Version"),
+        colors::bold("Integrity"),
+        colors::bold("Signature"),
+        colors::bold("Transparency"),
+        colors::bold("Status")
+    );
     println!("  {}", "─".repeat(96));
 
     for pkg in &packages {
@@ -877,9 +1042,27 @@ async fn cmd_trust_check(package_spec: &str, show_log: bool, format: &str, regis
         let has_transparency = pkg.transparency_index.is_some();
         let is_registry = pkg.source.starts_with("registry+");
 
-        let integrity_str = if has_integrity { colors::green("✓") } else if is_registry { colors::red("✗") } else { colors::gray("—") };
-        let signature_str = if has_signature { colors::green("✓") } else if is_registry { colors::red("✗") } else { colors::gray("—") };
-        let transparency_str = if has_transparency { colors::green("✓") } else if is_registry { colors::yellow("—") } else { colors::gray("—") };
+        let integrity_str = if has_integrity {
+            colors::green("✓")
+        } else if is_registry {
+            colors::red("✗")
+        } else {
+            colors::gray("—")
+        };
+        let signature_str = if has_signature {
+            colors::green("✓")
+        } else if is_registry {
+            colors::red("✗")
+        } else {
+            colors::gray("—")
+        };
+        let transparency_str = if has_transparency {
+            colors::green("✓")
+        } else if is_registry {
+            colors::yellow("—")
+        } else {
+            colors::gray("—")
+        };
 
         let status = if !is_registry {
             passed += 1;
@@ -895,9 +1078,10 @@ async fn cmd_trust_check(package_spec: &str, show_log: bool, format: &str, regis
             colors::red("fail")
         };
 
-        println!("  {:<30} {:<12} {:<12} {:<12} {:<14} {}",
-            pkg.name, pkg.version,
-            integrity_str, signature_str, transparency_str, status);
+        println!(
+            "  {:<30} {:<12} {:<12} {:<12} {:<14} {}",
+            pkg.name, pkg.version, integrity_str, signature_str, transparency_str, status
+        );
     }
 
     println!("  {}", "─".repeat(96));
@@ -905,7 +1089,10 @@ async fn cmd_trust_check(package_spec: &str, show_log: bool, format: &str, regis
 
     // Show transparency log entries if requested
     if show_log {
-        let logged: Vec<_> = packages.iter().filter(|p| p.transparency_index.is_some()).collect();
+        let logged: Vec<_> = packages
+            .iter()
+            .filter(|p| p.transparency_index.is_some())
+            .collect();
         if !logged.is_empty() {
             println!("{}", colors::bold("Transparency Log Entries"));
             for pkg in logged {
@@ -919,22 +1106,34 @@ async fn cmd_trust_check(package_spec: &str, show_log: bool, format: &str, regis
 
     // Summary
     println!("{}", colors::bold("Summary"));
-    println!("  {} passed, {} warnings, {} failed",
+    println!(
+        "  {} passed, {} warnings, {} failed",
         colors::green(&passed.to_string()),
         colors::yellow(&warned.to_string()),
-        colors::red(&failed.to_string()));
+        colors::red(&failed.to_string())
+    );
 
     if failed > 0 {
         println!();
-        println!("{} Some packages failed trust verification.", colors::red("✗"));
+        println!(
+            "{} Some packages failed trust verification.",
+            colors::red("✗")
+        );
         println!("  Run with '--trust permissive' to install anyway, or add signatures.");
         std::process::exit(1);
     } else if warned > 0 {
         println!();
-        println!("{} Some packages have incomplete trust metadata.", colors::yellow("!"));
+        println!(
+            "{} Some packages have incomplete trust metadata.",
+            colors::yellow("!")
+        );
     } else {
         println!();
-        println!("{} {}", colors::green("✓"), colors::bold("All packages pass trust verification."));
+        println!(
+            "{} {}",
+            colors::green("✓"),
+            colors::bold("All packages pass trust verification.")
+        );
     }
 }
 
@@ -944,7 +1143,9 @@ async fn cmd_trust_check(package_spec: &str, show_log: bool, format: &str, regis
 
 /// Verify trust metadata for all registry packages in a lockfile during install.
 fn verify_lockfile_trust(lockfile: &LockFile, trust_level: &str, _registry_url: &str) {
-    let registry_packages: Vec<_> = lockfile.packages.iter()
+    let registry_packages: Vec<_> = lockfile
+        .packages
+        .iter()
         .filter(|p| p.source.starts_with("registry+"))
         .collect();
 
@@ -962,29 +1163,57 @@ fn verify_lockfile_trust(lockfile: &LockFile, trust_level: &str, _registry_url: 
         match trust_level {
             "strict" => {
                 if !has_integrity {
-                    failures.push(format!("{}@{}: missing integrity hash", pkg.name, pkg.version));
+                    failures.push(format!(
+                        "{}@{}: missing integrity hash",
+                        pkg.name, pkg.version
+                    ));
                 }
                 if !has_signature {
                     failures.push(format!("{}@{}: missing signature", pkg.name, pkg.version));
                 }
                 if !has_transparency {
-                    failures.push(format!("{}@{}: missing transparency log entry", pkg.name, pkg.version));
+                    failures.push(format!(
+                        "{}@{}: missing transparency log entry",
+                        pkg.name, pkg.version
+                    ));
                 }
             }
             "normal" => {
                 if !has_integrity {
-                    failures.push(format!("{}@{}: missing integrity hash", pkg.name, pkg.version));
+                    failures.push(format!(
+                        "{}@{}: missing integrity hash",
+                        pkg.name, pkg.version
+                    ));
                 }
                 if !has_signature {
-                    println!("  {} {}@{}: no signature (consider 'strict' policy)",
-                        colors::yellow("!"), pkg.name, pkg.version);
+                    println!(
+                        "  {} {}@{}: no signature (consider 'strict' policy)",
+                        colors::yellow("!"),
+                        pkg.name,
+                        pkg.version
+                    );
                 }
             }
-            "permissive" | _ => {
+            "permissive" => {
                 // Permissive mode only warns, never fails
                 if !has_integrity && !has_signature {
-                    println!("  {} {}@{}: no trust metadata",
-                        colors::yellow("!"), pkg.name, pkg.version);
+                    println!(
+                        "  {} {}@{}: no trust metadata",
+                        colors::yellow("!"),
+                        pkg.name,
+                        pkg.version
+                    );
+                }
+            }
+            _ => {
+                // Permissive mode only warns, never fails
+                if !has_integrity && !has_signature {
+                    println!(
+                        "  {} {}@{}: no trust metadata",
+                        colors::yellow("!"),
+                        pkg.name,
+                        pkg.version
+                    );
                 }
             }
         }
@@ -1002,11 +1231,23 @@ fn verify_lockfile_trust(lockfile: &LockFile, trust_level: &str, _registry_url: 
     }
 
     let total = registry_packages.len();
-    let signed = registry_packages.iter().filter(|p| p.signature.is_some()).count();
-    let transparent = registry_packages.iter().filter(|p| p.transparency_index.is_some()).count();
+    let signed = registry_packages
+        .iter()
+        .filter(|p| p.signature.is_some())
+        .count();
+    let transparent = registry_packages
+        .iter()
+        .filter(|p| p.transparency_index.is_some())
+        .count();
 
-    println!("  {} Trust: {}/{} signed, {}/{} in transparency log",
-        colors::green("✓"), signed, total, transparent, total);
+    println!(
+        "  {} Trust: {}/{} signed, {}/{} in transparency log",
+        colors::green("✓"),
+        signed,
+        total,
+        transparent,
+        total
+    );
 }
 
 /// Trust check result for a single package (JSON-serializable).
@@ -1064,7 +1305,11 @@ fn check_single_package(
     // First try the lockfile
     if lock_path.exists() {
         if let Ok(lockfile) = LockFile::load(lock_path) {
-            if let Some(pkg) = lockfile.packages.iter().find(|p| p.name == name && p.version == version) {
+            if let Some(pkg) = lockfile
+                .packages
+                .iter()
+                .find(|p| p.name == name && p.version == version)
+            {
                 return check_locked_package_trust(pkg);
             }
         }
@@ -1073,42 +1318,43 @@ fn check_single_package(
     // Fall back to registry metadata
     let client = RegistryClient::new(registry_url);
     match client.fetch_version_metadata(name, version) {
-        Ok(meta) => {
-            TrustCheckResult {
-                package: meta.name,
-                version: meta.version,
-                integrity: meta.integrity.is_some(),
-                signature: meta.signature.is_some(),
-                transparency: meta.transparency.is_some(),
-                status: if meta.integrity.is_some() && meta.signature.is_some() {
-                    "pass".to_string()
-                } else if meta.integrity.is_some() || meta.signature.is_some() {
-                    "warn".to_string()
-                } else {
-                    "fail".to_string()
-                },
-                integrity_hash: meta.integrity.map(|i| i.manifest_hash),
-                transparency_index: meta.transparency.map(|t| t.log_index),
-            }
-        }
-        Err(_) => {
-            TrustCheckResult {
-                package: name.to_string(),
-                version: version.to_string(),
-                integrity: false,
-                signature: false,
-                transparency: false,
-                status: "unknown".to_string(),
-                integrity_hash: None,
-                transparency_index: None,
-            }
-        }
+        Ok(meta) => TrustCheckResult {
+            package: meta.name,
+            version: meta.version,
+            integrity: meta.integrity.is_some(),
+            signature: meta.signature.is_some(),
+            transparency: meta.transparency.is_some(),
+            status: if meta.integrity.is_some() && meta.signature.is_some() {
+                "pass".to_string()
+            } else if meta.integrity.is_some() || meta.signature.is_some() {
+                "warn".to_string()
+            } else {
+                "fail".to_string()
+            },
+            integrity_hash: meta.integrity.map(|i| i.manifest_hash),
+            transparency_index: meta.transparency.map(|t| t.log_index),
+        },
+        Err(_) => TrustCheckResult {
+            package: name.to_string(),
+            version: version.to_string(),
+            integrity: false,
+            signature: false,
+            transparency: false,
+            status: "unknown".to_string(),
+            integrity_hash: None,
+            transparency_index: None,
+        },
     }
 }
 
 /// Print a human-readable trust check result for a single package.
 fn print_single_trust_result(name: &str, version: &str, result: &TrustCheckResult, show_log: bool) {
-    println!("{} Trust check for {}@{}", colors::status_label("Trust"), colors::bold(name), version);
+    println!(
+        "{} Trust check for {}@{}",
+        colors::status_label("Trust"),
+        colors::bold(name),
+        version
+    );
     println!();
 
     println!("{}", colors::bold("Verification"));
@@ -1148,18 +1394,34 @@ fn print_single_trust_result(name: &str, version: &str, result: &TrustCheckResul
 
     match result.status.as_str() {
         "pass" => {
-            println!("{} {}", colors::green("✓"), colors::bold("Trust verification passed"));
+            println!(
+                "{} {}",
+                colors::green("✓"),
+                colors::bold("Trust verification passed")
+            );
         }
         "warn" => {
-            println!("{} {}", colors::yellow("!"), colors::bold("Trust verification incomplete"));
+            println!(
+                "{} {}",
+                colors::yellow("!"),
+                colors::bold("Trust verification incomplete")
+            );
             println!("  Some trust metadata is missing. Consider using 'strict' policy.");
         }
         "fail" => {
-            println!("{} {}", colors::red("✗"), colors::bold("Trust verification failed"));
+            println!(
+                "{} {}",
+                colors::red("✗"),
+                colors::bold("Trust verification failed")
+            );
             println!("  This package lacks required trust metadata.");
         }
         _ => {
-            println!("{} {}", colors::gray("?"), colors::bold("Trust status unknown"));
+            println!(
+                "{} {}",
+                colors::gray("?"),
+                colors::bold("Trust status unknown")
+            );
             println!("  Package not found in lockfile or registry.");
         }
     }
@@ -1173,13 +1435,13 @@ async fn cmd_policy_show(registry_url: &str) {
             std::process::exit(1);
         }
     };
-    
+
     let policy = client.config().get_policy(registry_url);
-    
+
     println!("{}", colors::bold("Trust Policy"));
     println!("  Registry: {}", registry_url);
     println!();
-    
+
     println!("{}", colors::bold("Requirements"));
     if let Some(pattern) = &policy.required_identity {
         println!("  Required identity: {}", colors::cyan(pattern));
@@ -1187,13 +1449,25 @@ async fn cmd_policy_show(registry_url: &str) {
         println!("  Required identity: Any");
     }
     println!("  Min SLSA level: {}", policy.min_slsa_level);
-    println!("  Require transparency log: {}", 
-        if policy.require_transparency_log { colors::green("Yes") } else { colors::yellow("No") });
+    println!(
+        "  Require transparency log: {}",
+        if policy.require_transparency_log {
+            colors::green("Yes")
+        } else {
+            colors::yellow("No")
+        }
+    );
     if let Some(age) = &policy.min_package_age {
         println!("  Min package age: {}", age);
     }
-    println!("  Block install scripts: {}", 
-        if policy.block_install_scripts { colors::green("Yes") } else { colors::yellow("No") });
+    println!(
+        "  Block install scripts: {}",
+        if policy.block_install_scripts {
+            colors::green("Yes")
+        } else {
+            colors::yellow("No")
+        }
+    );
 }
 
 async fn cmd_policy_set(registry_url: &str, policy: TrustPolicy) {
@@ -1204,25 +1478,38 @@ async fn cmd_policy_set(registry_url: &str, policy: TrustPolicy) {
             std::process::exit(1);
         }
     };
-    
-    client.config_mut().policies.insert(registry_url.to_string(), policy.clone());
-    
+
+    client
+        .config_mut()
+        .policies
+        .insert(registry_url.to_string(), policy.clone());
+
     if let Err(e) = client.config().save() {
         eprintln!("{} Failed to save policy: {}", colors::red("✗"), e);
         std::process::exit(1);
     }
-    
+
     println!("{} Policy updated for {}", colors::green("✓"), registry_url);
-    
+
     // Show what changed
     if policy.min_slsa_level >= 2 {
-        println!("  {} SLSA Level {} provenance required", colors::green("→"), policy.min_slsa_level);
+        println!(
+            "  {} SLSA Level {} provenance required",
+            colors::green("→"),
+            policy.min_slsa_level
+        );
     }
     if policy.require_transparency_log {
-        println!("  {} Transparency log inclusion required", colors::green("→"));
+        println!(
+            "  {} Transparency log inclusion required",
+            colors::green("→")
+        );
     }
     if policy.block_install_scripts {
-        println!("  {} Install scripts blocked by default", colors::green("→"));
+        println!(
+            "  {} Install scripts blocked by default",
+            colors::green("→")
+        );
     }
 }
 
@@ -1234,21 +1521,25 @@ fn read_package_info() -> Result<(String, String), String> {
     // Read lumen.toml
     let content = std::fs::read_to_string("lumen.toml")
         .map_err(|_| "No lumen.toml found. Run 'wares init' first.".to_string())?;
-    
-    let doc: toml::Value = content.parse()
+
+    let doc: toml::Value = content
+        .parse()
         .map_err(|e| format!("Failed to parse lumen.toml: {}", e))?;
-    
-    let package = doc.get("package")
+
+    let package = doc
+        .get("package")
         .ok_or_else(|| "No [package] section in lumen.toml".to_string())?;
-    
-    let name = package.get("name")
+
+    let name = package
+        .get("name")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "No package.name in lumen.toml".to_string())?;
-    
-    let version = package.get("version")
+
+    let version = package
+        .get("version")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "No package.version in lumen.toml".to_string())?;
-    
+
     Ok((name.to_string(), version.to_string()))
 }
 
@@ -1268,25 +1559,28 @@ fn generate_provenance(_name: &str, _version: &str) -> Option<crate::wares::type
     if std::env::var("GITHUB_ACTIONS").is_err() {
         return None;
     }
-    
-    use crate::wares::types::{BuildInvocation, BuildMetadata, ConfigSource, SlsaProvenance, SourceInfo};
-    use std::collections::HashMap;
+
+    use crate::wares::types::{
+        BuildInvocation, BuildMetadata, ConfigSource, SlsaProvenance, SourceInfo,
+    };
     use chrono::Utc;
-    
+    use std::collections::HashMap;
+
     let repo = std::env::var("GITHUB_REPOSITORY").unwrap_or_default();
     let workflow = std::env::var("GITHUB_WORKFLOW").unwrap_or_default();
     let sha = std::env::var("GITHUB_SHA").unwrap_or_default();
     let run_id = std::env::var("GITHUB_RUN_ID").unwrap_or_default();
-    
+
     let mut config_digest = HashMap::new();
     config_digest.insert("sha256".to_string(), sha.clone());
-    
+
     let mut source_digest = HashMap::new();
     source_digest.insert("gitCommit".to_string(), sha);
-    
+
     Some(SlsaProvenance {
         slsa_version: "v1.0".to_string(),
-        build_type: "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1".to_string(),
+        build_type: "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1"
+            .to_string(),
         builder_id: format!("https://github.com/{}/.github/workflows/{}", repo, workflow),
         invocation: BuildInvocation {
             config_source: ConfigSource {

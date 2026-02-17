@@ -48,6 +48,12 @@ pub enum ToolError {
     // Legacy variant for backward compatibility
     #[error("tool invocation failed: {0}")]
     InvocationFailed(String),
+    #[error("effect budget exhausted: {effect} (limit: {limit}) — {message}")]
+    BudgetExhausted {
+        effect: String,
+        limit: u32,
+        message: String,
+    },
 }
 
 // ---------------------------------------------------------------------------

@@ -45,18 +45,21 @@ impl std::fmt::Display for TokenScope {
     }
 }
 
-impl TokenScope {
-    /// Parse a scope from a string.
-    pub fn from_str(s: &str) -> Option<Self> {
+impl std::str::FromStr for TokenScope {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "publish" => Some(TokenScope::Publish),
-            "yank" => Some(TokenScope::Yank),
-            "owner" => Some(TokenScope::Owner),
-            "admin" => Some(TokenScope::Admin),
-            _ => None,
+            "publish" => Ok(TokenScope::Publish),
+            "yank" => Ok(TokenScope::Yank),
+            "owner" => Ok(TokenScope::Owner),
+            "admin" => Ok(TokenScope::Admin),
+            _ => Err(format!("invalid token scope: '{}'", s)),
         }
     }
+}
 
+impl TokenScope {
     /// Get all available scopes.
     pub fn all() -> Vec<Self> {
         vec![
@@ -163,13 +166,14 @@ impl std::fmt::Display for OwnerRole {
     }
 }
 
-impl OwnerRole {
-    /// Parse a role from a string.
-    pub fn from_str(s: &str) -> Option<Self> {
+impl std::str::FromStr for OwnerRole {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "maintainer" => Some(OwnerRole::Maintainer),
-            "owner" => Some(OwnerRole::Owner),
-            _ => None,
+            "maintainer" => Ok(OwnerRole::Maintainer),
+            "owner" => Ok(OwnerRole::Owner),
+            _ => Err(format!("invalid owner role: '{}'", s)),
         }
     }
 }
@@ -414,8 +418,8 @@ impl CredentialManager {
         let keys_dir = lumen_dir.join("keys");
 
         // Ensure directories exist
-        std::fs::create_dir_all(&lumen_dir).map_err(|e| AuthError::Io(e))?;
-        std::fs::create_dir_all(&keys_dir).map_err(|e| AuthError::Io(e))?;
+        std::fs::create_dir_all(&lumen_dir).map_err(AuthError::Io)?;
+        std::fs::create_dir_all(&keys_dir).map_err(AuthError::Io)?;
 
         Ok(Self {
             credentials_path,
@@ -430,8 +434,7 @@ impl CredentialManager {
             return Ok(CredentialsFile::new());
         }
 
-        let content =
-            std::fs::read_to_string(&self.credentials_path).map_err(|e| AuthError::Io(e))?;
+        let content = std::fs::read_to_string(&self.credentials_path).map_err(AuthError::Io)?;
 
         // Decrypt if using keyring (for now, just parse)
         let creds: CredentialsFile =
@@ -449,22 +452,18 @@ impl CredentialManager {
         opts.write(true).create(true).truncate(true);
         #[cfg(unix)]
         opts.mode(0o600);
-        let mut file = opts.open(&self.credentials_path)
-            .map_err(|e| AuthError::Io(e))?;
+        let mut file = opts.open(&self.credentials_path).map_err(AuthError::Io)?;
 
-        file.write_all(content.as_bytes())
-            .map_err(|e| AuthError::Io(e))?;
+        file.write_all(content.as_bytes()).map_err(AuthError::Io)?;
 
         // Ensure permissions on Unix
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let metadata =
-                std::fs::metadata(&self.credentials_path).map_err(|e| AuthError::Io(e))?;
+            let metadata = std::fs::metadata(&self.credentials_path).map_err(AuthError::Io)?;
             let mut permissions = metadata.permissions();
             permissions.set_mode(0o600);
-            std::fs::set_permissions(&self.credentials_path, permissions)
-                .map_err(|e| AuthError::Io(e))?;
+            std::fs::set_permissions(&self.credentials_path, permissions).map_err(AuthError::Io)?;
         }
 
         Ok(())
@@ -483,7 +482,7 @@ impl CredentialManager {
         #[cfg(feature = "keyring")]
         {
             if self.use_keyring {
-                let entry = keyring::Entry::new("lumen", &format!("{}", registry));
+                let entry = keyring::Entry::new("lumen", registry);
                 if let Ok(entry) = entry {
                     let _ = entry.set_password(token);
                     // Store reference in file
@@ -520,12 +519,9 @@ impl CredentialManager {
                 // Retrieve from keyring
                 #[cfg(feature = "keyring")]
                 {
-                    let entry = keyring::Entry::new("lumen", &format!("{}", registry));
+                    let entry = keyring::Entry::new("lumen", registry);
                     if let Ok(entry) = entry {
-                        return entry
-                            .get_password()
-                            .map(Some)
-                            .map_err(|e| AuthError::Keyring(e));
+                        return entry.get_password().map(Some).map_err(AuthError::Keyring);
                     }
                 }
                 return Ok(None);
@@ -565,8 +561,7 @@ impl CredentialManager {
             if let Some(key_id) = &cred.signing_key_id {
                 let key_path = self.keys_dir.join(format!("{}.json", key_id));
                 if key_path.exists() {
-                    let content =
-                        std::fs::read_to_string(&key_path).map_err(|e| AuthError::Io(e))?;
+                    let content = std::fs::read_to_string(&key_path).map_err(AuthError::Io)?;
                     let keypair: SigningKeypair = serde_json::from_str(&content)
                         .map_err(|e| AuthError::Parse(e.to_string()))?;
                     return Ok(keypair);
@@ -612,20 +607,18 @@ impl CredentialManager {
         opts.write(true).create(true).truncate(true);
         #[cfg(unix)]
         opts.mode(0o600);
-        let mut file = opts.open(&key_path)
-            .map_err(|e| AuthError::Io(e))?;
+        let mut file = opts.open(&key_path).map_err(AuthError::Io)?;
 
-        file.write_all(content.as_bytes())
-            .map_err(|e| AuthError::Io(e))?;
+        file.write_all(content.as_bytes()).map_err(AuthError::Io)?;
 
         // Ensure permissions on Unix
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let metadata = std::fs::metadata(&key_path).map_err(|e| AuthError::Io(e))?;
+            let metadata = std::fs::metadata(&key_path).map_err(AuthError::Io)?;
             let mut permissions = metadata.permissions();
             permissions.set_mode(0o600);
-            std::fs::set_permissions(&key_path, permissions).map_err(|e| AuthError::Io(e))?;
+            std::fs::set_permissions(&key_path, permissions).map_err(AuthError::Io)?;
         }
 
         Ok(())
@@ -909,10 +902,7 @@ impl AuthenticatedClient {
             "proof": proof,
         });
 
-        let mut req = self
-            .client
-            .put(&url)
-            .json(&json_body);
+        let mut req = self.client.put(&url).json(&json_body);
 
         if let Some(token) = &self.token {
             req = req.header("Authorization", format!("Bearer {}", token));
@@ -1128,9 +1118,9 @@ mod tests {
 
     #[test]
     fn test_token_scope_from_str() {
-        assert_eq!(TokenScope::from_str("publish"), Some(TokenScope::Publish));
-        assert_eq!(TokenScope::from_str("ADMIN"), Some(TokenScope::Admin));
-        assert_eq!(TokenScope::from_str("invalid"), None);
+        assert_eq!("publish".parse::<TokenScope>(), Ok(TokenScope::Publish));
+        assert_eq!("ADMIN".parse::<TokenScope>(), Ok(TokenScope::Admin));
+        assert!("invalid".parse::<TokenScope>().is_err());
     }
 
     #[test]

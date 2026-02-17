@@ -83,7 +83,7 @@ pub fn build_document_symbols(
                     .variants
                     .iter()
                     .map(|v| {
-                        let detail = v.payload.as_ref().map(|p| type_expr_to_string(p));
+                        let detail = v.payload.as_ref().map(type_expr_to_string);
                         let variant_range = span_to_selection_range(&v.span);
                         #[allow(deprecated)]
                         DocumentSymbol {
@@ -192,10 +192,7 @@ pub fn build_document_symbols(
 
 /// Convert a compiler Span to an LSP Range using byte offsets to compute the end line.
 /// The span's `line` field is 1-based; LSP uses 0-based.
-fn span_to_range(
-    span: &lumen_compiler::compiler::tokens::Span,
-    text: &str,
-) -> Range {
+fn span_to_range(span: &lumen_compiler::compiler::tokens::Span, text: &str) -> Range {
     let start_line = span.line.saturating_sub(1) as u32;
     let start_char = span.col.saturating_sub(1) as u32;
 

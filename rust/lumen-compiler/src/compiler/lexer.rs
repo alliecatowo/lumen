@@ -300,7 +300,7 @@ impl Lexer {
                 Some('{') if self.looks_like_interpolation_start() => {
                     is_interp = true;
                     if !cur_segment.is_empty() {
-                        segments.push((false, cur_segment.clone()));
+                        segments.push((false, cur_segment.clone(), None));
                         cur_segment.clear();
                     }
                     self.advance(); // skip {
@@ -340,7 +340,8 @@ impl Lexer {
                         });
                     }
                     self.advance(); // skip }
-                    segments.push((true, expr_str.trim().to_string()));
+                    let (expr_text, fmt_spec) = Self::split_format_spec(expr_str.trim());
+                    segments.push((true, expr_text, fmt_spec));
                 }
                 Some('{') => {
                     cur_segment.push('{');
@@ -356,7 +357,7 @@ impl Lexer {
         // Dedent: strip common leading whitespace
         let raw_content = if is_interp {
             if !cur_segment.is_empty() {
-                segments.push((false, cur_segment));
+                segments.push((false, cur_segment, None));
             }
             // For interpolated triple-quoted, apply dedent to text segments
             self.dedent_interp_segments(&mut segments);
@@ -402,7 +403,7 @@ impl Lexer {
         trimmed.to_string()
     }
 
-    fn dedent_interp_segments(&self, segments: &mut [(bool, String)]) {
+    fn dedent_interp_segments(&self, segments: &mut [(bool, String, Option<String>)]) {
         // Apply dedent to text-only segments
         for seg in segments.iter_mut() {
             if !seg.0 {
@@ -538,6 +539,119 @@ impl Lexer {
         Ok(Token::new(TokenKind::BytesLit(bytes), span))
     }
 
+    /// Split an interpolation expression string at the format spec boundary.
+    /// Returns `(expr_text, None)` or `(expr_text, Some(format_spec))`.
+    /// Only splits at `:` when it's at brace depth 0, not inside a nested string,
+    /// and the text after `:` looks like a valid format spec.
+    fn split_format_spec(expr_str: &str) -> (String, Option<String>) {
+        let chars: Vec<char> = expr_str.chars().collect();
+        let mut depth = 0i32;
+        let mut in_string = false;
+        let mut colon_pos = None;
+
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if in_string {
+                if c == '\\' {
+                    i += 1; // skip escaped char
+                } else if c == '"' {
+                    in_string = false;
+                }
+            } else {
+                match c {
+                    '"' => in_string = true,
+                    '{' | '(' | '[' => depth += 1,
+                    '}' | ')' | ']' => depth -= 1,
+                    ':' if depth == 0 => {
+                        // Found a potential format spec boundary
+                        let rest = &expr_str[i + 1..];
+                        if Self::looks_like_format_spec(rest) {
+                            colon_pos = Some(i);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            i += 1;
+        }
+
+        if let Some(pos) = colon_pos {
+            let expr_part = expr_str[..pos].trim().to_string();
+            let spec_part = expr_str[pos + 1..].to_string();
+            (expr_part, Some(spec_part))
+        } else {
+            (expr_str.trim().to_string(), None)
+        }
+    }
+
+    /// Check whether a string looks like a valid format spec.
+    /// Valid format specs match patterns like: `<10`, `>10`, `^10`, `.2f`, `#x`, `05d`, etc.
+    /// Must NOT look like an identifier, map key, or expression.
+    fn looks_like_format_spec(s: &str) -> bool {
+        if s.is_empty() {
+            return false;
+        }
+        let chars: Vec<char> = s.chars().collect();
+        let mut i = 0;
+
+        // Optional fill + align, or just align
+        if i < chars.len() && (chars[i] == '<' || chars[i] == '>' || chars[i] == '^') {
+            i += 1;
+        } else if i + 1 < chars.len()
+            && (chars[i + 1] == '<' || chars[i + 1] == '>' || chars[i + 1] == '^')
+        {
+            // fill char + align
+            i += 2;
+        }
+
+        // Optional sign
+        if i < chars.len() && (chars[i] == '+' || chars[i] == '-') {
+            i += 1;
+        }
+
+        // Optional '#'
+        if i < chars.len() && chars[i] == '#' {
+            i += 1;
+        }
+
+        // Optional '0' (zero-pad)
+        if i < chars.len()
+            && chars[i] == '0'
+            && i + 1 < chars.len()
+            && chars[i + 1].is_ascii_digit()
+        {
+            i += 1;
+        }
+
+        // Optional width (digits)
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+
+        // Optional '.' + precision digits
+        if i < chars.len() && chars[i] == '.' {
+            i += 1;
+            while i < chars.len() && chars[i].is_ascii_digit() {
+                i += 1;
+            }
+        }
+
+        // Optional type char
+        if i < chars.len()
+            && matches!(
+                chars[i],
+                'd' | 'x' | 'X' | 'o' | 'b' | 'f' | 'e' | 'E' | 's'
+            )
+        {
+            i += 1;
+        }
+
+        // Must have consumed the entire string
+        i == chars.len() && i > 0
+    }
+
     fn read_string(&mut self) -> Result<Token, LexError> {
         // Check for triple-quoted string
         if self.peek() == Some('"') && self.peek2() == Some('"') {
@@ -566,7 +680,7 @@ impl Lexer {
                     // Start of interpolation
                     is_interp = true;
                     if !cur_segment.is_empty() {
-                        segments.push((false, cur_segment.clone()));
+                        segments.push((false, cur_segment.clone(), None));
                         cur_segment.clear();
                     }
                     self.advance(); // skip {
@@ -608,7 +722,8 @@ impl Lexer {
                         });
                     }
                     self.advance(); // skip }
-                    segments.push((true, expr_str.trim().to_string()));
+                    let (expr_text, fmt_spec) = Self::split_format_spec(expr_str.trim());
+                    segments.push((true, expr_text, fmt_spec));
                 }
                 Some('{') => {
                     cur_segment.push('{');
@@ -628,7 +743,7 @@ impl Lexer {
         let span = self.span_from(so, sl, sc);
         if is_interp {
             if !cur_segment.is_empty() {
-                segments.push((false, cur_segment));
+                segments.push((false, cur_segment, None));
             }
             Ok(Token::new(TokenKind::StringInterpLit(segments), span))
         } else {
@@ -671,8 +786,17 @@ impl Lexer {
                 }
             } else if ch == '_' {
                 self.advance();
-            } else if (ch == 'e' || ch == 'E') && !is_float {
-                // Scientific notation
+            } else if ch == 'e' || ch == 'E' {
+                // Scientific notation: e.g. 1e10, 1.5e10, 2e-3, 3.14E+2
+                // Peek ahead to validate: must be followed by optional +/- then digit(s)
+                let mut lookahead = self.pos + 1;
+                if matches!(self.source.get(lookahead).copied(), Some('+') | Some('-')) {
+                    lookahead += 1;
+                }
+                if !matches!(self.source.get(lookahead).copied(), Some(d) if d.is_ascii_digit()) {
+                    // Not a valid exponent — stop here; `e`/`E` will be lexed as an identifier
+                    break;
+                }
                 is_float = true;
                 ns.push(ch);
                 self.advance();
@@ -739,14 +863,14 @@ impl Lexer {
         }
         let span = self.span_from(so, sl, sc);
         if let Ok(n) = i64::from_str_radix(&hex, 16) {
-             Ok(Token::new(TokenKind::IntLit(n), span))
+            Ok(Token::new(TokenKind::IntLit(n), span))
         } else if let Ok(n) = BigInt::from_str_radix(&hex, 16) {
-             Ok(Token::new(TokenKind::BigIntLit(n), span))
+            Ok(Token::new(TokenKind::BigIntLit(n), span))
         } else {
-             Err(LexError::InvalidNumber {
+            Err(LexError::InvalidNumber {
                 line: self.base_line + sl - 1,
                 col: sc,
-             })
+            })
         }
     }
 
@@ -772,14 +896,14 @@ impl Lexer {
         }
         let span = self.span_from(so, sl, sc);
         if let Ok(n) = i64::from_str_radix(&bin, 2) {
-             Ok(Token::new(TokenKind::IntLit(n), span))
+            Ok(Token::new(TokenKind::IntLit(n), span))
         } else if let Ok(n) = BigInt::from_str_radix(&bin, 2) {
-             Ok(Token::new(TokenKind::BigIntLit(n), span))
+            Ok(Token::new(TokenKind::BigIntLit(n), span))
         } else {
-             Err(LexError::InvalidNumber {
+            Err(LexError::InvalidNumber {
                 line: self.base_line + sl - 1,
                 col: sc,
-             })
+            })
         }
     }
 
@@ -805,14 +929,14 @@ impl Lexer {
         }
         let span = self.span_from(so, sl, sc);
         if let Ok(n) = i64::from_str_radix(&oct, 8) {
-             Ok(Token::new(TokenKind::IntLit(n), span))
+            Ok(Token::new(TokenKind::IntLit(n), span))
         } else if let Ok(n) = BigInt::from_str_radix(&oct, 8) {
-             Ok(Token::new(TokenKind::BigIntLit(n), span))
+            Ok(Token::new(TokenKind::BigIntLit(n), span))
         } else {
-             Err(LexError::InvalidNumber {
+            Err(LexError::InvalidNumber {
                 line: self.base_line + sl - 1,
                 col: sc,
-             })
+            })
         }
     }
 
@@ -916,7 +1040,7 @@ impl Lexer {
         self.advance(); // first `
         self.advance(); // second `
         self.advance(); // third `
-        // Consume any language tag on the same line (e.g., ```markdown)
+                        // Consume any language tag on the same line (e.g., ```markdown)
         while matches!(self.current(), Some(c) if c != '\n') {
             self.advance();
         }
@@ -936,7 +1060,7 @@ impl Lexer {
                     self.advance(); // `
                     self.advance(); // `
                     self.advance(); // `
-                    // Consume rest of closing fence line
+                                    // Consume rest of closing fence line
                     while matches!(self.current(), Some(c) if c != '\n') {
                         self.advance();
                     }
@@ -1185,8 +1309,19 @@ impl Lexer {
                     self.advance();
                     match self.current() {
                         Some('=') => {
-                            self.advance();
-                            tokens.push(Token::new(TokenKind::LtEq, self.span_from(so, sl, sc)));
+                            // Check for <=> (spaceship) before committing to <=
+                            if self.peek() == Some('>') {
+                                self.advance(); // consume '='
+                                self.advance(); // consume '>'
+                                tokens.push(Token::new(
+                                    TokenKind::Spaceship,
+                                    self.span_from(so, sl, sc),
+                                ));
+                            } else {
+                                self.advance();
+                                tokens
+                                    .push(Token::new(TokenKind::LtEq, self.span_from(so, sl, sc)));
+                            }
                         }
                         Some('<') => {
                             self.advance();
@@ -1393,10 +1528,112 @@ mod tests {
     }
 
     #[test]
-    fn test_lex_scientific() {
+    fn test_lex_scientific_basic() {
+        // Integer base with exponent
         let mut lexer = Lexer::new("1e10", 1, 0);
         let tokens = lexer.tokenize().unwrap();
         assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(f) if *f == 1e10));
+    }
+
+    #[test]
+    fn test_lex_scientific_with_decimal() {
+        // Float base with exponent: 1.5e10
+        let mut lexer = Lexer::new("1.5e10", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(f) if *f == 1.5e10));
+    }
+
+    #[test]
+    fn test_lex_scientific_negative_exponent() {
+        // Negative exponent: 2e-3 == 0.002
+        let mut lexer = Lexer::new("2e-3", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(f) if *f == 2e-3));
+    }
+
+    #[test]
+    fn test_lex_scientific_positive_exponent() {
+        // Explicit positive exponent: 3.14E+2 == 314.0
+        let mut lexer = Lexer::new("3.14E+2", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(f) if *f == 3.14E+2));
+    }
+
+    #[test]
+    fn test_lex_scientific_uppercase_e() {
+        // Uppercase E: 1E5 == 100000.0
+        let mut lexer = Lexer::new("1E5", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(f) if *f == 1E5));
+    }
+
+    #[test]
+    fn test_lex_scientific_no_decimal_large() {
+        // 1e5 == 100000.0
+        let mut lexer = Lexer::new("1e5", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(f) if *f == 1e5));
+    }
+
+    #[test]
+    fn test_lex_scientific_decimal_negative_exp() {
+        // 6.022e-23 (Avogadro-ish)
+        let mut lexer = Lexer::new("6.022e-23", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(f) if *f == 6.022e-23));
+    }
+
+    #[test]
+    fn test_lex_scientific_invalid_no_digits_after_e() {
+        // `1e` should NOT be a valid float — `1` is Int, `e` is an identifier
+        let mut lexer = Lexer::new("1e", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::IntLit(1)));
+        assert!(matches!(&tokens[1].kind, TokenKind::Ident(ref s) if s == "e"));
+    }
+
+    #[test]
+    fn test_lex_scientific_invalid_e_plus_no_digits() {
+        // `1e+` should NOT be a valid float — `1` is Int, `e` is ident, `+` is Plus
+        let mut lexer = Lexer::new("1e+", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::IntLit(1)));
+        assert!(matches!(&tokens[1].kind, TokenKind::Ident(ref s) if s == "e"));
+        assert!(matches!(&tokens[2].kind, TokenKind::Plus));
+    }
+
+    #[test]
+    fn test_lex_plain_int_unchanged() {
+        // Regular int is unaffected
+        let mut lexer = Lexer::new("42", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::IntLit(42)));
+    }
+
+    #[test]
+    fn test_lex_plain_float_unchanged() {
+        // Regular float is unaffected
+        let mut lexer = Lexer::new("3.14", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(f) if (*f - 3.14).abs() < 1e-15));
+    }
+
+    #[test]
+    fn test_lex_scientific_zero_exponent() {
+        // 5e0 == 5.0
+        let mut lexer = Lexer::new("5e0", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(f) if *f == 5.0));
+    }
+
+    #[test]
+    fn test_lex_scientific_in_expression() {
+        // Scientific notation in an expression context: `1.5e10 + 2e-3`
+        let mut lexer = Lexer::new("1.5e10 + 2e-3", 1, 0);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(f) if *f == 1.5e10));
+        assert!(matches!(&tokens[1].kind, TokenKind::Plus));
+        assert!(matches!(&tokens[2].kind, TokenKind::FloatLit(f) if *f == 2e-3));
     }
 
     #[test]
@@ -1536,7 +1773,9 @@ mod tests {
         let src = "```markdown\n# Title\nSome text\n```";
         let mut lexer = Lexer::new(src, 1, 0);
         let tokens = lexer.tokenize().unwrap();
-        assert!(matches!(&tokens[0].kind, TokenKind::MarkdownBlock(s) if s == "# Title\nSome text"));
+        assert!(
+            matches!(&tokens[0].kind, TokenKind::MarkdownBlock(s) if s == "# Title\nSome text")
+        );
     }
 
     #[test]
@@ -1544,7 +1783,9 @@ mod tests {
         let src = "```\nDocstring for main\n```\ncell main() -> Int\n  return 42\nend";
         let mut lexer = Lexer::new(src, 1, 0);
         let tokens = lexer.tokenize().unwrap();
-        assert!(matches!(&tokens[0].kind, TokenKind::MarkdownBlock(s) if s == "Docstring for main"));
+        assert!(
+            matches!(&tokens[0].kind, TokenKind::MarkdownBlock(s) if s == "Docstring for main")
+        );
         // Next meaningful token after newline should be Cell
         let cell_tok = tokens.iter().find(|t| matches!(t.kind, TokenKind::Cell));
         assert!(cell_tok.is_some());
@@ -1565,7 +1806,10 @@ mod tests {
         let mut lexer = Lexer::new(src, 1, 0);
         let result = lexer.tokenize();
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), LexError::UnterminatedMarkdownBlock { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            LexError::UnterminatedMarkdownBlock { .. }
+        ));
     }
 
     #[test]

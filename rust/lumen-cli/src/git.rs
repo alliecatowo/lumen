@@ -40,7 +40,7 @@ use std::process::Command;
 /// Default Lumen home directory for caching.
 pub fn lumen_home_dir() -> PathBuf {
     dirs::home_dir()
-        .unwrap_or_else(|| std::env::temp_dir())
+        .unwrap_or_else(std::env::temp_dir)
         .join(".lumen")
 }
 
@@ -711,8 +711,10 @@ pub fn update_git_repo(url: &str, cache_dir: &Path) -> Result<(), GitError> {
 
 /// Authentication method for git operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum GitAuth {
     /// No authentication (public repository).
+    #[default]
     None,
     /// SSH key authentication.
     Ssh {
@@ -735,11 +737,6 @@ pub enum GitAuth {
     },
 }
 
-impl Default for GitAuth {
-    fn default() -> Self {
-        Self::None
-    }
-}
 
 /// Environment configuration for git authentication.
 #[derive(Debug, Clone)]
@@ -943,17 +940,17 @@ pub fn parse_git_url(url: &str) -> (String, GitRef) {
         let base_url = &url[..idx];
         let ref_part = &url[idx + 1..];
 
-        let git_ref = if ref_part.starts_with("branch=") {
-            GitRef::Branch(ref_part[7..].to_string())
-        } else if ref_part.starts_with("tag=") {
-            GitRef::Tag(ref_part[4..].to_string())
+        let git_ref = if let Some(stripped) = ref_part.strip_prefix("branch=") {
+            GitRef::Branch(stripped.to_string())
+        } else if let Some(stripped) = ref_part.strip_prefix("tag=") {
+            GitRef::Tag(stripped.to_string())
         } else if ref_part.starts_with("commit=") || ref_part.starts_with("rev=") {
-            let sha = if ref_part.starts_with("commit=") {
-                &ref_part[7..]
-            } else {
-                &ref_part[4..]
-            };
-            GitRef::Commit(sha.to_string())
+            let sha = ref_part
+                .strip_prefix("commit=")
+                .or_else(|| ref_part.strip_prefix("rev="))
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| ref_part.to_string());
+            GitRef::Commit(sha)
         } else {
             // Assume it's a branch name
             GitRef::Branch(ref_part.to_string())

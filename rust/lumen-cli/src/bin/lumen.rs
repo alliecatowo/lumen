@@ -1,12 +1,12 @@
 //! Lumen CLI — command-line interface for the Lumen language.
 
 use lumen_cli::{
-    colors, config, doc, fmt, lang_ref,
-    lint, module_resolver, repl, test_cmd,
+    ci_output, colors, config, doc, error_chain, fmt, lang_ref, lint, module_resolver, repl,
+    test_cmd,
 };
 
-use colors::{bold, cyan, gray, green, red, status_label, yellow};
 use clap::{Parser as ClapParser, Subcommand, ValueEnum};
+use colors::{bold, cyan, gray, green, red, status_label, yellow};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -46,6 +46,10 @@ enum Commands {
         /// Path to the source file
         #[arg()]
         file: PathBuf,
+
+        /// Output format: text (default), junit, json
+        #[arg(long, default_value = "text")]
+        output_format: String,
     },
     /// Compile and run a `.lm`, `.lumen`, `.lm.md`, or `.lumen.md` file
     Run {
@@ -137,6 +141,15 @@ enum Commands {
     Build {
         #[command(subcommand)]
         sub: BuildCommands,
+    },
+    /// Watch files and re-check on changes
+    Watch {
+        /// Path to file or directory to watch (default: current directory)
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Polling interval in milliseconds
+        #[arg(long, default_value_t = 500)]
+        interval: u64,
     },
 }
 
@@ -273,6 +286,18 @@ fn register_providers(
             "crypto.hmac_sha256",
             Box::new(lumen_provider_crypto::CryptoProvider::hmac_sha256()),
         );
+        registry.register(
+            "crypto.ed25519_keygen",
+            Box::new(lumen_provider_crypto::Ed25519Provider::keygen()),
+        );
+        registry.register(
+            "crypto.ed25519_sign",
+            Box::new(lumen_provider_crypto::Ed25519Provider::sign()),
+        );
+        registry.register(
+            "crypto.ed25519_verify",
+            Box::new(lumen_provider_crypto::Ed25519Provider::verify()),
+        );
     }
 
     #[cfg(feature = "http")]
@@ -328,7 +353,10 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Check { file } => cmd_check(&file),
+        Commands::Check {
+            file,
+            output_format,
+        } => cmd_check(&file, &output_format),
         Commands::Run {
             file,
             cell,
@@ -364,6 +392,7 @@ fn main() {
         Commands::Build { sub } => match sub {
             BuildCommands::Wasm { target, release } => cmd_build_wasm(&target, release),
         },
+        Commands::Watch { path, interval } => cmd_watch(&path, interval),
     }
 }
 
@@ -740,27 +769,239 @@ fn compile_source_file(
     lumen_compiler::compile_with_imports(source, &resolve_import)
 }
 
-fn cmd_check(file: &PathBuf) {
+fn cmd_check(file: &PathBuf, output_format: &str) {
+    let format = ci_output::OutputFormat::from_str_name(output_format).unwrap_or_else(|| {
+        eprintln!(
+            "{} unknown output format '{}'. Valid formats: {}",
+            red("error:"),
+            output_format,
+            ci_output::OutputFormat::names().join(", ")
+        );
+        std::process::exit(1);
+    });
+
     let source = read_source(file);
     let filename = file.display().to_string();
 
-    println!("{} {}", status_label("Checking"), bold(&filename));
     let start = std::time::Instant::now();
 
-    match compile_source_file(file, &source) {
-        Ok(_module) => {
-            let elapsed = start.elapsed();
-            println!(
-                "{} Finished in {:.2}s — no errors",
-                green("✓"),
-                elapsed.as_secs_f64()
-            );
+    match format {
+        ci_output::OutputFormat::Text => {
+            // Original human-readable output.
+            println!("{} {}", status_label("Checking"), bold(&filename));
+            match compile_source_file(file, &source) {
+                Ok(_module) => {
+                    let elapsed = start.elapsed();
+                    println!(
+                        "{} Finished in {:.2}s — no errors",
+                        green("✓"),
+                        elapsed.as_secs_f64()
+                    );
+                }
+                Err(e) => {
+                    let formatted = lumen_compiler::format_error(&e, &source, &filename);
+                    eprint!("{}", formatted);
+                    std::process::exit(1);
+                }
+            }
         }
-        Err(e) => {
-            let formatted = lumen_compiler::format_error(&e, &source, &filename);
-            eprint!("{}", formatted);
+        ci_output::OutputFormat::Junit | ci_output::OutputFormat::Json => {
+            let mut report = ci_output::CheckReport::new("lumen-check");
+            let file_start = std::time::Instant::now();
+
+            let result = match compile_source_file(file, &source) {
+                Ok(_module) => ci_output::FileCheckResult {
+                    file: filename.clone(),
+                    passed: true,
+                    duration_secs: file_start.elapsed().as_secs_f64(),
+                    diagnostics: vec![],
+                },
+                Err(e) => {
+                    let diag = ci_output::diagnostic_from_compile_error(&e, &source, &filename);
+                    ci_output::FileCheckResult {
+                        file: filename.clone(),
+                        passed: false,
+                        duration_secs: file_start.elapsed().as_secs_f64(),
+                        diagnostics: vec![diag],
+                    }
+                }
+            };
+
+            let has_failures = !result.passed;
+            report.results.push(result);
+            report.total_duration_secs = start.elapsed().as_secs_f64();
+
+            let output = match format {
+                ci_output::OutputFormat::Junit => ci_output::render_junit_xml(&report),
+                ci_output::OutputFormat::Json => ci_output::render_json(&report),
+                ci_output::OutputFormat::Text => unreachable!(),
+            };
+            println!("{}", output);
+
+            if has_failures {
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+fn cmd_watch(path: &Path, interval_ms: u64) {
+    use std::collections::HashMap;
+    use std::time::{Duration, SystemTime};
+
+    // Collect initial set of source files
+    let mut source_files = Vec::new();
+    if path.is_file() {
+        if !is_lumen_source(path) {
+            eprintln!(
+                "{} expected a .lm, .lumen, .lm.md, or .lumen.md file, got '{}'",
+                red("error:"),
+                path.display()
+            );
             std::process::exit(1);
         }
+        source_files.push(path.to_path_buf());
+    } else if let Err(e) = collect_lumen_sources(path, &mut source_files) {
+        eprintln!("{} {}", red("error:"), e);
+        std::process::exit(1);
+    }
+
+    if source_files.is_empty() {
+        eprintln!(
+            "{} no .lm/.lumen/.lm.md/.lumen.md files found under {}",
+            red("error:"),
+            path.display()
+        );
+        std::process::exit(1);
+    }
+
+    source_files.sort();
+
+    println!(
+        "{} {} file(s) under {} (polling every {}ms, Ctrl+C to stop)",
+        status_label("Watching"),
+        source_files.len(),
+        bold(&path.display().to_string()),
+        interval_ms
+    );
+
+    // Install Ctrl+C handler
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = running.clone();
+    let _ = ctrlc::set_handler(move || {
+        r.store(false, std::sync::atomic::Ordering::SeqCst);
+    });
+
+    // Build initial mtime map
+    let mut mtimes: HashMap<PathBuf, SystemTime> = HashMap::new();
+    for file in &source_files {
+        if let Ok(meta) = std::fs::metadata(file) {
+            if let Ok(mtime) = meta.modified() {
+                mtimes.insert(file.clone(), mtime);
+            }
+        }
+    }
+
+    // Run initial check
+    run_watch_check(&source_files);
+
+    let poll_duration = Duration::from_millis(interval_ms);
+
+    while running.load(std::sync::atomic::Ordering::SeqCst) {
+        std::thread::sleep(poll_duration);
+
+        // Re-collect sources in case files were added/removed
+        let mut current_files = Vec::new();
+        if path.is_file() {
+            current_files.push(path.to_path_buf());
+        } else {
+            let _ = collect_lumen_sources(path, &mut current_files);
+        }
+        current_files.sort();
+
+        let mut changed = false;
+        for file in &current_files {
+            let current_mtime = std::fs::metadata(file).ok().and_then(|m| m.modified().ok());
+
+            match (mtimes.get(file), current_mtime) {
+                (Some(old), Some(new)) if new > *old => {
+                    changed = true;
+                    mtimes.insert(file.clone(), new);
+                }
+                (None, Some(new)) => {
+                    // New file
+                    changed = true;
+                    mtimes.insert(file.clone(), new);
+                }
+                _ => {}
+            }
+        }
+
+        // Check for deleted files
+        let deleted: Vec<PathBuf> = mtimes
+            .keys()
+            .filter(|k| !current_files.contains(k))
+            .cloned()
+            .collect();
+        for d in &deleted {
+            mtimes.remove(d);
+            changed = true;
+        }
+
+        if changed {
+            run_watch_check(&current_files);
+        }
+    }
+
+    println!("\n{} Watch stopped", gray("info:"));
+}
+
+fn run_watch_check(files: &[PathBuf]) {
+    let now = chrono::Local::now().format("%H:%M:%S");
+    println!(
+        "\n{} [{}] Checking {} file(s)...",
+        status_label("Watch"),
+        now,
+        files.len()
+    );
+
+    let start = std::time::Instant::now();
+    let mut errors = 0usize;
+
+    for file in files {
+        let source = match std::fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{} cannot read '{}': {}", red("error:"), file.display(), e);
+                errors += 1;
+                continue;
+            }
+        };
+
+        let filename = file.display().to_string();
+        if let Err(e) = compile_source_file(file, &source) {
+            let formatted = lumen_compiler::format_error(&e, &source, &filename);
+            eprint!("{}", formatted);
+            errors += 1;
+        }
+    }
+
+    let elapsed = start.elapsed();
+    if errors == 0 {
+        println!(
+            "{} [{}] All clear — {:.2}s",
+            green("✓"),
+            now,
+            elapsed.as_secs_f64()
+        );
+    } else {
+        eprintln!(
+            "{} [{}] {} error(s) — {:.2}s",
+            red("✗"),
+            now,
+            errors,
+            elapsed.as_secs_f64()
+        );
     }
 }
 
@@ -773,7 +1014,9 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
     let module = match compile_source_file(file, &source) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("{} compilation failed", red("✗ Error:"));
+            let chain = error_chain::ErrorChain::new("compilation failed")
+                .caused_by(format!("in file '{}'", filename));
+            eprintln!("{}", chain.format_with_prefix(&red("✗")));
             let formatted = lumen_compiler::format_error(&e, &source, &filename);
             eprint!("{}", formatted);
             std::process::exit(1);
@@ -868,7 +1111,8 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
                     ts.end_run();
                 }
             }
-            eprintln!("{} {}", red("✗ Error:"), e);
+            let chain = error_chain::chain_from_error(&e);
+            eprintln!("{}", chain.format_with_prefix(&red("✗ Error:")));
             std::process::exit(1);
         }
     }
@@ -882,7 +1126,9 @@ fn cmd_emit(file: &PathBuf, output: Option<PathBuf>) {
     let module = match compile_source_file(file, &source) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("{} compilation failed", red("error:"));
+            let chain = error_chain::ErrorChain::new("compilation failed")
+                .caused_by(format!("in file '{}'", filename));
+            eprintln!("{}", chain.format_with_prefix(&red("✗")));
             let formatted = lumen_compiler::format_error(&e, &source, &filename);
             eprint!("{}", formatted);
             std::process::exit(1);
@@ -890,7 +1136,8 @@ fn cmd_emit(file: &PathBuf, output: Option<PathBuf>) {
     };
 
     let json = lumen_compiler::compiler::emit::emit_json(&module).unwrap_or_else(|e| {
-        eprintln!("{} emit failed: {}", red("error:"), e);
+        let chain = error_chain::ErrorChain::new("emit failed").caused_by(e.to_string());
+        eprintln!("{}", chain.format_with_prefix(&red("✗")));
         std::process::exit(1);
     });
 
@@ -966,7 +1213,7 @@ fn read_trace_events(path: &Path) -> Result<Vec<lumen_runtime::trace::events::Tr
                 .map_err(|e| format!("invalid JSON in trace at line {}: {}", idx + 1, e))
         })
         .collect()
-    }
+}
 
 fn verify_trace_chain(events: &[lumen_runtime::trace::events::TraceEvent]) -> Result<(), String> {
     lumen_runtime::trace::store::verify_event_chain(events)

@@ -901,6 +901,10 @@ impl Formatter {
             Stmt::Yield(s) => {
                 self.writeln(&format!("yield {}", self.fmt_expr(&s.value)));
             }
+            Stmt::LocalRecord(_) | Stmt::LocalEnum(_) | Stmt::LocalCell(_) => {
+                // Local definitions inside cell bodies — format as-is for now
+                // These are lifted and formatted at the top level by the compiler
+            }
         }
     }
 
@@ -918,6 +922,13 @@ impl Formatter {
                         StringSegment::Interpolation(e) => {
                             result.push('{');
                             result.push_str(&self.fmt_expr(e));
+                            result.push('}');
+                        }
+                        StringSegment::FormattedInterpolation(e, spec) => {
+                            result.push('{');
+                            result.push_str(&self.fmt_expr(e));
+                            result.push(':');
+                            result.push_str(&spec.raw);
                             result.push('}');
                         }
                     }
@@ -1122,6 +1133,19 @@ impl Formatter {
             Expr::TryExpr(expr, _) => {
                 format!("{}?", self.fmt_expr(expr))
             }
+            Expr::TryElse {
+                expr,
+                error_binding,
+                handler,
+                ..
+            } => {
+                format!(
+                    "try {} else |{}| {}",
+                    self.fmt_expr(expr),
+                    error_binding,
+                    self.fmt_expr(handler)
+                )
+            }
             Expr::NullCoalesce(left, right, _) => {
                 format!("{} ?? {}", self.fmt_expr(left), self.fmt_expr(right))
             }
@@ -1195,10 +1219,16 @@ impl Formatter {
             } => {
                 format!("{} as {}", self.fmt_expr(expr), target_type)
             }
-            Expr::WhenExpr { arms, else_body, .. } => {
+            Expr::WhenExpr {
+                arms, else_body, ..
+            } => {
                 let mut parts = vec!["when".to_string()];
                 for arm in arms {
-                    parts.push(format!("  {} -> {}", self.fmt_expr(&arm.condition), self.fmt_expr(&arm.body)));
+                    parts.push(format!(
+                        "  {} -> {}",
+                        self.fmt_expr(&arm.condition),
+                        self.fmt_expr(&arm.body)
+                    ));
                 }
                 if let Some(eb) = else_body {
                     parts.push(format!("  _ -> {}", self.fmt_expr(eb)));
@@ -1209,9 +1239,19 @@ impl Formatter {
             Expr::ComptimeExpr(inner, _) => {
                 format!("comptime {}", self.fmt_expr(inner))
             }
-            Expr::Perform { effect_name, operation, args, .. } => {
+            Expr::Perform {
+                effect_name,
+                operation,
+                args,
+                ..
+            } => {
                 let arg_strs: Vec<String> = args.iter().map(|a| self.fmt_expr(a)).collect();
-                format!("perform {}.{}({})", effect_name, operation, arg_strs.join(", "))
+                format!(
+                    "perform {}.{}({})",
+                    effect_name,
+                    operation,
+                    arg_strs.join(", ")
+                )
             }
             Expr::HandleExpr { body, handlers, .. } => {
                 let mut parts = Vec::new();
@@ -1220,15 +1260,23 @@ impl Formatter {
                     let expr_str = match stmt {
                         Stmt::Expr(es) => format!("  {}", self.fmt_expr(&es.expr)),
                         Stmt::Return(r) => format!("  return {}", self.fmt_expr(&r.value)),
-                        Stmt::Let(ls) => format!("  let {} = {}", ls.name, self.fmt_expr(&ls.value)),
+                        Stmt::Let(ls) => {
+                            format!("  let {} = {}", ls.name, self.fmt_expr(&ls.value))
+                        }
                         _ => "  ...".to_string(),
                     };
                     parts.push(expr_str);
                 }
                 parts.push("with".to_string());
                 for handler in handlers {
-                    let params: Vec<String> = handler.params.iter().map(|p| p.name.clone()).collect();
-                    parts.push(format!("  {}.{}({}) =>", handler.effect_name, handler.operation, params.join(", ")));
+                    let params: Vec<String> =
+                        handler.params.iter().map(|p| p.name.clone()).collect();
+                    parts.push(format!(
+                        "  {}.{}({}) =>",
+                        handler.effect_name,
+                        handler.operation,
+                        params.join(", ")
+                    ));
                     for stmt in &handler.body {
                         let expr_str = match stmt {
                             Stmt::Expr(es) => format!("    {}", self.fmt_expr(&es.expr)),
@@ -1763,9 +1811,18 @@ cell greet() -> String
 end
 ";
         let output = format_lm_source(input);
-        assert!(output.contains("# Module Overview"), "markdown heading preserved");
-        assert!(output.contains("This module does things."), "markdown body preserved");
-        assert!(output.contains("```\n# Module Overview"), "opening fence preserved");
+        assert!(
+            output.contains("# Module Overview"),
+            "markdown heading preserved"
+        );
+        assert!(
+            output.contains("This module does things."),
+            "markdown body preserved"
+        );
+        assert!(
+            output.contains("```\n# Module Overview"),
+            "opening fence preserved"
+        );
         assert!(output.contains("  return \"hello\""), "code is formatted");
     }
 
@@ -1830,8 +1887,14 @@ cell second() -> Int
 end
 ";
         let output = format_lm_source(input);
-        assert!(output.contains("# Header"), "first markdown block preserved");
-        assert!(output.contains("# Second section"), "second markdown block preserved");
+        assert!(
+            output.contains("# Header"),
+            "first markdown block preserved"
+        );
+        assert!(
+            output.contains("# Second section"),
+            "second markdown block preserved"
+        );
         assert!(output.contains("cell first()"), "first cell present");
         assert!(output.contains("cell second()"), "second cell present");
     }

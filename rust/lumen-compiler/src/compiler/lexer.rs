@@ -300,7 +300,7 @@ impl Lexer {
                 Some('{') if self.looks_like_interpolation_start() => {
                     is_interp = true;
                     if !cur_segment.is_empty() {
-                        segments.push((false, cur_segment.clone()));
+                        segments.push((false, cur_segment.clone(), None));
                         cur_segment.clear();
                     }
                     self.advance(); // skip {
@@ -340,7 +340,8 @@ impl Lexer {
                         });
                     }
                     self.advance(); // skip }
-                    segments.push((true, expr_str.trim().to_string()));
+                    let (expr_text, fmt_spec) = Self::split_format_spec(expr_str.trim());
+                    segments.push((true, expr_text, fmt_spec));
                 }
                 Some('{') => {
                     cur_segment.push('{');
@@ -356,7 +357,7 @@ impl Lexer {
         // Dedent: strip common leading whitespace
         let raw_content = if is_interp {
             if !cur_segment.is_empty() {
-                segments.push((false, cur_segment));
+                segments.push((false, cur_segment, None));
             }
             // For interpolated triple-quoted, apply dedent to text segments
             self.dedent_interp_segments(&mut segments);
@@ -402,7 +403,7 @@ impl Lexer {
         trimmed.to_string()
     }
 
-    fn dedent_interp_segments(&self, segments: &mut [(bool, String)]) {
+    fn dedent_interp_segments(&self, segments: &mut [(bool, String, Option<String>)]) {
         // Apply dedent to text-only segments
         for seg in segments.iter_mut() {
             if !seg.0 {
@@ -538,6 +539,119 @@ impl Lexer {
         Ok(Token::new(TokenKind::BytesLit(bytes), span))
     }
 
+    /// Split an interpolation expression string at the format spec boundary.
+    /// Returns `(expr_text, None)` or `(expr_text, Some(format_spec))`.
+    /// Only splits at `:` when it's at brace depth 0, not inside a nested string,
+    /// and the text after `:` looks like a valid format spec.
+    fn split_format_spec(expr_str: &str) -> (String, Option<String>) {
+        let chars: Vec<char> = expr_str.chars().collect();
+        let mut depth = 0i32;
+        let mut in_string = false;
+        let mut colon_pos = None;
+
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if in_string {
+                if c == '\\' {
+                    i += 1; // skip escaped char
+                } else if c == '"' {
+                    in_string = false;
+                }
+            } else {
+                match c {
+                    '"' => in_string = true,
+                    '{' | '(' | '[' => depth += 1,
+                    '}' | ')' | ']' => depth -= 1,
+                    ':' if depth == 0 => {
+                        // Found a potential format spec boundary
+                        let rest = &expr_str[i + 1..];
+                        if Self::looks_like_format_spec(rest) {
+                            colon_pos = Some(i);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            i += 1;
+        }
+
+        if let Some(pos) = colon_pos {
+            let expr_part = expr_str[..pos].trim().to_string();
+            let spec_part = expr_str[pos + 1..].to_string();
+            (expr_part, Some(spec_part))
+        } else {
+            (expr_str.trim().to_string(), None)
+        }
+    }
+
+    /// Check whether a string looks like a valid format spec.
+    /// Valid format specs match patterns like: `<10`, `>10`, `^10`, `.2f`, `#x`, `05d`, etc.
+    /// Must NOT look like an identifier, map key, or expression.
+    fn looks_like_format_spec(s: &str) -> bool {
+        if s.is_empty() {
+            return false;
+        }
+        let chars: Vec<char> = s.chars().collect();
+        let mut i = 0;
+
+        // Optional fill + align, or just align
+        if i < chars.len() && (chars[i] == '<' || chars[i] == '>' || chars[i] == '^') {
+            i += 1;
+        } else if i + 1 < chars.len()
+            && (chars[i + 1] == '<' || chars[i + 1] == '>' || chars[i + 1] == '^')
+        {
+            // fill char + align
+            i += 2;
+        }
+
+        // Optional sign
+        if i < chars.len() && (chars[i] == '+' || chars[i] == '-') {
+            i += 1;
+        }
+
+        // Optional '#'
+        if i < chars.len() && chars[i] == '#' {
+            i += 1;
+        }
+
+        // Optional '0' (zero-pad)
+        if i < chars.len()
+            && chars[i] == '0'
+            && i + 1 < chars.len()
+            && chars[i + 1].is_ascii_digit()
+        {
+            i += 1;
+        }
+
+        // Optional width (digits)
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+
+        // Optional '.' + precision digits
+        if i < chars.len() && chars[i] == '.' {
+            i += 1;
+            while i < chars.len() && chars[i].is_ascii_digit() {
+                i += 1;
+            }
+        }
+
+        // Optional type char
+        if i < chars.len()
+            && matches!(
+                chars[i],
+                'd' | 'x' | 'X' | 'o' | 'b' | 'f' | 'e' | 'E' | 's'
+            )
+        {
+            i += 1;
+        }
+
+        // Must have consumed the entire string
+        i == chars.len() && i > 0
+    }
+
     fn read_string(&mut self) -> Result<Token, LexError> {
         // Check for triple-quoted string
         if self.peek() == Some('"') && self.peek2() == Some('"') {
@@ -566,7 +680,7 @@ impl Lexer {
                     // Start of interpolation
                     is_interp = true;
                     if !cur_segment.is_empty() {
-                        segments.push((false, cur_segment.clone()));
+                        segments.push((false, cur_segment.clone(), None));
                         cur_segment.clear();
                     }
                     self.advance(); // skip {
@@ -608,7 +722,8 @@ impl Lexer {
                         });
                     }
                     self.advance(); // skip }
-                    segments.push((true, expr_str.trim().to_string()));
+                    let (expr_text, fmt_spec) = Self::split_format_spec(expr_str.trim());
+                    segments.push((true, expr_text, fmt_spec));
                 }
                 Some('{') => {
                     cur_segment.push('{');
@@ -628,7 +743,7 @@ impl Lexer {
         let span = self.span_from(so, sl, sc);
         if is_interp {
             if !cur_segment.is_empty() {
-                segments.push((false, cur_segment));
+                segments.push((false, cur_segment, None));
             }
             Ok(Token::new(TokenKind::StringInterpLit(segments), span))
         } else {

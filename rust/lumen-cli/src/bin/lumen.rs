@@ -1,6 +1,8 @@
 //! Lumen CLI — command-line interface for the Lumen language.
 
-use lumen_cli::{colors, config, doc, fmt, lang_ref, lint, module_resolver, repl, test_cmd};
+use lumen_cli::{
+    ci_output, colors, config, doc, fmt, lang_ref, lint, module_resolver, repl, test_cmd,
+};
 
 use clap::{Parser as ClapParser, Subcommand, ValueEnum};
 use colors::{bold, cyan, gray, green, red, status_label, yellow};
@@ -43,6 +45,10 @@ enum Commands {
         /// Path to the source file
         #[arg()]
         file: PathBuf,
+
+        /// Output format: text (default), junit, json
+        #[arg(long, default_value = "text")]
+        output_format: String,
     },
     /// Compile and run a `.lm`, `.lumen`, `.lm.md`, or `.lumen.md` file
     Run {
@@ -334,7 +340,10 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Check { file } => cmd_check(&file),
+        Commands::Check {
+            file,
+            output_format,
+        } => cmd_check(&file, &output_format),
         Commands::Run {
             file,
             cell,
@@ -747,26 +756,78 @@ fn compile_source_file(
     lumen_compiler::compile_with_imports(source, &resolve_import)
 }
 
-fn cmd_check(file: &PathBuf) {
+fn cmd_check(file: &PathBuf, output_format: &str) {
+    let format = ci_output::OutputFormat::from_str_name(output_format).unwrap_or_else(|| {
+        eprintln!(
+            "{} unknown output format '{}'. Valid formats: {}",
+            red("error:"),
+            output_format,
+            ci_output::OutputFormat::names().join(", ")
+        );
+        std::process::exit(1);
+    });
+
     let source = read_source(file);
     let filename = file.display().to_string();
 
-    println!("{} {}", status_label("Checking"), bold(&filename));
     let start = std::time::Instant::now();
 
-    match compile_source_file(file, &source) {
-        Ok(_module) => {
-            let elapsed = start.elapsed();
-            println!(
-                "{} Finished in {:.2}s — no errors",
-                green("✓"),
-                elapsed.as_secs_f64()
-            );
+    match format {
+        ci_output::OutputFormat::Text => {
+            // Original human-readable output.
+            println!("{} {}", status_label("Checking"), bold(&filename));
+            match compile_source_file(file, &source) {
+                Ok(_module) => {
+                    let elapsed = start.elapsed();
+                    println!(
+                        "{} Finished in {:.2}s — no errors",
+                        green("✓"),
+                        elapsed.as_secs_f64()
+                    );
+                }
+                Err(e) => {
+                    let formatted = lumen_compiler::format_error(&e, &source, &filename);
+                    eprint!("{}", formatted);
+                    std::process::exit(1);
+                }
+            }
         }
-        Err(e) => {
-            let formatted = lumen_compiler::format_error(&e, &source, &filename);
-            eprint!("{}", formatted);
-            std::process::exit(1);
+        ci_output::OutputFormat::Junit | ci_output::OutputFormat::Json => {
+            let mut report = ci_output::CheckReport::new("lumen-check");
+            let file_start = std::time::Instant::now();
+
+            let result = match compile_source_file(file, &source) {
+                Ok(_module) => ci_output::FileCheckResult {
+                    file: filename.clone(),
+                    passed: true,
+                    duration_secs: file_start.elapsed().as_secs_f64(),
+                    diagnostics: vec![],
+                },
+                Err(e) => {
+                    let diag = ci_output::diagnostic_from_compile_error(&e, &source, &filename);
+                    ci_output::FileCheckResult {
+                        file: filename.clone(),
+                        passed: false,
+                        duration_secs: file_start.elapsed().as_secs_f64(),
+                        diagnostics: vec![diag],
+                    }
+                }
+            };
+
+            let has_failures = !result.passed;
+            report.results.push(result);
+            report.total_duration_secs = start.elapsed().as_secs_f64();
+
+            let output = match format {
+                ci_output::OutputFormat::Junit => ci_output::render_junit_xml(&report),
+                ci_output::OutputFormat::Json => ci_output::render_json(&report),
+                ci_output::OutputFormat::Text => unreachable!(),
+            };
+            println!("{}", output);
+
+            if has_failures {
+                std::process::exit(1);
+            }
         }
     }
 }

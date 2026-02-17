@@ -1323,7 +1323,53 @@ impl<'a> TypeChecker<'a> {
             Expr::BigIntLit(_, _) => Type::Int,
             Expr::FloatLit(_, _) => Type::Float,
             Expr::StringLit(_, _) => Type::String,
-            Expr::StringInterp(_, _) => Type::String,
+            Expr::StringInterp(segments, _span) => {
+                // Walk segments and validate format spec types
+                for seg in segments {
+                    match seg {
+                        StringSegment::Interpolation(expr) => {
+                            self.infer_expr(expr);
+                        }
+                        StringSegment::FormattedInterpolation(expr, spec) => {
+                            let expr_ty = self.infer_expr(expr);
+                            // Validate format type against expression type
+                            if let Some(ref ft) = spec.fmt_type {
+                                match ft {
+                                    FormatType::Decimal
+                                    | FormatType::Hex
+                                    | FormatType::HexUpper
+                                    | FormatType::Octal
+                                    | FormatType::Binary => {
+                                        if !matches!(expr_ty, Type::Int | Type::Any) {
+                                            self.errors.push(TypeError::Mismatch {
+                                                expected: "Int".to_string(),
+                                                actual: format!("{:?}", expr_ty),
+                                                line: expr.span().line,
+                                            });
+                                        }
+                                    }
+                                    FormatType::Fixed
+                                    | FormatType::Scientific
+                                    | FormatType::ScientificUpper => {
+                                        if !matches!(expr_ty, Type::Float | Type::Int | Type::Any) {
+                                            self.errors.push(TypeError::Mismatch {
+                                                expected: "Float".to_string(),
+                                                actual: format!("{:?}", expr_ty),
+                                                line: expr.span().line,
+                                            });
+                                        }
+                                    }
+                                    FormatType::Str => {
+                                        // 's' is compatible with any type
+                                    }
+                                }
+                            }
+                        }
+                        StringSegment::Literal(_) => {}
+                    }
+                }
+                Type::String
+            }
             Expr::BoolLit(_, _) => Type::Bool,
             Expr::NullLit(_) => Type::Null,
             Expr::Ident(name, span) => {

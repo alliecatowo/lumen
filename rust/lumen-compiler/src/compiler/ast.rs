@@ -785,6 +785,62 @@ pub struct WhenArm {
 pub enum StringSegment {
     Literal(String),
     Interpolation(Box<Expr>),
+    /// Interpolation with format specifier: `{expr:spec}`
+    FormattedInterpolation(Box<Expr>, FormatSpec),
+}
+
+/// Alignment for format specifiers
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum FormatAlign {
+    Left,
+    Right,
+    Center,
+}
+
+/// Type hint in a format specifier
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum FormatType {
+    /// `d` — decimal integer
+    Decimal,
+    /// `x` — lowercase hex
+    Hex,
+    /// `X` — uppercase hex
+    HexUpper,
+    /// `o` — octal
+    Octal,
+    /// `b` — binary
+    Binary,
+    /// `f` — fixed-point float
+    Fixed,
+    /// `e` — scientific notation
+    Scientific,
+    /// `E` — uppercase scientific
+    ScientificUpper,
+    /// `s` — string (default)
+    Str,
+}
+
+/// Parsed format specifier from `{expr:spec}`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FormatSpec {
+    /// Fill character (default space)
+    pub fill: Option<char>,
+    /// Alignment
+    pub align: Option<FormatAlign>,
+    /// `+` or `-` sign
+    pub sign: Option<char>,
+    /// `#` alternate form (e.g. `0x` prefix for hex)
+    pub alternate: bool,
+    /// Zero-pad with `0`
+    pub zero_pad: bool,
+    /// Minimum width
+    pub width: Option<usize>,
+    /// Precision (digits after decimal point)
+    pub precision: Option<usize>,
+    /// Type character
+    pub fmt_type: Option<FormatType>,
+    /// The raw spec string (for lowering)
+    pub raw: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -676,8 +676,14 @@ impl<'a> OwnershipChecker<'a> {
 
             Expr::StringInterp(segments, _) => {
                 for seg in segments {
-                    if let StringSegment::Interpolation(expr) = seg {
-                        self.check_expr(expr);
+                    match seg {
+                        StringSegment::Interpolation(expr) => {
+                            self.check_expr(expr);
+                        }
+                        StringSegment::FormattedInterpolation(expr, _) => {
+                            self.check_expr(expr);
+                        }
+                        StringSegment::Literal(_) => {}
                     }
                 }
             }

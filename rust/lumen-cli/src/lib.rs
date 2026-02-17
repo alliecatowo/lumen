@@ -5,6 +5,7 @@
 pub mod auth;
 pub mod build_script;
 pub mod cache;
+pub mod ci_output;
 pub mod colors;
 pub mod config;
 pub mod doc;

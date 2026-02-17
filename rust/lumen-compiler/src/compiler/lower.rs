@@ -886,7 +886,39 @@ impl<'a> Lowerer<'a> {
         consts.push(Constant::String(callee_name.to_string()));
         instrs.push(Instruction::abx(OpCode::LoadK, callee_reg, callee_idx));
         let arg_regs = self.lower_call_arg_regs(args, implicit_self_arg, ra, consts, instrs);
+        let arg_regs = self.pack_variadic_args(callee_name, arg_regs, ra, consts, instrs);
         self.emit_call_with_regs(callee_reg, &arg_regs, ra, instrs)
+    }
+
+    /// If `callee_name` refers to a cell with a variadic last parameter,
+    /// pack the extra arguments beyond the fixed params into a list.
+    fn pack_variadic_args(
+        &self,
+        callee_name: &str,
+        arg_regs: Vec<u8>,
+        ra: &mut RegAlloc,
+        _consts: &mut Vec<Constant>,
+        instrs: &mut Vec<Instruction>,
+    ) -> Vec<u8> {
+        if let Some(cell_info) = self.symbols.cells.get(callee_name) {
+            let has_variadic = cell_info.params.last().is_some_and(|(_, _, v)| *v);
+            if has_variadic && !cell_info.params.is_empty() {
+                let fixed_count = cell_info.params.len() - 1;
+                if arg_regs.len() >= fixed_count {
+                    let mut result = arg_regs[..fixed_count].to_vec();
+                    let variadic_regs = &arg_regs[fixed_count..];
+                    // Create a new list and append each variadic arg
+                    let list_reg = ra.alloc_temp();
+                    instrs.push(Instruction::abc(OpCode::NewList, list_reg, 0, 0));
+                    for &reg in variadic_regs {
+                        instrs.push(Instruction::abc(OpCode::Append, list_reg, reg, 0));
+                    }
+                    result.push(list_reg);
+                    return result;
+                }
+            }
+        }
+        arg_regs
     }
 
     fn lower_record(&mut self, r: &RecordDef) -> LirType {
@@ -2131,6 +2163,38 @@ impl<'a> Lowerer<'a> {
                                 instrs.push(Instruction::abc(OpCode::Concat, dest, dest, expr_reg));
                             }
                         }
+                        StringSegment::FormattedInterpolation(expr, spec) => {
+                            // Lower the expression, then call __format_spec(value, spec_string)
+                            let expr_reg = self.lower_expr(expr, ra, consts, instrs);
+                            // Build format spec string from the FormatSpec
+                            let spec_str = format_spec_to_string(spec);
+                            let spec_reg = ra.alloc_temp();
+                            let kidx = consts.len() as u16;
+                            consts.push(Constant::String(spec_str));
+                            instrs.push(Instruction::abx(OpCode::LoadK, spec_reg, kidx));
+                            // Call __format_spec(expr_reg, spec_reg)
+                            let callee_reg = ra.alloc_temp();
+                            let callee_idx = consts.len() as u16;
+                            consts.push(Constant::String("__format_spec".to_string()));
+                            instrs.push(Instruction::abx(OpCode::LoadK, callee_reg, callee_idx));
+                            let formatted_reg = self.emit_call_with_regs(
+                                callee_reg,
+                                &[expr_reg, spec_reg],
+                                ra,
+                                instrs,
+                            );
+                            if first {
+                                instrs.push(Instruction::abc(OpCode::Move, dest, formatted_reg, 0));
+                                first = false;
+                            } else {
+                                instrs.push(Instruction::abc(
+                                    OpCode::Concat,
+                                    dest,
+                                    dest,
+                                    formatted_reg,
+                                ));
+                            }
+                        }
                     }
                 }
                 if first {
@@ -2942,6 +3006,17 @@ impl<'a> Lowerer<'a> {
 
                 let arg_regs =
                     self.lower_call_arg_regs(args, implicit_self_arg, ra, consts, instrs);
+                // Pack variadic args if the callee is a known cell with variadic params
+                let callee_name = if let Expr::Ident(ref name, _) = **callee {
+                    Some(name.as_str())
+                } else {
+                    None
+                };
+                let arg_regs = if let Some(name) = callee_name {
+                    self.pack_variadic_args(name, arg_regs, ra, consts, instrs)
+                } else {
+                    arg_regs
+                };
                 self.emit_call_with_regs(callee_reg, &arg_regs, ra, instrs)
             }
             Expr::ToolCall(callee, args, _) => {
@@ -4028,8 +4103,14 @@ fn collect_free_idents_expr(expr: &Expr, out: &mut Vec<String>) {
         }
         Expr::StringInterp(segs, _) => {
             for seg in segs {
-                if let StringSegment::Interpolation(e) = seg {
-                    collect_free_idents_expr(e, out);
+                match seg {
+                    StringSegment::Interpolation(e) => {
+                        collect_free_idents_expr(e, out);
+                    }
+                    StringSegment::FormattedInterpolation(e, _) => {
+                        collect_free_idents_expr(e, out);
+                    }
+                    StringSegment::Literal(_) => {}
                 }
             }
         }
@@ -4189,6 +4270,52 @@ fn collect_free_idents_stmt(stmt: &Stmt, out: &mut Vec<String>) {
             // Control flow statements with no sub-expressions to scan.
         }
     }
+}
+
+/// Convert a FormatSpec AST node back into the string representation
+/// that the VM __format_spec builtin expects.
+fn format_spec_to_string(spec: &FormatSpec) -> String {
+    let mut s = String::new();
+    if let Some(fill) = spec.fill {
+        s.push(fill);
+    }
+    if let Some(ref align) = spec.align {
+        match align {
+            FormatAlign::Left => s.push('<'),
+            FormatAlign::Right => s.push('>'),
+            FormatAlign::Center => s.push('^'),
+        }
+    }
+    if let Some(sign) = spec.sign {
+        s.push(sign);
+    }
+    if spec.alternate {
+        s.push('#');
+    }
+    if spec.zero_pad {
+        s.push('0');
+    }
+    if let Some(w) = spec.width {
+        s.push_str(&format!("{}", w));
+    }
+    if let Some(p) = spec.precision {
+        s.push('.');
+        s.push_str(&format!("{}", p));
+    }
+    if let Some(ref ft) = spec.fmt_type {
+        match ft {
+            FormatType::Decimal => s.push('d'),
+            FormatType::Hex => s.push('x'),
+            FormatType::HexUpper => s.push('X'),
+            FormatType::Octal => s.push('o'),
+            FormatType::Binary => s.push('b'),
+            FormatType::Fixed => s.push('f'),
+            FormatType::Scientific => s.push('e'),
+            FormatType::ScientificUpper => s.push('E'),
+            FormatType::Str => s.push('s'),
+        }
+    }
+    s
 }
 
 fn format_type_expr(ty: &TypeExpr) -> String {

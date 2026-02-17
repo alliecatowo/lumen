@@ -920,6 +920,13 @@ impl Formatter {
                             result.push_str(&self.fmt_expr(e));
                             result.push('}');
                         }
+                        StringSegment::FormattedInterpolation(e, spec) => {
+                            result.push('{');
+                            result.push_str(&self.fmt_expr(e));
+                            result.push(':');
+                            result.push_str(&spec.raw);
+                            result.push('}');
+                        }
                     }
                 }
                 result.push('"');

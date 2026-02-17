@@ -602,8 +602,14 @@ impl TypestateChecker {
             }
             Expr::StringInterp(segments, _) => {
                 for seg in segments {
-                    if let StringSegment::Interpolation(e) = seg {
-                        self.check_expr(e);
+                    match seg {
+                        StringSegment::Interpolation(e) => {
+                            self.check_expr(e);
+                        }
+                        StringSegment::FormattedInterpolation(e, _) => {
+                            self.check_expr(e);
+                        }
+                        StringSegment::Literal(_) => {}
                     }
                 }
             }

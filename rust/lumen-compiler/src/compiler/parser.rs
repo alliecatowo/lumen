@@ -4769,15 +4769,9 @@ impl Parser {
                 let segments = segments.clone();
                 let span = self.advance().span;
                 let mut ast_segments = Vec::new();
-                for (is_expr, text) in segments {
+                for (is_expr, text, fmt_spec) in segments {
                     if is_expr {
                         // Parse the expression string
-                        // We need a fresh lexer/parser for the snippet
-                        // Use base offsets from the current span?
-                        // For simplicity in v1, we won't perfectly map the span inside the string,
-                        // but we could if we tracked offsets in StringInterpLit.
-                        // The Lexer change I made doesn't track offsets per segment yet, just strings.
-                        // So correct source mapping is a TODO for v2.
                         let mut lexer =
                             crate::compiler::lexer::Lexer::new(&text, span.line, span.col);
                         let tokens = lexer.tokenize().map_err(|e| ParseError::Unexpected {
@@ -4788,7 +4782,13 @@ impl Parser {
                         })?;
                         let mut parser = Parser::new(tokens);
                         let expr = parser.parse_expr(0)?;
-                        ast_segments.push(StringSegment::Interpolation(Box::new(expr)));
+                        if let Some(spec_str) = fmt_spec {
+                            let spec = parse_format_spec(&spec_str);
+                            ast_segments
+                                .push(StringSegment::FormattedInterpolation(Box::new(expr), spec));
+                        } else {
+                            ast_segments.push(StringSegment::Interpolation(Box::new(expr)));
+                        }
                     } else {
                         ast_segments.push(StringSegment::Literal(text));
                     }
@@ -7757,5 +7757,110 @@ end
                 panic!("expected Let statement");
             }
         }
+    }
+}
+
+/// Parse a format spec string (the part after `:` in `{expr:spec}`) into a `FormatSpec` AST node.
+fn parse_format_spec(s: &str) -> FormatSpec {
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    let mut fill = None;
+    let mut align = None;
+    let mut sign = None;
+    let mut alternate = false;
+    let mut zero_pad = false;
+    let mut width = None;
+    let mut precision = None;
+    let mut fmt_type = None;
+
+    // Check for fill + align or just align
+    if i + 1 < chars.len() && matches!(chars[i + 1], '<' | '>' | '^') {
+        fill = Some(chars[i]);
+        align = Some(match chars[i + 1] {
+            '<' => FormatAlign::Left,
+            '>' => FormatAlign::Right,
+            '^' => FormatAlign::Center,
+            _ => unreachable!(),
+        });
+        i += 2;
+    } else if i < chars.len() && matches!(chars[i], '<' | '>' | '^') {
+        align = Some(match chars[i] {
+            '<' => FormatAlign::Left,
+            '>' => FormatAlign::Right,
+            '^' => FormatAlign::Center,
+            _ => unreachable!(),
+        });
+        i += 1;
+    }
+
+    // Optional sign
+    if i < chars.len() && (chars[i] == '+' || chars[i] == '-') {
+        sign = Some(chars[i]);
+        i += 1;
+    }
+
+    // Optional '#' (alternate form)
+    if i < chars.len() && chars[i] == '#' {
+        alternate = true;
+        i += 1;
+    }
+
+    // Optional '0' (zero pad)
+    if i < chars.len() && chars[i] == '0' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit() {
+        zero_pad = true;
+        i += 1;
+    }
+
+    // Optional width (digits)
+    let width_start = i;
+    while i < chars.len() && chars[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i > width_start {
+        width = chars[width_start..i]
+            .iter()
+            .collect::<String>()
+            .parse()
+            .ok();
+    }
+
+    // Optional '.' + precision
+    if i < chars.len() && chars[i] == '.' {
+        i += 1;
+        let prec_start = i;
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i > prec_start {
+            precision = chars[prec_start..i].iter().collect::<String>().parse().ok();
+        }
+    }
+
+    // Optional type char
+    if i < chars.len() {
+        fmt_type = match chars[i] {
+            'd' => Some(FormatType::Decimal),
+            'x' => Some(FormatType::Hex),
+            'X' => Some(FormatType::HexUpper),
+            'o' => Some(FormatType::Octal),
+            'b' => Some(FormatType::Binary),
+            'f' => Some(FormatType::Fixed),
+            'e' => Some(FormatType::Scientific),
+            'E' => Some(FormatType::ScientificUpper),
+            's' => Some(FormatType::Str),
+            _ => None,
+        };
+    }
+
+    FormatSpec {
+        fill,
+        align,
+        sign,
+        alternate,
+        zero_pad,
+        width,
+        precision,
+        fmt_type,
+        raw: s.to_string(),
     }
 }

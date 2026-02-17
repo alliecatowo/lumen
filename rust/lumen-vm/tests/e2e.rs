@@ -1297,6 +1297,205 @@ end
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Closure / upvalue model — comprehensive edge-case tests (T189)
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn e2e_closure_returned_from_function() {
+    // A closure returned from a function retains its captured variable.
+    let result = run_main(
+        r#"
+cell make_greeter(prefix: String) -> fn(String) -> String
+  return fn(name: String) => prefix + " " + name
+end
+
+cell main() -> String
+  let greet = make_greeter("Hello")
+  return greet("World")
+end
+"#,
+    );
+    assert_eq!(
+        result,
+        Value::String(StringRef::Owned("Hello World".into()))
+    );
+}
+
+#[test]
+fn e2e_closure_captures_multiple_variables() {
+    // A closure captures multiple variables from its enclosing scope.
+    let result = run_main(
+        r#"
+cell make_linear(a: Int, b: Int) -> fn(Int) -> Int
+  return fn(x: Int) => a * x + b
+end
+
+cell main() -> Int
+  let f = make_linear(3, 7)
+  return f(10)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(37)); // 3*10 + 7
+}
+
+#[test]
+fn e2e_multiple_closures_share_captures() {
+    // Multiple closures created in the same scope each get their own copy
+    // of the captured value (value semantics — not shared reference).
+    let result = run_main(
+        r#"
+cell make_pair(n: Int) -> (fn() -> Int, fn() -> Int)
+  let add_one = fn() => n + 1
+  let add_two = fn() => n + 2
+  return (add_one, add_two)
+end
+
+cell main() -> Int
+  let (f, g) = make_pair(10)
+  return f() + g()
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(23)); // 11 + 12
+}
+
+#[test]
+fn e2e_closure_inside_closure() {
+    // Nested closure: inner closure captures from outer closure's scope.
+    let result = run_main(
+        r#"
+cell make_curried_add(a: Int) -> fn(Int) -> fn(Int) -> Int
+  return fn(b: Int) => fn(c: Int) => a + b + c
+end
+
+cell main() -> Int
+  let add1 = make_curried_add(1)
+  let add1_2 = add1(2)
+  return add1_2(3)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(6)); // 1 + 2 + 3
+}
+
+#[test]
+fn e2e_closure_captures_loop_variable() {
+    // Closures created from different function calls each capture
+    // their own value (value capture, not reference capture).
+    let result = run_main(
+        r#"
+cell make_const(n: Int) -> fn() -> Int
+  return fn() => n
+end
+
+cell main() -> Int
+  let f1 = make_const(10)
+  let f2 = make_const(20)
+  let f3 = make_const(30)
+  return f1() + f2() + f3()
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(60)); // 10 + 20 + 30
+}
+
+#[test]
+fn e2e_closure_captures_bool_and_string() {
+    // Closures can capture non-integer types.
+    let result = run_main(
+        r#"
+cell make_checker(label: String) -> fn() -> String
+  return fn() => label + "!"
+end
+
+cell main() -> String
+  let check = make_checker("YES")
+  return check()
+end
+"#,
+    );
+    assert_eq!(result, Value::String(StringRef::Owned("YES!".into())));
+}
+
+#[test]
+fn e2e_closure_captures_list() {
+    // Closure captures a list value.
+    let result = run_main(
+        r#"
+cell wrap(items: list[Int]) -> fn() -> Int
+  return fn() => items[0] + items[1]
+end
+
+cell main() -> Int
+  let f = wrap([100, 200])
+  return f()
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(300));
+}
+
+#[test]
+fn e2e_closure_as_callback() {
+    // Pass a closure as a callback argument to another function.
+    let result = run_main(
+        r#"
+cell apply(f: fn(Int) -> Int, x: Int) -> Int
+  return f(x)
+end
+
+cell main() -> Int
+  let offset = 100
+  let add_offset = fn(x: Int) => x + offset
+  return apply(add_offset, 42)
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(142));
+}
+
+#[test]
+fn e2e_closure_called_multiple_times() {
+    // Calling the same closure multiple times works correctly.
+    let result = run_main(
+        r#"
+cell make_counter_fn(base: Int) -> fn(Int) -> Int
+  return fn(n: Int) => base + n
+end
+
+cell main() -> Int
+  let f = make_counter_fn(10)
+  let a = f(1)
+  let b = f(2)
+  let c = f(3)
+  return a + b + c
+end
+"#,
+    );
+    assert_eq!(result, Value::Int(36)); // 11 + 12 + 13
+}
+
+#[test]
+fn e2e_closure_value_capture_snapshot() {
+    // Verify value-capture semantics: closure sees the value at capture time,
+    // not later mutations. In Lumen, let bindings are immutable by default,
+    // so we test by creating the closure before a shadowing let.
+    let result = run_main(
+        r#"
+cell main() -> Int
+  let x = 10
+  let f = fn() => x
+  let x = 999
+  return f()
+end
+"#,
+    );
+    // The closure captured x=10 before the shadowing, so it should return 10.
+    assert_eq!(result, Value::Int(10));
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Recursive function calls
 // ═══════════════════════════════════════════════════════════════════
 

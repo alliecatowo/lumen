@@ -1,4 +1,4 @@
-//! Wave 19 test suite — optional analysis pipeline integration.
+//! Spec suite: ownership, typestate, and session type analysis tests.
 //!
 //! Tests for:
 //! - Ownership analysis wired into compile pipeline (Warn vs Error vs Off modes)

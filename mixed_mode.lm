@@ -1,5 +1,0 @@
-cell main()
-  print("explicit main")
-end
-let x = 10
-print(x)

@@ -1470,7 +1470,7 @@ impl VM {
                 }
             }
 
-            // ── Wave20 T202: push alias for append ──
+            // ── List mutation: push alias for append ──
             "push" => {
                 let item = self.registers[base + a + 2].clone();
                 let list = &mut self.registers[base + a + 1];
@@ -1486,7 +1486,7 @@ impl VM {
                 }
             }
 
-            // ── Wave20 T196: parse_int / parse_float ──
+            // ── String-to-number parsing: parse_int / parse_float ──
             "parse_int" => {
                 let arg = &self.registers[base + a + 1];
                 Ok(match arg {
@@ -1532,7 +1532,7 @@ impl VM {
                 })
             }
 
-            // ── Wave20 T195: Bytes builtins ──
+            // ── Bytes builtins: ASCII/hex conversion and slicing ──
             "bytes_from_ascii" => {
                 let arg = &self.registers[base + a + 1];
                 Ok(match arg {
@@ -1595,7 +1595,7 @@ impl VM {
                 })
             }
 
-            // ── Wave20 T186: validate builtin (call_builtin path) ──
+            // ── Schema validation builtin ──
             "validate" => {
                 if nargs < 2 {
                     let val = &self.registers[base + a + 1];
@@ -2870,7 +2870,7 @@ fn format_value_with_spec(value: &Value, spec: &str) -> Result<String, VmError> 
     Ok(formatted)
 }
 
-// ── Wave20 T186: validate helper functions ──
+// ── Schema validation helper functions ──
 
 /// Check if a runtime Value matches a type name string.
 fn validate_value_against_type_name(val: &Value, type_name: &str) -> bool {

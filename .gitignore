@@ -44,3 +44,14 @@ wares-site/dist
 # Registry server build artifacts
 registry-server/target/
 test-ware/
+
+# Compiled library/binary artifacts
+*.rlib
+*.rmeta
+*.exe
+*.dll
+*.dylib
+*.so
+
+# Reproduction scripts
+repro_*

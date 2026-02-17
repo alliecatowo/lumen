@@ -1650,6 +1650,16 @@ impl VM {
                             lhs.as_string(),
                             rhs.as_string()
                         )));
+                    } else if matches!(lhs, Value::List(_)) && matches!(rhs, Value::List(_)) {
+                        // List concatenation
+                        let mut combined = Vec::new();
+                        if let Value::List(l) = lhs {
+                            combined.extend(l.iter().cloned());
+                        }
+                        if let Value::List(r) = rhs {
+                            combined.extend(r.iter().cloned());
+                        }
+                        self.registers[base + a] = Value::new_list(combined);
                     } else {
                         // Numeric addition with promotion
                         self.arith_op(base, a, b, c, BinaryOp::Add)?;

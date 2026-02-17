@@ -1,2 +1,7 @@
 [tools]
+node = "latest"
 rust = "latest"
+python = "latest"
+go = "latest"
+cmake = "latest"
+zig = "latest"

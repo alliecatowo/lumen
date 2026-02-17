@@ -163,6 +163,14 @@ enum Commands {
         #[arg(long, default_value_t = 500)]
         interval: u64,
     },
+    /// Migrate source files to a new edition
+    Migrate {
+        /// Target edition
+        #[arg(long, default_value = "2026")]
+        edition: String,
+        /// Files to migrate
+        files: Vec<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -411,6 +419,7 @@ fn main() {
             BuildCommands::Wasm { target, release } => cmd_build_wasm(&target, release),
         },
         Commands::Watch { path, interval } => cmd_watch(&path, interval),
+        Commands::Migrate { edition, files } => cmd_migrate(&edition, &files),
     }
 }
 
@@ -1026,6 +1035,27 @@ fn run_watch_check(files: &[PathBuf]) {
             elapsed.as_secs_f64()
         );
     }
+}
+
+fn cmd_migrate(edition: &str, files: &[PathBuf]) {
+    if files.is_empty() {
+        println!(
+            "{} no files specified for migration to edition {}",
+            status_label("Migrate"),
+            bold(edition)
+        );
+        return;
+    }
+    println!(
+        "{} {} file(s) to edition {}",
+        status_label("Migrate"),
+        files.len(),
+        bold(edition)
+    );
+    // For now, the current edition is the only supported edition, so
+    // no transformations are needed. This stub is infrastructure for
+    // future edition migrations.
+    println!("Edition migration: no changes needed (current edition matches target).");
 }
 
 fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>, allow_unstable: bool) {

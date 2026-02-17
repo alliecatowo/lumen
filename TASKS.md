@@ -376,17 +376,28 @@ The following tasks add depth and explicit competitive parity. Problem statement
 | T189 | Verify/fix closure and upvalue model | Audit and fix any remaining closure capture or upvalue bugs in lower and VM; tests may pass but edge cases or replay/serialization may expose issues. Ref: deficit 6. |
 | T190 | Workspace (monorepo) resolver | Multi-package workspace support: resolve and build multiple packages in one repo with shared deps (Cargo/npm-style). Ref: COMPETITIVE_ANALYSIS domain matrix "workspace resolver". |
 
-### Language / spec alignment and test suite (T191–T197)
+### Language / spec alignment and test suite (T191–T203)
 
 | # | Task | Problem statement / context |
 |---|------|-----------------------------|
 | T191 | **Float literals: scientific notation** | Lexer/parser should accept scientific notation for floats (e.g. `1.5e10`, `2e-3`). Currently `1.5e10` is tokenized as float `1.5` plus identifier `e10`, causing "undefined variable e10". Lexer has a test for `1e10`; ensure full form `[digits].[digits]e[+-]?[digits]` is supported and documented in SPEC.md/GRAMMAR.md. This is intended language support. |
 | T192 | **Consider: Lumen test suite vs implementation drift** | When `tests/` (e.g. `tests/core/*.lm`, `tests/integration/end_to_end.lm`) fail due to syntax or builtin mismatches, decide per case whether (a) the test is aspirational and should be updated to match current language, or (b) the implementation has drifted and should be fixed. Document decisions and any spec/grammar updates. Examples encountered: block expression `{ x = 1; true }` (parser expects `}` not `;`), `type(42)` vs keyword `type` (use `type_of` in tests or reserve builtin name), `assert` as builtin (typechecker was updated to recognize it). Keep a short note in this file or a small "test-suite alignment" doc when new drift is found. |
 | T193 | **Assert/call register reuse (VM/compiler)** | Consecutive `assert <expr>` can leave null in a register reused for the next expression, causing "arithmetic on non-numeric types: null and N". Tests adjusted to single `let ok = ... ; assert ok` per cell. Fix in compiler/VM. |
-| T194 | **Nested cell/enum/record** | Parser does not support `cell`/`enum`/`record` inside another `cell`; tests fail with "Add 'end'". Flatten to top-level or extend parser. |
+| T194 | **Nested cell/enum/record** | Parser does not support `cell`/`enum`/`record` inside another `cell`; tests fail with "Add 'end'". Flatten to top-level or extend parser. Extern declarations must be top-level. |
 | T195 | **Bytes literals** | Bytes must be hex (e.g. `b"68656c6c6f"`); ASCII `b"hello"` rejected. builtins adjusted; document or extend. |
 | T196 | **parse_int/parse_float** | Tests used parse_*; language has to_int/to_float. Tests updated. |
 | T197 | **i64::MIN literal** | Literal `-9223372036854775808` triggers "cannot negate". Test uses `-1 < 0`; fix or document. |
+| T198 | **If condition must be Bool (no truthiness)** | Language requires explicit Bool in `if` conditions; no truthy/falsy coercion (e.g. `if 1` or `if ""` invalid). Tests use explicit comparisons (e.g. `1 != 0`, `len(s) > 0`). Document in spec; no implementation change if intentional. |
+| T199 | **For-loop continue / labeled continue** | `continue` in for-loops can hit instruction limit (possible VM bug); labeled `continue @outer` same. Tests simplified to avoid continue or use list iteration. Fix VM/compiler so continue advances iterator correctly. |
+| T200 | **Enum/record constructors with payload at runtime** | `Option.Some(42)`, `Shape.Circle(radius: 5.0)`, generic record `Box[T](value: x)`, `Pair[A,B](...)` trigger "cannot call null" or "cannot call Pair()" at runtime. Tests stubbed or use zero-payload variants only. Fix VM/lowering so enum and generic record construction works. |
+| T201 | **Nested list comprehension** | `[ (x, y) for x in a for y in b ]` — inner loop variable `y` undefined in scope. Tests simplified to single `for`. Fix parser/scope so nested comprehensions bind correctly. |
+| T202 | **push vs append** | Tests used `push`; Lumen builtin is `append` for lists. Tests updated. Optional: add `push` as alias if desired. |
+| T203 | **to_list(set) builtin** | No builtin to convert set to list; set union/intersection/difference tests need it. Tests use list literals or stub. Add `to_list` (or set iteration in for) so set→list is available. |
+| T205 | **Let destructuring / match type-pattern** | Let with type annotations (e.g. `let (n: Int, s: String) = ...`) and match type-pattern syntax not fully supported. pattern_matching.lm uses plain destructuring and `is` checks; restore when supported. |
+| T206 | **Missing or renamed builtins** | Tests use type_of (not type), to_json (not json_stringify), to_int/to_float (not parse_*), timestamp (not timestamp_ms); trim_start/trim_end, exp, tan, random_int not present. builtins.lm stubbed or uses alternatives. |
+| T207 | **Effect handler resume at runtime** | handle/perform with resume() can fail with "resume called outside of effect handler". effects.lm minimal stub avoids handle/perform until fixed. |
+| T208 | **Record method scoping / generic T** | Records with nested method cells (Stack[T], Queue[T], etc.) cause duplicate definition (is_empty, size) and undefined type T in method signatures. end_to_end.lm stubbed to calculator-only. |
+| **T204** | **Resolve all test-suite TODOs and implement expected behavior** | Work through every TODO in `tests/` (T193–T208 and any in-file TODOs). For each: either implement the expected language/VM behavior so the test can be restored to its intended form, or document the decision to keep the workaround and close the TODO. Track in this file; goal: test suite passes with no remaining test-side workarounds for compiler/VM gaps. See `tests/README.md` § Test-suite TODOs. |
 
 ---
 

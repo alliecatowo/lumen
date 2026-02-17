@@ -225,6 +225,7 @@ struct CellContract {
     /// Parameter names in order (for positional argument mapping).
     param_names: Vec<String>,
     /// Declared effects (for budget counting).
+    #[allow(dead_code)]
     effects: Vec<String>,
 }
 
@@ -419,7 +420,7 @@ fn check_stmt_calls(
                     }
                 }
             }
-            return; // Already handled children.
+            // Already handled children — fall through to end of function.
         }
         Stmt::For(for_stmt) => {
             check_expr_calls(&for_stmt.iter, caller_name, contracts, ctx, results);
@@ -810,6 +811,7 @@ mod tests {
                 is_pub: false,
                 is_async: false,
                 is_extern: false,
+                must_use: false,
                 where_clauses: vec![wc],
                 span: span(),
                 doc: None,
@@ -926,6 +928,7 @@ mod tests {
             is_pub: false,
             is_async: false,
             is_extern: false,
+            must_use: false,
             where_clauses,
             span: span(),
             doc: None,

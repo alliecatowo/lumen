@@ -172,6 +172,7 @@ pub struct CellDef {
     pub is_pub: bool,
     pub is_async: bool,
     pub is_extern: bool,
+    pub must_use: bool,
     pub where_clauses: Vec<Expr>,
     pub span: Span,
     pub doc: Option<String>,
@@ -811,6 +812,7 @@ pub enum BinOp {
     Shl,
     Shr,
     Compose,
+    Spaceship,
 }
 
 impl fmt::Display for BinOp {
@@ -840,6 +842,7 @@ impl fmt::Display for BinOp {
             BinOp::Shl => write!(f, "<<"),
             BinOp::Shr => write!(f, ">>"),
             BinOp::Compose => write!(f, "~>"),
+            BinOp::Spaceship => write!(f, "<=>"),
         }
     }
 }

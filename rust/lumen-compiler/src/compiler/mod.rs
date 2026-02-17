@@ -8,6 +8,8 @@ pub mod ownership;
 pub mod parser;
 pub mod regalloc;
 pub mod resolve;
+pub mod session;
 pub mod tokens;
 pub mod typecheck;
+pub mod typestate;
 pub mod verification;

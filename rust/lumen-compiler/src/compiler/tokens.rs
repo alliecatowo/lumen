@@ -198,6 +198,7 @@ pub enum TokenKind {
     FloorDiv,         // // floor division
     FloorDivAssign,   // //= floor division assignment
     QuestionBracket,  // ?[ null-safe index
+    Spaceship,        // <=> three-way comparison
 
     // Delimiters
     Symbol(char),
@@ -358,6 +359,7 @@ impl fmt::Display for TokenKind {
             TokenKind::FloorDiv => write!(f, "//"),
             TokenKind::FloorDivAssign => write!(f, "//="),
             TokenKind::QuestionBracket => write!(f, "?["),
+            TokenKind::Spaceship => write!(f, "<=>"),
             // Delimiters
             TokenKind::LParen => write!(f, "("),
             TokenKind::RParen => write!(f, ")"),

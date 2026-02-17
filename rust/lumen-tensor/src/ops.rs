@@ -195,12 +195,12 @@ pub fn matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, OpError> {
             let m = a.shape().dims()[0];
             let k = a.shape().dims()[1];
             let mut data = vec![0.0; m];
-            for i in 0..m {
+            for (i, data_i) in data.iter_mut().enumerate() {
                 let mut s = 0.0;
                 for j in 0..k {
                     s += a.data()[i * k + j] * b.data()[j];
                 }
-                data[i] = s;
+                *data_i = s;
             }
             Ok(Tensor::from_vec(data, out_shape)?)
         }
@@ -208,12 +208,12 @@ pub fn matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, OpError> {
             let k = b.shape().dims()[0];
             let n = b.shape().dims()[1];
             let mut data = vec![0.0; n];
-            for j in 0..n {
+            for (j, data_j) in data.iter_mut().enumerate() {
                 let mut s = 0.0;
                 for i in 0..k {
                     s += a.data()[i] * b.data()[i * n + j];
                 }
-                data[j] = s;
+                *data_j = s;
             }
             Ok(Tensor::from_vec(data, out_shape)?)
         }

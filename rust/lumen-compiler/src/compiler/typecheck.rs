@@ -303,6 +303,8 @@ pub enum TypeError {
         missing: Vec<String>,
         line: usize,
     },
+    #[error("unused result of @must_use cell '{name}' at line {line}")]
+    MustUseIgnored { name: String, line: usize },
 }
 
 /// Resolved type representation
@@ -626,8 +628,10 @@ impl<'a> TypeChecker<'a> {
             None
         };
 
-        for stmt in &cell.body {
-            self.check_stmt(stmt, return_type.as_ref());
+        let body_len = cell.body.len();
+        for (i, stmt) in cell.body.iter().enumerate() {
+            let is_tail = body_len > 0 && i == body_len - 1;
+            self.check_stmt(stmt, return_type.as_ref(), is_tail);
         }
     }
 
@@ -655,7 +659,7 @@ impl<'a> TypeChecker<'a> {
             None
         };
         for stmt in &cell.body {
-            self.check_stmt(stmt, return_type.as_ref());
+            self.check_stmt(stmt, return_type.as_ref(), false);
         }
     }
 
@@ -772,7 +776,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_stmt(&mut self, stmt: &Stmt, expected_return: Option<&Type>) {
+    fn check_stmt(&mut self, stmt: &Stmt, expected_return: Option<&Type>, is_tail: bool) {
         match stmt {
             Stmt::Let(ls) => {
                 let val_type = self.infer_expr(&ls.value);
@@ -818,7 +822,7 @@ impl<'a> TypeChecker<'a> {
                 };
 
                 for s in &ifs.then_body {
-                    self.check_stmt(s, expected_return);
+                    self.check_stmt(s, expected_return, false);
                 }
 
                 // Restore original type after then-branch
@@ -832,7 +836,7 @@ impl<'a> TypeChecker<'a> {
 
                 if let Some(ref eb) = ifs.else_body {
                     for s in eb {
-                        self.check_stmt(s, expected_return);
+                        self.check_stmt(s, expected_return, false);
                     }
                 }
             }
@@ -857,7 +861,7 @@ impl<'a> TypeChecker<'a> {
                     self.infer_expr(filter);
                 }
                 for s in &fs.body {
-                    self.check_stmt(s, expected_return);
+                    self.check_stmt(s, expected_return, false);
                 }
             }
             Stmt::Match(ms) => {
@@ -874,7 +878,7 @@ impl<'a> TypeChecker<'a> {
                         arm.span.line,
                     );
                     for s in &arm.body {
-                        self.check_stmt(s, expected_return);
+                        self.check_stmt(s, expected_return, false);
                     }
                 }
 
@@ -925,23 +929,39 @@ impl<'a> TypeChecker<'a> {
             }
             Stmt::Expr(es) => {
                 self.infer_expr(&es.expr);
+                // Check if this is a call to a @must_use cell whose result is discarded.
+                // Skip the check if this is the tail expression (implicit return).
+                if !is_tail {
+                    if let Expr::Call(callee, _, _) = &es.expr {
+                        if let Expr::Ident(name, _) = callee.as_ref() {
+                            if let Some(cell_info) = self.symbols.cells.get(name.as_str()) {
+                                if cell_info.must_use {
+                                    self.errors.push(TypeError::MustUseIgnored {
+                                        name: name.clone(),
+                                        line: es.span.line,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
             }
             Stmt::While(ws) => {
                 let ct = self.infer_expr(&ws.condition);
                 self.check_compat(&Type::Bool, &ct, ws.span.line);
                 for s in &ws.body {
-                    self.check_stmt(s, expected_return);
+                    self.check_stmt(s, expected_return, false);
                 }
             }
             Stmt::Loop(ls) => {
                 for s in &ls.body {
-                    self.check_stmt(s, expected_return);
+                    self.check_stmt(s, expected_return, false);
                 }
             }
             Stmt::Break(_) | Stmt::Continue(_) => {}
             Stmt::Defer(ds) => {
                 for s in &ds.body {
-                    self.check_stmt(s, expected_return);
+                    self.check_stmt(s, expected_return, false);
                 }
             }
             Stmt::Emit(es) => {
@@ -1499,6 +1519,18 @@ impl<'a> TypeChecker<'a> {
                     BinOp::PipeForward | BinOp::Compose => rt,
                     BinOp::Concat => lt,
                     BinOp::In => Type::Bool,
+                    BinOp::Spaceship => {
+                        // Both operands must be the same orderable type (Int, Float, String)
+                        if lt != Type::Any && rt != Type::Any && lt != rt {
+                            self.errors.push(TypeError::Mismatch {
+                                expected: format!("{}", lt),
+                                actual: format!("{}", rt),
+                                line: _span.line,
+                            });
+                        }
+                        // Result is always Int (-1, 0, or 1)
+                        Type::Int
+                    }
                     BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => Type::Int,
                     BinOp::Shl | BinOp::Shr => {
                         if lt != Type::Any && lt != Type::Int {
@@ -1798,7 +1830,7 @@ impl<'a> TypeChecker<'a> {
                         LambdaBody::Expr(e) => self.infer_expr(e),
                         LambdaBody::Block(stmts) => {
                             for s in stmts {
-                                self.check_stmt(s, None);
+                                self.check_stmt(s, None, false);
                             }
                             Type::Any
                         }
@@ -2033,7 +2065,7 @@ impl<'a> TypeChecker<'a> {
                         arm.span.line,
                     );
                     for s in &arm.body {
-                        self.check_stmt(s, None);
+                        self.check_stmt(s, None, false);
                     }
                     // Infer type from last expression in arm body
                     if let Some(Stmt::Expr(es)) = arm.body.last() {
@@ -2070,7 +2102,7 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::BlockExpr(stmts, _) => {
                 for s in stmts {
-                    self.check_stmt(s, None);
+                    self.check_stmt(s, None, false);
                 }
                 // Infer type from last expression in block
                 if let Some(Stmt::Expr(es)) = stmts.last() {
@@ -2101,11 +2133,11 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::HandleExpr { body, handlers, .. } => {
                 for stmt in body {
-                    self.check_stmt(stmt, None);
+                    self.check_stmt(stmt, None, false);
                 }
                 for handler in handlers {
                     for stmt in &handler.body {
-                        self.check_stmt(stmt, None);
+                        self.check_stmt(stmt, None, false);
                     }
                 }
                 Type::Any

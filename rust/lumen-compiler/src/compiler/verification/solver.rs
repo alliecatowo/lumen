@@ -50,11 +50,7 @@ pub trait Solver {
         self.push();
         self.assert_constraint(premise);
         self.assert_constraint(&Constraint::Not(Box::new(conclusion.clone())));
-        let result = match self.check_sat() {
-            SatResult::Unsat => SatResult::Unsat, // implication holds (Valid)
-            SatResult::Sat => SatResult::Sat,     // counterexample exists
-            SatResult::Unknown => SatResult::Unknown,
-        };
+        let result = self.check_sat();
         self.pop();
         result
     }

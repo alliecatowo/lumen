@@ -184,7 +184,7 @@ fn lower_cell(
     // We do this before creating the FunctionBuilder because
     // `module.declare_func_in_func` needs `&mut module` and `&mut func`.
     let mut callee_refs: HashMap<FuncId, cranelift_codegen::ir::FuncRef> = HashMap::new();
-    for (&ref _name, &callee_id) in func_ids.iter() {
+    for (_name, &callee_id) in func_ids.iter() {
         let func_ref = module.declare_func_in_func(callee_id, &mut func);
         callee_refs.insert(callee_id, func_ref);
     }
@@ -194,8 +194,7 @@ fn lower_cell(
     // --- Declare variables for the register file ---
     let num_regs = (cell.registers as usize)
         .max(cell.params.len())
-        .max(1)
-        .min(MAX_REGS);
+        .clamp(1, MAX_REGS);
     let mut vars: Vec<Variable> = Vec::with_capacity(num_regs);
     for i in 0..num_regs {
         let var = Variable::from_u32(i as u32);
@@ -233,8 +232,8 @@ fn lower_cell(
     // does not complain about undefined uses on branches.
     {
         let zero = builder.ins().iconst(types::I64, 0);
-        for i in cell.params.len()..num_regs {
-            builder.def_var(vars[i], zero);
+        for var in vars.iter().take(num_regs).skip(cell.params.len()) {
+            builder.def_var(*var, zero);
         }
     }
 

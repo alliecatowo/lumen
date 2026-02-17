@@ -419,7 +419,7 @@ fn sum_along_axis(t: &Tensor, axis: usize) -> Tensor {
     let axis_size = dims[axis];
 
     // For each element in the output, accumulate over the axis
-    for flat_out in 0..new_numel {
+    for (flat_out, data_elem) in data.iter_mut().enumerate() {
         // Convert flat_out to multi-dim index in output
         let out_strides = new_shape.strides();
         let mut idx = vec![0usize; ndim];
@@ -438,7 +438,7 @@ fn sum_along_axis(t: &Tensor, axis: usize) -> Tensor {
             let flat_in: usize = idx.iter().zip(strides.iter()).map(|(&i, &st)| i * st).sum();
             s += t.data()[flat_in];
         }
-        data[flat_out] = s;
+        *data_elem = s;
     }
 
     Tensor::from_vec(data, new_shape).unwrap()

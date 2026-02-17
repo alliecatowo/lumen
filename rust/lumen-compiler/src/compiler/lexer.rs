@@ -1185,8 +1185,19 @@ impl Lexer {
                     self.advance();
                     match self.current() {
                         Some('=') => {
-                            self.advance();
-                            tokens.push(Token::new(TokenKind::LtEq, self.span_from(so, sl, sc)));
+                            // Check for <=> (spaceship) before committing to <=
+                            if self.peek() == Some('>') {
+                                self.advance(); // consume '='
+                                self.advance(); // consume '>'
+                                tokens.push(Token::new(
+                                    TokenKind::Spaceship,
+                                    self.span_from(so, sl, sc),
+                                ));
+                            } else {
+                                self.advance();
+                                tokens
+                                    .push(Token::new(TokenKind::LtEq, self.span_from(so, sl, sc)));
+                            }
                         }
                         Some('<') => {
                             self.advance();

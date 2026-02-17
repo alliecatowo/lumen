@@ -391,6 +391,7 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                         is_pub: false,
                         is_async: false,
                         is_extern: false,
+                        must_use: false,
                         where_clauses: vec![],
                         span,
                         doc: None,
@@ -647,6 +648,17 @@ fn try_const_eval(expr: &Expr) -> Option<ConstValue> {
                 }
                 (ConstValue::Bool(a), BinOp::Or, ConstValue::Bool(b)) => {
                     Some(ConstValue::Bool(a || b))
+                }
+
+                // Spaceship (Int)
+                (ConstValue::Int(a), BinOp::Spaceship, ConstValue::Int(b)) => {
+                    Some(ConstValue::Int(if a < b {
+                        -1
+                    } else if a == b {
+                        0
+                    } else {
+                        1
+                    }))
                 }
 
                 _ => None,
@@ -2308,6 +2320,62 @@ impl<'a> Lowerer<'a> {
                     return self.emit_call_with_regs(fn_reg, &[piped_val], ra, instrs);
                 }
 
+                // Spaceship operator <=>: emit a < b ? -1 : a == b ? 0 : 1
+                if *op == BinOp::Spaceship {
+                    let lr = self.lower_expr(lhs, ra, consts, instrs);
+                    let rr = self.lower_expr(rhs, ra, consts, instrs);
+                    let dest = ra.alloc_temp();
+                    let tmp = ra.alloc_temp();
+
+                    // tmp = (a < b)
+                    instrs.push(Instruction::abc(OpCode::Lt, tmp, lr, rr));
+                    // Test tmp: if truthy (a < b), skip next Jmp (fall through to load -1)
+                    instrs.push(Instruction::abc(OpCode::Test, tmp, 0, 0));
+                    let jmp_not_lt = instrs.len();
+                    instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+                                                                   // a < b: load -1
+                    consts.push(Constant::Int(-1));
+                    let neg1_idx = (consts.len() - 1) as u16;
+                    instrs.push(Instruction::abx(OpCode::LoadK, dest, neg1_idx));
+                    let jmp_done1 = instrs.len();
+                    instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+
+                    // patch jmp_not_lt to here
+                    let here1 = instrs.len();
+                    instrs[jmp_not_lt] =
+                        Instruction::sax(OpCode::Jmp, (here1 - jmp_not_lt - 1) as i32);
+
+                    // tmp = (a == b)
+                    instrs.push(Instruction::abc(OpCode::Eq, tmp, lr, rr));
+                    // Test tmp: if truthy (a == b), skip next Jmp (fall through to load 0)
+                    instrs.push(Instruction::abc(OpCode::Test, tmp, 0, 0));
+                    let jmp_not_eq = instrs.len();
+                    instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+                                                                   // a == b: load 0
+                    consts.push(Constant::Int(0));
+                    let zero_idx = (consts.len() - 1) as u16;
+                    instrs.push(Instruction::abx(OpCode::LoadK, dest, zero_idx));
+                    let jmp_done2 = instrs.len();
+                    instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+
+                    // patch jmp_not_eq to here
+                    let here2 = instrs.len();
+                    instrs[jmp_not_eq] =
+                        Instruction::sax(OpCode::Jmp, (here2 - jmp_not_eq - 1) as i32);
+
+                    // a > b: load 1
+                    consts.push(Constant::Int(1));
+                    let one_idx = (consts.len() - 1) as u16;
+                    instrs.push(Instruction::abx(OpCode::LoadK, dest, one_idx));
+
+                    // patch jmp_done1 and jmp_done2 to here
+                    let end = instrs.len();
+                    instrs[jmp_done1] = Instruction::sax(OpCode::Jmp, (end - jmp_done1 - 1) as i32);
+                    instrs[jmp_done2] = Instruction::sax(OpCode::Jmp, (end - jmp_done2 - 1) as i32);
+
+                    return dest;
+                }
+
                 // Compose operator f ~> g creates a closure: fn(x) => g(f(x))
                 if *op == BinOp::Compose {
                     let lr = self.lower_expr(lhs, ra, consts, instrs);
@@ -2397,6 +2465,7 @@ impl<'a> Lowerer<'a> {
                     BinOp::Shr => OpCode::Shr,
                     BinOp::PipeForward => unreachable!(), // handled above
                     BinOp::Compose => unreachable!(),     // handled above
+                    BinOp::Spaceship => unreachable!(),   // handled above
                 };
                 match op {
                     BinOp::Gt => instrs.push(Instruction::abc(opcode, dest, rr, lr)),
@@ -4044,6 +4113,7 @@ fn encode_machine_expr(expr: &Expr) -> Option<serde_json::Value> {
                 BinOp::Shr => ">>",
                 BinOp::PipeForward => "|>",
                 BinOp::Compose => "~>",
+                BinOp::Spaceship => "<=>",
             };
             Some(serde_json::json!({
                 "kind": "bin",

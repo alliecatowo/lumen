@@ -209,6 +209,7 @@ pub struct CellInfo {
     pub effects: Vec<String>,
     /// Generic type parameter names (e.g. ["T", "U"])
     pub generic_params: Vec<String>,
+    pub must_use: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -440,6 +441,7 @@ pub fn resolve_with_base(
                         return_type: c.return_type.clone(),
                         effects: c.effects.clone(),
                         generic_params: c.generic_params.iter().map(|gp| gp.name.clone()).collect(),
+                        must_use: c.must_use,
                     });
                 }
             },
@@ -506,6 +508,7 @@ pub fn resolve_with_base(
                             return_type: Some(TypeExpr::Named(a.name.clone(), a.span)),
                             effects: vec![],
                             generic_params: vec![],
+                            must_use: false,
                         },
                     );
                 }
@@ -533,6 +536,7 @@ pub fn resolve_with_base(
                                     .iter()
                                     .map(|gp| gp.name.clone())
                                     .collect(),
+                                must_use: cell.must_use,
                             });
                         }
                     }
@@ -632,6 +636,7 @@ pub fn resolve_with_base(
                             return_type: Some(TypeExpr::Named(p.name.clone(), p.span)),
                             effects: vec![],
                             generic_params: vec![],
+                            must_use: false,
                         },
                     );
                 }
@@ -650,6 +655,7 @@ pub fn resolve_with_base(
                             .iter()
                             .map(|gp| gp.name.clone())
                             .collect(),
+                        must_use: cell.must_use,
                     });
                 }
                 for g in &p.grants {
@@ -689,6 +695,7 @@ pub fn resolve_with_base(
                             .iter()
                             .map(|gp| gp.name.clone())
                             .collect(),
+                        must_use: false,
                     });
                 }
             }
@@ -732,6 +739,7 @@ pub fn resolve_with_base(
                             .iter()
                             .map(|gp| gp.name.clone())
                             .collect(),
+                        must_use: false,
                     });
                 }
             }
@@ -1827,9 +1835,12 @@ fn infer_machine_expr_type(expr: &Expr, scope: &HashMap<String, TypeExpr>) -> Op
                 | BinOp::Or
                 | BinOp::In => Some("Bool".to_string()),
                 BinOp::PipeForward | BinOp::Concat | BinOp::Compose => Some("Any".to_string()),
-                BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
-                    Some("Int".to_string())
-                }
+                BinOp::BitAnd
+                | BinOp::BitOr
+                | BinOp::BitXor
+                | BinOp::Shl
+                | BinOp::Shr
+                | BinOp::Spaceship => Some("Int".to_string()),
             }
         }
         _ => None,
@@ -3881,6 +3892,7 @@ mod tests {
                 is_async: false,
                 is_extern: false,
                 where_clauses: vec![],
+                must_use: false,
                 span: sp,
                 doc: None,
             })],
@@ -3919,6 +3931,7 @@ mod tests {
                 is_pub: false,
                 is_async: false,
                 is_extern: false,
+                must_use: false,
                 where_clauses: vec![],
                 span: sp,
                 doc: None,

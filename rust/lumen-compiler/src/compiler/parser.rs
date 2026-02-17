@@ -509,6 +509,7 @@ impl Parser {
                 is_pub: false,
                 is_async: false,
                 is_extern: false,
+                must_use: false,
                 where_clauses: vec![],
                 span: span_start.merge(end_span),
                 doc: None,
@@ -524,6 +525,19 @@ impl Parser {
             items,
             span,
         })
+    }
+
+    /// Check if current position is `@must_use` (@ followed by identifier "must_use")
+    fn is_must_use_attribute(&self) -> bool {
+        if !matches!(self.peek_kind(), TokenKind::At) {
+            return false;
+        }
+        // Look ahead: position after @ should be ident "must_use"
+        if let Some(tok) = self.tokens.get(self.pos + 1) {
+            matches!(&tok.kind, TokenKind::Ident(name) if name == "must_use")
+        } else {
+            false
+        }
     }
 
     fn is_top_level_stmt_start(&self) -> bool {
@@ -608,7 +622,43 @@ impl Parser {
                 c.is_async = is_async;
                 Ok(Item::Cell(c))
             }
-            TokenKind::At => Ok(Item::Addon(self.parse_attribute_decl()?)),
+            TokenKind::At => {
+                // Check for @must_use before a cell definition
+                if self.is_must_use_attribute() {
+                    self.advance(); // consume '@'
+                    self.advance(); // consume 'must_use'
+                    self.skip_newlines();
+                    if matches!(self.peek_kind(), TokenKind::Pub) {
+                        // @must_use pub cell ...
+                        self.advance();
+                        self.skip_newlines();
+                        let mut c = self.parse_cell(true)?;
+                        c.is_pub = true;
+                        c.must_use = true;
+                        Ok(Item::Cell(c))
+                    } else if matches!(self.peek_kind(), TokenKind::Cell) {
+                        let mut c = self.parse_cell(true)?;
+                        c.is_pub = is_pub;
+                        c.must_use = true;
+                        Ok(Item::Cell(c))
+                    } else {
+                        // @must_use not followed by cell — treat as regular attribute
+                        // Back up and re-parse as attribute
+                        // Since we already consumed @ and must_use, just make an AddonDecl
+                        let end = self.current().span;
+                        if matches!(self.peek_kind(), TokenKind::Newline) {
+                            self.skip_newlines();
+                        }
+                        Ok(Item::Addon(AddonDecl {
+                            kind: "attribute".into(),
+                            name: Some("must_use".to_string()),
+                            span: end,
+                        }))
+                    }
+                } else {
+                    Ok(Item::Addon(self.parse_attribute_decl()?))
+                }
+            }
             TokenKind::Use => Ok(Item::UseTool(self.parse_use_tool()?)),
             TokenKind::Grant => Ok(Item::Grant(self.parse_grant()?)),
             TokenKind::Type => Ok(Item::TypeAlias(self.parse_type_alias(is_pub)?)),
@@ -990,6 +1040,7 @@ impl Parser {
                 is_pub: false,
                 is_async: false,
                 is_extern: false,
+                must_use: false,
                 where_clauses: vec![],
                 span,
                 doc: None,
@@ -1026,6 +1077,7 @@ impl Parser {
                     is_pub: false,
                     is_async: false,
                     is_extern: false,
+                    must_use: false,
                     where_clauses: vec![],
                     span: start.merge(end_span),
                     doc: None,
@@ -1046,6 +1098,7 @@ impl Parser {
             is_pub: false,
             is_async: false,
             is_extern: false,
+            must_use: false,
             where_clauses: vec![],
             span: start.merge(end_span),
             doc: None,
@@ -3400,6 +3453,7 @@ impl Parser {
                 is_pub: false,
                 is_async: false,
                 is_extern: false,
+                must_use: false,
                 where_clauses: vec![],
                 span,
                 doc: None,
@@ -3432,6 +3486,7 @@ impl Parser {
                     is_pub: false,
                     is_async: false,
                     is_extern: false,
+                    must_use: false,
                     where_clauses: vec![],
                     span: start.merge(end_span),
                     doc: None,
@@ -3452,6 +3507,7 @@ impl Parser {
             is_pub: false,
             is_async: false,
             is_extern: false,
+            must_use: false,
             where_clauses: vec![],
             span: start.merge(end_span),
             doc: None,
@@ -4353,6 +4409,7 @@ impl Parser {
                 TokenKind::LtEq => (BinOp::LtEq, (14, 15)),
                 TokenKind::Gt => (BinOp::Gt, (14, 15)),
                 TokenKind::GtEq => (BinOp::GtEq, (14, 15)),
+                TokenKind::Spaceship => (BinOp::Spaceship, (14, 15)),
                 TokenKind::In => {
                     if matches!(
                         self.peek_n_kind(1),

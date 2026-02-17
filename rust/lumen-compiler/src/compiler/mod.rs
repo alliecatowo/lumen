@@ -16,6 +16,7 @@ pub mod probabilistic;
 pub mod prompt_check;
 pub mod regalloc;
 pub mod resolve;
+pub mod sandbox;
 pub mod session;
 pub mod tokens;
 pub mod typecheck;

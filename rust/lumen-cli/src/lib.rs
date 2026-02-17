@@ -4,6 +4,7 @@
 
 pub mod audit;
 pub mod auth;
+pub mod bindgen;
 pub mod build_script;
 pub mod cache;
 pub mod ci_output;

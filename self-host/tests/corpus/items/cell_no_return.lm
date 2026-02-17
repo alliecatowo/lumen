@@ -1,0 +1,7 @@
+cell say_hello() -> Null
+  print("hello")
+end
+
+cell main() -> Null
+  say_hello()
+end

@@ -1,0 +1,4 @@
+# Bitwise and
+cell main() -> Int
+  0xFF & 0x0F
+end

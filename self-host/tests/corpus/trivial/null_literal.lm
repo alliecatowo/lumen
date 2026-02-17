@@ -1,0 +1,4 @@
+# Null literal
+cell main() -> Null
+  null
+end

@@ -1,0 +1,31 @@
+record Entry(key: String, value: Int)
+
+cell transform(entries: list[Entry]) -> list[Entry]
+  let result: list[Entry] = []
+  for e in entries
+    if e.value > 0
+      result = result + [Entry(key: e.key, value: e.value * 2)]
+    end
+  end
+  result
+end
+
+cell total_value(entries: list[Entry]) -> Int
+  let sum = 0
+  for e in entries
+    sum = sum + e.value
+  end
+  sum
+end
+
+cell main() -> Int
+  let data = [
+    Entry(key: "a", value: 10),
+    Entry(key: "b", value: -5),
+    Entry(key: "c", value: 20),
+    Entry(key: "d", value: 0),
+    Entry(key: "e", value: 15)
+  ]
+  let transformed = transform(data)
+  total_value(transformed)
+end

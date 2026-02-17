@@ -1,0 +1,7 @@
+cell main() -> Int
+  let items = [1, 2, 3, 4, 5]
+  match items
+    [first, ...rest] -> first
+    _ -> 0
+  end
+end

@@ -1,0 +1,7 @@
+cell main() -> String
+  let x = 99
+  match x
+    1 -> "one"
+    _ -> "something else"
+  end
+end

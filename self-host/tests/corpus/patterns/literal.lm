@@ -1,0 +1,9 @@
+cell main() -> String
+  let x = 42
+  match x
+    1 -> "one"
+    42 -> "forty-two"
+    100 -> "hundred"
+    _ -> "other"
+  end
+end

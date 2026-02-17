@@ -1,0 +1,7 @@
+cell identity[T](x: T) -> T
+  x
+end
+
+cell main() -> Int
+  identity(42)
+end

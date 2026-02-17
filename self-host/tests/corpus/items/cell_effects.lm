@@ -1,0 +1,7 @@
+cell fetch_data(url: String) -> String / {http}
+  "data from {url}"
+end
+
+cell main() -> String
+  fetch_data("https://example.com")
+end

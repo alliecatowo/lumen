@@ -1,0 +1,7 @@
+cell main() -> String
+  let x: Int? = null
+  match x
+    null -> "nothing"
+    n -> "got {n}"
+  end
+end

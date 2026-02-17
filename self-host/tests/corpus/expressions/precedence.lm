@@ -1,0 +1,4 @@
+# Operator precedence
+cell main() -> Int
+  2 + 3 * 4
+end

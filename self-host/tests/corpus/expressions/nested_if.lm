@@ -1,0 +1,13 @@
+# Nested if expression
+cell main() -> String
+  let x = 5
+  if x > 10 then
+    "big"
+  else
+    if x > 3 then
+      "medium"
+    else
+      "small"
+    end
+  end
+end

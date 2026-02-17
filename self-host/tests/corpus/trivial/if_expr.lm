@@ -1,0 +1,4 @@
+# If expression
+cell main() -> String
+  if true then "yes" else "no" end
+end

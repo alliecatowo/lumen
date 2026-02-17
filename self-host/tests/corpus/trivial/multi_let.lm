@@ -1,0 +1,7 @@
+# Multiple let bindings
+cell main() -> Int
+  let a = 1
+  let b = 2
+  let c = 3
+  a + b + c
+end

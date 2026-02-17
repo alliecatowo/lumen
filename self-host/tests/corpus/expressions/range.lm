@@ -1,0 +1,4 @@
+# Range expression
+cell main() -> list[Int]
+  1..5
+end

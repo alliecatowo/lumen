@@ -1,0 +1,4 @@
+# Multiplication
+cell main() -> Int
+  6 * 7
+end

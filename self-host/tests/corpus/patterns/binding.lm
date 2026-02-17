@@ -1,0 +1,6 @@
+cell main() -> Int
+  let x = 42
+  match x
+    n -> n
+  end
+end

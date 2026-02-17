@@ -1,0 +1,4 @@
+# Equality
+cell main() -> Bool
+  42 == 42
+end

@@ -1,0 +1,4 @@
+# Less than
+cell main() -> Bool
+  3 < 5
+end

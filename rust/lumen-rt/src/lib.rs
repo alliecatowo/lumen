@@ -10,6 +10,7 @@ pub mod immix;
 pub mod interpreter;
 pub mod intrinsics;
 pub mod jit_tier;
+pub mod json_parser;
 pub mod parity_concurrency;
 pub mod tagged;
 pub mod tlab;

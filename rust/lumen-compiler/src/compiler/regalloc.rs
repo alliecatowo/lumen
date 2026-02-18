@@ -4,27 +4,29 @@
 
 use std::collections::HashMap;
 
-/// Maximum number of registers available per cell (u8::MAX)
-pub const MAX_REGISTERS: u8 = 255;
+/// Maximum number of registers available per cell.
+/// Currently constrained to 255 by the 8-bit register fields in 32-bit Instruction encoding.
+/// When Instruction64 is adopted, this can be raised to u16::MAX (65535).
+pub const MAX_REGISTERS: u16 = 255;
 
 /// Register allocation state for a single cell
 #[derive(Debug)]
 pub struct RegAlloc {
     /// Next register index for new allocations when free list is empty
-    next_reg: u8,
+    next_reg: u16,
     /// Map of variable names to their permanent registers
-    bindings: HashMap<String, u8>,
+    bindings: HashMap<String, u16>,
     /// Cell name for error reporting
     cell_name: String,
     /// Pool of free temporary registers available for reuse
-    free_temps: Vec<u8>,
+    free_temps: Vec<u16>,
     /// Track the maximum register count ever used (for reporting, not recycling)
-    max_reg_ever_used: u8,
+    max_reg_ever_used: u16,
     /// Count of how many temps have been recycled (for diagnostics)
     temps_recycled: usize,
     /// High-water mark for named bindings - temps allocated below this
     /// might be used for long-term storage and shouldn't be auto-freed
-    named_bindings_high_water: u8,
+    named_bindings_high_water: u16,
 }
 
 impl Default for RegAlloc {
@@ -46,11 +48,27 @@ impl RegAlloc {
         }
     }
 
+    /// Check that a u16 register index fits in u8 for the current instruction encoding.
+    /// Panics with a clear message if the index exceeds the 8-bit limit.
+    fn check_u8_overflow(&self, reg: u16) -> u8 {
+        if reg > u8::MAX as u16 {
+            panic!(
+                "Register allocation error in cell '{}': internal register index {} exceeds \
+                 the 8-bit instruction encoding limit (max {}). \
+                 This will be resolved when Instruction64 encoding is adopted.",
+                self.cell_name,
+                reg,
+                u8::MAX
+            );
+        }
+        reg as u8
+    }
+
     /// Allocate a named register for a parameter or let binding.
     /// Named registers are permanent and are never recycled.
     pub fn alloc_named(&mut self, name: &str) -> u8 {
         let reg = self.next_reg;
-        if reg == MAX_REGISTERS {
+        if reg >= MAX_REGISTERS {
             panic!(
                 "Register allocation error in cell '{}': exceeded maximum of {} registers. \
                  This cell is too complex. Consider breaking it into smaller helper cells.",
@@ -59,10 +77,10 @@ impl RegAlloc {
         }
         self.bindings.insert(name.to_string(), reg);
         self.next_reg += 1;
-        self.max_reg_ever_used = self.max_reg_ever_used.max(reg + 1);
+        self.max_reg_ever_used = self.max_reg_ever_used.max(self.next_reg);
         // Update high-water mark for named bindings
         self.named_bindings_high_water = self.named_bindings_high_water.max(self.next_reg);
-        reg
+        self.check_u8_overflow(reg)
     }
 
     /// Allocate a temporary register.
@@ -72,12 +90,12 @@ impl RegAlloc {
         // First, try to reuse a free temp from the pool
         if let Some(reg) = self.free_temps.pop() {
             self.temps_recycled += 1;
-            return reg;
+            return self.check_u8_overflow(reg);
         }
 
         // No free temps available - allocate a new one
         let reg = self.next_reg;
-        if reg == MAX_REGISTERS {
+        if reg >= MAX_REGISTERS {
             panic!(
                 "Register allocation error in cell '{}': exceeded maximum of {} registers \
                  even with recycling ({} temps were reused). \
@@ -87,7 +105,7 @@ impl RegAlloc {
         }
         self.next_reg += 1;
         self.max_reg_ever_used = self.max_reg_ever_used.max(self.next_reg);
-        reg
+        self.check_u8_overflow(reg)
     }
 
     /// Allocate a contiguous block of temporary registers.
@@ -95,35 +113,38 @@ impl RegAlloc {
     /// some VM opcodes (Call, NewList, etc).
     pub fn alloc_block(&mut self, count: u8) -> u8 {
         if count == 0 {
-            return self.next_reg;
+            return self.check_u8_overflow(self.next_reg);
         }
         let start = self.next_reg;
-        if start as u16 + count as u16 > MAX_REGISTERS as u16 {
+        let end = start as u32 + count as u32;
+        if end > MAX_REGISTERS as u32 {
             panic!(
-                "Register allocation error in cell '{}': block of {} registers exceeds limit.",
-                self.cell_name, count
+                "Register allocation error in cell '{}': contiguous block of {} registers \
+                 starting at r{} would exceed the maximum of {} registers.",
+                self.cell_name, count, start, MAX_REGISTERS
             );
         }
-        self.next_reg += count;
+        self.next_reg += count as u16;
         self.max_reg_ever_used = self.max_reg_ever_used.max(self.next_reg);
-        start
+        self.check_u8_overflow(start)
     }
 
     /// Mark a temporary register as free for reuse.
     /// This should only be called for temporary registers, not named bindings.
     /// Safe to call multiple times on the same register - duplicates are ignored.
     pub fn free_temp(&mut self, reg: u8) {
+        let reg16 = reg as u16;
         // Don't free registers that are bound to names (permanent allocations)
-        if self.bindings.values().any(|&r| r == reg) {
+        if self.bindings.values().any(|&r| r == reg16) {
             return;
         }
 
         // Don't add duplicates to the free list
-        if self.free_temps.contains(&reg) {
+        if self.free_temps.contains(&reg16) {
             return;
         }
 
-        self.free_temps.push(reg);
+        self.free_temps.push(reg16);
     }
 
     /// Free multiple temporary registers at once.
@@ -135,13 +156,14 @@ impl RegAlloc {
 
     /// Look up a named binding
     pub fn lookup(&self, name: &str) -> Option<u8> {
-        self.bindings.get(name).copied()
+        self.bindings.get(name).map(|&r| r as u8)
     }
 
     /// Get the maximum register count used.
     /// This returns the high-water mark of register usage, which is
     /// what's needed for the VM to allocate sufficient register space.
-    pub fn max_regs(&self) -> u8 {
+    /// Returns u16 to feed directly into LirCell.registers.
+    pub fn max_regs(&self) -> u16 {
         self.max_reg_ever_used
     }
 
@@ -152,7 +174,7 @@ impl RegAlloc {
         // 1. All named bindings
         // 2. All currently-in-use temps (allocated but not freed)
         // 3. Any other registers allocated up to next_reg
-        self.next_reg
+        self.next_reg as u8
     }
 
     /// Get the number of temps that have been recycled
@@ -167,7 +189,7 @@ impl RegAlloc {
 
     /// Manually bind a name to an existing register (for temporary shadowing)
     pub fn bind(&mut self, name: &str, reg: u8) {
-        self.bindings.insert(name.to_string(), reg);
+        self.bindings.insert(name.to_string(), reg as u16);
     }
 
     /// Unbind a name (for temporary shadowing)
@@ -177,7 +199,7 @@ impl RegAlloc {
 
     /// Get the current next_reg value (for manual tracking)
     pub fn current_reg_count(&self) -> u8 {
-        self.next_reg
+        self.next_reg as u8
     }
 
     /// Free all temporary registers that were allocated above the named bindings high-water mark.
@@ -185,7 +207,7 @@ impl RegAlloc {
     pub fn free_statement_temps(&mut self) {
         // Any register index >= named_bindings_high_water that's not already in the free list
         // and not a named binding can be freed
-        let named_regs: Vec<u8> = self.bindings.values().copied().collect();
+        let named_regs: Vec<u16> = self.bindings.values().copied().collect();
 
         for reg in self.named_bindings_high_water..self.next_reg {
             if !named_regs.contains(&reg) && !self.free_temps.contains(&reg) {
@@ -196,7 +218,7 @@ impl RegAlloc {
 
     /// Get the high-water mark for named bindings
     pub fn named_bindings_count(&self) -> u8 {
-        self.named_bindings_high_water
+        self.named_bindings_high_water as u8
     }
 
     /// Free specific temporary registers.

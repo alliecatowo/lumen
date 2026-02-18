@@ -597,6 +597,11 @@ extern "C" fn jit_rt_log10(value: f64) -> f64 {
     value.log10()
 }
 
+/// Float modulo (a % b), matching Rust `f64::rem`.
+extern "C" fn jit_rt_fmod(a: f64, b: f64) -> f64 {
+    a % b
+}
+
 /// Power: base^exp.
 extern "C" fn jit_rt_pow_float(base: f64, exp: f64) -> f64 {
     base.powf(exp)
@@ -705,6 +710,7 @@ fn register_intrinsic_helpers(builder: &mut JITBuilder) {
     builder.symbol("jit_rt_log10", jit_rt_log10 as *const u8);
     builder.symbol("jit_rt_pow_float", jit_rt_pow_float as *const u8);
     builder.symbol("jit_rt_pow_int", jit_rt_pow_int as *const u8);
+    builder.symbol("jit_rt_fmod", jit_rt_fmod as *const u8);
     builder.symbol("jit_rt_abs_float", jit_rt_abs_float as *const u8);
     builder.symbol("jit_rt_abs_int", jit_rt_abs_int as *const u8);
 
@@ -3824,5 +3830,174 @@ mod tests {
         assert_ne!(raw, 0, "string pointer should be non-null");
         let s = unsafe { jit_take_string(raw) };
         assert_eq!(s, "3.14", "string_concat(3.14) should be \"3.14\"");
+    }
+
+    // --- OpCode::Pow (** operator) tests ----------------------------------
+
+    #[test]
+    fn jit_opcode_pow_int() {
+        // cell test_pow_op() -> Int
+        //   r0 = 2
+        //   r1 = 10
+        //   r2 = r0 ** r1   # OpCode::Pow — 2^10 = 1024
+        //   return r2
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_pow_op".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadInt, 0, 2),
+                Instruction::abx(OpCode::LoadInt, 1, 10),
+                Instruction::abc(OpCode::Pow, 2, 0, 1),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result = engine.execute_jit_nullary("test_pow_op").expect("execute");
+        assert_eq!(result, 1024, "2 ** 10 = 1024");
+    }
+
+    #[test]
+    fn jit_opcode_pow_float() {
+        // cell test_pow_op_f() -> Float
+        //   r0 = 3.0
+        //   r1 = 2.0
+        //   r2 = r0 ** r1   # OpCode::Pow — 3.0^2.0 = 9.0
+        //   return r2
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_pow_op_f".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 3,
+            constants: vec![Constant::Float(3.0), Constant::Float(2.0)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Pow, 2, 0, 1),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine
+            .execute_jit_nullary("test_pow_op_f")
+            .expect("execute");
+        let result = f64::from_bits(raw as u64);
+        assert!(
+            (result - 9.0).abs() < 1e-10,
+            "3.0 ** 2.0 = 9.0, got {result}"
+        );
+    }
+
+    // --- OpCode::Mod with floats tests ------------------------------------
+
+    #[test]
+    fn jit_opcode_mod_float() {
+        // cell test_mod_f() -> Float
+        //   r0 = 7.5
+        //   r1 = 2.5
+        //   r2 = r0 % r1   # OpCode::Mod — 7.5 % 2.5 = 0.0
+        //   return r2
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_mod_f".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 3,
+            constants: vec![Constant::Float(7.5), Constant::Float(2.5)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Mod, 2, 0, 1),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("test_mod_f").expect("execute");
+        let result = f64::from_bits(raw as u64);
+        assert!(result.abs() < 1e-10, "7.5 % 2.5 = 0.0, got {result}");
+    }
+
+    #[test]
+    fn jit_opcode_mod_float_nonzero() {
+        // cell test_mod_f2() -> Float
+        //   r0 = 10.0
+        //   r1 = 3.0
+        //   r2 = r0 % r1   # OpCode::Mod — 10.0 % 3.0 = 1.0
+        //   return r2
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_mod_f2".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 3,
+            constants: vec![Constant::Float(10.0), Constant::Float(3.0)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Mod, 2, 0, 1),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("test_mod_f2").expect("execute");
+        let result = f64::from_bits(raw as u64);
+        assert!(
+            (result - 1.0).abs() < 1e-10,
+            "10.0 % 3.0 = 1.0, got {result}"
+        );
+    }
+
+    // --- ToString inline refcount test ------------------------------------
+
+    #[test]
+    fn jit_intrinsic_to_string_passthrough() {
+        // cell test_tostr_pass() -> String
+        //   r0 = "hello"
+        //   r1 = to_string(r0)   # Intrinsic(1, 10, 0) — should inline refcount
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_tostr_pass".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 2,
+            constants: vec![Constant::String("hello".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 10, 0), // to_string(r0)
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine
+            .execute_jit_nullary("test_tostr_pass")
+            .expect("execute");
+        assert_ne!(raw, 0, "string pointer should be non-null");
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "hello", "to_string on a string should pass through");
     }
 }

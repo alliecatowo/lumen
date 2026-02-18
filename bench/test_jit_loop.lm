@@ -1,0 +1,13 @@
+cell loop_body(n: Int) -> Int
+  let mut sum = 0
+  let mut i = 1
+  while i <= n
+    sum = sum + i
+    i = i + 1
+  end
+  sum
+end
+
+cell main() -> Int
+  loop_body(10000000)
+end

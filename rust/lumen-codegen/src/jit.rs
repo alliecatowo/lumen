@@ -651,6 +651,8 @@ fn is_cell_jit_compilable(cell: &LirCell) -> bool {
                 | OpCode::BitNot
                 | OpCode::Shl
                 | OpCode::Shr
+                | OpCode::GetField
+                | OpCode::SetField
         )
     })
 }
@@ -1400,6 +1402,113 @@ mod tests {
 
         // Unsupported arity.
         assert!(engine.execute_jit("add", &[1, 2, 3, 4]).is_err());
+    }
+
+    #[test]
+    fn jit_compilable_includes_record_ops() {
+        // Verify GetField and SetField are in the whitelist
+        let get_field_cell = LirCell {
+            name: "get_field".to_string(),
+            params: vec![],
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadInt, 0, 0), // r0 = 0 (record ptr stub)
+                Instruction::abc(OpCode::GetField, 1, 0, 0), // r1 = r0.field[0]
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+
+        let set_field_cell = LirCell {
+            name: "set_field".to_string(),
+            params: vec![],
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadInt, 0, 0), // r0 = 0 (record ptr stub)
+                Instruction::abx(OpCode::LoadInt, 1, 42), // r1 = 42
+                Instruction::abc(OpCode::SetField, 0, 0, 1), // r0.field[0] = r1
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+
+        assert!(
+            is_cell_jit_compilable(&get_field_cell),
+            "GetField should be JIT-compilable"
+        );
+        assert!(
+            is_cell_jit_compilable(&set_field_cell),
+            "SetField should be JIT-compilable"
+        );
+    }
+
+    #[test]
+    fn jit_compile_record_field_access() {
+        // Test that cells with GetField/SetField compile without errors.
+        // The stub implementation returns 0 for GetField and is a no-op for SetField,
+        // but the important thing is that compilation succeeds.
+        let lir = make_module_with_cells(vec![
+            LirCell {
+                name: "access_field".to_string(),
+                params: vec![],
+                returns: Some("Int".to_string()),
+                registers: 3,
+                constants: vec![],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadInt, 0, 0), // r0 = 0 (stub record ptr)
+                    Instruction::abc(OpCode::GetField, 1, 0, 0), // r1 = r0.field[0]
+                    Instruction::abc(OpCode::Return, 1, 1, 0), // return r1
+                ],
+                effect_handler_metas: Vec::new(),
+            },
+            LirCell {
+                name: "set_field".to_string(),
+                params: vec![],
+                returns: Some("Int".to_string()),
+                registers: 3,
+                constants: vec![],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadInt, 0, 0), // r0 = 0 (stub record ptr)
+                    Instruction::abx(OpCode::LoadInt, 1, 42), // r1 = 42
+                    Instruction::abc(OpCode::SetField, 0, 0, 1), // r0.field[0] = r1
+                    Instruction::abc(OpCode::Return, 1, 1, 0), // return r1
+                ],
+                effect_handler_metas: Vec::new(),
+            },
+        ]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+
+        // Should compile successfully
+        engine
+            .compile_module(&lir)
+            .expect("Record field access cells should compile");
+
+        // Verify both cells are compiled
+        assert!(
+            engine.is_compiled("access_field"),
+            "access_field should be compiled"
+        );
+        assert!(
+            engine.is_compiled("set_field"),
+            "set_field should be compiled"
+        );
+
+        // Execute to ensure no runtime traps
+        let result = engine
+            .execute_jit_nullary("access_field")
+            .expect("GetField stub should execute");
+        assert_eq!(result, 0, "GetField stub returns 0");
+
+        let result2 = engine
+            .execute_jit_nullary("set_field")
+            .expect("SetField stub should execute");
+        assert_eq!(result2, 42, "SetField should return the value register");
     }
 
     #[test]

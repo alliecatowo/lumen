@@ -1,6 +1,7 @@
 //! Builtin function dispatch, intrinsic opcodes, and closure calls for the VM.
 
 use super::*;
+use crate::json_parser::parse_json_optimized;
 use lumen_compiler::compile_raw;
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
@@ -404,61 +405,8 @@ impl VM {
             "sort" => {
                 let arg = std::mem::take(&mut self.registers[base + a + 1]);
                 if let Value::List(mut l) = arg {
-                    // Homogeneous sort specialization: check if all elements are the same type
-                    // and use fast-path sorting for Int/Float/String
-                    if !l.is_empty() {
-                        let first_is_int = matches!(l[0], Value::Int(_));
-                        let first_is_float = matches!(l[0], Value::Float(_));
-                        let first_is_string_owned =
-                            matches!(l[0], Value::String(StringRef::Owned(_)));
-
-                        if first_is_int && l.iter().all(|v| matches!(v, Value::Int(_))) {
-                            // Fast path: homogeneous Int list
-                            let mut ints: Vec<i64> = l
-                                .iter()
-                                .map(|v| if let Value::Int(n) = v { *n } else { 0 })
-                                .collect();
-                            ints.sort_unstable();
-                            let sorted: Vec<Value> = ints.into_iter().map(Value::Int).collect();
-                            Ok(Value::new_list(sorted))
-                        } else if first_is_float && l.iter().all(|v| matches!(v, Value::Float(_))) {
-                            // Fast path: homogeneous Float list
-                            let mut floats: Vec<f64> = l
-                                .iter()
-                                .map(|v| if let Value::Float(f) = v { *f } else { 0.0 })
-                                .collect();
-                            floats.sort_by(|a, b| a.total_cmp(b));
-                            let sorted: Vec<Value> = floats.into_iter().map(Value::Float).collect();
-                            Ok(Value::new_list(sorted))
-                        } else if first_is_string_owned
-                            && l.iter()
-                                .all(|v| matches!(v, Value::String(StringRef::Owned(_))))
-                        {
-                            // Fast path: homogeneous owned String list
-                            let mut strings: Vec<String> = l
-                                .iter()
-                                .map(|v| {
-                                    if let Value::String(StringRef::Owned(s)) = v {
-                                        s.clone()
-                                    } else {
-                                        String::new()
-                                    }
-                                })
-                                .collect();
-                            strings.sort_unstable();
-                            let sorted: Vec<Value> = strings
-                                .into_iter()
-                                .map(|s| Value::String(StringRef::Owned(s)))
-                                .collect();
-                            Ok(Value::new_list(sorted))
-                        } else {
-                            // Fall back to general Value::cmp for mixed types or interned strings
-                            Arc::make_mut(&mut l).sort();
-                            Ok(Value::List(l))
-                        }
-                    } else {
-                        Ok(Value::List(l))
-                    }
+                    sort_list_homogeneous(Arc::make_mut(&mut l));
+                    Ok(Value::List(l))
                 } else {
                     Ok(arg)
                 }
@@ -871,8 +819,8 @@ impl VM {
             // JSON
             "json_parse" | "parse_json" => {
                 let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
-                match serde_json::from_str::<serde_json::Value>(&s) {
-                    Ok(v) => Ok(json_to_value(&v)),
+                match parse_json_optimized(&s) {
+                    Ok(v) => Ok(v),
                     Err(_) => Ok(Value::Null),
                 }
             }
@@ -2088,7 +2036,7 @@ impl VM {
                 let arg = &self.registers[base + a + 1];
                 if let Value::List(l) = arg {
                     let mut s: Vec<Value> = (**l).clone();
-                    s.sort();
+                    sort_list_homogeneous(&mut s);
                     Ok(Value::new_list(s))
                 } else {
                     Ok(arg.clone())
@@ -2098,7 +2046,7 @@ impl VM {
                 let arg = &self.registers[base + a + 1];
                 if let Value::List(l) = arg {
                     let mut s: Vec<Value> = (**l).clone();
-                    s.sort();
+                    sort_list_homogeneous(&mut s);
                     s.reverse();
                     Ok(Value::new_list(s))
                 } else {
@@ -2609,7 +2557,7 @@ impl VM {
                 // SORT
                 if let Value::List(l) = arg {
                     let mut s: Vec<Value> = (**l).clone();
-                    s.sort();
+                    sort_list_homogeneous(&mut s);
                     Ok(Value::new_list(s))
                 } else {
                     Ok(arg.clone())
@@ -3761,7 +3709,7 @@ impl VM {
                 // SORT_ASC: sort list in ascending order
                 if let Value::List(l) = arg {
                     let mut s: Vec<Value> = (**l).clone();
-                    s.sort();
+                    sort_list_homogeneous(&mut s);
                     Ok(Value::new_list(s))
                 } else {
                     Ok(arg.clone())
@@ -3771,7 +3719,7 @@ impl VM {
                 // SORT_DESC: sort list in descending order
                 if let Value::List(l) = arg {
                     let mut s: Vec<Value> = (**l).clone();
-                    s.sort();
+                    sort_list_homogeneous(&mut s);
                     s.reverse();
                     Ok(Value::new_list(s))
                 } else {
@@ -5062,4 +5010,80 @@ fn net_udp_recv(handle: i64, max_bytes: i64) -> Value {
             Value::new_map(map)
         }
     }
+}
+
+/// Sort a list using homogeneous specialization when all elements share a
+/// single primitive type (Int, Float, or String).  Falls back to the
+/// general `Value::cmp`-based sort for mixed or non-primitive lists.
+///
+/// This avoids the overhead of `Value::cmp` (type_order dispatch +
+/// enum matching per comparison) for the overwhelmingly common case of
+/// sorting a uniform list of scalars.
+fn sort_list_homogeneous(items: &mut Vec<Value>) {
+    if items.len() <= 1 {
+        return;
+    }
+
+    // Peek at the first element to decide the fast path.
+    match items[0] {
+        Value::Int(_) => {
+            if items.iter().all(|v| matches!(v, Value::Int(_))) {
+                // Fast path: all-Int — extract, sort_unstable, rewrap.
+                let mut ints: Vec<i64> = items
+                    .iter()
+                    .map(|v| match v {
+                        Value::Int(n) => *n,
+                        _ => unreachable!(),
+                    })
+                    .collect();
+                ints.sort_unstable();
+                for (slot, n) in items.iter_mut().zip(ints) {
+                    *slot = Value::Int(n);
+                }
+                return;
+            }
+        }
+        Value::Float(_) => {
+            if items.iter().all(|v| matches!(v, Value::Float(_))) {
+                // Fast path: all-Float — use total_cmp for NaN safety.
+                let mut floats: Vec<f64> = items
+                    .iter()
+                    .map(|v| match v {
+                        Value::Float(f) => *f,
+                        _ => unreachable!(),
+                    })
+                    .collect();
+                floats.sort_unstable_by(f64::total_cmp);
+                for (slot, f) in items.iter_mut().zip(floats) {
+                    *slot = Value::Float(f);
+                }
+                return;
+            }
+        }
+        Value::String(StringRef::Owned(_)) => {
+            if items
+                .iter()
+                .all(|v| matches!(v, Value::String(StringRef::Owned(_))))
+            {
+                // Fast path: all owned Strings — sort in-place via a
+                // temporary Vec<String> to avoid Value enum overhead.
+                let mut strings: Vec<String> = items
+                    .iter_mut()
+                    .map(|v| match v {
+                        Value::String(StringRef::Owned(s)) => std::mem::take(s),
+                        _ => unreachable!(),
+                    })
+                    .collect();
+                strings.sort_unstable();
+                for (slot, s) in items.iter_mut().zip(strings) {
+                    *slot = Value::String(StringRef::Owned(s));
+                }
+                return;
+            }
+        }
+        _ => {}
+    }
+
+    // Fallback: general comparison.
+    items.sort();
 }

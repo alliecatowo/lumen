@@ -1,0 +1,25 @@
+# Benchmark: List creation and traversal
+# Tests: list append (growth), indexed access, loop iteration over large list
+# Expected result: sum(0..9999) = 49995000
+
+cell make_list(n: Int) -> list[Int]
+  let mut lst = []
+  let mut i = 0
+  while i < n
+    lst = append(lst, i)
+    i = i + 1
+  end
+  lst
+end
+
+cell main() -> Int
+  let list = make_list(10000)
+  let mut sum = 0
+  let mut j = 0
+  let n = length(list)
+  while j < n
+    sum = sum + list[j]
+    j = j + 1
+  end
+  sum
+end

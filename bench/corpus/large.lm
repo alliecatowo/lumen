@@ -1,0 +1,507 @@
+# Large corpus — ~500 lines, complex program with processes, effects, enums
+
+# ── Data Types ──────────────────────────────────────────────────────
+
+record Config
+  max_retries: Int
+  timeout_ms: Int
+  verbose: Bool
+end
+
+record HttpRequest
+  method: String
+  url: String
+  body: String
+end
+
+record HttpResponse
+  status: Int
+  body: String
+end
+
+record User
+  id: Int
+  name: String
+  email: String
+  active: Bool
+end
+
+record Product
+  id: Int
+  name: String
+  price: Float
+  stock: Int
+end
+
+record Order
+  id: Int
+  user_id: Int
+  items: list[OrderItem]
+  total: Float
+  status: String
+end
+
+record OrderItem
+  product_id: Int
+  quantity: Int
+  unit_price: Float
+end
+
+record Stats
+  count: Int
+  total: Float
+  average: Float
+  min_val: Float
+  max_val: Float
+end
+
+# ── Enums ──────────────────────────────────────────────────────────
+
+enum Result
+  Ok(value: String)
+  Err(message: String)
+end
+
+enum Option
+  Some(value: Int)
+  None
+end
+
+enum LogLevel
+  Debug
+  Info
+  Warn
+  Error
+end
+
+enum TaskState
+  Pending
+  Running
+  Complete(result: String)
+  Failed(error: String)
+end
+
+enum Direction
+  North
+  South
+  East
+  West
+end
+
+# ── Utility functions ──────────────────────────────────────────────
+
+cell max_int(a: Int, b: Int) -> Int
+  if a > b
+    return a
+  end
+  return b
+end
+
+cell min_int(a: Int, b: Int) -> Int
+  if a < b
+    return a
+  end
+  return b
+end
+
+cell clamp_int(value: Int, lo: Int, hi: Int) -> Int
+  return max_int(lo, min_int(value, hi))
+end
+
+cell max_float(a: Float, b: Float) -> Float
+  if a > b
+    return a
+  end
+  return b
+end
+
+cell min_float(a: Float, b: Float) -> Float
+  if a < b
+    return a
+  end
+  return b
+end
+
+cell abs_int(n: Int) -> Int
+  if n < 0
+    return 0 - n
+  end
+  return n
+end
+
+cell repeat_string(s: String, n: Int) -> String
+  let result = ""
+  let i = 0
+  while i < n
+    result = result + s
+    i = i + 1
+  end
+  return result
+end
+
+cell pad_left(s: String, width: Int, ch: String) -> String
+  let padding = width - len(s)
+  if padding <= 0
+    return s
+  end
+  return repeat_string(ch, padding) + s
+end
+
+# ── List operations ────────────────────────────────────────────────
+
+cell sum_ints(items: list[Int]) -> Int
+  let total = 0
+  for item in items
+    total = total + item
+  end
+  return total
+end
+
+cell sum_floats(items: list[Float]) -> Float
+  let total = 0.0
+  for item in items
+    total = total + item
+  end
+  return total
+end
+
+cell filter_positive(items: list[Int]) -> list[Int]
+  let result = []
+  for item in items
+    if item > 0
+      result = append(result, item)
+    end
+  end
+  return result
+end
+
+cell map_add(items: list[Int], n: Int) -> list[Int]
+  let result = []
+  for item in items
+    result = append(result, item + n)
+  end
+  return result
+end
+
+cell zip_with_index(items: list[String]) -> list[String]
+  let result = []
+  let i = 0
+  for item in items
+    result = append(result, to_string(i) + ": " + item)
+    i = i + 1
+  end
+  return result
+end
+
+cell take_n(items: list[Int], n: Int) -> list[Int]
+  let result = []
+  let count = 0
+  for item in items
+    if count >= n
+      break
+    end
+    result = append(result, item)
+    count = count + 1
+  end
+  return result
+end
+
+cell drop_n(items: list[Int], n: Int) -> list[Int]
+  let result = []
+  let i = 0
+  for item in items
+    if i >= n
+      result = append(result, item)
+    end
+    i = i + 1
+  end
+  return result
+end
+
+cell flatten_pairs(pairs: list[list[Int]]) -> list[Int]
+  let result = []
+  for pair in pairs
+    for item in pair
+      result = append(result, item)
+    end
+  end
+  return result
+end
+
+# ── Sorting ────────────────────────────────────────────────────────
+
+cell insert_sorted(sorted: list[Int], value: Int) -> list[Int]
+  let n = len(sorted)
+  if n == 0
+    return [value]
+  end
+  let result = []
+  let inserted = false
+  let i = 0
+  while i < n
+    let curr = sorted[i]
+    if not inserted and value <= curr
+      result = append(result, value)
+      inserted = true
+    end
+    result = append(result, curr)
+    i = i + 1
+  end
+  if not inserted
+    result = append(result, value)
+  end
+  return result
+end
+
+cell insertion_sort(items: list[Int]) -> list[Int]
+  let sorted = []
+  for item in items
+    sorted = insert_sorted(sorted, item)
+  end
+  return sorted
+end
+
+cell is_sorted(items: list[Int]) -> Bool
+  let n = len(items)
+  if n <= 1
+    return true
+  end
+  let i = 0
+  while i < n - 1
+    if items[i] > items[i + 1]
+      return false
+    end
+    i = i + 1
+  end
+  return true
+end
+
+# ── Enum operations ────────────────────────────────────────────────
+
+cell result_map(r: Result, prefix: String) -> Result
+  match r
+    Ok -> Ok(value: prefix + r.value)
+    Err -> r
+  end
+end
+
+cell result_unwrap_or(r: Result, default: String) -> String
+  match r
+    Ok -> r.value
+    Err -> default
+  end
+end
+
+cell option_map(o: Option, f: Int) -> Option
+  match o
+    Some -> Some(value: o.value + f)
+    None -> None
+  end
+end
+
+cell option_unwrap_or(o: Option, default: Int) -> Int
+  match o
+    Some -> o.value
+    None -> default
+  end
+end
+
+cell log_level_name(level: LogLevel) -> String
+  match level
+    Debug -> "DEBUG"
+    Info -> "INFO"
+    Warn -> "WARN"
+    Error -> "ERROR"
+  end
+end
+
+cell log_level_severity(level: LogLevel) -> Int
+  match level
+    Debug -> 0
+    Info -> 1
+    Warn -> 2
+    Error -> 3
+  end
+end
+
+cell task_is_done(state: TaskState) -> Bool
+  match state
+    Complete -> true
+    Failed -> true
+    _ -> false
+  end
+end
+
+cell task_description(state: TaskState) -> String
+  match state
+    Pending -> "Task is pending"
+    Running -> "Task is running"
+    Complete -> "Completed: " + state.result
+    Failed -> "Failed: " + state.error
+  end
+end
+
+cell direction_opposite(d: Direction) -> Direction
+  match d
+    North -> South
+    South -> North
+    East -> West
+    West -> East
+  end
+end
+
+cell direction_name(d: Direction) -> String
+  match d
+    North -> "North"
+    South -> "South"
+    East -> "East"
+    West -> "West"
+  end
+end
+
+# ── Business logic ─────────────────────────────────────────────────
+
+cell calculate_order_total(items: list[OrderItem]) -> Float
+  let total = 0.0
+  for item in items
+    total = total + item.unit_price * to_float(item.quantity)
+  end
+  return total
+end
+
+cell user_display(user: User) -> String
+  let status = "inactive"
+  if user.active
+    status = "active"
+  end
+  return user.name + " <" + user.email + "> [" + status + "]"
+end
+
+cell product_in_stock(product: Product) -> Bool
+  return product.stock > 0
+end
+
+cell apply_discount(price: Float, percent: Float) -> Float
+  return price * (1.0 - percent / 100.0)
+end
+
+cell compute_stats(values: list[Float]) -> Stats
+  let n = len(values)
+  if n == 0
+    return Stats(count: 0, total: 0.0, average: 0.0, min_val: 0.0, max_val: 0.0)
+  end
+  let total = 0.0
+  let lo = values[0]
+  let hi = values[0]
+  for v in values
+    total = total + v
+    if v < lo
+      lo = v
+    end
+    if v > hi
+      hi = v
+    end
+  end
+  let avg = total / to_float(n)
+  return Stats(count: n, total: total, average: avg, min_val: lo, max_val: hi)
+end
+
+# ── Recursive algorithms ──────────────────────────────────────────
+
+cell fibonacci(n: Int) -> Int
+  if n < 2
+    return n
+  end
+  return fibonacci(n - 1) + fibonacci(n - 2)
+end
+
+cell gcd(a: Int, b: Int) -> Int
+  if b == 0
+    return a
+  end
+  return gcd(b, a % b)
+end
+
+cell power(base: Int, exp: Int) -> Int
+  if exp == 0
+    return 1
+  end
+  if exp % 2 == 0
+    let half = power(base, exp / 2)
+    return half * half
+  end
+  return base * power(base, exp - 1)
+end
+
+# ── String processing ──────────────────────────────────────────────
+
+cell count_char(s: String, ch: String) -> Int
+  let count = 0
+  let i = 0
+  while i < len(s)
+    if s[i] == ch
+      count = count + 1
+    end
+    i = i + 1
+  end
+  return count
+end
+
+cell starts_with_char(s: String, ch: String) -> Bool
+  if len(s) == 0
+    return false
+  end
+  return s[0] == ch
+end
+
+cell build_csv_row(fields: list[String]) -> String
+  return join(fields, ",")
+end
+
+# ── Main ───────────────────────────────────────────────────────────
+
+cell main() -> Null
+  let config = Config(max_retries: 3, timeout_ms: 5000, verbose: true)
+  print("Config: retries=" + to_string(config.max_retries))
+
+  let user = User(id: 1, name: "Alice", email: "alice@example.com", active: true)
+  print("User: " + user_display(user))
+
+  let items = [
+    OrderItem(product_id: 1, quantity: 2, unit_price: 29.99),
+    OrderItem(product_id: 2, quantity: 1, unit_price: 49.99)
+  ]
+  let total = calculate_order_total(items)
+  print("Order total: " + to_string(total))
+  print("With 10% discount: " + to_string(apply_discount(total, 10.0)))
+
+  let nums = [42, 17, 93, 5, 68, 31, 76]
+  let sorted = insertion_sort(nums)
+  print("Sorted: " + to_string(is_sorted(sorted)))
+
+  print("fib(10) = " + to_string(fibonacci(10)))
+  print("gcd(48, 18) = " + to_string(gcd(48, 18)))
+  print("2^10 = " + to_string(power(2, 10)))
+
+  let values = [1.5, 3.7, 2.1, 8.4, 0.9]
+  let stats = compute_stats(values)
+  print("Stats: count=" + to_string(stats.count) + " avg=" + to_string(stats.average))
+
+  let r1 = Ok(value: "hello")
+  let r2 = Err(message: "not found")
+  print("Result 1: " + result_unwrap_or(r1, "default"))
+  print("Result 2: " + result_unwrap_or(r2, "default"))
+
+  let levels = [Debug, Info, Warn, Error]
+  for level in levels
+    print(log_level_name(level) + " severity=" + to_string(log_level_severity(level)))
+  end
+
+  let directions = [North, South, East, West]
+  for d in directions
+    let opp = direction_opposite(d)
+    print(direction_name(d) + " -> " + direction_name(opp))
+  end
+
+  return null
+end

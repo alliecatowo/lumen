@@ -1,0 +1,6 @@
+cell main() -> Int
+  let x = 10
+  match x
+    n -> n * 2
+  end
+end

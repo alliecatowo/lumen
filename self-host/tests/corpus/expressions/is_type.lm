@@ -1,0 +1,5 @@
+# Is type check
+cell main() -> Bool
+  let x = 42
+  x is Int
+end

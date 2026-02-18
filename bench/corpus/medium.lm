@@ -1,0 +1,219 @@
+# Medium corpus — ~200 lines, data processing with records, enums, match
+
+record Point
+  x: Int
+  y: Int
+end
+
+record Rect
+  origin: Point
+  width: Int
+  height: Int
+end
+
+enum Shape
+  Circle(radius: Int)
+  Rectangle(rect: Rect)
+  Triangle(base: Int, height: Int)
+end
+
+enum Color
+  Red
+  Green
+  Blue
+  Custom(r: Int, g: Int, b: Int)
+end
+
+cell make_point(x: Int, y: Int) -> Point
+  return Point(x: x, y: y)
+end
+
+cell distance_sq(a: Point, b: Point) -> Int
+  let dx = a.x - b.x
+  let dy = a.y - b.y
+  return dx * dx + dy * dy
+end
+
+cell translate(p: Point, dx: Int, dy: Int) -> Point
+  return Point(x: p.x + dx, y: p.y + dy)
+end
+
+cell area(shape: Shape) -> Int
+  match shape
+    Circle -> shape.radius * shape.radius * 3
+    Rectangle -> shape.rect.width * shape.rect.height
+    Triangle -> shape.base * shape.height / 2
+  end
+end
+
+cell perimeter(shape: Shape) -> Int
+  match shape
+    Circle -> shape.radius * 2 * 3
+    Rectangle -> 2 * (shape.rect.width + shape.rect.height)
+    Triangle -> shape.base + shape.height + shape.base
+  end
+end
+
+cell color_name(c: Color) -> String
+  match c
+    Red -> "red"
+    Green -> "green"
+    Blue -> "blue"
+    Custom -> "custom(" + to_string(c.r) + "," + to_string(c.g) + "," + to_string(c.b) + ")"
+  end
+end
+
+cell max_val(a: Int, b: Int) -> Int
+  if a > b
+    return a
+  end
+  return b
+end
+
+cell min_val(a: Int, b: Int) -> Int
+  if a < b
+    return a
+  end
+  return b
+end
+
+cell clamp(value: Int, lo: Int, hi: Int) -> Int
+  return max_val(lo, min_val(value, hi))
+end
+
+cell sum_list(items: list[Int]) -> Int
+  let total = 0
+  for item in items
+    total = total + item
+  end
+  return total
+end
+
+cell filter_positive(items: list[Int]) -> list[Int]
+  let result = []
+  for item in items
+    if item > 0
+      result = append(result, item)
+    end
+  end
+  return result
+end
+
+cell map_double(items: list[Int]) -> list[Int]
+  let result = []
+  for item in items
+    result = append(result, item * 2)
+  end
+  return result
+end
+
+cell contains_value(items: list[Int], target: Int) -> Bool
+  for item in items
+    if item == target
+      return true
+    end
+  end
+  return false
+end
+
+cell count_matching(items: list[Int], target: Int) -> Int
+  let count = 0
+  for item in items
+    if item == target
+      count = count + 1
+    end
+  end
+  return count
+end
+
+cell reverse_list(items: list[Int]) -> list[Int]
+  let result = []
+  let i = len(items) - 1
+  while i >= 0
+    result = append(result, items[i])
+    i = i - 1
+  end
+  return result
+end
+
+cell insert_sorted(sorted: list[Int], value: Int) -> list[Int]
+  let n = len(sorted)
+  if n == 0
+    return [value]
+  end
+  let result = []
+  let inserted = false
+  let i = 0
+  while i < n
+    let curr = sorted[i]
+    if not inserted and value <= curr
+      result = append(result, value)
+      inserted = true
+    end
+    result = append(result, curr)
+    i = i + 1
+  end
+  if not inserted
+    result = append(result, value)
+  end
+  return result
+end
+
+cell insertion_sort(items: list[Int]) -> list[Int]
+  let sorted = []
+  for item in items
+    sorted = insert_sorted(sorted, item)
+  end
+  return sorted
+end
+
+cell is_sorted(items: list[Int]) -> Bool
+  let n = len(items)
+  if n <= 1
+    return true
+  end
+  let i = 0
+  while i < n - 1
+    if items[i] > items[i + 1]
+      return false
+    end
+    i = i + 1
+  end
+  return true
+end
+
+cell describe_shape(shape: Shape) -> String
+  let a = area(shape)
+  let p = perimeter(shape)
+  match shape
+    Circle -> "Circle(r=" + to_string(shape.radius) + ", area=" + to_string(a) + ", perim=" + to_string(p) + ")"
+    Rectangle -> "Rect(w=" + to_string(shape.rect.width) + ", h=" + to_string(shape.rect.height) + ", area=" + to_string(a) + ")"
+    Triangle -> "Tri(b=" + to_string(shape.base) + ", h=" + to_string(shape.height) + ", area=" + to_string(a) + ")"
+  end
+end
+
+cell main() -> Null
+  let origin = make_point(0, 0)
+  let p1 = make_point(3, 4)
+  let d = distance_sq(origin, p1)
+  print("Distance squared: " + to_string(d))
+
+  let shapes = [Circle(radius: 5), Rectangle(rect: Rect(origin: origin, width: 10, height: 20)), Triangle(base: 6, height: 8)]
+  for s in shapes
+    print(describe_shape(s))
+  end
+
+  let nums = [5, 0 - 3, 8, 0 - 1, 12, 0 - 7, 3]
+  let positives = filter_positive(nums)
+  let doubled = map_double(positives)
+  let sorted = insertion_sort(nums)
+  print("Sum: " + to_string(sum_list(nums)))
+  print("Positive count: " + to_string(len(positives)))
+  print("Sorted: " + to_string(is_sorted(sorted)))
+  print("Clamped 15 to [0,10]: " + to_string(clamp(15, 0, 10)))
+
+  let c = Custom(r: 128, g: 64, b: 255)
+  print("Color: " + color_name(c))
+
+  return null
+end

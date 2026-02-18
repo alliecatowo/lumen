@@ -50,6 +50,10 @@ enum Commands {
         /// Output format: text (default), junit, json
         #[arg(long, default_value = "text")]
         output_format: String,
+
+        /// Allow unstable features without errors
+        #[arg(long)]
+        allow_unstable: bool,
     },
     /// Compile and run a `.lm`, `.lumen`, `.lm.md`, or `.lumen.md` file
     Run {
@@ -64,6 +68,15 @@ enum Commands {
         /// Emit trace to the given directory
         #[arg(long)]
         trace_dir: Option<PathBuf>,
+
+        /// Allow unstable features without errors
+        #[arg(long)]
+        allow_unstable: bool,
+
+        /// JIT compilation threshold (number of calls before compiling a cell).
+        /// Default is 0 meaning JIT is always attempted immediately.
+        #[arg(long, default_value = "0")]
+        jit_threshold: u32,
     },
     /// Compile a `.lm`, `.lumen`, `.lm.md`, or `.lumen.md` file to LIR JSON
     Emit {
@@ -74,6 +87,10 @@ enum Commands {
         /// Output path (default: stdout)
         #[arg(short, long)]
         output: Option<PathBuf>,
+
+        /// Allow unstable features without errors
+        #[arg(long)]
+        allow_unstable: bool,
     },
     /// Show trace for a run
     Trace {
@@ -150,6 +167,14 @@ enum Commands {
         /// Polling interval in milliseconds
         #[arg(long, default_value_t = 500)]
         interval: u64,
+    },
+    /// Migrate source files to a new edition
+    Migrate {
+        /// Target edition
+        #[arg(long, default_value = "2026")]
+        edition: String,
+        /// Files to migrate
+        files: Vec<PathBuf>,
     },
 }
 
@@ -356,13 +381,20 @@ fn main() {
         Commands::Check {
             file,
             output_format,
-        } => cmd_check(&file, &output_format),
+            allow_unstable,
+        } => cmd_check(&file, &output_format, allow_unstable),
         Commands::Run {
             file,
             cell,
             trace_dir,
-        } => cmd_run(&file, &cell, trace_dir),
-        Commands::Emit { file, output } => cmd_emit(&file, output),
+            allow_unstable,
+            jit_threshold,
+        } => cmd_run(&file, &cell, trace_dir, allow_unstable, jit_threshold),
+        Commands::Emit {
+            file,
+            output,
+            allow_unstable,
+        } => cmd_emit(&file, output, allow_unstable),
         Commands::Trace { sub } => match sub {
             TraceCommands::Show {
                 run_id,
@@ -393,6 +425,7 @@ fn main() {
             BuildCommands::Wasm { target, release } => cmd_build_wasm(&target, release),
         },
         Commands::Watch { path, interval } => cmd_watch(&path, interval),
+        Commands::Migrate { edition, files } => cmd_migrate(&edition, &files),
     }
 }
 
@@ -593,7 +626,7 @@ fn gate_check_sources(files: &[PathBuf]) -> bool {
         };
 
         let filename = file.display().to_string();
-        if let Err(e) = compile_source_file(file, &source) {
+        if let Err(e) = compile_source_file(file, &source, false) {
             let formatted = lumen_compiler::format_error(&e, &source, &filename);
             eprint!("{}", formatted);
             failures += 1;
@@ -746,6 +779,7 @@ fn find_project_root(start: &Path) -> Option<PathBuf> {
 fn compile_source_file(
     path: &Path,
     source: &str,
+    allow_unstable: bool,
 ) -> Result<lumen_compiler::compiler::lir::LirModule, lumen_compiler::CompileError> {
     let source_dir = path
         .parent()
@@ -766,10 +800,14 @@ fn compile_source_file(
     let resolver = RefCell::new(resolver);
     let resolve_import = |module_path: &str| resolver.borrow_mut().resolve(module_path);
 
-    lumen_compiler::compile_with_imports(source, &resolve_import)
+    let opts = lumen_compiler::CompileOptions {
+        allow_unstable,
+        ..Default::default()
+    };
+    lumen_compiler::compile_with_imports_and_options(source, &resolve_import, &opts)
 }
 
-fn cmd_check(file: &PathBuf, output_format: &str) {
+fn cmd_check(file: &PathBuf, output_format: &str, allow_unstable: bool) {
     let format = ci_output::OutputFormat::from_str_name(output_format).unwrap_or_else(|| {
         eprintln!(
             "{} unknown output format '{}'. Valid formats: {}",
@@ -789,7 +827,7 @@ fn cmd_check(file: &PathBuf, output_format: &str) {
         ci_output::OutputFormat::Text => {
             // Original human-readable output.
             println!("{} {}", status_label("Checking"), bold(&filename));
-            match compile_source_file(file, &source) {
+            match compile_source_file(file, &source, allow_unstable) {
                 Ok(_module) => {
                     let elapsed = start.elapsed();
                     println!(
@@ -809,7 +847,7 @@ fn cmd_check(file: &PathBuf, output_format: &str) {
             let mut report = ci_output::CheckReport::new("lumen-check");
             let file_start = std::time::Instant::now();
 
-            let result = match compile_source_file(file, &source) {
+            let result = match compile_source_file(file, &source, allow_unstable) {
                 Ok(_module) => ci_output::FileCheckResult {
                     file: filename.clone(),
                     passed: true,
@@ -979,7 +1017,7 @@ fn run_watch_check(files: &[PathBuf]) {
         };
 
         let filename = file.display().to_string();
-        if let Err(e) = compile_source_file(file, &source) {
+        if let Err(e) = compile_source_file(file, &source, false) {
             let formatted = lumen_compiler::format_error(&e, &source, &filename);
             eprint!("{}", formatted);
             errors += 1;
@@ -1005,13 +1043,40 @@ fn run_watch_check(files: &[PathBuf]) {
     }
 }
 
-fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
+fn cmd_migrate(edition: &str, files: &[PathBuf]) {
+    if files.is_empty() {
+        println!(
+            "{} no files specified for migration to edition {}",
+            status_label("Migrate"),
+            bold(edition)
+        );
+        return;
+    }
+    println!(
+        "{} {} file(s) to edition {}",
+        status_label("Migrate"),
+        files.len(),
+        bold(edition)
+    );
+    // For now, the current edition is the only supported edition, so
+    // no transformations are needed. This stub is infrastructure for
+    // future edition migrations.
+    println!("Edition migration: no changes needed (current edition matches target).");
+}
+
+fn cmd_run(
+    file: &PathBuf,
+    cell: &str,
+    trace_dir: Option<PathBuf>,
+    allow_unstable: bool,
+    jit_threshold: u32,
+) {
     let source = read_source(file);
     let filename = file.display().to_string();
 
     println!("{} {}", status_label("Compiling"), bold(&filename));
     let start = std::time::Instant::now();
-    let module = match compile_source_file(file, &source) {
+    let module = match compile_source_file(file, &source, allow_unstable) {
         Ok(m) => m,
         Err(e) => {
             let chain = error_chain::ErrorChain::new("compilation failed")
@@ -1022,6 +1087,13 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
             std::process::exit(1);
         }
     };
+
+    // ─── JIT fast path removed ────────────────────────────────────────
+    // The AOT fast path (try_jit_execute) required ALL cells to be Int-only,
+    // so it almost never activated. With --jit-threshold=0 (default), the
+    // tiered JIT compiles eligible cells on first call, making the AOT path
+    // redundant. Fallback to the interpreter is automatic for non-eligible cells.
+    // ─── End JIT fast path ───────────────────────────────────────────
 
     // Load project config and build provider registry
     let config = config::LumenConfig::load();
@@ -1045,6 +1117,10 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
 
     println!("{} {}", status_label("Running"), cyan(cell));
     let mut vm = lumen_vm::vm::VM::new();
+    // Enable tiered JIT: with --jit-threshold=0 (default), eligible cells are
+    // compiled to native code on their very first call. Use a higher value to
+    // defer compilation to only hot cells.
+    vm.enable_jit(jit_threshold as u64);
     if let Some(run_id) = trace_run_id.as_ref() {
         vm.set_trace_id(run_id.clone());
     }
@@ -1102,7 +1178,19 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
                 }
             }
             println!("\n{}", result);
-            println!("{} Finished in {:.2}s", green("✓"), elapsed.as_secs_f64());
+            // Show tiered JIT stats if any cells were compiled at runtime
+            let jit_stats = vm.jit_stats();
+            if jit_stats.cells_compiled > 0 {
+                println!(
+                    "{} Finished in {:.4}s (tiered JIT: {} cells compiled, {} native calls)",
+                    green("✓"),
+                    elapsed.as_secs_f64(),
+                    jit_stats.cells_compiled,
+                    jit_stats.jit_executions,
+                );
+            } else {
+                println!("{} Finished in {:.2}s", green("✓"), elapsed.as_secs_f64());
+            }
         }
         Err(e) => {
             if let Some(trace_store) = trace_store.as_ref() {
@@ -1118,12 +1206,20 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>) {
     }
 }
 
-fn cmd_emit(file: &PathBuf, output: Option<PathBuf>) {
+// ---------------------------------------------------------------------------
+// JIT fast-path helper (removed)
+// ---------------------------------------------------------------------------
+// The AOT fast path (`try_jit_execute`) has been removed. It required ALL cells
+// in the module to be Int-only, so it almost never activated in practice.
+// With --jit-threshold=0 (default), the tiered JIT in the VM compiles eligible
+// cells on their very first call, making this function redundant.
+
+fn cmd_emit(file: &PathBuf, output: Option<PathBuf>, allow_unstable: bool) {
     let source = read_source(file);
     let filename = file.display().to_string();
 
     println!("{} {}", status_label("Compiling"), filename);
-    let module = match compile_source_file(file, &source) {
+    let module = match compile_source_file(file, &source, allow_unstable) {
         Ok(m) => m,
         Err(e) => {
             let chain = error_chain::ErrorChain::new("compilation failed")

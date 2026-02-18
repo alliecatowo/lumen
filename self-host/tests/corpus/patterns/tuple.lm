@@ -1,0 +1,6 @@
+cell main() -> Int
+  let pair = (10, 20)
+  match pair
+    (a, b) -> a + b
+  end
+end

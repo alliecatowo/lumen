@@ -61,6 +61,58 @@ fn is_builtin_function(name: &str) -> bool {
             | "assert_eq"
             | "assert_ne"
             | "assert_contains"
+            | "read_lines"
+            | "walk_dir"
+            | "glob"
+            | "path_join"
+            | "path_parent"
+            | "path_extension"
+            | "path_filename"
+            | "path_stem"
+            | "exec"
+            | "read_stdin"
+            | "read_line"
+            | "eprint"
+            | "eprintln"
+            | "csv_parse"
+            | "csv_encode"
+            | "toml_parse"
+            | "toml_encode"
+            | "regex_match"
+            | "regex_replace"
+            | "regex_find_all"
+            | "string_concat"
+            | "http_get"
+            | "http_post"
+            | "http_put"
+            | "http_delete"
+            | "http_request"
+            | "tcp_connect"
+            | "tcp_listen"
+            | "tcp_send"
+            | "tcp_recv"
+            | "udp_bind"
+            | "udp_send"
+            | "udp_recv"
+            | "tcp_close"
+            | "map_sorted_keys"
+            | "parse_int"
+            | "parse_float"
+            | "log2"
+            | "log10"
+            | "is_nan"
+            | "is_infinite"
+            | "math_pi"
+            | "math_e"
+            | "sort_asc"
+            | "sort_desc"
+            | "sort_by"
+            | "binary_search"
+            | "hrtime"
+            | "format_time"
+            | "args"
+            | "set_env"
+            | "env_vars"
     )
 }
 
@@ -157,6 +209,50 @@ fn builtin_return_type(name: &str, arg_types: &[Type]) -> Option<Type> {
         "exists" => Some(Type::Bool),
         "mkdir" => Some(Type::Null),
         "exit" => Some(Type::Null),
+        "read_lines" => Some(Type::List(Box::new(Type::String))),
+        "walk_dir" => Some(Type::List(Box::new(Type::String))),
+        "glob" => Some(Type::List(Box::new(Type::String))),
+        "path_join" => Some(Type::String),
+        "path_parent" => Some(Type::String),
+        "path_extension" => Some(Type::String),
+        "path_filename" => Some(Type::String),
+        "path_stem" => Some(Type::String),
+        "exec" => Some(Type::Any),
+        "read_stdin" => Some(Type::String),
+        "read_line" => Some(Type::String),
+        "eprint" => Some(Type::Null),
+        "eprintln" => Some(Type::Null),
+        "csv_parse" => Some(Type::List(Box::new(Type::List(Box::new(Type::String))))),
+        "csv_encode" => Some(Type::String),
+        "toml_parse" => Some(Type::Any),
+        "toml_encode" => Some(Type::String),
+        "regex_match" => Some(Type::List(Box::new(Type::String))),
+        "regex_replace" => Some(Type::String),
+        "regex_find_all" => Some(Type::List(Box::new(Type::String))),
+        "string_concat" => Some(Type::String),
+        // HTTP client builtins — return maps with status, body, ok fields
+        "http_get" | "http_post" | "http_put" | "http_delete" | "http_request" => Some(Type::Any),
+        // TCP/UDP networking builtins
+        "tcp_connect" | "tcp_listen" | "udp_bind" => Some(Type::Any),
+        "tcp_send" | "udp_send" => Some(Type::Any),
+        "tcp_recv" => Some(Type::Any),
+        "udp_recv" => Some(Type::Any),
+        "tcp_close" => Some(Type::Null),
+        // Wave 4A: stdlib completeness (T361-T370)
+        "map_sorted_keys" => Some(Type::List(Box::new(Type::Any))),
+        "parse_int" => Some(Type::Result(Box::new(Type::Int), Box::new(Type::String))),
+        "parse_float" => Some(Type::Result(Box::new(Type::Float), Box::new(Type::String))),
+        "log2" | "log10" => Some(Type::Float),
+        "is_nan" | "is_infinite" => Some(Type::Bool),
+        "math_pi" | "math_e" => Some(Type::Float),
+        "sort_asc" | "sort_desc" => arg_types.first().cloned().or(Some(Type::Any)),
+        "sort_by" => arg_types.first().cloned().or(Some(Type::Any)),
+        "binary_search" => Some(Type::Result(Box::new(Type::Int), Box::new(Type::Int))),
+        "hrtime" => Some(Type::Int),
+        "format_time" => Some(Type::String),
+        "args" => Some(Type::List(Box::new(Type::String))),
+        "set_env" => Some(Type::Null),
+        "env_vars" => Some(Type::Map(Box::new(Type::String), Box::new(Type::String))),
         _ => None,
     }
 }
@@ -922,15 +1018,48 @@ impl<'a> TypeChecker<'a> {
             Stmt::Assign(asgn) => {
                 let val_type = self.infer_expr(&asgn.value);
                 // Check mutability
-                if let Some(&is_mut) = self.mutables.get(&asgn.target) {
-                    if !is_mut {
-                        self.errors.push(TypeError::ImmutableAssign {
-                            name: asgn.target.clone(),
-                            line: asgn.span.line,
-                        });
+                match &asgn.target {
+                    AssignTarget::Variable(var_name) => {
+                        if let Some(&is_mut) = self.mutables.get(var_name.as_str()) {
+                            if !is_mut {
+                                self.errors.push(TypeError::ImmutableAssign {
+                                    name: var_name.to_string(),
+                                    line: asgn.span.line,
+                                });
+                            }
+                        }
+                        self.locals.insert(var_name.to_string(), val_type);
+                    }
+                    AssignTarget::Index(base, idx) => {
+                        // Check that the base variable is mutable
+                        if let Expr::Ident(base_name, _) = base.as_ref() {
+                            if let Some(&is_mut) = self.mutables.get(base_name.as_str()) {
+                                if !is_mut {
+                                    self.errors.push(TypeError::ImmutableAssign {
+                                        name: base_name.to_string(),
+                                        line: asgn.span.line,
+                                    });
+                                }
+                            }
+                        }
+                        self.infer_expr(base);
+                        self.infer_expr(idx);
+                    }
+                    AssignTarget::Field(base, _) => {
+                        // Check that the base variable is mutable
+                        if let Expr::Ident(base_name, _) = base.as_ref() {
+                            if let Some(&is_mut) = self.mutables.get(base_name.as_str()) {
+                                if !is_mut {
+                                    self.errors.push(TypeError::ImmutableAssign {
+                                        name: base_name.to_string(),
+                                        line: asgn.span.line,
+                                    });
+                                }
+                            }
+                        }
+                        self.infer_expr(base);
                     }
                 }
-                self.locals.insert(asgn.target.clone(), val_type);
             }
             Stmt::Expr(es) => {
                 self.infer_expr(&es.expr);
@@ -977,39 +1106,72 @@ impl<'a> TypeChecker<'a> {
             }
             Stmt::CompoundAssign(ca) => {
                 let val_type = self.infer_expr(&ca.value);
-                // Check mutability
-                if let Some(&is_mut) = self.mutables.get(&ca.target) {
-                    if !is_mut {
-                        self.errors.push(TypeError::ImmutableAssign {
-                            name: ca.target.clone(),
-                            line: ca.span.line,
-                        });
+                // Check mutability and types
+                match &ca.target {
+                    AssignTarget::Variable(var_name) => {
+                        if let Some(&is_mut) = self.mutables.get(var_name.as_str()) {
+                            if !is_mut {
+                                self.errors.push(TypeError::ImmutableAssign {
+                                    name: var_name.to_string(),
+                                    line: ca.span.line,
+                                });
+                            }
+                        }
+                        if let Some(existing) = self.locals.get(var_name.as_str()).cloned() {
+                            // Bitwise compound assignments require Int operands
+                            match ca.op {
+                                CompoundOp::BitAndAssign
+                                | CompoundOp::BitOrAssign
+                                | CompoundOp::BitXorAssign => {
+                                    if existing != Type::Any && existing != Type::Int {
+                                        self.errors.push(TypeError::Mismatch {
+                                            expected: "Int".into(),
+                                            actual: format!("{}", existing),
+                                            line: ca.span.line,
+                                        });
+                                    }
+                                    if val_type != Type::Any && val_type != Type::Int {
+                                        self.errors.push(TypeError::Mismatch {
+                                            expected: "Int".into(),
+                                            actual: format!("{}", val_type),
+                                            line: ca.span.line,
+                                        });
+                                    }
+                                }
+                                _ => {
+                                    self.check_compat(&existing, &val_type, ca.span.line);
+                                }
+                            }
+                        }
                     }
-                }
-                if let Some(existing) = self.locals.get(&ca.target).cloned() {
-                    // Bitwise compound assignments require Int operands
-                    match ca.op {
-                        CompoundOp::BitAndAssign
-                        | CompoundOp::BitOrAssign
-                        | CompoundOp::BitXorAssign => {
-                            if existing != Type::Any && existing != Type::Int {
-                                self.errors.push(TypeError::Mismatch {
-                                    expected: "Int".into(),
-                                    actual: format!("{}", existing),
-                                    line: ca.span.line,
-                                });
-                            }
-                            if val_type != Type::Any && val_type != Type::Int {
-                                self.errors.push(TypeError::Mismatch {
-                                    expected: "Int".into(),
-                                    actual: format!("{}", val_type),
-                                    line: ca.span.line,
-                                });
+                    AssignTarget::Index(base, idx) => {
+                        // Check that the base variable is mutable
+                        if let Expr::Ident(base_name, _) = base.as_ref() {
+                            if let Some(&is_mut) = self.mutables.get(base_name.as_str()) {
+                                if !is_mut {
+                                    self.errors.push(TypeError::ImmutableAssign {
+                                        name: base_name.to_string(),
+                                        line: ca.span.line,
+                                    });
+                                }
                             }
                         }
-                        _ => {
-                            self.check_compat(&existing, &val_type, ca.span.line);
+                        self.infer_expr(base);
+                        self.infer_expr(idx);
+                    }
+                    AssignTarget::Field(base, _) => {
+                        // Check that the base variable is mutable
+                        if let Expr::Ident(base_name, _) = base.as_ref() {
+                            if let Some(&is_mut) = self.mutables.get(base_name.as_str()) {
+                                if !is_mut {
+                                    self.errors.push(TypeError::ImmutableAssign {
+                                        name: base_name.to_string(),
+                                        line: ca.span.line,
+                                    });
+                                }
+                            }
                         }
+                        self.infer_expr(base);
                     }
                 }
             }

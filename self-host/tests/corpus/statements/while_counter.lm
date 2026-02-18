@@ -1,0 +1,9 @@
+cell main() -> Int
+  let count = 0
+  let i = 1
+  while i <= 10
+    count = count + i
+    i = i + 1
+  end
+  count
+end

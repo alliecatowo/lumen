@@ -1,0 +1,40 @@
+# Sort benchmark — builtin sort on 100,000 integers
+# Uses Lumen's builtin sort() which delegates to Rust's stable sort (O(n log n))
+
+# Simple linear congruential generator for deterministic "random" data
+cell make_data(count: Int) -> list[Int]
+  let data = []
+  let val = 42
+  let i = 0
+  while i < count
+    val = (val * 1103515245 + 12345) % 2147483648
+    data = append(data, val % 100000)
+    i = i + 1
+  end
+  return data
+end
+
+cell is_sorted(items: list[Int]) -> Bool
+  let n = len(items)
+  if n <= 1
+    return true
+  end
+  let i = 0
+  while i < n - 1
+    if items[i] > items[i + 1]
+      return false
+    end
+    i = i + 1
+  end
+  return true
+end
+
+cell main() -> String
+  let n = 100000
+  let data = make_data(n)
+  let sorted = sort(data)
+  let ok = is_sorted(sorted)
+  let result = "sort(" + to_string(n) + ") sorted=" + to_string(ok)
+  print(result)
+  return result
+end

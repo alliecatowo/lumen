@@ -727,7 +727,7 @@ mod tests {
     fn make_module_with_params(
         name: &str,
         params: Vec<LirParam>,
-        registers: u8,
+        registers: u16,
         constants: Vec<Constant>,
         instructions: Vec<Instruction>,
     ) -> LirModule {

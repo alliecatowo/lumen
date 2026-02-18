@@ -1,0 +1,46 @@
+# Sieve of Eratosthenes — primes up to 1,000,000
+# True sieve using index assignment (list[i] = val).
+# Algorithm: O(n * log(log(n))) matching the C reference implementation.
+
+cell main() -> String
+  let limit = 1000000
+
+  # Build sieve array of limit+1 entries using range, then zero out
+  # range() creates the list in one native call, much faster than append loop
+  let mut sieve = range(0, limit + 1)
+  let mut i = 0
+  while i <= limit
+    sieve[i] = 0
+    i = i + 1
+  end
+
+  # Mark 0 and 1 as non-prime
+  sieve[0] = 1
+  sieve[1] = 1
+
+  # Mark composites: for each i where i*i <= limit
+  i = 2
+  while i * i <= limit
+    if sieve[i] == 0
+      let mut j = i * i
+      while j <= limit
+        sieve[j] = 1
+        j = j + i
+      end
+    end
+    i = i + 1
+  end
+
+  # Count primes
+  let mut count = 0
+  i = 2
+  while i <= limit
+    if sieve[i] == 0
+      count = count + 1
+    end
+    i = i + 1
+  end
+
+  print("primes_sieve(1000000): count = " + to_string(count))
+  "done"
+end

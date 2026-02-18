@@ -1,0 +1,12 @@
+enum Shape
+  Circle(radius: Float)
+  Square(side: Float)
+end
+
+cell main() -> String
+  let s = Shape.Circle(radius: 5.0)
+  match s
+    Shape.Circle(radius:) -> "circle"
+    Shape.Square(side:) -> "square"
+  end
+end

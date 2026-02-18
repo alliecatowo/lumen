@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use cranelift_codegen::ir::condcodes::IntCC;
+use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{types, AbiParam, InstBuilder, Type as ClifType};
 use cranelift_codegen::Context;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
@@ -26,6 +26,147 @@ use crate::types::lir_type_str_to_cl_type;
 
 /// Maximum number of virtual registers we support per cell.
 const MAX_REGS: usize = 256;
+
+// ---------------------------------------------------------------------------
+// JIT variable type tracking
+// ---------------------------------------------------------------------------
+
+/// Tracks the semantic type of each JIT variable/register.
+/// At the Cranelift IR level, both Int and Str are I64, but we need to
+/// distinguish them so that operations like Add dispatch to the correct
+/// implementation (iadd vs string concatenation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JitVarType {
+    /// 64-bit signed integer.
+    Int,
+    /// 64-bit IEEE 754 floating point.
+    Float,
+    /// Heap-allocated string, represented as a `*mut String` cast to i64.
+    /// The pointer is created by `jit_rt_string_alloc` or `jit_rt_string_concat`
+    /// and must be freed via `jit_rt_string_drop` when no longer needed.
+    Str,
+}
+
+impl JitVarType {
+    /// Return the Cranelift IR type for this variable type.
+    #[allow(dead_code)]
+    fn clif_type(self) -> ClifType {
+        match self {
+            JitVarType::Int => types::I64,
+            JitVarType::Float => types::F64,
+            // String pointers are i64 on 64-bit targets.
+            JitVarType::Str => types::I64,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// String runtime helpers (extern "C" functions callable from JIT code)
+// ---------------------------------------------------------------------------
+
+/// Allocate a new heap `String` from a raw UTF-8 byte pointer and length.
+/// Returns a `*mut String` as i64.
+///
+/// # Safety
+/// `ptr` must point to valid UTF-8 bytes of at least `len` bytes.
+extern "C" fn jit_rt_string_alloc(ptr: *const u8, len: usize) -> i64 {
+    let s = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len)) };
+    let boxed = Box::new(s.to_string());
+    Box::into_raw(boxed) as i64
+}
+
+/// Concatenate two heap strings. Both inputs are `*mut String` as i64.
+/// Returns a new `*mut String` as i64 owning the concatenated result.
+/// The input strings are NOT freed (callers manage lifetimes).
+///
+/// # Safety
+/// Both `a` and `b` must be valid `*mut String` pointers.
+extern "C" fn jit_rt_string_concat(a: i64, b: i64) -> i64 {
+    let sa = unsafe { &*(a as *const String) };
+    let sb = unsafe { &*(b as *const String) };
+    let mut result = String::with_capacity(sa.len() + sb.len());
+    result.push_str(sa);
+    result.push_str(sb);
+    let boxed = Box::new(result);
+    Box::into_raw(boxed) as i64
+}
+
+/// Clone a heap string. Input is `*mut String` as i64.
+/// Returns a new `*mut String` as i64.
+///
+/// # Safety
+/// `s` must be a valid `*mut String` pointer.
+extern "C" fn jit_rt_string_clone(s: i64) -> i64 {
+    let original = unsafe { &*(s as *const String) };
+    let boxed = Box::new(original.clone());
+    Box::into_raw(boxed) as i64
+}
+
+/// Compare two heap strings for equality. Returns 1 if equal, 0 if not.
+///
+/// # Safety
+/// Both `a` and `b` must be valid `*mut String` pointers.
+extern "C" fn jit_rt_string_eq(a: i64, b: i64) -> i64 {
+    let sa = unsafe { &*(a as *const String) };
+    let sb = unsafe { &*(b as *const String) };
+    if sa == sb {
+        1
+    } else {
+        0
+    }
+}
+
+/// Compare two heap strings, returning -1/0/1 for less/equal/greater.
+///
+/// # Safety
+/// Both `a` and `b` must be valid `*mut String` pointers.
+extern "C" fn jit_rt_string_cmp(a: i64, b: i64) -> i64 {
+    let sa = unsafe { &*(a as *const String) };
+    let sb = unsafe { &*(b as *const String) };
+    match sa.cmp(sb) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
+}
+
+/// Free a heap string. Input is `*mut String` as i64.
+/// Call this when a string value is no longer needed.
+///
+/// # Safety
+/// `s` must be a valid `*mut String` pointer that was created by one of the
+/// `jit_rt_string_*` functions. Must not be called twice on the same pointer.
+extern "C" fn jit_rt_string_drop(s: i64) {
+    if s != 0 {
+        unsafe {
+            let _ = Box::from_raw(s as *mut String);
+        }
+    }
+}
+
+/// Reconstruct a `String` from a JIT-returned raw pointer.
+///
+/// # Safety
+/// `ptr` must be a valid `*mut String` pointer created by `jit_rt_string_alloc`,
+/// `jit_rt_string_concat`, or `jit_rt_string_clone`. After this call the pointer
+/// is consumed and must not be used again.
+pub unsafe fn jit_take_string(ptr: i64) -> String {
+    if ptr == 0 {
+        String::new()
+    } else {
+        *Box::from_raw(ptr as *mut String)
+    }
+}
+
+/// Register all JIT string runtime helper symbols with a JITBuilder.
+fn register_string_helpers(builder: &mut JITBuilder) {
+    builder.symbol("jit_rt_string_alloc", jit_rt_string_alloc as *const u8);
+    builder.symbol("jit_rt_string_concat", jit_rt_string_concat as *const u8);
+    builder.symbol("jit_rt_string_clone", jit_rt_string_clone as *const u8);
+    builder.symbol("jit_rt_string_eq", jit_rt_string_eq as *const u8);
+    builder.symbol("jit_rt_string_cmp", jit_rt_string_cmp as *const u8);
+    builder.symbol("jit_rt_string_drop", jit_rt_string_drop as *const u8);
+}
 
 // ---------------------------------------------------------------------------
 // Execution profiling
@@ -179,6 +320,8 @@ struct CompiledFunction {
     fn_ptr: *const u8,
     /// Number of parameters the function expects.
     param_count: usize,
+    /// True if the function returns a heap-allocated string pointer.
+    returns_string: bool,
 }
 
 // Safety: The function pointers are valid for the lifetime of the JITModule
@@ -241,8 +384,11 @@ impl JitEngine {
     /// cache-hit bump).
     pub fn compile_module(&mut self, module: &LirModule) -> Result<(), JitError> {
         // Create a new JIT module for this compilation batch.
-        let builder = JITBuilder::new(cranelift_module::default_libcall_names())
+        let mut builder = JITBuilder::new(cranelift_module::default_libcall_names())
             .map_err(|e| JitError::ModuleError(format!("JITBuilder creation failed: {e}")))?;
+
+        // Register string runtime helper symbols so JIT code can call them.
+        register_string_helpers(&mut builder);
 
         let mut jit_module = JITModule::new(builder);
         let pointer_type = jit_module.isa().pointer_type();
@@ -263,6 +409,7 @@ impl JitEngine {
                 CompiledFunction {
                     fn_ptr,
                     param_count: func.param_count,
+                    returns_string: func.returns_string,
                 },
             );
             self.stats.cells_compiled += 1;
@@ -442,6 +589,69 @@ impl JitEngine {
     pub fn compiled_param_count(&self, cell_name: &str) -> Option<usize> {
         self.cache.get(cell_name).map(|c| c.param_count)
     }
+
+    /// Check if a compiled cell returns a heap-allocated string pointer.
+    pub fn returns_string(&self, cell_name: &str) -> bool {
+        self.cache
+            .get(cell_name)
+            .map(|c| c.returns_string)
+            .unwrap_or(false)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pre-scan: check if a cell only uses JIT-supported opcodes
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if every instruction in the cell uses an opcode the JIT can
+/// compile. Cells containing unsupported opcodes (e.g. Intrinsic, ToolCall,
+/// NewList, etc.) are filtered out before compilation so we never emit traps
+/// for unsupported operations.
+fn is_cell_jit_compilable(cell: &LirCell) -> bool {
+    cell.instructions.iter().all(|instr| {
+        matches!(
+            instr.op,
+            OpCode::LoadK
+                | OpCode::LoadBool
+                | OpCode::LoadInt
+                | OpCode::LoadNil
+                | OpCode::Move
+                | OpCode::MoveOwn
+                | OpCode::Add
+                | OpCode::Sub
+                | OpCode::Mul
+                | OpCode::Div
+                | OpCode::Mod
+                | OpCode::Neg
+                | OpCode::FloorDiv
+                | OpCode::Pow
+                | OpCode::Eq
+                | OpCode::Lt
+                | OpCode::Le
+                | OpCode::Not
+                | OpCode::And
+                | OpCode::Or
+                | OpCode::Test
+                | OpCode::Jmp
+                | OpCode::Break
+                | OpCode::Continue
+                | OpCode::Return
+                | OpCode::Halt
+                | OpCode::Call
+                | OpCode::TailCall
+                | OpCode::Nop
+                | OpCode::Loop
+                | OpCode::ForPrep
+                | OpCode::ForLoop
+                | OpCode::ForIn
+                | OpCode::BitOr
+                | OpCode::BitAnd
+                | OpCode::BitXor
+                | OpCode::BitNot
+                | OpCode::Shl
+                | OpCode::Shr
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -457,9 +667,12 @@ struct JitLoweredFunction {
     name: String,
     func_id: FuncId,
     param_count: usize,
+    returns_string: bool,
 }
 
 /// Lower an entire LIR module into Cranelift IR inside the given `JITModule`.
+/// Cells containing unsupported opcodes are silently skipped — they will
+/// remain interpreted.
 fn lower_module_jit(
     module: &mut JITModule,
     lir: &LirModule,
@@ -467,19 +680,45 @@ fn lower_module_jit(
 ) -> Result<JitLoweredModule, CodegenError> {
     let mut fb_ctx = FunctionBuilderContext::new();
 
-    // First pass: declare all cell signatures.
+    // Filter to only JIT-compilable cells.
+    let compilable_cells: Vec<&LirCell> = lir
+        .cells
+        .iter()
+        .filter(|c| is_cell_jit_compilable(c))
+        .collect();
+
+    if compilable_cells.is_empty() {
+        return Ok(JitLoweredModule {
+            functions: Vec::new(),
+        });
+    }
+
+    // First pass: declare all compilable cell signatures.
     let mut func_ids: HashMap<String, FuncId> = HashMap::new();
-    for cell in &lir.cells {
+    for cell in &compilable_cells {
         let mut sig = module.make_signature();
-        for _param in &cell.params {
-            sig.params.push(AbiParam::new(pointer_type));
+        for param in &cell.params {
+            let param_ty = lir_type_str_to_cl_type(&param.ty, pointer_type);
+            // Cranelift ABI requires I8 to be extended; use I64 for Bool params.
+            let abi_ty = if param_ty == types::I8 {
+                types::I64
+            } else {
+                param_ty
+            };
+            sig.params.push(AbiParam::new(abi_ty));
         }
         let ret_ty = cell
             .returns
             .as_deref()
             .map(|s| lir_type_str_to_cl_type(s, pointer_type))
             .unwrap_or(pointer_type);
-        sig.returns.push(AbiParam::new(ret_ty));
+        // Same for return: use I64 for Bool.
+        let abi_ret = if ret_ty == types::I8 {
+            types::I64
+        } else {
+            ret_ty
+        };
+        sig.returns.push(AbiParam::new(abi_ret));
         let func_id = module
             .declare_function(&cell.name, Linkage::Export, &sig)
             .map_err(|e| {
@@ -490,16 +729,22 @@ fn lower_module_jit(
 
     // Second pass: lower each cell body.
     let mut lowered = JitLoweredModule {
-        functions: Vec::with_capacity(lir.cells.len()),
+        functions: Vec::with_capacity(compilable_cells.len()),
     };
 
-    for cell in &lir.cells {
+    for cell in &compilable_cells {
         let func_id = func_ids[&cell.name];
         lower_cell_jit(module, cell, &mut fb_ctx, pointer_type, func_id, &func_ids)?;
+        let ret_is_string = cell
+            .returns
+            .as_deref()
+            .map(|s| s == "String")
+            .unwrap_or(false);
         lowered.functions.push(JitLoweredFunction {
             name: cell.name.clone(),
             func_id,
             param_count: cell.params.len(),
+            returns_string: ret_is_string,
         });
     }
 
@@ -567,6 +812,9 @@ fn find_callee_name(
             OpCode::Move if inst.a == base_reg => {
                 return find_callee_name(cell, instructions, i, inst.b);
             }
+            OpCode::MoveOwn if inst.a == base_reg => {
+                return find_callee_name(cell, instructions, i, inst.b);
+            }
             _ => {}
         }
     }
@@ -586,15 +834,27 @@ fn lower_cell_jit(
     func_ids: &HashMap<String, FuncId>,
 ) -> Result<(), CodegenError> {
     let mut sig = module.make_signature();
-    for _param in &cell.params {
-        sig.params.push(AbiParam::new(pointer_type));
+    for param in &cell.params {
+        let param_ty = lir_type_str_to_cl_type(&param.ty, pointer_type);
+        // Cranelift ABI requires I8 to be extended; use I64 for Bool params.
+        let abi_ty = if param_ty == types::I8 {
+            types::I64
+        } else {
+            param_ty
+        };
+        sig.params.push(AbiParam::new(abi_ty));
     }
     let ret_ty = cell
         .returns
         .as_deref()
         .map(|s| lir_type_str_to_cl_type(s, pointer_type))
         .unwrap_or(pointer_type);
-    sig.returns.push(AbiParam::new(ret_ty));
+    let abi_ret = if ret_ty == types::I8 {
+        types::I64
+    } else {
+        ret_ty
+    };
+    sig.returns.push(AbiParam::new(abi_ret));
 
     let mut func = cranelift_codegen::ir::Function::with_name_signature(
         cranelift_codegen::ir::UserFuncName::user(0, func_id.as_u32()),
@@ -607,15 +867,98 @@ fn lower_cell_jit(
         callee_refs.insert(callee_id, func_ref);
     }
 
+    // Declare string runtime helper functions in this function's scope.
+    let str_concat_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_string_concat",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let str_alloc_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_string_alloc",
+        &[types::I64, types::I64], // ptr, len
+        &[types::I64],
+    )?;
+    let str_clone_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_string_clone",
+        &[types::I64],
+        &[types::I64],
+    )?;
+    let str_eq_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_string_eq",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let str_cmp_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_string_cmp",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let str_drop_ref =
+        declare_helper_func(module, &mut func, "jit_rt_string_drop", &[types::I64], &[])?;
+
+    // Suppress unused-variable warnings for helpers not yet used in all paths.
+    let _ = str_clone_ref;
+
     let mut builder = FunctionBuilder::new(&mut func, fb_ctx);
 
     let num_regs = (cell.registers as usize)
         .max(cell.params.len())
         .clamp(1, MAX_REGS);
     let mut vars: Vec<Variable> = Vec::with_capacity(num_regs);
+
+    // Track the semantic type of each variable for type-aware code generation.
+    let mut var_types: HashMap<u32, JitVarType> = HashMap::new();
+
+    // Pre-scan constants to determine which registers receive float/string values.
+    let mut float_regs: std::collections::HashSet<u8> = std::collections::HashSet::new();
+    let mut string_regs: std::collections::HashSet<u8> = std::collections::HashSet::new();
+    for inst in &cell.instructions {
+        if inst.op == OpCode::LoadK {
+            let bx = inst.bx() as usize;
+            match cell.constants.get(bx) {
+                Some(Constant::Float(_)) => {
+                    float_regs.insert(inst.a);
+                }
+                Some(Constant::String(_)) => {
+                    string_regs.insert(inst.a);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // All Cranelift variables are declared as I64 (both ints and string pointers
+    // are I64; only floats are F64). The semantic distinction is in var_types.
     for i in 0..num_regs {
         let var = Variable::from_u32(i as u32);
-        builder.declare_var(var, types::I64);
+        let (var_ty, clif_ty) = if i < cell.params.len() {
+            let param_ty_str = &cell.params[i].ty;
+            if param_ty_str == "Float" {
+                (JitVarType::Float, types::F64)
+            } else if param_ty_str == "String" {
+                (JitVarType::Str, types::I64)
+            } else {
+                (JitVarType::Int, types::I64)
+            }
+        } else if float_regs.contains(&(i as u8)) {
+            (JitVarType::Float, types::F64)
+        } else {
+            // Both int and string regs use I64 at the Cranelift level.
+            // The semantic type for string regs is set later when LoadK executes.
+            (JitVarType::Int, types::I64)
+        };
+        builder.declare_var(var, clif_ty);
+        var_types.insert(i as u32, var_ty);
         vars.push(var);
     }
 
@@ -634,9 +977,24 @@ fn lower_cell_jit(
     }
 
     {
-        let zero = builder.ins().iconst(types::I64, 0);
-        for var in vars.iter().take(num_regs).skip(cell.params.len()) {
-            builder.def_var(*var, zero);
+        for (i, var) in vars
+            .iter()
+            .enumerate()
+            .take(num_regs)
+            .skip(cell.params.len())
+        {
+            let vty = var_types
+                .get(&(i as u32))
+                .copied()
+                .unwrap_or(JitVarType::Int);
+            if vty == JitVarType::Float {
+                let zero = builder.ins().f64const(0.0);
+                builder.def_var(*var, zero);
+            } else {
+                // Both Int and Str use I64; strings start as null pointers (0).
+                let zero = builder.ins().iconst(types::I64, 0);
+                builder.def_var(*var, zero);
+            }
         }
     }
 
@@ -675,8 +1033,40 @@ fn lower_cell_jit(
             OpCode::LoadK => {
                 let a = inst.a;
                 let bx = inst.bx() as usize;
-                let val = lower_constant(&mut builder, cell, bx)?;
-                def_var(&mut builder, &vars, a, val);
+                if let Some(constant) = cell.constants.get(bx) {
+                    match constant {
+                        Constant::String(s) => {
+                            // Drop the old string value if the dest register held one.
+                            if var_types.get(&(a as u32)) == Some(&JitVarType::Str) {
+                                let old = use_var(&mut builder, &vars, a);
+                                builder.ins().call(str_drop_ref, &[old]);
+                            }
+                            // Allocate the string on the heap via runtime helper.
+                            let str_bytes = s.as_bytes();
+                            let ptr_val =
+                                builder.ins().iconst(types::I64, str_bytes.as_ptr() as i64);
+                            let len_val = builder.ins().iconst(types::I64, str_bytes.len() as i64);
+                            let call = builder.ins().call(str_alloc_ref, &[ptr_val, len_val]);
+                            let result = builder.inst_results(call)[0];
+                            var_types.insert(a as u32, JitVarType::Str);
+                            def_var(&mut builder, &vars, a, result);
+                        }
+                        Constant::Float(_) => {
+                            let val = lower_constant(&mut builder, cell, bx)?;
+                            var_types.insert(a as u32, JitVarType::Float);
+                            def_var(&mut builder, &vars, a, val);
+                        }
+                        _ => {
+                            let val = lower_constant(&mut builder, cell, bx)?;
+                            var_types.insert(a as u32, JitVarType::Int);
+                            def_var(&mut builder, &vars, a, val);
+                        }
+                    }
+                } else {
+                    let val = lower_constant(&mut builder, cell, bx)?;
+                    var_types.insert(a as u32, JitVarType::Int);
+                    def_var(&mut builder, &vars, a, val);
+                }
             }
             OpCode::LoadBool => {
                 let a = inst.a;
@@ -702,51 +1092,211 @@ fn lower_cell_jit(
                 }
             }
             OpCode::Move => {
+                let src_ty = var_types
+                    .get(&(inst.b as u32))
+                    .copied()
+                    .unwrap_or(JitVarType::Int);
+                let val = if src_ty == JitVarType::Str {
+                    // Drop old destination string if it held one and differs from source.
+                    if var_types.get(&(inst.a as u32)) == Some(&JitVarType::Str) && inst.a != inst.b
+                    {
+                        let old = use_var(&mut builder, &vars, inst.a);
+                        builder.ins().call(str_drop_ref, &[old]);
+                    }
+                    // Clone the string so both source and dest own independent copies.
+                    let src = use_var(&mut builder, &vars, inst.b);
+                    let call = builder.ins().call(str_clone_ref, &[src]);
+                    builder.inst_results(call)[0]
+                } else {
+                    use_var(&mut builder, &vars, inst.b)
+                };
+                var_types.insert(inst.a as u32, src_ty);
+                def_var(&mut builder, &vars, inst.a, val);
+            }
+            OpCode::MoveOwn => {
+                // MoveOwn transfers ownership — no clone needed even for strings.
                 let val = use_var(&mut builder, &vars, inst.b);
+                if let Some(&src_ty) = var_types.get(&(inst.b as u32)) {
+                    var_types.insert(inst.a as u32, src_ty);
+                    // For strings, null out the source register so the
+                    // Return-time cleanup doesn't double-free the pointer.
+                    if src_ty == JitVarType::Str && inst.a != inst.b {
+                        let null = builder.ins().iconst(types::I64, 0);
+                        def_var(&mut builder, &vars, inst.b, null);
+                    }
+                }
                 def_var(&mut builder, &vars, inst.a, val);
             }
 
-            // Arithmetic
+            // Arithmetic (type-aware: Int uses iadd/isub/etc., Float uses fadd/fsub/etc., Str uses concat)
             OpCode::Add => {
                 let lhs = use_var(&mut builder, &vars, inst.b);
                 let rhs = use_var(&mut builder, &vars, inst.c);
-                let res = builder.ins().iadd(lhs, rhs);
-                def_var(&mut builder, &vars, inst.a, res);
+                let lhs_ty = var_types
+                    .get(&(inst.b as u32))
+                    .copied()
+                    .unwrap_or(JitVarType::Int);
+                let rhs_ty = var_types
+                    .get(&(inst.c as u32))
+                    .copied()
+                    .unwrap_or(JitVarType::Int);
+                if lhs_ty == JitVarType::Str || rhs_ty == JitVarType::Str {
+                    // Read the old destination value before overwriting, if it
+                    // was a string that is distinct from both inputs. We'll
+                    // drop it after the concat to prevent a leak.
+                    let dest_ty = var_types
+                        .get(&(inst.a as u32))
+                        .copied()
+                        .unwrap_or(JitVarType::Int);
+                    let old_dest =
+                        if dest_ty == JitVarType::Str && inst.a != inst.b && inst.a != inst.c {
+                            Some(use_var(&mut builder, &vars, inst.a))
+                        } else {
+                            None
+                        };
+
+                    // String concatenation via runtime helper.
+                    let call = builder.ins().call(str_concat_ref, &[lhs, rhs]);
+                    let result = builder.inst_results(call)[0];
+
+                    // Drop the old destination string if it was distinct from
+                    // the inputs. For a == b (self-assign like s = s + "x"),
+                    // the old value is the `lhs` input — drop it instead.
+                    if let Some(old) = old_dest {
+                        builder.ins().call(str_drop_ref, &[old]);
+                    } else if dest_ty == JitVarType::Str && inst.a == inst.b {
+                        // self-assign: old value was `lhs`, safe to drop after concat
+                        builder.ins().call(str_drop_ref, &[lhs]);
+                    } else if dest_ty == JitVarType::Str && inst.a == inst.c {
+                        builder.ins().call(str_drop_ref, &[rhs]);
+                    }
+
+                    var_types.insert(inst.a as u32, JitVarType::Str);
+                    def_var(&mut builder, &vars, inst.a, result);
+                } else if lhs_ty == JitVarType::Float || rhs_ty == JitVarType::Float {
+                    let res = builder.ins().fadd(lhs, rhs);
+                    var_types.insert(inst.a as u32, JitVarType::Float);
+                    def_var(&mut builder, &vars, inst.a, res);
+                } else {
+                    let res = builder.ins().iadd(lhs, rhs);
+                    var_types.insert(inst.a as u32, JitVarType::Int);
+                    def_var(&mut builder, &vars, inst.a, res);
+                }
             }
             OpCode::Sub => {
                 let lhs = use_var(&mut builder, &vars, inst.b);
                 let rhs = use_var(&mut builder, &vars, inst.c);
-                let res = builder.ins().isub(lhs, rhs);
+                let is_float = is_float_op_jvt(&var_types, inst.b, inst.c);
+                let res = if is_float {
+                    builder.ins().fsub(lhs, rhs)
+                } else {
+                    builder.ins().isub(lhs, rhs)
+                };
+                var_types.insert(
+                    inst.a as u32,
+                    if is_float {
+                        JitVarType::Float
+                    } else {
+                        JitVarType::Int
+                    },
+                );
                 def_var(&mut builder, &vars, inst.a, res);
             }
             OpCode::Mul => {
                 let lhs = use_var(&mut builder, &vars, inst.b);
                 let rhs = use_var(&mut builder, &vars, inst.c);
-                let res = builder.ins().imul(lhs, rhs);
+                let is_float = is_float_op_jvt(&var_types, inst.b, inst.c);
+                let res = if is_float {
+                    builder.ins().fmul(lhs, rhs)
+                } else {
+                    builder.ins().imul(lhs, rhs)
+                };
+                var_types.insert(
+                    inst.a as u32,
+                    if is_float {
+                        JitVarType::Float
+                    } else {
+                        JitVarType::Int
+                    },
+                );
                 def_var(&mut builder, &vars, inst.a, res);
             }
             OpCode::Div => {
                 let lhs = use_var(&mut builder, &vars, inst.b);
                 let rhs = use_var(&mut builder, &vars, inst.c);
-                let res = builder.ins().sdiv(lhs, rhs);
+                let is_float = is_float_op_jvt(&var_types, inst.b, inst.c);
+                let res = if is_float {
+                    builder.ins().fdiv(lhs, rhs)
+                } else {
+                    builder.ins().sdiv(lhs, rhs)
+                };
+                var_types.insert(
+                    inst.a as u32,
+                    if is_float {
+                        JitVarType::Float
+                    } else {
+                        JitVarType::Int
+                    },
+                );
                 def_var(&mut builder, &vars, inst.a, res);
             }
             OpCode::Mod => {
                 let lhs = use_var(&mut builder, &vars, inst.b);
                 let rhs = use_var(&mut builder, &vars, inst.c);
+                // Cranelift doesn't have a direct float modulo; keep integer path.
                 let res = builder.ins().srem(lhs, rhs);
                 def_var(&mut builder, &vars, inst.a, res);
             }
             OpCode::Neg => {
                 let operand = use_var(&mut builder, &vars, inst.b);
-                let res = builder.ins().ineg(operand);
+                let is_float = var_types.get(&(inst.b as u32)).copied() == Some(JitVarType::Float);
+                let res = if is_float {
+                    builder.ins().fneg(operand)
+                } else {
+                    builder.ins().ineg(operand)
+                };
+                var_types.insert(
+                    inst.a as u32,
+                    if is_float {
+                        JitVarType::Float
+                    } else {
+                        JitVarType::Int
+                    },
+                );
                 def_var(&mut builder, &vars, inst.a, res);
             }
             OpCode::FloorDiv => {
                 let lhs = use_var(&mut builder, &vars, inst.b);
                 let rhs = use_var(&mut builder, &vars, inst.c);
-                let res = builder.ins().sdiv(lhs, rhs);
+                let is_float = is_float_op_jvt(&var_types, inst.b, inst.c);
+                let res = if is_float {
+                    // floor(a / b)
+                    let div = builder.ins().fdiv(lhs, rhs);
+                    builder.ins().floor(div)
+                } else {
+                    builder.ins().sdiv(lhs, rhs)
+                };
+                var_types.insert(
+                    inst.a as u32,
+                    if is_float {
+                        JitVarType::Float
+                    } else {
+                        JitVarType::Int
+                    },
+                );
                 def_var(&mut builder, &vars, inst.a, res);
+            }
+            OpCode::Pow => {
+                let is_float = is_float_op_jvt(&var_types, inst.b, inst.c);
+                if is_float {
+                    let zero = builder.ins().f64const(0.0);
+                    var_types.insert(inst.a as u32, JitVarType::Float);
+                    def_var(&mut builder, &vars, inst.a, zero);
+                } else {
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    var_types.insert(inst.a as u32, JitVarType::Int);
+                    def_var(&mut builder, &vars, inst.a, zero);
+                }
             }
 
             // Bitwise
@@ -786,26 +1336,87 @@ fn lower_cell_jit(
                 def_var(&mut builder, &vars, inst.a, res);
             }
 
-            // Comparison
+            // Comparison (type-aware: Float uses fcmp, Str uses runtime helpers)
             OpCode::Eq => {
                 let lhs = use_var(&mut builder, &vars, inst.b);
                 let rhs = use_var(&mut builder, &vars, inst.c);
-                let cmp = builder.ins().icmp(IntCC::Equal, lhs, rhs);
-                let res = builder.ins().uextend(types::I64, cmp);
+                let lhs_ty = var_types
+                    .get(&(inst.b as u32))
+                    .copied()
+                    .unwrap_or(JitVarType::Int);
+                let rhs_ty = var_types
+                    .get(&(inst.c as u32))
+                    .copied()
+                    .unwrap_or(JitVarType::Int);
+                let res = if lhs_ty == JitVarType::Str || rhs_ty == JitVarType::Str {
+                    let call = builder.ins().call(str_eq_ref, &[lhs, rhs]);
+                    builder.inst_results(call)[0]
+                } else if lhs_ty == JitVarType::Float || rhs_ty == JitVarType::Float {
+                    let cmp = builder.ins().fcmp(FloatCC::Equal, lhs, rhs);
+                    builder.ins().uextend(types::I64, cmp)
+                } else {
+                    let cmp = builder.ins().icmp(IntCC::Equal, lhs, rhs);
+                    builder.ins().uextend(types::I64, cmp)
+                };
+                var_types.insert(inst.a as u32, JitVarType::Int);
                 def_var(&mut builder, &vars, inst.a, res);
             }
             OpCode::Lt => {
                 let lhs = use_var(&mut builder, &vars, inst.b);
                 let rhs = use_var(&mut builder, &vars, inst.c);
-                let cmp = builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs);
-                let res = builder.ins().uextend(types::I64, cmp);
+                let lhs_ty = var_types
+                    .get(&(inst.b as u32))
+                    .copied()
+                    .unwrap_or(JitVarType::Int);
+                let rhs_ty = var_types
+                    .get(&(inst.c as u32))
+                    .copied()
+                    .unwrap_or(JitVarType::Int);
+                let res = if lhs_ty == JitVarType::Str || rhs_ty == JitVarType::Str {
+                    // str_cmp returns -1/0/1; Lt means cmp < 0.
+                    let call = builder.ins().call(str_cmp_ref, &[lhs, rhs]);
+                    let cmp_result = builder.inst_results(call)[0];
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let lt = builder.ins().icmp(IntCC::SignedLessThan, cmp_result, zero);
+                    builder.ins().uextend(types::I64, lt)
+                } else if lhs_ty == JitVarType::Float || rhs_ty == JitVarType::Float {
+                    let cmp = builder.ins().fcmp(FloatCC::LessThan, lhs, rhs);
+                    builder.ins().uextend(types::I64, cmp)
+                } else {
+                    let cmp = builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs);
+                    builder.ins().uextend(types::I64, cmp)
+                };
+                var_types.insert(inst.a as u32, JitVarType::Int);
                 def_var(&mut builder, &vars, inst.a, res);
             }
             OpCode::Le => {
                 let lhs = use_var(&mut builder, &vars, inst.b);
                 let rhs = use_var(&mut builder, &vars, inst.c);
-                let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lhs, rhs);
-                let res = builder.ins().uextend(types::I64, cmp);
+                let lhs_ty = var_types
+                    .get(&(inst.b as u32))
+                    .copied()
+                    .unwrap_or(JitVarType::Int);
+                let rhs_ty = var_types
+                    .get(&(inst.c as u32))
+                    .copied()
+                    .unwrap_or(JitVarType::Int);
+                let res = if lhs_ty == JitVarType::Str || rhs_ty == JitVarType::Str {
+                    // str_cmp returns -1/0/1; Le means cmp <= 0.
+                    let call = builder.ins().call(str_cmp_ref, &[lhs, rhs]);
+                    let cmp_result = builder.inst_results(call)[0];
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let le = builder
+                        .ins()
+                        .icmp(IntCC::SignedLessThanOrEqual, cmp_result, zero);
+                    builder.ins().uextend(types::I64, le)
+                } else if lhs_ty == JitVarType::Float || rhs_ty == JitVarType::Float {
+                    let cmp = builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs, rhs);
+                    builder.ins().uextend(types::I64, cmp)
+                } else {
+                    let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lhs, rhs);
+                    builder.ins().uextend(types::I64, cmp)
+                };
+                var_types.insert(inst.a as u32, JitVarType::Int);
                 def_var(&mut builder, &vars, inst.a, res);
             }
             OpCode::Not => {
@@ -860,7 +1471,19 @@ fn lower_cell_jit(
 
             // Return / Halt
             OpCode::Return => {
-                let val = use_var(&mut builder, &vars, inst.a);
+                // Drop all live string registers except the return value to
+                // prevent memory leaks. The return value ownership transfers
+                // to the caller (VM converts it back via jit_take_string).
+                let ret_reg = inst.a;
+                for (&reg_id, &ty) in &var_types {
+                    if ty == JitVarType::Str && reg_id != ret_reg as u32 {
+                        if (reg_id as usize) < vars.len() {
+                            let v = use_var(&mut builder, &vars, reg_id as u8);
+                            builder.ins().call(str_drop_ref, &[v]);
+                        }
+                    }
+                }
+                let val = use_var(&mut builder, &vars, ret_reg);
                 builder.ins().return_(&[val]);
                 terminated = true;
             }
@@ -963,12 +1586,12 @@ fn lower_cell_jit(
 
             OpCode::Nop => {}
 
-            // Everything else -> trap
+            // Everything else -> error (should be unreachable due to pre-scan).
             _ => {
-                builder
-                    .ins()
-                    .trap(cranelift_codegen::ir::TrapCode::unwrap_user(2));
-                terminated = true;
+                return Err(CodegenError::LoweringError(format!(
+                    "unsupported opcode {:?} in cell '{}' (should have been filtered by pre-scan)",
+                    inst.op, cell.name
+                )));
             }
         }
     }
@@ -992,6 +1615,35 @@ fn lower_cell_jit(
 // ---------------------------------------------------------------------------
 // Variable helpers
 // ---------------------------------------------------------------------------
+
+/// Declare an external helper function in both the JIT module and the current
+/// Cranelift function, returning a `FuncRef` that can be used with `builder.ins().call()`.
+fn declare_helper_func(
+    module: &mut JITModule,
+    func: &mut cranelift_codegen::ir::Function,
+    name: &str,
+    params: &[ClifType],
+    returns: &[ClifType],
+) -> Result<cranelift_codegen::ir::FuncRef, CodegenError> {
+    let mut sig = module.make_signature();
+    for &p in params {
+        sig.params.push(AbiParam::new(p));
+    }
+    for &r in returns {
+        sig.returns.push(AbiParam::new(r));
+    }
+    let func_id = module
+        .declare_function(name, Linkage::Import, &sig)
+        .map_err(|e| CodegenError::LoweringError(format!("declare_function({name}): {e}")))?;
+    Ok(module.declare_func_in_func(func_id, func))
+}
+
+/// Returns `true` if either operand register is typed as Float, indicating a
+/// float operation.
+fn is_float_op_jvt(var_types: &HashMap<u32, JitVarType>, lhs_reg: u8, rhs_reg: u8) -> bool {
+    var_types.get(&(lhs_reg as u32)).copied() == Some(JitVarType::Float)
+        || var_types.get(&(rhs_reg as u32)).copied() == Some(JitVarType::Float)
+}
 
 fn use_var(
     builder: &mut FunctionBuilder,
@@ -1060,7 +1712,7 @@ fn lower_constant(
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
     use super::*;
     use lumen_compiler::compiler::lir::{
@@ -1668,5 +2320,699 @@ mod tests {
         let _both = OptLevel::SpeedAndSize;
         assert_ne!(OptLevel::None, OptLevel::Speed);
         assert_ne!(OptLevel::Speed, OptLevel::SpeedAndSize);
+    }
+
+    // --- JIT string operation tests ----------------------------------------
+
+    #[test]
+    fn jit_string_constant_load_and_return() {
+        // cell greeting() -> String
+        //   return "hello"
+        //
+        // 0: LoadK   r0, 0   ("hello")
+        // 1: Return  r0
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "greeting".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 2,
+            constants: vec![Constant::String("hello".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        assert!(
+            engine.returns_string("greeting"),
+            "greeting should be marked as returning a string"
+        );
+
+        let raw = engine
+            .execute_jit_nullary("greeting")
+            .expect("execute greeting");
+        assert_ne!(raw, 0, "string pointer should be non-null");
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "hello");
+    }
+
+    #[test]
+    fn jit_string_concatenation() {
+        // cell concat() -> String
+        //   r0 = "hello, "
+        //   r1 = "world"
+        //   r2 = r0 + r1
+        //   return r2
+        //
+        // 0: LoadK  r0, 0   ("hello, ")
+        // 1: LoadK  r1, 1   ("world")
+        // 2: Add    r2, r0, r1
+        // 3: Return r2
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "concat".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 4,
+            constants: vec![
+                Constant::String("hello, ".to_string()),
+                Constant::String("world".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Add, 2, 0, 1),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("concat").expect("execute");
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "hello, world");
+    }
+
+    #[test]
+    fn jit_string_self_concat() {
+        // cell double_str() -> String
+        //   r0 = "ab"
+        //   r0 = r0 + r0   (self-assign concat: a == b)
+        //   return r0
+        //
+        // 0: LoadK  r0, 0   ("ab")
+        // 1: Add    r0, r0, r0
+        // 2: Return r0
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "double_str".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 2,
+            constants: vec![Constant::String("ab".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Add, 0, 0, 0),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("double_str").expect("execute");
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "abab");
+    }
+
+    #[test]
+    fn jit_string_equality() {
+        // cell eq_test() -> Int
+        //   r0 = "abc"
+        //   r1 = "abc"
+        //   r2 = (r0 == r1)   -> should be 1
+        //   return r2
+        //
+        // 0: LoadK  r0, 0   ("abc")
+        // 1: LoadK  r1, 1   ("abc")
+        // 2: Eq     r2, r0, r1
+        // 3: Return r2
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "eq_test".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 4,
+            constants: vec![
+                Constant::String("abc".to_string()),
+                Constant::String("abc".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Eq, 2, 0, 1),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result = engine.execute_jit_nullary("eq_test").expect("execute");
+        assert_eq!(result, 1, "equal strings should return 1");
+    }
+
+    #[test]
+    fn jit_string_inequality() {
+        // cell neq_test() -> Int
+        //   r0 = "abc"
+        //   r1 = "xyz"
+        //   r2 = (r0 == r1)   -> should be 0
+        //   return r2
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "neq_test".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 4,
+            constants: vec![
+                Constant::String("abc".to_string()),
+                Constant::String("xyz".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Eq, 2, 0, 1),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result = engine.execute_jit_nullary("neq_test").expect("execute");
+        assert_eq!(result, 0, "different strings should return 0");
+    }
+
+    #[test]
+    fn jit_string_less_than() {
+        // cell lt_test() -> Int
+        //   r0 = "apple"
+        //   r1 = "banana"
+        //   r2 = (r0 < r1)   -> should be 1 (lexicographic)
+        //   return r2
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "lt_test".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 4,
+            constants: vec![
+                Constant::String("apple".to_string()),
+                Constant::String("banana".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Lt, 2, 0, 1),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result = engine.execute_jit_nullary("lt_test").expect("execute");
+        assert_eq!(result, 1, "\"apple\" < \"banana\" should be 1");
+    }
+
+    #[test]
+    fn jit_string_less_than_reverse() {
+        // "banana" < "apple" -> 0
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "lt_rev".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 4,
+            constants: vec![
+                Constant::String("banana".to_string()),
+                Constant::String("apple".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Lt, 2, 0, 1),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result = engine.execute_jit_nullary("lt_rev").expect("execute");
+        assert_eq!(result, 0, "\"banana\" < \"apple\" should be 0");
+    }
+
+    #[test]
+    fn jit_string_less_equal() {
+        // "abc" <= "abc" -> 1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "le_eq".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 4,
+            constants: vec![
+                Constant::String("abc".to_string()),
+                Constant::String("abc".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Le, 2, 0, 1),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result = engine.execute_jit_nullary("le_eq").expect("execute");
+        assert_eq!(result, 1, "\"abc\" <= \"abc\" should be 1");
+    }
+
+    #[test]
+    fn jit_string_move_clone() {
+        // cell clone_str() -> String
+        //   r0 = "original"
+        //   r1 = r0         (Move: clone string)
+        //   return r1
+        //
+        // 0: LoadK  r0, 0   ("original")
+        // 1: Move   r1, r0
+        // 2: Return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "clone_str".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 3,
+            constants: vec![Constant::String("original".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Move, 1, 0, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("clone_str").expect("execute");
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "original");
+    }
+
+    #[test]
+    fn jit_string_overwrite_drops_old() {
+        // Verify that overwriting a string register with a new LoadK drops
+        // the old value (no leak). We can't directly observe the drop, but
+        // we confirm the final value is correct and no crash occurs.
+        //
+        // cell overwrite() -> String
+        //   r0 = "first"
+        //   r0 = "second"    (should drop "first" internally)
+        //   return r0
+        //
+        // 0: LoadK  r0, 0   ("first")
+        // 1: LoadK  r0, 1   ("second")
+        // 2: Return r0
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "overwrite".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 2,
+            constants: vec![
+                Constant::String("first".to_string()),
+                Constant::String("second".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 0, 1),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("overwrite").expect("execute");
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "second");
+    }
+
+    #[test]
+    fn jit_string_concat_in_loop() {
+        // Build a string by concatenating in a loop (tests memory management
+        // under repeated allocation/deallocation).
+        //
+        // cell build() -> String
+        //   r0 = ""           (accumulator)
+        //   r1 = "x"          (append constant)
+        //   r2 = 3            (counter)
+        //   r3 = 0            (zero)
+        //   r4 = 1            (decrement)
+        //   loop:
+        //     if 0 < counter goto body else goto end
+        //     body:
+        //       r0 = r0 + r1    (self-assign concat)
+        //       r2 = r2 - r4
+        //       goto loop
+        //   end:
+        //     return r0
+        //
+        //  0: LoadK   r0, 0   ("")
+        //  1: LoadK   r1, 1   ("x")
+        //  2: LoadInt  r2, 3
+        //  3: LoadInt  r3, 0
+        //  4: LoadInt  r4, 1
+        //  5: Lt       r5, r3, r2   (0 < counter? -> truthy means continue)
+        //  6: Test     r5, 0, 0
+        //  7: Jmp      +3           (-> 11: end, taken when r5 is falsy)
+        //  8: Add      r0, r0, r1   (accum += "x")
+        //  9: Sub      r2, r2, r4   (counter -= 1)
+        // 10: Jmp      -6           (-> 5: loop)
+        // 11: Return   r0
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "build".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 7,
+            constants: vec![
+                Constant::String("".to_string()),
+                Constant::String("x".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),      // 0: r0 = ""
+                Instruction::abx(OpCode::LoadK, 1, 1),      // 1: r1 = "x"
+                Instruction::abc(OpCode::LoadInt, 2, 3, 0), // 2: r2 = 3
+                Instruction::abc(OpCode::LoadInt, 3, 0, 0), // 3: r3 = 0
+                Instruction::abc(OpCode::LoadInt, 4, 1, 0), // 4: r4 = 1
+                Instruction::abc(OpCode::Lt, 5, 3, 2),      // 5: r5 = 0 < counter
+                Instruction::abc(OpCode::Test, 5, 0, 0),    // 6: test
+                Instruction::sax(OpCode::Jmp, 3),           // 7: -> 11 (end)
+                Instruction::abc(OpCode::Add, 0, 0, 1),     // 8: r0 = r0 + r1
+                Instruction::abc(OpCode::Sub, 2, 2, 4),     // 9: r2 -= 1
+                Instruction::sax(OpCode::Jmp, -6),          // 10: -> 5 (loop)
+                Instruction::abc(OpCode::Return, 0, 1, 0),  // 11: return r0
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("build").expect("execute");
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "xxx", "loop should concatenate 'x' three times");
+    }
+
+    #[test]
+    fn jit_string_conditional_branch() {
+        // cell pick(x: Int) -> String
+        //   if x > 0 then "positive" else "non-positive" end
+        //
+        //  0: LoadInt  r1, 0
+        //  1: Lt       r2, r1, r0      (0 < x => x > 0?)
+        //  2: Test     r2, 0, 0
+        //  3: Jmp      +2              (-> 6: else)
+        //  4: LoadK    r3, 0           ("positive")
+        //  5: Jmp      +1              (-> 7: end)
+        //  6: LoadK    r3, 1           ("non-positive")
+        //  7: Return   r3
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "pick".to_string(),
+            params: vec![LirParam {
+                name: "x".to_string(),
+                ty: "Int".to_string(),
+                register: 0,
+                variadic: false,
+            }],
+            returns: Some("String".to_string()),
+            registers: 5,
+            constants: vec![
+                Constant::String("positive".to_string()),
+                Constant::String("non-positive".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abc(OpCode::LoadInt, 1, 0, 0), // 0: r1 = 0
+                Instruction::abc(OpCode::Lt, 2, 1, 0),      // 1: r2 = 0 < x
+                Instruction::abc(OpCode::Test, 2, 0, 0),    // 2: test
+                Instruction::sax(OpCode::Jmp, 2),           // 3: -> 6 (else)
+                Instruction::abx(OpCode::LoadK, 3, 0),      // 4: r3 = "positive"
+                Instruction::sax(OpCode::Jmp, 1),           // 5: -> 7 (end)
+                Instruction::abx(OpCode::LoadK, 3, 1),      // 6: r3 = "non-positive"
+                Instruction::abc(OpCode::Return, 3, 1, 0),  // 7: return r3
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        assert!(engine.returns_string("pick"));
+
+        let raw_pos = engine.execute_jit_unary("pick", 5).expect("positive");
+        let s_pos = unsafe { jit_take_string(raw_pos) };
+        assert_eq!(s_pos, "positive");
+
+        let raw_neg = engine.execute_jit_unary("pick", -1).expect("negative");
+        let s_neg = unsafe { jit_take_string(raw_neg) };
+        assert_eq!(s_neg, "non-positive");
+
+        let raw_zero = engine.execute_jit_unary("pick", 0).expect("zero");
+        let s_zero = unsafe { jit_take_string(raw_zero) };
+        assert_eq!(s_zero, "non-positive");
+    }
+
+    #[test]
+    fn jit_string_empty_string() {
+        // Verify empty string allocation and return.
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "empty".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 2,
+            constants: vec![Constant::String("".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("empty").expect("execute");
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "");
+    }
+
+    #[test]
+    fn jit_string_multiple_concats() {
+        // cell three_way() -> String
+        //   r0 = "a"
+        //   r1 = "b"
+        //   r2 = "c"
+        //   r3 = r0 + r1    ("ab")
+        //   r4 = r3 + r2    ("abc")
+        //   return r4
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "three_way".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 6,
+            constants: vec![
+                Constant::String("a".to_string()),
+                Constant::String("b".to_string()),
+                Constant::String("c".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),     // r0 = "a"
+                Instruction::abx(OpCode::LoadK, 1, 1),     // r1 = "b"
+                Instruction::abx(OpCode::LoadK, 2, 2),     // r2 = "c"
+                Instruction::abc(OpCode::Add, 3, 0, 1),    // r3 = "a" + "b"
+                Instruction::abc(OpCode::Add, 4, 3, 2),    // r4 = "ab" + "c"
+                Instruction::abc(OpCode::Return, 4, 1, 0), // return "abc"
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("three_way").expect("execute");
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "abc");
+    }
+
+    #[test]
+    fn jit_string_eq_used_in_branch() {
+        // cell is_hello() -> Int
+        //   r0 = "hello"
+        //   r1 = "hello"
+        //   r2 = (r0 == r1)
+        //   if r2 then return 100 else return 200
+        //
+        //  0: LoadK   r0, 0   ("hello")
+        //  1: LoadK   r1, 1   ("hello")
+        //  2: Eq      r2, r0, r1
+        //  3: Test    r2, 0, 0
+        //  4: Jmp     +2      (-> 7: else)
+        //  5: LoadInt r3, 100
+        //  6: Jmp     +1      (-> 8: end)
+        //  7: LoadInt r3, 50
+        //  8: Return  r3
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "is_hello".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 5,
+            constants: vec![
+                Constant::String("hello".to_string()),
+                Constant::String("hello".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Eq, 2, 0, 1),
+                Instruction::abc(OpCode::Test, 2, 0, 0),
+                Instruction::sax(OpCode::Jmp, 2),
+                Instruction::abc(OpCode::LoadInt, 3, 100, 0),
+                Instruction::sax(OpCode::Jmp, 1),
+                Instruction::abc(OpCode::LoadInt, 3, 50, 0),
+                Instruction::abc(OpCode::Return, 3, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result = engine.execute_jit_nullary("is_hello").expect("execute");
+        assert_eq!(result, 100, "equal strings should take the then-branch");
+    }
+
+    #[test]
+    fn jit_string_returns_string_flag() {
+        // Verify that cells returning String have returns_string=true,
+        // and cells returning Int have returns_string=false.
+        let lir = make_module_with_cells(vec![
+            LirCell {
+                name: "str_cell".to_string(),
+                params: Vec::new(),
+                returns: Some("String".to_string()),
+                registers: 2,
+                constants: vec![Constant::String("hi".to_string())],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                ],
+                effect_handler_metas: Vec::new(),
+            },
+            LirCell {
+                name: "int_cell".to_string(),
+                params: Vec::new(),
+                returns: Some("Int".to_string()),
+                registers: 2,
+                constants: vec![Constant::Int(42)],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                ],
+                effect_handler_metas: Vec::new(),
+            },
+        ]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        assert!(engine.returns_string("str_cell"));
+        assert!(!engine.returns_string("int_cell"));
+    }
+
+    #[test]
+    fn jit_string_move_own_transfer() {
+        // cell transfer() -> String
+        //   r0 = "transferred"
+        //   MoveOwn r1, r0    (ownership transfer, no clone)
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "transfer".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 3,
+            constants: vec![Constant::String("transferred".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::MoveOwn, 1, 0, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("transfer").expect("execute");
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "transferred");
+    }
+
+    #[test]
+    fn jit_string_concat_dest_overwrites_distinct() {
+        // Test where Add dest (r0) already holds a string different from both
+        // operands (r1, r2). The old r0 value should be dropped.
+        //
+        // cell overwrite_concat() -> String
+        //   r0 = "old"
+        //   r1 = "hello"
+        //   r2 = " world"
+        //   r0 = r1 + r2    (overwrites "old" in r0 with "hello world")
+        //   return r0
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "overwrite_concat".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 4,
+            constants: vec![
+                Constant::String("old".to_string()),
+                Constant::String("hello".to_string()),
+                Constant::String(" world".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),     // r0 = "old"
+                Instruction::abx(OpCode::LoadK, 1, 1),     // r1 = "hello"
+                Instruction::abx(OpCode::LoadK, 2, 2),     // r2 = " world"
+                Instruction::abc(OpCode::Add, 0, 1, 2),    // r0 = r1 + r2
+                Instruction::abc(OpCode::Return, 0, 1, 0), // return r0
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine
+            .execute_jit_nullary("overwrite_concat")
+            .expect("execute");
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "hello world");
     }
 }

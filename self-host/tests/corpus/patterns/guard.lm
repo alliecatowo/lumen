@@ -1,0 +1,8 @@
+cell main() -> String
+  let x = 15
+  match x
+    n if n > 10 -> "big"
+    n if n > 0 -> "small"
+    _ -> "non-positive"
+  end
+end

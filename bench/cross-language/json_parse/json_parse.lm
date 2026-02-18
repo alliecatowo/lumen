@@ -1,0 +1,39 @@
+# JSON-like data structure manipulation using maps
+# Mirrors Go version: build map of key-value pairs, then look up by key
+# Uses Lumen's map[K,V] type for O(log n) lookup via BTreeMap
+
+cell build_chunk(start: Int, count: Int) -> map[String, String]
+  let result = {}
+  let i = start
+  let stop = start + count
+  while i < stop
+    result = merge(result, {"key_{i}": "value_{i}"})
+    i = i + 1
+  end
+  return result
+end
+
+cell build_map(total: Int) -> map[String, String]
+  let chunk_size = 100
+  let result = {}
+  let offset = 0
+  while offset < total
+    let remaining = total - offset
+    let size = chunk_size
+    if remaining < size
+      size = remaining
+    end
+    let chunk = build_chunk(offset, size)
+    result = merge(result, chunk)
+    offset = offset + chunk_size
+  end
+  return result
+end
+
+cell main() -> Null
+  let data = build_map(10000)
+  let found = data["key_9999"]
+  print("Found: " + found)
+  print("Count: " + to_string(len(data)))
+  return null
+end

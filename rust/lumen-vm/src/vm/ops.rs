@@ -21,6 +21,135 @@ pub enum BinaryOp {
     Rem,
 }
 
+/// Checked integer arithmetic — returns None on overflow or division by zero.
+#[inline(always)]
+fn int_op(op: BinaryOp, x: i64, y: i64) -> Option<i64> {
+    match op {
+        BinaryOp::Add => x.checked_add(y),
+        BinaryOp::Sub => x.checked_sub(y),
+        BinaryOp::Mul => x.checked_mul(y),
+        BinaryOp::Div => {
+            if y == 0 {
+                None
+            } else {
+                x.checked_div(y)
+            }
+        }
+        BinaryOp::FloorDiv => {
+            if y == 0 {
+                None
+            } else {
+                Some(x.div_euclid(y))
+            }
+        }
+        BinaryOp::Mod => {
+            if y == 0 {
+                None
+            } else {
+                Some(x.rem_euclid(y))
+            }
+        }
+        BinaryOp::Rem => {
+            if y == 0 {
+                None
+            } else {
+                Some(x % y)
+            }
+        }
+        BinaryOp::Pow => {
+            if y < 0 || y > u32::MAX as i64 {
+                None
+            } else {
+                x.checked_pow(y as u32)
+            }
+        }
+    }
+}
+
+/// IEEE 754 float arithmetic — overflow produces infinity, not an error.
+#[inline(always)]
+fn float_op(op: BinaryOp, x: f64, y: f64) -> f64 {
+    match op {
+        BinaryOp::Add => x + y,
+        BinaryOp::Sub => x - y,
+        BinaryOp::Mul => x * y,
+        BinaryOp::Div => x / y,
+        BinaryOp::FloorDiv => (x / y).floor(),
+        BinaryOp::Mod => x.rem_euclid(y),
+        BinaryOp::Rem => x % y,
+        BinaryOp::Pow => x.powf(y),
+    }
+}
+
+/// Descriptive name for operation — only used in error messages.
+#[cold]
+#[inline(never)]
+fn op_name(op: BinaryOp) -> &'static str {
+    match op {
+        BinaryOp::Add => "addition",
+        BinaryOp::Sub => "subtraction",
+        BinaryOp::Mul => "multiplication",
+        BinaryOp::Div => "division",
+        BinaryOp::FloorDiv => "floor division",
+        BinaryOp::Mod => "modulo",
+        BinaryOp::Rem => "remainder",
+        BinaryOp::Pow => "exponentiation",
+    }
+}
+
+/// BigInt arithmetic — only used on the cold/rare path.
+#[cold]
+#[inline(never)]
+fn bigint_op(op: BinaryOp, x: &BigInt, y: &BigInt) -> Result<BigInt, VmError> {
+    match op {
+        BinaryOp::Add => Ok(x + y),
+        BinaryOp::Sub => Ok(x - y),
+        BinaryOp::Mul => Ok(x * y),
+        BinaryOp::Div => Ok(x / y),
+        BinaryOp::FloorDiv => Ok(x / y),
+        BinaryOp::Mod => Ok(x % y),
+        BinaryOp::Rem => Ok(x % y),
+        BinaryOp::Pow => {
+            if let Some(exp) = y.to_u32() {
+                Ok(x.pow(exp))
+            } else {
+                Err(VmError::Runtime("exponent out of range".to_string()))
+            }
+        }
+    }
+}
+
+/// Handle BigInt and mixed BigInt/Float/Int slow path.
+/// Separated out so the compiler doesn't pollute the hot path's code layout.
+#[cold]
+#[inline(never)]
+fn arith_op_slow(op: BinaryOp, lhs: &Value, rhs: &Value) -> Result<Value, VmError> {
+    match (lhs, rhs) {
+        (Value::BigInt(x), Value::BigInt(y)) => Ok(Value::BigInt(bigint_op(op, x, y)?)),
+        (Value::Int(x), Value::BigInt(y)) => {
+            Ok(Value::BigInt(bigint_op(op, &BigInt::from(*x), y)?))
+        }
+        (Value::BigInt(x), Value::Int(y)) => {
+            Ok(Value::BigInt(bigint_op(op, x, &BigInt::from(*y))?))
+        }
+        (Value::BigInt(x), Value::Float(y)) => {
+            let xf = x.to_f64().unwrap_or(f64::NAN);
+            Ok(Value::Float(float_op(op, xf, *y)))
+        }
+        (Value::Float(x), Value::BigInt(y)) => {
+            let yf = y.to_f64().unwrap_or(f64::NAN);
+            Ok(Value::Float(float_op(op, *x, yf)))
+        }
+        _ => Err(VmError::TypeError(format!(
+            "arithmetic on non-numeric types: {} ({}) and {} ({})",
+            lhs.display_pretty(),
+            lhs.type_name(),
+            rhs.display_pretty(),
+            rhs.type_name()
+        ))),
+    }
+}
+
 impl VM {
     /// Structural diff of two values.
     pub(crate) fn diff_values(&self, a: &Value, b: &Value) -> Value {
@@ -186,6 +315,9 @@ impl VM {
         }
     }
 
+    /// Core arithmetic dispatch. Inlined into the main VM dispatch loop for performance.
+    /// The Int-Int fast path is first and avoids any heap allocation or cloning.
+    #[inline(always)]
     pub(crate) fn arith_op(
         &mut self,
         base: usize,
@@ -194,145 +326,43 @@ impl VM {
         c: usize,
         op: BinaryOp,
     ) -> Result<(), VmError> {
-        let lhs = self.registers[base + b].clone();
-        let rhs = self.registers[base + c].clone();
+        // Fast path: borrow registers and extract Copy types (Int, Float) directly.
+        // This avoids any cloning or heap allocation for the 99% case.
+        let lhs_ref = &self.registers[base + b];
+        let rhs_ref = &self.registers[base + c];
 
-        // Helper for checked int ops
-        fn int_op(op: BinaryOp, x: i64, y: i64) -> Option<i64> {
-            match op {
-                BinaryOp::Add => x.checked_add(y),
-                BinaryOp::Sub => x.checked_sub(y),
-                BinaryOp::Mul => x.checked_mul(y),
-                BinaryOp::Div => {
-                    if y == 0 {
-                        None
-                    } else {
-                        x.checked_div(y)
-                    }
-                }
-                BinaryOp::FloorDiv => {
-                    if y == 0 {
-                        None
-                    } else {
-                        Some(x.div_euclid(y))
-                    }
-                }
-                BinaryOp::Mod => {
-                    if y == 0 {
-                        None
-                    } else {
-                        Some(x.rem_euclid(y))
-                    }
-                }
-                BinaryOp::Rem => {
-                    if y == 0 {
-                        None
-                    } else {
-                        Some(x % y)
-                    }
-                }
-                BinaryOp::Pow => {
-                    if y < 0 || y > u32::MAX as i64 {
-                        None
-                    } else {
-                        x.checked_pow(y as u32)
-                    }
-                }
+        // HOT PATH: Int op Int — the vast majority of arithmetic in numeric code.
+        // Using if-let instead of nested match to give the compiler the best branch layout.
+        if let (Value::Int(x), Value::Int(y)) = (lhs_ref, rhs_ref) {
+            let x = *x;
+            let y = *y;
+            if let Some(res) = int_op(op, x, y) {
+                self.registers[base + a] = Value::Int(res);
+                return Ok(());
+            } else {
+                return Err(VmError::ArithmeticOverflow(op_name(op).to_string()));
             }
         }
 
-        // Helper for float ops — follows IEEE 754: overflow produces infinity, not an error
-        fn float_op(op: BinaryOp, x: f64, y: f64) -> f64 {
-            match op {
-                BinaryOp::Add => x + y,
-                BinaryOp::Sub => x - y,
-                BinaryOp::Mul => x * y,
-                BinaryOp::Div => x / y,
-                BinaryOp::FloorDiv => (x / y).floor(),
-                BinaryOp::Mod => x.rem_euclid(y),
-                BinaryOp::Rem => x % y,
-                BinaryOp::Pow => x.powf(y),
-            }
+        // WARM PATH: Float op Float
+        if let (Value::Float(x), Value::Float(y)) = (lhs_ref, rhs_ref) {
+            self.registers[base + a] = Value::Float(float_op(op, *x, *y));
+            return Ok(());
         }
 
-        /// Return a descriptive name for the operation, used in error messages.
-        fn op_name(op: BinaryOp) -> &'static str {
-            match op {
-                BinaryOp::Add => "addition",
-                BinaryOp::Sub => "subtraction",
-                BinaryOp::Mul => "multiplication",
-                BinaryOp::Div => "division",
-                BinaryOp::FloorDiv => "floor division",
-                BinaryOp::Mod => "modulo",
-                BinaryOp::Rem => "remainder",
-                BinaryOp::Pow => "exponentiation",
-            }
+        // WARM PATH: Mixed Int/Float promotion
+        if let (Value::Int(x), Value::Float(y)) = (lhs_ref, rhs_ref) {
+            self.registers[base + a] = Value::Float(float_op(op, *x as f64, *y));
+            return Ok(());
+        }
+        if let (Value::Float(x), Value::Int(y)) = (lhs_ref, rhs_ref) {
+            self.registers[base + a] = Value::Float(float_op(op, *x, *y as f64));
+            return Ok(());
         }
 
-        // Helper for BigInt ops
-        fn bigint_op(op: BinaryOp, x: &BigInt, y: &BigInt) -> Result<BigInt, VmError> {
-            match op {
-                BinaryOp::Add => Ok(x + y),
-                BinaryOp::Sub => Ok(x - y),
-                BinaryOp::Mul => Ok(x * y),
-                BinaryOp::Div => Ok(x / y),
-                BinaryOp::FloorDiv => Ok(x / y),
-                BinaryOp::Mod => Ok(x % y),
-                BinaryOp::Rem => Ok(x % y),
-                BinaryOp::Pow => {
-                    if let Some(exp) = y.to_u32() {
-                        Ok(x.pow(exp))
-                    } else {
-                        // Exponent too large - return error for out of range
-                        Err(VmError::Runtime("exponent out of range".to_string()))
-                    }
-                }
-            }
-        }
-
-        self.registers[base + a] = match (&lhs, &rhs) {
-            (Value::Int(x), Value::Int(y)) => {
-                if let Some(res) = int_op(op, *x, *y) {
-                    Value::Int(res)
-                } else {
-                    // Integer overflow — return operation-specific error
-                    return Err(VmError::ArithmeticOverflow(op_name(op).to_string()));
-                }
-            }
-            (Value::BigInt(x), Value::BigInt(y)) => Value::BigInt(bigint_op(op, x, y)?),
-            (Value::Int(x), Value::BigInt(y)) => {
-                Value::BigInt(bigint_op(op, &BigInt::from(*x), y)?)
-            }
-            (Value::BigInt(x), Value::Int(y)) => {
-                Value::BigInt(bigint_op(op, x, &BigInt::from(*y))?)
-            }
-            (Value::Float(x), Value::Float(y)) => Value::Float(float_op(op, *x, *y)),
-            (Value::Int(x), Value::Float(y)) => {
-                let xf = *x as f64;
-                Value::Float(float_op(op, xf, *y))
-            }
-            (Value::Float(x), Value::Int(y)) => {
-                let yf = *y as f64;
-                Value::Float(float_op(op, *x, yf))
-            }
-            (Value::BigInt(x), Value::Float(y)) => {
-                let xf = x.to_f64().unwrap_or(f64::NAN);
-                Value::Float(float_op(op, xf, *y))
-            }
-            (Value::Float(x), Value::BigInt(y)) => {
-                let yf = y.to_f64().unwrap_or(f64::NAN);
-                Value::Float(float_op(op, *x, yf))
-            }
-            _ => {
-                return Err(VmError::TypeError(format!(
-                    "arithmetic on non-numeric types: {} ({}) and {} ({})",
-                    lhs.display_pretty(),
-                    lhs.type_name(),
-                    rhs.display_pretty(),
-                    rhs.type_name()
-                )))
-            }
-        };
+        // COLD PATH: BigInt and error cases — delegated to a separate non-inlined function
+        // so the compiler doesn't bloat the hot path's instruction cache footprint.
+        self.registers[base + a] = arith_op_slow(op, lhs_ref, rhs_ref)?;
         Ok(())
     }
 }

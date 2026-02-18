@@ -1,0 +1,8 @@
+# Pipe operator
+cell double(x: Int) -> Int
+  x * 2
+end
+
+cell main() -> Int
+  5 |> double()
+end

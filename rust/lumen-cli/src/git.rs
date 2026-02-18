@@ -710,8 +710,7 @@ pub fn update_git_repo(url: &str, cache_dir: &Path) -> Result<(), GitError> {
 // =============================================================================
 
 /// Authentication method for git operations.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum GitAuth {
     /// No authentication (public repository).
     #[default]
@@ -736,7 +735,6 @@ pub enum GitAuth {
         password: String,
     },
 }
-
 
 /// Environment configuration for git authentication.
 #[derive(Debug, Clone)]

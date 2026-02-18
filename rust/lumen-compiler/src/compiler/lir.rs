@@ -28,6 +28,7 @@ pub enum OpCode {
     LoadBool = 0x03, // A, B, C: load bool B into A; if C, skip next
     LoadInt = 0x04,  // A, sB: R[A] = sB as i64 (small integer)
     Move = 0x05,     // A, B:  copy register B to A
+    MoveOwn = 0x0C,  // A, B:  move register B to A (B becomes Null) — used when B is dead after
 
     // Data construction
     NewList = 0x06,   // A, B:  create list from B values at A+1..
@@ -218,6 +219,61 @@ pub enum IntrinsicId {
     Guardrail = 83,
     Pattern = 84,
     Exit = 85,
+    ReadLines = 86,
+    WalkDir = 87,
+    GlobMatch = 88,
+    PathJoin = 89,
+    PathParent = 90,
+    PathExtension = 91,
+    PathFilename = 92,
+    PathStem = 93,
+    Exec = 94,
+    ReadStdin = 95,
+    Eprint = 96,
+    Eprintln = 97,
+    CsvParse = 98,
+    CsvEncode = 99,
+    TomlParse = 100,
+    TomlEncode = 101,
+    RegexMatch = 102,
+    RegexReplace = 103,
+    RegexFindAll = 104,
+    ReadLine = 105,
+    StringConcat = 106,
+    // HTTP client builtins
+    HttpGet = 107,
+    HttpPost = 108,
+    HttpPut = 109,
+    HttpDelete = 110,
+    HttpRequest = 111,
+    // TCP/UDP networking builtins
+    TcpConnect = 112,
+    TcpListen = 113,
+    TcpSend = 114,
+    TcpRecv = 115,
+    UdpBind = 116,
+    UdpSend = 117,
+    UdpRecv = 118,
+    TcpClose = 119,
+    // Wave 4A: stdlib completeness (T361-T370)
+    MapSortedKeys = 120,
+    ParseInt = 121,
+    ParseFloat = 122,
+    Log2 = 123,
+    Log10 = 124,
+    IsNan = 125,
+    IsInfinite = 126,
+    MathPi = 127,
+    MathE = 128,
+    SortAsc = 129,
+    SortDesc = 130,
+    SortBy = 131,
+    BinarySearch = 132,
+    Hrtime = 133,
+    FormatTime = 134,
+    Args = 135,
+    SetEnv = 136,
+    EnvVars = 137,
 }
 
 /// A 32-bit instruction
@@ -449,7 +505,7 @@ pub struct LirCell {
     pub name: String,
     pub params: Vec<LirParam>,
     pub returns: Option<String>,
-    pub registers: u8,
+    pub registers: u16,
     pub constants: Vec<Constant>,
     pub instructions: Vec<Instruction>,
     /// Metadata for effect handler scopes pushed by HandlePush instructions in this cell.

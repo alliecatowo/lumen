@@ -1,0 +1,7 @@
+type IntList = list[Int]
+type StringMap = map[String, Int]
+
+cell main() -> Int
+  let items: IntList = [1, 2, 3]
+  len(items)
+end

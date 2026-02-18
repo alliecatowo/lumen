@@ -31,6 +31,7 @@ lumen-provider-fs = { path = "../lumen-provider-fs", version = "0.5.0", optional
 lumen-provider-env = { path = "../lumen-provider-env", version = "0.5.0", optional = true }
 lumen-provider-crypto = { path = "../lumen-provider-crypto", version = "0.5.0", optional = true }
 lumen-provider-gemini = { path = "../lumen-provider-gemini", version = "0.5.0", optional = true }
+lumen-codegen = { path = "../lumen-codegen", version = "0.5.0", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
@@ -64,7 +65,8 @@ humantime = "2"
 ctrlc = "3"
 
 [features]
-default = ["http", "json", "fs", "env", "crypto", "keyring", "ed25519"]
+default = ["http", "json", "fs", "env", "crypto", "keyring", "ed25519", "jit"]
+jit = ["lumen-codegen"]
 http = ["lumen-provider-http"]
 json = ["lumen-provider-json"]
 fs = ["lumen-provider-fs"]

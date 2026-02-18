@@ -1,0 +1,12 @@
+enum Option
+  Some(value: Int)
+  None
+end
+
+cell main() -> Int
+  let opt = Option.Some(value: 42)
+  match opt
+    Option.Some(value:) -> value
+    Option.None -> 0
+  end
+end

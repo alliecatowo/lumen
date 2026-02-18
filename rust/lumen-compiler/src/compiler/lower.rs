@@ -104,6 +104,61 @@ fn get_intrinsic_id(name: &str) -> Option<IntrinsicId> {
         "guardrail" => Some(IntrinsicId::Guardrail),
         "pattern" => Some(IntrinsicId::Pattern),
         "exit" => Some(IntrinsicId::Exit),
+        "read_lines" => Some(IntrinsicId::ReadLines),
+        "walk_dir" => Some(IntrinsicId::WalkDir),
+        "glob" => Some(IntrinsicId::GlobMatch),
+        "path_join" => Some(IntrinsicId::PathJoin),
+        "path_parent" => Some(IntrinsicId::PathParent),
+        "path_extension" => Some(IntrinsicId::PathExtension),
+        "path_filename" => Some(IntrinsicId::PathFilename),
+        "path_stem" => Some(IntrinsicId::PathStem),
+        "exec" => Some(IntrinsicId::Exec),
+        "read_stdin" => Some(IntrinsicId::ReadStdin),
+        "eprint" => Some(IntrinsicId::Eprint),
+        "eprintln" => Some(IntrinsicId::Eprintln),
+        "csv_parse" => Some(IntrinsicId::CsvParse),
+        "csv_encode" => Some(IntrinsicId::CsvEncode),
+        "toml_parse" => Some(IntrinsicId::TomlParse),
+        "toml_encode" => Some(IntrinsicId::TomlEncode),
+        "regex_match" => Some(IntrinsicId::RegexMatch),
+        "regex_replace" => Some(IntrinsicId::RegexReplace),
+        "regex_find_all" => Some(IntrinsicId::RegexFindAll),
+        "read_line" => Some(IntrinsicId::ReadLine),
+        "string_concat" => Some(IntrinsicId::StringConcat),
+        // HTTP client builtins
+        "http_get" => Some(IntrinsicId::HttpGet),
+        "http_post" => Some(IntrinsicId::HttpPost),
+        "http_put" => Some(IntrinsicId::HttpPut),
+        "http_delete" => Some(IntrinsicId::HttpDelete),
+        "http_request" => Some(IntrinsicId::HttpRequest),
+        // TCP/UDP networking builtins
+        "tcp_connect" => Some(IntrinsicId::TcpConnect),
+        "tcp_listen" => Some(IntrinsicId::TcpListen),
+        "tcp_send" => Some(IntrinsicId::TcpSend),
+        "tcp_recv" => Some(IntrinsicId::TcpRecv),
+        "udp_bind" => Some(IntrinsicId::UdpBind),
+        "udp_send" => Some(IntrinsicId::UdpSend),
+        "udp_recv" => Some(IntrinsicId::UdpRecv),
+        "tcp_close" => Some(IntrinsicId::TcpClose),
+        // Wave 4A: stdlib completeness (T361-T370)
+        "map_sorted_keys" => Some(IntrinsicId::MapSortedKeys),
+        "parse_int" => Some(IntrinsicId::ParseInt),
+        "parse_float" => Some(IntrinsicId::ParseFloat),
+        "log2" => Some(IntrinsicId::Log2),
+        "log10" => Some(IntrinsicId::Log10),
+        "is_nan" => Some(IntrinsicId::IsNan),
+        "is_infinite" => Some(IntrinsicId::IsInfinite),
+        "math_pi" => Some(IntrinsicId::MathPi),
+        "math_e" => Some(IntrinsicId::MathE),
+        "sort_asc" => Some(IntrinsicId::SortAsc),
+        "sort_desc" => Some(IntrinsicId::SortDesc),
+        "sort_by" => Some(IntrinsicId::SortBy),
+        "binary_search" => Some(IntrinsicId::BinarySearch),
+        "hrtime" => Some(IntrinsicId::Hrtime),
+        "format_time" => Some(IntrinsicId::FormatTime),
+        "args" => Some(IntrinsicId::Args),
+        "set_env" => Some(IntrinsicId::SetEnv),
+        "env_vars" => Some(IntrinsicId::EnvVars),
         _ => None,
     }
 }
@@ -181,6 +236,485 @@ fn desugar_pipe_application(input: &Expr, stage: &Expr, span: Span) -> Expr {
             vec![CallArg::Positional(input.clone())],
             span,
         ),
+    }
+}
+
+/// Post-lowering peephole pass: eliminate redundant `Move` instructions that
+/// copy a temporary result back to a source operand.
+///
+/// Pattern:
+///   `<Op> rX = rY op rZ; Move rY = rX`  (where rX is a dead temporary)
+/// Becomes:
+///   `<Op> rY = rY op rZ; Nop`
+///
+/// This is safe when rX (the temporary) is not read again before being
+/// overwritten or the end of the basic block.
+fn eliminate_redundant_moves(instrs: &mut Vec<Instruction>) {
+    let len = instrs.len();
+    if len < 2 {
+        return;
+    }
+
+    let mut i = 0;
+    while i + 1 < instrs.len() {
+        let curr = instrs[i];
+        let next = instrs[i + 1];
+
+        // Pattern: <Op> rX = rY op rZ; Move rY = rX
+        // → <Op> rY = rY op rZ; Nop
+        if next.op == OpCode::Move {
+            let move_dst = next.a; // rY — where we want the result
+            let move_src = next.b; // rX — the temporary
+
+            // curr must write to move_src (rX) and be a safe-to-transform op
+            if curr.a == move_src && is_move_elim_candidate(curr.op) {
+                // move_dst (rY) must be one of curr's source operands
+                let dst_is_source = if is_unary_op(curr.op) {
+                    curr.b == move_dst
+                } else {
+                    curr.b == move_dst || curr.c == move_dst
+                };
+
+                if dst_is_source {
+                    // Check: move_src (rX) is not used after the Move before
+                    // being overwritten or end of basic block
+                    if !is_reg_live_after(instrs, i + 2, move_src) {
+                        // Transform: redirect curr's dest to move_dst, nop the Move
+                        instrs[i] = Instruction::abc(curr.op, move_dst, curr.b, curr.c);
+                        instrs[i + 1] = Instruction::abc(OpCode::Nop, 0, 0, 0);
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
+/// Returns true if the opcode is a candidate for redundant-Move elimination.
+/// We limit to opcodes where field `a` is the destination and `b`/`c` are
+/// source operands with well-known semantics.
+fn is_move_elim_candidate(op: OpCode) -> bool {
+    matches!(
+        op,
+        OpCode::Add
+            | OpCode::Sub
+            | OpCode::Mul
+            | OpCode::Div
+            | OpCode::Mod
+            | OpCode::Pow
+            | OpCode::Neg
+            | OpCode::FloorDiv
+            | OpCode::BitOr
+            | OpCode::BitAnd
+            | OpCode::BitXor
+            | OpCode::BitNot
+            | OpCode::Shl
+            | OpCode::Shr
+            | OpCode::Concat
+            | OpCode::And
+            | OpCode::Or
+            | OpCode::Not
+            | OpCode::NullCo
+            | OpCode::Intrinsic
+    )
+}
+
+/// Returns true if the opcode is a unary operation (only reads field `b`, not `c`).
+fn is_unary_op(op: OpCode) -> bool {
+    matches!(op, OpCode::Neg | OpCode::Not | OpCode::BitNot)
+}
+
+/// Check if register `reg` is read between position `start` and the next
+/// write to `reg` or end of basic block. Returns true if the register is
+/// still live (i.e., someone will read it).
+fn is_reg_live_after(instrs: &[Instruction], start: usize, reg: u8) -> bool {
+    for j in start..instrs.len() {
+        let instr = &instrs[j];
+        // Hit a basic-block boundary — conservatively assume live
+        if is_block_boundary(instr.op) {
+            // But first check if this boundary instruction itself reads reg
+            if instr_reads_reg(instr, reg) {
+                return true;
+            }
+            // End of block — reg is not used within this block
+            return false;
+        }
+        // Check if this instruction READS reg (it's still live)
+        if instr_reads_reg(instr, reg) {
+            return true;
+        }
+        // Check if this instruction WRITES reg (reg is dead from here)
+        if instr_writes_to_a(instr.op) && instr.a == reg {
+            return false;
+        }
+    }
+    // Reached end of instructions — reg is not used
+    false
+}
+
+/// Post-lowering peephole pass: convert `Move` to `MoveOwn` when the source
+/// register is provably dead (overwritten before being read again within the
+/// same basic block).
+///
+/// This eliminates unnecessary Rc refcount increments so that subsequent
+/// `Arc::make_mut()` on lists/strings can mutate in-place, turning O(n²)
+/// accumulation patterns into O(n).
+fn optimize_move_own(instrs: &mut Vec<Instruction>) {
+    let len = instrs.len();
+    for i in 0..len {
+        if instrs[i].op != OpCode::Move {
+            continue;
+        }
+        let src = instrs[i].b;
+        let dst = instrs[i].a;
+        // Don't convert self-moves (shouldn't exist but be safe)
+        if src == dst {
+            continue;
+        }
+        // Scan forward within the same basic block to determine if `src` is
+        // written before it is read.
+        let mut can_convert = false;
+        for j in (i + 1)..len {
+            let op = instrs[j].op;
+            let ja = instrs[j].a;
+            let _jb = instrs[j].b;
+            let _jc = instrs[j].c;
+
+            // Basic-block boundary: stop analysis.
+            if is_block_boundary(op) {
+                break;
+            }
+
+            // Check if this instruction reads `src`.
+            if instr_reads_reg(&instrs[j], src) {
+                // src is read before being overwritten — cannot convert.
+                break;
+            }
+
+            // Check if this instruction writes to `src` (i.e. src is the
+            // destination register `a`).
+            if instr_writes_to_a(op) && ja == src {
+                can_convert = true;
+                break;
+            }
+
+            // Call writes to registers a..a+b, check if src falls in that
+            // range (the result is placed at base=a after call returns).
+            if op == OpCode::Call && ja == src {
+                can_convert = true;
+                break;
+            }
+        }
+
+        if can_convert {
+            instrs[i].op = OpCode::MoveOwn;
+        }
+    }
+}
+
+/// Returns true if the opcode marks a basic-block boundary (control flow).
+fn is_block_boundary(op: OpCode) -> bool {
+    matches!(
+        op,
+        OpCode::Jmp
+            | OpCode::Test
+            | OpCode::Return
+            | OpCode::Halt
+            | OpCode::Break
+            | OpCode::Continue
+            | OpCode::Loop
+            | OpCode::ForPrep
+            | OpCode::ForLoop
+            | OpCode::ForIn
+            | OpCode::TailCall
+            | OpCode::HandlePush
+            | OpCode::HandlePop
+            | OpCode::Perform
+    )
+}
+
+/// Returns true if the given opcode writes its result to field `a`.
+fn instr_writes_to_a(op: OpCode) -> bool {
+    matches!(
+        op,
+        OpCode::Move
+            | OpCode::MoveOwn
+            | OpCode::LoadK
+            | OpCode::LoadNil
+            | OpCode::LoadBool
+            | OpCode::LoadInt
+            | OpCode::Add
+            | OpCode::Sub
+            | OpCode::Mul
+            | OpCode::Div
+            | OpCode::Mod
+            | OpCode::Pow
+            | OpCode::Neg
+            | OpCode::Concat
+            | OpCode::FloorDiv
+            | OpCode::BitOr
+            | OpCode::BitAnd
+            | OpCode::BitXor
+            | OpCode::BitNot
+            | OpCode::Shl
+            | OpCode::Shr
+            | OpCode::Not
+            | OpCode::And
+            | OpCode::Or
+            | OpCode::In
+            | OpCode::Is
+            | OpCode::NullCo
+            | OpCode::NewList
+            | OpCode::NewMap
+            | OpCode::NewRecord
+            | OpCode::NewUnion
+            | OpCode::NewTuple
+            | OpCode::NewSet
+            | OpCode::GetField
+            | OpCode::GetIndex
+            | OpCode::GetTuple
+            | OpCode::Eq
+            | OpCode::Lt
+            | OpCode::Le
+            | OpCode::Intrinsic
+            | OpCode::Closure
+            | OpCode::GetUpval
+            | OpCode::Unbox
+            | OpCode::Await
+    )
+}
+
+/// Returns true if the instruction reads the given register.
+fn instr_reads_reg(instr: &Instruction, reg: u8) -> bool {
+    let op = instr.op;
+    let a = instr.a;
+    let b = instr.b;
+    let c = instr.c;
+
+    match op {
+        // Move/MoveOwn read field b
+        OpCode::Move | OpCode::MoveOwn => b == reg,
+        // Unary ops read field b
+        OpCode::Neg | OpCode::BitNot | OpCode::Not => b == reg,
+        // Unbox reads field b
+        OpCode::Unbox => b == reg,
+        // Append reads fields a (the list) and b (the element)
+        OpCode::Append => a == reg || b == reg,
+        // Binary arithmetic/logic read fields b and c
+        OpCode::Add
+        | OpCode::Sub
+        | OpCode::Mul
+        | OpCode::Div
+        | OpCode::FloorDiv
+        | OpCode::Mod
+        | OpCode::Pow
+        | OpCode::Concat
+        | OpCode::BitOr
+        | OpCode::BitAnd
+        | OpCode::BitXor
+        | OpCode::Shl
+        | OpCode::Shr
+        | OpCode::And
+        | OpCode::Or
+        | OpCode::In
+        | OpCode::Is
+        | OpCode::NullCo => b == reg || c == reg,
+        // Comparison ops read fields b and c
+        OpCode::Eq | OpCode::Lt | OpCode::Le => b == reg || c == reg,
+        // Test reads field a
+        OpCode::Test => a == reg,
+        // Return reads field a
+        OpCode::Return => a == reg,
+        // SetField reads a, b, c
+        OpCode::SetField => a == reg || b == reg || c == reg,
+        // SetIndex reads a, b, c
+        OpCode::SetIndex => a == reg || b == reg || c == reg,
+        // SetUpval reads a and c
+        OpCode::SetUpval => a == reg || c == reg,
+        // GetField/GetIndex/GetTuple read b (and c for field name/index)
+        OpCode::GetField | OpCode::GetIndex | OpCode::GetTuple => b == reg || c == reg,
+        // Await reads b
+        OpCode::Await => b == reg,
+        // Call reads registers a through a+b (callee + args)
+        OpCode::Call | OpCode::TailCall => reg >= a && reg <= a.saturating_add(b),
+        // Intrinsic reads args starting at c (number depends on intrinsic,
+        // but conservatively treat c as read)
+        OpCode::Intrinsic => c == reg,
+        // Emit, Schema, Halt read field a
+        OpCode::Emit | OpCode::Schema | OpCode::Halt => a == reg,
+        // NewList/NewTuple/NewSet read a+1..a+b
+        OpCode::NewList | OpCode::NewTuple | OpCode::NewSet => {
+            reg > a && reg <= a.saturating_add(b)
+        }
+        // NewMap reads a+1..a+2*b
+        OpCode::NewMap => reg > a && reg <= a.saturating_add(b.saturating_mul(2)),
+        // NewRecord: reads registers after a (fields), conservatively treat as reading a range
+        OpCode::NewRecord => reg > a,
+        // NewUnion reads b and c
+        OpCode::NewUnion => b == reg || c == reg,
+        // ToolCall reads a (args map)
+        OpCode::ToolCall => a == reg,
+        // Perform reads a
+        OpCode::Perform => a == reg,
+        // Resume reads a
+        OpCode::Resume => a == reg,
+        // LoadK, LoadNil, LoadBool, LoadInt, Closure, GetUpval: only write, don't read
+        // Jmp, Break, Continue, Loop, Nop, HandlePush, HandlePop: no register reads
+        // ForPrep, ForLoop, ForIn, Spawn, IsVariant, TraceRef: handled conservatively
+        _ => false,
+    }
+}
+
+/// Post-lowering pass: hoist loop-invariant `LoadK`, `LoadBool`, and `LoadInt`
+/// instructions out of loops.
+///
+/// A "loop" is identified by a backward `Jmp` (negative offset) whose target
+/// is the loop header.  An instruction is loop-invariant when:
+///
+///  1. It is a `LoadK`, `LoadBool`, or `LoadInt` (deterministic constant loads).
+///  2. No *other* instruction in the loop writes to the same destination
+///     register (field `a`).
+///
+/// Invariant instructions are **moved** — they are inserted immediately before
+/// the loop header and the original slot is replaced with `Nop`.  All jump
+/// offsets referencing instructions at or after the insertion point are adjusted
+/// to account for the newly inserted instructions.
+fn hoist_loop_invariants(instrs: &mut Vec<Instruction>) {
+    if instrs.len() < 3 {
+        return;
+    }
+
+    // Collect loops: each backward Jmp defines a loop [header .. back_edge].
+    // Process from innermost (latest) first so offset adjustments don't
+    // cascade across earlier loops. We sort by header descending so earlier
+    // insertions don't invalidate later loop boundaries.
+    struct LoopRegion {
+        header: usize,
+        back_edge: usize,
+    }
+    let mut loops: Vec<LoopRegion> = Vec::new();
+    for (pc, inst) in instrs.iter().enumerate() {
+        if matches!(inst.op, OpCode::Jmp | OpCode::Break | OpCode::Continue) {
+            let offset = inst.sax_val();
+            if offset < 0 {
+                let target = (pc as i32 + 1 + offset) as usize;
+                if target < pc {
+                    loops.push(LoopRegion {
+                        header: target,
+                        back_edge: pc,
+                    });
+                }
+            }
+        }
+    }
+
+    // Deduplicate: multiple backward jumps can target the same header (e.g. a
+    // `continue` and the actual back-edge). Keep only the outermost loop
+    // (largest back_edge) for each header so we don't double-process.
+    loops.sort_by(|a, b| a.header.cmp(&b.header).then(b.back_edge.cmp(&a.back_edge)));
+    loops.dedup_by_key(|l| l.header);
+
+    // Process loops from last to first so that insertions for later loops
+    // don't shift the indices of earlier loops.
+    loops.sort_by(|a, b| b.header.cmp(&a.header));
+
+    for region in &loops {
+        let header = region.header;
+        let back_edge = region.back_edge;
+
+        // Find hoistable instructions.
+        let mut hoistable: Vec<(usize, Instruction)> = Vec::new();
+        for pc in header..=back_edge {
+            let inst = instrs[pc];
+            if !matches!(inst.op, OpCode::LoadK | OpCode::LoadBool | OpCode::LoadInt) {
+                continue;
+            }
+            let dest = inst.a;
+            // Check that no *other* instruction in the loop writes to `dest`.
+            let mut other_writes = false;
+            for pc2 in header..=back_edge {
+                if pc2 == pc {
+                    continue;
+                }
+                let i2 = instrs[pc2];
+                if instr_writes_to_a(i2.op) && i2.a == dest {
+                    other_writes = true;
+                    break;
+                }
+                // Call writes to base register `a`
+                if matches!(i2.op, OpCode::Call | OpCode::TailCall) && i2.a == dest {
+                    other_writes = true;
+                    break;
+                }
+            }
+            if !other_writes {
+                hoistable.push((pc, inst));
+            }
+        }
+
+        if hoistable.is_empty() {
+            continue;
+        }
+
+        let n = hoistable.len();
+
+        // Replace originals with Nop.
+        for &(pc, _) in &hoistable {
+            instrs[pc] = Instruction::abc(OpCode::Nop, 0, 0, 0);
+        }
+
+        // Insert copies before the header.
+        let insert_point = header;
+        let mut to_insert: Vec<Instruction> = hoistable.iter().map(|&(_, inst)| inst).collect();
+        // Reverse so the first hoistable instruction ends up at the earliest position.
+        to_insert.reverse();
+        // Actually, we want them in original order, so don't reverse.
+        to_insert.reverse();
+
+        // Adjust all existing jump offsets before inserting.
+        // After insertion of `n` instructions at `insert_point`, any instruction
+        // originally at index `i >= insert_point` moves to `i + n`.
+        // A jump at original index `src` with target `tgt`:
+        //   new_src = src + (src >= insert_point ? n : 0)
+        //   new_tgt = tgt + (tgt >= insert_point ? n : 0)
+        //   new_offset = (new_tgt - new_src - 1)
+        for i in 0..instrs.len() {
+            let inst = instrs[i];
+            if matches!(inst.op, OpCode::Jmp | OpCode::Break | OpCode::Continue) {
+                let old_offset = inst.sax_val();
+                let old_tgt = (i as i32 + 1 + old_offset) as usize;
+                let new_src = if i >= insert_point { i + n } else { i };
+                let new_tgt = if old_tgt >= insert_point {
+                    old_tgt + n
+                } else {
+                    old_tgt
+                };
+                let new_offset = new_tgt as i32 - new_src as i32 - 1;
+                if new_offset != old_offset {
+                    instrs[i] = Instruction::sax(inst.op, new_offset);
+                }
+            }
+            // HandlePush also uses Ax as a forward offset.
+            if inst.op == OpCode::HandlePush {
+                let old_offset = inst.sax_val();
+                let old_tgt = (i as i32 + 1 + old_offset) as usize;
+                let new_src = if i >= insert_point { i + n } else { i };
+                let new_tgt = if old_tgt >= insert_point {
+                    old_tgt + n
+                } else {
+                    old_tgt
+                };
+                let new_offset = new_tgt as i32 - new_src as i32 - 1;
+                if new_offset != old_offset {
+                    instrs[i] = Instruction::sax(inst.op, new_offset);
+                }
+            }
+        }
+
+        // Now insert the hoisted instructions.
+        for (idx, inst) in to_insert.into_iter().enumerate() {
+            instrs.insert(insert_point + idx, inst);
+        }
     }
 }
 
@@ -393,7 +927,7 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                             span,
                         );
                         body.push(Stmt::Assign(AssignStmt {
-                            target: value_name.clone(),
+                            target: AssignTarget::Variable(value_name.clone()),
                             value: call,
                             span,
                         }));
@@ -431,6 +965,7 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
                         where_clauses: vec![],
                         span,
                         doc: None,
+                        deprecated: None,
                     };
                     module.cells.push(lowerer.lower_cell(&generated));
                 }
@@ -1260,6 +1795,48 @@ impl<'a> Lowerer<'a> {
                     instructions.push(Instruction::abc(OpCode::Return, val_reg, 1, 0));
                     continue;
                 }
+                // Support match as implicit return value
+                if let Stmt::Match(ms) = stmt {
+                    let match_expr = Expr::MatchExpr {
+                        subject: Box::new(ms.subject.clone()),
+                        arms: ms.arms.clone(),
+                        span: ms.span,
+                    };
+                    let val_reg =
+                        self.lower_expr(&match_expr, &mut ra, &mut constants, &mut instructions);
+                    self.emit_defers(&mut ra, &mut constants, &mut instructions);
+                    instructions.push(Instruction::abc(OpCode::Return, val_reg, 1, 0));
+                    continue;
+                }
+                // Support for-loop as implicit return value (collects into list)
+                if let Stmt::For(fs) = stmt {
+                    let result_reg = ra.alloc_temp();
+                    instructions.push(Instruction::abc(OpCode::NewList, result_reg, 0, 0));
+                    self.lower_for_as_expr(
+                        fs,
+                        result_reg,
+                        &mut ra,
+                        &mut constants,
+                        &mut instructions,
+                    );
+                    self.emit_defers(&mut ra, &mut constants, &mut instructions);
+                    instructions.push(Instruction::abc(OpCode::Return, result_reg, 1, 0));
+                    continue;
+                }
+                // Support if/else as implicit return value
+                if let Stmt::If(ifs) = stmt {
+                    let result_reg = ra.alloc_temp();
+                    self.lower_if_as_tail(
+                        ifs,
+                        result_reg,
+                        &mut ra,
+                        &mut constants,
+                        &mut instructions,
+                    );
+                    self.emit_defers(&mut ra, &mut constants, &mut instructions);
+                    instructions.push(Instruction::abc(OpCode::Return, result_reg, 1, 0));
+                    continue;
+                }
             }
             self.lower_stmt(stmt, &mut ra, &mut constants, &mut instructions);
         }
@@ -1281,6 +1858,11 @@ impl<'a> Lowerer<'a> {
         // Restore defer stack and collect effect handler metas
         self.defer_stack = saved_defers;
         let effect_handler_metas = std::mem::replace(&mut self.effect_handler_metas, saved_metas);
+
+        // Peephole optimizations
+        hoist_loop_invariants(&mut instructions);
+        eliminate_redundant_moves(&mut instructions);
+        optimize_move_own(&mut instructions);
 
         LirCell {
             name: cell.name.clone(),
@@ -1548,14 +2130,38 @@ impl<'a> Lowerer<'a> {
             }
             Stmt::Assign(asgn) => {
                 let val_reg = self.lower_expr(&asgn.value, ra, consts, instrs);
-                if let Some(dest) = ra.lookup(&asgn.target) {
-                    if dest != val_reg {
-                        instrs.push(Instruction::abc(OpCode::Move, dest, val_reg, 0));
+                match &asgn.target {
+                    AssignTarget::Variable(name) => {
+                        if let Some(dest) = ra.lookup(name) {
+                            if dest != val_reg {
+                                instrs.push(Instruction::abc(OpCode::Move, dest, val_reg, 0));
+                            }
+                        } else {
+                            let dest = ra.alloc_named(name);
+                            if dest != val_reg {
+                                instrs.push(Instruction::abc(OpCode::Move, dest, val_reg, 0));
+                            }
+                        }
                     }
-                } else {
-                    let dest = ra.alloc_named(&asgn.target);
-                    if dest != val_reg {
-                        instrs.push(Instruction::abc(OpCode::Move, dest, val_reg, 0));
+                    AssignTarget::Index(base_expr, index_expr) => {
+                        let base_reg = self.lower_expr(base_expr, ra, consts, instrs);
+                        let idx_reg = self.lower_expr(index_expr, ra, consts, instrs);
+                        instrs.push(Instruction::abc(
+                            OpCode::SetIndex,
+                            base_reg,
+                            idx_reg,
+                            val_reg,
+                        ));
+                    }
+                    AssignTarget::Field(base_expr, field_name) => {
+                        let base_reg = self.lower_expr(base_expr, ra, consts, instrs);
+                        let field_idx = self.intern_string(field_name);
+                        instrs.push(Instruction::abc(
+                            OpCode::SetField,
+                            base_reg,
+                            field_idx as u8,
+                            val_reg,
+                        ));
                     }
                 }
             }
@@ -1664,11 +2270,6 @@ impl<'a> Lowerer<'a> {
             }
             Stmt::CompoundAssign(ca) => {
                 let val_reg = self.lower_expr(&ca.value, ra, consts, instrs);
-                let target_reg = if let Some(r) = ra.lookup(&ca.target) {
-                    r
-                } else {
-                    ra.alloc_named(&ca.target)
-                };
                 let opcode = match ca.op {
                     CompoundOp::AddAssign => OpCode::Add,
                     CompoundOp::SubAssign => OpCode::Sub,
@@ -1681,7 +2282,54 @@ impl<'a> Lowerer<'a> {
                     CompoundOp::BitOrAssign => OpCode::BitOr,
                     CompoundOp::BitXorAssign => OpCode::BitXor,
                 };
-                instrs.push(Instruction::abc(opcode, target_reg, target_reg, val_reg));
+                match &ca.target {
+                    AssignTarget::Variable(name) => {
+                        let target_reg = if let Some(r) = ra.lookup(name) {
+                            r
+                        } else {
+                            ra.alloc_named(name)
+                        };
+                        instrs.push(Instruction::abc(opcode, target_reg, target_reg, val_reg));
+                    }
+                    AssignTarget::Index(base_expr, index_expr) => {
+                        let base_reg = self.lower_expr(base_expr, ra, consts, instrs);
+                        let idx_reg = self.lower_expr(index_expr, ra, consts, instrs);
+                        // Load current value, apply op, store back
+                        let cur_reg = ra.alloc_temp();
+                        instrs.push(Instruction::abc(
+                            OpCode::GetIndex,
+                            cur_reg,
+                            base_reg,
+                            idx_reg,
+                        ));
+                        instrs.push(Instruction::abc(opcode, cur_reg, cur_reg, val_reg));
+                        instrs.push(Instruction::abc(
+                            OpCode::SetIndex,
+                            base_reg,
+                            idx_reg,
+                            cur_reg,
+                        ));
+                    }
+                    AssignTarget::Field(base_expr, field_name) => {
+                        let base_reg = self.lower_expr(base_expr, ra, consts, instrs);
+                        let field_idx = self.intern_string(field_name);
+                        // Load current value, apply op, store back
+                        let cur_reg = ra.alloc_temp();
+                        instrs.push(Instruction::abc(
+                            OpCode::GetField,
+                            cur_reg,
+                            base_reg,
+                            field_idx as u8,
+                        ));
+                        instrs.push(Instruction::abc(opcode, cur_reg, cur_reg, val_reg));
+                        instrs.push(Instruction::abc(
+                            OpCode::SetField,
+                            base_reg,
+                            field_idx as u8,
+                            cur_reg,
+                        ));
+                    }
+                }
             }
             Stmt::Defer(ds) => {
                 // Collect defer block body for emission before returns (LIFO order)
@@ -1694,6 +2342,225 @@ impl<'a> Lowerer<'a> {
             // Local definitions are lifted to module level during lower();
             // nothing to emit inline.
             Stmt::LocalRecord(_) | Stmt::LocalEnum(_) | Stmt::LocalCell(_) => {}
+        }
+    }
+
+    /// Lower an if/else statement as a tail expression, storing the result
+    /// of whichever branch is taken into `result_reg`.
+    fn lower_if_as_tail(
+        &mut self,
+        ifs: &IfStmt,
+        result_reg: u8,
+        ra: &mut RegAlloc,
+        consts: &mut Vec<Constant>,
+        instrs: &mut Vec<Instruction>,
+    ) {
+        let cond_reg = self.lower_expr(&ifs.condition, ra, consts, instrs);
+        let true_reg = ra.alloc_temp();
+        instrs.push(Instruction::abc(OpCode::LoadBool, true_reg, 1, 0));
+        let cmp_dest = ra.alloc_temp();
+        instrs.push(Instruction::abc(OpCode::Eq, cmp_dest, cond_reg, true_reg));
+        instrs.push(Instruction::abc(OpCode::Test, cmp_dest, 0, 0));
+        let jmp_to_else = instrs.len();
+        instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+
+        // Then branch
+        self.lower_branch_as_tail(&ifs.then_body, result_reg, ra, consts, instrs);
+        let jmp_over_else = instrs.len();
+        instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+
+        // Else branch
+        let else_start = instrs.len();
+        instrs[jmp_to_else] = Instruction::sax(OpCode::Jmp, (else_start - jmp_to_else - 1) as i32);
+
+        if let Some(ref else_body) = ifs.else_body {
+            // Check if else body is a single Stmt::If (else-if chain)
+            if else_body.len() == 1 {
+                if let Stmt::If(nested_ifs) = &else_body[0] {
+                    self.lower_if_as_tail(nested_ifs, result_reg, ra, consts, instrs);
+                } else {
+                    self.lower_branch_as_tail(else_body, result_reg, ra, consts, instrs);
+                }
+            } else {
+                self.lower_branch_as_tail(else_body, result_reg, ra, consts, instrs);
+            }
+        } else {
+            // No else: result is null
+            instrs.push(Instruction::abc(OpCode::LoadNil, result_reg, 0, 0));
+        }
+
+        let end = instrs.len();
+        instrs[jmp_over_else] = Instruction::sax(OpCode::Jmp, (end - jmp_over_else - 1) as i32);
+    }
+
+    /// Lower a branch body (then or else), storing the last expression's value
+    /// into `result_reg`.
+    fn lower_branch_as_tail(
+        &mut self,
+        body: &[Stmt],
+        result_reg: u8,
+        ra: &mut RegAlloc,
+        consts: &mut Vec<Constant>,
+        instrs: &mut Vec<Instruction>,
+    ) {
+        if body.is_empty() {
+            instrs.push(Instruction::abc(OpCode::LoadNil, result_reg, 0, 0));
+            return;
+        }
+        let last_idx = body.len() - 1;
+        for (i, stmt) in body.iter().enumerate() {
+            if i == last_idx {
+                // Last statement: try to capture its value
+                match stmt {
+                    Stmt::Expr(es) => {
+                        let val = self.lower_expr(&es.expr, ra, consts, instrs);
+                        if val != result_reg {
+                            instrs.push(Instruction::abc(OpCode::Move, result_reg, val, 0));
+                        }
+                        return;
+                    }
+                    Stmt::If(nested_ifs) => {
+                        self.lower_if_as_tail(nested_ifs, result_reg, ra, consts, instrs);
+                        return;
+                    }
+                    Stmt::Match(ms) => {
+                        let match_expr = Expr::MatchExpr {
+                            subject: Box::new(ms.subject.clone()),
+                            arms: ms.arms.clone(),
+                            span: ms.span,
+                        };
+                        let val = self.lower_expr(&match_expr, ra, consts, instrs);
+                        if val != result_reg {
+                            instrs.push(Instruction::abc(OpCode::Move, result_reg, val, 0));
+                        }
+                        return;
+                    }
+                    _ => {
+                        // Non-expression last statement: lower normally, result is null
+                        self.lower_stmt(stmt, ra, consts, instrs);
+                        instrs.push(Instruction::abc(OpCode::LoadNil, result_reg, 0, 0));
+                        return;
+                    }
+                }
+            }
+            self.lower_stmt(stmt, ra, consts, instrs);
+        }
+    }
+
+    /// Lower a for loop as an expression that collects each iteration's last
+    /// expression value into an existing result list register.
+    fn lower_for_as_expr(
+        &mut self,
+        fs: &ForStmt,
+        result_reg: u8,
+        ra: &mut RegAlloc,
+        consts: &mut Vec<Constant>,
+        instrs: &mut Vec<Instruction>,
+    ) {
+        let iter_reg = self.lower_expr(&fs.iter, ra, consts, instrs);
+        let idx_reg = ra.alloc_temp();
+        let len_reg = ra.alloc_temp();
+        let elem_reg = ra.alloc_named(&fs.var);
+
+        // idx = 0
+        let zero_idx = consts.len() as u16;
+        consts.push(Constant::Int(0));
+        instrs.push(Instruction::abx(OpCode::LoadK, idx_reg, zero_idx));
+        // len = length(iter)
+        instrs.push(Instruction::abc(
+            OpCode::Intrinsic,
+            len_reg,
+            IntrinsicId::Length as u8,
+            iter_reg,
+        ));
+
+        let loop_start = instrs.len();
+        let lt_reg = ra.alloc_temp();
+        instrs.push(Instruction::abc(OpCode::Lt, lt_reg, idx_reg, len_reg));
+        instrs.push(Instruction::abc(OpCode::Test, lt_reg, 0, 0));
+        let break_jmp = instrs.len();
+        instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
+
+        // elem = iter[idx]
+        instrs.push(Instruction::abc(
+            OpCode::GetIndex,
+            elem_reg,
+            iter_reg,
+            idx_reg,
+        ));
+
+        // Handle tuple destructuring pattern if present
+        if let Some(ref pattern) = fs.pattern {
+            self.lower_let_pattern(pattern, elem_reg, ra, consts, instrs);
+        }
+
+        self.loop_stack.push(LoopContext {
+            label: fs.label.clone(),
+            break_jumps: Vec::new(),
+            continue_jumps: Vec::new(),
+        });
+
+        // Optional filter
+        let mut filter_jmp = None;
+        if let Some(ref filter) = fs.filter {
+            let cond_reg = self.lower_expr(filter, ra, consts, instrs);
+            let true_reg = ra.alloc_temp();
+            instrs.push(Instruction::abc(OpCode::LoadBool, true_reg, 1, 0));
+            let cmp_reg = ra.alloc_temp();
+            instrs.push(Instruction::abc(OpCode::Eq, cmp_reg, cond_reg, true_reg));
+            instrs.push(Instruction::abc(OpCode::Test, cmp_reg, 0, 0));
+            filter_jmp = Some(instrs.len());
+            instrs.push(Instruction::sax(OpCode::Jmp, 0));
+        }
+
+        // Lower body: all but last statement are lowered normally,
+        // the last statement's expression value is appended to result.
+        let body_len = fs.body.len();
+        for (bidx, s) in fs.body.iter().enumerate() {
+            if bidx == body_len - 1 {
+                if let Stmt::Expr(es) = s {
+                    let val = self.lower_expr(&es.expr, ra, consts, instrs);
+                    instrs.push(Instruction::abc(OpCode::Append, result_reg, val, 0));
+                } else if let Stmt::For(inner_fs) = s {
+                    // Nested for-as-expression: recursively collect into the same list
+                    self.lower_for_as_expr(inner_fs, result_reg, ra, consts, instrs);
+                } else {
+                    self.lower_stmt(s, ra, consts, instrs);
+                }
+            } else {
+                self.lower_stmt(s, ra, consts, instrs);
+            }
+        }
+
+        // Patch filter jump
+        if let Some(fj) = filter_jmp {
+            let body_end = instrs.len();
+            instrs[fj] = Instruction::sax(OpCode::Jmp, (body_end - fj - 1) as i32);
+        }
+
+        // idx = idx + 1
+        let increment_start = instrs.len();
+        let one_idx = consts.len() as u16;
+        consts.push(Constant::Int(1));
+        let one_reg = ra.alloc_temp();
+        instrs.push(Instruction::abx(OpCode::LoadK, one_reg, one_idx));
+        instrs.push(Instruction::abc(OpCode::Add, idx_reg, idx_reg, one_reg));
+
+        // Jump back to loop start
+        let back_offset = loop_start as i32 - instrs.len() as i32 - 1;
+        instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
+
+        // Patch break
+        let after_loop = instrs.len();
+        let break_offset = (after_loop - break_jmp - 1) as i32;
+        instrs[break_jmp] = Instruction::sax(OpCode::Jmp, break_offset);
+
+        let ctx = self.loop_stack.pop().unwrap();
+        for bj in ctx.break_jumps {
+            instrs[bj] = Instruction::sax(OpCode::Jmp, (after_loop - bj - 1) as i32);
+        }
+        for cj in ctx.continue_jumps {
+            instrs[cj] = Instruction::sax(OpCode::Jmp, (increment_start - cj - 1) as i32);
         }
     }
 
@@ -1947,8 +2814,22 @@ impl<'a> Lowerer<'a> {
             }
             Pattern::Wildcard(_) => {}
             Pattern::Ident(name, _) => {
-                let breg = ra.alloc_named(name);
-                instrs.push(Instruction::abc(OpCode::Move, breg, value_reg, 0));
+                // Check if this identifier is actually an enum variant name.
+                // If so, emit an IsVariant check instead of binding as a variable.
+                let is_enum_variant = self.symbols.types.values().any(|t| {
+                    matches!(&t.kind, crate::compiler::resolve::TypeInfoKind::Enum(e)
+                        if e.variants.iter().any(|v| v.name == *name))
+                });
+                if is_enum_variant {
+                    let tag_idx = self.intern_string(name);
+                    instrs.push(Instruction::abx(OpCode::IsVariant, value_reg, tag_idx));
+                    let fail_jmp = instrs.len();
+                    instrs.push(Instruction::sax(OpCode::Jmp, 0));
+                    fail_jumps.push(fail_jmp);
+                } else {
+                    let breg = ra.alloc_named(name);
+                    instrs.push(Instruction::abc(OpCode::Move, breg, value_reg, 0));
+                }
             }
             Pattern::Guard {
                 inner, condition, ..
@@ -2799,15 +3680,15 @@ impl<'a> Lowerer<'a> {
                     }
 
                     if is_result || is_enum {
-                        // Expect 1 argument (payload)
-                        // If 0 args -> Nil payload (handled in Ident if bare, but if ok(), then explicit nil?)
-                        // If >1 args -> Tuple? Result only takes 1. Enum payload is 1 type (maybe tuple).
-                        // For now assume 1 arg.
+                        // Build the payload register:
+                        //  - 0 args -> Nil payload
+                        //  - 1 arg  -> single value
+                        //  - >1 args -> wrap in a tuple
                         let payload_reg = if args.is_empty() {
                             let r = ra.alloc_temp();
                             instrs.push(Instruction::abc(OpCode::LoadNil, r, 0, 0));
                             r
-                        } else {
+                        } else if args.len() == 1 {
                             match &args[0] {
                                 CallArg::Positional(e) | CallArg::Named(_, e, _) => {
                                     self.lower_expr(e, ra, consts, instrs)
@@ -2818,6 +3699,36 @@ impl<'a> Lowerer<'a> {
                                     r
                                 }
                             }
+                        } else {
+                            // Multiple args: pack into a tuple
+                            let block_start = ra.alloc_block(1 + args.len() as u8);
+                            let dest = block_start;
+                            let mut elem_regs = Vec::new();
+                            for arg in args.iter() {
+                                match arg {
+                                    CallArg::Positional(e) | CallArg::Named(_, e, _) => {
+                                        elem_regs.push(self.lower_expr(e, ra, consts, instrs));
+                                    }
+                                    _ => {
+                                        let r = ra.alloc_temp();
+                                        instrs.push(Instruction::abc(OpCode::LoadNil, r, 0, 0));
+                                        elem_regs.push(r);
+                                    }
+                                }
+                            }
+                            for (i, er) in elem_regs.iter().enumerate() {
+                                let target = dest + 1 + i as u8;
+                                if *er != target {
+                                    instrs.push(Instruction::abc(OpCode::Move, target, *er, 0));
+                                }
+                            }
+                            instrs.push(Instruction::abc(
+                                OpCode::NewTuple,
+                                dest,
+                                args.len() as u8,
+                                0,
+                            ));
+                            dest
                         };
 
                         let dest = ra.alloc_temp();
@@ -2898,7 +3809,7 @@ impl<'a> Lowerer<'a> {
                                 let r = ra.alloc_temp();
                                 instrs.push(Instruction::abc(OpCode::LoadNil, r, 0, 0));
                                 r
-                            } else {
+                            } else if args.len() == 1 {
                                 match &args[0] {
                                     CallArg::Positional(e) | CallArg::Named(_, e, _) => {
                                         self.lower_expr(e, ra, consts, instrs)
@@ -2909,6 +3820,36 @@ impl<'a> Lowerer<'a> {
                                         r
                                     }
                                 }
+                            } else {
+                                // Multiple args: pack into a tuple
+                                let block_start = ra.alloc_block(1 + args.len() as u8);
+                                let dest = block_start;
+                                let mut elem_regs = Vec::new();
+                                for arg in args.iter() {
+                                    match arg {
+                                        CallArg::Positional(e) | CallArg::Named(_, e, _) => {
+                                            elem_regs.push(self.lower_expr(e, ra, consts, instrs));
+                                        }
+                                        _ => {
+                                            let r = ra.alloc_temp();
+                                            instrs.push(Instruction::abc(OpCode::LoadNil, r, 0, 0));
+                                            elem_regs.push(r);
+                                        }
+                                    }
+                                }
+                                for (i, er) in elem_regs.iter().enumerate() {
+                                    let target = dest + 1 + i as u8;
+                                    if *er != target {
+                                        instrs.push(Instruction::abc(OpCode::Move, target, *er, 0));
+                                    }
+                                }
+                                instrs.push(Instruction::abc(
+                                    OpCode::NewTuple,
+                                    dest,
+                                    args.len() as u8,
+                                    0,
+                                ));
+                                dest
                             };
 
                             let dest = ra.alloc_temp();
@@ -3977,6 +4918,19 @@ impl<'a> Lowerer<'a> {
                         } else if let Stmt::Return(rs) = s {
                             let val = self.lower_expr(&rs.value, ra, consts, instrs);
                             instrs.push(Instruction::abc(OpCode::Return, val, 1, 0));
+                        } else if let Stmt::Match(ms) = s {
+                            // Match as expression: convert to MatchExpr
+                            let match_expr = Expr::MatchExpr {
+                                subject: Box::new(ms.subject.clone()),
+                                arms: ms.arms.clone(),
+                                span: ms.span,
+                            };
+                            let val = self.lower_expr(&match_expr, ra, consts, instrs);
+                            instrs.push(Instruction::abc(OpCode::Move, dest, val, 0));
+                        } else if let Stmt::For(fs) = s {
+                            // For-as-expression: collect body results into a list
+                            instrs.push(Instruction::abc(OpCode::NewList, dest, 0, 0));
+                            self.lower_for_as_expr(fs, dest, ra, consts, instrs);
                         } else {
                             self.lower_stmt(s, ra, consts, instrs);
                             instrs.push(Instruction::abc(OpCode::LoadNil, dest, 0, 0));
@@ -4427,7 +5381,20 @@ fn collect_free_idents_expr(expr: &Expr, out: &mut Vec<String>) {
 fn collect_free_idents_stmt(stmt: &Stmt, out: &mut Vec<String>) {
     match stmt {
         Stmt::Let(ls) => collect_free_idents_expr(&ls.value, out),
-        Stmt::Assign(a) => collect_free_idents_expr(&a.value, out),
+        Stmt::Assign(a) => {
+            collect_free_idents_expr(&a.value, out);
+            // Also collect free idents from Index/Field target base expressions
+            match &a.target {
+                AssignTarget::Index(base, idx) => {
+                    collect_free_idents_expr(base, out);
+                    collect_free_idents_expr(idx, out);
+                }
+                AssignTarget::Field(base, _) => {
+                    collect_free_idents_expr(base, out);
+                }
+                AssignTarget::Variable(_) => {}
+            }
+        }
         Stmt::Return(r) => collect_free_idents_expr(&r.value, out),
         Stmt::Halt(h) => collect_free_idents_expr(&h.message, out),
         Stmt::Expr(e) => collect_free_idents_expr(&e.expr, out),
@@ -4471,7 +5438,19 @@ fn collect_free_idents_stmt(stmt: &Stmt, out: &mut Vec<String>) {
                 }
             }
         }
-        Stmt::CompoundAssign(ca) => collect_free_idents_expr(&ca.value, out),
+        Stmt::CompoundAssign(ca) => {
+            collect_free_idents_expr(&ca.value, out);
+            match &ca.target {
+                AssignTarget::Index(base, idx) => {
+                    collect_free_idents_expr(base, out);
+                    collect_free_idents_expr(idx, out);
+                }
+                AssignTarget::Field(base, _) => {
+                    collect_free_idents_expr(base, out);
+                }
+                AssignTarget::Variable(_) => {}
+            }
+        }
         Stmt::Defer(ds) => {
             for s in &ds.body {
                 collect_free_idents_stmt(s, out);

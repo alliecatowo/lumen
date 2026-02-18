@@ -1,0 +1,13 @@
+cell check(x: Int) -> String
+  if x < 0
+    return "negative"
+  end
+  if x == 0
+    return "zero"
+  end
+  "positive"
+end
+
+cell main() -> String
+  check(-1)
+end

@@ -1,0 +1,85 @@
+# Fannkuch-Redux benchmark, N=10
+# Uses direct index assignment (list[i] = val) for O(1) element updates.
+
+cell main() -> String
+  let n = 10
+  let mut perm = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  let mut perm1 = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  let mut count = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  let mut max_flips = 0
+  let mut checksum = 0
+  let mut r = n
+  let mut perm_count = 0
+  let mut done = false
+
+  while done == false
+    # Set counts
+    while r > 1
+      count[r - 1] = r
+      r = r - 1
+    end
+
+    # Copy perm1 to perm
+    let mut i = 0
+    while i < n
+      perm[i] = perm1[i]
+      i = i + 1
+    end
+
+    # Count flips
+    let mut flips = 0
+    let mut k = perm[0]
+    while k != 0
+      # Reverse prefix 0..k in-place via swaps
+      let mut lo = 0
+      let mut hi = k
+      while lo < hi
+        let t = perm[lo]
+        perm[lo] = perm[hi]
+        perm[hi] = t
+        lo = lo + 1
+        hi = hi - 1
+      end
+      flips = flips + 1
+      k = perm[0]
+    end
+
+    if flips > max_flips
+      max_flips = flips
+    end
+    if perm_count % 2 == 0
+      checksum = checksum + flips
+    else
+      checksum = checksum - flips
+    end
+    perm_count = perm_count + 1
+
+    # Next permutation
+    let mut found_next = false
+    while found_next == false
+      if r == n
+        done = true
+        found_next = true
+      else
+        # Rotate left perm1[0..r] in-place
+        let p0 = perm1[0]
+        let mut j = 0
+        while j < r
+          perm1[j] = perm1[j + 1]
+          j = j + 1
+        end
+        perm1[r] = p0
+        count[r] = count[r] - 1
+        if count[r] > 0
+          found_next = true
+        else
+          r = r + 1
+        end
+      end
+    end
+  end
+
+  print(to_string(checksum))
+  print("Pfannkuchen(" + to_string(n) + ") = " + to_string(max_flips))
+  "done"
+end

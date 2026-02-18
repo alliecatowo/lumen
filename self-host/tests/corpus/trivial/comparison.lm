@@ -1,0 +1,6 @@
+# Comparison operators
+cell main() -> Bool
+  let a = 10
+  let b = 20
+  a < b
+end

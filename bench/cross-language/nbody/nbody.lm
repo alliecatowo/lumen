@@ -1,0 +1,103 @@
+# N-body gravitational simulation — 5-body solar system
+# Flat parallel arrays with index assignment for in-place updates.
+# Correct symmetric force updates matching the C reference.
+# Step count = 50,000 (interpreter-friendly; C uses 1,000,000).
+
+cell energy(x: list[Float], y: list[Float], z: list[Float], vx: list[Float], vy: list[Float], vz: list[Float], mass: list[Float]) -> Float
+  let mut e = 0.0
+  let mut i = 0
+  while i < 5
+    e = e + 0.5 * mass[i] * (vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i])
+    let mut j = i + 1
+    while j < 5
+      let dx = x[i] - x[j]
+      let dy = y[i] - y[j]
+      let dz = z[i] - z[j]
+      let dist = sqrt(dx * dx + dy * dy + dz * dz)
+      e = e - mass[i] * mass[j] / dist
+      j = j + 1
+    end
+    i = i + 1
+  end
+  return e
+end
+
+cell advance(x: list[Float], y: list[Float], z: list[Float], vx: list[Float], vy: list[Float], vz: list[Float], mass: list[Float], steps: Int) -> String
+  let dt = 0.01
+  let mut s = 0
+  while s < steps
+    # Step 1: update velocities from pairwise forces (symmetric)
+    let mut i = 0
+    while i < 5
+      let mut j = i + 1
+      while j < 5
+        let dx = x[i] - x[j]
+        let dy = y[i] - y[j]
+        let dz = z[i] - z[j]
+        let d2 = dx * dx + dy * dy + dz * dz
+        let dist = sqrt(d2)
+        let mag = dt / (d2 * dist)
+        # Body i pushed by j
+        vx[i] = vx[i] - dx * mass[j] * mag
+        vy[i] = vy[i] - dy * mass[j] * mag
+        vz[i] = vz[i] - dz * mass[j] * mag
+        # Body j pushed by i (symmetric, opposite sign)
+        vx[j] = vx[j] + dx * mass[i] * mag
+        vy[j] = vy[j] + dy * mass[i] * mag
+        vz[j] = vz[j] + dz * mass[i] * mag
+        j = j + 1
+      end
+      i = i + 1
+    end
+    # Step 2: update positions
+    i = 0
+    while i < 5
+      x[i] = x[i] + dt * vx[i]
+      y[i] = y[i] + dt * vy[i]
+      z[i] = z[i] + dt * vz[i]
+      i = i + 1
+    end
+    s = s + 1
+  end
+  return to_string(energy(x, y, z, vx, vy, vz, mass))
+end
+
+cell main() -> String
+  let pi = 3.141592653589793
+  let sm = 4.0 * pi * pi
+  let dpy = 365.24
+
+  # Positions
+  let mut x = [0.0, 4.84143144246472090, 8.34336671824457987, 12.8943695621391310, 15.3796971148509165]
+  let mut y = [0.0, 0.0 - 1.16032004402742839, 4.12479856412430479, 0.0 - 15.1111514016986312, 0.0 - 25.9193146099879641]
+  let mut z = [0.0, 0.0 - 0.103622044471123109, 0.0 - 0.403523417114321381, 0.0 - 0.223307578892655734, 0.179258772950371181]
+
+  # Velocities (pre-multiplied by DAYS_PER_YEAR)
+  let mut vx = [0.0, 1.66007664274403694e-03 * dpy, 0.0 - 2.76742510726862411e-03 * dpy, 2.96460137564761618e-03 * dpy, 2.68067772490389322e-03 * dpy]
+  let mut vy = [0.0, 7.69901118419740425e-03 * dpy, 4.99852801234917238e-03 * dpy, 2.37847173959480950e-03 * dpy, 1.62824170038242295e-03 * dpy]
+  let mut vz = [0.0, 0.0 - 6.90460016972063023e-05 * dpy, 2.30417297573763929e-05 * dpy, 0.0 - 2.96589568540237556e-05 * dpy, 0.0 - 9.51592254519715870e-05 * dpy]
+
+  # Masses (pre-multiplied by SOLAR_MASS)
+  let mass = [sm, 9.54791938424326609e-04 * sm, 2.85885980666130812e-04 * sm, 4.36624404335156298e-05 * sm, 5.15138902046611451e-05 * sm]
+
+  # Offset momentum: sun velocity = -sum(v[i]*mass[i]) / SOLAR_MASS
+  let mut px = 0.0
+  let mut py = 0.0
+  let mut pz = 0.0
+  let mut i = 0
+  while i < 5
+    px = px + vx[i] * mass[i]
+    py = py + vy[i] * mass[i]
+    pz = pz + vz[i] * mass[i]
+    i = i + 1
+  end
+  vx[0] = 0.0 - px / sm
+  vy[0] = 0.0 - py / sm
+  vz[0] = 0.0 - pz / sm
+
+  let e0 = to_string(energy(x, y, z, vx, vy, vz, mass))
+  print(e0)
+  let e1 = advance(x, y, z, vx, vy, vz, mass, 50000)
+  print(e1)
+  return "done"
+end

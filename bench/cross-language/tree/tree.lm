@@ -1,0 +1,29 @@
+# Binary tree — build + traverse depth 18
+enum Node
+  Leaf(value: Int)
+  Branch(left: Node, right: Node)
+end
+
+cell build_tree(depth: Int) -> Node
+  if depth <= 0
+    return Leaf(value: 1)
+  end
+  return Branch(
+    left: build_tree(depth - 1),
+    right: build_tree(depth - 1)
+  )
+end
+
+cell check_tree(node: Node) -> Int
+  match node
+    Leaf(v) -> v
+    Branch((left, right)) -> check_tree(left) + check_tree(right)
+  end
+end
+
+cell main() -> Null
+  let tree = build_tree(18)
+  let checksum = check_tree(tree)
+  print("Checksum: " + to_string(checksum))
+  return null
+end

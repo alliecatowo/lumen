@@ -1,0 +1,4 @@
+# Tuple literal
+cell main() -> tuple[Int, String]
+  (42, "hello")
+end

@@ -34,7 +34,7 @@ const MAX_REGS: usize = 65_536;
 /// distinguish them so that operations like Add dispatch to the correct
 /// implementation (iadd vs string concatenation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum JitVarType {
+pub(crate) enum JitVarType {
     /// 64-bit signed integer.
     Int,
     /// 64-bit IEEE 754 floating point.
@@ -54,6 +54,15 @@ impl JitVarType {
             JitVarType::Float => types::F64,
             // String pointers are i64 on 64-bit targets.
             JitVarType::Str => types::I64,
+        }
+    }
+
+    /// Infer JitVarType from a LIR return-type string (e.g. "Int", "Float", "String").
+    pub(crate) fn from_lir_return_type(s: &str) -> Self {
+        match s {
+            "Float" => JitVarType::Float,
+            "String" => JitVarType::Str,
+            _ => JitVarType::Int,
         }
     }
 }
@@ -78,7 +87,7 @@ impl JitVarType {
 /// # Returns
 ///
 /// Ok(()) on success, or a CodegenError describing what went wrong.
-pub fn lower_cell<M: Module>(
+pub(crate) fn lower_cell<M: Module>(
     ctx: &mut Context,
     fb_ctx: &mut FunctionBuilderContext,
     cell: &LirCell,
@@ -87,6 +96,7 @@ pub fn lower_cell<M: Module>(
     func_id: FuncId,
     func_ids: &HashMap<String, FuncId>,
     string_table: &[String],
+    cell_return_types: &HashMap<String, JitVarType>,
 ) -> Result<(), CodegenError> {
     // Build signature
     let mut sig = module.make_signature();
@@ -1233,7 +1243,25 @@ pub fn lower_cell<M: Module>(
                     var_types.remove(&arg_reg);
                 }
 
-                var_types.insert(base as u32, JitVarType::Int);
+                // Infer return type from callee's declared return type.
+                // The ABI always returns I64 — floats are bitcast to I64 by
+                // the callee's Return handler. So we only need to track Str
+                // (for cleanup) and keep everything else as Int at the
+                // Cranelift level. Float results remain as I64 bits; callers
+                // that need to do further float ops on the result would need
+                // explicit bitcast (not yet implemented).
+                let ret_ty = callee_name
+                    .as_ref()
+                    .and_then(|n| cell_return_types.get(n.as_str()))
+                    .copied()
+                    .unwrap_or(JitVarType::Int);
+                // Only set Str; Float results stay as Int (I64 bits).
+                let effective_ty = if ret_ty == JitVarType::Str {
+                    JitVarType::Str
+                } else {
+                    JitVarType::Int
+                };
+                var_types.insert(base as u32, effective_ty);
             }
             OpCode::TailCall => {
                 let base = inst.a;

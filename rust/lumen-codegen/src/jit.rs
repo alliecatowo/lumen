@@ -1247,6 +1247,7 @@ fn is_cell_jit_compilable(cell: &LirCell) -> bool {
                 | OpCode::BitNot
                 | OpCode::Shl
                 | OpCode::Shr
+                | OpCode::Concat
                 | OpCode::GetField
                 | OpCode::SetField
         )
@@ -1312,18 +1313,10 @@ fn lower_module_jit(
             };
             sig.params.push(AbiParam::new(abi_ty));
         }
-        let ret_ty = cell
-            .returns
-            .as_deref()
-            .map(|s| lir_type_str_to_cl_type(s, pointer_type))
-            .unwrap_or(pointer_type);
-        // Same for return: use I64 for Bool.
-        let abi_ret = if ret_ty == types::I8 {
-            types::I64
-        } else {
-            ret_ty
-        };
-        sig.returns.push(AbiParam::new(abi_ret));
+        // ABI always returns I64. Float results are bitcast to I64 by the
+        // callee's Return handler so that execute_jit_nullary (which
+        // transmutes the fn ptr to `fn() -> i64`) works uniformly.
+        sig.returns.push(AbiParam::new(types::I64));
         let func_id = module
             .declare_function(&cell.name, Linkage::Export, &sig)
             .map_err(|e| {
@@ -1342,6 +1335,19 @@ fn lower_module_jit(
         _retained_cells: Vec::new(), // filled after the loop
     };
 
+    // Build a map of cell name → return type for cross-cell call type inference.
+    let cell_return_types: HashMap<String, crate::ir::JitVarType> = compilable_cells
+        .iter()
+        .map(|c| {
+            let ret_ty = c
+                .returns
+                .as_deref()
+                .map(crate::ir::JitVarType::from_lir_return_type)
+                .unwrap_or(crate::ir::JitVarType::Int);
+            (c.name.clone(), ret_ty)
+        })
+        .collect();
+
     for cell in &compilable_cells {
         let func_id = func_ids[&cell.name];
         let mut ctx = Context::new();
@@ -1359,6 +1365,7 @@ fn lower_module_jit(
             func_id,
             &func_ids,
             &lir.strings,
+            &cell_return_types,
         )?;
 
         // Keep the cell alive so string constant pointers remain valid.
@@ -1394,6 +1401,7 @@ fn lower_cell_jit(
     func_id: FuncId,
     func_ids: &HashMap<String, FuncId>,
     string_table: &[String],
+    cell_return_types: &HashMap<String, crate::ir::JitVarType>,
 ) -> Result<(), CodegenError> {
     // Delegate to the unified IR builder
     crate::ir::lower_cell(
@@ -1405,6 +1413,7 @@ fn lower_cell_jit(
         func_id,
         func_ids,
         string_table,
+        cell_return_types,
     )
 }
 
@@ -3797,7 +3806,7 @@ mod tests {
             .expect("execute");
         assert_ne!(raw, 0, "string pointer should be non-null");
         let s = unsafe { jit_take_string(raw) };
-        assert_eq!(s, "42", "string_concat(42) should be \"42\"");
+        assert_eq!(s, "42", "string_concat(42) should produce \"42\"");
     }
 
     #[test]
@@ -3999,5 +4008,171 @@ mod tests {
         assert_ne!(raw, 0, "string pointer should be non-null");
         let s = unsafe { jit_take_string(raw) };
         assert_eq!(s, "hello", "to_string on a string should pass through");
+    }
+
+    // --- Standalone Concat opcode test ------------------------------------
+
+    #[test]
+    fn jit_string_concat_opcode() {
+        // cell greet() -> String
+        //   r0 = "hello"
+        //   r1 = " world"
+        //   r2 = r0 ++ r1          # Concat(2, 0, 1)
+        //   return r2
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "greet".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 3,
+            constants: vec![
+                Constant::String("hello".to_string()),
+                Constant::String(" world".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Concat, 2, 0, 1),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("greet").expect("execute");
+        assert_ne!(raw, 0, "string pointer should be non-null");
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "hello world", "Concat opcode should concatenate strings");
+    }
+
+    // --- Cross-cell call return type inference tests -----------------------
+
+    #[test]
+    fn jit_cross_cell_call_string_return() {
+        // Test that when main() calls greet() which returns String,
+        // the JIT correctly infers the return type as String (not Int).
+        //
+        // cell greet() -> String
+        //   r0 = "hello"
+        //   r1 = " world"
+        //   r2 = r0 ++ r1          # Concat(2, 0, 1)
+        //   return r2
+        //
+        // cell main() -> String
+        //   r0 = "greet"
+        //   call r0, 0 args       # result in r0, should be typed as String
+        //   return r0
+        let greet_cell = LirCell {
+            name: "greet".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 3,
+            constants: vec![
+                Constant::String("hello".to_string()),
+                Constant::String(" world".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),     // r0 = "hello"
+                Instruction::abx(OpCode::LoadK, 1, 1),     // r1 = " world"
+                Instruction::abc(OpCode::Concat, 2, 0, 1), // r2 = r0 ++ r1
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+
+        let main_cell = LirCell {
+            name: "main".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 2,
+            constants: vec![Constant::String("greet".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),     // r0 = "greet"
+                Instruction::abc(OpCode::Call, 0, 0, 0),   // r0 = greet()
+                Instruction::abc(OpCode::Return, 0, 1, 0), // return r0
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+
+        let lir = make_module_with_cells(vec![greet_cell, main_cell]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("main").expect("execute main");
+        assert_ne!(raw, 0, "string pointer should be non-null");
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(
+            s, "hello world",
+            "cross-cell string return should preserve string type"
+        );
+    }
+
+    #[test]
+    fn jit_cross_cell_call_float_return() {
+        // Test that when main() calls half() which returns Float,
+        // the JIT correctly infers the return type as Float (not Int).
+        //
+        // cell half(x: Int) -> Float
+        //   r1 = to_float(r0)   # Intrinsic(1, 12, 0)
+        //   r2 = 2.0
+        //   r3 = r1 / r2
+        //   return r3
+        //
+        // cell main() -> Float
+        //   r0 = "half"
+        //   r1 = 7
+        //   call r0, 1 arg       # result in r0, should be typed as Float
+        //   return r0
+        let half_cell = LirCell {
+            name: "half".to_string(),
+            params: vec![LirParam {
+                name: "x".to_string(),
+                ty: "Int".to_string(),
+                register: 0,
+                variadic: false,
+            }],
+            returns: Some("Float".to_string()),
+            registers: 4,
+            constants: vec![Constant::Float(2.0)],
+            instructions: vec![
+                Instruction::abc(OpCode::Intrinsic, 1, 12, 0), // r1 = to_float(r0)
+                Instruction::abx(OpCode::LoadK, 2, 0),         // r2 = 2.0
+                Instruction::abc(OpCode::Div, 3, 1, 2),        // r3 = r1 / r2
+                Instruction::abc(OpCode::Return, 3, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+
+        let main_cell = LirCell {
+            name: "main".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 3,
+            constants: vec![Constant::String("half".to_string()), Constant::Int(7)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),     // r0 = "half"
+                Instruction::abx(OpCode::LoadK, 1, 1),     // r1 = 7
+                Instruction::abc(OpCode::Call, 0, 1, 1),   // r0 = half(7)
+                Instruction::abc(OpCode::Return, 0, 1, 0), // return r0
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+
+        let lir = make_module_with_cells(vec![half_cell, main_cell]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("main").expect("execute main");
+        let result = f64::from_bits(raw as u64);
+        assert!(
+            (result - 3.5).abs() < 1e-10,
+            "half(7) should return 3.5, got {result}"
+        );
     }
 }

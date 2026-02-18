@@ -76,17 +76,10 @@ pub fn compile_object_module(
             };
             sig.params.push(AbiParam::new(abi_ty));
         }
-        let ret_ty = cell
-            .returns
-            .as_deref()
-            .map(|s| lir_type_str_to_cl_type(s, pointer_type))
-            .unwrap_or(pointer_type);
-        let abi_ret = if ret_ty == cranelift_codegen::ir::types::I8 {
-            cranelift_codegen::ir::types::I64
-        } else {
-            ret_ty
-        };
-        sig.returns.push(AbiParam::new(abi_ret));
+        // ABI always returns I64. Float results are bitcast to I64 by the
+        // callee's Return handler for uniform calling convention.
+        sig.returns
+            .push(AbiParam::new(cranelift_codegen::ir::types::I64));
         let func_id = module
             .declare_function(&cell.name, Linkage::Export, &sig)
             .map_err(|e| {
@@ -94,6 +87,20 @@ pub fn compile_object_module(
             })?;
         func_ids.insert(cell.name.clone(), func_id);
     }
+
+    // Build a map of cell name → return type for cross-cell call type inference.
+    let cell_return_types: HashMap<String, crate::ir::JitVarType> = lir
+        .cells
+        .iter()
+        .map(|c| {
+            let ret_ty = c
+                .returns
+                .as_deref()
+                .map(crate::ir::JitVarType::from_lir_return_type)
+                .unwrap_or(crate::ir::JitVarType::Int);
+            (c.name.clone(), ret_ty)
+        })
+        .collect();
 
     // Second pass: lower each cell body using ir::lower_cell.
     let mut fb_ctx = FunctionBuilderContext::new();
@@ -114,6 +121,7 @@ pub fn compile_object_module(
             func_id,
             &func_ids,
             &lir.strings,
+            &cell_return_types,
         )?;
     }
 

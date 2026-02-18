@@ -31,7 +31,7 @@ features:
     details: Tools, grants, agents, pipelines, state machines, and orchestration are first-class language features with effect tracking.
   - icon: "⚡"
     title: Deterministic Runtime
-    details: Explicit effects, controlled nondeterminism, and reproducible execution for auditable AI workflows. 1180+ tests passing.
+    details: Explicit effects, controlled nondeterminism, and reproducible execution for auditable AI workflows. 5,300+ tests passing.
   - icon: "🌐"
     title: WASM Ready
     details: Compile to WebAssembly for browser execution or edge deployment with zero external dependencies.

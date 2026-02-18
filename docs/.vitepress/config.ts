@@ -179,9 +179,21 @@ export default defineConfig({
           text: "Guides",
           items: [
             { text: "CLI Reference", link: "/guide/cli" },
+            { text: "Wares Registry", link: "/CLI" },
             { text: "Editor Support", link: "/guide/editors" },
             { text: "Configuration", link: "/guide/configuration" },
             { text: "Tool Providers", link: "/guide/providers" },
+            { text: "Security & Trust", link: "/guide/security" },
+            { text: "WASM Deployment", link: "/guide/wasm-browser" },
+          ],
+        },
+        {
+          text: "Architecture",
+          items: [
+            { text: "System Architecture", link: "/ARCHITECTURE" },
+            { text: "Runtime Semantics", link: "/RUNTIME" },
+            { text: "Design Decisions", link: "/DESIGN_DECISIONS" },
+            { text: "WASM Strategy", link: "/WASM_STRATEGY" },
           ],
         },
       ],

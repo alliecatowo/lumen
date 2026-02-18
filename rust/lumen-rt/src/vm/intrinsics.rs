@@ -404,8 +404,61 @@ impl VM {
             "sort" => {
                 let arg = std::mem::take(&mut self.registers[base + a + 1]);
                 if let Value::List(mut l) = arg {
-                    Arc::make_mut(&mut l).sort();
-                    Ok(Value::List(l))
+                    // Homogeneous sort specialization: check if all elements are the same type
+                    // and use fast-path sorting for Int/Float/String
+                    if !l.is_empty() {
+                        let first_is_int = matches!(l[0], Value::Int(_));
+                        let first_is_float = matches!(l[0], Value::Float(_));
+                        let first_is_string_owned =
+                            matches!(l[0], Value::String(StringRef::Owned(_)));
+
+                        if first_is_int && l.iter().all(|v| matches!(v, Value::Int(_))) {
+                            // Fast path: homogeneous Int list
+                            let mut ints: Vec<i64> = l
+                                .iter()
+                                .map(|v| if let Value::Int(n) = v { *n } else { 0 })
+                                .collect();
+                            ints.sort_unstable();
+                            let sorted: Vec<Value> = ints.into_iter().map(Value::Int).collect();
+                            Ok(Value::new_list(sorted))
+                        } else if first_is_float && l.iter().all(|v| matches!(v, Value::Float(_))) {
+                            // Fast path: homogeneous Float list
+                            let mut floats: Vec<f64> = l
+                                .iter()
+                                .map(|v| if let Value::Float(f) = v { *f } else { 0.0 })
+                                .collect();
+                            floats.sort_by(|a, b| a.total_cmp(b));
+                            let sorted: Vec<Value> = floats.into_iter().map(Value::Float).collect();
+                            Ok(Value::new_list(sorted))
+                        } else if first_is_string_owned
+                            && l.iter()
+                                .all(|v| matches!(v, Value::String(StringRef::Owned(_))))
+                        {
+                            // Fast path: homogeneous owned String list
+                            let mut strings: Vec<String> = l
+                                .iter()
+                                .map(|v| {
+                                    if let Value::String(StringRef::Owned(s)) = v {
+                                        s.clone()
+                                    } else {
+                                        String::new()
+                                    }
+                                })
+                                .collect();
+                            strings.sort_unstable();
+                            let sorted: Vec<Value> = strings
+                                .into_iter()
+                                .map(|s| Value::String(StringRef::Owned(s)))
+                                .collect();
+                            Ok(Value::new_list(sorted))
+                        } else {
+                            // Fall back to general Value::cmp for mixed types or interned strings
+                            Arc::make_mut(&mut l).sort();
+                            Ok(Value::List(l))
+                        }
+                    } else {
+                        Ok(Value::List(l))
+                    }
                 } else {
                     Ok(arg)
                 }

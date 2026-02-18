@@ -1,0 +1,798 @@
+[1;32m   Compiling[0m tree.lm
+[1;32m    Emitting[0m LIR to stdout
+{
+  "version": "1.0.0",
+  "doc_hash": "sha256:14d53d0d744f6b2f3b99bba7f64b363db65dd1e98c13e80d8cfdcceea549da44",
+  "strings": [
+    "Node",
+    "Leaf",
+    "Branch",
+    "build_tree",
+    "check_tree",
+    "main"
+  ],
+  "types": [
+    {
+      "kind": "enum",
+      "name": "Node",
+      "fields": [],
+      "variants": [
+        {
+          "name": "Leaf",
+          "payload": "Int"
+        },
+        {
+          "name": "Branch",
+          "payload": "(Node, Node)"
+        }
+      ]
+    }
+  ],
+  "cells": [
+    {
+      "name": "build_tree",
+      "params": [
+        {
+          "name": "depth",
+          "type": "Int",
+          "register": 0,
+          "variadic": false
+        }
+      ],
+      "returns": "Node",
+      "registers": 18,
+      "constants": [
+        {
+          "Int": 0
+        },
+        {
+          "Int": 1
+        },
+        {
+          "String": "Leaf"
+        },
+        {
+          "String": "build_tree"
+        },
+        {
+          "Int": 1
+        },
+        {
+          "String": "build_tree"
+        },
+        {
+          "Int": 1
+        },
+        {
+          "String": "Branch"
+        }
+      ],
+      "instructions": [
+        {
+          "op": "LoadK",
+          "pad": 0,
+          "a": 1,
+          "b": 0,
+          "c": 0
+        },
+        {
+          "op": "Le",
+          "pad": 0,
+          "a": 2,
+          "b": 0,
+          "c": 1
+        },
+        {
+          "op": "Test",
+          "pad": 0,
+          "a": 2,
+          "b": 0,
+          "c": 0
+        },
+        {
+          "op": "Jmp",
+          "pad": 0,
+          "a": 0,
+          "b": 0,
+          "c": 4
+        },
+        {
+          "op": "LoadK",
+          "pad": 0,
+          "a": 5,
+          "b": 0,
+          "c": 1
+        },
+        {
+          "op": "LoadK",
+          "pad": 0,
+          "a": 7,
+          "b": 0,
+          "c": 2
+        },
+        {
+          "op": "NewUnion",
+          "pad": 0,
+          "a": 6,
+          "b": 7,
+          "c": 5
+        },
+        {
+          "op": "Return",
+          "pad": 0,
+          "a": 6,
+          "b": 1,
+          "c": 0
+        },
+        {
+          "op": "LoadK",
+          "pad": 0,
+          "a": 7,
+          "b": 0,
+          "c": 3
+        },
+        {
+          "op": "LoadK",
+          "pad": 0,
+          "a": 6,
+          "b": 0,
+          "c": 4
+        },
+        {
+          "op": "Sub",
+          "pad": 0,
+          "a": 5,
+          "b": 0,
+          "c": 6
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 11,
+          "b": 7,
+          "c": 0
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 12,
+          "b": 5,
+          "c": 0
+        },
+        {
+          "op": "Call",
+          "pad": 0,
+          "a": 11,
+          "b": 1,
+          "c": 1
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 4,
+          "b": 11,
+          "c": 0
+        },
+        {
+          "op": "LoadK",
+          "pad": 0,
+          "a": 3,
+          "b": 0,
+          "c": 5
+        },
+        {
+          "op": "LoadK",
+          "pad": 0,
+          "a": 2,
+          "b": 0,
+          "c": 6
+        },
+        {
+          "op": "Sub",
+          "pad": 0,
+          "a": 1,
+          "b": 0,
+          "c": 2
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 13,
+          "b": 3,
+          "c": 0
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 14,
+          "b": 1,
+          "c": 0
+        },
+        {
+          "op": "Call",
+          "pad": 0,
+          "a": 13,
+          "b": 1,
+          "c": 1
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 15,
+          "b": 13,
+          "c": 0
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 9,
+          "b": 4,
+          "c": 0
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 10,
+          "b": 15,
+          "c": 0
+        },
+        {
+          "op": "NewTuple",
+          "pad": 0,
+          "a": 8,
+          "b": 2,
+          "c": 0
+        },
+        {
+          "op": "LoadK",
+          "pad": 0,
+          "a": 17,
+          "b": 0,
+          "c": 7
+        },
+        {
+          "op": "NewUnion",
+          "pad": 0,
+          "a": 16,
+          "b": 17,
+          "c": 8
+        },
+        {
+          "op": "Return",
+          "pad": 0,
+          "a": 16,
+          "b": 1,
+          "c": 0
+        }
+      ],
+      "effect_handler_metas": []
+    },
+    {
+      "name": "check_tree",
+      "params": [
+        {
+          "name": "node",
+          "type": "Node",
+          "register": 0,
+          "variadic": false
+        }
+      ],
+      "returns": "Int",
+      "registers": 25,
+      "constants": [
+        {
+          "String": "Tuple"
+        },
+        {
+          "Int": 2
+        },
+        {
+          "Int": 0
+        },
+        {
+          "Int": 1
+        },
+        {
+          "String": "check_tree"
+        },
+        {
+          "String": "check_tree"
+        }
+      ],
+      "instructions": [
+        {
+          "op": "IsVariant",
+          "pad": 0,
+          "a": 0,
+          "b": 0,
+          "c": 1
+        },
+        {
+          "op": "Jmp",
+          "pad": 0,
+          "a": 0,
+          "b": 0,
+          "c": 4
+        },
+        {
+          "op": "Unbox",
+          "pad": 0,
+          "a": 2,
+          "b": 0,
+          "c": 0
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 3,
+          "b": 2,
+          "c": 0
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 1,
+          "b": 3,
+          "c": 0
+        },
+        {
+          "op": "Jmp",
+          "pad": 0,
+          "a": 0,
+          "b": 0,
+          "c": 31
+        },
+        {
+          "op": "IsVariant",
+          "pad": 0,
+          "a": 0,
+          "b": 0,
+          "c": 2
+        },
+        {
+          "op": "Jmp",
+          "pad": 0,
+          "a": 0,
+          "b": 0,
+          "c": 29
+        },
+        {
+          "op": "Unbox",
+          "pad": 0,
+          "a": 4,
+          "b": 0,
+          "c": 0
+        },
+        {
+          "op": "LoadK",
+          "pad": 0,
+          "a": 5,
+          "b": 0,
+          "c": 0
+        },
+        {
+          "op": "Is",
+          "pad": 0,
+          "a": 6,
+          "b": 4,
+          "c": 5
+        },
+        {
+          "op": "Test",
+          "pad": 0,
+          "a": 6,
+          "b": 0,
+          "c": 0
+        },
+        {
+          "op": "Jmp",
+          "pad": 0,
+          "a": 0,
+          "b": 0,
+          "c": 24
+        },
+        {
+          "op": "Intrinsic",
+          "pad": 0,
+          "a": 7,
+          "b": 0,
+          "c": 4
+        },
+        {
+          "op": "LoadK",
+          "pad": 0,
+          "a": 8,
+          "b": 0,
+          "c": 1
+        },
+        {
+          "op": "Eq",
+          "pad": 0,
+          "a": 9,
+          "b": 7,
+          "c": 8
+        },
+        {
+          "op": "Test",
+          "pad": 0,
+          "a": 9,
+          "b": 0,
+          "c": 0
+        },
+        {
+          "op": "Jmp",
+          "pad": 0,
+          "a": 0,
+          "b": 0,
+          "c": 19
+        },
+        {
+          "op": "LoadK",
+          "pad": 0,
+          "a": 10,
+          "b": 0,
+          "c": 2
+        },
+        {
+          "op": "GetIndex",
+          "pad": 0,
+          "a": 11,
+          "b": 4,
+          "c": 10
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 12,
+          "b": 11,
+          "c": 0
+        },
+        {
+          "op": "LoadK",
+          "pad": 0,
+          "a": 13,
+          "b": 0,
+          "c": 3
+        },
+        {
+          "op": "GetIndex",
+          "pad": 0,
+          "a": 14,
+          "b": 4,
+          "c": 13
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 15,
+          "b": 14,
+          "c": 0
+        },
+        {
+          "op": "LoadK",
+          "pad": 0,
+          "a": 16,
+          "b": 0,
+          "c": 4
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 17,
+          "b": 16,
+          "c": 0
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 18,
+          "b": 12,
+          "c": 0
+        },
+        {
+          "op": "Call",
+          "pad": 0,
+          "a": 17,
+          "b": 1,
+          "c": 1
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 19,
+          "b": 17,
+          "c": 0
+        },
+        {
+          "op": "LoadK",
+          "pad": 0,
+          "a": 20,
+          "b": 0,
+          "c": 5
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 21,
+          "b": 20,
+          "c": 0
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 22,
+          "b": 15,
+          "c": 0
+        },
+        {
+          "op": "Call",
+          "pad": 0,
+          "a": 21,
+          "b": 1,
+          "c": 1
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 23,
+          "b": 21,
+          "c": 0
+        },
+        {
+          "op": "Add",
+          "pad": 0,
+          "a": 24,
+          "b": 19,
+          "c": 23
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 1,
+          "b": 24,
+          "c": 0
+        },
+        {
+          "op": "Jmp",
+          "pad": 0,
+          "a": 0,
+          "b": 0,
+          "c": 0
+        },
+        {
+          "op": "Return",
+          "pad": 0,
+          "a": 1,
+          "b": 1,
+          "c": 0
+        }
+      ],
+      "effect_handler_metas": []
+    },
+    {
+      "name": "main",
+      "params": [],
+      "returns": "Null",
+      "registers": 21,
+      "constants": [
+        {
+          "String": "build_tree"
+        },
+        {
+          "Int": 18
+        },
+        {
+          "String": "check_tree"
+        },
+        {
+          "String": "print"
+        },
+        {
+          "String": "Checksum: "
+        },
+        {
+          "String": "to_string"
+        }
+      ],
+      "instructions": [
+        {
+          "op": "LoadK",
+          "pad": 0,
+          "a": 0,
+          "b": 0,
+          "c": 0
+        },
+        {
+          "op": "LoadK",
+          "pad": 0,
+          "a": 1,
+          "b": 0,
+          "c": 1
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 2,
+          "b": 0,
+          "c": 0
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 3,
+          "b": 1,
+          "c": 0
+        },
+        {
+          "op": "Call",
+          "pad": 0,
+          "a": 2,
+          "b": 1,
+          "c": 1
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 4,
+          "b": 2,
+          "c": 0
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 5,
+          "b": 4,
+          "c": 0
+        },
+        {
+          "op": "LoadK",
+          "pad": 0,
+          "a": 6,
+          "b": 0,
+          "c": 2
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 7,
+          "b": 6,
+          "c": 0
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 8,
+          "b": 5,
+          "c": 0
+        },
+        {
+          "op": "Call",
+          "pad": 0,
+          "a": 7,
+          "b": 1,
+          "c": 1
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 9,
+          "b": 7,
+          "c": 0
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 10,
+          "b": 9,
+          "c": 0
+        },
+        {
+          "op": "LoadK",
+          "pad": 0,
+          "a": 11,
+          "b": 0,
+          "c": 3
+        },
+        {
+          "op": "LoadK",
+          "pad": 0,
+          "a": 12,
+          "b": 0,
+          "c": 4
+        },
+        {
+          "op": "LoadK",
+          "pad": 0,
+          "a": 13,
+          "b": 0,
+          "c": 5
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 14,
+          "b": 13,
+          "c": 0
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 15,
+          "b": 10,
+          "c": 0
+        },
+        {
+          "op": "Call",
+          "pad": 0,
+          "a": 14,
+          "b": 1,
+          "c": 1
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 16,
+          "b": 14,
+          "c": 0
+        },
+        {
+          "op": "Add",
+          "pad": 0,
+          "a": 17,
+          "b": 12,
+          "c": 16
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 18,
+          "b": 11,
+          "c": 0
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 19,
+          "b": 17,
+          "c": 0
+        },
+        {
+          "op": "Call",
+          "pad": 0,
+          "a": 18,
+          "b": 1,
+          "c": 1
+        },
+        {
+          "op": "Move",
+          "pad": 0,
+          "a": 20,
+          "b": 18,
+          "c": 0
+        },
+        {
+          "op": "LoadNil",
+          "pad": 0,
+          "a": 20,
+          "b": 0,
+          "c": 0
+        },
+        {
+          "op": "Return",
+          "pad": 0,
+          "a": 20,
+          "b": 1,
+          "c": 0
+        }
+      ],
+      "effect_handler_metas": []
+    }
+  ],
+  "tools": [],
+  "policies": [],
+  "agents": [],
+  "addons": [],
+  "effects": [],
+  "effect_binds": [],
+  "handlers": []
+}

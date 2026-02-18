@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
     Copy,
     PartialEq,
     Eq,
+    Hash,
     Serialize,
     Deserialize,
     strum_macros::EnumIter,

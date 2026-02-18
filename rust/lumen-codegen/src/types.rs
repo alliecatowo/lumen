@@ -1,4 +1,12 @@
 //! Mapping from Lumen types to Cranelift IR types.
+//!
+//! With NaN-boxing, ALL values are stored as I64 in registers:
+//!   Int   -> I64  (NaN-boxed: `(val << 1) | 1`)
+//!   Float -> I64  (NaN-boxed: raw f64 bits bitcast to i64)
+//!   Bool  -> I64  (NaN-boxed: quiet NaN payloads)
+//!   Null  -> I64  (NaN-boxed: canonical quiet NaN sentinel)
+//!
+//! Heap-allocated types (String, List, etc.) are also I64 (raw pointers).
 
 use cranelift_codegen::ir::types;
 use cranelift_codegen::ir::Type as ClifType;
@@ -6,22 +14,16 @@ use lumen_compiler::compiler::typecheck::Type as LumenType;
 
 /// Convert a Lumen type to the corresponding Cranelift IR type.
 ///
-/// Primitive scalars map directly:
-///   Int   -> I64
-///   Float -> F64
-///   Bool  -> I8 (Cranelift has no i1)
-///
-/// All heap-allocated / complex types (String, List, Map, Record, etc.)
-/// are represented as opaque pointers (I64 on 64-bit targets) for now.
-/// A future GC/runtime integration pass will refine these.
+/// With NaN-boxing, every value is uniformly represented as I64.
+/// The `pointer_type` parameter is kept for API compatibility but
+/// all types map to I64 on 64-bit targets.
 pub fn lumen_type_to_cl_type(ty: &LumenType, pointer_type: ClifType) -> ClifType {
     match ty {
         LumenType::Int => types::I64,
-        LumenType::Float => types::F64,
-        LumenType::Bool => types::I8,
-        // Null is a sentinel integer value (0).
+        LumenType::Float => types::I64, // NaN-boxed: f64 bits as i64
+        LumenType::Bool => types::I64,  // NaN-boxed: quiet NaN payloads
         LumenType::Null => types::I64,
-        // Everything else is a pointer to a heap object.
+        // Everything else is a pointer to a heap object (also I64).
         LumenType::String
         | LumenType::Bytes
         | LumenType::Json
@@ -42,13 +44,12 @@ pub fn lumen_type_to_cl_type(ty: &LumenType, pointer_type: ClifType) -> ClifType
 
 /// Parse a Lumen type string (as stored in LIR metadata) into a Cranelift type.
 ///
-/// LIR cells carry return types as plain strings like "Int", "Float", "Bool", etc.
-/// This provides a quick mapping for the common cases used during lowering.
+/// With NaN-boxing, Int/Float/Bool/Null all become I64.
 pub fn lir_type_str_to_cl_type(ty_str: &str, pointer_type: ClifType) -> ClifType {
     match ty_str {
         "Int" => types::I64,
-        "Float" => types::F64,
-        "Bool" => types::I8,
+        "Float" => types::I64, // NaN-boxed
+        "Bool" => types::I64,  // NaN-boxed
         "Null" => types::I64,
         _ => pointer_type,
     }
@@ -62,9 +63,10 @@ mod tests {
 
     #[test]
     fn primitive_type_mapping() {
+        // With NaN-boxing, all primitives are I64
         assert_eq!(lumen_type_to_cl_type(&LumenType::Int, PTR), types::I64);
-        assert_eq!(lumen_type_to_cl_type(&LumenType::Float, PTR), types::F64);
-        assert_eq!(lumen_type_to_cl_type(&LumenType::Bool, PTR), types::I8);
+        assert_eq!(lumen_type_to_cl_type(&LumenType::Float, PTR), types::I64);
+        assert_eq!(lumen_type_to_cl_type(&LumenType::Bool, PTR), types::I64);
         assert_eq!(lumen_type_to_cl_type(&LumenType::Null, PTR), types::I64);
     }
 
@@ -91,9 +93,10 @@ mod tests {
 
     #[test]
     fn lir_string_type_mapping() {
+        // With NaN-boxing, Float and Bool also map to I64
         assert_eq!(lir_type_str_to_cl_type("Int", PTR), types::I64);
-        assert_eq!(lir_type_str_to_cl_type("Float", PTR), types::F64);
-        assert_eq!(lir_type_str_to_cl_type("Bool", PTR), types::I8);
+        assert_eq!(lir_type_str_to_cl_type("Float", PTR), types::I64);
+        assert_eq!(lir_type_str_to_cl_type("Bool", PTR), types::I64);
         assert_eq!(lir_type_str_to_cl_type("String", PTR), PTR);
         assert_eq!(lir_type_str_to_cl_type("SomeRecord", PTR), PTR);
     }

@@ -1,11 +1,11 @@
 //! Tests for is/as expressions and implicit returns.
 
 use lumen_compiler::compiler::lexer::Lexer;
-use lumen_core::lir::{IntrinsicId, OpCode};
 use lumen_compiler::compiler::lower::lower;
 use lumen_compiler::compiler::parser::Parser;
 use lumen_compiler::compiler::resolve::resolve;
 use lumen_compiler::compiler::typecheck::typecheck;
+use lumen_core::lir::{IntrinsicId, OpCode};
 
 fn compile_to_lir(src: &str) -> lumen_core::lir::LirModule {
     let mut lexer = Lexer::new(src, 1, 0);
@@ -93,7 +93,7 @@ fn as_int_compiles() {
         .expect("should have Intrinsic");
     assert_eq!(
         intr.b,
-        IntrinsicId::ToInt as u8,
+        IntrinsicId::ToInt as u16,
         "should use ToInt intrinsic"
     );
 }
@@ -109,7 +109,7 @@ fn as_float_compiles() {
         .expect("should have Intrinsic for as Float");
     assert_eq!(
         intr.b,
-        IntrinsicId::ToFloat as u8,
+        IntrinsicId::ToFloat as u16,
         "should use ToFloat intrinsic"
     );
 }
@@ -125,7 +125,7 @@ fn as_string_compiles() {
         .expect("should have Intrinsic for as String");
     assert_eq!(
         intr.b,
-        IntrinsicId::ToString as u8,
+        IntrinsicId::ToString as u16,
         "should use ToString intrinsic"
     );
 }

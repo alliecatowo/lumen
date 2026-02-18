@@ -373,7 +373,7 @@ end
     let has_range = main_cell
         .instructions
         .iter()
-        .any(|i| i.op == OpCode::Intrinsic && i.b == IntrinsicId::Range as u8);
+        .any(|i| i.op == OpCode::Intrinsic && i.b == IntrinsicId::Range as u16);
     assert!(has_range, "exclusive range should emit Range intrinsic");
 }
 

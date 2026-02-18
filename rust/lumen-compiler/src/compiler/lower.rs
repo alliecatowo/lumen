@@ -327,7 +327,7 @@ fn is_unary_op(op: OpCode) -> bool {
 /// Check if register `reg` is read between position `start` and the next
 /// write to `reg` or end of basic block. Returns true if the register is
 /// still live (i.e., someone will read it).
-fn is_reg_live_after(instrs: &[Instruction], start: usize, reg: u8) -> bool {
+fn is_reg_live_after(instrs: &[Instruction], start: usize, reg: u16) -> bool {
     for instr in &instrs[start..] {
         // Hit a basic-block boundary — conservatively assume live
         if is_block_boundary(instr.op) {
@@ -390,7 +390,7 @@ fn optimize_move_own(instrs: &mut [Instruction]) {
                 if op == OpCode::Jmp {
                     let offset = instrs[j].sax_val();
                     if offset < 0 {
-                        let target = (j as i32 + 1 + offset) as usize;
+                        let target = (j as i64 + 1 + offset) as usize;
                         if target <= i {
                             // Scan from the jump target through instructions
                             // before the Move at `i`.
@@ -526,7 +526,7 @@ fn instr_writes_to_a(op: OpCode) -> bool {
 }
 
 /// Returns true if the instruction reads the given register.
-fn instr_reads_reg(instr: &Instruction, reg: u8) -> bool {
+fn instr_reads_reg(instr: &Instruction, reg: u16) -> bool {
     let op = instr.op;
     let a = instr.a;
     let b = instr.b;
@@ -636,15 +636,13 @@ fn hoist_loop_invariants(instrs: &mut Vec<Instruction>) {
     let mut loops: Vec<LoopRegion> = Vec::new();
     for (pc, inst) in instrs.iter().enumerate() {
         if matches!(inst.op, OpCode::Jmp | OpCode::Break | OpCode::Continue) {
-            let offset = inst.sax_val();
-            if offset < 0 {
-                let target = (pc as i32 + 1 + offset) as usize;
-                if target < pc {
-                    loops.push(LoopRegion {
-                        header: target,
-                        back_edge: pc,
-                    });
-                }
+            let old_offset = inst.sax_val();
+            let target = (pc as i64 + 1 + old_offset) as usize;
+            if target < pc {
+                loops.push(LoopRegion {
+                    header: target,
+                    back_edge: pc,
+                });
             }
         }
     }
@@ -726,14 +724,14 @@ fn hoist_loop_invariants(instrs: &mut Vec<Instruction>) {
             let inst = *slot;
             if matches!(inst.op, OpCode::Jmp | OpCode::Break | OpCode::Continue) {
                 let old_offset = inst.sax_val();
-                let old_tgt = (i as i32 + 1 + old_offset) as usize;
+                let old_tgt = (i as i64 + 1 + old_offset) as usize;
                 let new_src = if i >= insert_point { i + n } else { i };
                 let new_tgt = if old_tgt >= insert_point {
                     old_tgt + n
                 } else {
                     old_tgt
                 };
-                let new_offset = new_tgt as i32 - new_src as i32 - 1;
+                let new_offset = new_tgt as i64 - new_src as i64 - 1;
                 if new_offset != old_offset {
                     *slot = Instruction::sax(inst.op, new_offset);
                 }
@@ -741,14 +739,14 @@ fn hoist_loop_invariants(instrs: &mut Vec<Instruction>) {
             // HandlePush also uses Ax as a forward offset.
             if inst.op == OpCode::HandlePush {
                 let old_offset = inst.sax_val();
-                let old_tgt = (i as i32 + 1 + old_offset) as usize;
+                let old_tgt = (i as i64 + 1 + old_offset) as usize;
                 let new_src = if i >= insert_point { i + n } else { i };
                 let new_tgt = if old_tgt >= insert_point {
                     old_tgt + n
                 } else {
                     old_tgt
                 };
-                let new_offset = new_tgt as i32 - new_src as i32 - 1;
+                let new_offset = new_tgt as i64 - new_src as i64 - 1;
                 if new_offset != old_offset {
                     *slot = Instruction::sax(inst.op, new_offset);
                 }
@@ -892,12 +890,12 @@ fn strip_nops(instrs: &mut Vec<Instruction>) {
             OpCode::Jmp | OpCode::Break | OpCode::Continue => {
                 let old_offset = inst.sax_val();
                 // Compute old target: ip is pos+1 after fetch, then ip += offset
-                let old_target = (old_pos as i32 + 1 + old_offset) as usize;
+                let old_target = (old_pos as i64 + 1 + old_offset) as usize;
                 // Clamp to valid range for the mapping lookup
                 let old_target_clamped = old_target.min(old_len);
                 let new_pos = old_to_new[old_pos];
                 let new_target = old_to_new[old_target_clamped];
-                let new_offset = new_target as i32 - new_pos as i32 - 1;
+                let new_offset = new_target as i64 - new_pos as i64 - 1;
                 if new_offset != old_offset {
                     instrs[old_pos] = Instruction::sax(inst.op, new_offset);
                 }
@@ -913,7 +911,7 @@ fn strip_nops(instrs: &mut Vec<Instruction>) {
                 let new_target = old_to_new[old_target_clamped];
                 let new_bx = new_target - new_pos;
                 if new_bx != old_bx {
-                    instrs[old_pos] = Instruction::abx(OpCode::HandlePush, inst.a, new_bx as u16);
+                    instrs[old_pos] = Instruction::abx(OpCode::HandlePush, inst.a, new_bx as u32);
                 }
             }
             _ => {}
@@ -1276,7 +1274,7 @@ pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModul
 
     // Lambda cells are appended after top-level cells. Patch closure opcodes
     // to absolute module cell indices before we append.
-    let lambda_base = module.cells.len() as u16;
+    let lambda_base = module.cells.len() as u32;
     for cell in &mut module.cells {
         patch_lambda_closure_indices(cell, lambda_base);
     }
@@ -1574,11 +1572,11 @@ impl<'a> Lowerer<'a> {
     fn lower_call_arg_regs(
         &mut self,
         args: &[CallArg],
-        implicit_self_arg: Option<u8>,
+        implicit_self_arg: Option<u16>,
         ra: &mut RegAlloc,
         consts: &mut Vec<Constant>,
         instrs: &mut Vec<Instruction>,
-    ) -> Vec<u8> {
+    ) -> Vec<u16> {
         let mut arg_regs = Vec::new();
         if let Some(self_reg) = implicit_self_arg {
             arg_regs.push(self_reg);
@@ -1591,7 +1589,7 @@ impl<'a> Lowerer<'a> {
                 CallArg::Role(name, content, _) => {
                     let content_reg = self.lower_expr(content, ra, consts, instrs);
                     let prefix_reg = ra.alloc_temp();
-                    let kidx = consts.len() as u16;
+                    let kidx = consts.len() as u32;
                     consts.push(Constant::String(format!("{}: ", name)));
                     instrs.push(Instruction::abx(OpCode::LoadK, prefix_reg, kidx));
                     let dest = ra.alloc_temp();
@@ -1610,12 +1608,12 @@ impl<'a> Lowerer<'a> {
 
     fn emit_call_with_regs(
         &mut self,
-        callee_reg: u8,
-        arg_regs: &[u8],
+        callee_reg: u16,
+        arg_regs: &[u16],
         ra: &mut RegAlloc,
         instrs: &mut Vec<Instruction>,
-    ) -> u8 {
-        let base = ra.alloc_block(1 + arg_regs.len() as u8);
+    ) -> u16 {
+        let base = ra.alloc_block(1 + arg_regs.len() as u16);
         if callee_reg != base {
             instrs.push(Instruction::abc(OpCode::Move, base, callee_reg, 0));
         }
@@ -1623,7 +1621,7 @@ impl<'a> Lowerer<'a> {
         // Move arguments in reverse order to avoid overwriting source registers
         // that might also be destinations (e.g., moving r3->r5 then r5->r6)
         for (i, &reg) in arg_regs.iter().enumerate().rev() {
-            let target = base + 1 + i as u8;
+            let target = base + 1 + i as u16;
             if reg != target {
                 instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
             }
@@ -1633,7 +1631,7 @@ impl<'a> Lowerer<'a> {
         instrs.push(Instruction::abc(
             OpCode::Call,
             base,
-            arg_regs.len() as u8,
+            arg_regs.len() as u16,
             1,
         ));
         instrs.push(Instruction::abc(OpCode::Move, result_reg, base, 0));
@@ -1644,20 +1642,20 @@ impl<'a> Lowerer<'a> {
     /// then emits TailCall instead of Call+Return.
     fn emit_tail_call_with_regs(
         &mut self,
-        callee_reg: u8,
-        arg_regs: &[u8],
+        callee_reg: u16,
+        arg_regs: &[u16],
         ra: &mut RegAlloc,
         instrs: &mut Vec<Instruction>,
     ) {
         // Note: For tail calls we don't free temps - the call never returns
         // to this frame, so register cleanup happens naturally
-        let base = ra.alloc_block(1 + arg_regs.len() as u8);
+        let base = ra.alloc_block(1 + arg_regs.len() as u16);
         if callee_reg != base {
             instrs.push(Instruction::abc(OpCode::Move, base, callee_reg, 0));
         }
 
         for (i, &reg) in arg_regs.iter().enumerate() {
-            let target = base + 1 + i as u8;
+            let target = base + 1 + i as u16;
             if reg != target {
                 instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
             }
@@ -1666,7 +1664,7 @@ impl<'a> Lowerer<'a> {
         instrs.push(Instruction::abc(
             OpCode::TailCall,
             base,
-            arg_regs.len() as u8,
+            arg_regs.len() as u16,
             0,
         ));
     }
@@ -1675,13 +1673,13 @@ impl<'a> Lowerer<'a> {
         &mut self,
         callee_name: &str,
         args: &[CallArg],
-        implicit_self_arg: Option<u8>,
+        implicit_self_arg: Option<u16>,
         ra: &mut RegAlloc,
         consts: &mut Vec<Constant>,
         instrs: &mut Vec<Instruction>,
-    ) -> u8 {
+    ) -> u16 {
         let callee_reg = ra.alloc_temp();
-        let callee_idx = consts.len() as u16;
+        let callee_idx = consts.len() as u32;
         consts.push(Constant::String(callee_name.to_string()));
         instrs.push(Instruction::abx(OpCode::LoadK, callee_reg, callee_idx));
         let arg_regs = self.lower_call_arg_regs(args, implicit_self_arg, ra, consts, instrs);
@@ -1694,11 +1692,11 @@ impl<'a> Lowerer<'a> {
     fn pack_variadic_args(
         &self,
         callee_name: &str,
-        arg_regs: Vec<u8>,
+        arg_regs: Vec<u16>,
         ra: &mut RegAlloc,
         _consts: &mut Vec<Constant>,
         instrs: &mut Vec<Instruction>,
-    ) -> Vec<u8> {
+    ) -> Vec<u16> {
         if let Some(cell_info) = self.symbols.cells.get(callee_name) {
             let has_variadic = cell_info.params.last().is_some_and(|(_, _, v)| *v);
             if has_variadic && !cell_info.params.is_empty() {
@@ -1891,12 +1889,12 @@ impl<'a> Lowerer<'a> {
         let mut instructions: Vec<Instruction> = Vec::new();
 
         let dest = ra.alloc_temp();
-        let type_idx = self.intern_string(&p.name);
+        let type_idx = self.intern_string(&p.name) as u32;
         instructions.push(Instruction::abx(OpCode::NewRecord, dest, type_idx));
 
         for method in self.process_runtime_method_names(p) {
             let val_reg = ra.alloc_temp();
-            let kidx = constants.len() as u16;
+            let kidx = constants.len() as u32;
             constants.push(Constant::String(format!("{}.{}", p.name, method)));
             instructions.push(Instruction::abx(OpCode::LoadK, val_reg, kidx));
             self.emit_set_field(
@@ -1929,12 +1927,12 @@ impl<'a> Lowerer<'a> {
         let mut instructions: Vec<Instruction> = Vec::new();
 
         let dest = ra.alloc_temp();
-        let type_idx = self.intern_string(&a.name);
+        let type_idx = self.intern_string(&a.name) as u32;
         instructions.push(Instruction::abx(OpCode::NewRecord, dest, type_idx));
 
         for cell in &a.cells {
             let val_reg = ra.alloc_temp();
-            let kidx = constants.len() as u16;
+            let kidx = constants.len() as u32;
             constants.push(Constant::String(format!("{}.{}", a.name, cell.name)));
             instructions.push(Instruction::abx(OpCode::LoadK, val_reg, kidx));
             self.emit_set_field(
@@ -2133,7 +2131,7 @@ impl<'a> Lowerer<'a> {
                     instrs.push(Instruction::sax(OpCode::Jmp, 0)); // skip else
                     let else_start = instrs.len();
                     // Patch the conditional jump
-                    let offset = (else_start - jmp_idx - 1) as i32;
+                    let offset = (else_start - jmp_idx - 1) as i64;
                     instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, offset);
 
                     for s in else_body {
@@ -2141,11 +2139,11 @@ impl<'a> Lowerer<'a> {
                     }
 
                     let after_else = instrs.len();
-                    let else_offset = (after_else - else_jmp_idx - 1) as i32;
+                    let else_offset = (after_else - else_jmp_idx - 1) as i64;
                     instrs[else_jmp_idx] = Instruction::sax(OpCode::Jmp, else_offset);
                 } else {
                     let after = instrs.len();
-                    let offset = (after - jmp_idx - 1) as i32;
+                    let offset = (after - jmp_idx - 1) as i64;
                     instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, offset);
                 }
                 // After if statement completes, free any temps used for condition checking
@@ -2158,14 +2156,14 @@ impl<'a> Lowerer<'a> {
                 let elem_reg = ra.alloc_named(&fs.var);
 
                 // idx = 0
-                let zero_idx = consts.len() as u16;
+                let zero_idx = consts.len() as u32;
                 consts.push(Constant::Int(0));
                 instrs.push(Instruction::abx(OpCode::LoadK, idx_reg, zero_idx));
                 // len = length(iter)
                 instrs.push(Instruction::abc(
                     OpCode::Intrinsic,
                     len_reg,
-                    IntrinsicId::Length as u8,
+                    IntrinsicId::Length as u16,
                     iter_reg,
                 ));
 
@@ -2216,7 +2214,7 @@ impl<'a> Lowerer<'a> {
                     // Patch skip jump to point past the body (to the increment)
                     let body_end = instrs.len();
                     instrs[skip_jmp] =
-                        Instruction::sax(OpCode::Jmp, (body_end - skip_jmp - 1) as i32);
+                        Instruction::sax(OpCode::Jmp, (body_end - skip_jmp - 1) as i64);
                 } else {
                     for s in &fs.body {
                         self.lower_stmt(s, ra, consts, instrs);
@@ -2226,29 +2224,29 @@ impl<'a> Lowerer<'a> {
                 // idx = idx + 1
                 // Continue jumps target this increment section (not loop_start)
                 let increment_start = instrs.len();
-                let one_idx = consts.len() as u16;
+                let one_idx = consts.len() as u32;
                 consts.push(Constant::Int(1));
                 let one_reg = ra.alloc_temp();
                 instrs.push(Instruction::abx(OpCode::LoadK, one_reg, one_idx));
                 instrs.push(Instruction::abc(OpCode::Add, idx_reg, idx_reg, one_reg));
 
                 // Jump back to loop start (negative offset)
-                let back_offset = loop_start as i32 - instrs.len() as i32 - 1;
+                let back_offset = loop_start as i64 - instrs.len() as i64 - 1;
                 instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
 
                 // Patch break jump (forward offset, always positive)
                 let after_loop = instrs.len();
-                let break_offset = (after_loop - break_jmp - 1) as i32;
+                let break_offset = (after_loop - break_jmp - 1) as i64;
                 instrs[break_jmp] = Instruction::sax(OpCode::Jmp, break_offset);
 
                 // Patch any break jumps from the loop body
                 let ctx = self.loop_stack.pop().unwrap();
                 for bj in ctx.break_jumps {
-                    instrs[bj] = Instruction::sax(OpCode::Jmp, (after_loop - bj - 1) as i32);
+                    instrs[bj] = Instruction::sax(OpCode::Jmp, (after_loop - bj - 1) as i64);
                 }
                 // Patch continue jumps to the increment section
                 for cj in ctx.continue_jumps {
-                    instrs[cj] = Instruction::sax(OpCode::Jmp, (increment_start - cj - 1) as i32);
+                    instrs[cj] = Instruction::sax(OpCode::Jmp, (increment_start - cj - 1) as i64);
                 }
                 // After for loop completes, free any temps used for iteration
                 ra.free_statement_temps();
@@ -2276,13 +2274,13 @@ impl<'a> Lowerer<'a> {
 
                     let next_arm = instrs.len();
                     for j in fail_jumps {
-                        instrs[j] = Instruction::sax(OpCode::Jmp, (next_arm - j - 1) as i32);
+                        instrs[j] = Instruction::sax(OpCode::Jmp, (next_arm - j - 1) as i64);
                     }
                 }
 
                 let end = instrs.len();
                 for jmp_idx in end_jumps {
-                    instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, (end - jmp_idx - 1) as i32);
+                    instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, (end - jmp_idx - 1) as i64);
                 }
                 // After match statement completes, free any temps used for subject/patterns
                 ra.free_statement_temps();
@@ -2312,7 +2310,7 @@ impl<'a> Lowerer<'a> {
                                 && !is_result
                             {
                                 let callee_reg = ra.alloc_temp();
-                                let callee_idx = consts.len() as u16;
+                                let callee_idx = consts.len() as u32;
                                 consts.push(Constant::String(name.to_string()));
                                 instrs.push(Instruction::abx(
                                     OpCode::LoadK,
@@ -2413,7 +2411,7 @@ impl<'a> Lowerer<'a> {
                         instrs.push(Instruction::abc(
                             OpCode::SetField,
                             base_reg,
-                            field_idx as u8,
+                            field_idx as u16,
                             val_reg,
                         ));
                     }
@@ -2446,20 +2444,20 @@ impl<'a> Lowerer<'a> {
                     self.lower_stmt(s, ra, consts, instrs);
                 }
 
-                let back_offset = loop_start as i32 - instrs.len() as i32 - 1;
+                let back_offset = loop_start as i64 - instrs.len() as i64 - 1;
                 instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
 
                 let after = instrs.len();
-                instrs[cond_jmp] = Instruction::sax(OpCode::Jmp, (after - cond_jmp - 1) as i32);
+                instrs[cond_jmp] = Instruction::sax(OpCode::Jmp, (after - cond_jmp - 1) as i64);
 
                 // Patch all break jumps
                 let ctx = self.loop_stack.pop().unwrap();
                 for bj in ctx.break_jumps {
-                    instrs[bj] = Instruction::sax(OpCode::Jmp, (after - bj - 1) as i32);
+                    instrs[bj] = Instruction::sax(OpCode::Jmp, (after - bj - 1) as i64);
                 }
                 // Patch continue jumps back to loop start (re-evaluate condition)
                 for cj in ctx.continue_jumps {
-                    instrs[cj] = Instruction::sax(OpCode::Jmp, loop_start as i32 - cj as i32 - 1);
+                    instrs[cj] = Instruction::sax(OpCode::Jmp, loop_start as i64 - cj as i64 - 1);
                 }
                 // After while loop completes, free any temps used for condition
                 ra.free_statement_temps();
@@ -2475,17 +2473,17 @@ impl<'a> Lowerer<'a> {
                 for s in &ls.body {
                     self.lower_stmt(s, ra, consts, instrs);
                 }
-                let back_offset = loop_start as i32 - instrs.len() as i32 - 1;
+                let back_offset = loop_start as i64 - instrs.len() as i64 - 1;
                 instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
 
                 let after = instrs.len();
                 let ctx = self.loop_stack.pop().unwrap();
                 for bj in ctx.break_jumps {
-                    instrs[bj] = Instruction::sax(OpCode::Jmp, (after - bj - 1) as i32);
+                    instrs[bj] = Instruction::sax(OpCode::Jmp, (after - bj - 1) as i64);
                 }
                 // Patch continue jumps back to loop start
                 for cj in ctx.continue_jumps {
-                    instrs[cj] = Instruction::sax(OpCode::Jmp, loop_start as i32 - cj as i32 - 1);
+                    instrs[cj] = Instruction::sax(OpCode::Jmp, loop_start as i64 - cj as i64 - 1);
                 }
             }
             Stmt::Break(bs) => {
@@ -2573,13 +2571,13 @@ impl<'a> Lowerer<'a> {
                             OpCode::GetField,
                             cur_reg,
                             base_reg,
-                            field_idx as u8,
+                            field_idx as u16,
                         ));
                         instrs.push(Instruction::abc(opcode, cur_reg, cur_reg, val_reg));
                         instrs.push(Instruction::abc(
                             OpCode::SetField,
                             base_reg,
-                            field_idx as u8,
+                            field_idx as u16,
                             cur_reg,
                         ));
                     }
@@ -2604,7 +2602,7 @@ impl<'a> Lowerer<'a> {
     fn lower_if_as_tail(
         &mut self,
         ifs: &IfStmt,
-        result_reg: u8,
+        result_reg: u16,
         ra: &mut RegAlloc,
         consts: &mut Vec<Constant>,
         instrs: &mut Vec<Instruction>,
@@ -2625,7 +2623,7 @@ impl<'a> Lowerer<'a> {
 
         // Else branch
         let else_start = instrs.len();
-        instrs[jmp_to_else] = Instruction::sax(OpCode::Jmp, (else_start - jmp_to_else - 1) as i32);
+        instrs[jmp_to_else] = Instruction::sax(OpCode::Jmp, (else_start - jmp_to_else - 1) as i64);
 
         if let Some(ref else_body) = ifs.else_body {
             // Check if else body is a single Stmt::If (else-if chain)
@@ -2644,7 +2642,7 @@ impl<'a> Lowerer<'a> {
         }
 
         let end = instrs.len();
-        instrs[jmp_over_else] = Instruction::sax(OpCode::Jmp, (end - jmp_over_else - 1) as i32);
+        instrs[jmp_over_else] = Instruction::sax(OpCode::Jmp, (end - jmp_over_else - 1) as i64);
     }
 
     /// Lower a branch body (then or else), storing the last expression's value
@@ -2652,7 +2650,7 @@ impl<'a> Lowerer<'a> {
     fn lower_branch_as_tail(
         &mut self,
         body: &[Stmt],
-        result_reg: u8,
+        result_reg: u16,
         ra: &mut RegAlloc,
         consts: &mut Vec<Constant>,
         instrs: &mut Vec<Instruction>,
@@ -2706,7 +2704,7 @@ impl<'a> Lowerer<'a> {
     fn lower_for_as_expr(
         &mut self,
         fs: &ForStmt,
-        result_reg: u8,
+        result_reg: u16,
         ra: &mut RegAlloc,
         consts: &mut Vec<Constant>,
         instrs: &mut Vec<Instruction>,
@@ -2717,14 +2715,14 @@ impl<'a> Lowerer<'a> {
         let elem_reg = ra.alloc_named(&fs.var);
 
         // idx = 0
-        let zero_idx = consts.len() as u16;
+        let zero_idx = consts.len() as u32;
         consts.push(Constant::Int(0));
         instrs.push(Instruction::abx(OpCode::LoadK, idx_reg, zero_idx));
         // len = length(iter)
         instrs.push(Instruction::abc(
             OpCode::Intrinsic,
             len_reg,
-            IntrinsicId::Length as u8,
+            IntrinsicId::Length as u16,
             iter_reg,
         ));
 
@@ -2789,32 +2787,32 @@ impl<'a> Lowerer<'a> {
         // Patch filter jump
         if let Some(fj) = filter_jmp {
             let body_end = instrs.len();
-            instrs[fj] = Instruction::sax(OpCode::Jmp, (body_end - fj - 1) as i32);
+            instrs[fj] = Instruction::sax(OpCode::Jmp, (body_end - fj - 1) as i64);
         }
 
         // idx = idx + 1
         let increment_start = instrs.len();
-        let one_idx = consts.len() as u16;
+        let one_idx = consts.len() as u32;
         consts.push(Constant::Int(1));
         let one_reg = ra.alloc_temp();
         instrs.push(Instruction::abx(OpCode::LoadK, one_reg, one_idx));
         instrs.push(Instruction::abc(OpCode::Add, idx_reg, idx_reg, one_reg));
 
         // Jump back to loop start
-        let back_offset = loop_start as i32 - instrs.len() as i32 - 1;
+        let back_offset = loop_start as i64 - instrs.len() as i64 - 1;
         instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
 
         // Patch break
         let after_loop = instrs.len();
-        let break_offset = (after_loop - break_jmp - 1) as i32;
+        let break_offset = (after_loop - break_jmp - 1) as i64;
         instrs[break_jmp] = Instruction::sax(OpCode::Jmp, break_offset);
 
         let ctx = self.loop_stack.pop().unwrap();
         for bj in ctx.break_jumps {
-            instrs[bj] = Instruction::sax(OpCode::Jmp, (after_loop - bj - 1) as i32);
+            instrs[bj] = Instruction::sax(OpCode::Jmp, (after_loop - bj - 1) as i64);
         }
         for cj in ctx.continue_jumps {
-            instrs[cj] = Instruction::sax(OpCode::Jmp, (increment_start - cj - 1) as i32);
+            instrs[cj] = Instruction::sax(OpCode::Jmp, (increment_start - cj - 1) as i64);
         }
     }
 
@@ -2841,9 +2839,9 @@ impl<'a> Lowerer<'a> {
         ra: &mut RegAlloc,
         consts: &mut Vec<Constant>,
         instrs: &mut Vec<Instruction>,
-    ) -> u8 {
+    ) -> u16 {
         let reg = ra.alloc_temp();
-        let kidx = consts.len() as u16;
+        let kidx = consts.len() as u32;
         consts.push(Constant::Int(n));
         instrs.push(Instruction::abx(OpCode::LoadK, reg, kidx));
         reg
@@ -2855,15 +2853,15 @@ impl<'a> Lowerer<'a> {
         ra: &mut RegAlloc,
         consts: &mut Vec<Constant>,
         instrs: &mut Vec<Instruction>,
-    ) -> u8 {
+    ) -> u16 {
         let reg = ra.alloc_temp();
-        let kidx = consts.len() as u16;
+        let kidx = consts.len() as u32;
         consts.push(Constant::String(s.to_string()));
         instrs.push(Instruction::abx(OpCode::LoadK, reg, kidx));
         reg
     }
 
-    fn emit_jump_if_false(&mut self, cond_reg: u8, instrs: &mut Vec<Instruction>) -> usize {
+    fn emit_jump_if_false(&mut self, cond_reg: u16, instrs: &mut Vec<Instruction>) -> usize {
         instrs.push(Instruction::abc(OpCode::Test, cond_reg, 0, 0));
         let jmp_idx = instrs.len();
         instrs.push(Instruction::sax(OpCode::Jmp, 0));
@@ -2872,8 +2870,8 @@ impl<'a> Lowerer<'a> {
 
     fn emit_get_field(
         &mut self,
-        dest: u8,
-        obj_reg: u8,
+        dest: u16,
+        obj_reg: u16,
         field_name: &str,
         ra: &mut RegAlloc,
         consts: &mut Vec<Constant>,
@@ -2885,9 +2883,9 @@ impl<'a> Lowerer<'a> {
 
     fn emit_set_field(
         &mut self,
-        obj_reg: u8,
+        obj_reg: u16,
         field_name: &str,
-        value_reg: u8,
+        value_reg: u16,
         ra: &mut RegAlloc,
         consts: &mut Vec<Constant>,
         instrs: &mut Vec<Instruction>,
@@ -2909,7 +2907,7 @@ impl<'a> Lowerer<'a> {
     fn lower_let_pattern(
         &mut self,
         pattern: &Pattern,
-        value_reg: u8,
+        value_reg: u16,
         ra: &mut RegAlloc,
         consts: &mut Vec<Constant>,
         instrs: &mut Vec<Instruction>,
@@ -2937,7 +2935,7 @@ impl<'a> Lowerer<'a> {
                                 OpCode::GetTuple,
                                 dest,
                                 value_reg,
-                                i as u8,
+                                i as u16,
                             ));
                         }
                         _ => {
@@ -2947,7 +2945,7 @@ impl<'a> Lowerer<'a> {
                                 OpCode::GetTuple,
                                 temp,
                                 value_reg,
-                                i as u8,
+                                i as u16,
                             ));
                             self.lower_let_pattern(elem_pat, temp, ra, consts, instrs);
                         }
@@ -3001,7 +2999,7 @@ impl<'a> Lowerer<'a> {
                     // rest = list.drop(elements.len())
                     let list_arg = ra.alloc_temp();
                     instrs.push(Instruction::abc(OpCode::Move, list_arg, value_reg, 0));
-                    let n_kidx = consts.len() as u16;
+                    let n_kidx = consts.len() as u32;
                     consts.push(Constant::Int(elements.len() as i64));
                     let n_reg = ra.alloc_temp();
                     instrs.push(Instruction::abx(OpCode::LoadK, n_reg, n_kidx));
@@ -3010,7 +3008,7 @@ impl<'a> Lowerer<'a> {
                     instrs.push(Instruction::abc(
                         OpCode::Intrinsic,
                         rest_reg,
-                        IntrinsicId::Drop as u8,
+                        IntrinsicId::Drop as u16,
                         list_arg,
                     ));
                 }
@@ -3033,7 +3031,7 @@ impl<'a> Lowerer<'a> {
     fn lower_match_pattern(
         &mut self,
         pattern: &Pattern,
-        value_reg: u8,
+        value_reg: u16,
         ra: &mut RegAlloc,
         consts: &mut Vec<Constant>,
         instrs: &mut Vec<Instruction>,
@@ -3048,7 +3046,11 @@ impl<'a> Lowerer<'a> {
             }
             Pattern::Variant(tag, binding, _) => {
                 let tag_idx = self.intern_string(tag);
-                instrs.push(Instruction::abx(OpCode::IsVariant, value_reg, tag_idx));
+                instrs.push(Instruction::abx(
+                    OpCode::IsVariant,
+                    value_reg,
+                    tag_idx.into(),
+                ));
                 let fail_jmp = instrs.len();
                 instrs.push(Instruction::sax(OpCode::Jmp, 0));
                 fail_jumps.push(fail_jmp);
@@ -3076,7 +3078,11 @@ impl<'a> Lowerer<'a> {
                 });
                 if is_enum_variant {
                     let tag_idx = self.intern_string(name);
-                    instrs.push(Instruction::abx(OpCode::IsVariant, value_reg, tag_idx));
+                    instrs.push(Instruction::abx(
+                        OpCode::IsVariant,
+                        value_reg,
+                        tag_idx.into(),
+                    ));
                     let fail_jmp = instrs.len();
                     instrs.push(Instruction::sax(OpCode::Jmp, 0));
                     fail_jumps.push(fail_jmp);
@@ -3110,13 +3116,13 @@ impl<'a> Lowerer<'a> {
 
                         let next_alt = instrs.len();
                         for j in alt_fail_jumps {
-                            instrs[j] = Instruction::sax(OpCode::Jmp, (next_alt - j - 1) as i32);
+                            instrs[j] = Instruction::sax(OpCode::Jmp, (next_alt - j - 1) as i64);
                         }
                     }
                 }
                 let after_or = instrs.len();
                 for j in success_jumps {
-                    instrs[j] = Instruction::sax(OpCode::Jmp, (after_or - j - 1) as i32);
+                    instrs[j] = Instruction::sax(OpCode::Jmp, (after_or - j - 1) as i64);
                 }
             }
             Pattern::ListDestructure { elements, rest, .. } => {
@@ -3129,7 +3135,7 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::abc(
                     OpCode::Intrinsic,
                     len_reg,
-                    IntrinsicId::Length as u8,
+                    IntrinsicId::Length as u16,
                     value_reg,
                 ));
                 let expected_reg = self.push_const_int(elements.len() as i64, ra, consts, instrs);
@@ -3167,7 +3173,7 @@ impl<'a> Lowerer<'a> {
                 if let Some(rest_name) = rest {
                     let list_arg = ra.alloc_temp();
                     instrs.push(Instruction::abc(OpCode::Move, list_arg, value_reg, 0));
-                    let n_kidx = consts.len() as u16;
+                    let n_kidx = consts.len() as u32;
                     consts.push(Constant::Int(elements.len() as i64));
                     let n_reg = ra.alloc_temp();
                     instrs.push(Instruction::abx(OpCode::LoadK, n_reg, n_kidx));
@@ -3176,7 +3182,7 @@ impl<'a> Lowerer<'a> {
                     instrs.push(Instruction::abc(
                         OpCode::Intrinsic,
                         rest_reg,
-                        IntrinsicId::Drop as u8,
+                        IntrinsicId::Drop as u16,
                         list_arg,
                     ));
                 }
@@ -3196,7 +3202,7 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::abc(
                     OpCode::Intrinsic,
                     len_reg,
-                    IntrinsicId::Length as u8,
+                    IntrinsicId::Length as u16,
                     value_reg,
                 ));
                 let expected_reg = self.push_const_int(elements.len() as i64, ra, consts, instrs);
@@ -3288,32 +3294,32 @@ impl<'a> Lowerer<'a> {
         ra: &mut RegAlloc,
         consts: &mut Vec<Constant>,
         instrs: &mut Vec<Instruction>,
-    ) -> u8 {
+    ) -> u16 {
         match expr {
             Expr::IntLit(n, _) => {
                 let dest = ra.alloc_temp();
-                let kidx = consts.len() as u16;
+                let kidx = consts.len() as u32;
                 consts.push(Constant::Int(*n));
                 instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
                 dest
             }
             Expr::BigIntLit(n, _) => {
                 let dest = ra.alloc_temp();
-                let kidx = consts.len() as u16;
+                let kidx = consts.len() as u32;
                 consts.push(Constant::BigInt(n.clone()));
                 instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
                 dest
             }
             Expr::FloatLit(f, _) => {
                 let dest = ra.alloc_temp();
-                let kidx = consts.len() as u16;
+                let kidx = consts.len() as u32;
                 consts.push(Constant::Float(*f));
                 instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
                 dest
             }
             Expr::StringLit(s, _) => {
                 let dest = ra.alloc_temp();
-                let kidx = consts.len() as u16;
+                let kidx = consts.len() as u32;
                 consts.push(Constant::String(s.clone()));
                 instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
                 dest
@@ -3330,7 +3336,7 @@ impl<'a> Lowerer<'a> {
                                 continue;
                             }
                             let seg_reg = ra.alloc_temp();
-                            let kidx = consts.len() as u16;
+                            let kidx = consts.len() as u32;
                             consts.push(Constant::String(s.clone()));
                             instrs.push(Instruction::abx(OpCode::LoadK, seg_reg, kidx));
                             if first {
@@ -3345,7 +3351,7 @@ impl<'a> Lowerer<'a> {
                             if first {
                                 // Convert to string via a temp concat with empty
                                 let empty_reg = ra.alloc_temp();
-                                let kidx = consts.len() as u16;
+                                let kidx = consts.len() as u32;
                                 consts.push(Constant::String(String::new()));
                                 instrs.push(Instruction::abx(OpCode::LoadK, empty_reg, kidx));
                                 instrs.push(Instruction::abc(
@@ -3365,12 +3371,12 @@ impl<'a> Lowerer<'a> {
                             // Build format spec string from the FormatSpec
                             let spec_str = format_spec_to_string(spec);
                             let spec_reg = ra.alloc_temp();
-                            let kidx = consts.len() as u16;
+                            let kidx = consts.len() as u32;
                             consts.push(Constant::String(spec_str));
                             instrs.push(Instruction::abx(OpCode::LoadK, spec_reg, kidx));
                             // Call __format_spec(expr_reg, spec_reg)
                             let callee_reg = ra.alloc_temp();
-                            let callee_idx = consts.len() as u16;
+                            let callee_idx = consts.len() as u32;
                             consts.push(Constant::String("__format_spec".to_string()));
                             instrs.push(Instruction::abx(OpCode::LoadK, callee_reg, callee_idx));
                             let formatted_reg = self.emit_call_with_regs(
@@ -3395,7 +3401,7 @@ impl<'a> Lowerer<'a> {
                 }
                 if first {
                     // Empty interpolation - load empty string
-                    let kidx = consts.len() as u16;
+                    let kidx = consts.len() as u32;
                     consts.push(Constant::String(String::new()));
                     instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
                 }
@@ -3429,7 +3435,7 @@ impl<'a> Lowerer<'a> {
                     }
                 } else if let Some(constant) = builtin_math_constant_value(name) {
                     let dest = ra.alloc_temp();
-                    let kidx = consts.len() as u16;
+                    let kidx = consts.len() as u32;
                     consts.push(constant);
                     instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
                     dest
@@ -3437,7 +3443,7 @@ impl<'a> Lowerer<'a> {
                     // Enum Variant Constructor (Union with no payload)
                     let dest = ra.alloc_temp();
                     let tag_reg = ra.alloc_temp();
-                    let kidx = consts.len() as u16;
+                    let kidx = consts.len() as u32;
                     consts.push(Constant::String(name.clone()));
                     instrs.push(Instruction::abx(OpCode::LoadK, tag_reg, kidx));
 
@@ -3448,7 +3454,7 @@ impl<'a> Lowerer<'a> {
                     dest
                 } else {
                     let dest = ra.alloc_temp();
-                    let kidx = consts.len() as u16;
+                    let kidx = consts.len() as u32;
                     consts.push(Constant::String(name.clone()));
                     instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
                     dest
@@ -3470,13 +3476,13 @@ impl<'a> Lowerer<'a> {
                                 let idx_reg = ra.alloc_temp();
                                 let len_reg = ra.alloc_temp();
 
-                                let zero_idx = consts.len() as u16;
+                                let zero_idx = consts.len() as u32;
                                 consts.push(Constant::Int(0));
                                 instrs.push(Instruction::abx(OpCode::LoadK, idx_reg, zero_idx));
                                 instrs.push(Instruction::abc(
                                     OpCode::Intrinsic,
                                     len_reg,
-                                    IntrinsicId::Length as u8,
+                                    IntrinsicId::Length as u16,
                                     src_reg,
                                 ));
 
@@ -3496,7 +3502,7 @@ impl<'a> Lowerer<'a> {
                                 ));
                                 instrs.push(Instruction::abc(OpCode::Append, dest, elem_reg, 0));
 
-                                let one_idx = consts.len() as u16;
+                                let one_idx = consts.len() as u32;
                                 consts.push(Constant::Int(1));
                                 let one_reg = ra.alloc_temp();
                                 instrs.push(Instruction::abx(OpCode::LoadK, one_reg, one_idx));
@@ -3507,13 +3513,13 @@ impl<'a> Lowerer<'a> {
                                     one_reg,
                                 ));
 
-                                let back_offset = loop_start as i32 - instrs.len() as i32 - 1;
+                                let back_offset = loop_start as i64 - instrs.len() as i64 - 1;
                                 instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
 
                                 let after_loop = instrs.len();
                                 instrs[break_jmp] = Instruction::sax(
                                     OpCode::Jmp,
-                                    (after_loop - break_jmp - 1) as i32,
+                                    (after_loop - break_jmp - 1) as i64,
                                 );
                             }
                             _ => {
@@ -3526,7 +3532,7 @@ impl<'a> Lowerer<'a> {
                 } else {
                     // No spread - use original efficient lowering
                     // Allocate dest and contiguous slots in one block
-                    let block_start = ra.alloc_block(1 + elems.len() as u8);
+                    let block_start = ra.alloc_block(1 + elems.len() as u16);
                     let dest = block_start;
 
                     let mut elem_regs = Vec::new();
@@ -3536,7 +3542,7 @@ impl<'a> Lowerer<'a> {
                     }
                     // Move elements into consecutive positions dest+1..dest+N
                     for (i, er) in elem_regs.iter().enumerate() {
-                        let target = dest + 1 + i as u8;
+                        let target = dest + 1 + i as u16;
                         if *er != target {
                             instrs.push(Instruction::abc(OpCode::Move, target, *er, 0));
                         }
@@ -3544,7 +3550,7 @@ impl<'a> Lowerer<'a> {
                     instrs.push(Instruction::abc(
                         OpCode::NewList,
                         dest,
-                        elems.len() as u8,
+                        elems.len() as u16,
                         0,
                     ));
                     dest
@@ -3552,7 +3558,7 @@ impl<'a> Lowerer<'a> {
                 dest
             }
             Expr::MapLit(pairs, _) => {
-                let block_start = ra.alloc_block(1 + (pairs.len() * 2) as u8);
+                let block_start = ra.alloc_block(1 + (pairs.len() * 2) as u16);
                 let dest = block_start;
 
                 let mut kv_regs = Vec::new();
@@ -3563,17 +3569,22 @@ impl<'a> Lowerer<'a> {
 
                 // Move KVs into consecutive positions dest+1..
                 for (i, reg) in kv_regs.iter().enumerate() {
-                    let target = dest + 1 + i as u8;
+                    let target = dest + 1 + i as u16;
                     if *reg != target {
                         instrs.push(Instruction::abc(OpCode::Move, target, *reg, 0));
                     }
                 }
-                instrs.push(Instruction::abc(OpCode::NewMap, dest, pairs.len() as u8, 0));
+                instrs.push(Instruction::abc(
+                    OpCode::NewMap,
+                    dest,
+                    pairs.len() as u16,
+                    0,
+                ));
                 dest
             }
             Expr::RecordLit(name, fields, _) => {
                 let dest = ra.alloc_temp();
-                let type_idx = self.intern_string(name);
+                let type_idx = self.intern_string(name) as u32;
                 instrs.push(Instruction::abx(OpCode::NewRecord, dest, type_idx));
                 // Now set each field
                 for (field_name, val) in fields {
@@ -3630,7 +3641,7 @@ impl<'a> Lowerer<'a> {
                     instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
                                                                    // a < b: load -1
                     consts.push(Constant::Int(-1));
-                    let neg1_idx = (consts.len() - 1) as u16;
+                    let neg1_idx = (consts.len() - 1) as u32;
                     instrs.push(Instruction::abx(OpCode::LoadK, dest, neg1_idx));
                     let jmp_done1 = instrs.len();
                     instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
@@ -3638,7 +3649,7 @@ impl<'a> Lowerer<'a> {
                     // patch jmp_not_lt to here
                     let here1 = instrs.len();
                     instrs[jmp_not_lt] =
-                        Instruction::sax(OpCode::Jmp, (here1 - jmp_not_lt - 1) as i32);
+                        Instruction::sax(OpCode::Jmp, (here1 - jmp_not_lt - 1) as i64);
 
                     // tmp = (a == b)
                     instrs.push(Instruction::abc(OpCode::Eq, tmp, lr, rr));
@@ -3648,7 +3659,7 @@ impl<'a> Lowerer<'a> {
                     instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
                                                                    // a == b: load 0
                     consts.push(Constant::Int(0));
-                    let zero_idx = (consts.len() - 1) as u16;
+                    let zero_idx = (consts.len() - 1) as u32;
                     instrs.push(Instruction::abx(OpCode::LoadK, dest, zero_idx));
                     let jmp_done2 = instrs.len();
                     instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
@@ -3656,17 +3667,17 @@ impl<'a> Lowerer<'a> {
                     // patch jmp_not_eq to here
                     let here2 = instrs.len();
                     instrs[jmp_not_eq] =
-                        Instruction::sax(OpCode::Jmp, (here2 - jmp_not_eq - 1) as i32);
+                        Instruction::sax(OpCode::Jmp, (here2 - jmp_not_eq - 1) as i64);
 
                     // a > b: load 1
                     consts.push(Constant::Int(1));
-                    let one_idx = (consts.len() - 1) as u16;
+                    let one_idx = (consts.len() - 1) as u32;
                     instrs.push(Instruction::abx(OpCode::LoadK, dest, one_idx));
 
                     // patch jmp_done1 and jmp_done2 to here
                     let end = instrs.len();
-                    instrs[jmp_done1] = Instruction::sax(OpCode::Jmp, (end - jmp_done1 - 1) as i32);
-                    instrs[jmp_done2] = Instruction::sax(OpCode::Jmp, (end - jmp_done2 - 1) as i32);
+                    instrs[jmp_done1] = Instruction::sax(OpCode::Jmp, (end - jmp_done1 - 1) as i64);
+                    instrs[jmp_done2] = Instruction::sax(OpCode::Jmp, (end - jmp_done2 - 1) as i64);
 
                     return dest;
                 }
@@ -3713,7 +3724,7 @@ impl<'a> Lowerer<'a> {
                         Instruction::abc(OpCode::Return, 5, 1, 0), // return g(f(x))
                     ];
 
-                    let proto_idx = self.lambda_cells.len() as u16;
+                    let proto_idx = self.lambda_cells.len() as u32;
                     self.lambda_cells.push(LirCell {
                         name: lambda_name,
                         params: lparams,
@@ -3822,7 +3833,7 @@ impl<'a> Lowerer<'a> {
 
                     if is_record && !is_agent_ctor && !is_process_ctor {
                         let dest = ra.alloc_temp();
-                        let type_idx = self.intern_string(name);
+                        let type_idx = self.intern_string(name) as u32;
                         instrs.push(Instruction::abx(OpCode::NewRecord, dest, type_idx));
 
                         for arg in args {
@@ -3864,7 +3875,7 @@ impl<'a> Lowerer<'a> {
                                         // 5. Emit Check
                                         // 5. Emit Check
                                         // Check against false: if cond == false, skip Jmp and Halt
-                                        let false_idx = consts.len() as u16;
+                                        let false_idx = consts.len() as u32;
                                         consts.push(Constant::Bool(false));
                                         let false_reg = ra.alloc_temp();
                                         instrs.push(Instruction::abx(
@@ -3898,7 +3909,7 @@ impl<'a> Lowerer<'a> {
                                         // Halt(msg)
                                         let msg =
                                             format!("Constraint failed for field '{}'", field);
-                                        let msg_idx = consts.len() as u16;
+                                        let msg_idx = consts.len() as u32;
                                         consts.push(Constant::String(msg));
                                         let msg_reg = ra.alloc_temp();
                                         instrs.push(Instruction::abx(
@@ -3910,7 +3921,7 @@ impl<'a> Lowerer<'a> {
 
                                         // Patch Jmp
                                         let after_halt = instrs.len();
-                                        let offset = (after_halt - jmp_idx - 1) as i32;
+                                        let offset = (after_halt - jmp_idx - 1) as i64;
                                         instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, offset);
                                     }
 
@@ -3955,7 +3966,7 @@ impl<'a> Lowerer<'a> {
                             }
                         } else {
                             // Multiple args: pack into a tuple
-                            let block_start = ra.alloc_block(1 + args.len() as u8);
+                            let block_start = ra.alloc_block(1 + args.len() as u16);
                             let dest = block_start;
                             let mut elem_regs = Vec::new();
                             for arg in args.iter() {
@@ -3971,7 +3982,7 @@ impl<'a> Lowerer<'a> {
                                 }
                             }
                             for (i, er) in elem_regs.iter().enumerate() {
-                                let target = dest + 1 + i as u8;
+                                let target = dest + 1 + i as u16;
                                 if *er != target {
                                     instrs.push(Instruction::abc(OpCode::Move, target, *er, 0));
                                 }
@@ -3979,7 +3990,7 @@ impl<'a> Lowerer<'a> {
                             instrs.push(Instruction::abc(
                                 OpCode::NewTuple,
                                 dest,
-                                args.len() as u8,
+                                args.len() as u16,
                                 0,
                             ));
                             dest
@@ -3987,7 +3998,7 @@ impl<'a> Lowerer<'a> {
 
                         let dest = ra.alloc_temp();
                         let tag_reg = ra.alloc_temp();
-                        let kidx = consts.len() as u16;
+                        let kidx = consts.len() as u32;
                         consts.push(Constant::String(name.clone()));
                         instrs.push(Instruction::abx(OpCode::LoadK, tag_reg, kidx));
 
@@ -4024,10 +4035,10 @@ impl<'a> Lowerer<'a> {
                         }
 
                         // Move args to contiguous block
-                        let start_reg = ra.alloc_block(arg_regs.len() as u8);
+                        let start_reg = ra.alloc_block(arg_regs.len() as u16);
 
                         for (i, &reg) in arg_regs.iter().enumerate() {
-                            let target = start_reg + i as u8;
+                            let target = start_reg + i as u16;
                             if reg != target {
                                 instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
                             }
@@ -4037,7 +4048,7 @@ impl<'a> Lowerer<'a> {
                         instrs.push(Instruction::abc(
                             OpCode::Intrinsic,
                             dest,
-                            id as u8,
+                            id as u16,
                             start_reg,
                         ));
                         return dest;
@@ -4045,7 +4056,7 @@ impl<'a> Lowerer<'a> {
                 }
 
                 // Normal call (including agent-style method calls via dot access).
-                let mut implicit_self_arg: Option<u8> = None;
+                let mut implicit_self_arg: Option<u16> = None;
                 let callee_reg = if let Expr::DotAccess(obj, field, _) = callee.as_ref() {
                     if let Expr::Ident(agent_name, _) = obj.as_ref() {
                         // Check if this is a local variable (not a process/agent type constructor)
@@ -4076,7 +4087,7 @@ impl<'a> Lowerer<'a> {
                                 }
                             } else {
                                 // Multiple args: pack into a tuple
-                                let block_start = ra.alloc_block(1 + args.len() as u8);
+                                let block_start = ra.alloc_block(1 + args.len() as u16);
                                 let dest = block_start;
                                 let mut elem_regs = Vec::new();
                                 for arg in args.iter() {
@@ -4092,7 +4103,7 @@ impl<'a> Lowerer<'a> {
                                     }
                                 }
                                 for (i, er) in elem_regs.iter().enumerate() {
-                                    let target = dest + 1 + i as u8;
+                                    let target = dest + 1 + i as u16;
                                     if *er != target {
                                         instrs.push(Instruction::abc(OpCode::Move, target, *er, 0));
                                     }
@@ -4100,7 +4111,7 @@ impl<'a> Lowerer<'a> {
                                 instrs.push(Instruction::abc(
                                     OpCode::NewTuple,
                                     dest,
-                                    args.len() as u8,
+                                    args.len() as u16,
                                     0,
                                 ));
                                 dest
@@ -4108,7 +4119,7 @@ impl<'a> Lowerer<'a> {
 
                             let dest = ra.alloc_temp();
                             let tag_reg = ra.alloc_temp();
-                            let kidx = consts.len() as u16;
+                            let kidx = consts.len() as u32;
                             consts.push(Constant::String(field.clone()));
                             instrs.push(Instruction::abx(OpCode::LoadK, tag_reg, kidx));
 
@@ -4132,14 +4143,14 @@ impl<'a> Lowerer<'a> {
                         if is_ctor_target {
                             // Constructor-style call: Pipeline.run(args) -> construct then call
                             let ctor_reg = ra.alloc_temp();
-                            let ctor_idx = consts.len() as u16;
+                            let ctor_idx = consts.len() as u32;
                             consts.push(Constant::String(agent_name.clone()));
                             instrs.push(Instruction::abx(OpCode::LoadK, ctor_reg, ctor_idx));
                             instrs.push(Instruction::abc(OpCode::Call, ctor_reg, 0, 1));
                             implicit_self_arg = Some(ctor_reg);
 
                             let dest = ra.alloc_temp();
-                            let kidx = consts.len() as u16;
+                            let kidx = consts.len() as u32;
                             consts.push(Constant::String(format!("{}.{}", agent_name, field)));
                             instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
                             dest
@@ -4176,9 +4187,9 @@ impl<'a> Lowerer<'a> {
                                     }
                                 }
                             }
-                            let start_reg = ra.alloc_block(arg_regs.len() as u8);
+                            let start_reg = ra.alloc_block(arg_regs.len() as u16);
                             for (i, &reg) in arg_regs.iter().enumerate() {
-                                let target = start_reg + i as u8;
+                                let target = start_reg + i as u16;
                                 if reg != target {
                                     instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
                                 }
@@ -4187,7 +4198,7 @@ impl<'a> Lowerer<'a> {
                             instrs.push(Instruction::abc(
                                 OpCode::Intrinsic,
                                 dest,
-                                id as u8,
+                                id as u16,
                                 start_reg,
                             ));
                             return dest;
@@ -4223,9 +4234,9 @@ impl<'a> Lowerer<'a> {
                                 }
                             }
                         }
-                        let start_reg = ra.alloc_block(arg_regs.len() as u8);
+                        let start_reg = ra.alloc_block(arg_regs.len() as u16);
                         for (i, &reg) in arg_regs.iter().enumerate() {
-                            let target = start_reg + i as u8;
+                            let target = start_reg + i as u16;
                             if reg != target {
                                 instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
                             }
@@ -4234,7 +4245,7 @@ impl<'a> Lowerer<'a> {
                         instrs.push(Instruction::abc(
                             OpCode::Intrinsic,
                             dest,
-                            id as u8,
+                            id as u16,
                             start_reg,
                         ));
                         return dest;
@@ -4293,7 +4304,7 @@ impl<'a> Lowerer<'a> {
                         // Emit NewUnion with nil payload (no-payload variant)
                         let dest = ra.alloc_temp();
                         let tag_reg = ra.alloc_temp();
-                        let kidx = consts.len() as u16;
+                        let kidx = consts.len() as u32;
                         consts.push(Constant::String(field.clone()));
                         instrs.push(Instruction::abx(OpCode::LoadK, tag_reg, kidx));
 
@@ -4321,7 +4332,7 @@ impl<'a> Lowerer<'a> {
 
                 // Prefix: "name: "
                 let prefix_reg = ra.alloc_temp();
-                let kidx = consts.len() as u16;
+                let kidx = consts.len() as u32;
                 consts.push(Constant::String(format!("{}: ", name)));
                 instrs.push(Instruction::abx(OpCode::LoadK, prefix_reg, kidx));
 
@@ -4338,19 +4349,19 @@ impl<'a> Lowerer<'a> {
             Expr::ExpectSchema(inner, schema_name, _) => {
                 let ir = self.lower_expr(inner, ra, consts, instrs);
                 let schema_idx = self.intern_string(schema_name);
-                instrs.push(Instruction::abx(OpCode::Schema, ir, schema_idx));
+                instrs.push(Instruction::abx(OpCode::Schema, ir, schema_idx.into()));
                 ir
             }
             Expr::RawStringLit(s, _) => {
                 let dest = ra.alloc_temp();
-                let kidx = consts.len() as u16;
+                let kidx = consts.len() as u32;
                 consts.push(Constant::String(s.clone()));
                 instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
                 dest
             }
             Expr::BytesLit(bytes, _) => {
                 let dest = ra.alloc_temp();
-                let kidx = consts.len() as u16;
+                let kidx = consts.len() as u32;
                 // Store bytes as hex string constant for now
                 let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
                 consts.push(Constant::String(hex));
@@ -4376,7 +4387,7 @@ impl<'a> Lowerer<'a> {
 
                 // Determine which referenced names are captures from the enclosing scope
                 let param_names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
-                let mut captures: Vec<(String, u8)> = Vec::new(); // (name, outer_reg)
+                let mut captures: Vec<(String, u16)> = Vec::new(); // (name, outer_reg)
                 let mut seen = std::collections::HashSet::new();
                 for name in &referenced {
                     if param_names.contains(&name.as_str()) {
@@ -4414,7 +4425,7 @@ impl<'a> Lowerer<'a> {
                     // The VM already copies captures to regs 0..cap_count on call,
                     // but GetUpval is still emitted for correctness when the frame
                     // is entered via non-closure dispatch paths.
-                    linstrs.push(Instruction::abc(OpCode::GetUpval, reg, idx as u8, 0));
+                    linstrs.push(Instruction::abc(OpCode::GetUpval, reg, idx as u16, 0));
                 }
 
                 // 2. Allocate registers for actual parameters after captures
@@ -4458,7 +4469,7 @@ impl<'a> Lowerer<'a> {
                 // Restore defer stack
                 self.defer_stack = saved_defers;
 
-                let proto_idx = self.lambda_cells.len() as u16;
+                let proto_idx = self.lambda_cells.len() as u32;
                 self.lambda_cells.push(LirCell {
                     name: lambda_name,
                     params: lparams,
@@ -4477,7 +4488,7 @@ impl<'a> Lowerer<'a> {
                     instrs.push(Instruction::abc(
                         OpCode::SetUpval,
                         *outer_reg,
-                        idx as u8,
+                        idx as u16,
                         dest,
                     ));
                 }
@@ -4485,7 +4496,7 @@ impl<'a> Lowerer<'a> {
                 dest
             }
             Expr::TupleLit(elems, _) => {
-                let block_start = ra.alloc_block(1 + elems.len() as u8);
+                let block_start = ra.alloc_block(1 + elems.len() as u16);
                 let dest = block_start;
 
                 let mut elem_regs = Vec::new();
@@ -4494,7 +4505,7 @@ impl<'a> Lowerer<'a> {
                     elem_regs.push(er);
                 }
                 for (i, er) in elem_regs.iter().enumerate() {
-                    let target = dest + 1 + i as u8;
+                    let target = dest + 1 + i as u16;
                     if *er != target {
                         instrs.push(Instruction::abc(OpCode::Move, target, *er, 0));
                     }
@@ -4502,13 +4513,13 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::abc(
                     OpCode::NewTuple,
                     dest,
-                    elems.len() as u8,
+                    elems.len() as u16,
                     0,
                 ));
                 dest
             }
             Expr::SetLit(elems, _) => {
-                let block_start = ra.alloc_block(1 + elems.len() as u8);
+                let block_start = ra.alloc_block(1 + elems.len() as u16);
                 let dest = block_start;
 
                 let mut elem_regs = Vec::new();
@@ -4517,12 +4528,17 @@ impl<'a> Lowerer<'a> {
                     elem_regs.push(er);
                 }
                 for (i, er) in elem_regs.iter().enumerate() {
-                    let target = dest + 1 + i as u8;
+                    let target = dest + 1 + i as u16;
                     if *er != target {
                         instrs.push(Instruction::abc(OpCode::Move, target, *er, 0));
                     }
                 }
-                instrs.push(Instruction::abc(OpCode::NewSet, dest, elems.len() as u8, 0));
+                instrs.push(Instruction::abc(
+                    OpCode::NewSet,
+                    dest,
+                    elems.len() as u16,
+                    0,
+                ));
                 dest
             }
             Expr::RangeExpr {
@@ -4536,7 +4552,7 @@ impl<'a> Lowerer<'a> {
                     self.lower_expr(s, ra, consts, instrs)
                 } else {
                     let r = ra.alloc_temp();
-                    let kidx = consts.len() as u16;
+                    let kidx = consts.len() as u32;
                     consts.push(Constant::Int(0));
                     instrs.push(Instruction::abx(OpCode::LoadK, r, kidx));
                     r
@@ -4548,7 +4564,7 @@ impl<'a> Lowerer<'a> {
                         // intrinsic (which uses exclusive upper bound) includes
                         // the endpoint.
                         let one_reg = ra.alloc_temp();
-                        let one_kidx = consts.len() as u16;
+                        let one_kidx = consts.len() as u32;
                         consts.push(Constant::Int(1));
                         instrs.push(Instruction::abx(OpCode::LoadK, one_reg, one_kidx));
                         let inc_reg = ra.alloc_temp();
@@ -4559,7 +4575,7 @@ impl<'a> Lowerer<'a> {
                     }
                 } else {
                     let r = ra.alloc_temp();
-                    let kidx = consts.len() as u16;
+                    let kidx = consts.len() as u32;
                     consts.push(Constant::Int(0));
                     instrs.push(Instruction::abx(OpCode::LoadK, r, kidx));
                     r
@@ -4579,7 +4595,7 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::abc(
                     OpCode::Intrinsic,
                     dest,
-                    IntrinsicId::Range as u8,
+                    IntrinsicId::Range as u16,
                     start_reg,
                 ));
                 dest
@@ -4589,7 +4605,7 @@ impl<'a> Lowerer<'a> {
                 let dest = ra.alloc_temp();
                 // Check if result is err variant
                 let err_idx = self.intern_string("err");
-                instrs.push(Instruction::abx(OpCode::IsVariant, ir, err_idx));
+                instrs.push(Instruction::abx(OpCode::IsVariant, ir, err_idx.into()));
                 // IsVariant: if matched (is err), skip next instruction
                 // If err: skip Jmp -> go to Return(err)
                 // If ok: execute Jmp -> jump over return
@@ -4599,7 +4615,7 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::abc(OpCode::Return, ir, 1, 0));
                 // Patch jump
                 let after = instrs.len();
-                instrs[jmp_ok] = Instruction::sax(OpCode::Jmp, (after - jmp_ok - 1) as i32);
+                instrs[jmp_ok] = Instruction::sax(OpCode::Jmp, (after - jmp_ok - 1) as i64);
                 // Unbox ok value
                 instrs.push(Instruction::abc(OpCode::Unbox, dest, ir, 0));
                 dest
@@ -4614,7 +4630,7 @@ impl<'a> Lowerer<'a> {
                 let dest = ra.alloc_temp();
                 // Check if result is err variant
                 let err_idx = self.intern_string("err");
-                instrs.push(Instruction::abx(OpCode::IsVariant, ir, err_idx));
+                instrs.push(Instruction::abx(OpCode::IsVariant, ir, err_idx.into()));
                 // IsVariant: if matched (is err), skip next instruction
                 // If err: skip Jmp -> go to handler
                 // If ok: execute Jmp -> jump to unbox ok
@@ -4632,12 +4648,12 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder: jump past ok path
                                                                // Patch jmp_ok to here (ok path)
                 let ok_start = instrs.len();
-                instrs[jmp_ok] = Instruction::sax(OpCode::Jmp, (ok_start - jmp_ok - 1) as i32);
+                instrs[jmp_ok] = Instruction::sax(OpCode::Jmp, (ok_start - jmp_ok - 1) as i64);
                 // Ok path: unbox ok value
                 instrs.push(Instruction::abc(OpCode::Unbox, dest, ir, 0));
                 // Patch jmp_end to here
                 let after = instrs.len();
-                instrs[jmp_end] = Instruction::sax(OpCode::Jmp, (after - jmp_end - 1) as i32);
+                instrs[jmp_end] = Instruction::sax(OpCode::Jmp, (after - jmp_end - 1) as i64);
                 dest
             }
             Expr::NullCoalesce(lhs, rhs, _) => {
@@ -4647,7 +4663,7 @@ impl<'a> Lowerer<'a> {
 
                 // T209: Check if lhs is a result err variant → use rhs
                 let err_idx = self.intern_string("err");
-                instrs.push(Instruction::abx(OpCode::IsVariant, lr, err_idx));
+                instrs.push(Instruction::abx(OpCode::IsVariant, lr, err_idx.into()));
                 // IsVariant: if matched (is err), skip next instruction
                 let jmp_not_err = instrs.len();
                 instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
@@ -4660,11 +4676,11 @@ impl<'a> Lowerer<'a> {
                 // Not-err path:
                 let not_err_start = instrs.len();
                 instrs[jmp_not_err] =
-                    Instruction::sax(OpCode::Jmp, (not_err_start - jmp_not_err - 1) as i32);
+                    Instruction::sax(OpCode::Jmp, (not_err_start - jmp_not_err - 1) as i64);
 
                 // Check if lhs is ok variant → unbox payload
                 let ok_idx = self.intern_string("ok");
-                instrs.push(Instruction::abx(OpCode::IsVariant, lr, ok_idx));
+                instrs.push(Instruction::abx(OpCode::IsVariant, lr, ok_idx.into()));
                 // IsVariant: if matched (is ok), skip next instruction
                 let jmp_not_ok = instrs.len();
                 instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
@@ -4677,13 +4693,13 @@ impl<'a> Lowerer<'a> {
                 // Neither ok nor err: fall through to original NullCo behavior
                 let neither_start = instrs.len();
                 instrs[jmp_not_ok] =
-                    Instruction::sax(OpCode::Jmp, (neither_start - jmp_not_ok - 1) as i32);
+                    Instruction::sax(OpCode::Jmp, (neither_start - jmp_not_ok - 1) as i64);
                 instrs.push(Instruction::abc(OpCode::NullCo, dest, lr, rr));
 
                 // End: patch all jumps
                 let end = instrs.len();
-                instrs[jmp_end_err] = Instruction::sax(OpCode::Jmp, (end - jmp_end_err - 1) as i32);
-                instrs[jmp_end_ok] = Instruction::sax(OpCode::Jmp, (end - jmp_end_ok - 1) as i32);
+                instrs[jmp_end_err] = Instruction::sax(OpCode::Jmp, (end - jmp_end_err - 1) as i64);
+                instrs[jmp_end_ok] = Instruction::sax(OpCode::Jmp, (end - jmp_end_ok - 1) as i64);
 
                 dest
             }
@@ -4705,10 +4721,10 @@ impl<'a> Lowerer<'a> {
                 // Null case: load nil
                 let null_start = instrs.len();
                 instrs[jmp_null] =
-                    Instruction::sax(OpCode::Jmp, (null_start - jmp_null - 1) as i32);
+                    Instruction::sax(OpCode::Jmp, (null_start - jmp_null - 1) as i64);
                 instrs.push(Instruction::abc(OpCode::LoadNil, dest, 0, 0));
                 let after = instrs.len();
-                instrs[jmp_end] = Instruction::sax(OpCode::Jmp, (after - jmp_end - 1) as i32);
+                instrs[jmp_end] = Instruction::sax(OpCode::Jmp, (after - jmp_end - 1) as i64);
                 dest
             }
             Expr::NullSafeIndex(obj, index, _) => {
@@ -4730,10 +4746,10 @@ impl<'a> Lowerer<'a> {
                 // Null case: load nil
                 let null_start = instrs.len();
                 instrs[jmp_null] =
-                    Instruction::sax(OpCode::Jmp, (null_start - jmp_null - 1) as i32);
+                    Instruction::sax(OpCode::Jmp, (null_start - jmp_null - 1) as i64);
                 instrs.push(Instruction::abc(OpCode::LoadNil, dest, 0, 0));
                 let after = instrs.len();
-                instrs[jmp_end] = Instruction::sax(OpCode::Jmp, (after - jmp_end - 1) as i32);
+                instrs[jmp_end] = Instruction::sax(OpCode::Jmp, (after - jmp_end - 1) as i64);
                 dest
             }
             Expr::NullAssert(inner, _) => {
@@ -4742,7 +4758,7 @@ impl<'a> Lowerer<'a> {
 
                 // T209: Check if value is a result err variant first
                 let err_idx = self.intern_string("err");
-                instrs.push(Instruction::abx(OpCode::IsVariant, ir, err_idx));
+                instrs.push(Instruction::abx(OpCode::IsVariant, ir, err_idx.into()));
                 // IsVariant: if matched (is err), skip next instruction
                 // If err: skip Jmp -> go to halt
                 // If ok-or-other: execute Jmp -> jump past err halt
@@ -4750,7 +4766,7 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
 
                 // Err path: halt with error
-                let err_msg_idx = consts.len() as u16;
+                let err_msg_idx = consts.len() as u32;
                 consts.push(Constant::String(
                     "result unwrap failed: value is err".to_string(),
                 ));
@@ -4761,11 +4777,11 @@ impl<'a> Lowerer<'a> {
                 // Patch jump past err halt
                 let after_err = instrs.len();
                 instrs[jmp_not_err] =
-                    Instruction::sax(OpCode::Jmp, (after_err - jmp_not_err - 1) as i32);
+                    Instruction::sax(OpCode::Jmp, (after_err - jmp_not_err - 1) as i64);
 
                 // Check if value is ok variant → unbox it
                 let ok_idx = self.intern_string("ok");
-                instrs.push(Instruction::abx(OpCode::IsVariant, ir, ok_idx));
+                instrs.push(Instruction::abx(OpCode::IsVariant, ir, ok_idx.into()));
                 // IsVariant: if matched (is ok), skip next instruction
                 let jmp_not_ok = instrs.len();
                 instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
@@ -4778,7 +4794,7 @@ impl<'a> Lowerer<'a> {
                 // Not-ok path: check for null (original NullAssert behavior)
                 let not_ok_start = instrs.len();
                 instrs[jmp_not_ok] =
-                    Instruction::sax(OpCode::Jmp, (not_ok_start - jmp_not_ok - 1) as i32);
+                    Instruction::sax(OpCode::Jmp, (not_ok_start - jmp_not_ok - 1) as i64);
 
                 // If null, halt with error
                 let nil_reg = ra.alloc_temp();
@@ -4789,19 +4805,19 @@ impl<'a> Lowerer<'a> {
                 let jmp_ok2 = instrs.len();
                 instrs.push(Instruction::sax(OpCode::Jmp, 0));
                 // Null case: halt
-                let msg_idx = consts.len() as u16;
+                let msg_idx = consts.len() as u32;
                 consts.push(Constant::String("null assertion failed".to_string()));
                 let msg_reg = ra.alloc_temp();
                 instrs.push(Instruction::abx(OpCode::LoadK, msg_reg, msg_idx));
                 instrs.push(Instruction::abc(OpCode::Halt, msg_reg, 0, 0));
                 // Not null: just use the value as-is
                 let after_null = instrs.len();
-                instrs[jmp_ok2] = Instruction::sax(OpCode::Jmp, (after_null - jmp_ok2 - 1) as i32);
+                instrs[jmp_ok2] = Instruction::sax(OpCode::Jmp, (after_null - jmp_ok2 - 1) as i64);
                 instrs.push(Instruction::abc(OpCode::Move, dest, ir, 0));
 
                 // Patch jmp_done
                 let end = instrs.len();
-                instrs[jmp_done] = Instruction::sax(OpCode::Jmp, (end - jmp_done - 1) as i32);
+                instrs[jmp_done] = Instruction::sax(OpCode::Jmp, (end - jmp_done - 1) as i64);
 
                 dest
             }
@@ -4815,13 +4831,13 @@ impl<'a> Lowerer<'a> {
                 let idx_reg = ra.alloc_temp();
                 let len_reg = ra.alloc_temp();
 
-                let zero_idx = consts.len() as u16;
+                let zero_idx = consts.len() as u32;
                 consts.push(Constant::Int(0));
                 instrs.push(Instruction::abx(OpCode::LoadK, idx_reg, zero_idx));
                 instrs.push(Instruction::abc(
                     OpCode::Intrinsic,
                     len_reg,
-                    IntrinsicId::Length as u8,
+                    IntrinsicId::Length as u16,
                     src_reg,
                 ));
 
@@ -4841,18 +4857,18 @@ impl<'a> Lowerer<'a> {
                 ));
                 instrs.push(Instruction::abc(OpCode::Append, dest, elem_reg, 0));
 
-                let one_idx = consts.len() as u16;
+                let one_idx = consts.len() as u32;
                 consts.push(Constant::Int(1));
                 let one_reg = ra.alloc_temp();
                 instrs.push(Instruction::abx(OpCode::LoadK, one_reg, one_idx));
                 instrs.push(Instruction::abc(OpCode::Add, idx_reg, idx_reg, one_reg));
 
-                let back_offset = loop_start as i32 - instrs.len() as i32 - 1;
+                let back_offset = loop_start as i64 - instrs.len() as i64 - 1;
                 instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
 
                 let after_loop = instrs.len();
                 instrs[break_jmp] =
-                    Instruction::sax(OpCode::Jmp, (after_loop - break_jmp - 1) as i32);
+                    Instruction::sax(OpCode::Jmp, (after_loop - break_jmp - 1) as i64);
                 dest
             }
             Expr::IfExpr {
@@ -4877,12 +4893,12 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::sax(OpCode::Jmp, 0));
 
                 let else_start = instrs.len();
-                instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, (else_start - jmp_idx - 1) as i32);
+                instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, (else_start - jmp_idx - 1) as i64);
                 let else_reg = self.lower_expr(else_val, ra, consts, instrs);
                 instrs.push(Instruction::abc(OpCode::Move, dest, else_reg, 0));
 
                 let after = instrs.len();
-                instrs[else_jmp] = Instruction::sax(OpCode::Jmp, (after - else_jmp - 1) as i32);
+                instrs[else_jmp] = Instruction::sax(OpCode::Jmp, (after - else_jmp - 1) as i64);
                 dest
             }
             Expr::AwaitExpr(inner, _) => {
@@ -4937,20 +4953,20 @@ impl<'a> Lowerer<'a> {
 
                 // For each clause, emit: lower iter, init idx, compute len, loop header
                 // Track (loop_start, break_jmp, idx_reg) for each clause to patch later
-                let mut loop_info: Vec<(usize, usize, u8)> = Vec::new();
+                let mut loop_info: Vec<(usize, usize, u16)> = Vec::new();
                 for clause in &all_clauses {
                     let iter_reg = self.lower_expr(clause.iter, ra, consts, instrs);
                     let idx_reg = ra.alloc_temp();
                     let len_reg = ra.alloc_temp();
                     let elem_reg = ra.alloc_named(clause.var);
 
-                    let zero_idx = consts.len() as u16;
+                    let zero_idx = consts.len() as u32;
                     consts.push(Constant::Int(0));
                     instrs.push(Instruction::abx(OpCode::LoadK, idx_reg, zero_idx));
                     instrs.push(Instruction::abc(
                         OpCode::Intrinsic,
                         len_reg,
-                        IntrinsicId::Length as u8,
+                        IntrinsicId::Length as u16,
                         iter_reg,
                     ));
 
@@ -4994,7 +5010,7 @@ impl<'a> Lowerer<'a> {
                         // For map comprehension, body should be a tuple (key, value).
                         // Extract key at index 0 and value at index 1.
                         let zero_reg = ra.alloc_temp();
-                        let kidx = consts.len() as u16;
+                        let kidx = consts.len() as u32;
                         consts.push(Constant::Int(0));
                         instrs.push(Instruction::abx(OpCode::LoadK, zero_reg, kidx));
                         let key_reg = ra.alloc_temp();
@@ -5006,7 +5022,7 @@ impl<'a> Lowerer<'a> {
                         ));
 
                         let one_k = ra.alloc_temp();
-                        let kidx2 = consts.len() as u16;
+                        let kidx2 = consts.len() as u32;
                         consts.push(Constant::Int(1));
                         instrs.push(Instruction::abx(OpCode::LoadK, one_k, kidx2));
                         let val_reg = ra.alloc_temp();
@@ -5023,23 +5039,23 @@ impl<'a> Lowerer<'a> {
 
                 if let Some(cj) = cond_jmp {
                     let after_body = instrs.len();
-                    instrs[cj] = Instruction::sax(OpCode::Jmp, (after_body - cj - 1) as i32);
+                    instrs[cj] = Instruction::sax(OpCode::Jmp, (after_body - cj - 1) as i64);
                 }
 
                 // Close all loops in reverse order (innermost first)
                 for &(loop_start, break_jmp, idx_reg) in loop_info.iter().rev() {
-                    let one_idx = consts.len() as u16;
+                    let one_idx = consts.len() as u32;
                     consts.push(Constant::Int(1));
                     let one_reg = ra.alloc_temp();
                     instrs.push(Instruction::abx(OpCode::LoadK, one_reg, one_idx));
                     instrs.push(Instruction::abc(OpCode::Add, idx_reg, idx_reg, one_reg));
 
-                    let back_offset = loop_start as i32 - instrs.len() as i32 - 1;
+                    let back_offset = loop_start as i64 - instrs.len() as i64 - 1;
                     instrs.push(Instruction::sax(OpCode::Jmp, back_offset));
 
                     let after_loop = instrs.len();
                     instrs[break_jmp] =
-                        Instruction::sax(OpCode::Jmp, (after_loop - break_jmp - 1) as i32);
+                        Instruction::sax(OpCode::Jmp, (after_loop - break_jmp - 1) as i64);
                 }
 
                 // For set comprehensions, convert the list to a set using ToSet intrinsic
@@ -5048,7 +5064,7 @@ impl<'a> Lowerer<'a> {
                     instrs.push(Instruction::abc(
                         OpCode::Intrinsic,
                         dest,
-                        IntrinsicId::ToSet as u8,
+                        IntrinsicId::ToSet as u16,
                         temp_reg,
                     ));
                     dest
@@ -5093,13 +5109,13 @@ impl<'a> Lowerer<'a> {
 
                     let next_arm = instrs.len();
                     for j in fail_jumps {
-                        instrs[j] = Instruction::sax(OpCode::Jmp, (next_arm - j - 1) as i32);
+                        instrs[j] = Instruction::sax(OpCode::Jmp, (next_arm - j - 1) as i64);
                     }
                 }
 
                 let end = instrs.len();
                 for jmp_idx in end_jumps {
-                    instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, (end - jmp_idx - 1) as i32);
+                    instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, (end - jmp_idx - 1) as i64);
                 }
                 dest
             }
@@ -5110,7 +5126,7 @@ impl<'a> Lowerer<'a> {
             } => {
                 let val_reg = self.lower_expr(inner, ra, consts, instrs);
                 let type_str_reg = ra.alloc_temp();
-                let kidx = consts.len() as u16;
+                let kidx = consts.len() as u32;
                 consts.push(Constant::String(type_name.clone()));
                 instrs.push(Instruction::abx(OpCode::LoadK, type_str_reg, kidx));
                 let dest = ra.alloc_temp();
@@ -5149,7 +5165,7 @@ impl<'a> Lowerer<'a> {
                         instrs.push(Instruction::abc(
                             OpCode::Intrinsic,
                             dest,
-                            intrinsic as u8,
+                            intrinsic as u16,
                             arg_start,
                         ));
                         dest
@@ -5212,7 +5228,7 @@ impl<'a> Lowerer<'a> {
                     instrs.push(Instruction::abc(OpCode::Move, dest, val, 0));
                     end_jumps.push(instrs.len());
                     instrs.push(Instruction::sax(OpCode::Jmp, 0));
-                    let target = instrs.len() as i32 - jmp_idx as i32;
+                    let target = instrs.len() as i64 - jmp_idx as i64;
                     instrs[jmp_idx] = Instruction::sax(OpCode::Jmp, target);
                 }
                 if let Some(eb) = else_body {
@@ -5222,7 +5238,7 @@ impl<'a> Lowerer<'a> {
                     instrs.push(Instruction::abc(OpCode::LoadNil, dest, 0, 0));
                 }
                 for idx in end_jumps {
-                    let target = instrs.len() as i32 - idx as i32;
+                    let target = instrs.len() as i64 - idx as i64;
                     instrs[idx] = Instruction::sax(OpCode::Jmp, target);
                 }
                 dest
@@ -5232,22 +5248,22 @@ impl<'a> Lowerer<'a> {
                     let dest = ra.alloc_temp();
                     match val {
                         ConstValue::Int(n) => {
-                            let kidx = consts.len() as u16;
+                            let kidx = consts.len() as u32;
                             consts.push(Constant::Int(n));
                             instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
                         }
                         ConstValue::BigInt(n) => {
-                            let kidx = consts.len() as u16;
+                            let kidx = consts.len() as u32;
                             consts.push(Constant::BigInt(n));
                             instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
                         }
                         ConstValue::Float(f) => {
-                            let kidx = consts.len() as u16;
+                            let kidx = consts.len() as u32;
                             consts.push(Constant::Float(f));
                             instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
                         }
                         ConstValue::String(s) => {
-                            let kidx = consts.len() as u16;
+                            let kidx = consts.len() as u32;
                             consts.push(Constant::String(s));
                             instrs.push(Instruction::abx(OpCode::LoadK, dest, kidx));
                         }
@@ -5286,27 +5302,27 @@ impl<'a> Lowerer<'a> {
                 }
                 // Allocate a contiguous block [dest, arg1, arg2, ...] to avoid
                 // clobbering live registers when dest comes from the free list (T193).
-                let block = ra.alloc_block(1 + args.len() as u8);
+                let block = ra.alloc_block(1 + args.len() as u16);
                 let dest = block;
                 // Move args into consecutive registers starting at dest+1
                 for (i, ar) in arg_regs.iter().enumerate() {
-                    let target = dest + 1 + i as u8;
+                    let target = dest + 1 + i as u16;
                     if *ar != target {
                         instrs.push(Instruction::abc(OpCode::Move, target, *ar, 0));
                     }
                 }
                 // Load effect_name and operation as constants
-                let eff_kidx = consts.len() as u16;
+                let eff_kidx = consts.len() as u32;
                 consts.push(Constant::String(effect_name.clone()));
-                let op_kidx = consts.len() as u16;
+                let op_kidx = consts.len() as u32;
                 consts.push(Constant::String(operation.clone()));
                 // Perform opcode: A=dest, B=effect_name const, C=operation const
                 // We use bx to pack both indices: effect in b, operation in c
                 instrs.push(Instruction::abc(
                     OpCode::Perform,
                     dest,
-                    eff_kidx as u8,
-                    op_kidx as u8,
+                    eff_kidx as u16,
+                    op_kidx as u16,
                 ));
                 dest
             }
@@ -5327,7 +5343,7 @@ impl<'a> Lowerer<'a> {
                     });
                     let push_idx = instrs.len();
                     // Placeholder: a=meta_idx, bx=0 (patched later)
-                    instrs.push(Instruction::abx(OpCode::HandlePush, meta_idx as u8, 0));
+                    instrs.push(Instruction::abx(OpCode::HandlePush, meta_idx as u16, 0));
                     handle_push_indices.push(push_idx);
                 }
 
@@ -5367,7 +5383,7 @@ impl<'a> Lowerer<'a> {
 
                     // Patch the HandlePush instruction with the correct offset
                     instrs[push_idx] =
-                        Instruction::abx(OpCode::HandlePush, meta_idx as u8, offset as u16);
+                        Instruction::abx(OpCode::HandlePush, meta_idx as u16, offset as u32);
 
                     // Update handler_ip in the metadata (for debugging/serialization)
                     self.effect_handler_metas[meta_idx].handler_ip = handler_code_start;
@@ -5380,7 +5396,7 @@ impl<'a> Lowerer<'a> {
 
                 // Patch jump past handlers
                 let after_handlers = instrs.len();
-                let jmp_offset = after_handlers as i32 - jmp_past_handlers_idx as i32 - 1;
+                let jmp_offset = after_handlers as i64 - jmp_past_handlers_idx as i64 - 1;
                 instrs[jmp_past_handlers_idx] = Instruction::sax(OpCode::Jmp, jmp_offset);
 
                 dest
@@ -5401,7 +5417,7 @@ impl<'a> Lowerer<'a> {
         ra: &mut RegAlloc,
         consts: &mut Vec<Constant>,
         instrs: &mut Vec<Instruction>,
-    ) -> u8 {
+    ) -> u16 {
         let mut kv_regs = Vec::new();
         for (idx, arg) in args.iter().enumerate() {
             let (key, value_reg) = match arg {
@@ -5415,7 +5431,7 @@ impl<'a> Lowerer<'a> {
                 CallArg::Role(name, content, _) => {
                     let content_reg = self.lower_expr(content, ra, consts, instrs);
                     let prefix_reg = ra.alloc_temp();
-                    let kidx = consts.len() as u16;
+                    let kidx = consts.len() as u32;
                     consts.push(Constant::String(format!("{}: ", name)));
                     instrs.push(Instruction::abx(OpCode::LoadK, prefix_reg, kidx));
                     let rendered_reg = ra.alloc_temp();
@@ -5430,7 +5446,7 @@ impl<'a> Lowerer<'a> {
             };
 
             let key_reg = ra.alloc_temp();
-            let key_idx = consts.len() as u16;
+            let key_idx = consts.len() as u32;
             consts.push(Constant::String(key));
             instrs.push(Instruction::abx(OpCode::LoadK, key_reg, key_idx));
 
@@ -5441,11 +5457,11 @@ impl<'a> Lowerer<'a> {
             kv_regs.push((key_reg, value_copy_reg));
         }
 
-        let block_start = ra.alloc_block(1 + (kv_regs.len() * 2) as u8);
+        let block_start = ra.alloc_block(1 + (kv_regs.len() * 2) as u16);
         let dest = block_start;
 
         for (i, (key_reg, value_reg)) in kv_regs.iter().enumerate() {
-            let key_target = dest + 1 + (i as u8) * 2;
+            let key_target = dest + 1 + (i as u16) * 2;
             let value_target = key_target + 1;
             if *key_reg != key_target {
                 instrs.push(Instruction::abc(OpCode::Move, key_target, *key_reg, 0));
@@ -5458,13 +5474,13 @@ impl<'a> Lowerer<'a> {
         instrs.push(Instruction::abc(
             OpCode::NewMap,
             dest,
-            kv_regs.len() as u8,
+            kv_regs.len() as u16,
             0,
         ));
         let tool_index = alias
             .and_then(|name| self.tool_indices.get(name).copied())
             .unwrap_or(0);
-        instrs.push(Instruction::abx(OpCode::ToolCall, dest, tool_index));
+        instrs.push(Instruction::abx(OpCode::ToolCall, dest, tool_index.into()));
         dest
     }
 }
@@ -5797,7 +5813,7 @@ fn format_type_expr(ty: &TypeExpr) -> String {
     }
 }
 
-fn patch_lambda_closure_indices(cell: &mut LirCell, lambda_base: u16) {
+fn patch_lambda_closure_indices(cell: &mut LirCell, lambda_base: u32) {
     for instr in &mut cell.instructions {
         if instr.op == OpCode::Closure {
             let patched = instr.bx().saturating_add(lambda_base);
@@ -5952,7 +5968,7 @@ mod tests {
         let module = lower_src(src);
         let instrs = &module.cells[0].instructions;
         // Find all Jmp instructions
-        let jmps: Vec<(usize, i32)> = instrs
+        let jmps: Vec<(usize, i64)> = instrs
             .iter()
             .enumerate()
             .filter(|(_, i)| i.op == OpCode::Jmp)
@@ -6025,14 +6041,14 @@ mod tests {
             ops.contains(&OpCode::Append),
             "set comprehension should emit Append"
         );
-        let intrinsics: Vec<u8> = module.cells[0]
+        let intrinsics: Vec<u16> = module.cells[0]
             .instructions
             .iter()
             .filter(|i| i.op == OpCode::Intrinsic)
             .map(|i| i.b)
             .collect();
         assert!(
-            intrinsics.contains(&(IntrinsicId::ToSet as u8)),
+            intrinsics.contains(&(IntrinsicId::ToSet as u16)),
             "set comprehension should use ToSet intrinsic"
         );
     }
@@ -6108,7 +6124,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             intr.b,
-            IntrinsicId::Sort as u8,
+            IntrinsicId::Sort as u16,
             "sort should use Sort intrinsic ID"
         );
     }
@@ -6124,7 +6140,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             intr.b,
-            IntrinsicId::Filter as u8,
+            IntrinsicId::Filter as u16,
             "filter should use Filter intrinsic ID"
         );
     }
@@ -6135,7 +6151,7 @@ mod tests {
         let module = lower_src(src);
         let instrs = &module.cells[0].instructions;
         // Should have both forward jumps (break) and backward jumps (while loop back)
-        let jmps: Vec<i32> = instrs
+        let jmps: Vec<i64> = instrs
             .iter()
             .filter(|i| i.op == OpCode::Jmp)
             .map(|i| i.sax_val())
@@ -6172,7 +6188,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             intr.b,
-            IntrinsicId::Matches as u8,
+            IntrinsicId::Matches as u16,
             "matches should use Matches intrinsic ID"
         );
     }
@@ -6188,7 +6204,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             intr.b,
-            IntrinsicId::TraceRef as u8,
+            IntrinsicId::TraceRef as u16,
             "trace_ref should use TraceRef intrinsic ID"
         );
     }
@@ -6394,14 +6410,14 @@ mod tests {
             ops.contains(&OpCode::Append),
             "set comprehension should use Append during iteration"
         );
-        let intrinsics: Vec<u8> = module.cells[0]
+        let intrinsics: Vec<u16> = module.cells[0]
             .instructions
             .iter()
             .filter(|i| i.op == OpCode::Intrinsic)
             .map(|i| i.b)
             .collect();
         assert!(
-            intrinsics.contains(&(IntrinsicId::ToSet as u8)),
+            intrinsics.contains(&(IntrinsicId::ToSet as u16)),
             "set comprehension should use ToSet intrinsic to convert list to set"
         );
     }

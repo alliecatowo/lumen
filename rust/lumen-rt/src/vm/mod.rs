@@ -79,7 +79,7 @@ pub enum VmError {
     #[error("undefined cell: {0}")]
     UndefinedCell(String),
     #[error("register out of bounds: r{0} in cell with {1} registers")]
-    RegisterOOB(u8, u8),
+    RegisterOOB(u16, u16),
     #[error("tool call error: {0}")]
     ToolError(String),
     #[error("type error at runtime: {0}")]
@@ -819,8 +819,8 @@ impl VM {
         if reg < cell_registers as usize {
             Ok(())
         } else {
-            let offending = reg.min(u8::MAX as usize) as u8;
-            Err(VmError::RegisterOOB(offending, cell_registers as u8))
+            let offending = reg.min(u16::MAX as usize) as u16;
+            Err(VmError::RegisterOOB(offending, cell_registers))
         }
     }
 
@@ -2542,7 +2542,7 @@ impl VM {
                 // Control flow
                 OpCode::Jmp => {
                     let offset = instr.sax_val();
-                    ip = (ip as i32 + offset) as usize;
+                    ip = (ip as i64 + offset) as usize;
                 }
                 // Call and TailCall are handled in the pre-match above
                 OpCode::Call | OpCode::TailCall => {
@@ -2705,12 +2705,12 @@ impl VM {
                 OpCode::Break => {
                     // Jump to loop end (offset in Ax)
                     let offset = instr.sax_val();
-                    ip = (ip as i32 + offset) as usize;
+                    ip = (ip as i64 + offset) as usize;
                 }
                 OpCode::Continue => {
                     // Jump to loop start (offset in Ax)
                     let offset = instr.sax_val();
-                    ip = (ip as i32 + offset) as usize;
+                    ip = (ip as i64 + offset) as usize;
                 }
 
                 // Intrinsic is handled in the pre-match above
@@ -2732,7 +2732,7 @@ impl VM {
                     // Get upvalue from current closure's captures
                     // The current frame must be running a closure
                     // base == current frame's base_register
-                    if b < 256 {
+                    if b < 65536 {
                         self.registers[base + a] = self.registers[base + b].clone();
                     }
                 }
@@ -5306,7 +5306,7 @@ end
                     registers: 8,
                     constants: vec![],
                     instructions: vec![
-                        Instruction::abx(OpCode::LoadInt, 0, 42_u16), // r0 = 42
+                        Instruction::abx(OpCode::LoadInt, 0, 42_u32), // r0 = 42
                         Instruction::abx(OpCode::Closure, 1, 1),      // r1 = Closure(cell 1)
                         Instruction::abc(OpCode::SetUpval, 0, 0, 1), // capture r0 -> closure[0] in r1
                         Instruction::abc(OpCode::Call, 1, 0, 0),     // call r1 with 0 args
@@ -5359,8 +5359,8 @@ end
                     registers: 8,
                     constants: vec![],
                     instructions: vec![
-                        Instruction::abx(OpCode::LoadInt, 0, 10_u16), // r0 = 10
-                        Instruction::abx(OpCode::LoadInt, 1, 20_u16), // r1 = 20
+                        Instruction::abx(OpCode::LoadInt, 0, 10_u32), // r0 = 10
+                        Instruction::abx(OpCode::LoadInt, 1, 20_u32), // r1 = 20
                         Instruction::abx(OpCode::Closure, 2, 1),      // r2 = Closure(cell 1)
                         Instruction::abc(OpCode::SetUpval, 0, 0, 2),  // capture r0 -> closure[0]
                         Instruction::abc(OpCode::SetUpval, 1, 1, 2),  // capture r1 -> closure[1]

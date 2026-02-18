@@ -1,0 +1,122 @@
+# Fannkuch-Redux benchmark, N=10
+# Lumen limitation: No index assignment (list[i] = val doesn't work).
+# This implementation uses list concatenation to simulate index mutation.
+# Performance will be much slower than languages with mutable arrays.
+
+cell list_set(lst: list[Int], idx: Int, val: Int) -> list[Int]
+  let result = []
+  let i = 0
+  let n = len(lst)
+  while i < n
+    if i == idx
+      result = append(result, val)
+    else
+      result = append(result, lst[i])
+    end
+    i = i + 1
+  end
+  return result
+end
+
+cell reverse_prefix(lst: list[Int], k: Int) -> list[Int]
+  # Reverse elements 0..k (inclusive)
+  let result = []
+  let i = k
+  while i >= 0
+    result = append(result, lst[i])
+    i = i - 1
+  end
+  let j = k + 1
+  let n = len(lst)
+  while j < n
+    result = append(result, lst[j])
+    j = j + 1
+  end
+  return result
+end
+
+cell rotate_left(lst: list[Int], r: Int) -> list[Int]
+  # Shift elements 0..r left by one, put old [0] at position r
+  let p0 = lst[0]
+  let result = []
+  let i = 0
+  while i < r
+    result = append(result, lst[i + 1])
+    i = i + 1
+  end
+  result = append(result, p0)
+  let j = r + 1
+  let n = len(lst)
+  while j < n
+    result = append(result, lst[j])
+    j = j + 1
+  end
+  return result
+end
+
+cell main() -> Null
+  let n = 10
+  let perm1 = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  let count = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  let max_flips = 0
+  let checksum = 0
+  let r = n
+  let perm_count = 0
+  let done = false
+
+  while done == false
+    # Set counts
+    while r > 1
+      count = list_set(count, r - 1, r)
+      r = r - 1
+    end
+
+    # Copy perm1 to perm
+    let perm = []
+    let i = 0
+    while i < n
+      perm = append(perm, perm1[i])
+      i = i + 1
+    end
+
+    # Count flips
+    let flips = 0
+    let k = perm[0]
+    while k != 0
+      perm = reverse_prefix(perm, k)
+      flips = flips + 1
+      k = perm[0]
+    end
+
+    if flips > max_flips
+      max_flips = flips
+    end
+    if perm_count % 2 == 0
+      checksum = checksum + flips
+    else
+      checksum = checksum - flips
+    end
+    perm_count = perm_count + 1
+
+    # Next permutation
+    let found_next = false
+    while found_next == false
+      if r == n
+        done = true
+        found_next = true
+      else
+        perm1 = rotate_left(perm1, r)
+        count = list_set(count, r, count[r] - 1)
+        if count[r] > 0
+          found_next = true
+        else
+          r = r + 1
+        end
+      end
+    end
+  end
+
+  print(to_string(checksum))
+  print("Pfannkuchen(" + to_string(n) + ") = " + to_string(max_flips))
+  return null
+end

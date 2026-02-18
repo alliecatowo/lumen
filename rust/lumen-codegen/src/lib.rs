@@ -4,6 +4,7 @@
 
 pub mod aot;
 pub mod bench_programs;
+pub mod collection_helpers;
 pub mod context;
 pub mod emit;
 pub mod ffi;

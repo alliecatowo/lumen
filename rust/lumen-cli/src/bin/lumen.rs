@@ -1,7 +1,7 @@
 //! Lumen CLI — command-line interface for the Lumen language.
 
 use lumen_cli::{
-    ci_output, colors, config, doc, error_chain, fmt, lang_ref, lint, module_resolver, repl,
+    ci_output, colors, config, dap, doc, error_chain, fmt, lang_ref, lint, module_resolver, repl,
     test_cmd,
 };
 
@@ -175,6 +175,16 @@ enum Commands {
         edition: String,
         /// Files to migrate
         files: Vec<PathBuf>,
+    },
+    /// Launch a Debug Adapter Protocol (DAP) server for debugging Lumen programs
+    Debug {
+        /// Path to the source file to debug
+        #[arg()]
+        file: PathBuf,
+
+        /// Allow unstable features without errors
+        #[arg(long)]
+        allow_unstable: bool,
     },
 }
 
@@ -426,6 +436,10 @@ fn main() {
         },
         Commands::Watch { path, interval } => cmd_watch(&path, interval),
         Commands::Migrate { edition, files } => cmd_migrate(&edition, &files),
+        Commands::Debug {
+            file,
+            allow_unstable,
+        } => dap::run_dap_server(&file, allow_unstable),
     }
 }
 
@@ -1102,9 +1116,9 @@ fn cmd_run(
 
     // Optionally set up tracing
     let trace_store = trace_dir.map(|dir| {
-        Arc::new(Mutex::new(lumen_rt::services::trace::store::TraceStore::new(
-            &dir,
-        )))
+        Arc::new(Mutex::new(
+            lumen_rt::services::trace::store::TraceStore::new(&dir),
+        ))
     });
     let mut trace_run_id: Option<String> = None;
 
@@ -1297,7 +1311,9 @@ fn cmd_trace_show(run_id: &str, trace_dir: &Path, format: TraceShowFormat, verif
     }
 }
 
-fn read_trace_events(path: &Path) -> Result<Vec<lumen_rt::services::trace::events::TraceEvent>, String> {
+fn read_trace_events(
+    path: &Path,
+) -> Result<Vec<lumen_rt::services::trace::events::TraceEvent>, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read trace '{}': {}", path.display(), e))?;
 
@@ -1311,7 +1327,9 @@ fn read_trace_events(path: &Path) -> Result<Vec<lumen_rt::services::trace::event
         .collect()
 }
 
-fn verify_trace_chain(events: &[lumen_rt::services::trace::events::TraceEvent]) -> Result<(), String> {
+fn verify_trace_chain(
+    events: &[lumen_rt::services::trace::events::TraceEvent],
+) -> Result<(), String> {
     lumen_rt::services::trace::store::verify_event_chain(events)
 }
 

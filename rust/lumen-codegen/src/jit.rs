@@ -23,120 +23,364 @@ use crate::emit::CodegenError;
 use crate::types::lir_type_str_to_cl_type;
 
 // ---------------------------------------------------------------------------
-// String runtime helpers (extern "C" functions callable from JIT code)
+// JitString — refcounted string with C-compatible layout
 // ---------------------------------------------------------------------------
 
-/// Allocate a new heap `String` from a raw UTF-8 byte pointer and length.
-/// Returns a `*mut String` as i64.
+/// A reference-counted string with a C-compatible memory layout.
 ///
-/// # Safety
-/// `ptr` must point to valid UTF-8 bytes of at least `len` bytes.
-extern "C" fn jit_rt_string_alloc(ptr: *const u8, len: usize) -> i64 {
-    let s = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len)) };
-    let boxed = Box::new(s.to_string());
-    Box::into_raw(boxed) as i64
+/// This replaces `Box<String>` for JIT string operations. The key advantage
+/// is that cloning is O(1) (refcount increment) instead of O(n) (heap copy),
+/// and length queries are O(1) field reads instead of function calls.
+///
+/// # Layout (32 bytes, all fields i64-aligned)
+///
+/// | Offset | Field    | Description                              |
+/// |--------|----------|------------------------------------------|
+/// | 0      | refcount | Reference count (i64, starts at 1)       |
+/// | 8      | len      | Byte length of the string (i64)          |
+/// | 16     | cap      | Capacity of the data buffer (i64)        |
+/// | 24     | ptr      | Pointer to UTF-8 data buffer (*mut u8)   |
+///
+/// When refcount drops to 0, both the data buffer and the JitString struct
+/// are freed.
+#[repr(C)]
+struct JitString {
+    refcount: i64,
+    len: i64,
+    cap: i64,
+    ptr: *mut u8,
 }
 
-/// Concatenate two heap strings. Both inputs are `*mut String` as i64.
-/// Returns a new `*mut String` as i64 owning the concatenated result.
-/// The input strings are NOT freed (callers manage lifetimes).
-///
-/// # Safety
-/// Both `a` and `b` must be valid `*mut String` pointers.
-extern "C" fn jit_rt_string_concat(a: i64, b: i64) -> i64 {
-    let sa = unsafe { &*(a as *const String) };
-    let sb = unsafe { &*(b as *const String) };
-    let mut result = String::with_capacity(sa.len() + sb.len());
-    result.push_str(sa);
-    result.push_str(sb);
-    let boxed = Box::new(result);
-    Box::into_raw(boxed) as i64
-}
+impl JitString {
+    /// Allocate a new JitString from raw UTF-8 bytes.
+    fn from_bytes(data: &[u8]) -> *mut JitString {
+        let len = data.len();
+        // Allocate data buffer
+        let data_ptr = if len > 0 {
+            let mut buf = Vec::with_capacity(len);
+            buf.extend_from_slice(data);
+            let ptr = buf.as_mut_ptr();
+            std::mem::forget(buf);
+            ptr
+        } else {
+            std::ptr::null_mut()
+        };
 
-/// Concatenate two heap strings with in-place optimization.
-/// Takes ownership of `a`, appends `b` to it, and returns the modified `a`.
-/// The string `a` is consumed and must not be used afterward.
-/// The string `b` is borrowed (not consumed).
-///
-/// This is used for the pattern `a = a + b` where we can reuse `a`'s allocation.
-///
-/// # Safety
-/// Both `a` and `b` must be valid `*mut String` pointers.
-/// After this call, `a` is consumed and the returned pointer should be used instead.
-extern "C" fn jit_rt_string_concat_mut(a: i64, b: i64) -> i64 {
-    let mut boxed_a = unsafe { Box::from_raw(a as *mut String) };
-    let sb = unsafe { &*(b as *const String) };
-
-    // Append b to a in-place (will reallocate if needed, but may reuse capacity)
-    boxed_a.push_str(sb);
-
-    Box::into_raw(boxed_a) as i64
-}
-
-/// Clone a heap string. Input is `*mut String` as i64.
-/// Returns a new `*mut String` as i64.
-///
-/// # Safety
-/// `s` must be a valid `*mut String` pointer.
-extern "C" fn jit_rt_string_clone(s: i64) -> i64 {
-    let original = unsafe { &*(s as *const String) };
-    let boxed = Box::new(original.clone());
-    Box::into_raw(boxed) as i64
-}
-
-/// Compare two heap strings for equality. Returns 1 if equal, 0 if not.
-///
-/// # Safety
-/// Both `a` and `b` must be valid `*mut String` pointers.
-extern "C" fn jit_rt_string_eq(a: i64, b: i64) -> i64 {
-    let sa = unsafe { &*(a as *const String) };
-    let sb = unsafe { &*(b as *const String) };
-    if sa == sb {
-        1
-    } else {
-        0
+        let js = Box::new(JitString {
+            refcount: 1,
+            len: len as i64,
+            cap: len as i64,
+            ptr: data_ptr,
+        });
+        Box::into_raw(js)
     }
-}
 
-/// Compare two heap strings, returning -1/0/1 for less/equal/greater.
-///
-/// # Safety
-/// Both `a` and `b` must be valid `*mut String` pointers.
-extern "C" fn jit_rt_string_cmp(a: i64, b: i64) -> i64 {
-    let sa = unsafe { &*(a as *const String) };
-    let sb = unsafe { &*(b as *const String) };
-    match sa.cmp(sb) {
-        std::cmp::Ordering::Less => -1,
-        std::cmp::Ordering::Equal => 0,
-        std::cmp::Ordering::Greater => 1,
+    /// Allocate a new empty JitString with a given capacity.
+    fn with_capacity(cap: usize) -> *mut JitString {
+        let data_ptr = if cap > 0 {
+            let buf = Vec::<u8>::with_capacity(cap);
+            let ptr = buf.as_ptr() as *mut u8;
+            std::mem::forget(buf);
+            ptr
+        } else {
+            std::ptr::null_mut()
+        };
+
+        let js = Box::new(JitString {
+            refcount: 1,
+            len: 0,
+            cap: cap as i64,
+            ptr: data_ptr,
+        });
+        Box::into_raw(js)
     }
-}
 
-/// Free a heap string. Input is `*mut String` as i64.
-/// Call this when a string value is no longer needed.
-///
-/// # Safety
-/// `s` must be a valid `*mut String` pointer that was created by one of the
-/// `jit_rt_string_*` functions. Must not be called twice on the same pointer.
-extern "C" fn jit_rt_string_drop(s: i64) {
-    if s != 0 {
-        unsafe {
-            let _ = Box::from_raw(s as *mut String);
+    /// Get the string data as a byte slice.
+    ///
+    /// # Safety
+    /// The JitString must be valid (non-null ptr if len > 0).
+    unsafe fn as_bytes(&self) -> &[u8] {
+        if self.len == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(self.ptr, self.len as usize)
+        }
+    }
+
+    /// Get the string data as a &str.
+    ///
+    /// # Safety
+    /// The data must be valid UTF-8.
+    unsafe fn as_str(&self) -> &str {
+        std::str::from_utf8_unchecked(self.as_bytes())
+    }
+
+    /// Increment refcount and return the same pointer.
+    unsafe fn clone_ref(ptr: *mut JitString) -> *mut JitString {
+        (*ptr).refcount += 1;
+        ptr
+    }
+
+    /// Decrement refcount. If it reaches 0, free data buffer and struct.
+    unsafe fn drop_ref(ptr: *mut JitString) {
+        if ptr.is_null() {
+            return;
+        }
+        (*ptr).refcount -= 1;
+        if (*ptr).refcount <= 0 {
+            // Free the data buffer
+            let len = (*ptr).len as usize;
+            let cap = (*ptr).cap as usize;
+            if cap > 0 && !(*ptr).ptr.is_null() {
+                // Reconstruct the Vec to let Rust free it properly
+                drop(Vec::from_raw_parts((*ptr).ptr, len, cap));
+            }
+            // Free the JitString struct
+            drop(Box::from_raw(ptr));
         }
     }
 }
 
-/// Reconstruct a `String` from a JIT-returned raw pointer.
+// ---------------------------------------------------------------------------
+// String runtime helpers (extern "C" functions callable from JIT code)
+// ---------------------------------------------------------------------------
+
+/// Allocate a new JitString from a raw UTF-8 byte pointer and length.
+/// Returns a `*mut JitString` as i64.
 ///
 /// # Safety
-/// `ptr` must be a valid `*mut String` pointer created by `jit_rt_string_alloc`,
+/// `ptr` must point to valid UTF-8 bytes of at least `len` bytes.
+extern "C" fn jit_rt_string_alloc(ptr: *const u8, len: usize) -> i64 {
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    JitString::from_bytes(bytes) as i64
+}
+
+/// Concatenate two JitStrings. Both inputs are `*mut JitString` as i64.
+/// Returns a new `*mut JitString` as i64 owning the concatenated result.
+/// The input strings are NOT freed (callers manage lifetimes).
+///
+/// # Safety
+/// Both `a` and `b` must be valid `*mut JitString` pointers.
+extern "C" fn jit_rt_string_concat(a: i64, b: i64) -> i64 {
+    unsafe {
+        let sa = &*(a as *const JitString);
+        let sb = &*(b as *const JitString);
+        let total = sa.len as usize + sb.len as usize;
+        let new = JitString::with_capacity(total);
+        if sa.len > 0 {
+            std::ptr::copy_nonoverlapping(sa.ptr, (*new).ptr, sa.len as usize);
+        }
+        if sb.len > 0 {
+            std::ptr::copy_nonoverlapping(sb.ptr, (*new).ptr.add(sa.len as usize), sb.len as usize);
+        }
+        (*new).len = total as i64;
+        new as i64
+    }
+}
+
+/// Concatenate two JitStrings with in-place optimization.
+/// Takes ownership of `a`, appends `b` to it, and returns the result.
+/// If `a` has refcount == 1 and sufficient capacity, appends in-place.
+/// Otherwise allocates a new JitString.
+///
+/// # Safety
+/// Both `a` and `b` must be valid `*mut JitString` pointers.
+/// After this call, `a` is consumed and the returned pointer should be used instead.
+extern "C" fn jit_rt_string_concat_mut(a: i64, b: i64) -> i64 {
+    unsafe {
+        let pa = a as *mut JitString;
+        let sb = &*(b as *const JitString);
+        let b_len = sb.len as usize;
+
+        if b_len == 0 {
+            return a;
+        }
+
+        // Can only mutate in-place if we have exclusive ownership
+        if (*pa).refcount == 1 {
+            let a_len = (*pa).len as usize;
+            let a_cap = (*pa).cap as usize;
+            let new_len = a_len + b_len;
+
+            if new_len <= a_cap {
+                // Fast path: append in-place, capacity suffices
+                std::ptr::copy_nonoverlapping(sb.ptr, (*pa).ptr.add(a_len), b_len);
+                (*pa).len = new_len as i64;
+                return a;
+            }
+
+            // Need to grow: allocate new buffer with 2x growth
+            let new_cap = new_len.max(a_cap * 2);
+            let mut new_buf = Vec::<u8>::with_capacity(new_cap);
+            if a_len > 0 {
+                new_buf.extend_from_slice(std::slice::from_raw_parts((*pa).ptr, a_len));
+            }
+            new_buf.extend_from_slice(std::slice::from_raw_parts(sb.ptr, b_len));
+            let new_ptr = new_buf.as_mut_ptr();
+            std::mem::forget(new_buf);
+
+            // Free old buffer
+            if a_cap > 0 && !(*pa).ptr.is_null() {
+                drop(Vec::from_raw_parts((*pa).ptr, a_len, a_cap));
+            }
+
+            (*pa).ptr = new_ptr;
+            (*pa).len = new_len as i64;
+            (*pa).cap = new_cap as i64;
+            return a;
+        }
+
+        // Shared: must create a new JitString
+        let sa = &*(a as *const JitString);
+        let total = sa.len as usize + b_len;
+        let new = JitString::with_capacity(total);
+        if sa.len > 0 {
+            std::ptr::copy_nonoverlapping(sa.ptr, (*new).ptr, sa.len as usize);
+        }
+        std::ptr::copy_nonoverlapping(sb.ptr, (*new).ptr.add(sa.len as usize), b_len);
+        (*new).len = total as i64;
+        // Drop old reference
+        JitString::drop_ref(pa);
+        new as i64
+    }
+}
+
+/// Clone a JitString by incrementing its reference count.
+/// Returns the SAME pointer (not a copy). O(1) operation.
+///
+/// # Safety
+/// `s` must be a valid `*mut JitString` pointer.
+extern "C" fn jit_rt_string_clone(s: i64) -> i64 {
+    if s == 0 {
+        return 0;
+    }
+    unsafe { JitString::clone_ref(s as *mut JitString) as i64 }
+}
+
+/// Compare two JitStrings for equality. Returns 1 if equal, 0 if not.
+///
+/// # Safety
+/// Both `a` and `b` must be valid `*mut JitString` pointers.
+extern "C" fn jit_rt_string_eq(a: i64, b: i64) -> i64 {
+    // Fast path: same pointer means same string
+    if a == b {
+        return 1;
+    }
+    unsafe {
+        let sa = &*(a as *const JitString);
+        let sb = &*(b as *const JitString);
+        // Quick length check before comparing bytes
+        if sa.len != sb.len {
+            return 0;
+        }
+        if sa.len == 0 {
+            return 1;
+        }
+        let eq = std::slice::from_raw_parts(sa.ptr, sa.len as usize)
+            == std::slice::from_raw_parts(sb.ptr, sb.len as usize);
+        if eq {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+/// Compare two JitStrings, returning -1/0/1 for less/equal/greater.
+///
+/// # Safety
+/// Both `a` and `b` must be valid `*mut JitString` pointers.
+extern "C" fn jit_rt_string_cmp(a: i64, b: i64) -> i64 {
+    if a == b {
+        return 0;
+    }
+    unsafe {
+        let sa = &*(a as *const JitString);
+        let sb = &*(b as *const JitString);
+        let a_bytes = sa.as_bytes();
+        let b_bytes = sb.as_bytes();
+        match a_bytes.cmp(b_bytes) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+        }
+    }
+}
+
+/// Free a JitString by decrementing its reference count.
+/// When refcount reaches 0, frees the data buffer and the struct.
+///
+/// # Safety
+/// `s` must be a valid `*mut JitString` pointer that was created by one of the
+/// `jit_rt_string_*` functions.
+extern "C" fn jit_rt_string_drop(s: i64) {
+    if s != 0 {
+        unsafe {
+            JitString::drop_ref(s as *mut JitString);
+        }
+    }
+}
+
+/// Concatenate multiple JitStrings in a single allocation.
+/// Takes a pointer to an array of `*mut JitString` as i64 values and a count.
+/// Pre-computes the total length, allocates once, and copies all parts.
+/// Returns a new `*mut JitString` as i64.
+///
+/// # Safety
+/// `ptrs` must point to an array of `count` valid `i64` values, each being
+/// a valid `*mut JitString` pointer (or 0 for null/empty).
+extern "C" fn jit_rt_string_concat_multi(ptrs: *const i64, count: usize) -> i64 {
+    if count == 0 {
+        return JitString::from_bytes(&[]) as i64;
+    }
+
+    let slice = unsafe { std::slice::from_raw_parts(ptrs, count) };
+
+    // First pass: compute total length.
+    let mut total_len = 0usize;
+    for &ptr in slice {
+        if ptr != 0 {
+            let s = unsafe { &*(ptr as *const JitString) };
+            total_len += s.len as usize;
+        }
+    }
+
+    // Single allocation with exact capacity.
+    let new = JitString::with_capacity(total_len);
+
+    // Second pass: copy all parts.
+    unsafe {
+        let mut offset = 0usize;
+        for &ptr in slice {
+            if ptr != 0 {
+                let s = &*(ptr as *const JitString);
+                let slen = s.len as usize;
+                if slen > 0 {
+                    std::ptr::copy_nonoverlapping(s.ptr, (*new).ptr.add(offset), slen);
+                    offset += slen;
+                }
+            }
+        }
+        (*new).len = total_len as i64;
+    }
+
+    new as i64
+}
+
+/// Reconstruct a `String` from a JIT-returned raw pointer (JitString).
+///
+/// # Safety
+/// `ptr` must be a valid `*mut JitString` pointer created by `jit_rt_string_alloc`,
 /// `jit_rt_string_concat`, or `jit_rt_string_clone`. After this call the pointer
-/// is consumed and must not be used again.
+/// is consumed (refcount decremented) and must not be used again.
 pub unsafe fn jit_take_string(ptr: i64) -> String {
     if ptr == 0 {
         String::new()
     } else {
-        *Box::from_raw(ptr as *mut String)
+        let js = &*(ptr as *const JitString);
+        let result = js.as_str().to_string();
+        JitString::drop_ref(ptr as *mut JitString);
+        result
     }
 }
 
@@ -147,6 +391,10 @@ fn register_string_helpers(builder: &mut JITBuilder) {
     builder.symbol(
         "jit_rt_string_concat_mut",
         jit_rt_string_concat_mut as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_string_concat_multi",
+        jit_rt_string_concat_multi as *const u8,
     );
     builder.symbol("jit_rt_string_clone", jit_rt_string_clone as *const u8);
     builder.symbol("jit_rt_string_eq", jit_rt_string_eq as *const u8);
@@ -289,53 +537,199 @@ extern "C" fn jit_rt_print_int(value: i64) {
 }
 
 /// Print a string to stdout (intrinsic #2: PRINT)
-/// For JIT-compiled code, prints a single string argument.
+/// For JIT-compiled code, prints a single JitString argument.
 ///
 /// # Safety
-/// `s` must be a valid `*mut String` pointer.
+/// `s` must be a valid `*mut JitString` pointer.
 extern "C" fn jit_rt_print_str(s: i64) {
     if s != 0 {
-        let string = unsafe { &*(s as *const String) };
-        println!("{}", string);
+        let string = unsafe { &*(s as *const JitString) };
+        let str_data = unsafe { string.as_str() };
+        println!("{}", str_data);
     }
 }
 
-/// Get the length of a string (intrinsic #0: LENGTH)
+/// Get the length of a JitString (intrinsic #0: LENGTH)
 /// Returns the number of Unicode characters (not bytes).
 ///
 /// # Safety
-/// `s` must be a valid `*mut String` pointer.
+/// `s` must be a valid `*mut JitString` pointer.
 extern "C" fn jit_rt_string_len(s: i64) -> i64 {
     if s == 0 {
         return 0;
     }
-    let string = unsafe { &*(s as *const String) };
-    string.chars().count() as i64
+    let string = unsafe { &*(s as *const JitString) };
+    let str_data = unsafe { string.as_str() };
+    str_data.chars().count() as i64
 }
 
-/// Absolute value of an integer (intrinsic #16: ABS)
-///
-/// # Safety
-/// None - operates on a simple i64 value.
-extern "C" fn jit_rt_abs_int(value: i64) -> i64 {
-    value.abs()
+// ---------------------------------------------------------------------------
+// Math runtime helpers (transcendental functions Cranelift doesn't support)
+// ---------------------------------------------------------------------------
+
+/// Sine of a float (radians).
+extern "C" fn jit_rt_sin(value: f64) -> f64 {
+    value.sin()
 }
 
-/// Absolute value of a float (intrinsic #16: ABS)
-///
-/// # Safety
-/// None - operates on a simple f64 value.
+/// Cosine of a float (radians).
+extern "C" fn jit_rt_cos(value: f64) -> f64 {
+    value.cos()
+}
+
+/// Tangent of a float (radians).
+extern "C" fn jit_rt_tan(value: f64) -> f64 {
+    value.tan()
+}
+
+/// Natural logarithm.
+extern "C" fn jit_rt_log(value: f64) -> f64 {
+    value.ln()
+}
+
+/// Base-2 logarithm.
+extern "C" fn jit_rt_log2(value: f64) -> f64 {
+    value.log2()
+}
+
+/// Base-10 logarithm.
+extern "C" fn jit_rt_log10(value: f64) -> f64 {
+    value.log10()
+}
+
+/// Power: base^exp.
+extern "C" fn jit_rt_pow_float(base: f64, exp: f64) -> f64 {
+    base.powf(exp)
+}
+
+/// Integer power: base^exp (returns i64).
+extern "C" fn jit_rt_pow_int(base: i64, exp: i64) -> i64 {
+    if exp < 0 {
+        return 0; // integer power with negative exponent → 0 (truncation)
+    }
+    (base as i128).pow(exp as u32) as i64
+}
+
+/// Absolute value of a float.
 extern "C" fn jit_rt_abs_float(value: f64) -> f64 {
     value.abs()
 }
 
+/// Absolute value of an integer.
+extern "C" fn jit_rt_abs_int(value: i64) -> i64 {
+    value.wrapping_abs()
+}
+
+// ---------------------------------------------------------------------------
+// Conversion runtime helpers
+// ---------------------------------------------------------------------------
+
+/// Print a float to stdout.
+extern "C" fn jit_rt_print_float(value: f64) {
+    // Use Display formatting which omits trailing zeros like the interpreter
+    println!("{}", value);
+}
+
+/// Print a bool to stdout (1=true, 0=false).
+extern "C" fn jit_rt_print_bool(value: i64) {
+    if value != 0 {
+        println!("true");
+    } else {
+        println!("false");
+    }
+}
+
+/// Convert an integer to a JitString. Returns `*mut JitString` as i64.
+extern "C" fn jit_rt_to_string_int(value: i64) -> i64 {
+    let s = value.to_string();
+    JitString::from_bytes(s.as_bytes()) as i64
+}
+
+/// Convert a float to a JitString. Returns `*mut JitString` as i64.
+extern "C" fn jit_rt_to_string_float(value: f64) -> i64 {
+    let s = if value.fract() == 0.0 && value.is_finite() {
+        format!("{:.1}", value) // e.g. "3.0"
+    } else {
+        format!("{}", value)
+    };
+    JitString::from_bytes(s.as_bytes()) as i64
+}
+
+/// Convert a float to an integer (truncate toward zero).
+extern "C" fn jit_rt_to_int_from_float(value: f64) -> i64 {
+    value as i64
+}
+
+/// Convert a JitString to an integer. Returns the parsed value, or 0 on failure.
+extern "C" fn jit_rt_to_int_from_string(s: i64) -> i64 {
+    if s == 0 {
+        return 0;
+    }
+    let js = unsafe { &*(s as *const JitString) };
+    let text = unsafe { js.as_str() };
+    text.trim().parse::<i64>().unwrap_or(0)
+}
+
+/// Convert an integer to a float.
+extern "C" fn jit_rt_to_float_from_int(value: i64) -> f64 {
+    value as f64
+}
+
+/// Convert a JitString to a float. Returns the parsed value, or 0.0 on failure.
+extern "C" fn jit_rt_to_float_from_string(s: i64) -> f64 {
+    if s == 0 {
+        return 0.0;
+    }
+    let js = unsafe { &*(s as *const JitString) };
+    let text = unsafe { js.as_str() };
+    text.trim().parse::<f64>().unwrap_or(0.0)
+}
+
 /// Register all JIT intrinsic runtime helper symbols with a JITBuilder.
 fn register_intrinsic_helpers(builder: &mut JITBuilder) {
+    // Print helpers
     builder.symbol("jit_rt_print_int", jit_rt_print_int as *const u8);
+    builder.symbol("jit_rt_print_float", jit_rt_print_float as *const u8);
+    builder.symbol("jit_rt_print_bool", jit_rt_print_bool as *const u8);
     builder.symbol("jit_rt_print_str", jit_rt_print_str as *const u8);
+
+    // String intrinsics
     builder.symbol("jit_rt_string_len", jit_rt_string_len as *const u8);
-    builder.symbol("jit_rt_abs_int", jit_rt_abs_int as *const u8);
+
+    // Math helpers (transcendental functions Cranelift can't do natively)
+    builder.symbol("jit_rt_sin", jit_rt_sin as *const u8);
+    builder.symbol("jit_rt_cos", jit_rt_cos as *const u8);
+    builder.symbol("jit_rt_tan", jit_rt_tan as *const u8);
+    builder.symbol("jit_rt_log", jit_rt_log as *const u8);
+    builder.symbol("jit_rt_log2", jit_rt_log2 as *const u8);
+    builder.symbol("jit_rt_log10", jit_rt_log10 as *const u8);
+    builder.symbol("jit_rt_pow_float", jit_rt_pow_float as *const u8);
+    builder.symbol("jit_rt_pow_int", jit_rt_pow_int as *const u8);
     builder.symbol("jit_rt_abs_float", jit_rt_abs_float as *const u8);
+    builder.symbol("jit_rt_abs_int", jit_rt_abs_int as *const u8);
+
+    // Conversion helpers
+    builder.symbol("jit_rt_to_string_int", jit_rt_to_string_int as *const u8);
+    builder.symbol(
+        "jit_rt_to_string_float",
+        jit_rt_to_string_float as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_to_int_from_float",
+        jit_rt_to_int_from_float as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_to_int_from_string",
+        jit_rt_to_int_from_string as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_to_float_from_int",
+        jit_rt_to_float_from_int as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_to_float_from_string",
+        jit_rt_to_float_from_string as *const u8,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -563,8 +957,13 @@ impl JitEngine {
         // native code is competitive with ahead-of-time compilers. Without
         // this, Cranelift defaults to `none` (no optimizations), resulting
         // in 20-50x slower code for compute-heavy workloads like fibonacci.
+        let cl_opt = match self.codegen_settings.opt_level {
+            OptLevel::None => "none",
+            OptLevel::Speed => "speed",
+            OptLevel::SpeedAndSize => "speed_and_size",
+        };
         let mut builder = JITBuilder::with_flags(
-            &[("opt_level", "speed")],
+            &[("opt_level", cl_opt)],
             cranelift_module::default_libcall_names(),
         )
         .map_err(|e| JitError::ModuleError(format!("JITBuilder creation failed: {e}")))?;

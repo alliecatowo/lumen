@@ -31,3 +31,5 @@ pub mod transparency;
 pub mod tuf;
 pub mod wares;
 pub mod workspace;
+
+pub mod dap;

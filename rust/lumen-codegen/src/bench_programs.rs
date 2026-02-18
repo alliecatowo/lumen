@@ -278,6 +278,58 @@ pub fn tail_recursive_countdown_lir() -> LirModule {
     empty_module(vec![cell])
 }
 
+/// String concatenation chain — exercises batch-concat optimization.
+///
+/// Pseudo-code:
+/// ```text
+/// cell string_chain() -> String
+///   let a = "hello"
+///   let b = " "
+///   let c = "world"
+///   let d = "!"
+///   return a + b + c + d   # 4-leaf chain → jit_rt_string_concat_multi
+/// end
+/// ```
+///
+/// LIR layout:
+/// ```text
+///   0: r0 = LoadK 0           ("hello")
+///   1: r1 = LoadK 1           (" ")
+///   2: r2 = LoadK 2           ("world")
+///   3: r3 = LoadK 3           ("!")
+///   4: r4 = r0 + r1           (intermediate, skipped by batch-concat)
+///   5: r5 = r4 + r2           (intermediate, skipped by batch-concat)
+///   6: r6 = r5 + r3           (chain tail → concat_multi([r0, r1, r2, r3]))
+///   7: return r6
+/// ```
+pub fn string_concat_chain_lir() -> LirModule {
+    let cell = LirCell {
+        name: "string_chain".to_string(),
+        params: Vec::new(),
+        returns: Some("String".to_string()),
+        registers: 8,
+        constants: vec![
+            Constant::String("hello".to_string()),
+            Constant::String(" ".to_string()),
+            Constant::String("world".to_string()),
+            Constant::String("!".to_string()),
+        ],
+        instructions: vec![
+            Instruction::abx(OpCode::LoadK, 0, 0),     // r0 = "hello"
+            Instruction::abx(OpCode::LoadK, 1, 1),     // r1 = " "
+            Instruction::abx(OpCode::LoadK, 2, 2),     // r2 = "world"
+            Instruction::abx(OpCode::LoadK, 3, 3),     // r3 = "!"
+            Instruction::abc(OpCode::Add, 4, 0, 1),    // r4 = r0 + r1
+            Instruction::abc(OpCode::Add, 5, 4, 2),    // r5 = r4 + r2
+            Instruction::abc(OpCode::Add, 6, 5, 3),    // r6 = r5 + r3  (chain tail)
+            Instruction::abc(OpCode::Return, 6, 1, 0), // return r6
+        ],
+        effect_handler_metas: Vec::new(),
+    };
+
+    empty_module(vec![cell])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,6 +374,13 @@ mod tests {
     #[test]
     fn bench_tail_recursive_compiles() {
         let lir = tail_recursive_countdown_lir();
+        let bytes = compile_lir(&lir);
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn bench_string_concat_chain_compiles() {
+        let lir = string_concat_chain_lir();
         let bytes = compile_lir(&lir);
         assert!(!bytes.is_empty());
     }

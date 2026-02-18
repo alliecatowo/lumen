@@ -40,3 +40,6 @@ flate2 = "1"
 lumen-provider-crypto = { path = "../lumen-provider-crypto" }
 lumen-provider-env = { path = "../lumen-provider-env" }
 lumen-provider-fs = { path = "../lumen-provider-fs" }
+
+[build-dependencies]
+object = { version = "0.36", features = ["read"] }

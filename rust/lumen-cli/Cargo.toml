@@ -63,6 +63,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 regex = "1"
 humantime = "2"
 ctrlc = "3"
+dap = "0.4.1-alpha1"
 
 [features]
 default = ["http", "json", "fs", "env", "crypto", "keyring", "ed25519", "jit"]

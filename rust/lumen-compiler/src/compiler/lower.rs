@@ -380,8 +380,51 @@ fn optimize_move_own(instrs: &mut Vec<Instruction>) {
             let _jb = instrs[j].b;
             let _jc = instrs[j].c;
 
-            // Basic-block boundary: stop analysis.
+            // Basic-block boundary: check for backward Jmp (loop back-edge).
             if is_block_boundary(op) {
+                // If this is a backward Jmp, we can continue analysis across
+                // the loop boundary. A backward jump means the next iteration
+                // will execute from the jump target forward through the
+                // instructions *before* the Move at index `i`. If `src` is
+                // written before being read in that prefix, it is dead at the
+                // Move and we can safely convert to MoveOwn.
+                if op == OpCode::Jmp {
+                    let offset = instrs[j].sax_val();
+                    if offset < 0 {
+                        let target = (j as i32 + 1 + offset) as usize;
+                        if target <= i {
+                            // Scan from the jump target through instructions
+                            // before the Move at `i`.
+                            let mut loop_safe = false;
+                            for k in target..i {
+                                let kinstr = &instrs[k];
+                                // If this instruction reads `src`, it's still
+                                // live — cannot convert.
+                                if instr_reads_reg(kinstr, src) {
+                                    break;
+                                }
+                                // If this instruction writes to `src`, it is
+                                // dead at the Move — safe to convert.
+                                if instr_writes_to_a(kinstr.op) && kinstr.a == src {
+                                    loop_safe = true;
+                                    break;
+                                }
+                                if kinstr.op == OpCode::Call && kinstr.a == src {
+                                    loop_safe = true;
+                                    break;
+                                }
+                                // If we hit another block boundary inside the
+                                // loop prefix, stop conservatively.
+                                if is_block_boundary(kinstr.op) {
+                                    break;
+                                }
+                            }
+                            if loop_safe {
+                                can_convert = true;
+                            }
+                        }
+                    }
+                }
                 break;
             }
 
@@ -2129,6 +2172,52 @@ impl<'a> Lowerer<'a> {
                 instrs.push(Instruction::abc(OpCode::Halt, msg_reg, 0, 0));
             }
             Stmt::Assign(asgn) => {
+                // ── Optimization: `x = append(x, elem)` → in-place OpCode::Append ──
+                // When the assignment target is a variable and the RHS is
+                // `append(same_var, elem)`, we can emit the dedicated Append
+                // opcode which mutates the list in-place.  This avoids an
+                // intermediate Intrinsic result register that would keep the
+                // Arc refcount ≥ 2 across loop iterations, causing O(n)
+                // copies per append (and O(n²) overall).
+                if let AssignTarget::Variable(target_name) = &asgn.target {
+                    if let Expr::Call(callee, args, _) = &asgn.value {
+                        if let Expr::Ident(fn_name, _) = callee.as_ref() {
+                            if fn_name == "append"
+                                && args.len() == 2
+                                && !self.symbols.cells.contains_key(fn_name.as_str())
+                            {
+                                // Check that the first arg is the same variable as the target
+                                let first_arg_expr = match &args[0] {
+                                    CallArg::Positional(e)
+                                    | CallArg::Named(_, e, _)
+                                    | CallArg::Role(_, e, _) => e,
+                                };
+                                if let Expr::Ident(arg_name, _) = first_arg_expr {
+                                    if arg_name == target_name {
+                                        if let Some(list_reg) = ra.lookup(target_name) {
+                                            let elem_expr = match &args[1] {
+                                                CallArg::Positional(e)
+                                                | CallArg::Named(_, e, _)
+                                                | CallArg::Role(_, e, _) => e,
+                                            };
+                                            let elem_reg =
+                                                self.lower_expr(elem_expr, ra, consts, instrs);
+                                            instrs.push(Instruction::abc(
+                                                OpCode::Append,
+                                                list_reg,
+                                                elem_reg,
+                                                0,
+                                            ));
+                                            // Skip normal lowering — the list is mutated in-place
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 let val_reg = self.lower_expr(&asgn.value, ra, consts, instrs);
                 match &asgn.target {
                     AssignTarget::Variable(name) => {

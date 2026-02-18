@@ -5,7 +5,7 @@
 //!
 //! This implementation supports all opcodes from the JIT path, including:
 //! - Type-aware arithmetic (Int, Float, String)
-//! - String runtime helpers (alloc, concat, clone, eq, cmp, drop)
+//! - String runtime helpers (inline malloc alloc, concat, clone, eq, cmp, drop)
 //! - Float operations (fadd, fsub, fmul, fdiv, fneg, floor)
 //! - Type-aware comparisons (icmp, fcmp, string_cmp)
 //! - Tail-call optimization for self-recursive calls
@@ -354,7 +354,7 @@ pub enum JitVarType {
     /// 64-bit IEEE 754 floating point.
     Float,
     /// Heap-allocated refcounted string, represented as a `*mut JitString` cast to i64.
-    /// The pointer is created by `jit_rt_string_alloc` or `jit_rt_string_concat`
+    /// The pointer is created by inline `jit_rt_malloc` + field stores or `jit_rt_string_concat`
     /// and must be freed via `jit_rt_string_drop` when no longer needed.
     Str,
     /// Boolean value, NaN-boxed as sentinel values (NAN_BOX_TRUE / NAN_BOX_FALSE).
@@ -465,11 +465,18 @@ pub(crate) fn lower_cell<M: Module>(
         &[types::I64, types::I64], // ptr to array, count
         &[types::I64],
     )?;
-    let str_alloc_ref = declare_helper_func(
+    let malloc_ref = declare_helper_func(
         module,
         &mut func,
-        "jit_rt_string_alloc",
-        &[types::I64, types::I64], // ptr, len
+        "jit_rt_malloc",
+        &[types::I64], // size
+        &[types::I64],
+    )?;
+    let alloc_bytes_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_alloc_bytes",
+        &[types::I64], // size
         &[types::I64],
     )?;
     let str_eq_ref = declare_helper_func(
@@ -969,16 +976,52 @@ pub(crate) fn lower_cell<M: Module>(
                                     let old = use_var(&mut builder, &regs, &var_types, a);
                                     builder.ins().call(str_drop_ref, &[old]);
                                 }
-                                // Allocate the string on the heap via runtime helper.
+                                // Inline JitString allocation. Cranelift sees the
+                                // individual malloc + field stores, enabling constant
+                                // folding of struct fields and dead-store elimination.
+                                //
+                                // JitString layout (32 bytes, repr(C)):
+                                //   offset  0: refcount (i64) = 1
+                                //   offset  8: len      (i64)
+                                //   offset 16: cap      (i64) = len
+                                //   offset 24: ptr      (*mut u8)
                                 let str_bytes = s.as_bytes();
-                                let ptr_val =
-                                    builder.ins().iconst(types::I64, str_bytes.as_ptr() as i64);
-                                let len_val =
-                                    builder.ins().iconst(types::I64, str_bytes.len() as i64);
-                                let call = builder.ins().call(str_alloc_ref, &[ptr_val, len_val]);
-                                let result = builder.inst_results(call)[0];
+                                let len = str_bytes.len() as i64;
+                                let flags = MemFlags::new();
+
+                                // 1. Allocate the 32-byte JitString struct.
+                                let struct_size = builder.ins().iconst(types::I64, 32);
+                                let struct_call = builder.ins().call(malloc_ref, &[struct_size]);
+                                let struct_ptr = builder.inst_results(struct_call)[0];
+
+                                // 2. Store struct fields (all known at compile time).
+                                let rc_one = builder.ins().iconst(types::I64, 1);
+                                builder.ins().store(flags, rc_one, struct_ptr, 0); // refcount
+                                let len_val = builder.ins().iconst(types::I64, len);
+                                builder.ins().store(flags, len_val, struct_ptr, 8); // len
+                                builder.ins().store(flags, len_val, struct_ptr, 16); // cap = len
+
+                                // 3. Allocate data buffer and copy string bytes.
+                                //    Uses alloc_bytes_ref (Vec-compatible) so that
+                                //    JitString::drop_ref can free via Vec::from_raw_parts.
+                                if len > 0 {
+                                    let data_call = builder.ins().call(alloc_bytes_ref, &[len_val]);
+                                    let data_ptr = builder.inst_results(data_call)[0];
+                                    let src_ptr =
+                                        builder.ins().iconst(types::I64, str_bytes.as_ptr() as i64);
+                                    builder
+                                        .ins()
+                                        .call(memcpy_ref, &[data_ptr, src_ptr, len_val]);
+                                    builder.ins().store(flags, data_ptr, struct_ptr, 24);
+                                // ptr
+                                } else {
+                                    let null_ptr = builder.ins().iconst(types::I64, 0);
+                                    builder.ins().store(flags, null_ptr, struct_ptr, 24);
+                                    // ptr = null
+                                }
+
                                 var_types.insert(a as u32, JitVarType::Str);
-                                def_var(&mut builder, &mut regs, a, result);
+                                def_var(&mut builder, &mut regs, a, struct_ptr);
                             }
                         }
                         Constant::Float(_) => {
@@ -2210,13 +2253,33 @@ pub(crate) fn lower_cell<M: Module>(
                             Some(JitVarType::Str) => b"String",
                             None => b"Unknown",
                         };
-                        // Create a string from the static type name
-                        let ptr_val = builder.ins().iconst(types::I64, type_str.as_ptr() as i64);
-                        let len_val = builder.ins().iconst(types::I64, type_str.len() as i64);
-                        let call = builder.ins().call(str_alloc_ref, &[ptr_val, len_val]);
-                        let result = builder.inst_results(call)[0];
+                        // Inline JitString allocation for the type name.
+                        let len = type_str.len() as i64;
+                        let flags = MemFlags::new();
+
+                        let struct_size = builder.ins().iconst(types::I64, 32);
+                        let struct_call = builder.ins().call(malloc_ref, &[struct_size]);
+                        let struct_ptr = builder.inst_results(struct_call)[0];
+
+                        let rc_one = builder.ins().iconst(types::I64, 1);
+                        builder.ins().store(flags, rc_one, struct_ptr, 0);
+                        let len_val = builder.ins().iconst(types::I64, len);
+                        builder.ins().store(flags, len_val, struct_ptr, 8);
+                        builder.ins().store(flags, len_val, struct_ptr, 16);
+
+                        // Type names are always non-empty (3-7 bytes).
+                        // Uses alloc_bytes_ref (Vec-compatible) so that
+                        // JitString::drop_ref can free via Vec::from_raw_parts.
+                        let data_call = builder.ins().call(alloc_bytes_ref, &[len_val]);
+                        let data_ptr = builder.inst_results(data_call)[0];
+                        let src_ptr = builder.ins().iconst(types::I64, type_str.as_ptr() as i64);
+                        builder
+                            .ins()
+                            .call(memcpy_ref, &[data_ptr, src_ptr, len_val]);
+                        builder.ins().store(flags, data_ptr, struct_ptr, 24);
+
                         var_types.insert(inst.a as u32, JitVarType::Str);
-                        def_var(&mut builder, &mut regs, inst.a, result);
+                        def_var(&mut builder, &mut regs, inst.a, struct_ptr);
                     }
 
                     // -------------------------------------------------------

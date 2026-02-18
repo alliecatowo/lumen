@@ -131,11 +131,11 @@ A single file is a module:
 # Math Utilities
 
 ```lumen
-export cell add(a: Int, b: Int) -> Int
+pub cell add(a: Int, b: Int) -> Int
   return a + b
 end
 
-export cell multiply(a: Int, b: Int) -> Int
+pub cell multiply(a: Int, b: Int) -> Int
   return a * b
 end
 ```

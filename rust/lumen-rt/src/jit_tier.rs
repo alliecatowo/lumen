@@ -292,6 +292,13 @@ impl JitTier {
         }
     }
 
+    /// Get the NaN-boxing return type for a compiled cell.
+    /// Returns `None` if the cell is not compiled or the JIT feature is disabled.
+    #[cfg(feature = "jit")]
+    pub fn return_type(&self, cell_name: &str) -> Option<lumen_codegen::jit::JitVarType> {
+        self.engine.as_ref().and_then(|e| e.return_type(cell_name))
+    }
+
     /// Get a snapshot of JIT tier statistics.
     pub fn tier_stats(&self) -> JitTierStats {
         self.stats.clone()

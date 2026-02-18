@@ -2330,8 +2330,22 @@ impl<'a> Lowerer<'a> {
             }
             Pattern::Wildcard(_) => {}
             Pattern::Ident(name, _) => {
-                let breg = ra.alloc_named(name);
-                instrs.push(Instruction::abc(OpCode::Move, breg, value_reg, 0));
+                // Check if this identifier is actually an enum variant name.
+                // If so, emit an IsVariant check instead of binding as a variable.
+                let is_enum_variant = self.symbols.types.values().any(|t| {
+                    matches!(&t.kind, crate::compiler::resolve::TypeInfoKind::Enum(e)
+                        if e.variants.iter().any(|v| v.name == *name))
+                });
+                if is_enum_variant {
+                    let tag_idx = self.intern_string(name);
+                    instrs.push(Instruction::abx(OpCode::IsVariant, value_reg, tag_idx));
+                    let fail_jmp = instrs.len();
+                    instrs.push(Instruction::sax(OpCode::Jmp, 0));
+                    fail_jumps.push(fail_jmp);
+                } else {
+                    let breg = ra.alloc_named(name);
+                    instrs.push(Instruction::abc(OpCode::Move, breg, value_reg, 0));
+                }
             }
             Pattern::Guard {
                 inner, condition, ..

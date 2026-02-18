@@ -1,43 +1,46 @@
 # Sieve of Eratosthenes — primes up to 1,000,000
-# Lumen limitation: No index assignment (list[i] = val doesn't work).
-# Lumen limitation: Function calls inside while loops that update outer
-# variables cause register clobbering, so prime check is inlined.
-# Uses trial division as a workaround. Same output, different algorithm.
-# Trial division is O(n*sqrt(n)) vs sieve's O(n*log(log(n))), so this
-# will be significantly slower — that's expected and noted.
+# True sieve using index assignment (list[i] = val).
+# Algorithm: O(n * log(log(n))) matching the C reference implementation.
 
-cell main() -> Null
+cell main() -> String
   let limit = 1000000
-  let count = 0
-  let n = 2
-  while n <= limit
-    # Inline trial division
-    let is_prime = true
-    if n < 2
-      is_prime = false
-    end
-    if n >= 4
-      if n % 2 == 0
-        is_prime = false
+
+  # Build sieve array of limit+1 entries using range, then zero out
+  # range() creates the list in one native call, much faster than append loop
+  let mut sieve = range(0, limit + 1)
+  let mut i = 0
+  while i <= limit
+    sieve[i] = 0
+    i = i + 1
+  end
+
+  # Mark 0 and 1 as non-prime
+  sieve[0] = 1
+  sieve[1] = 1
+
+  # Mark composites: for each i where i*i <= limit
+  i = 2
+  while i * i <= limit
+    if sieve[i] == 0
+      let mut j = i * i
+      while j <= limit
+        sieve[j] = 1
+        j = j + i
       end
     end
-    if is_prime
-      if n >= 9
-        let i = 3
-        while i * i <= n
-          if n % i == 0
-            is_prime = false
-          end
-          i = i + 2
-        end
-      end
-    end
-    if is_prime
+    i = i + 1
+  end
+
+  # Count primes
+  let mut count = 0
+  i = 2
+  while i <= limit
+    if sieve[i] == 0
       count = count + 1
     end
-    n = n + 1
+    i = i + 1
   end
 
   print("primes_sieve(1000000): count = " + to_string(count))
-  return null
+  "done"
 end

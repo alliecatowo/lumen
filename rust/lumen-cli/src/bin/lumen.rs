@@ -72,6 +72,11 @@ enum Commands {
         /// Allow unstable features without errors
         #[arg(long)]
         allow_unstable: bool,
+
+        /// JIT compilation threshold (number of calls before compiling a cell).
+        /// Default is 0 meaning JIT is always attempted immediately.
+        #[arg(long, default_value = "0")]
+        jit_threshold: u32,
     },
     /// Compile a `.lm`, `.lumen`, `.lm.md`, or `.lumen.md` file to LIR JSON
     Emit {
@@ -383,7 +388,8 @@ fn main() {
             cell,
             trace_dir,
             allow_unstable,
-        } => cmd_run(&file, &cell, trace_dir, allow_unstable),
+            jit_threshold,
+        } => cmd_run(&file, &cell, trace_dir, allow_unstable, jit_threshold),
         Commands::Emit {
             file,
             output,
@@ -1058,7 +1064,13 @@ fn cmd_migrate(edition: &str, files: &[PathBuf]) {
     println!("Edition migration: no changes needed (current edition matches target).");
 }
 
-fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>, allow_unstable: bool) {
+fn cmd_run(
+    file: &PathBuf,
+    cell: &str,
+    trace_dir: Option<PathBuf>,
+    allow_unstable: bool,
+    jit_threshold: u32,
+) {
     let source = read_source(file);
     let filename = file.display().to_string();
 
@@ -1076,21 +1088,11 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>, allow_unstabl
         }
     };
 
-    // ─── JIT fast path ───────────────────────────────────────────────
-    #[cfg(feature = "jit")]
-    {
-        if let Some(result) = try_jit_execute(&module, cell) {
-            let elapsed = start.elapsed();
-            println!("{} {}", status_label("Running"), cyan(cell));
-            println!("\n{}", result);
-            println!(
-                "{} Finished in {:.4}s (JIT)",
-                green("✓"),
-                elapsed.as_secs_f64()
-            );
-            return;
-        }
-    }
+    // ─── JIT fast path removed ────────────────────────────────────────
+    // The AOT fast path (try_jit_execute) required ALL cells to be Int-only,
+    // so it almost never activated. With --jit-threshold=0 (default), the
+    // tiered JIT compiles eligible cells on first call, making the AOT path
+    // redundant. Fallback to the interpreter is automatic for non-eligible cells.
     // ─── End JIT fast path ───────────────────────────────────────────
 
     // Load project config and build provider registry
@@ -1115,9 +1117,10 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>, allow_unstabl
 
     println!("{} {}", status_label("Running"), cyan(cell));
     let mut vm = lumen_vm::vm::VM::new();
-    // Enable tiered JIT: the interpreter will track call counts and compile
-    // hot cells to native code after 10 calls (default threshold).
-    vm.enable_jit(10);
+    // Enable tiered JIT: with --jit-threshold=0 (default), eligible cells are
+    // compiled to native code on their very first call. Use a higher value to
+    // defer compilation to only hot cells.
+    vm.enable_jit(jit_threshold as u64);
     if let Some(run_id) = trace_run_id.as_ref() {
         vm.set_trace_id(run_id.clone());
     }
@@ -1204,60 +1207,12 @@ fn cmd_run(file: &PathBuf, cell: &str, trace_dir: Option<PathBuf>, allow_unstabl
 }
 
 // ---------------------------------------------------------------------------
-// JIT fast-path helper
+// JIT fast-path helper (removed)
 // ---------------------------------------------------------------------------
-
-/// Attempt JIT compilation and execution of the target cell.
-///
-/// Returns `Some(result_string)` if the cell was successfully JIT-compiled and
-/// executed as native code. Returns `None` if the cell is not JIT-eligible or
-/// if compilation/execution fails — the caller should fall back to the
-/// interpreter.
-#[cfg(feature = "jit")]
-fn try_jit_execute(
-    module: &lumen_compiler::compiler::lir::LirModule,
-    cell: &str,
-) -> Option<String> {
-    use lumen_codegen::jit::{CodegenSettings, JitEngine};
-
-    // Find the target cell in the module.
-    let cell_def = module.cells.iter().find(|c| c.name == cell)?;
-
-    // JIT eligibility: all params must be Int, return type must be Int.
-    let all_int_params = cell_def.params.iter().all(|p| p.ty == "Int");
-    let returns_int = cell_def.returns.as_deref() == Some("Int");
-
-    if !all_int_params || !returns_int {
-        return None; // Not JIT-eligible — fall back to interpreter
-    }
-
-    // Also verify that all cells in the module are Int-only (cross-cell calls
-    // must be homogeneous for the i64-only JIT backend).
-    let all_cells_int = module.cells.iter().all(|c| {
-        let params_ok = c.params.iter().all(|p| p.ty == "Int");
-        let ret_ok = c.returns.as_deref() == Some("Int");
-        params_ok && ret_ok
-    });
-    if !all_cells_int {
-        return None;
-    }
-
-    let settings = CodegenSettings::default();
-    let mut engine = JitEngine::new(settings, 0); // threshold=0: compile immediately
-
-    // Try to compile the entire module so cross-cell calls work.
-    if engine.compile_module(module).is_err() {
-        return None; // Fall back to interpreter
-    }
-
-    // Build argument list (the target cell's params — for main() this is empty).
-    let args: Vec<i64> = vec![0; cell_def.params.len()];
-
-    match engine.execute_jit(cell, &args) {
-        Ok(result) => Some(result.to_string()),
-        Err(_) => None, // Fall back to interpreter
-    }
-}
+// The AOT fast path (`try_jit_execute`) has been removed. It required ALL cells
+// in the module to be Int-only, so it almost never activated in practice.
+// With --jit-threshold=0 (default), the tiered JIT in the VM compiles eligible
+// cells on their very first call, making this function redundant.
 
 fn cmd_emit(file: &PathBuf, output: Option<PathBuf>, allow_unstable: bool) {
     let source = read_source(file);

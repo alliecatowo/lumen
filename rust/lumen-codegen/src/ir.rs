@@ -547,6 +547,13 @@ pub(crate) fn lower_cell<M: Module>(
         &[types::F64],
         &[types::F64],
     )?;
+    let intrinsic_tan_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_tan",
+        &[types::F64],
+        &[types::F64],
+    )?;
     let intrinsic_log_ref = declare_helper_func(
         module,
         &mut func,
@@ -711,6 +718,29 @@ pub(crate) fn lower_cell<M: Module>(
         &[types::I64, types::I64],
         &[types::I64],
     )?;
+    let intrinsic_hrtime_ref =
+        declare_helper_func(module, &mut func, "jit_rt_hrtime", &[], &[types::I64])?;
+    let intrinsic_string_hash_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_string_hash",
+        &[types::I64],
+        &[types::I64],
+    )?;
+    let intrinsic_string_split_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_string_split",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let _intrinsic_string_join_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_string_join",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )?;
 
     let mut builder = FunctionBuilder::new(&mut func, fb_ctx);
 
@@ -752,8 +782,8 @@ pub(crate) fn lower_cell<M: Module>(
                 let arg_base = inst.c;
                 match intrinsic_id {
                     // Intrinsics that ALWAYS produce float results
-                    57 | 58 | 59 | 60 | 62 | 63 | 64 | 123 | 124 | 127 | 128 => {
-                        // Round, Ceil, Floor, Sqrt, Log, Sin, Cos, Log2, Log10, MathPi, MathE
+                    57 | 58 | 59 | 60 | 62 | 63 | 64 | 123 | 124 | 127 | 128 | 138 | 139 => {
+                        // Round, Ceil, Floor, Sqrt, Log, Sin, Cos, Log2, Log10, MathPi, MathE, Tan, Trunc
                         float_regs.insert(inst.a);
                     }
                     // Intrinsics that produce float when input is float
@@ -2547,6 +2577,42 @@ pub(crate) fn lower_cell<M: Module>(
                     }
 
                     // -------------------------------------------------------
+                    // 138: Tan — runtime helper
+                    // -------------------------------------------------------
+                    138 => {
+                        let v = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let fv = if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Float) {
+                            emit_unbox_float(&mut builder, v)
+                        } else {
+                            let raw = emit_unbox_int(&mut builder, v);
+                            builder.ins().fcvt_from_sint(types::F64, raw)
+                        };
+                        let call = builder.ins().call(intrinsic_tan_ref, &[fv]);
+                        let f64_result = builder.inst_results(call)[0];
+                        let result = emit_box_float(&mut builder, f64_result);
+                        var_types.insert(inst.a as u32, JitVarType::Float);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 139: Trunc — pure Cranelift IR
+                    // -------------------------------------------------------
+                    139 => {
+                        let v = use_var(&mut builder, &regs, &var_types, arg_base);
+                        if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Float) {
+                            let fv = emit_unbox_float(&mut builder, v);
+                            let truncated = builder.ins().trunc(fv);
+                            let result = emit_box_float(&mut builder, truncated);
+                            var_types.insert(inst.a as u32, JitVarType::Float);
+                            def_var(&mut builder, &mut regs, inst.a, result);
+                        } else {
+                            // Int input: already a whole number, pass through
+                            var_types.insert(inst.a as u32, JitVarType::Int);
+                            def_var(&mut builder, &mut regs, inst.a, v);
+                        }
+                    }
+
+                    // -------------------------------------------------------
                     // 65: Clamp(val, lo, hi)
                     // -------------------------------------------------------
                     65 => {
@@ -2908,6 +2974,182 @@ pub(crate) fn lower_cell<M: Module>(
                         let call = builder.ins().call(intrinsic_string_pad_right_ref, &[a, b]);
                         let result = builder.inst_results(call)[0];
                         var_types.insert(inst.a as u32, JitVarType::Str);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 2: Matches — truthiness test
+                    // -------------------------------------------------------
+                    2 => {
+                        let arg_ty = var_types.get(&(arg_base as u32)).copied();
+                        let result = match arg_ty {
+                            Some(JitVarType::Bool) => {
+                                // Already a NaN-boxed bool — pass through
+                                use_var(&mut builder, &regs, &var_types, arg_base)
+                            }
+                            Some(JitVarType::Float) => {
+                                let v = use_var(&mut builder, &regs, &var_types, arg_base);
+                                let fv = emit_unbox_float(&mut builder, v);
+                                let zero = builder.ins().f64const(0.0);
+                                let is_nonzero = builder.ins().fcmp(FloatCC::NotEqual, fv, zero);
+                                let true_val = builder.ins().iconst(types::I64, NAN_BOX_TRUE);
+                                let false_val = builder.ins().iconst(types::I64, NAN_BOX_FALSE);
+                                builder.ins().select(is_nonzero, true_val, false_val)
+                            }
+                            Some(JitVarType::Str) => {
+                                let v = use_var(&mut builder, &regs, &var_types, arg_base);
+                                let call = builder.ins().call(intrinsic_string_len_ref, &[v]);
+                                let len = builder.inst_results(call)[0];
+                                let zero = builder.ins().iconst(types::I64, 0);
+                                let is_nonempty = builder.ins().icmp(IntCC::NotEqual, len, zero);
+                                let true_val = builder.ins().iconst(types::I64, NAN_BOX_TRUE);
+                                let false_val = builder.ins().iconst(types::I64, NAN_BOX_FALSE);
+                                builder.ins().select(is_nonempty, true_val, false_val)
+                            }
+                            _ => {
+                                // Int: nonzero → true
+                                let v = use_var(&mut builder, &regs, &var_types, arg_base);
+                                let raw = emit_unbox_int(&mut builder, v);
+                                let zero = builder.ins().iconst(types::I64, 0);
+                                let is_nonzero = builder.ins().icmp(IntCC::NotEqual, raw, zero);
+                                let true_val = builder.ins().iconst(types::I64, NAN_BOX_TRUE);
+                                let false_val = builder.ins().iconst(types::I64, NAN_BOX_FALSE);
+                                builder.ins().select(is_nonzero, true_val, false_val)
+                            }
+                        };
+                        var_types.insert(inst.a as u32, JitVarType::Bool);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 3: Hash — hash value to sha256-prefixed hex string
+                    // -------------------------------------------------------
+                    3 => {
+                        let arg_ty = var_types.get(&(arg_base as u32)).copied();
+                        // Convert non-strings to string first, then hash
+                        let str_val = match arg_ty {
+                            Some(JitVarType::Str) => {
+                                use_var(&mut builder, &regs, &var_types, arg_base)
+                            }
+                            Some(JitVarType::Float) => {
+                                let v = use_var(&mut builder, &regs, &var_types, arg_base);
+                                let fv = emit_unbox_float(&mut builder, v);
+                                let call = builder.ins().call(intrinsic_to_string_float_ref, &[fv]);
+                                builder.inst_results(call)[0]
+                            }
+                            _ => {
+                                let v = use_var(&mut builder, &regs, &var_types, arg_base);
+                                let unboxed = emit_unbox_int(&mut builder, v);
+                                let call =
+                                    builder.ins().call(intrinsic_to_string_int_ref, &[unboxed]);
+                                builder.inst_results(call)[0]
+                            }
+                        };
+                        let call = builder.ins().call(intrinsic_string_hash_ref, &[str_val]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Str);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 18: Split(str, sep) -> String (stub: returns comma-joined)
+                    // -------------------------------------------------------
+                    18 => {
+                        let a = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let b = use_var(&mut builder, &regs, &var_types, arg_base + 1);
+                        let call = builder.ins().call(intrinsic_string_split_ref, &[a, b]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Str);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 66: Clone — copy value (refcount increment for strings)
+                    // -------------------------------------------------------
+                    66 => {
+                        let arg_ty = var_types.get(&(arg_base as u32)).copied();
+                        let v = use_var(&mut builder, &regs, &var_types, arg_base);
+                        match arg_ty {
+                            Some(JitVarType::Str) => {
+                                // Increment refcount
+                                let flags = MemFlags::new();
+                                let rc = builder.ins().load(types::I64, flags, v, 0);
+                                let rc1 = builder.ins().iadd_imm(rc, 1);
+                                builder.ins().store(flags, rc1, v, 0);
+                                var_types.insert(inst.a as u32, JitVarType::Str);
+                                def_var(&mut builder, &mut regs, inst.a, v);
+                            }
+                            _ => {
+                                // Scalar — just copy the NaN-boxed value
+                                let ty = arg_ty.unwrap_or(JitVarType::Int);
+                                var_types.insert(inst.a as u32, ty);
+                                def_var(&mut builder, &mut regs, inst.a, v);
+                            }
+                        }
+                    }
+
+                    // -------------------------------------------------------
+                    // 67: Sizeof — size in bytes
+                    // -------------------------------------------------------
+                    67 => {
+                        let arg_ty = var_types.get(&(arg_base as u32)).copied();
+                        let result = if arg_ty == Some(JitVarType::Str) {
+                            // Return the byte length of the string content
+                            let v = use_var(&mut builder, &regs, &var_types, arg_base);
+                            let call = builder.ins().call(intrinsic_string_len_ref, &[v]);
+                            let raw_len = builder.inst_results(call)[0];
+                            emit_box_int(&mut builder, raw_len)
+                        } else {
+                            // All scalars are 8 bytes (i64 NaN-boxed)
+                            builder.ins().iconst(types::I64, nan_box_int(8))
+                        };
+                        var_types.insert(inst.a as u32, JitVarType::Int);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 77: Format — same as ToString for scalar types
+                    // -------------------------------------------------------
+                    77 => {
+                        let arg_ty = var_types.get(&(arg_base as u32)).copied();
+                        match arg_ty {
+                            Some(JitVarType::Str) => {
+                                let src = use_var(&mut builder, &regs, &var_types, arg_base);
+                                let flags = MemFlags::new();
+                                let rc = builder.ins().load(types::I64, flags, src, 0);
+                                let rc_plus_one = builder.ins().iadd_imm(rc, 1);
+                                builder.ins().store(flags, rc_plus_one, src, 0);
+                                var_types.insert(inst.a as u32, JitVarType::Str);
+                                def_var(&mut builder, &mut regs, inst.a, src);
+                            }
+                            Some(JitVarType::Float) => {
+                                let v = use_var(&mut builder, &regs, &var_types, arg_base);
+                                let fv = emit_unbox_float(&mut builder, v);
+                                let call = builder.ins().call(intrinsic_to_string_float_ref, &[fv]);
+                                let result = builder.inst_results(call)[0];
+                                var_types.insert(inst.a as u32, JitVarType::Str);
+                                def_var(&mut builder, &mut regs, inst.a, result);
+                            }
+                            _ => {
+                                let v = use_var(&mut builder, &regs, &var_types, arg_base);
+                                let unboxed = emit_unbox_int(&mut builder, v);
+                                let call =
+                                    builder.ins().call(intrinsic_to_string_int_ref, &[unboxed]);
+                                let result = builder.inst_results(call)[0];
+                                var_types.insert(inst.a as u32, JitVarType::Str);
+                                def_var(&mut builder, &mut regs, inst.a, result);
+                            }
+                        }
+                    }
+
+                    // -------------------------------------------------------
+                    // 133: Hrtime — high-resolution timer (nanoseconds)
+                    // -------------------------------------------------------
+                    133 => {
+                        let call = builder.ins().call(intrinsic_hrtime_ref, &[]);
+                        let raw = builder.inst_results(call)[0];
+                        let result = emit_box_int(&mut builder, raw);
+                        var_types.insert(inst.a as u32, JitVarType::Int);
                         def_var(&mut builder, &mut regs, inst.a, result);
                     }
 

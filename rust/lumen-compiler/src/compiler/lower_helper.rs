@@ -64,6 +64,8 @@ fn get_intrinsic_id(name: &str) -> Option<IntrinsicId> {
         "log" => Some(IntrinsicId::Log),
         "sin" => Some(IntrinsicId::Sin),
         "cos" => Some(IntrinsicId::Cos),
+        "tan" => Some(IntrinsicId::Tan),
+        "trunc" => Some(IntrinsicId::Trunc),
         "clamp" => Some(IntrinsicId::Clamp),
         // Utility operations
         "clone" => Some(IntrinsicId::Clone),
@@ -75,7 +77,7 @@ fn get_intrinsic_id(name: &str) -> Option<IntrinsicId> {
         "patch" => Some(IntrinsicId::Patch),
         "redact" => Some(IntrinsicId::Redact),
         "validate" => Some(IntrinsicId::Validate),
-         // Map/Set operations
+        // Map/Set operations
         "has_key" => Some(IntrinsicId::HasKey),
         "merge" => Some(IntrinsicId::Merge),
         "size" => Some(IntrinsicId::Size),

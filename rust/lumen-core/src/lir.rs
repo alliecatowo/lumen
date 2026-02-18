@@ -274,6 +274,8 @@ pub enum IntrinsicId {
     Args = 135,
     SetEnv = 136,
     EnvVars = 137,
+    Tan = 138,
+    Trunc = 139,
 }
 
 /// A 32-bit instruction

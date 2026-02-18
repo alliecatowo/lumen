@@ -85,6 +85,7 @@ pub fn lower_cell<M: Module>(
     pointer_type: ClifType,
     func_id: FuncId,
     func_ids: &HashMap<String, FuncId>,
+    string_table: &[String],
 ) -> Result<(), CodegenError> {
     // Build signature
     let mut sig = module.make_signature();
@@ -168,6 +169,31 @@ pub fn lower_cell<M: Module>(
     let str_drop_ref =
         declare_helper_func(module, &mut func, "jit_rt_string_drop", &[types::I64], &[])?;
 
+    // Declare record runtime helper functions (for JIT record support).
+    let record_get_field_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_record_get_field",
+        &[types::I64, types::I64, types::I64], // record_ptr, field_name_ptr, field_name_len
+        &[types::I64],
+    )?;
+    let record_set_field_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_record_set_field",
+        &[types::I64, types::I64, types::I64, types::I64], // record_ptr, field_name_ptr, field_name_len, value_ptr
+        &[types::I64],
+    )?;
+    let value_clone_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_value_clone",
+        &[types::I64],
+        &[types::I64],
+    )?;
+    let value_drop_ref =
+        declare_helper_func(module, &mut func, "jit_rt_value_drop", &[types::I64], &[])?;
+
     // Declare intrinsic runtime helper functions (for JIT builtin support).
     let intrinsic_print_int_ref =
         declare_helper_func(module, &mut func, "jit_rt_print_int", &[types::I64], &[])?;
@@ -197,6 +223,8 @@ pub fn lower_cell<M: Module>(
 
     // Suppress unused-variable warnings for helpers not yet used in all paths.
     let _ = str_clone_ref;
+    let _ = value_clone_ref;
+    let _ = value_drop_ref;
 
     let mut builder = FunctionBuilder::new(&mut func, fb_ctx);
 
@@ -937,30 +965,71 @@ pub fn lower_cell<M: Module>(
             // Record field access
             OpCode::GetField => {
                 // A = B.field[C]
-                // B is the record register (pointer to RecordValue)
+                // B is the record register (pointer to Value containing a Record)
                 // C is the field name index in the string table
                 let record_ptr = use_var(&mut builder, &vars, inst.b);
-                let field_idx = builder.ins().iconst(types::I64, inst.c as i64);
 
-                // For now, stub with null - full implementation requires runtime helpers
-                let zero = builder.ins().iconst(types::I64, 0);
-                var_types.insert(inst.a as u32, JitVarType::Int);
-                def_var(&mut builder, &vars, inst.a, zero);
+                // Get the field name from the string table
+                let field_name = if (inst.c as usize) < string_table.len() {
+                    &string_table[inst.c as usize]
+                } else {
+                    ""
+                };
 
-                // Suppress unused variable warnings
-                let _ = record_ptr;
-                let _ = field_idx;
+                // Pass field name as raw pointer and length to the runtime helper
+                let field_name_bytes = field_name.as_bytes();
+                let field_name_ptr = builder
+                    .ins()
+                    .iconst(types::I64, field_name_bytes.as_ptr() as i64);
+                let field_name_len = builder
+                    .ins()
+                    .iconst(types::I64, field_name_bytes.len() as i64);
+
+                // Call jit_rt_record_get_field(record_ptr, field_name_ptr, field_name_len)
+                let call = builder.ins().call(
+                    record_get_field_ref,
+                    &[record_ptr, field_name_ptr, field_name_len],
+                );
+                let result = builder.inst_results(call)[0];
+
+                // The result is a boxed Value, store it
+                var_types.insert(inst.a as u32, JitVarType::Int); // Represents a Value pointer
+                def_var(&mut builder, &vars, inst.a, result);
             }
             OpCode::SetField => {
                 // A.field[B] = C
-                // A is the record register (pointer to RecordValue)
+                // A is the record register (pointer to Value containing a Record)
                 // B is the field name index in the string table
-                // C is the value to set
-                let _record_ptr = use_var(&mut builder, &vars, inst.a);
-                let _field_idx = builder.ins().iconst(types::I64, inst.b as i64);
-                let _value = use_var(&mut builder, &vars, inst.c);
+                // C is the value to set (register containing the new value)
+                let record_ptr = use_var(&mut builder, &vars, inst.a);
+                let value_ptr = use_var(&mut builder, &vars, inst.c);
 
-                // For now, stub - full implementation requires runtime helpers
+                // Get the field name from the string table
+                let field_name = if (inst.b as usize) < string_table.len() {
+                    &string_table[inst.b as usize]
+                } else {
+                    ""
+                };
+
+                // Pass field name as raw pointer and length to the runtime helper
+                let field_name_bytes = field_name.as_bytes();
+                let field_name_ptr = builder
+                    .ins()
+                    .iconst(types::I64, field_name_bytes.as_ptr() as i64);
+                let field_name_len = builder
+                    .ins()
+                    .iconst(types::I64, field_name_bytes.len() as i64);
+
+                // Call jit_rt_record_set_field(record_ptr, field_name_ptr, field_name_len, value_ptr)
+                let call = builder.ins().call(
+                    record_set_field_ref,
+                    &[record_ptr, field_name_ptr, field_name_len, value_ptr],
+                );
+                let result = builder.inst_results(call)[0];
+
+                // Update the record register with the new record (COW semantics)
+                var_types.insert(inst.a as u32, JitVarType::Int); // Represents a Value pointer
+                def_var(&mut builder, &vars, inst.a, result);
             }
 
             // Intrinsic (builtin function call)

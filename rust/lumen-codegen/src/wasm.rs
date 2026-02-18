@@ -19,7 +19,7 @@
 //!
 //! The public entry point is [`compile_to_wasm`].
 
-use lumen_compiler::compiler::lir::{Constant, LirCell, LirModule, OpCode};
+use lumen_core::lir::{Constant, LirCell, LirModule, OpCode};
 
 use crate::emit::CodegenError;
 
@@ -574,9 +574,7 @@ fn encode_i64_leb128(buf: &mut Vec<u8>, mut value: i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lumen_compiler::compiler::lir::{
-        Constant, Instruction, LirCell, LirModule, LirParam, OpCode,
-    };
+    use lumen_core::lir::{Constant, Instruction, LirCell, LirModule, LirParam, OpCode};
 
     fn empty_lir_module(cells: Vec<LirCell>) -> LirModule {
         LirModule {

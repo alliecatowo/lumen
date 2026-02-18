@@ -12,14 +12,14 @@ pub(crate) use processes::{
 };
 
 use crate::jit_tier::{JitTier, JitTierConfig};
-use crate::strings::StringTable;
-use crate::types::{RuntimeField, RuntimeType, RuntimeTypeKind, RuntimeVariant, TypeTable};
-use crate::values::{
+use crate::vm::ops::BinaryOp;
+use lumen_core::lir::*;
+use lumen_core::strings::StringTable;
+use lumen_core::types::{RuntimeField, RuntimeType, RuntimeTypeKind, RuntimeVariant, TypeTable};
+use lumen_core::values::{
     values_equal, ClosureValue, FutureStatus, FutureValue, RecordValue, StringRef, TraceRefValue,
     UnionValue, Value,
 };
-use crate::vm::ops::BinaryOp;
-use lumen_compiler::compiler::lir::*;
 
 use lumen_runtime::tools::{ProviderRegistry, ToolDispatcher, ToolRequest};
 use num_bigint::BigInt;
@@ -1584,11 +1584,19 @@ impl VM {
                                             if self.jit_tier.returns_string(&callee_cell.name) {
                                                 // Convert the raw *mut String pointer back to a
                                                 // Value::String. This consumes the heap allocation.
-                                                let s = unsafe {
-                                                    lumen_codegen::jit::jit_take_string(result)
-                                                };
-                                                self.registers[callee_reg] =
-                                                    Value::String(StringRef::Owned(s));
+                                                #[cfg(feature = "jit")]
+                                                {
+                                                    let s = unsafe {
+                                                        lumen_codegen::jit::jit_take_string(result)
+                                                    };
+                                                    self.registers[callee_reg] =
+                                                        Value::String(StringRef::Owned(s));
+                                                }
+                                                #[cfg(not(feature = "jit"))]
+                                                {
+                                                    // This path should never be reached without JIT feature
+                                                    self.registers[callee_reg] = Value::Int(result);
+                                                }
                                             } else {
                                                 self.registers[callee_reg] = Value::Int(result);
                                             }
@@ -1777,10 +1785,18 @@ impl VM {
                                                 .jit_tier
                                                 .returns_string(&callee_cell.name)
                                             {
-                                                let s = unsafe {
-                                                    lumen_codegen::jit::jit_take_string(result)
-                                                };
-                                                Value::String(StringRef::Owned(s))
+                                                #[cfg(feature = "jit")]
+                                                {
+                                                    let s = unsafe {
+                                                        lumen_codegen::jit::jit_take_string(result)
+                                                    };
+                                                    Value::String(StringRef::Owned(s))
+                                                }
+                                                #[cfg(not(feature = "jit"))]
+                                                {
+                                                    // This path should never be reached without JIT feature
+                                                    Value::Int(result)
+                                                }
                                             } else {
                                                 Value::Int(result)
                                             };
@@ -7044,7 +7060,7 @@ end
     fn t123_negation_overflow() {
         // Negation of i64::MIN overflows because |i64::MIN| > i64::MAX.
         // Test via raw LIR to directly exercise the Neg opcode with checked_neg.
-        use lumen_compiler::compiler::lir::*;
+        use lumen_core::lir::*;
         let module = LirModule {
             version: "1.0.0".into(),
             doc_hash: "test".into(),

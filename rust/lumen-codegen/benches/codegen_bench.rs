@@ -13,7 +13,7 @@ use lumen_codegen::bench_programs;
 use lumen_codegen::context::CodegenContext;
 use lumen_codegen::emit::emit_object;
 use lumen_codegen::lower::lower_module;
-use lumen_compiler::compiler::lir::LirModule;
+use lumen_core::lir::LirModule;
 
 /// Number of iterations for each benchmark.
 const ITERATIONS: u32 = 20;

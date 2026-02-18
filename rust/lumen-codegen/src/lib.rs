@@ -13,3 +13,6 @@ pub mod opt;
 pub mod types;
 pub mod wasm;
 pub mod wit;
+
+// Re-export commonly used wasm types
+pub use wasm::{compile_to_wasm, WasmCodegen, WasmTarget};

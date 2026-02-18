@@ -215,10 +215,14 @@ impl JitTier {
             let mut engine = JitEngine::new(settings, 0);
             match engine.compile_module(module) {
                 Ok(()) => {
-                    // Mark ALL cells as compiled.
-                    for (idx, _cell) in module.cells.iter().enumerate() {
-                        self.compiled.insert(idx);
-                        self.stats.cells_compiled += 1;
+                    // Only mark cells that were actually compiled by the engine.
+                    // Cells with unsupported opcodes are silently skipped by
+                    // compile_module and won't be in the engine's cache.
+                    for (idx, cell) in module.cells.iter().enumerate() {
+                        if engine.is_compiled(&cell.name) {
+                            self.compiled.insert(idx);
+                            self.stats.cells_compiled += 1;
+                        }
                     }
                     self.engine = Some(engine);
                     true

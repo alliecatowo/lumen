@@ -45,7 +45,7 @@ fn strEql(a: []const u8, b: []const u8) bool {
 }
 
 pub fn main() !void {
-    const count = 10000;
+    const count = 10_000;
     var entries: [count]Entry = undefined;
 
     for (0..count) |i| {
@@ -63,7 +63,10 @@ pub fn main() !void {
         }
     }
 
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("Found: {s}\n", .{found});
-    try stdout.print("Count: {d}\n", .{count});
+    const stdout_file = std.fs.File.stdout();
+    var buf: [4096]u8 = undefined;
+    var w = stdout_file.writer(&buf);
+    try w.interface.print("Found: {s}\n", .{found});
+    try w.interface.print("Count: {d}\n", .{count});
+    try w.interface.flush();
 }

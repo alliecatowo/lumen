@@ -1,0 +1,136 @@
+# N-body gravitational simulation — 5-body solar system
+# Uses list-of-lists for body state.
+#
+# LUMEN VM LIMITATIONS: No index assignment, function calls in while loops
+# clobber registers, max 255 registers per cell.
+#
+# Strategy: Advance loop rebuilds bodies one at a time. For each body,
+# compute its interactions with all others, update velocity and position,
+# append to new list. This keeps the per-statement register count low.
+# Step count = 1000 (vs 1M in compiled languages).
+
+cell energy(bodies: list[list[Float]]) -> Float
+  let e = 0.0
+  let i = 0
+  while i < 5
+    let vx = bodies[i][3]
+    let vy = bodies[i][4]
+    let vz = bodies[i][5]
+    let mi = bodies[i][6]
+    e = e + 0.5 * mi * (vx * vx + vy * vy + vz * vz)
+    let j = i + 1
+    while j < 5
+      let dx = bodies[i][0] - bodies[j][0]
+      let dy = bodies[i][1] - bodies[j][1]
+      let dz = bodies[i][2] - bodies[j][2]
+      let dist = sqrt(dx * dx + dy * dy + dz * dz)
+      e = e - mi * bodies[j][6] / dist
+      j = j + 1
+    end
+    i = i + 1
+  end
+  return e
+end
+
+cell make_body(a: Float, b: Float, c: Float, d: Float, e: Float, f: Float, g: Float) -> list[Float]
+  let r = []
+  r = append(r, a)
+  r = append(r, b)
+  r = append(r, c)
+  r = append(r, d)
+  r = append(r, e)
+  r = append(r, f)
+  r = append(r, g)
+  return r
+end
+
+cell init() -> list[list[Float]]
+  let pi = 3.141592653589793
+  let sm = 4.0 * pi * pi
+  let dpy = 365.24
+  let bodies = []
+  bodies = append(bodies, make_body(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, sm))
+  bodies = append(bodies, make_body(4.84143144246472090, 0.0 - 1.16032004402742839, 0.0 - 0.103622044471123109, 1.66007664274403694e-3 * dpy, 7.69901118419740425e-3 * dpy, 0.0 - 6.90460016972063023e-5 * dpy, 9.54791938424326609e-4 * sm))
+  bodies = append(bodies, make_body(8.34336671824457987, 4.12479856412430479, 0.0 - 0.403523417114321381, 0.0 - 2.76742510726862411e-3 * dpy, 4.99852801234917238e-3 * dpy, 2.30417297573763929e-5 * dpy, 2.85885980666130812e-4 * sm))
+  bodies = append(bodies, make_body(12.8943695621391310, 0.0 - 15.1111514016986312, 0.0 - 0.223307578892655734, 2.96460137564761618e-3 * dpy, 2.37847173959480950e-3 * dpy, 0.0 - 2.96589568540237556e-5 * dpy, 4.36624404335156298e-5 * sm))
+  bodies = append(bodies, make_body(15.3796971148509165, 0.0 - 25.9193146099879641, 0.179258772950371181, 2.68067772490389322e-3 * dpy, 1.62824170038242295e-3 * dpy, 0.0 - 9.51592254519715870e-5 * dpy, 5.15138902046611451e-5 * sm))
+  let px = 0.0
+  let py = 0.0
+  let pz = 0.0
+  let i = 0
+  while i < 5
+    px = px + bodies[i][3] * bodies[i][6]
+    py = py + bodies[i][4] * bodies[i][6]
+    pz = pz + bodies[i][5] * bodies[i][6]
+    i = i + 1
+  end
+  let nb = []
+  nb = append(nb, make_body(0.0, 0.0, 0.0, 0.0 - px / sm, 0.0 - py / sm, 0.0 - pz / sm, sm))
+  i = 1
+  while i < 5
+    nb = append(nb, bodies[i])
+    i = i + 1
+  end
+  return nb
+end
+
+# Note: this advance implementation is INCORRECT for the nbody problem because
+# it applies velocity updates asymmetrically (each body sees the OLD positions
+# of later bodies but UPDATED positions/velocities of earlier bodies within
+# the same step). For a correct implementation, we'd need to compute all
+# force deltas first, THEN apply them — but that exceeds Lumen's 255 register
+# limit. This version produces approximately correct results for demonstration.
+cell advance(bodies: list[list[Float]], steps: Int) -> list[list[Float]]
+  let dt = 0.01
+  let s = 0
+  while s < steps
+    # For each body, compute its velocity delta from interactions
+    # with all other bodies, update velocity and position, rebuild
+    let nb = []
+    let i = 0
+    while i < 5
+      let dvx = 0.0
+      let dvy = 0.0
+      let dvz = 0.0
+      let j = 0
+      while j < 5
+        if j != i
+          let dx = bodies[i][0] - bodies[j][0]
+          let dy = bodies[i][1] - bodies[j][1]
+          let dz = bodies[i][2] - bodies[j][2]
+          let d2 = dx * dx + dy * dy + dz * dz
+          let dist = sqrt(d2)
+          let mag = dt / (d2 * dist)
+          dvx = dvx - dx * bodies[j][6] * mag
+          dvy = dvy - dy * bodies[j][6] * mag
+          dvz = dvz - dz * bodies[j][6] * mag
+        end
+        j = j + 1
+      end
+      let nvx = bodies[i][3] + dvx
+      let nvy = bodies[i][4] + dvy
+      let nvz = bodies[i][5] + dvz
+      let bx = []
+      bx = append(bx, bodies[i][0] + dt * nvx)
+      bx = append(bx, bodies[i][1] + dt * nvy)
+      bx = append(bx, bodies[i][2] + dt * nvz)
+      bx = append(bx, nvx)
+      bx = append(bx, nvy)
+      bx = append(bx, nvz)
+      bx = append(bx, bodies[i][6])
+      nb = append(nb, bx)
+      i = i + 1
+    end
+    bodies = nb
+    s = s + 1
+  end
+  return bodies
+end
+
+cell main() -> Null
+  let bodies = init()
+  print(to_string(energy(bodies)))
+  bodies = advance(bodies, 1000)
+  print(to_string(energy(bodies)))
+  return null
+end

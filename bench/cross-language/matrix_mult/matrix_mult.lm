@@ -1,0 +1,71 @@
+# Matrix multiplication — 200x200 dense naive O(n^3)
+# Tests: floating point arithmetic, nested loops, list indexing
+# NOTE: All row construction is inlined (no helper function calls in while loops)
+# due to a VM register clobbering bug with function calls inside while loops.
+
+cell main() -> Null
+  let n = 200
+
+  # Build matrix A: A[i][j] = (i*200+j) % 1000 / 1000.0
+  let a = []
+  let i = 0
+  while i < n
+    let row = []
+    let j = 0
+    while j < n
+      row = append(row, (i * n + j) % 1000 / 1000.0)
+      j = j + 1
+    end
+    a = append(a, row)
+    i = i + 1
+  end
+
+  # Build matrix B: B[i][j] = (j*200+i) % 1000 / 1000.0
+  let b = []
+  i = 0
+  while i < n
+    let row = []
+    let j = 0
+    while j < n
+      row = append(row, (j * n + i) % 1000 / 1000.0)
+      j = j + 1
+    end
+    b = append(b, row)
+    i = i + 1
+  end
+
+  # Multiply C = A * B — build result row by row
+  let c = []
+  i = 0
+  while i < n
+    let row = []
+    let j = 0
+    while j < n
+      let sum = 0.0
+      let k = 0
+      while k < n
+        sum = sum + a[i][k] * b[k][j]
+        k = k + 1
+      end
+      row = append(row, sum)
+      j = j + 1
+    end
+    c = append(c, row)
+    i = i + 1
+  end
+
+  # Checksum: sum of all elements
+  let checksum = 0.0
+  i = 0
+  while i < n
+    let j = 0
+    while j < n
+      checksum = checksum + c[i][j]
+      j = j + 1
+    end
+    i = i + 1
+  end
+
+  print("matrix_mult(200): checksum = " + to_string(checksum))
+  return null
+end

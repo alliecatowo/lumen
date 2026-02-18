@@ -20,7 +20,7 @@
 //! # Example
 //!
 //! ```rust
-//! use lumen_runtime::panic_boundary::{catch_panic, PanicPolicy, with_panic_boundary};
+//! use lumen_rt::services::panic_boundary::{catch_panic, PanicPolicy, with_panic_boundary};
 //!
 //! // Catch a panic and convert to Result
 //! let result = catch_panic(|| {

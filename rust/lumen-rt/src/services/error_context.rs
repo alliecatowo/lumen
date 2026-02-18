@@ -11,7 +11,7 @@
 //! # Example
 //!
 //! ```rust
-//! use lumen_runtime::error_context::{ErrorContext, ErrorChain};
+//! use lumen_rt::services::error_context::{ErrorContext, ErrorChain};
 //!
 //! let root = ErrorContext::new("TLS handshake failed");
 //! let chain = ErrorChain::new(root)
@@ -167,7 +167,7 @@ impl fmt::Display for ErrorChain {
 // ToolError integration
 // ---------------------------------------------------------------------------
 
-use crate::tools::ToolError;
+use crate::services::tools::ToolError;
 
 impl ToolError {
     /// Wrap this error with additional context, returning an [`ErrorChain`].

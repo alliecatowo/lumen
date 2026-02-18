@@ -13,8 +13,8 @@
 //! # Example
 //!
 //! ```ignore
-//! use lumen_runtime::channel;
-//! use lumen_runtime::select::{Selector, SelectResult};
+//! use lumen_rt::services::channel;
+//! use lumen_rt::services::select::{Selector, SelectResult};
 //! use std::time::Duration;
 //!
 //! let (tx1, rx1) = channel::unbounded::<i32>();
@@ -31,7 +31,7 @@
 //! assert!(matches!(result, SelectResult::Matched(_)));
 //! ```
 
-use crate::channel::Receiver;
+use crate::services::channel::Receiver;
 use crossbeam_channel::{self as cb};
 use std::time::Duration;
 
@@ -287,7 +287,7 @@ impl<'a> Default for Selector<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channel;
+    use crate::services::channel;
     use std::collections::HashSet;
     use std::thread;
     use std::time::{Duration, Instant};

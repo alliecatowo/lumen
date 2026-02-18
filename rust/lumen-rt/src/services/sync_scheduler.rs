@@ -1,7 +1,7 @@
 //! Synchronous single-threaded scheduler for deterministic stepping.
 //!
 //! The [`SyncScheduler`] provides the same logical model as the threaded
-//! [`Scheduler`](crate::scheduler::Scheduler) — a global injection queue,
+//! [`Scheduler`](crate::services::scheduler::Scheduler) — a global injection queue,
 //! per-worker local queues, and work-stealing — but executes everything on the
 //! calling thread. This makes it suitable for:
 //!
@@ -17,9 +17,9 @@
 //!    If the local queue is empty, attempt to steal from a peer.
 //! 3. Return a [`TickResult`] indicating whether work was performed.
 
-use crate::injection::InjectionQueue;
-use crate::process::{ProcessControlBlock, ProcessId, ProcessStatus};
-use crate::scheduler::Task;
+use crate::services::injection::InjectionQueue;
+use crate::services::process::{ProcessControlBlock, ProcessId, ProcessStatus};
+use crate::services::scheduler::Task;
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -318,7 +318,7 @@ impl fmt::Debug for SyncScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::process::ProcessStatus;
+    use crate::services::process::ProcessStatus;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 

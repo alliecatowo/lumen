@@ -356,7 +356,7 @@ end
 
 #[test]
 fn vm_null_coalesce_returns_non_null_value() {
-    use lumen_vm::vm::VM;
+    use lumen_rt::vm::VM;
     let src = r#"cell main() -> Int
   let x = 42
   return x ?? 99
@@ -370,7 +370,7 @@ end"#;
 
 #[test]
 fn vm_null_coalesce_returns_default_on_null() {
-    use lumen_vm::vm::VM;
+    use lumen_rt::vm::VM;
     let src = r#"cell main() -> Int
   let x = null
   return x ?? 99
@@ -384,7 +384,7 @@ end"#;
 
 #[test]
 fn vm_null_safe_access_on_non_null_record() {
-    use lumen_vm::vm::VM;
+    use lumen_rt::vm::VM;
     let src = r#"record Point
   x: Int
   y: Int
@@ -404,7 +404,7 @@ end"#;
 
 #[test]
 fn vm_null_safe_access_on_null_returns_null() {
-    use lumen_vm::vm::VM;
+    use lumen_rt::vm::VM;
     let src = r#"cell main() -> Int
   let p = null
   let val = p?.x
@@ -419,7 +419,7 @@ end"#;
 
 #[test]
 fn vm_chained_null_safe_access() {
-    use lumen_vm::vm::VM;
+    use lumen_rt::vm::VM;
     let src = r#"record Inner
   value: Int
 end
@@ -442,7 +442,7 @@ end"#;
 
 #[test]
 fn vm_combined_null_safe_and_coalesce() {
-    use lumen_vm::vm::VM;
+    use lumen_rt::vm::VM;
     let src = r#"record Config
   name: String
 end
@@ -460,7 +460,7 @@ end"#;
 
 #[test]
 fn vm_combined_null_safe_and_coalesce_on_null() {
-    use lumen_vm::vm::VM;
+    use lumen_rt::vm::VM;
     let src = r#"cell main() -> String
   let c = null
   return c?.name ?? "fallback"
@@ -474,7 +474,7 @@ end"#;
 
 #[test]
 fn vm_null_coalesce_chain_picks_first_non_null() {
-    use lumen_vm::vm::VM;
+    use lumen_rt::vm::VM;
     let src = r#"cell main() -> Int
   let a = null
   let b = null
@@ -490,7 +490,7 @@ end"#;
 
 #[test]
 fn vm_null_coalesce_chain_all_null() {
-    use lumen_vm::vm::VM;
+    use lumen_rt::vm::VM;
     let src = r#"cell main() -> Int
   let a = null
   let b = null
@@ -507,7 +507,7 @@ end"#;
 #[test]
 fn vm_null_safe_access_with_method_result() {
     // Test ?. combined with function calls
-    use lumen_vm::vm::VM;
+    use lumen_rt::vm::VM;
     let src = r#"record Box
   value: Int
 end

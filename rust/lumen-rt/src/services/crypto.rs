@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```rust
-//! use lumen_runtime::crypto::{sha256_hex, base64_encode, base64_decode, generate_uuid_v4};
+//! use lumen_rt::services::crypto::{sha256_hex, base64_encode, base64_decode, generate_uuid_v4};
 //!
 //! let hash = sha256_hex(b"hello");
 //! assert_eq!(hash.len(), 64);
@@ -67,7 +67,7 @@ impl std::error::Error for CryptoError {}
 /// # Examples
 ///
 /// ```rust
-/// use lumen_runtime::crypto::sha256;
+/// use lumen_rt::services::crypto::sha256;
 ///
 /// let digest = sha256(b"abc");
 /// assert_eq!(digest.len(), 32);
@@ -86,7 +86,7 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
 /// # Examples
 ///
 /// ```rust
-/// use lumen_runtime::crypto::sha256_hex;
+/// use lumen_rt::services::crypto::sha256_hex;
 ///
 /// let hex = sha256_hex(b"abc");
 /// assert_eq!(hex.len(), 64);
@@ -112,7 +112,7 @@ pub fn sha256_hex(data: &[u8]) -> String {
 /// # Examples
 ///
 /// ```rust
-/// use lumen_runtime::crypto::blake3_hash;
+/// use lumen_rt::services::crypto::blake3_hash;
 ///
 /// let digest = blake3_hash(b"hello");
 /// assert_eq!(digest.len(), 32);
@@ -281,7 +281,7 @@ mod blake3_impl {
 /// # Examples
 ///
 /// ```rust
-/// use lumen_runtime::crypto::{hmac_sha256, hex_encode};
+/// use lumen_rt::services::crypto::{hmac_sha256, hex_encode};
 ///
 /// let mac = hmac_sha256(b"key", b"The quick brown fox jumps over the lazy dog");
 /// let hex = hex_encode(&mac);
@@ -339,7 +339,7 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
 /// # Examples
 ///
 /// ```rust
-/// use lumen_runtime::crypto::hkdf_sha256;
+/// use lumen_rt::services::crypto::hkdf_sha256;
 ///
 /// let okm = hkdf_sha256(b"input-key", b"salt", b"info", 32);
 /// assert_eq!(okm.len(), 32);
@@ -390,7 +390,7 @@ const BASE64_CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrst
 /// # Examples
 ///
 /// ```rust
-/// use lumen_runtime::crypto::base64_encode;
+/// use lumen_rt::services::crypto::base64_encode;
 ///
 /// assert_eq!(base64_encode(b"hello world"), "aGVsbG8gd29ybGQ=");
 /// assert_eq!(base64_encode(b""), "");
@@ -438,7 +438,7 @@ pub fn base64_encode(data: &[u8]) -> String {
 /// # Examples
 ///
 /// ```rust
-/// use lumen_runtime::crypto::base64_decode;
+/// use lumen_rt::services::crypto::base64_decode;
 ///
 /// let decoded = base64_decode("aGVsbG8gd29ybGQ=").unwrap();
 /// assert_eq!(decoded, b"hello world");
@@ -498,7 +498,7 @@ pub fn base64_decode(encoded: &str) -> Result<Vec<u8>, CryptoError> {
 /// # Examples
 ///
 /// ```rust
-/// use lumen_runtime::crypto::hex_encode;
+/// use lumen_rt::services::crypto::hex_encode;
 ///
 /// assert_eq!(hex_encode(&[0xDE, 0xAD, 0xBE, 0xEF]), "deadbeef");
 /// assert_eq!(hex_encode(&[]), "");
@@ -525,7 +525,7 @@ const HEX_LOWER: [char; 16] = [
 /// # Examples
 ///
 /// ```rust
-/// use lumen_runtime::crypto::hex_decode;
+/// use lumen_rt::services::crypto::hex_decode;
 ///
 /// let bytes = hex_decode("deadbeef").unwrap();
 /// assert_eq!(bytes, vec![0xDE, 0xAD, 0xBE, 0xEF]);
@@ -578,7 +578,7 @@ fn hex_digit(ch: u8, pos: usize) -> Result<u8, CryptoError> {
 /// # Examples
 ///
 /// ```rust
-/// use lumen_runtime::crypto::random_bytes;
+/// use lumen_rt::services::crypto::random_bytes;
 ///
 /// let bytes = random_bytes(32);
 /// assert_eq!(bytes.len(), 32);
@@ -610,7 +610,7 @@ pub fn random_bytes(count: usize) -> Vec<u8> {
 /// # Examples
 ///
 /// ```rust
-/// use lumen_runtime::crypto::generate_uuid_v4;
+/// use lumen_rt::services::crypto::generate_uuid_v4;
 ///
 /// let uuid = generate_uuid_v4();
 /// assert_eq!(uuid.len(), 36);

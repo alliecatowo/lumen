@@ -19,7 +19,7 @@
 //! Each spawned actor is assigned a unique [`ProcessId`] for integration with
 //! the existing process management system.
 
-use crate::process::ProcessId;
+use crate::services::process::ProcessId;
 
 use crossbeam_channel::{self as cb};
 use std::fmt;

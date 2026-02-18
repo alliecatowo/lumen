@@ -1,9 +1,9 @@
 //! Wave-21 tests: T162 — Multi-shot continuations infrastructure.
 //!
-//! Tests for `lumen_vm::vm::continuations` module covering all public types
+//! Tests for `lumen_rt::vm::continuations` module covering all public types
 //! and their invariants.
 
-use lumen_vm::vm::continuations::*;
+use lumen_rt::vm::continuations::*;
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -1,6 +1,6 @@
 //! Per-effect budget enforcement for the Lumen runtime.
 //!
-//! While [`crate::reduction::ReductionCounter`] provides generic cooperative
+//! While [`crate::services::reduction::ReductionCounter`] provides generic cooperative
 //! preemption, this module tracks **per-effect** call counts so that
 //! individual effects (e.g. `http`, `fs`, `llm`) can be independently
 //! rate-limited at runtime.
@@ -8,7 +8,7 @@
 //! # Example
 //!
 //! ```rust
-//! use lumen_runtime::effect_budget::EffectBudgetTracker;
+//! use lumen_rt::services::effect_budget::EffectBudgetTracker;
 //!
 //! let mut tracker = EffectBudgetTracker::new();
 //! tracker.set_budget("http", 5);
@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 
-use crate::tools::ToolError;
+use crate::services::tools::ToolError;
 
 /// Tracks per-effect invocation counts and enforces configurable budgets.
 ///

@@ -16,7 +16,7 @@
 //! Task completion is tracked via a shared [`AtomicUsize`] counter so callers
 //! can wait for a known number of tasks to finish.
 
-use crate::process::{ProcessControlBlock, ProcessId, ProcessStatus};
+use crate::services::process::{ProcessControlBlock, ProcessId, ProcessStatus};
 use crossbeam_deque::{Injector, Steal, Stealer, Worker};
 use std::collections::HashMap;
 use std::fmt;
@@ -718,7 +718,7 @@ mod tests {
 
     #[test]
     fn process_mailbox_returns_results() {
-        use crate::process::Message;
+        use crate::services::process::Message;
         use serde_json::json;
         let pcb = ProcessControlBlock::new(0, None);
         assert!(pcb.send_message(Message::new(json!(42))).is_ok());

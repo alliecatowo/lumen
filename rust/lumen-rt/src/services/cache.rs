@@ -1,6 +1,6 @@
 //! Content-addressed cache for tool invocation results.
 
-use crate::trace::hasher::canonical_hash;
+use crate::services::trace::hasher::canonical_hash;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -54,7 +54,7 @@ impl CacheStore {
         args: &serde_json::Value,
     ) -> Option<&CacheEntry> {
         let args_hash = canonical_hash(args);
-        let key = crate::trace::hasher::cache_key(tool_id, version, policy_hash, &args_hash);
+        let key = crate::services::trace::hasher::cache_key(tool_id, version, policy_hash, &args_hash);
         self.get(&key)
     }
 }

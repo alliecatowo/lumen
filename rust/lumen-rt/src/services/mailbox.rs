@@ -3,7 +3,7 @@
 //! This module provides a [`Mailbox`] abstraction wrapping crossbeam MPSC
 //! channels with both non-blocking and blocking receive operations, plus
 //! timeout-based receives. Designed to integrate with the existing [`Actor`]
-//! trait in [`crate::actor`].
+//! trait in [`crate::services::actor`].
 //!
 //! Supports Erlang-style **selective receive**: [`recv_selective`] scans the
 //! mailbox for the first message matching a predicate, leaving non-matching
@@ -12,7 +12,7 @@
 //! # Example
 //!
 //! ```rust
-//! use lumen_runtime::mailbox::{Mailbox, MailboxSender};
+//! use lumen_rt::services::mailbox::{Mailbox, MailboxSender};
 //!
 //! let (sender, mailbox) = Mailbox::<String>::unbounded();
 //! sender.send("hello".to_string()).unwrap();

@@ -4,8 +4,8 @@
 //! It implements the ToolProvider trait by discovering tools from an MCP server
 //! and forwarding tool calls via JSON-RPC.
 
-use lumen_runtime::tools::Capability;
-use lumen_runtime::tools::*;
+use lumen_rt::services::tools::Capability;
+use lumen_rt::services::tools::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};

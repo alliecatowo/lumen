@@ -6,7 +6,7 @@
 //! - `crypto.ed25519_verify` — Verify an Ed25519 signature
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use lumen_runtime::tools::{ToolError, ToolProvider, ToolSchema};
+use lumen_rt::services::tools::{ToolError, ToolProvider, ToolSchema};
 use rand::rngs::OsRng;
 use serde::Deserialize;
 use serde_json::{json, Value};

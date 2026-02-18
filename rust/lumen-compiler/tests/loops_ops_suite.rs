@@ -351,7 +351,7 @@ fn unlabeled_for_still_works() {
 
 #[test]
 fn vm_floor_div_int() {
-    use lumen_vm::vm::VM;
+    use lumen_rt::vm::VM;
     let module = compile_to_lir("cell main() -> Int\n  return 7 // 2\nend");
     let mut vm = VM::new();
     vm.load(module);
@@ -361,7 +361,7 @@ fn vm_floor_div_int() {
 
 #[test]
 fn vm_floor_div_negative() {
-    use lumen_vm::vm::VM;
+    use lumen_rt::vm::VM;
     // Test negative floor division: (-7) // 2 = -4 (rounds toward negative infinity)
     let module = compile_to_lir("cell fdiv(a: Int, b: Int) -> Int\n  return a // b\nend\ncell main() -> Int\n  return fdiv(0 - 7, 2)\nend");
     let mut vm = VM::new();
@@ -372,7 +372,7 @@ fn vm_floor_div_negative() {
 
 #[test]
 fn vm_floor_div_float() {
-    use lumen_vm::vm::VM;
+    use lumen_rt::vm::VM;
     let module = compile_to_lir("cell main() -> Float\n  return 7.0 // 2.0\nend");
     let mut vm = VM::new();
     vm.load(module);
@@ -386,7 +386,7 @@ fn vm_floor_div_float() {
 
 #[test]
 fn vm_null_safe_index_valid() {
-    use lumen_vm::vm::VM;
+    use lumen_rt::vm::VM;
     let module = compile_to_lir(
         "cell main() -> Int\n  let x = [10, 20, 30]\n  let y = x?[1]\n  return y ?? 0\nend",
     );
@@ -398,7 +398,7 @@ fn vm_null_safe_index_valid() {
 
 #[test]
 fn vm_null_safe_index_on_null() {
-    use lumen_vm::vm::VM;
+    use lumen_rt::vm::VM;
     let module = compile_to_lir(
         "cell main() -> Int\n  let x = null\n  let y = x?[0]\n  return y ?? 42\nend",
     );
@@ -414,7 +414,7 @@ fn vm_null_safe_index_on_null() {
 
 #[test]
 fn vm_labeled_break_outer() {
-    use lumen_vm::vm::VM;
+    use lumen_rt::vm::VM;
     let src = r#"cell main() -> Int
   let mut result = 0
   loop @outer
@@ -439,7 +439,7 @@ end"#;
 
 #[test]
 fn vm_labeled_continue() {
-    use lumen_vm::vm::VM;
+    use lumen_rt::vm::VM;
     let src = r#"cell main() -> Int
   let mut count = 0
   let mut i = 0
@@ -462,7 +462,7 @@ end"#;
 
 #[test]
 fn vm_compose_operator() {
-    use lumen_vm::vm::VM;
+    use lumen_rt::vm::VM;
     let src = r#"cell double(x: Int) -> Int
   return x * 2
 end
@@ -506,7 +506,7 @@ end"#;
 
 #[test]
 fn variadic_param_e2e() {
-    use lumen_vm::vm::VM;
+    use lumen_rt::vm::VM;
     let src = r#"cell sum_all(...nums: Int) -> Int
   let total = 0
   for n in nums
@@ -527,7 +527,7 @@ end"#;
 
 #[test]
 fn variadic_param_empty_args() {
-    use lumen_vm::vm::VM;
+    use lumen_rt::vm::VM;
     let src = r#"cell count(...items: String) -> Int
   let n = 0
   for _ in items
@@ -548,7 +548,7 @@ end"#;
 
 #[test]
 fn variadic_with_fixed_params() {
-    use lumen_vm::vm::VM;
+    use lumen_rt::vm::VM;
     let src = r#"cell format_list(sep: String, ...items: String) -> String
   let result = ""
   let first = true

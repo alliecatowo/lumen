@@ -187,18 +187,58 @@ impl JitString {
 }
 
 // ---------------------------------------------------------------------------
-// String runtime helpers (extern "C" functions callable from JIT code)
+// Low-level allocation helpers (extern "C" functions callable from JIT code)
 // ---------------------------------------------------------------------------
 
-/// Allocate a new JitString from a raw UTF-8 byte pointer and length.
-/// Returns a `*mut JitString` as i64.
+/// Allocate `size` bytes of zeroed memory with 8-byte alignment, returning a
+/// pointer as i64.
+///
+/// This is the JIT-callable malloc used for JitString struct allocation (32
+/// bytes). The memory is zeroed so partially-initialized structs don't contain
+/// garbage. The returned pointer is compatible with `Box::from_raw::<JitString>`.
 ///
 /// # Safety
-/// `ptr` must point to valid UTF-8 bytes of at least `len` bytes.
-extern "C" fn jit_rt_string_alloc(ptr: *const u8, len: usize) -> i64 {
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-    JitString::from_bytes(bytes) as i64
+/// Caller must ensure `size > 0`. The returned pointer must eventually be freed
+/// via `Box::from_raw` with the matching type layout.
+extern "C" fn jit_rt_malloc(size: i64) -> i64 {
+    let size = size as usize;
+    if size == 0 {
+        return 0;
+    }
+    let layout =
+        std::alloc::Layout::from_size_align(size, 8).expect("jit_rt_malloc: invalid layout");
+    // Safety: layout is non-zero size, alignment is valid.
+    let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+    if ptr.is_null() {
+        std::alloc::handle_alloc_error(layout);
+    }
+    ptr as i64
 }
+
+/// Allocate `size` bytes of uninitialized memory using a Vec<u8>, returning a
+/// pointer as i64.
+///
+/// This is the JIT-callable allocator for string data buffers. Using Vec
+/// ensures the allocation is compatible with `Vec::from_raw_parts` in the
+/// deallocation path (`JitString::drop_ref`).
+///
+/// # Safety
+/// Caller must ensure `size > 0`. The returned pointer must eventually be freed
+/// via `Vec::from_raw_parts(ptr, len, cap)` with the correct length and capacity.
+extern "C" fn jit_rt_alloc_bytes(size: i64) -> i64 {
+    let size = size as usize;
+    if size == 0 {
+        return 0;
+    }
+    let buf = Vec::<u8>::with_capacity(size);
+    let ptr = buf.as_ptr() as *mut u8;
+    std::mem::forget(buf);
+    ptr as i64
+}
+
+// ---------------------------------------------------------------------------
+// String runtime helpers (extern "C" functions callable from JIT code)
+// ---------------------------------------------------------------------------
 
 /// Concatenate two JitStrings. Both inputs are `*mut JitString` as i64.
 /// Returns a new `*mut JitString` as i64 owning the concatenated result.
@@ -430,7 +470,7 @@ extern "C" fn jit_rt_string_concat_multi(ptrs: *const i64, count: usize) -> i64 
 /// Reconstruct a `String` from a JIT-returned raw pointer (JitString).
 ///
 /// # Safety
-/// `ptr` must be a valid `*mut JitString` pointer created by `jit_rt_string_alloc`,
+/// `ptr` must be a valid `*mut JitString` pointer created by inline malloc,
 /// `jit_rt_string_concat`, or `jit_rt_string_clone`. After this call the pointer
 /// is consumed (refcount decremented) and must not be used again.
 pub unsafe fn jit_take_string(ptr: i64) -> String {
@@ -446,7 +486,8 @@ pub unsafe fn jit_take_string(ptr: i64) -> String {
 
 /// Register all JIT string runtime helper symbols with a JITBuilder.
 fn register_string_helpers(builder: &mut JITBuilder) {
-    builder.symbol("jit_rt_string_alloc", jit_rt_string_alloc as *const u8);
+    builder.symbol("jit_rt_malloc", jit_rt_malloc as *const u8);
+    builder.symbol("jit_rt_alloc_bytes", jit_rt_alloc_bytes as *const u8);
     builder.symbol("jit_rt_string_concat", jit_rt_string_concat as *const u8);
     builder.symbol(
         "jit_rt_string_concat_mut",
@@ -1537,8 +1578,8 @@ fn is_cell_jit_compilable(cell: &LirCell) -> bool {
 struct JitLoweredModule {
     functions: Vec<JitLoweredFunction>,
     /// Retain optimized cells so that string constant data (whose raw pointers
-    /// are baked into the generated machine code as immediates for
-    /// `jit_rt_string_alloc` calls) stays alive for the lifetime of the JIT
+    /// are baked into the generated machine code as immediates for inline
+    /// `jit_rt_malloc` + memcpy calls) stays alive for the lifetime of the JIT
     /// code.
     _retained_cells: Vec<LirCell>,
 }
@@ -3336,6 +3377,78 @@ mod tests {
 
         let result = engine.execute_jit_nullary("test_max").expect("execute");
         assert_eq!(result, 10, "max(10, 3) = 10");
+    }
+
+    #[test]
+    fn jit_intrinsic_min_float() {
+        // cell test_min_float() -> Float
+        //   r0 = 3.14   (LoadK const 0)
+        //   r1 = 2.71   (LoadK const 1)
+        //   r2 = min(r0, r1)  # Intrinsic(2, 27, 0) — fmin path
+        //   return r2
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_min_float".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 3,
+            constants: vec![Constant::Float(3.14), Constant::Float(2.71)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Intrinsic, 2, 27, 0),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result_bits = engine
+            .execute_jit_nullary("test_min_float")
+            .expect("execute");
+        let result = f64::from_bits(result_bits as u64);
+        assert!(
+            (result - 2.71).abs() < 1e-10,
+            "min(3.14, 2.71) should be 2.71, got {result}"
+        );
+    }
+
+    #[test]
+    fn jit_intrinsic_max_float() {
+        // cell test_max_float() -> Float
+        //   r0 = 3.14   (LoadK const 0)
+        //   r1 = 2.71   (LoadK const 1)
+        //   r2 = max(r0, r1)  # Intrinsic(2, 28, 0) — fmax path
+        //   return r2
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_max_float".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 3,
+            constants: vec![Constant::Float(3.14), Constant::Float(2.71)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Intrinsic, 2, 28, 0),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result_bits = engine
+            .execute_jit_nullary("test_max_float")
+            .expect("execute");
+        let result = f64::from_bits(result_bits as u64);
+        assert!(
+            (result - 3.14).abs() < 1e-10,
+            "max(3.14, 2.71) should be 3.14, got {result}"
+        );
     }
 
     #[test]

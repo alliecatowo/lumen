@@ -779,6 +779,10 @@ fn register_collection_helpers(builder: &mut JITBuilder) {
         "jit_rt_new_map",
         crate::collection_helpers::jit_rt_new_map as *const u8,
     );
+    builder.symbol(
+        "jit_rt_collection_len",
+        crate::collection_helpers::jit_rt_collection_len as *const u8,
+    );
 }
 
 // ---------------------------------------------------------------------------

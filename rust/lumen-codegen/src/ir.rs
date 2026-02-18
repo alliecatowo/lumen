@@ -269,6 +269,13 @@ pub fn lower_cell<M: Module>(
         &[types::I64, types::I64],
         &[types::I64],
     )?;
+    let intrinsic_fmod_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_fmod",
+        &[types::F64, types::F64],
+        &[types::F64],
+    )?;
     // Absolute value helpers
     let intrinsic_abs_float_ref = declare_helper_func(
         module,
@@ -335,6 +342,7 @@ pub fn lower_cell<M: Module>(
     let _ = intrinsic_abs_int_ref;
     let _ = intrinsic_tan_ref;
     let _ = intrinsic_print_bool_ref;
+    let _ = str_clone_ref;
 
     let mut builder = FunctionBuilder::new(&mut func, fb_ctx);
 
@@ -904,8 +912,17 @@ pub fn lower_cell<M: Module>(
             OpCode::Mod => {
                 let lhs = use_var(&mut builder, &vars, inst.b);
                 let rhs = use_var(&mut builder, &vars, inst.c);
-                let res = builder.ins().srem(lhs, rhs);
-                def_var(&mut builder, &vars, inst.a, res);
+                let is_float = is_float_op(&var_types, inst.b, inst.c);
+                if is_float {
+                    let call = builder.ins().call(intrinsic_fmod_ref, &[lhs, rhs]);
+                    let result = builder.inst_results(call)[0];
+                    var_types.insert(inst.a as u32, JitVarType::Float);
+                    def_var(&mut builder, &vars, inst.a, result);
+                } else {
+                    let res = builder.ins().srem(lhs, rhs);
+                    var_types.insert(inst.a as u32, JitVarType::Int);
+                    def_var(&mut builder, &vars, inst.a, res);
+                }
             }
             OpCode::Neg => {
                 let operand = use_var(&mut builder, &vars, inst.b);
@@ -946,15 +963,19 @@ pub fn lower_cell<M: Module>(
                 def_var(&mut builder, &vars, inst.a, res);
             }
             OpCode::Pow => {
+                let lhs = use_var(&mut builder, &vars, inst.b);
+                let rhs = use_var(&mut builder, &vars, inst.c);
                 let is_float = is_float_op(&var_types, inst.b, inst.c);
                 if is_float {
-                    let zero = builder.ins().f64const(0.0);
+                    let call = builder.ins().call(intrinsic_pow_float_ref, &[lhs, rhs]);
+                    let result = builder.inst_results(call)[0];
                     var_types.insert(inst.a as u32, JitVarType::Float);
-                    def_var(&mut builder, &vars, inst.a, zero);
+                    def_var(&mut builder, &vars, inst.a, result);
                 } else {
-                    let zero = builder.ins().iconst(types::I64, 0);
+                    let call = builder.ins().call(intrinsic_pow_int_ref, &[lhs, rhs]);
+                    let result = builder.inst_results(call)[0];
                     var_types.insert(inst.a as u32, JitVarType::Int);
-                    def_var(&mut builder, &vars, inst.a, zero);
+                    def_var(&mut builder, &vars, inst.a, result);
                 }
             }
 
@@ -1422,12 +1443,15 @@ pub fn lower_cell<M: Module>(
                         let arg_ty = var_types.get(&(arg_base as u32)).copied();
                         match arg_ty {
                             Some(JitVarType::Str) => {
-                                // Already a string — clone it
-                                let v = use_var(&mut builder, &vars, arg_base);
-                                let call = builder.ins().call(str_clone_ref, &[v]);
-                                let result = builder.inst_results(call)[0];
+                                // Already a string — inline refcount increment
+                                // (same pattern as Move and StringConcat).
+                                let src = use_var(&mut builder, &vars, arg_base);
+                                let flags = MemFlags::new();
+                                let rc = builder.ins().load(types::I64, flags, src, 0);
+                                let rc_plus_one = builder.ins().iadd_imm(rc, 1);
+                                builder.ins().store(flags, rc_plus_one, src, 0);
                                 var_types.insert(inst.a as u32, JitVarType::Str);
-                                def_var(&mut builder, &vars, inst.a, result);
+                                def_var(&mut builder, &vars, inst.a, src);
                             }
                             Some(JitVarType::Float) => {
                                 let v = use_var(&mut builder, &vars, arg_base);

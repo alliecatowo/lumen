@@ -1500,6 +1500,27 @@ fn lower_cell_jit(
                 let num_args = inst.b as usize;
                 let callee_name = find_callee_name(cell, &cell.instructions, pc, base);
 
+                // Drop the old string in the base register before overwriting
+                // with the call result (base typically holds the callee name).
+                if var_types.get(&(base as u32)) == Some(&JitVarType::Str) {
+                    let old = use_var(&mut builder, &vars, base);
+                    builder.ins().call(str_drop_ref, &[old]);
+                }
+
+                // Argument registers are consumed by the call; drop any that
+                // are typed as Str and remove them from var_types so the
+                // Return cleanup doesn't double-free or leak.
+                for i in 0..num_args {
+                    let arg_reg = (base + 1 + i as u8) as u32;
+                    if var_types.get(&arg_reg) == Some(&JitVarType::Str) {
+                        if (arg_reg as usize) < vars.len() {
+                            let v = use_var(&mut builder, &vars, arg_reg as u8);
+                            builder.ins().call(str_drop_ref, &[v]);
+                        }
+                        var_types.remove(&arg_reg);
+                    }
+                }
+
                 if let Some(ref name) = callee_name {
                     if let Some(&callee_func_id) = func_ids.get(name.as_str()) {
                         if let Some(&func_ref) = callee_refs.get(&callee_func_id) {
@@ -1524,6 +1545,10 @@ fn lower_cell_jit(
                     let zero = builder.ins().iconst(types::I64, 0);
                     def_var(&mut builder, &vars, base, zero);
                 }
+
+                // The call result is an integer (or float), not a string.
+                // Update var_types so Return cleanup doesn't try to drop it.
+                var_types.insert(base as u32, JitVarType::Int);
             }
             OpCode::TailCall => {
                 let base = inst.a;
@@ -1534,6 +1559,25 @@ fn lower_cell_jit(
                     .as_ref()
                     .map(|n| n == &cell.name)
                     .unwrap_or(false);
+
+                // Drop the callee name string in base before overwriting.
+                if var_types.get(&(base as u32)) == Some(&JitVarType::Str) {
+                    let old = use_var(&mut builder, &vars, base);
+                    builder.ins().call(str_drop_ref, &[old]);
+                    var_types.remove(&(base as u32));
+                }
+
+                // Drop any string-typed argument registers consumed by the call.
+                for i in 0..num_args {
+                    let arg_reg = (base + 1 + i as u8) as u32;
+                    if var_types.get(&arg_reg) == Some(&JitVarType::Str) {
+                        if (arg_reg as usize) < vars.len() {
+                            let v = use_var(&mut builder, &vars, arg_reg as u8);
+                            builder.ins().call(str_drop_ref, &[v]);
+                        }
+                        var_types.remove(&arg_reg);
+                    }
+                }
 
                 if is_self_call && self_tco {
                     if let Some(loop_block) = tco_loop_block {

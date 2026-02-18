@@ -440,6 +440,8 @@ fn intrinsic_description(id: &IntrinsicId) -> &str {
         Args => "Return command-line arguments as a list of strings",
         SetEnv => "Set an environment variable",
         EnvVars => "Return all environment variables as a map",
+        Tan => "Tangent (radians)",
+        Trunc => "Truncate float toward zero",
     }
 }
 

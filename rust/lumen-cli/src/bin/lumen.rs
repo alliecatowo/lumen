@@ -780,7 +780,7 @@ fn compile_source_file(
     path: &Path,
     source: &str,
     allow_unstable: bool,
-) -> Result<lumen_compiler::compiler::lir::LirModule, lumen_compiler::CompileError> {
+) -> Result<lumen_core::lir::LirModule, lumen_compiler::CompileError> {
     let source_dir = path
         .parent()
         .unwrap_or_else(|| Path::new("."))

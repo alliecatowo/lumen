@@ -4073,7 +4073,7 @@ fn validate_value_against_type_name(val: &Value, type_name: &str) -> bool {
 fn validate_value_against_schema(
     val: &Value,
     schema: &Value,
-    strings: &crate::strings::StringTable,
+    strings: &lumen_core::strings::StringTable,
 ) -> bool {
     match schema {
         Value::String(sref) => {

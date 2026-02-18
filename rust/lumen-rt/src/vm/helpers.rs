@@ -221,7 +221,7 @@ pub(crate) fn parse_bool_like(raw: &str) -> Option<bool> {
 /// Convert a Lumen Value to a serde_json Value.
 pub(crate) fn value_to_json(
     val: &Value,
-    strings: &crate::strings::StringTable,
+    strings: &lumen_core::strings::StringTable,
 ) -> serde_json::Value {
     match val {
         Value::Null => serde_json::Value::Null,
@@ -374,7 +374,7 @@ pub(crate) fn simple_base64_decode(s: &str) -> Option<Vec<u8>> {
 /// types it falls back to `as_string()`.
 pub(crate) fn value_to_str_cow<'a>(
     val: &'a Value,
-    strings: &'a crate::strings::StringTable,
+    strings: &'a lumen_core::strings::StringTable,
 ) -> std::borrow::Cow<'a, str> {
     match val {
         Value::String(StringRef::Owned(s)) => std::borrow::Cow::Borrowed(s.as_str()),

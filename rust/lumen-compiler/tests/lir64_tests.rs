@@ -85,7 +85,7 @@
 //! - [ ] `LirCell64` variant (future: would hold `Vec<Instruction64>`)
 //! - [ ] Lowering pass to emit 64-bit instructions (future)
 
-use lumen_compiler::compiler::lir::{Instruction, Instruction64, OpCode};
+use lumen_core::lir::{Instruction, Instruction64, OpCode};
 
 // ============================================================================
 // ABC format tests

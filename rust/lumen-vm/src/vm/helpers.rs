@@ -297,7 +297,7 @@ pub(crate) fn json_to_value(val: &serde_json::Value) -> Value {
 /// Simple base64 encode (no external dependency).
 pub(crate) fn simple_base64_encode(data: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let encoded_len = 4 * ((data.len() + 2) / 3);
+    let encoded_len = 4 * data.len().div_ceil(3);
     let mut result = String::with_capacity(encoded_len);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;
@@ -383,19 +383,4 @@ pub(crate) fn value_to_str_cow<'a>(
         }
         _ => std::borrow::Cow::Owned(val.as_string()),
     }
-}
-
-/// Concatenate two Values as strings with a single allocation.
-/// Uses borrowing for `Value::String` to avoid cloning inputs.
-pub(crate) fn concat_string_values(
-    lhs: &Value,
-    rhs: &Value,
-    strings: &crate::strings::StringTable,
-) -> Value {
-    let left = value_to_str_cow(lhs, strings);
-    let right = value_to_str_cow(rhs, strings);
-    let mut result = String::with_capacity(left.len() + right.len());
-    result.push_str(&left);
-    result.push_str(&right);
-    Value::String(StringRef::Owned(result))
 }

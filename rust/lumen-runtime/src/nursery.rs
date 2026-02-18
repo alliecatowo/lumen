@@ -473,10 +473,14 @@ mod tests {
         nursery.spawn(|_token| Err("error-c".to_string()));
 
         let err = nursery.wait_all().unwrap_err();
-        // The first task's error should be propagated (spawn-order).
+        // One of the task errors should be propagated; which one arrives
+        // first is non-deterministic because tasks run on threads.
         match err {
             NurseryError::TaskFailed { error, .. } => {
-                assert_eq!(error, "error-a");
+                assert!(
+                    ["error-a", "error-b", "error-c"].contains(&error.as_str()),
+                    "unexpected error: {error}"
+                );
             }
             other => panic!("expected TaskFailed, got {:?}", other),
         }

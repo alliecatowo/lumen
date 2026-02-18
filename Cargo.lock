@@ -1556,8 +1556,7 @@ dependencies = [
  "lumen-provider-gemini",
  "lumen-provider-http",
  "lumen-provider-json",
- "lumen-runtime",
- "lumen-vm",
+ "lumen-rt",
  "open",
  "rand 0.8.5",
  "regex",
@@ -1596,7 +1595,7 @@ name = "lumen-compiler"
 version = "0.5.0"
 dependencies = [
  "lumen-core",
- "lumen-vm",
+ "lumen-rt",
  "num-bigint",
  "num-traits",
  "serde",
@@ -1642,7 +1641,7 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "hmac",
- "lumen-runtime",
+ "lumen-rt",
  "md-5",
  "rand 0.8.5",
  "serde",
@@ -1656,7 +1655,7 @@ dependencies = [
 name = "lumen-provider-env"
 version = "0.5.0"
 dependencies = [
- "lumen-runtime",
+ "lumen-rt",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -1666,7 +1665,7 @@ dependencies = [
 name = "lumen-provider-fs"
 version = "0.5.0"
 dependencies = [
- "lumen-runtime",
+ "lumen-rt",
  "serde",
  "serde_json",
  "uuid",
@@ -1676,7 +1675,7 @@ dependencies = [
 name = "lumen-provider-gemini"
 version = "0.5.0"
 dependencies = [
- "lumen-runtime",
+ "lumen-rt",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -1686,7 +1685,7 @@ dependencies = [
 name = "lumen-provider-http"
 version = "0.5.0"
 dependencies = [
- "lumen-runtime",
+ "lumen-rt",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -1697,7 +1696,7 @@ dependencies = [
 name = "lumen-provider-json"
 version = "0.5.0"
 dependencies = [
- "lumen-runtime",
+ "lumen-rt",
  "serde",
  "serde_json",
 ]
@@ -1706,13 +1705,13 @@ dependencies = [
 name = "lumen-provider-mcp"
 version = "0.5.0"
 dependencies = [
- "lumen-runtime",
+ "lumen-rt",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "lumen-runtime"
+name = "lumen-rt"
 version = "0.5.0"
 dependencies = [
  "bincode",
@@ -1720,14 +1719,22 @@ dependencies = [
  "crossbeam-channel",
  "crossbeam-deque",
  "flate2",
+ "lumen-codegen",
+ "lumen-compiler",
+ "lumen-core",
  "lumen-provider-crypto",
  "lumen-provider-env",
  "lumen-provider-fs",
+ "num-bigint",
+ "num-traits",
  "num_cpus",
+ "once_cell",
+ "regex",
  "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
+ "ureq",
  "uuid",
 ]
 
@@ -1737,27 +1744,6 @@ version = "0.5.0"
 dependencies = [
  "num-traits",
  "serde",
-]
-
-[[package]]
-name = "lumen-vm"
-version = "0.5.0"
-dependencies = [
- "chrono",
- "lumen-codegen",
- "lumen-compiler",
- "lumen-core",
- "lumen-runtime",
- "num-bigint",
- "num-traits",
- "once_cell",
- "regex",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "ureq",
- "uuid",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
-use lumen_runtime::tools::Capability;
-use lumen_runtime::tools::*;
+use lumen_rt::services::tools::Capability;
+use lumen_rt::services::tools::*;
 use serde_json::{json, Value};
 
 /// Gemini tool type — each gets its own provider instance.

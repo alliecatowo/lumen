@@ -8,9 +8,9 @@
 //! T401 — Runtime error stack traces
 
 use lumen_compiler::compile;
-use lumen_vm::strings::StringTable;
-use lumen_vm::values::{StringRef, Value};
-use lumen_vm::vm::VM;
+use lumen_rt::strings::StringTable;
+use lumen_rt::values::{StringRef, Value};
+use lumen_rt::vm::VM;
 use std::collections::BTreeMap;
 
 /// Helper: wrap raw Lumen code in markdown, compile, run `main`, return the result.

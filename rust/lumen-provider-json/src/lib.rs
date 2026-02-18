@@ -4,7 +4,7 @@
 //! with dot-path navigation, JSONPath-style lookup, deep merge, flatten,
 //! and diff capabilities.
 
-use lumen_runtime::tools::{ToolError, ToolProvider, ToolSchema};
+use lumen_rt::services::tools::{ToolError, ToolProvider, ToolSchema};
 use serde_json::{json, Value};
 
 /// JSON manipulation provider implementing common JSON operations.

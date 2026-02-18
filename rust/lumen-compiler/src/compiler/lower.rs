@@ -239,6 +239,485 @@ fn desugar_pipe_application(input: &Expr, stage: &Expr, span: Span) -> Expr {
     }
 }
 
+/// Post-lowering peephole pass: eliminate redundant `Move` instructions that
+/// copy a temporary result back to a source operand.
+///
+/// Pattern:
+///   `<Op> rX = rY op rZ; Move rY = rX`  (where rX is a dead temporary)
+/// Becomes:
+///   `<Op> rY = rY op rZ; Nop`
+///
+/// This is safe when rX (the temporary) is not read again before being
+/// overwritten or the end of the basic block.
+fn eliminate_redundant_moves(instrs: &mut Vec<Instruction>) {
+    let len = instrs.len();
+    if len < 2 {
+        return;
+    }
+
+    let mut i = 0;
+    while i + 1 < instrs.len() {
+        let curr = instrs[i];
+        let next = instrs[i + 1];
+
+        // Pattern: <Op> rX = rY op rZ; Move rY = rX
+        // → <Op> rY = rY op rZ; Nop
+        if next.op == OpCode::Move {
+            let move_dst = next.a; // rY — where we want the result
+            let move_src = next.b; // rX — the temporary
+
+            // curr must write to move_src (rX) and be a safe-to-transform op
+            if curr.a == move_src && is_move_elim_candidate(curr.op) {
+                // move_dst (rY) must be one of curr's source operands
+                let dst_is_source = if is_unary_op(curr.op) {
+                    curr.b == move_dst
+                } else {
+                    curr.b == move_dst || curr.c == move_dst
+                };
+
+                if dst_is_source {
+                    // Check: move_src (rX) is not used after the Move before
+                    // being overwritten or end of basic block
+                    if !is_reg_live_after(instrs, i + 2, move_src) {
+                        // Transform: redirect curr's dest to move_dst, nop the Move
+                        instrs[i] = Instruction::abc(curr.op, move_dst, curr.b, curr.c);
+                        instrs[i + 1] = Instruction::abc(OpCode::Nop, 0, 0, 0);
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
+/// Returns true if the opcode is a candidate for redundant-Move elimination.
+/// We limit to opcodes where field `a` is the destination and `b`/`c` are
+/// source operands with well-known semantics.
+fn is_move_elim_candidate(op: OpCode) -> bool {
+    matches!(
+        op,
+        OpCode::Add
+            | OpCode::Sub
+            | OpCode::Mul
+            | OpCode::Div
+            | OpCode::Mod
+            | OpCode::Pow
+            | OpCode::Neg
+            | OpCode::FloorDiv
+            | OpCode::BitOr
+            | OpCode::BitAnd
+            | OpCode::BitXor
+            | OpCode::BitNot
+            | OpCode::Shl
+            | OpCode::Shr
+            | OpCode::Concat
+            | OpCode::And
+            | OpCode::Or
+            | OpCode::Not
+            | OpCode::NullCo
+            | OpCode::Intrinsic
+    )
+}
+
+/// Returns true if the opcode is a unary operation (only reads field `b`, not `c`).
+fn is_unary_op(op: OpCode) -> bool {
+    matches!(op, OpCode::Neg | OpCode::Not | OpCode::BitNot)
+}
+
+/// Check if register `reg` is read between position `start` and the next
+/// write to `reg` or end of basic block. Returns true if the register is
+/// still live (i.e., someone will read it).
+fn is_reg_live_after(instrs: &[Instruction], start: usize, reg: u8) -> bool {
+    for j in start..instrs.len() {
+        let instr = &instrs[j];
+        // Hit a basic-block boundary — conservatively assume live
+        if is_block_boundary(instr.op) {
+            // But first check if this boundary instruction itself reads reg
+            if instr_reads_reg(instr, reg) {
+                return true;
+            }
+            // End of block — reg is not used within this block
+            return false;
+        }
+        // Check if this instruction READS reg (it's still live)
+        if instr_reads_reg(instr, reg) {
+            return true;
+        }
+        // Check if this instruction WRITES reg (reg is dead from here)
+        if instr_writes_to_a(instr.op) && instr.a == reg {
+            return false;
+        }
+    }
+    // Reached end of instructions — reg is not used
+    false
+}
+
+/// Post-lowering peephole pass: convert `Move` to `MoveOwn` when the source
+/// register is provably dead (overwritten before being read again within the
+/// same basic block).
+///
+/// This eliminates unnecessary Rc refcount increments so that subsequent
+/// `Arc::make_mut()` on lists/strings can mutate in-place, turning O(n²)
+/// accumulation patterns into O(n).
+fn optimize_move_own(instrs: &mut Vec<Instruction>) {
+    let len = instrs.len();
+    for i in 0..len {
+        if instrs[i].op != OpCode::Move {
+            continue;
+        }
+        let src = instrs[i].b;
+        let dst = instrs[i].a;
+        // Don't convert self-moves (shouldn't exist but be safe)
+        if src == dst {
+            continue;
+        }
+        // Scan forward within the same basic block to determine if `src` is
+        // written before it is read.
+        let mut can_convert = false;
+        for j in (i + 1)..len {
+            let op = instrs[j].op;
+            let ja = instrs[j].a;
+            let _jb = instrs[j].b;
+            let _jc = instrs[j].c;
+
+            // Basic-block boundary: stop analysis.
+            if is_block_boundary(op) {
+                break;
+            }
+
+            // Check if this instruction reads `src`.
+            if instr_reads_reg(&instrs[j], src) {
+                // src is read before being overwritten — cannot convert.
+                break;
+            }
+
+            // Check if this instruction writes to `src` (i.e. src is the
+            // destination register `a`).
+            if instr_writes_to_a(op) && ja == src {
+                can_convert = true;
+                break;
+            }
+
+            // Call writes to registers a..a+b, check if src falls in that
+            // range (the result is placed at base=a after call returns).
+            if op == OpCode::Call && ja == src {
+                can_convert = true;
+                break;
+            }
+        }
+
+        if can_convert {
+            instrs[i].op = OpCode::MoveOwn;
+        }
+    }
+}
+
+/// Returns true if the opcode marks a basic-block boundary (control flow).
+fn is_block_boundary(op: OpCode) -> bool {
+    matches!(
+        op,
+        OpCode::Jmp
+            | OpCode::Test
+            | OpCode::Return
+            | OpCode::Halt
+            | OpCode::Break
+            | OpCode::Continue
+            | OpCode::Loop
+            | OpCode::ForPrep
+            | OpCode::ForLoop
+            | OpCode::ForIn
+            | OpCode::TailCall
+            | OpCode::HandlePush
+            | OpCode::HandlePop
+            | OpCode::Perform
+    )
+}
+
+/// Returns true if the given opcode writes its result to field `a`.
+fn instr_writes_to_a(op: OpCode) -> bool {
+    matches!(
+        op,
+        OpCode::Move
+            | OpCode::MoveOwn
+            | OpCode::LoadK
+            | OpCode::LoadNil
+            | OpCode::LoadBool
+            | OpCode::LoadInt
+            | OpCode::Add
+            | OpCode::Sub
+            | OpCode::Mul
+            | OpCode::Div
+            | OpCode::Mod
+            | OpCode::Pow
+            | OpCode::Neg
+            | OpCode::Concat
+            | OpCode::FloorDiv
+            | OpCode::BitOr
+            | OpCode::BitAnd
+            | OpCode::BitXor
+            | OpCode::BitNot
+            | OpCode::Shl
+            | OpCode::Shr
+            | OpCode::Not
+            | OpCode::And
+            | OpCode::Or
+            | OpCode::In
+            | OpCode::Is
+            | OpCode::NullCo
+            | OpCode::NewList
+            | OpCode::NewMap
+            | OpCode::NewRecord
+            | OpCode::NewUnion
+            | OpCode::NewTuple
+            | OpCode::NewSet
+            | OpCode::GetField
+            | OpCode::GetIndex
+            | OpCode::GetTuple
+            | OpCode::Eq
+            | OpCode::Lt
+            | OpCode::Le
+            | OpCode::Intrinsic
+            | OpCode::Closure
+            | OpCode::GetUpval
+            | OpCode::Unbox
+            | OpCode::Await
+    )
+}
+
+/// Returns true if the instruction reads the given register.
+fn instr_reads_reg(instr: &Instruction, reg: u8) -> bool {
+    let op = instr.op;
+    let a = instr.a;
+    let b = instr.b;
+    let c = instr.c;
+
+    match op {
+        // Move/MoveOwn read field b
+        OpCode::Move | OpCode::MoveOwn => b == reg,
+        // Unary ops read field b
+        OpCode::Neg | OpCode::BitNot | OpCode::Not => b == reg,
+        // Unbox reads field b
+        OpCode::Unbox => b == reg,
+        // Append reads fields a (the list) and b (the element)
+        OpCode::Append => a == reg || b == reg,
+        // Binary arithmetic/logic read fields b and c
+        OpCode::Add
+        | OpCode::Sub
+        | OpCode::Mul
+        | OpCode::Div
+        | OpCode::FloorDiv
+        | OpCode::Mod
+        | OpCode::Pow
+        | OpCode::Concat
+        | OpCode::BitOr
+        | OpCode::BitAnd
+        | OpCode::BitXor
+        | OpCode::Shl
+        | OpCode::Shr
+        | OpCode::And
+        | OpCode::Or
+        | OpCode::In
+        | OpCode::Is
+        | OpCode::NullCo => b == reg || c == reg,
+        // Comparison ops read fields b and c
+        OpCode::Eq | OpCode::Lt | OpCode::Le => b == reg || c == reg,
+        // Test reads field a
+        OpCode::Test => a == reg,
+        // Return reads field a
+        OpCode::Return => a == reg,
+        // SetField reads a, b, c
+        OpCode::SetField => a == reg || b == reg || c == reg,
+        // SetIndex reads a, b, c
+        OpCode::SetIndex => a == reg || b == reg || c == reg,
+        // SetUpval reads a and c
+        OpCode::SetUpval => a == reg || c == reg,
+        // GetField/GetIndex/GetTuple read b (and c for field name/index)
+        OpCode::GetField | OpCode::GetIndex | OpCode::GetTuple => b == reg || c == reg,
+        // Await reads b
+        OpCode::Await => b == reg,
+        // Call reads registers a through a+b (callee + args)
+        OpCode::Call | OpCode::TailCall => reg >= a && reg <= a.saturating_add(b),
+        // Intrinsic reads args starting at c (number depends on intrinsic,
+        // but conservatively treat c as read)
+        OpCode::Intrinsic => c == reg,
+        // Emit, Schema, Halt read field a
+        OpCode::Emit | OpCode::Schema | OpCode::Halt => a == reg,
+        // NewList/NewTuple/NewSet read a+1..a+b
+        OpCode::NewList | OpCode::NewTuple | OpCode::NewSet => {
+            reg > a && reg <= a.saturating_add(b)
+        }
+        // NewMap reads a+1..a+2*b
+        OpCode::NewMap => reg > a && reg <= a.saturating_add(b.saturating_mul(2)),
+        // NewRecord: reads registers after a (fields), conservatively treat as reading a range
+        OpCode::NewRecord => reg > a,
+        // NewUnion reads b and c
+        OpCode::NewUnion => b == reg || c == reg,
+        // ToolCall reads a (args map)
+        OpCode::ToolCall => a == reg,
+        // Perform reads a
+        OpCode::Perform => a == reg,
+        // Resume reads a
+        OpCode::Resume => a == reg,
+        // LoadK, LoadNil, LoadBool, LoadInt, Closure, GetUpval: only write, don't read
+        // Jmp, Break, Continue, Loop, Nop, HandlePush, HandlePop: no register reads
+        // ForPrep, ForLoop, ForIn, Spawn, IsVariant, TraceRef: handled conservatively
+        _ => false,
+    }
+}
+
+/// Post-lowering pass: hoist loop-invariant `LoadK`, `LoadBool`, and `LoadInt`
+/// instructions out of loops.
+///
+/// A "loop" is identified by a backward `Jmp` (negative offset) whose target
+/// is the loop header.  An instruction is loop-invariant when:
+///
+///  1. It is a `LoadK`, `LoadBool`, or `LoadInt` (deterministic constant loads).
+///  2. No *other* instruction in the loop writes to the same destination
+///     register (field `a`).
+///
+/// Invariant instructions are **moved** — they are inserted immediately before
+/// the loop header and the original slot is replaced with `Nop`.  All jump
+/// offsets referencing instructions at or after the insertion point are adjusted
+/// to account for the newly inserted instructions.
+fn hoist_loop_invariants(instrs: &mut Vec<Instruction>) {
+    if instrs.len() < 3 {
+        return;
+    }
+
+    // Collect loops: each backward Jmp defines a loop [header .. back_edge].
+    // Process from innermost (latest) first so offset adjustments don't
+    // cascade across earlier loops. We sort by header descending so earlier
+    // insertions don't invalidate later loop boundaries.
+    struct LoopRegion {
+        header: usize,
+        back_edge: usize,
+    }
+    let mut loops: Vec<LoopRegion> = Vec::new();
+    for (pc, inst) in instrs.iter().enumerate() {
+        if matches!(inst.op, OpCode::Jmp | OpCode::Break | OpCode::Continue) {
+            let offset = inst.sax_val();
+            if offset < 0 {
+                let target = (pc as i32 + 1 + offset) as usize;
+                if target < pc {
+                    loops.push(LoopRegion {
+                        header: target,
+                        back_edge: pc,
+                    });
+                }
+            }
+        }
+    }
+
+    // Deduplicate: multiple backward jumps can target the same header (e.g. a
+    // `continue` and the actual back-edge). Keep only the outermost loop
+    // (largest back_edge) for each header so we don't double-process.
+    loops.sort_by(|a, b| a.header.cmp(&b.header).then(b.back_edge.cmp(&a.back_edge)));
+    loops.dedup_by_key(|l| l.header);
+
+    // Process loops from last to first so that insertions for later loops
+    // don't shift the indices of earlier loops.
+    loops.sort_by(|a, b| b.header.cmp(&a.header));
+
+    for region in &loops {
+        let header = region.header;
+        let back_edge = region.back_edge;
+
+        // Find hoistable instructions.
+        let mut hoistable: Vec<(usize, Instruction)> = Vec::new();
+        for pc in header..=back_edge {
+            let inst = instrs[pc];
+            if !matches!(inst.op, OpCode::LoadK | OpCode::LoadBool | OpCode::LoadInt) {
+                continue;
+            }
+            let dest = inst.a;
+            // Check that no *other* instruction in the loop writes to `dest`.
+            let mut other_writes = false;
+            for pc2 in header..=back_edge {
+                if pc2 == pc {
+                    continue;
+                }
+                let i2 = instrs[pc2];
+                if instr_writes_to_a(i2.op) && i2.a == dest {
+                    other_writes = true;
+                    break;
+                }
+                // Call writes to base register `a`
+                if matches!(i2.op, OpCode::Call | OpCode::TailCall) && i2.a == dest {
+                    other_writes = true;
+                    break;
+                }
+            }
+            if !other_writes {
+                hoistable.push((pc, inst));
+            }
+        }
+
+        if hoistable.is_empty() {
+            continue;
+        }
+
+        let n = hoistable.len();
+
+        // Replace originals with Nop.
+        for &(pc, _) in &hoistable {
+            instrs[pc] = Instruction::abc(OpCode::Nop, 0, 0, 0);
+        }
+
+        // Insert copies before the header.
+        let insert_point = header;
+        let mut to_insert: Vec<Instruction> = hoistable.iter().map(|&(_, inst)| inst).collect();
+        // Reverse so the first hoistable instruction ends up at the earliest position.
+        to_insert.reverse();
+        // Actually, we want them in original order, so don't reverse.
+        to_insert.reverse();
+
+        // Adjust all existing jump offsets before inserting.
+        // After insertion of `n` instructions at `insert_point`, any instruction
+        // originally at index `i >= insert_point` moves to `i + n`.
+        // A jump at original index `src` with target `tgt`:
+        //   new_src = src + (src >= insert_point ? n : 0)
+        //   new_tgt = tgt + (tgt >= insert_point ? n : 0)
+        //   new_offset = (new_tgt - new_src - 1)
+        for i in 0..instrs.len() {
+            let inst = instrs[i];
+            if matches!(inst.op, OpCode::Jmp | OpCode::Break | OpCode::Continue) {
+                let old_offset = inst.sax_val();
+                let old_tgt = (i as i32 + 1 + old_offset) as usize;
+                let new_src = if i >= insert_point { i + n } else { i };
+                let new_tgt = if old_tgt >= insert_point {
+                    old_tgt + n
+                } else {
+                    old_tgt
+                };
+                let new_offset = new_tgt as i32 - new_src as i32 - 1;
+                if new_offset != old_offset {
+                    instrs[i] = Instruction::sax(inst.op, new_offset);
+                }
+            }
+            // HandlePush also uses Ax as a forward offset.
+            if inst.op == OpCode::HandlePush {
+                let old_offset = inst.sax_val();
+                let old_tgt = (i as i32 + 1 + old_offset) as usize;
+                let new_src = if i >= insert_point { i + n } else { i };
+                let new_tgt = if old_tgt >= insert_point {
+                    old_tgt + n
+                } else {
+                    old_tgt
+                };
+                let new_offset = new_tgt as i32 - new_src as i32 - 1;
+                if new_offset != old_offset {
+                    instrs[i] = Instruction::sax(inst.op, new_offset);
+                }
+            }
+        }
+
+        // Now insert the hoisted instructions.
+        for (idx, inst) in to_insert.into_iter().enumerate() {
+            instrs.insert(insert_point + idx, inst);
+        }
+    }
+}
+
 /// Recursively scan a cell body for local definitions and lift them to module
 /// level. Local records/enums become LIR types; local cells become LIR cells.
 fn lift_local_defs(body: &[Stmt], module: &mut LirModule, lowerer: &mut Lowerer) {
@@ -1379,6 +1858,11 @@ impl<'a> Lowerer<'a> {
         // Restore defer stack and collect effect handler metas
         self.defer_stack = saved_defers;
         let effect_handler_metas = std::mem::replace(&mut self.effect_handler_metas, saved_metas);
+
+        // Peephole optimizations
+        hoist_loop_invariants(&mut instructions);
+        eliminate_redundant_moves(&mut instructions);
+        optimize_move_own(&mut instructions);
 
         LirCell {
             name: cell.name.clone(),

@@ -690,6 +690,187 @@ extern "C" fn jit_rt_to_float_from_string(s: i64) -> f64 {
     text.trim().parse::<f64>().unwrap_or(0.0)
 }
 
+// ---------------------------------------------------------------------------
+// String operation runtime helpers
+// ---------------------------------------------------------------------------
+
+/// Convert a JitString to uppercase. Returns `*mut JitString` as i64.
+extern "C" fn jit_rt_string_upper(s: i64) -> i64 {
+    if s == 0 {
+        return JitString::from_bytes(b"") as i64;
+    }
+    let js = unsafe { &*(s as *const JitString) };
+    let text = unsafe { js.as_str() };
+    let upper = text.to_uppercase();
+    JitString::from_bytes(upper.as_bytes()) as i64
+}
+
+/// Convert a JitString to lowercase. Returns `*mut JitString` as i64.
+extern "C" fn jit_rt_string_lower(s: i64) -> i64 {
+    if s == 0 {
+        return JitString::from_bytes(b"") as i64;
+    }
+    let js = unsafe { &*(s as *const JitString) };
+    let text = unsafe { js.as_str() };
+    let lower = text.to_lowercase();
+    JitString::from_bytes(lower.as_bytes()) as i64
+}
+
+/// Trim whitespace from both ends. Returns `*mut JitString` as i64.
+extern "C" fn jit_rt_string_trim(s: i64) -> i64 {
+    if s == 0 {
+        return JitString::from_bytes(b"") as i64;
+    }
+    let js = unsafe { &*(s as *const JitString) };
+    let text = unsafe { js.as_str() };
+    let trimmed = text.trim();
+    JitString::from_bytes(trimmed.as_bytes()) as i64
+}
+
+/// Check if string `a` contains substring `b`. Returns 1 (true) or 0 (false).
+extern "C" fn jit_rt_string_contains(a: i64, b: i64) -> i64 {
+    if a == 0 || b == 0 {
+        return 0;
+    }
+    let ja = unsafe { &*(a as *const JitString) };
+    let jb = unsafe { &*(b as *const JitString) };
+    let sa = unsafe { ja.as_str() };
+    let sb = unsafe { jb.as_str() };
+    if sa.contains(sb) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Check if string `a` starts with prefix `b`. Returns 1 or 0.
+extern "C" fn jit_rt_string_starts_with(a: i64, b: i64) -> i64 {
+    if a == 0 || b == 0 {
+        return 0;
+    }
+    let ja = unsafe { &*(a as *const JitString) };
+    let jb = unsafe { &*(b as *const JitString) };
+    let sa = unsafe { ja.as_str() };
+    let sb = unsafe { jb.as_str() };
+    if sa.starts_with(sb) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Check if string `a` ends with suffix `b`. Returns 1 or 0.
+extern "C" fn jit_rt_string_ends_with(a: i64, b: i64) -> i64 {
+    if a == 0 || b == 0 {
+        return 0;
+    }
+    let ja = unsafe { &*(a as *const JitString) };
+    let jb = unsafe { &*(b as *const JitString) };
+    let sa = unsafe { ja.as_str() };
+    let sb = unsafe { jb.as_str() };
+    if sa.ends_with(sb) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Replace all occurrences of `pattern` with `replacement` in `source`.
+/// Returns `*mut JitString` as i64.
+extern "C" fn jit_rt_string_replace(source: i64, pattern: i64, replacement: i64) -> i64 {
+    if source == 0 {
+        return JitString::from_bytes(b"") as i64;
+    }
+    let js = unsafe { &*(source as *const JitString) };
+    let ss = unsafe { js.as_str() };
+    if pattern == 0 {
+        return JitString::from_bytes(ss.as_bytes()) as i64;
+    }
+    let jp = unsafe { &*(pattern as *const JitString) };
+    let sp = unsafe { jp.as_str() };
+    let sr = if replacement == 0 {
+        ""
+    } else {
+        let jr = unsafe { &*(replacement as *const JitString) };
+        unsafe { jr.as_str() }
+    };
+    let result = ss.replace(sp, sr);
+    JitString::from_bytes(result.as_bytes()) as i64
+}
+
+/// Find first index of substring `needle` in `haystack`.
+/// Returns the character index (0-based), or -1 if not found.
+extern "C" fn jit_rt_string_index_of(haystack: i64, needle: i64) -> i64 {
+    if haystack == 0 || needle == 0 {
+        return -1;
+    }
+    let jh = unsafe { &*(haystack as *const JitString) };
+    let jn = unsafe { &*(needle as *const JitString) };
+    let sh = unsafe { jh.as_str() };
+    let sn = unsafe { jn.as_str() };
+    // Find byte offset, then convert to char index
+    match sh.find(sn) {
+        Some(byte_idx) => sh[..byte_idx].chars().count() as i64,
+        None => -1,
+    }
+}
+
+/// Substring by character indices [start, end). Returns `*mut JitString` as i64.
+extern "C" fn jit_rt_string_slice(s: i64, start: i64, end: i64) -> i64 {
+    if s == 0 {
+        return JitString::from_bytes(b"") as i64;
+    }
+    let js = unsafe { &*(s as *const JitString) };
+    let text = unsafe { js.as_str() };
+    let char_count = text.chars().count() as i64;
+    let start = if start < 0 { 0 } else { start.min(char_count) } as usize;
+    let end = if end < 0 { 0 } else { end.min(char_count) } as usize;
+    if start >= end {
+        return JitString::from_bytes(b"") as i64;
+    }
+    let sliced: String = text.chars().skip(start).take(end - start).collect();
+    JitString::from_bytes(sliced.as_bytes()) as i64
+}
+
+/// Left-pad a string with spaces to reach the target width.
+/// Returns `*mut JitString` as i64.
+extern "C" fn jit_rt_string_pad_left(s: i64, width: i64) -> i64 {
+    if s == 0 {
+        let pad: String = " ".repeat(width.max(0) as usize);
+        return JitString::from_bytes(pad.as_bytes()) as i64;
+    }
+    let js = unsafe { &*(s as *const JitString) };
+    let text = unsafe { js.as_str() };
+    let current_len = text.chars().count() as i64;
+    if current_len >= width {
+        // Already wide enough — clone
+        return JitString::from_bytes(text.as_bytes()) as i64;
+    }
+    let pad_count = (width - current_len) as usize;
+    let mut result = " ".repeat(pad_count);
+    result.push_str(text);
+    JitString::from_bytes(result.as_bytes()) as i64
+}
+
+/// Right-pad a string with spaces to reach the target width.
+/// Returns `*mut JitString` as i64.
+extern "C" fn jit_rt_string_pad_right(s: i64, width: i64) -> i64 {
+    if s == 0 {
+        let pad: String = " ".repeat(width.max(0) as usize);
+        return JitString::from_bytes(pad.as_bytes()) as i64;
+    }
+    let js = unsafe { &*(s as *const JitString) };
+    let text = unsafe { js.as_str() };
+    let current_len = text.chars().count() as i64;
+    if current_len >= width {
+        return JitString::from_bytes(text.as_bytes()) as i64;
+    }
+    let pad_count = (width - current_len) as usize;
+    let mut result = text.to_string();
+    result.push_str(&" ".repeat(pad_count));
+    JitString::from_bytes(result.as_bytes()) as i64
+}
+
 /// Register all JIT intrinsic runtime helper symbols with a JITBuilder.
 fn register_intrinsic_helpers(builder: &mut JITBuilder) {
     // Print helpers
@@ -735,6 +916,37 @@ fn register_intrinsic_helpers(builder: &mut JITBuilder) {
     builder.symbol(
         "jit_rt_to_float_from_string",
         jit_rt_to_float_from_string as *const u8,
+    );
+
+    // String operation helpers
+    builder.symbol("jit_rt_string_upper", jit_rt_string_upper as *const u8);
+    builder.symbol("jit_rt_string_lower", jit_rt_string_lower as *const u8);
+    builder.symbol("jit_rt_string_trim", jit_rt_string_trim as *const u8);
+    builder.symbol(
+        "jit_rt_string_contains",
+        jit_rt_string_contains as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_string_starts_with",
+        jit_rt_string_starts_with as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_string_ends_with",
+        jit_rt_string_ends_with as *const u8,
+    );
+    builder.symbol("jit_rt_string_replace", jit_rt_string_replace as *const u8);
+    builder.symbol(
+        "jit_rt_string_index_of",
+        jit_rt_string_index_of as *const u8,
+    );
+    builder.symbol("jit_rt_string_slice", jit_rt_string_slice as *const u8);
+    builder.symbol(
+        "jit_rt_string_pad_left",
+        jit_rt_string_pad_left as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_string_pad_right",
+        jit_rt_string_pad_right as *const u8,
     );
 }
 
@@ -1237,10 +1449,6 @@ fn is_cell_jit_compilable(cell: &LirCell) -> bool {
                 | OpCode::TailCall
                 | OpCode::Intrinsic
                 | OpCode::Nop
-                | OpCode::Loop
-                | OpCode::ForPrep
-                | OpCode::ForLoop
-                | OpCode::ForIn
                 | OpCode::BitOr
                 | OpCode::BitAnd
                 | OpCode::BitXor
@@ -4174,5 +4382,457 @@ mod tests {
             (result - 3.5).abs() < 1e-10,
             "half(7) should return 3.5, got {result}"
         );
+    }
+
+    // =======================================================================
+    // String intrinsic tests
+    // =======================================================================
+
+    #[test]
+    fn jit_intrinsic_upper() {
+        // cell test() -> String
+        //   r0 = "hello world"
+        //   r1 = upper(r0)           # Intrinsic(1, 20, 0)
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_upper".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 2,
+            constants: vec![Constant::String("hello world".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 20, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("test_upper").expect("execute");
+        assert_ne!(raw, 0);
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "HELLO WORLD");
+    }
+
+    #[test]
+    fn jit_intrinsic_lower() {
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_lower".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 2,
+            constants: vec![Constant::String("HELLO World".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 21, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("test_lower").expect("execute");
+        assert_ne!(raw, 0);
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "hello world");
+    }
+
+    #[test]
+    fn jit_intrinsic_trim() {
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_trim".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 2,
+            constants: vec![Constant::String("  hello  ".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 19, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("test_trim").expect("execute");
+        assert_ne!(raw, 0);
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "hello");
+    }
+
+    #[test]
+    fn jit_intrinsic_contains() {
+        // contains("hello world", "world") -> 1 (true)
+        // r0 = "hello world", r1 = "world"
+        // r2 = contains(r0, r1)    # Intrinsic(2, 16, 0)  — arg_base=0, reads r0 & r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_contains".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![
+                Constant::String("hello world".to_string()),
+                Constant::String("world".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Intrinsic, 2, 16, 0),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine
+            .execute_jit_nullary("test_contains")
+            .expect("execute");
+        assert_eq!(raw, 1, "contains(\"hello world\", \"world\") should be 1");
+    }
+
+    #[test]
+    fn jit_intrinsic_contains_false() {
+        // contains("hello", "xyz") -> 0 (false)
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_contains_f".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![
+                Constant::String("hello".to_string()),
+                Constant::String("xyz".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Intrinsic, 2, 16, 0),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine
+            .execute_jit_nullary("test_contains_f")
+            .expect("execute");
+        assert_eq!(raw, 0, "contains(\"hello\", \"xyz\") should be 0");
+    }
+
+    #[test]
+    fn jit_intrinsic_starts_with() {
+        // starts_with("hello world", "hello") -> 1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_sw".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![
+                Constant::String("hello world".to_string()),
+                Constant::String("hello".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Intrinsic, 2, 52, 0),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("test_sw").expect("execute");
+        assert_eq!(raw, 1);
+    }
+
+    #[test]
+    fn jit_intrinsic_starts_with_false() {
+        // starts_with("hello world", "world") -> 0
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_sw_f".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![
+                Constant::String("hello world".to_string()),
+                Constant::String("world".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Intrinsic, 2, 52, 0),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("test_sw_f").expect("execute");
+        assert_eq!(raw, 0);
+    }
+
+    #[test]
+    fn jit_intrinsic_ends_with() {
+        // ends_with("hello world", "world") -> 1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_ew".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![
+                Constant::String("hello world".to_string()),
+                Constant::String("world".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Intrinsic, 2, 53, 0),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("test_ew").expect("execute");
+        assert_eq!(raw, 1);
+    }
+
+    #[test]
+    fn jit_intrinsic_ends_with_false() {
+        // ends_with("hello world", "hello") -> 0
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_ew_f".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![
+                Constant::String("hello world".to_string()),
+                Constant::String("hello".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Intrinsic, 2, 53, 0),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("test_ew_f").expect("execute");
+        assert_eq!(raw, 0);
+    }
+
+    #[test]
+    fn jit_intrinsic_replace() {
+        // replace("hello world", "world", "rust") -> "hello rust"
+        // r0 = "hello world", r1 = "world", r2 = "rust"
+        // r3 = replace(r0, r1, r2)  # Intrinsic(3, 22, 0) — 3-arg, arg_base=0
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_replace".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 4,
+            constants: vec![
+                Constant::String("hello world".to_string()),
+                Constant::String("world".to_string()),
+                Constant::String("rust".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abx(OpCode::LoadK, 2, 2),
+                Instruction::abc(OpCode::Intrinsic, 3, 22, 0),
+                Instruction::abc(OpCode::Return, 3, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("test_replace").expect("execute");
+        assert_ne!(raw, 0);
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "hello rust");
+    }
+
+    #[test]
+    fn jit_intrinsic_slice() {
+        // slice("hello world", 0, 5) -> "hello"
+        // r0 = "hello world", r1 = 0, r2 = 5
+        // r3 = slice(r0, r1, r2)  # Intrinsic(3, 23, 0)
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_slice".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 4,
+            constants: vec![Constant::String("hello world".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadInt, 1, 0),
+                Instruction::abx(OpCode::LoadInt, 2, 5),
+                Instruction::abc(OpCode::Intrinsic, 3, 23, 0),
+                Instruction::abc(OpCode::Return, 3, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("test_slice").expect("execute");
+        assert_ne!(raw, 0);
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "hello");
+    }
+
+    #[test]
+    fn jit_intrinsic_index_of() {
+        // index_of("hello world", "world") -> 6
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_indexof".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![
+                Constant::String("hello world".to_string()),
+                Constant::String("world".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Intrinsic, 2, 54, 0),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("test_indexof").expect("execute");
+        assert_eq!(raw, 6, "index_of(\"hello world\", \"world\") should be 6");
+    }
+
+    #[test]
+    fn jit_intrinsic_index_of_not_found() {
+        // index_of("hello", "xyz") -> -1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_indexof_nf".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![
+                Constant::String("hello".to_string()),
+                Constant::String("xyz".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Intrinsic, 2, 54, 0),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine
+            .execute_jit_nullary("test_indexof_nf")
+            .expect("execute");
+        assert_eq!(raw, -1i64 as i64, "index_of not found should be -1");
+    }
+
+    #[test]
+    fn jit_intrinsic_pad_left() {
+        // pad_left("hi", 5) -> "   hi"
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_pad_left".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 3,
+            constants: vec![Constant::String("hi".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadInt, 1, 5),
+                Instruction::abc(OpCode::Intrinsic, 2, 55, 0),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine
+            .execute_jit_nullary("test_pad_left")
+            .expect("execute");
+        assert_ne!(raw, 0);
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "   hi", "pad_left(\"hi\", 5) should be \"   hi\"");
+    }
+
+    #[test]
+    fn jit_intrinsic_pad_right() {
+        // pad_right("hi", 5) -> "hi   "
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_pad_right".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 3,
+            constants: vec![Constant::String("hi".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadInt, 1, 5),
+                Instruction::abc(OpCode::Intrinsic, 2, 56, 0),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine
+            .execute_jit_nullary("test_pad_right")
+            .expect("execute");
+        assert_ne!(raw, 0);
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "hi   ", "pad_right(\"hi\", 5) should be \"hi   \"");
     }
 }

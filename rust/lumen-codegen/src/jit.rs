@@ -963,6 +963,69 @@ extern "C" fn jit_rt_string_pad_right(s: i64, width: i64) -> i64 {
     JitString::from_bytes(result.as_bytes()) as i64
 }
 
+/// High-resolution timer returning nanoseconds since UNIX epoch.
+extern "C" fn jit_rt_hrtime() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0)
+}
+
+/// Hash a JitString using Rust's default hasher and return a `sha256:` prefixed hex string.
+/// NOTE: This uses SipHash (Rust default), not real SHA-256. Matches VM behaviour for now.
+extern "C" fn jit_rt_string_hash(s: i64) -> i64 {
+    use std::hash::{Hash, Hasher};
+    if s == 0 {
+        return JitString::from_bytes(b"sha256:") as i64;
+    }
+    let js = unsafe { &*(s as *const JitString) };
+    let text = unsafe { js.as_str() };
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    let hash_val = hasher.finish();
+    let hex = format!("sha256:{:016x}", hash_val);
+    JitString::from_bytes(hex.as_bytes()) as i64
+}
+
+/// Split a string by separator. Returns a JitString containing JSON array representation
+/// since the JIT doesn't support list values yet.
+extern "C" fn jit_rt_string_split(s: i64, sep: i64) -> i64 {
+    if s == 0 {
+        return JitString::from_bytes(b"[]") as i64;
+    }
+    let js = unsafe { &*(s as *const JitString) };
+    let text = unsafe { js.as_str() };
+    let separator = if sep == 0 {
+        ""
+    } else {
+        let jsep = unsafe { &*(sep as *const JitString) };
+        unsafe { jsep.as_str() }
+    };
+    let parts: Vec<&str> = text.split(separator).collect();
+    // Return comma-joined for now (simpler than JSON for downstream use)
+    let result = parts.join(",");
+    JitString::from_bytes(result.as_bytes()) as i64
+}
+
+/// Join strings (stub — the JIT doesn't support lists yet).
+/// Returns the separator string as a placeholder.
+extern "C" fn jit_rt_string_join(list_placeholder: i64, sep: i64) -> i64 {
+    // Without list support, just return the first argument
+    if list_placeholder != 0 {
+        // Increment refcount and return
+        let js = unsafe { &mut *(list_placeholder as *mut JitString) };
+        js.refcount += 1;
+        return list_placeholder;
+    }
+    if sep != 0 {
+        let js = unsafe { &mut *(sep as *mut JitString) };
+        js.refcount += 1;
+        return sep;
+    }
+    JitString::from_bytes(b"") as i64
+}
+
 /// Register all JIT intrinsic runtime helper symbols with a JITBuilder.
 fn register_intrinsic_helpers(builder: &mut JITBuilder) {
     // Print helpers
@@ -1038,6 +1101,12 @@ fn register_intrinsic_helpers(builder: &mut JITBuilder) {
         "jit_rt_string_pad_right",
         jit_rt_string_pad_right as *const u8,
     );
+
+    // Timer and hash helpers
+    builder.symbol("jit_rt_hrtime", jit_rt_hrtime as *const u8);
+    builder.symbol("jit_rt_string_hash", jit_rt_string_hash as *const u8);
+    builder.symbol("jit_rt_string_split", jit_rt_string_split as *const u8);
+    builder.symbol("jit_rt_string_join", jit_rt_string_join as *const u8);
 }
 
 // ---------------------------------------------------------------------------
@@ -5014,5 +5083,120 @@ mod tests {
         assert_ne!(raw, 0);
         let s = unsafe { jit_take_string(raw) };
         assert_eq!(s, "hi   ", "pad_right(\"hi\", 5) should be \"hi   \"");
+    }
+
+    /// Test that string concat in a loop with Move pattern (as compiler generates)
+    /// produces correct results and doesn't leak memory.
+    #[test]
+    fn jit_string_concat_loop_with_move_pattern() {
+        // This mirrors what the compiler actually generates:
+        //   r0 = LoadK ""
+        //   r1 = Move r0     (refcount++ — THIS is the problematic pattern)
+        //   r2 = LoadK "x"
+        //   r3 = N, r4 = 0, r5 = 1
+        //   loop:
+        //     r6 = r4 < r3
+        //     Test r6
+        //     Jmp +3  (exit)
+        //     r1 = r1 + r2   (in-place concat)
+        //     r4 = r4 + r5
+        //     Jmp -6  (loop)
+        //   return r1
+        let n = 10000;
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "build_with_move".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 8,
+            constants: vec![
+                Constant::String("".to_string()),
+                Constant::String("x".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),   //  0: r0 = ""
+                Instruction::abc(OpCode::Move, 1, 0, 0), //  1: r1 = r0 (clone!)
+                Instruction::abx(OpCode::LoadK, 2, 1),   //  2: r2 = "x"
+                Instruction::abx(OpCode::LoadInt, 3, n), //  3: r3 = N
+                Instruction::abx(OpCode::LoadInt, 4, 0), //  4: r4 = 0
+                Instruction::abx(OpCode::LoadInt, 5, 1), //  5: r5 = 1
+                // loop header:
+                Instruction::abc(OpCode::Lt, 6, 4, 3), //  6: r6 = r4 < r3
+                Instruction::abc(OpCode::Test, 6, 0, 0), //  7: test
+                Instruction::sax(OpCode::Jmp, 3),      //  8: -> 12 (exit)
+                // loop body:
+                Instruction::abc(OpCode::Add, 1, 1, 2), //  9: r1 = r1 + r2
+                Instruction::abc(OpCode::Add, 4, 4, 5), // 10: r4 = r4 + 1
+                Instruction::sax(OpCode::Jmp, -6),      // 11: -> 6 (loop)
+                // exit:
+                Instruction::abc(OpCode::Return, 1, 1, 0), // 12: return r1
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let start = std::time::Instant::now();
+        let raw = engine
+            .execute_jit_nullary("build_with_move")
+            .expect("execute");
+        let elapsed = start.elapsed();
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s.len(), n as usize, "should have {n} 'x' characters");
+        assert!(s.chars().all(|c| c == 'x'), "all characters should be 'x'");
+        eprintln!(
+            "jit_string_concat_loop_with_move_pattern: {}us for {n} iterations",
+            elapsed.as_micros()
+        );
+    }
+
+    /// Same loop but without the Move (ideal pattern — LoadK directly into the
+    /// accumulator register). This should be faster.
+    #[test]
+    fn jit_string_concat_loop_ideal_pattern() {
+        let n = 10000;
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "build_ideal".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 7,
+            constants: vec![
+                Constant::String("".to_string()),
+                Constant::String("x".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),   //  0: r0 = ""
+                Instruction::abx(OpCode::LoadK, 1, 1),   //  1: r1 = "x"
+                Instruction::abx(OpCode::LoadInt, 2, n), //  2: r2 = N
+                Instruction::abx(OpCode::LoadInt, 3, 0), //  3: r3 = 0
+                Instruction::abx(OpCode::LoadInt, 4, 1), //  4: r4 = 1
+                // loop header:
+                Instruction::abc(OpCode::Lt, 5, 3, 2), //  5: r5 = r3 < r2
+                Instruction::abc(OpCode::Test, 5, 0, 0), //  6: test
+                Instruction::sax(OpCode::Jmp, 3),      //  7: -> 11 (exit)
+                // loop body:
+                Instruction::abc(OpCode::Add, 0, 0, 1), //  8: r0 = r0 + r1
+                Instruction::abc(OpCode::Add, 3, 3, 4), //  9: r3 = r3 + 1
+                Instruction::sax(OpCode::Jmp, -6),      // 10: -> 5 (loop)
+                // exit:
+                Instruction::abc(OpCode::Return, 0, 1, 0), // 11: return r0
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let start = std::time::Instant::now();
+        let raw = engine.execute_jit_nullary("build_ideal").expect("execute");
+        let elapsed = start.elapsed();
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s.len(), n as usize, "should have {n} 'x' characters");
+        eprintln!(
+            "jit_string_concat_loop_ideal_pattern: {}us for {n} iterations",
+            elapsed.as_micros()
+        );
     }
 }

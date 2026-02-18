@@ -191,6 +191,64 @@ These verify Lumen is ready for self-hosting.
 
 ---
 
+## Phase F: Hybrid Compilation Architecture (T500–T540)
+
+The "No Tradeoff" architecture: C-level speed with JS-level ergonomics. Three tiers of execution with seamless transitions.
+
+### F1: Register Architecture Overhaul
+
+| # | Task | Status | Description |
+|---|------|--------|-------------|
+| T500 | Remove 255 register limit | OPEN | Replace fixed 8-bit register fields with growable register file (Vec<Value> per frame). No program should ever hit a register limit. |
+| T501 | Virtual register allocation | OPEN | Compiler uses unlimited virtual registers. Current 8-bit fields become indices into growable frame. |
+| T502 | Variable-width instruction encoding | OPEN | Extend instruction format to support 16-bit+ register fields for programs exceeding 256 registers. |
+| T503 | Register overflow stress tests | OPEN | Test with 1000+ locals, deep nesting, complex expressions. Must never fail. |
+
+### F2: Copy-and-Patch Interpreter (Tier 0)
+
+| # | Task | Status | Description |
+|---|------|--------|-------------|
+| T510 | Copy-and-patch design doc | OPEN | Design the stencil-based interpreter. Each opcode becomes a pre-compiled machine code snippet. Stencils are memcpy'd and patched at runtime. Target: 5-10x faster than switch-loop interpreter. |
+| T511 | Stencil generation for all opcodes | OPEN | Generate machine code stencils for all ~100 opcodes. Use Cranelift or hand-written assembly. |
+| T512 | Copy-and-patch execution engine | OPEN | Runtime stencil stitching — memcpy stencils into executable buffer, patch operand slots. |
+| T513 | Tier 0 → Tier 1 transition | OPEN | Copy-and-patch interpreter detects hot cells and triggers JIT compilation. Seamless handoff. |
+
+### F3: JIT Evolution (Tier 1 & 2)
+
+| # | Task | Status | Description |
+|---|------|--------|-------------|
+| T520 | JIT Float type support | OPEN | Extend Cranelift JIT beyond Int-only cells. Float operations compile to native FP instructions. |
+| T521 | JIT Bool/String support | OPEN | Complete type coverage in JIT compiler. |
+| T522 | On-Stack Replacement (OSR) | OPEN | Allow interpreter to transition to JIT-compiled code mid-loop without restarting the function. Critical for long-running loops. |
+| T523 | Speculative optimization | OPEN | JIT speculates on types/values seen at runtime. Generates fast-path code with guards. Falls back to interpreter on guard failure (deoptimization). |
+| T524 | Deoptimization support | OPEN | JIT → interpreter fallback when speculative assumptions are violated. Must reconstruct interpreter state from JIT state. |
+
+### F4: Profile-Guided Optimization & AOT (Tier 2+)
+
+| # | Task | Status | Description |
+|---|------|--------|-------------|
+| T530 | PGO profiling infrastructure | OPEN | Record execution profiles during interpreted/JIT runs: branch frequencies, type feedback, call counts, hot paths. Serialize to .lumen-profile files. |
+| T531 | PGO-guided JIT optimization | OPEN | Feed profile data into JIT compiler for better inlining, code layout, and specialization decisions. |
+| T532 | AOT compilation mode | OPEN | Reuse JIT backend to compile to object files on disk. `lumen build --aot` produces native executables. Same Cranelift backend, different output target. |
+| T533 | Continuous PGO | OPEN | Production mode: runtime profiles feed back into next AOT build. The deployed binary bakes in JIT-level knowledge. |
+
+### F5: Memory Architecture
+
+| # | Task | Status | Description |
+|---|------|--------|-------------|
+| T535 | Region-based memory model | OPEN | Hybrid memory: stack allocation for local-only values (90% case), GC only for escaped objects. Escape analysis determines allocation strategy. |
+| T536 | Escape analysis | OPEN | Compiler analysis to determine which values escape their defining scope. Non-escaping values use stack allocation (free, fast). |
+| T537 | Stack allocation for locals | OPEN | Values that don't escape are allocated on the call stack frame instead of the heap. Eliminates GC overhead for most allocations. |
+
+### F6: Unified Architecture
+
+| # | Task | Status | Description |
+|---|------|--------|-------------|
+| T540 | Gradual structural typing | OPEN | Support both dynamic (untyped) and static (typed) code in the same file. Untyped code runs in interpreter, typed code compiles to native. Progressive lowering. |
+| T541 | Unified IR (progressive lowering) | OPEN | Single IR that can represent code at multiple abstraction levels. High-level (dynamic dispatch) → mid-level (typed, virtual calls) → low-level (concrete, inlined). Inspired by MLIR. |
+
+---
+
 ## Post-Bootstrap (NOT YET — do after self-hosting)
 
 These are important but come AFTER the language can compile itself:
@@ -229,3 +287,4 @@ All tasks T001-T209 from the original TASKS.md are complete. They covered:
 - Mark tasks DONE when implemented and tested.
 - If a dogfooding task (Phase D) reveals a language gap, add it to Phase A or B and fix it first.
 - The goal is: **every task in Phases A-E is DONE before attempting self-hosting**.
+- Phase F is the long-term compilation architecture roadmap. Tasks are ordered by dependency but can be parallelized within sub-phases.

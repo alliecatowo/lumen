@@ -2455,7 +2455,7 @@ impl VM {
                 let with = value_to_str_cow(&self.registers[base + arg_reg + 2], &self.strings);
                 Ok(match arg {
                     Value::String(StringRef::Owned(s)) => {
-                        Value::String(StringRef::Owned(s.replace(&*pat, &*with)))
+                        Value::String(StringRef::Owned(s.replace(pat.as_ref(), with.as_ref())))
                     }
                     _ => arg.clone(),
                 })

@@ -25,8 +25,9 @@ use std::sync::Arc;
 /// cheap cloning via reference counting. Mutation uses `Arc::make_mut()` which
 /// provides copy-on-write semantics — the inner data is only cloned when the
 /// reference count is greater than one.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub enum Value {
+    #[default]
     Null,
     Bool(bool),
     Int(i64),

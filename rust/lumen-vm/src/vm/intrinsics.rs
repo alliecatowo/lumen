@@ -45,8 +45,8 @@ impl VM {
                 })
             }
             "append" => {
-                let list = self.registers[base + a + 1].clone();
-                let elem = self.registers[base + a + 2].clone();
+                let list = std::mem::take(&mut self.registers[base + a + 1]);
+                let elem = std::mem::take(&mut self.registers[base + a + 2]);
                 if let Value::List(mut l) = list {
                     Arc::make_mut(&mut l).push(elem);
                     Ok(Value::List(l))
@@ -402,7 +402,7 @@ impl VM {
             }
             // Collection ops
             "sort" => {
-                let arg = self.registers[base + a + 1].clone();
+                let arg = std::mem::take(&mut self.registers[base + a + 1]);
                 if let Value::List(mut l) = arg {
                     Arc::make_mut(&mut l).sort();
                     Ok(Value::List(l))
@@ -411,7 +411,7 @@ impl VM {
                 }
             }
             "reverse" => {
-                let arg = self.registers[base + a + 1].clone();
+                let arg = std::mem::take(&mut self.registers[base + a + 1]);
                 if let Value::List(mut l) = arg {
                     Arc::make_mut(&mut l).reverse();
                     Ok(Value::List(l))
@@ -2500,13 +2500,13 @@ impl VM {
                 })
             }
             24 => {
-                // APPEND
-                let item = self.registers[base + arg_reg + 1].clone();
-                Ok(match arg {
-                    Value::List(l) => {
-                        let mut new_l: Vec<Value> = (**l).clone();
-                        new_l.push(item);
-                        Value::new_list(new_l)
+                // APPEND — O(1) amortized via take + Arc::make_mut
+                let item = std::mem::take(&mut self.registers[base + arg_reg + 1]);
+                let taken = std::mem::take(&mut self.registers[base + arg_reg]);
+                Ok(match taken {
+                    Value::List(mut l) => {
+                        Arc::make_mut(&mut l).push(item);
+                        Value::List(l)
                     }
                     _ => Value::Null,
                 })

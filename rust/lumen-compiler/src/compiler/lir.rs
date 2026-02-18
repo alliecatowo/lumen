@@ -504,7 +504,7 @@ pub struct LirCell {
     pub name: String,
     pub params: Vec<LirParam>,
     pub returns: Option<String>,
-    pub registers: u8,
+    pub registers: u16,
     pub constants: Vec<Constant>,
     pub instructions: Vec<Instruction>,
     /// Metadata for effect handler scopes pushed by HandlePush instructions in this cell.

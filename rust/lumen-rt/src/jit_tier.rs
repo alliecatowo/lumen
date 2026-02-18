@@ -188,17 +188,20 @@ impl JitTier {
     /// Attempt to compile a hot cell. Returns `true` on success.
     ///
     /// On the `jit` feature, this creates/updates the Cranelift JIT engine and
-    /// compiles all cells from the module. Cells with unsupported opcodes will
-    /// cause compilation to fail gracefully, falling back to the interpreter.
+    /// compiles only the specified hot cell — not the entire module. Cells with
+    /// unsupported opcodes will have deopt stubs inserted; if compilation fails
+    /// entirely the cell falls back to the interpreter.
     ///
     /// On no-jit builds, this is a no-op that returns `false`.
-    pub fn try_compile(&mut self, _cell_idx: usize, module: &LirModule) -> bool {
+    pub fn try_compile(&mut self, cell_idx: usize, module: &LirModule) -> bool {
         #[cfg(feature = "jit")]
         {
-            if module.cells.is_empty() {
+            if module.cells.is_empty() || cell_idx >= module.cells.len() {
                 self.stats.compile_failures += 1;
                 return false;
             }
+
+            let cell_name = &module.cells[cell_idx].name;
 
             let opt = match self.config.opt_level {
                 JitOptLevel::None => OptLevel::None,
@@ -213,16 +216,12 @@ impl JitTier {
             // Create a new engine each time (Cranelift JITModule doesn't support
             // incremental addition of functions after finalize_definitions).
             let mut engine = JitEngine::new(settings, 0);
-            match engine.compile_module(module) {
+            match engine.compile_hot(cell_name, module) {
                 Ok(()) => {
-                    // Only mark cells that were actually compiled by the engine.
-                    // Cells with unsupported opcodes are silently skipped by
-                    // compile_module and won't be in the engine's cache.
-                    for (idx, cell) in module.cells.iter().enumerate() {
-                        if engine.is_compiled(&cell.name) {
-                            self.compiled.insert(idx);
-                            self.stats.cells_compiled += 1;
-                        }
+                    // Mark only the hot cell as compiled.
+                    if engine.is_compiled(cell_name) {
+                        self.compiled.insert(cell_idx);
+                        self.stats.cells_compiled += 1;
                     }
                     self.engine = Some(engine);
                     true
@@ -230,8 +229,8 @@ impl JitTier {
                 Err(_e) => {
                     // Compilation failed — mark the target cell as not eligible
                     // so we don't retry it.
-                    if _cell_idx < self.eligibility.len() {
-                        self.eligibility[_cell_idx] = CellEligibility::NotEligible;
+                    if cell_idx < self.eligibility.len() {
+                        self.eligibility[cell_idx] = CellEligibility::NotEligible;
                     }
                     self.stats.compile_failures += 1;
                     false

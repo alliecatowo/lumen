@@ -1707,6 +1707,7 @@ dependencies = [
  "cranelift-object",
  "lumen-compiler",
  "lumen-core",
+ "strum",
  "target-lexicon",
  "thiserror 2.0.18",
  "wasm-encoder",

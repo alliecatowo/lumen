@@ -238,12 +238,12 @@ const MAX_CALL_DEPTH: usize = 4096;
 
 /// Call frame on the VM stack.
 #[derive(Debug, Clone)]
-pub(crate) struct CallFrame {
-    pub(crate) cell_idx: usize,
-    pub(crate) base_register: usize,
-    pub(crate) ip: usize,
-    pub(crate) return_register: usize,
-    pub(crate) future_id: Option<u64>,
+pub struct CallFrame {
+    pub cell_idx: usize,
+    pub base_register: usize,
+    pub ip: usize,
+    pub return_register: usize,
+    pub future_id: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -794,6 +794,28 @@ impl VM {
                 }
             })
             .collect()
+    }
+
+    // ─── Debug Accessors (for DAP server) ──────────────────────────────────
+
+    /// Get a reference to the loaded module, if any.
+    pub fn module(&self) -> Option<&LirModule> {
+        self.module.as_ref()
+    }
+
+    /// Get a reference to the current call frame stack.
+    pub fn frames(&self) -> &[CallFrame] {
+        &self.frames
+    }
+
+    /// Check if the call frame stack is empty.
+    pub fn frames_is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
+
+    /// Read a register value by absolute index. Returns `Value::Null` if out of bounds.
+    pub fn read_register(&self, index: usize) -> Value {
+        self.registers.get(index).cloned().unwrap_or(Value::Null)
     }
 
     /// Checked register access (read-only).

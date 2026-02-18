@@ -14,6 +14,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
+use cranelift_codegen::ir::stackslot::{StackSlotData, StackSlotKind};
 use cranelift_codegen::ir::{types, AbiParam, InstBuilder, Type as ClifType};
 use cranelift_codegen::Context;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
@@ -38,7 +39,7 @@ enum JitVarType {
     Int,
     /// 64-bit IEEE 754 floating point.
     Float,
-    /// Heap-allocated string, represented as a `*mut String` cast to i64.
+    /// Heap-allocated refcounted string, represented as a `*mut JitString` cast to i64.
     /// The pointer is created by `jit_rt_string_alloc` or `jit_rt_string_concat`
     /// and must be freed via `jit_rt_string_drop` when no longer needed.
     Str,
@@ -138,6 +139,13 @@ pub fn lower_cell<M: Module>(
         &[types::I64, types::I64],
         &[types::I64],
     )?;
+    let str_concat_multi_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_string_concat_multi",
+        &[types::I64, types::I64], // ptr to array, count
+        &[types::I64],
+    )?;
     let str_alloc_ref = declare_helper_func(
         module,
         &mut func,
@@ -197,6 +205,10 @@ pub fn lower_cell<M: Module>(
     // Declare intrinsic runtime helper functions (for JIT builtin support).
     let intrinsic_print_int_ref =
         declare_helper_func(module, &mut func, "jit_rt_print_int", &[types::I64], &[])?;
+    let intrinsic_print_float_ref =
+        declare_helper_func(module, &mut func, "jit_rt_print_float", &[types::F64], &[])?;
+    let intrinsic_print_bool_ref =
+        declare_helper_func(module, &mut func, "jit_rt_print_bool", &[types::I64], &[])?;
     let intrinsic_print_str_ref =
         declare_helper_func(module, &mut func, "jit_rt_print_str", &[types::I64], &[])?;
     let intrinsic_string_len_ref = declare_helper_func(
@@ -206,13 +218,64 @@ pub fn lower_cell<M: Module>(
         &[types::I64],
         &[types::I64],
     )?;
-    let intrinsic_abs_int_ref = declare_helper_func(
+    // Math transcendental helpers (Cranelift can't do these natively)
+    let intrinsic_sin_ref = declare_helper_func(
         module,
         &mut func,
-        "jit_rt_abs_int",
-        &[types::I64],
+        "jit_rt_sin",
+        &[types::F64],
+        &[types::F64],
+    )?;
+    let intrinsic_cos_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_cos",
+        &[types::F64],
+        &[types::F64],
+    )?;
+    let intrinsic_tan_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_tan",
+        &[types::F64],
+        &[types::F64],
+    )?;
+    let intrinsic_log_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_log",
+        &[types::F64],
+        &[types::F64],
+    )?;
+    let intrinsic_log2_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_log2",
+        &[types::F64],
+        &[types::F64],
+    )?;
+    let intrinsic_log10_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_log10",
+        &[types::F64],
+        &[types::F64],
+    )?;
+    let intrinsic_pow_float_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_pow_float",
+        &[types::F64, types::F64],
+        &[types::F64],
+    )?;
+    let intrinsic_pow_int_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_pow_int",
+        &[types::I64, types::I64],
         &[types::I64],
     )?;
+    // Absolute value helpers
     let intrinsic_abs_float_ref = declare_helper_func(
         module,
         &mut func,
@@ -220,11 +283,64 @@ pub fn lower_cell<M: Module>(
         &[types::F64],
         &[types::F64],
     )?;
+    let intrinsic_abs_int_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_abs_int",
+        &[types::I64],
+        &[types::I64],
+    )?;
+    // Conversion helpers
+    let intrinsic_to_string_int_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_to_string_int",
+        &[types::I64],
+        &[types::I64],
+    )?;
+    let intrinsic_to_string_float_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_to_string_float",
+        &[types::F64],
+        &[types::I64],
+    )?;
+    let intrinsic_to_int_from_float_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_to_int_from_float",
+        &[types::F64],
+        &[types::I64],
+    )?;
+    let intrinsic_to_int_from_string_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_to_int_from_string",
+        &[types::I64],
+        &[types::I64],
+    )?;
+    let intrinsic_to_float_from_int_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_to_float_from_int",
+        &[types::I64],
+        &[types::F64],
+    )?;
+    let intrinsic_to_float_from_string_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_to_float_from_string",
+        &[types::I64],
+        &[types::F64],
+    )?;
 
     // Suppress unused-variable warnings for helpers not yet used in all paths.
-    let _ = str_clone_ref;
     let _ = value_clone_ref;
     let _ = value_drop_ref;
+    let _ = intrinsic_abs_float_ref;
+    let _ = intrinsic_abs_int_ref;
+    let _ = intrinsic_tan_ref;
+    let _ = intrinsic_print_bool_ref;
 
     let mut builder = FunctionBuilder::new(&mut func, fb_ctx);
 
@@ -257,6 +373,17 @@ pub fn lower_cell<M: Module>(
     // Pre-scan: identify registers that hold string constants used ONLY as
     // Call/TailCall callee names. For these we skip heap string allocation.
     let call_name_regs = identify_call_name_registers(cell);
+
+    // Pre-scan: identify chains of string Add/Concat that can be batched into
+    // a single jit_rt_string_concat_multi call.
+    let string_param_regs: std::collections::HashSet<u16> = cell
+        .params
+        .iter()
+        .enumerate()
+        .filter(|(_i, p)| p.ty == "String")
+        .map(|(i, _p)| i as u16)
+        .collect();
+    let concat_chains = identify_concat_chains(cell, &string_param_regs);
 
     // All Cranelift variables are declared as I64 (both ints and string pointers
     // are I64; only floats are F64). The semantic distinction is in var_types.
@@ -348,6 +475,12 @@ pub fn lower_cell<M: Module>(
         }
 
         if terminated {
+            continue;
+        }
+
+        // Skip intermediate Add/Concat instructions that are part of a
+        // batch-concat chain. Their work is handled at the chain tail.
+        if concat_chains.skip_pcs.contains(&pc) {
             continue;
         }
 
@@ -466,8 +599,6 @@ pub fn lower_cell<M: Module>(
 
             // Arithmetic (type-aware)
             OpCode::Add => {
-                let lhs = use_var(&mut builder, &vars, inst.b);
-                let rhs = use_var(&mut builder, &vars, inst.c);
                 let lhs_ty = var_types
                     .get(&(inst.b as u32))
                     .copied()
@@ -477,23 +608,155 @@ pub fn lower_cell<M: Module>(
                     .copied()
                     .unwrap_or(JitVarType::Int);
                 if lhs_ty == JitVarType::Str || rhs_ty == JitVarType::Str {
-                    // String concatenation
+                    // Check if this is the tail of a batch-concat chain.
+                    if let Some(leaves) = concat_chains.chains.get(&pc) {
+                        let dest_ty = var_types
+                            .get(&(inst.a as u32))
+                            .copied()
+                            .unwrap_or(JitVarType::Int);
+                        // Drop old destination string if it exists and differs
+                        // from all leaf operands.
+                        let old_dest = if dest_ty == JitVarType::Str && !leaves.contains(&inst.a) {
+                            Some(use_var(&mut builder, &vars, inst.a))
+                        } else {
+                            None
+                        };
+
+                        // Build a stack slot holding the array of string pointers.
+                        let slot_size = (leaves.len() * 8) as u32;
+                        let slot_data =
+                            StackSlotData::new(StackSlotKind::ExplicitSlot, slot_size, 3);
+                        let slot = builder.create_sized_stack_slot(slot_data);
+
+                        for (i, &leaf_reg) in leaves.iter().enumerate() {
+                            let val = use_var(&mut builder, &vars, leaf_reg);
+                            builder.ins().stack_store(val, slot, (i * 8) as i32);
+                        }
+
+                        let addr = builder.ins().stack_addr(types::I64, slot, 0);
+                        let count_val = builder.ins().iconst(types::I64, leaves.len() as i64);
+                        let call = builder.ins().call(str_concat_multi_ref, &[addr, count_val]);
+                        let result = builder.inst_results(call)[0];
+
+                        if let Some(old) = old_dest {
+                            builder.ins().call(str_drop_ref, &[old]);
+                        }
+
+                        var_types.insert(inst.a as u32, JitVarType::Str);
+                        def_var(&mut builder, &vars, inst.a, result);
+                    } else {
+                        // String concatenation (non-chain) — safe to read operands now.
+                        let lhs = use_var(&mut builder, &vars, inst.b);
+                        let rhs = use_var(&mut builder, &vars, inst.c);
+                        let dest_ty = var_types
+                            .get(&(inst.a as u32))
+                            .copied()
+                            .unwrap_or(JitVarType::Int);
+
+                        // Optimization: if dest == lhs (a = a + c), use in-place mutation
+                        if dest_ty == JitVarType::Str && inst.a == inst.b {
+                            // In-place: a = a + c
+                            // Use jit_rt_string_concat_mut which takes ownership of lhs
+                            let call = builder.ins().call(str_concat_mut_ref, &[lhs, rhs]);
+                            let result = builder.inst_results(call)[0];
+                            var_types.insert(inst.a as u32, JitVarType::Str);
+                            def_var(&mut builder, &vars, inst.a, result);
+                            // Note: lhs is consumed by concat_mut, no need to drop
+                        } else {
+                            // Standard case: create new string
+                            let old_dest = if dest_ty == JitVarType::Str
+                                && inst.a != inst.b
+                                && inst.a != inst.c
+                            {
+                                Some(use_var(&mut builder, &vars, inst.a))
+                            } else {
+                                None
+                            };
+
+                            let call = builder.ins().call(str_concat_ref, &[lhs, rhs]);
+                            let result = builder.inst_results(call)[0];
+
+                            if let Some(old) = old_dest {
+                                builder.ins().call(str_drop_ref, &[old]);
+                            } else if dest_ty == JitVarType::Str && inst.a == inst.c {
+                                // a = b + a: drop the old value of a (which is rhs)
+                                builder.ins().call(str_drop_ref, &[rhs]);
+                            }
+
+                            var_types.insert(inst.a as u32, JitVarType::Str);
+                            def_var(&mut builder, &vars, inst.a, result);
+                        }
+                    }
+                } else if lhs_ty == JitVarType::Float || rhs_ty == JitVarType::Float {
+                    let lhs = use_var(&mut builder, &vars, inst.b);
+                    let rhs = use_var(&mut builder, &vars, inst.c);
+                    let res = builder.ins().fadd(lhs, rhs);
+                    var_types.insert(inst.a as u32, JitVarType::Float);
+                    def_var(&mut builder, &vars, inst.a, res);
+                } else {
+                    let lhs = use_var(&mut builder, &vars, inst.b);
+                    let rhs = use_var(&mut builder, &vars, inst.c);
+                    let res = builder.ins().iadd(lhs, rhs);
+                    var_types.insert(inst.a as u32, JitVarType::Int);
+                    def_var(&mut builder, &vars, inst.a, res);
+                }
+            }
+            // Explicit string/list concatenation operator (++).
+            // In the JIT we only support string concatenation (lists are not
+            // JIT-compiled). The logic mirrors the string branch of Add.
+            OpCode::Concat => {
+                // Check if this is the tail of a batch-concat chain.
+                if let Some(leaves) = concat_chains.chains.get(&pc) {
+                    let dest_ty = var_types
+                        .get(&(inst.a as u32))
+                        .copied()
+                        .unwrap_or(JitVarType::Int);
+                    // Drop old destination string if it exists and differs
+                    // from all leaf operands.
+                    let old_dest = if dest_ty == JitVarType::Str && !leaves.contains(&inst.a) {
+                        Some(use_var(&mut builder, &vars, inst.a))
+                    } else {
+                        None
+                    };
+
+                    // Build a stack slot holding the array of string pointers.
+                    let slot_size = (leaves.len() * 8) as u32;
+                    let slot_data = StackSlotData::new(StackSlotKind::ExplicitSlot, slot_size, 3);
+                    let slot = builder.create_sized_stack_slot(slot_data);
+
+                    for (i, &leaf_reg) in leaves.iter().enumerate() {
+                        let val = use_var(&mut builder, &vars, leaf_reg);
+                        builder.ins().stack_store(val, slot, (i * 8) as i32);
+                    }
+
+                    let addr = builder.ins().stack_addr(types::I64, slot, 0);
+                    let count_val = builder.ins().iconst(types::I64, leaves.len() as i64);
+                    let call = builder.ins().call(str_concat_multi_ref, &[addr, count_val]);
+                    let result = builder.inst_results(call)[0];
+
+                    if let Some(old) = old_dest {
+                        builder.ins().call(str_drop_ref, &[old]);
+                    }
+
+                    var_types.insert(inst.a as u32, JitVarType::Str);
+                    def_var(&mut builder, &vars, inst.a, result);
+                } else {
+                    // Non-chain: regular concat
+                    let lhs = use_var(&mut builder, &vars, inst.b);
+                    let rhs = use_var(&mut builder, &vars, inst.c);
                     let dest_ty = var_types
                         .get(&(inst.a as u32))
                         .copied()
                         .unwrap_or(JitVarType::Int);
 
-                    // Optimization: if dest == lhs (a = a + c), use in-place mutation
+                    // Optimization: if dest == lhs (a = a ++ c), use in-place mutation
                     if dest_ty == JitVarType::Str && inst.a == inst.b {
-                        // In-place: a = a + c
-                        // Use jit_rt_string_concat_mut which takes ownership of lhs
                         let call = builder.ins().call(str_concat_mut_ref, &[lhs, rhs]);
                         let result = builder.inst_results(call)[0];
                         var_types.insert(inst.a as u32, JitVarType::Str);
                         def_var(&mut builder, &vars, inst.a, result);
-                        // Note: lhs is consumed by concat_mut, no need to drop
                     } else {
-                        // Standard case: create new string
+                        // Drop old destination string if it exists and differs from operands.
                         let old_dest =
                             if dest_ty == JitVarType::Str && inst.a != inst.b && inst.a != inst.c {
                                 Some(use_var(&mut builder, &vars, inst.a))
@@ -507,23 +770,16 @@ pub fn lower_cell<M: Module>(
                         if let Some(old) = old_dest {
                             builder.ins().call(str_drop_ref, &[old]);
                         } else if dest_ty == JitVarType::Str && inst.a == inst.c {
-                            // a = b + a: drop the old value of a (which is rhs)
+                            // a = b ++ a: drop the old value of a (which is rhs)
                             builder.ins().call(str_drop_ref, &[rhs]);
                         }
 
                         var_types.insert(inst.a as u32, JitVarType::Str);
                         def_var(&mut builder, &vars, inst.a, result);
                     }
-                } else if lhs_ty == JitVarType::Float || rhs_ty == JitVarType::Float {
-                    let res = builder.ins().fadd(lhs, rhs);
-                    var_types.insert(inst.a as u32, JitVarType::Float);
-                    def_var(&mut builder, &vars, inst.a, res);
-                } else {
-                    let res = builder.ins().iadd(lhs, rhs);
-                    var_types.insert(inst.a as u32, JitVarType::Int);
-                    def_var(&mut builder, &vars, inst.a, res);
                 }
             }
+
             OpCode::Sub => {
                 let lhs = use_var(&mut builder, &vars, inst.b);
                 let rhs = use_var(&mut builder, &vars, inst.c);
@@ -1045,10 +1301,10 @@ pub fn lower_cell<M: Module>(
                 // For now, implement a subset of common intrinsics.
                 // Full implementation requires complex Value type support.
                 match intrinsic_id {
-                    0 => {
-                        // LENGTH (IntrinsicId::Length)
-                        // For strings: call jit_rt_string_len(str_ptr)
-                        // For now, only handle string case
+                    // -------------------------------------------------------
+                    // 0 / 1 / 72: Length / Count / Size
+                    // -------------------------------------------------------
+                    0 | 1 | 72 => {
                         if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Str) {
                             let str_ptr = use_var(&mut builder, &vars, arg_base);
                             let call = builder.ins().call(intrinsic_string_len_ref, &[str_ptr]);
@@ -1056,51 +1312,516 @@ pub fn lower_cell<M: Module>(
                             var_types.insert(inst.a as u32, JitVarType::Int);
                             def_var(&mut builder, &vars, inst.a, result);
                         } else {
-                            // For other types, return 0 (stub)
+                            // For non-string types, return 0 (stub — collections not yet in JIT)
                             let zero = builder.ins().iconst(types::I64, 0);
                             var_types.insert(inst.a as u32, JitVarType::Int);
                             def_var(&mut builder, &vars, inst.a, zero);
                         }
                     }
+
+                    // -------------------------------------------------------
+                    // 9: Print
+                    // -------------------------------------------------------
                     9 => {
-                        // PRINT (IntrinsicId::Print)
-                        // Determine the type of the first argument
-                        if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Str) {
-                            // Print string
-                            let str_ptr = use_var(&mut builder, &vars, arg_base);
-                            builder.ins().call(intrinsic_print_str_ref, &[str_ptr]);
-                        } else {
-                            // Print integer
-                            let int_val = use_var(&mut builder, &vars, arg_base);
-                            builder.ins().call(intrinsic_print_int_ref, &[int_val]);
+                        let arg_ty = var_types.get(&(arg_base as u32)).copied();
+                        match arg_ty {
+                            Some(JitVarType::Str) => {
+                                let v = use_var(&mut builder, &vars, arg_base);
+                                builder.ins().call(intrinsic_print_str_ref, &[v]);
+                            }
+                            Some(JitVarType::Float) => {
+                                let v = use_var(&mut builder, &vars, arg_base);
+                                builder.ins().call(intrinsic_print_float_ref, &[v]);
+                            }
+                            _ => {
+                                // Int or unknown — print as int
+                                let v = use_var(&mut builder, &vars, arg_base);
+                                builder.ins().call(intrinsic_print_int_ref, &[v]);
+                            }
                         }
-                        // Print returns Null (represented as 0)
                         let zero = builder.ins().iconst(types::I64, 0);
                         var_types.insert(inst.a as u32, JitVarType::Int);
                         def_var(&mut builder, &vars, inst.a, zero);
                     }
+
+                    // -------------------------------------------------------
+                    // 10: ToString
+                    // -------------------------------------------------------
+                    10 => {
+                        let arg_ty = var_types.get(&(arg_base as u32)).copied();
+                        match arg_ty {
+                            Some(JitVarType::Str) => {
+                                // Already a string — clone it
+                                let v = use_var(&mut builder, &vars, arg_base);
+                                let call = builder.ins().call(str_clone_ref, &[v]);
+                                let result = builder.inst_results(call)[0];
+                                var_types.insert(inst.a as u32, JitVarType::Str);
+                                def_var(&mut builder, &vars, inst.a, result);
+                            }
+                            Some(JitVarType::Float) => {
+                                let v = use_var(&mut builder, &vars, arg_base);
+                                let call = builder.ins().call(intrinsic_to_string_float_ref, &[v]);
+                                let result = builder.inst_results(call)[0];
+                                var_types.insert(inst.a as u32, JitVarType::Str);
+                                def_var(&mut builder, &vars, inst.a, result);
+                            }
+                            _ => {
+                                let v = use_var(&mut builder, &vars, arg_base);
+                                let call = builder.ins().call(intrinsic_to_string_int_ref, &[v]);
+                                let result = builder.inst_results(call)[0];
+                                var_types.insert(inst.a as u32, JitVarType::Str);
+                                def_var(&mut builder, &vars, inst.a, result);
+                            }
+                        }
+                    }
+
+                    // -------------------------------------------------------
+                    // 11 / 121: ToInt / ParseInt
+                    // -------------------------------------------------------
+                    11 | 121 => {
+                        let arg_ty = var_types.get(&(arg_base as u32)).copied();
+                        match arg_ty {
+                            Some(JitVarType::Float) => {
+                                let v = use_var(&mut builder, &vars, arg_base);
+                                let call =
+                                    builder.ins().call(intrinsic_to_int_from_float_ref, &[v]);
+                                let result = builder.inst_results(call)[0];
+                                var_types.insert(inst.a as u32, JitVarType::Int);
+                                def_var(&mut builder, &vars, inst.a, result);
+                            }
+                            Some(JitVarType::Str) => {
+                                let v = use_var(&mut builder, &vars, arg_base);
+                                let call =
+                                    builder.ins().call(intrinsic_to_int_from_string_ref, &[v]);
+                                let result = builder.inst_results(call)[0];
+                                var_types.insert(inst.a as u32, JitVarType::Int);
+                                def_var(&mut builder, &vars, inst.a, result);
+                            }
+                            _ => {
+                                // Already Int — pass through
+                                let v = use_var(&mut builder, &vars, arg_base);
+                                var_types.insert(inst.a as u32, JitVarType::Int);
+                                def_var(&mut builder, &vars, inst.a, v);
+                            }
+                        }
+                    }
+
+                    // -------------------------------------------------------
+                    // 12 / 122: ToFloat / ParseFloat
+                    // -------------------------------------------------------
+                    12 | 122 => {
+                        let arg_ty = var_types.get(&(arg_base as u32)).copied();
+                        match arg_ty {
+                            Some(JitVarType::Int) => {
+                                let v = use_var(&mut builder, &vars, arg_base);
+                                let call =
+                                    builder.ins().call(intrinsic_to_float_from_int_ref, &[v]);
+                                let result = builder.inst_results(call)[0];
+                                var_types.insert(inst.a as u32, JitVarType::Float);
+                                def_var(&mut builder, &vars, inst.a, result);
+                            }
+                            Some(JitVarType::Str) => {
+                                let v = use_var(&mut builder, &vars, arg_base);
+                                let call =
+                                    builder.ins().call(intrinsic_to_float_from_string_ref, &[v]);
+                                let result = builder.inst_results(call)[0];
+                                var_types.insert(inst.a as u32, JitVarType::Float);
+                                def_var(&mut builder, &vars, inst.a, result);
+                            }
+                            _ => {
+                                // Already Float — pass through
+                                let v = use_var(&mut builder, &vars, arg_base);
+                                var_types.insert(inst.a as u32, JitVarType::Float);
+                                def_var(&mut builder, &vars, inst.a, v);
+                            }
+                        }
+                    }
+
+                    // -------------------------------------------------------
+                    // 13: TypeOf — returns a string representation of the type
+                    // -------------------------------------------------------
+                    13 => {
+                        let arg_ty = var_types.get(&(arg_base as u32)).copied();
+                        let type_str: &[u8] = match arg_ty {
+                            Some(JitVarType::Int) => b"Int",
+                            Some(JitVarType::Float) => b"Float",
+                            Some(JitVarType::Str) => b"String",
+                            None => b"Unknown",
+                        };
+                        // Create a string from the static type name
+                        let ptr_val = builder.ins().iconst(types::I64, type_str.as_ptr() as i64);
+                        let len_val = builder.ins().iconst(types::I64, type_str.len() as i64);
+                        let call = builder.ins().call(str_alloc_ref, &[ptr_val, len_val]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Str);
+                        def_var(&mut builder, &vars, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 26: Abs — pure Cranelift IR (no runtime helper)
+                    // -------------------------------------------------------
                     26 => {
-                        // ABS (IntrinsicId::Abs)
-                        // Determine if the argument is Int or Float
                         if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Float) {
-                            // Absolute value of float
-                            let float_val = use_var(&mut builder, &vars, arg_base);
-                            let call = builder.ins().call(intrinsic_abs_float_ref, &[float_val]);
+                            let v = use_var(&mut builder, &vars, arg_base);
+                            let result = builder.ins().fabs(v);
+                            var_types.insert(inst.a as u32, JitVarType::Float);
+                            def_var(&mut builder, &vars, inst.a, result);
+                        } else {
+                            // Integer abs: neg = ineg(x); cmp = icmp(slt, x, 0); select(cmp, neg, x)
+                            let v = use_var(&mut builder, &vars, arg_base);
+                            let neg = builder.ins().ineg(v);
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            let is_neg = builder.ins().icmp(IntCC::SignedLessThan, v, zero);
+                            let result = builder.ins().select(is_neg, neg, v);
+                            var_types.insert(inst.a as u32, JitVarType::Int);
+                            def_var(&mut builder, &vars, inst.a, result);
+                        }
+                    }
+
+                    // -------------------------------------------------------
+                    // 27: Min
+                    // -------------------------------------------------------
+                    27 => {
+                        let arg_ty = var_types.get(&(arg_base as u32)).copied();
+                        if arg_ty == Some(JitVarType::Float) {
+                            let a = use_var(&mut builder, &vars, arg_base);
+                            let b = use_var(&mut builder, &vars, arg_base + 1);
+                            let result = builder.ins().fmin(a, b);
+                            var_types.insert(inst.a as u32, JitVarType::Float);
+                            def_var(&mut builder, &vars, inst.a, result);
+                        } else {
+                            let a = use_var(&mut builder, &vars, arg_base);
+                            let b = use_var(&mut builder, &vars, arg_base + 1);
+                            let result = builder.ins().smin(a, b);
+                            var_types.insert(inst.a as u32, JitVarType::Int);
+                            def_var(&mut builder, &vars, inst.a, result);
+                        }
+                    }
+
+                    // -------------------------------------------------------
+                    // 28: Max
+                    // -------------------------------------------------------
+                    28 => {
+                        let arg_ty = var_types.get(&(arg_base as u32)).copied();
+                        if arg_ty == Some(JitVarType::Float) {
+                            let a = use_var(&mut builder, &vars, arg_base);
+                            let b = use_var(&mut builder, &vars, arg_base + 1);
+                            let result = builder.ins().fmax(a, b);
+                            var_types.insert(inst.a as u32, JitVarType::Float);
+                            def_var(&mut builder, &vars, inst.a, result);
+                        } else {
+                            let a = use_var(&mut builder, &vars, arg_base);
+                            let b = use_var(&mut builder, &vars, arg_base + 1);
+                            let result = builder.ins().smax(a, b);
+                            var_types.insert(inst.a as u32, JitVarType::Int);
+                            def_var(&mut builder, &vars, inst.a, result);
+                        }
+                    }
+
+                    // -------------------------------------------------------
+                    // 50: IsEmpty — string only for now
+                    // -------------------------------------------------------
+                    50 => {
+                        if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Str) {
+                            let str_ptr = use_var(&mut builder, &vars, arg_base);
+                            let call = builder.ins().call(intrinsic_string_len_ref, &[str_ptr]);
+                            let len = builder.inst_results(call)[0];
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            let is_empty = builder.ins().icmp(IntCC::Equal, len, zero);
+                            let result = builder.ins().uextend(types::I64, is_empty);
+                            var_types.insert(inst.a as u32, JitVarType::Int);
+                            def_var(&mut builder, &vars, inst.a, result);
+                        } else {
+                            // Non-string: stub returns false (0)
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            var_types.insert(inst.a as u32, JitVarType::Int);
+                            def_var(&mut builder, &vars, inst.a, zero);
+                        }
+                    }
+
+                    // -------------------------------------------------------
+                    // 57: Round (nearest even) — pure Cranelift IR
+                    // -------------------------------------------------------
+                    57 => {
+                        let v = use_var(&mut builder, &vars, arg_base);
+                        if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Float) {
+                            let result = builder.ins().nearest(v);
+                            var_types.insert(inst.a as u32, JitVarType::Float);
+                            def_var(&mut builder, &vars, inst.a, result);
+                        } else {
+                            // Int round is a no-op
+                            var_types.insert(inst.a as u32, JitVarType::Int);
+                            def_var(&mut builder, &vars, inst.a, v);
+                        }
+                    }
+
+                    // -------------------------------------------------------
+                    // 58: Ceil — pure Cranelift IR
+                    // -------------------------------------------------------
+                    58 => {
+                        let v = use_var(&mut builder, &vars, arg_base);
+                        if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Float) {
+                            let result = builder.ins().ceil(v);
+                            var_types.insert(inst.a as u32, JitVarType::Float);
+                            def_var(&mut builder, &vars, inst.a, result);
+                        } else {
+                            var_types.insert(inst.a as u32, JitVarType::Int);
+                            def_var(&mut builder, &vars, inst.a, v);
+                        }
+                    }
+
+                    // -------------------------------------------------------
+                    // 59: Floor — pure Cranelift IR
+                    // -------------------------------------------------------
+                    59 => {
+                        let v = use_var(&mut builder, &vars, arg_base);
+                        if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Float) {
+                            let result = builder.ins().floor(v);
+                            var_types.insert(inst.a as u32, JitVarType::Float);
+                            def_var(&mut builder, &vars, inst.a, result);
+                        } else {
+                            var_types.insert(inst.a as u32, JitVarType::Int);
+                            def_var(&mut builder, &vars, inst.a, v);
+                        }
+                    }
+
+                    // -------------------------------------------------------
+                    // 60: Sqrt — pure Cranelift IR
+                    // -------------------------------------------------------
+                    60 => {
+                        let v = use_var(&mut builder, &vars, arg_base);
+                        if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Float) {
+                            let result = builder.ins().sqrt(v);
+                            var_types.insert(inst.a as u32, JitVarType::Float);
+                            def_var(&mut builder, &vars, inst.a, result);
+                        } else {
+                            // Convert int to float first, then sqrt
+                            let fv = builder.ins().fcvt_from_sint(types::F64, v);
+                            let result = builder.ins().sqrt(fv);
+                            var_types.insert(inst.a as u32, JitVarType::Float);
+                            def_var(&mut builder, &vars, inst.a, result);
+                        }
+                    }
+
+                    // -------------------------------------------------------
+                    // 61: Pow — runtime helper (no Cranelift native)
+                    // -------------------------------------------------------
+                    61 => {
+                        let arg_ty = var_types.get(&(arg_base as u32)).copied();
+                        if arg_ty == Some(JitVarType::Float) {
+                            let base = use_var(&mut builder, &vars, arg_base);
+                            let exp = use_var(&mut builder, &vars, arg_base + 1);
+                            let call = builder.ins().call(intrinsic_pow_float_ref, &[base, exp]);
                             let result = builder.inst_results(call)[0];
                             var_types.insert(inst.a as u32, JitVarType::Float);
                             def_var(&mut builder, &vars, inst.a, result);
                         } else {
-                            // Absolute value of integer
-                            let int_val = use_var(&mut builder, &vars, arg_base);
-                            let call = builder.ins().call(intrinsic_abs_int_ref, &[int_val]);
+                            let base = use_var(&mut builder, &vars, arg_base);
+                            let exp = use_var(&mut builder, &vars, arg_base + 1);
+                            let call = builder.ins().call(intrinsic_pow_int_ref, &[base, exp]);
                             let result = builder.inst_results(call)[0];
                             var_types.insert(inst.a as u32, JitVarType::Int);
                             def_var(&mut builder, &vars, inst.a, result);
                         }
                     }
+
+                    // -------------------------------------------------------
+                    // 62: Log (natural) — runtime helper
+                    // -------------------------------------------------------
+                    62 => {
+                        let v = use_var(&mut builder, &vars, arg_base);
+                        let fv = if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Float) {
+                            v
+                        } else {
+                            builder.ins().fcvt_from_sint(types::F64, v)
+                        };
+                        let call = builder.ins().call(intrinsic_log_ref, &[fv]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Float);
+                        def_var(&mut builder, &vars, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 63: Sin — runtime helper
+                    // -------------------------------------------------------
+                    63 => {
+                        let v = use_var(&mut builder, &vars, arg_base);
+                        let fv = if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Float) {
+                            v
+                        } else {
+                            builder.ins().fcvt_from_sint(types::F64, v)
+                        };
+                        let call = builder.ins().call(intrinsic_sin_ref, &[fv]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Float);
+                        def_var(&mut builder, &vars, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 64: Cos — runtime helper
+                    // -------------------------------------------------------
+                    64 => {
+                        let v = use_var(&mut builder, &vars, arg_base);
+                        let fv = if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Float) {
+                            v
+                        } else {
+                            builder.ins().fcvt_from_sint(types::F64, v)
+                        };
+                        let call = builder.ins().call(intrinsic_cos_ref, &[fv]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Float);
+                        def_var(&mut builder, &vars, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 65: Clamp(val, lo, hi)
+                    // -------------------------------------------------------
+                    65 => {
+                        let arg_ty = var_types.get(&(arg_base as u32)).copied();
+                        let val = use_var(&mut builder, &vars, arg_base);
+                        let lo = use_var(&mut builder, &vars, arg_base + 1);
+                        let hi = use_var(&mut builder, &vars, arg_base + 2);
+                        if arg_ty == Some(JitVarType::Float) {
+                            let clamped_lo = builder.ins().fmax(val, lo);
+                            let result = builder.ins().fmin(clamped_lo, hi);
+                            var_types.insert(inst.a as u32, JitVarType::Float);
+                            def_var(&mut builder, &vars, inst.a, result);
+                        } else {
+                            let clamped_lo = builder.ins().smax(val, lo);
+                            let result = builder.ins().smin(clamped_lo, hi);
+                            var_types.insert(inst.a as u32, JitVarType::Int);
+                            def_var(&mut builder, &vars, inst.a, result);
+                        }
+                    }
+
+                    // -------------------------------------------------------
+                    // 68 / 96 / 97: Debug / Eprint / Eprintln — same as print for now
+                    // -------------------------------------------------------
+                    68 | 96 | 97 => {
+                        let arg_ty = var_types.get(&(arg_base as u32)).copied();
+                        match arg_ty {
+                            Some(JitVarType::Str) => {
+                                let v = use_var(&mut builder, &vars, arg_base);
+                                builder.ins().call(intrinsic_print_str_ref, &[v]);
+                            }
+                            Some(JitVarType::Float) => {
+                                let v = use_var(&mut builder, &vars, arg_base);
+                                builder.ins().call(intrinsic_print_float_ref, &[v]);
+                            }
+                            _ => {
+                                let v = use_var(&mut builder, &vars, arg_base);
+                                builder.ins().call(intrinsic_print_int_ref, &[v]);
+                            }
+                        }
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        var_types.insert(inst.a as u32, JitVarType::Int);
+                        def_var(&mut builder, &vars, inst.a, zero);
+                    }
+
+                    // -------------------------------------------------------
+                    // 85: Exit — trap to terminate
+                    // -------------------------------------------------------
+                    85 => {
+                        builder
+                            .ins()
+                            .trap(cranelift_codegen::ir::TrapCode::unwrap_user(3));
+                        terminated = true;
+                    }
+
+                    // -------------------------------------------------------
+                    // 123: Log2 — runtime helper
+                    // -------------------------------------------------------
+                    123 => {
+                        let v = use_var(&mut builder, &vars, arg_base);
+                        let fv = if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Float) {
+                            v
+                        } else {
+                            builder.ins().fcvt_from_sint(types::F64, v)
+                        };
+                        let call = builder.ins().call(intrinsic_log2_ref, &[fv]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Float);
+                        def_var(&mut builder, &vars, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 124: Log10 — runtime helper
+                    // -------------------------------------------------------
+                    124 => {
+                        let v = use_var(&mut builder, &vars, arg_base);
+                        let fv = if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Float) {
+                            v
+                        } else {
+                            builder.ins().fcvt_from_sint(types::F64, v)
+                        };
+                        let call = builder.ins().call(intrinsic_log10_ref, &[fv]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Float);
+                        def_var(&mut builder, &vars, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 125: IsNan — pure Cranelift IR
+                    // fcmp Unordered(v, v) — NaN is unordered with itself
+                    // -------------------------------------------------------
+                    125 => {
+                        if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Float) {
+                            let v = use_var(&mut builder, &vars, arg_base);
+                            let is_nan = builder.ins().fcmp(FloatCC::Unordered, v, v);
+                            let result = builder.ins().uextend(types::I64, is_nan);
+                            var_types.insert(inst.a as u32, JitVarType::Int);
+                            def_var(&mut builder, &vars, inst.a, result);
+                        } else {
+                            // Integers are never NaN
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            var_types.insert(inst.a as u32, JitVarType::Int);
+                            def_var(&mut builder, &vars, inst.a, zero);
+                        }
+                    }
+
+                    // -------------------------------------------------------
+                    // 126: IsInfinite — pure Cranelift IR
+                    // fabs(v) == +inf
+                    // -------------------------------------------------------
+                    126 => {
+                        if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Float) {
+                            let v = use_var(&mut builder, &vars, arg_base);
+                            let abs_v = builder.ins().fabs(v);
+                            let inf = builder.ins().f64const(f64::INFINITY);
+                            let is_inf = builder.ins().fcmp(FloatCC::Equal, abs_v, inf);
+                            let result = builder.ins().uextend(types::I64, is_inf);
+                            var_types.insert(inst.a as u32, JitVarType::Int);
+                            def_var(&mut builder, &vars, inst.a, result);
+                        } else {
+                            // Integers are never infinite
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            var_types.insert(inst.a as u32, JitVarType::Int);
+                            def_var(&mut builder, &vars, inst.a, zero);
+                        }
+                    }
+
+                    // -------------------------------------------------------
+                    // 127: MathPi — f64const(π)
+                    // -------------------------------------------------------
+                    127 => {
+                        let pi = builder.ins().f64const(std::f64::consts::PI);
+                        var_types.insert(inst.a as u32, JitVarType::Float);
+                        def_var(&mut builder, &vars, inst.a, pi);
+                    }
+
+                    // -------------------------------------------------------
+                    // 128: MathE — f64const(e)
+                    // -------------------------------------------------------
+                    128 => {
+                        let e = builder.ins().f64const(std::f64::consts::E);
+                        var_types.insert(inst.a as u32, JitVarType::Float);
+                        def_var(&mut builder, &vars, inst.a, e);
+                    }
+
+                    // -------------------------------------------------------
+                    // Unsupported intrinsic — return 0 stub
+                    // -------------------------------------------------------
                     _ => {
-                        // Unsupported intrinsic - return 0 for now
-                        // TODO: Implement more intrinsics or fall back to interpreter
                         let zero = builder.ins().iconst(types::I64, 0);
                         var_types.insert(inst.a as u32, JitVarType::Int);
                         def_var(&mut builder, &vars, inst.a, zero);
@@ -1418,4 +2139,236 @@ fn identify_call_name_registers(cell: &LirCell) -> std::collections::HashSet<u16
     }
 
     result
+}
+
+/// Result of concat chain analysis: identifies chains of string Add/Concat
+/// instructions that can be replaced with a single `jit_rt_string_concat_multi`
+/// call.
+struct ConcatChains {
+    /// Maps the PC of the final instruction in a chain to the ordered list of
+    /// leaf register indices (the original string operands to concatenate).
+    chains: HashMap<usize, Vec<u16>>,
+    /// PCs of intermediate Add/Concat instructions that are consumed by a chain
+    /// and should be skipped during lowering.
+    skip_pcs: std::collections::HashSet<usize>,
+}
+
+/// Pre-scan the instruction stream to find chains of string Add/Concat
+/// operations whose intermediate results are used only once (as the LHS of
+/// the next concatenation in the chain). Chains of 3+ leaf strings are
+/// candidates for batch concatenation via `jit_rt_string_concat_multi`.
+///
+/// A typical chain looks like:
+/// ```text
+///   pc0: r2 = r0 + r1     (string)
+///   pc1: r3 = r2 + r4     (r2 single-use → chain continues)
+///   pc2: r5 = r3 + r6     (r3 single-use → chain continues)
+/// ```
+/// This produces `chains[pc2] = [r0, r1, r4, r6]` and `skip_pcs = {pc0, pc1}`.
+///
+/// Only operates on straight-line code — jumps, branches, and control flow
+/// boundaries conservatively break chains.
+fn identify_concat_chains(
+    cell: &LirCell,
+    string_param_regs: &std::collections::HashSet<u16>,
+) -> ConcatChains {
+    use std::collections::{HashMap, HashSet};
+
+    let instructions = &cell.instructions;
+
+    // Step 1: Forward-propagate string types to identify which registers are
+    // strings. We start from LoadK(String) and string parameters, then
+    // propagate through Add/Concat/Move instructions.
+    let mut is_string_reg: HashSet<u16> = HashSet::new();
+    is_string_reg.extend(string_param_regs);
+
+    // Also seed from LoadK string constants.
+    for inst in instructions {
+        if inst.op == OpCode::LoadK {
+            let bx = inst.bx() as usize;
+            if matches!(cell.constants.get(bx), Some(Constant::String(_))) {
+                is_string_reg.insert(inst.a);
+            }
+        }
+    }
+
+    // Propagate: Add/Concat with a string operand produces a string.
+    // Move/MoveOwn from a string register produces a string.
+    // We iterate until stable (usually 1-2 passes for straight-line code).
+    loop {
+        let mut changed = false;
+        for inst in instructions {
+            match inst.op {
+                OpCode::Add | OpCode::Concat => {
+                    if (is_string_reg.contains(&inst.b) || is_string_reg.contains(&inst.c))
+                        && is_string_reg.insert(inst.a)
+                    {
+                        changed = true;
+                    }
+                }
+                OpCode::Move | OpCode::MoveOwn => {
+                    if is_string_reg.contains(&inst.b) && is_string_reg.insert(inst.a) {
+                        changed = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Step 2: Count how many times each register is used as a source operand
+    // (inst.b or inst.c) across ALL instructions. A register is "single-use"
+    // if it appears as a source exactly once.
+    let mut use_count: HashMap<u16, usize> = HashMap::new();
+    for inst in instructions {
+        match inst.op {
+            // Two-source opcodes: both b and c are used.
+            OpCode::Add
+            | OpCode::Concat
+            | OpCode::Sub
+            | OpCode::Mul
+            | OpCode::Div
+            | OpCode::Mod
+            | OpCode::Pow
+            | OpCode::FloorDiv
+            | OpCode::Eq
+            | OpCode::Lt
+            | OpCode::Le
+            | OpCode::BitOr
+            | OpCode::BitAnd
+            | OpCode::BitXor
+            | OpCode::Shl
+            | OpCode::Shr => {
+                *use_count.entry(inst.b).or_insert(0) += 1;
+                *use_count.entry(inst.c).or_insert(0) += 1;
+            }
+            // One-source opcodes: only b is used.
+            OpCode::Move
+            | OpCode::MoveOwn
+            | OpCode::Neg
+            | OpCode::BitNot
+            | OpCode::Test
+            | OpCode::Not => {
+                *use_count.entry(inst.b).or_insert(0) += 1;
+            }
+            // Return uses a.
+            OpCode::Return => {
+                *use_count.entry(inst.a).or_insert(0) += 1;
+            }
+            // Call uses base reg (a) plus arguments.
+            OpCode::Call | OpCode::TailCall => {
+                let base = inst.a;
+                let num_args = inst.b as usize;
+                *use_count.entry(base).or_insert(0) += 1;
+                for i in 0..num_args {
+                    *use_count.entry(base + 1 + i as u16).or_insert(0) += 1;
+                }
+            }
+            // Intrinsic uses base reg arguments.
+            OpCode::Intrinsic => {
+                let base = inst.a;
+                let num_args = inst.c as usize;
+                for i in 0..num_args {
+                    *use_count.entry(base + 1 + i as u16).or_insert(0) += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Step 3: Identify which PCs are string Add/Concat instructions and
+    // build a map from destination register to the PC that produced it.
+    let mut string_concat_pcs: HashSet<usize> = HashSet::new();
+    let mut producer_pc: HashMap<u16, usize> = HashMap::new();
+    for (pc, inst) in instructions.iter().enumerate() {
+        if matches!(inst.op, OpCode::Add | OpCode::Concat)
+            && (is_string_reg.contains(&inst.b) || is_string_reg.contains(&inst.c))
+        {
+            string_concat_pcs.insert(pc);
+            producer_pc.insert(inst.a, pc);
+        }
+    }
+
+    // Step 4: Build chains. For each string concat instruction, walk backward
+    // through LHS operands to find chains of single-use intermediates.
+    //
+    // We process instructions in reverse order so that we find the longest
+    // chain tail first and mark intermediates before shorter overlapping
+    // chains can claim them.
+    let mut intermediate_pcs: HashSet<usize> = HashSet::new();
+    let mut chains: HashMap<usize, Vec<u16>> = HashMap::new();
+
+    // Iterate in reverse so longer tails are found first.
+    for pc in (0..instructions.len()).rev() {
+        if !string_concat_pcs.contains(&pc) {
+            continue;
+        }
+        // Skip if this pc is already consumed as an intermediate of a
+        // longer chain found earlier (in reverse iteration).
+        if intermediate_pcs.contains(&pc) {
+            continue;
+        }
+
+        // Collect the chain by walking backward through LHS operands.
+        let mut leaves: Vec<u16> = Vec::new();
+        let mut current_pc = pc;
+        let mut found_intermediates: Vec<usize> = Vec::new();
+
+        loop {
+            let current_inst = &instructions[current_pc];
+            let lhs_reg = current_inst.b;
+            let rhs_reg = current_inst.c;
+
+            // RHS is always a leaf (rightmost operand at each step).
+            leaves.push(rhs_reg);
+
+            // Check if LHS is a single-use result of another string concat.
+            if let Some(&lhs_producer_pc) = producer_pc.get(&lhs_reg) {
+                let lhs_uses = use_count.get(&lhs_reg).copied().unwrap_or(0);
+                if lhs_uses == 1
+                    && string_concat_pcs.contains(&lhs_producer_pc)
+                    && lhs_producer_pc < current_pc
+                    && !intermediate_pcs.contains(&lhs_producer_pc)
+                {
+                    // LHS is a single-use intermediate — extend the chain.
+                    // Only mark current_pc as an intermediate if it's not
+                    // the chain tail (pc). The tail is where concat_multi
+                    // is emitted, so it must NOT be skipped.
+                    if current_pc != pc {
+                        found_intermediates.push(current_pc);
+                    }
+                    current_pc = lhs_producer_pc;
+                    continue;
+                }
+            }
+
+            // LHS is a leaf (not a single-use intermediate).
+            leaves.push(lhs_reg);
+            break;
+        }
+
+        // Leaves were collected in reverse order (RHS first, walking backward).
+        // Reverse to get left-to-right order.
+        leaves.reverse();
+
+        // Only optimize chains with 3+ leaf strings (2 leaves = regular concat).
+        if leaves.len() >= 3 {
+            // current_pc is the earliest instruction in the chain (the "head").
+            // pc is the last instruction (the "tail") that produces the final result.
+            // Mark the head and all intermediates as skipped.
+            intermediate_pcs.insert(current_pc);
+            for &ipc in &found_intermediates {
+                intermediate_pcs.insert(ipc);
+            }
+            chains.insert(pc, leaves);
+        }
+    }
+
+    ConcatChains {
+        chains,
+        skip_pcs: intermediate_pcs,
+    }
 }

@@ -1,6 +1,6 @@
 //! LIR module serialization to canonical JSON.
 
-use crate::compiler::lir::*;
+use lumen_core::lir::*;
 use serde_json;
 
 /// Emit a LIR module as canonical JSON.

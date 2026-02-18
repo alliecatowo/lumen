@@ -182,9 +182,16 @@ fn try_parse_float_fast(bytes: &[u8]) -> Option<Value> {
 /// Skip whitespace bytes starting at `pos`.
 #[inline(always)]
 fn skip_ws(bytes: &[u8], pos: &mut usize) {
-    while *pos < bytes.len() && bytes[*pos].is_ascii_whitespace() {
-        *pos += 1;
+    let len = bytes.len();
+    let mut p = *pos;
+    while p < len {
+        // JSON only has 4 whitespace characters: space, tab, newline, carriage return
+        match unsafe { *bytes.get_unchecked(p) } {
+            b' ' | b'\t' | b'\n' | b'\r' => p += 1,
+            _ => break,
+        }
     }
+    *pos = p;
 }
 
 /// Parse any JSON value at the current position.
@@ -339,98 +346,24 @@ fn parse_string(bytes: &[u8], pos: &mut usize) -> Option<Value> {
     let len = bytes.len();
 
     // Fast scan: look for end quote or backslash
-    let mut has_escapes = false;
     let mut end = start;
     while end < len {
-        match bytes[end] {
-            b'"' => break,
-            b'\\' => {
-                has_escapes = true;
-                end += 2; // skip escape + next char
-                if end > len {
-                    return None;
-                }
-            }
-            _ => end += 1,
+        let b = unsafe { *bytes.get_unchecked(end) };
+        if b == b'"' {
+            // No escapes — fast path
+            let s = unsafe { std::str::from_utf8_unchecked(&bytes[start..end]) };
+            *pos = end + 1; // skip closing "
+            return Some(Value::String(StringRef::Owned(s.to_string())));
         }
-    }
-
-    if end >= len {
-        return None;
-    }
-
-    if !has_escapes {
-        // No escapes — zero-copy path
-        let s = std::str::from_utf8(&bytes[start..end]).ok()?;
-        *pos = end + 1; // skip closing "
-        Some(Value::String(StringRef::Owned(s.to_string())))
-    } else {
-        // Has escapes — need to process them
-        let mut result = String::with_capacity(end - start);
-        let mut i = start;
-        while i < len {
-            match bytes[i] {
-                b'"' => {
-                    *pos = i + 1;
-                    return Some(Value::String(StringRef::Owned(result)));
-                }
-                b'\\' => {
-                    i += 1;
-                    if i >= len {
-                        return None;
-                    }
-                    match bytes[i] {
-                        b'"' => result.push('"'),
-                        b'\\' => result.push('\\'),
-                        b'/' => result.push('/'),
-                        b'b' => result.push('\u{0008}'),
-                        b'f' => result.push('\u{000C}'),
-                        b'n' => result.push('\n'),
-                        b'r' => result.push('\r'),
-                        b't' => result.push('\t'),
-                        b'u' => {
-                            // Unicode escape: \uXXXX
-                            if i + 4 >= len {
-                                return None;
-                            }
-                            let hex = std::str::from_utf8(&bytes[i + 1..i + 5]).ok()?;
-                            let code = u16::from_str_radix(hex, 16).ok()?;
-                            i += 4;
-
-                            // Handle surrogate pairs
-                            if (0xD800..=0xDBFF).contains(&code) {
-                                // High surrogate — expect \uXXXX low surrogate
-                                if i + 6 < len && bytes[i + 1] == b'\\' && bytes[i + 2] == b'u' {
-                                    let hex2 = std::str::from_utf8(&bytes[i + 3..i + 7]).ok()?;
-                                    let low = u16::from_str_radix(hex2, 16).ok()?;
-                                    if (0xDC00..=0xDFFF).contains(&low) {
-                                        let cp = 0x10000
-                                            + ((code as u32 - 0xD800) << 10)
-                                            + (low as u32 - 0xDC00);
-                                        result.push(char::from_u32(cp)?);
-                                        i += 6;
-                                    } else {
-                                        return None;
-                                    }
-                                } else {
-                                    return None;
-                                }
-                            } else {
-                                result.push(char::from_u32(code as u32)?);
-                            }
-                        }
-                        _ => return None,
-                    }
-                    i += 1;
-                }
-                other => {
-                    result.push(other as char);
-                    i += 1;
-                }
-            }
+        if b == b'\\' {
+            // Has escapes — process them
+            let raw = parse_string_raw_escaped(bytes, pos, start, end)?;
+            return Some(Value::String(StringRef::Owned(raw)));
         }
-        None // unterminated string
+        end += 1;
     }
+
+    None // unterminated string
 }
 
 /// Parse a JSON object and advance `pos`.
@@ -438,14 +371,17 @@ fn parse_object(bytes: &[u8], pos: &mut usize) -> Option<Value> {
     debug_assert_eq!(bytes[*pos], b'{');
     *pos += 1; // skip {
 
-    let mut map = BTreeMap::new();
     let len = bytes.len();
 
     skip_ws(bytes, pos);
     if *pos < len && bytes[*pos] == b'}' {
         *pos += 1;
-        return Some(Value::new_map(map));
+        return Some(Value::new_map(BTreeMap::new()));
     }
+
+    // Collect key-value pairs into a Vec, then build BTreeMap at the end.
+    // This avoids repeated BTreeMap rebalancing during insertion.
+    let mut pairs: Vec<(String, Value)> = Vec::with_capacity(8);
 
     loop {
         skip_ws(bytes, pos);
@@ -463,7 +399,7 @@ fn parse_object(bytes: &[u8], pos: &mut usize) -> Option<Value> {
         *pos += 1; // skip :
 
         let value = parse_value(bytes, pos)?;
-        map.insert(key, value);
+        pairs.push((key, value));
 
         skip_ws(bytes, pos);
         if *pos >= len {
@@ -476,6 +412,8 @@ fn parse_object(bytes: &[u8], pos: &mut usize) -> Option<Value> {
             }
             b'}' => {
                 *pos += 1;
+                // Build BTreeMap from collected pairs
+                let map: BTreeMap<String, Value> = pairs.into_iter().collect();
                 return Some(Value::new_map(map));
             }
             _ => return None,
@@ -494,93 +432,97 @@ fn parse_string_raw(bytes: &[u8], pos: &mut usize) -> Option<String> {
     let len = bytes.len();
 
     // Fast scan for end quote or backslash
-    let mut has_escapes = false;
     let mut end = start;
     while end < len {
-        match bytes[end] {
-            b'"' => break,
+        let b = unsafe { *bytes.get_unchecked(end) };
+        if b == b'"' {
+            // No escapes — fast path (most common for JSON keys)
+            // Safety: JSON keys are valid UTF-8 by spec
+            let s = unsafe { std::str::from_utf8_unchecked(&bytes[start..end]) };
+            *pos = end + 1;
+            return Some(s.to_string());
+        }
+        if b == b'\\' {
+            // Has escapes — use slow path
+            return parse_string_raw_escaped(bytes, pos, start, end);
+        }
+        end += 1;
+    }
+
+    None // unterminated string
+}
+
+/// Slow path for parse_string_raw when escapes are present.
+/// `start` is the position after the opening `"`, `esc_pos` is where the first `\` was found.
+fn parse_string_raw_escaped(
+    bytes: &[u8],
+    pos: &mut usize,
+    start: usize,
+    esc_pos: usize,
+) -> Option<String> {
+    let len = bytes.len();
+    let mut result = String::with_capacity(32);
+    // Copy the already-scanned non-escape prefix (bytes before the first backslash)
+    result.push_str(unsafe { std::str::from_utf8_unchecked(&bytes[start..esc_pos]) });
+    let mut i = esc_pos;
+    while i < len {
+        match bytes[i] {
+            b'"' => {
+                *pos = i + 1;
+                return Some(result);
+            }
             b'\\' => {
-                has_escapes = true;
-                end += 2;
-                if end > len {
+                i += 1;
+                if i >= len {
                     return None;
                 }
-            }
-            _ => end += 1,
-        }
-    }
-
-    if end >= len {
-        return None;
-    }
-
-    if !has_escapes {
-        let s = std::str::from_utf8(&bytes[start..end]).ok()?;
-        *pos = end + 1;
-        Some(s.to_string())
-    } else {
-        // Reuse the escape-processing logic from parse_string
-        let mut result = String::with_capacity(end - start);
-        let mut i = start;
-        while i < len {
-            match bytes[i] {
-                b'"' => {
-                    *pos = i + 1;
-                    return Some(result);
-                }
-                b'\\' => {
-                    i += 1;
-                    if i >= len {
-                        return None;
-                    }
-                    match bytes[i] {
-                        b'"' => result.push('"'),
-                        b'\\' => result.push('\\'),
-                        b'/' => result.push('/'),
-                        b'b' => result.push('\u{0008}'),
-                        b'f' => result.push('\u{000C}'),
-                        b'n' => result.push('\n'),
-                        b'r' => result.push('\r'),
-                        b't' => result.push('\t'),
-                        b'u' => {
-                            if i + 4 >= len {
-                                return None;
-                            }
-                            let hex = std::str::from_utf8(&bytes[i + 1..i + 5]).ok()?;
-                            let code = u16::from_str_radix(hex, 16).ok()?;
-                            i += 4;
-                            if (0xD800..=0xDBFF).contains(&code) {
-                                if i + 6 < len && bytes[i + 1] == b'\\' && bytes[i + 2] == b'u' {
-                                    let hex2 = std::str::from_utf8(&bytes[i + 3..i + 7]).ok()?;
-                                    let low = u16::from_str_radix(hex2, 16).ok()?;
-                                    if (0xDC00..=0xDFFF).contains(&low) {
-                                        let cp = 0x10000
-                                            + ((code as u32 - 0xD800) << 10)
-                                            + (low as u32 - 0xDC00);
-                                        result.push(char::from_u32(cp)?);
-                                        i += 6;
-                                    } else {
-                                        return None;
-                                    }
+                match bytes[i] {
+                    b'"' => result.push('"'),
+                    b'\\' => result.push('\\'),
+                    b'/' => result.push('/'),
+                    b'b' => result.push('\u{0008}'),
+                    b'f' => result.push('\u{000C}'),
+                    b'n' => result.push('\n'),
+                    b'r' => result.push('\r'),
+                    b't' => result.push('\t'),
+                    b'u' => {
+                        if i + 4 >= len {
+                            return None;
+                        }
+                        let hex = std::str::from_utf8(&bytes[i + 1..i + 5]).ok()?;
+                        let code = u16::from_str_radix(hex, 16).ok()?;
+                        i += 4;
+                        if (0xD800..=0xDBFF).contains(&code) {
+                            if i + 6 < len && bytes[i + 1] == b'\\' && bytes[i + 2] == b'u' {
+                                let hex2 = std::str::from_utf8(&bytes[i + 3..i + 7]).ok()?;
+                                let low = u16::from_str_radix(hex2, 16).ok()?;
+                                if (0xDC00..=0xDFFF).contains(&low) {
+                                    let cp = 0x10000
+                                        + ((code as u32 - 0xD800) << 10)
+                                        + (low as u32 - 0xDC00);
+                                    result.push(char::from_u32(cp)?);
+                                    i += 6;
                                 } else {
                                     return None;
                                 }
                             } else {
-                                result.push(char::from_u32(code as u32)?);
+                                return None;
                             }
+                        } else {
+                            result.push(char::from_u32(code as u32)?);
                         }
-                        _ => return None,
                     }
-                    i += 1;
+                    _ => return None,
                 }
-                other => {
-                    result.push(other as char);
-                    i += 1;
-                }
+                i += 1;
+            }
+            other => {
+                result.push(other as char);
+                i += 1;
             }
         }
-        None
     }
+    None
 }
 
 /// Parse a JSON array and advance `pos`.

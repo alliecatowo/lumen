@@ -25,7 +25,7 @@ use std::fmt;
 
 /// A serializable, deep-clonable representation of a runtime value.
 ///
-/// `SavedValue` mirrors the subset of [`crate::values::Value`] variants that
+/// `SavedValue` mirrors the subset of [`lumen_core::values::Value`] variants that
 /// are needed to faithfully snapshot registers across resumptions. The `Opaque`
 /// variant covers values that cannot be structurally serialized (closures,
 /// futures, process references, etc.) — they are stored as a debug description.

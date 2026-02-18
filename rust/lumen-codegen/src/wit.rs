@@ -18,7 +18,7 @@
 //!
 //! [Component Model]: https://github.com/WebAssembly/component-model
 
-use lumen_compiler::compiler::lir::{LirModule, LirType};
+use lumen_core::lir::{LirModule, LirType};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -301,7 +301,7 @@ fn sanitize_wit_ident(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lumen_compiler::compiler::lir::{
+    use lumen_core::lir::{
         Constant, Instruction, LirCell, LirField, LirModule, LirParam, LirTool, LirType,
         LirVariant, OpCode,
     };

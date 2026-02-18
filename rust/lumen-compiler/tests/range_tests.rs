@@ -19,7 +19,7 @@ fn assert_compiles(label: &str, source: &str) {
     }
 }
 
-fn assert_compiles_to_lir(label: &str, source: &str) -> lumen_compiler::compiler::lir::LirModule {
+fn assert_compiles_to_lir(label: &str, source: &str) -> lumen_core::lir::LirModule {
     let md = md(source);
     match compile(&md) {
         Ok(module) => module,
@@ -357,7 +357,7 @@ end
 
 #[test]
 fn range_exclusive_emits_intrinsic() {
-    use lumen_compiler::compiler::lir::{IntrinsicId, OpCode};
+    use lumen_core::lir::{IntrinsicId, OpCode};
 
     let module = assert_compiles_to_lir(
         "range_excl_lir",
@@ -379,7 +379,7 @@ end
 
 #[test]
 fn range_inclusive_emits_add() {
-    use lumen_compiler::compiler::lir::OpCode;
+    use lumen_core::lir::OpCode;
 
     let module = assert_compiles_to_lir(
         "range_incl_lir_add",

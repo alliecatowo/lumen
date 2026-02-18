@@ -19,7 +19,7 @@ fn assert_compiles(label: &str, source: &str) {
     }
 }
 
-fn assert_compiles_to_lir(label: &str, source: &str) -> lumen_compiler::compiler::lir::LirModule {
+fn assert_compiles_to_lir(label: &str, source: &str) -> lumen_core::lir::LirModule {
     let md = md(source);
     match compile(&md) {
         Ok(module) => module,
@@ -287,7 +287,7 @@ end
 
 #[test]
 fn in_emits_in_opcode() {
-    use lumen_compiler::compiler::lir::OpCode;
+    use lumen_core::lir::OpCode;
 
     let module = assert_compiles_to_lir(
         "in_opcode",

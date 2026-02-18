@@ -1,0 +1,15 @@
+[package]
+name = "lumen-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+num-bigint = { workspace = true, features = ["serde"] }
+num-traits = { workspace = true }
+strum = { version = "0.26", features = ["derive"] }
+strum_macros = "0.26"
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }

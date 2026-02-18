@@ -3,8 +3,8 @@
 use super::*;
 use std::collections::BTreeMap;
 
-use crate::values::Value;
 use crate::vm::VM;
+use lumen_core::values::Value;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 

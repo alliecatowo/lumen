@@ -42,9 +42,8 @@ pub fn emit_to_file(module: ObjectModule, path: &Path) -> Result<(), CodegenErro
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::CodegenContext;
-    use crate::lower::lower_module;
-    use lumen_compiler::compiler::lir::{Constant, Instruction, LirCell, LirModule, OpCode};
+    use crate::aot::compile_object_module;
+    use lumen_core::lir::{Constant, Instruction, LirCell, LirModule, OpCode};
 
     #[test]
     fn emit_simple_object() {
@@ -74,12 +73,10 @@ mod tests {
             handlers: Vec::new(),
         };
 
-        let mut ctx = CodegenContext::new().expect("host context");
-        let ptr_ty = ctx.pointer_type();
-        let _lowered =
-            lower_module(&mut ctx.module, &lir, ptr_ty).expect("lowering should succeed");
+        let ptr_ty = cranelift_codegen::ir::types::I64;
+        let module = compile_object_module(&lir, ptr_ty).expect("compilation should succeed");
 
-        let bytes = emit_object(ctx.module).expect("emission should succeed");
+        let bytes = emit_object(module).expect("emission should succeed");
         assert!(!bytes.is_empty(), "object file should not be empty");
         // ELF magic number (Linux) or Mach-O magic (macOS).
         // Just verify we got some bytes — the exact format depends on the host.

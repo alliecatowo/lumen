@@ -2,13 +2,13 @@
 //! and set/map comprehension lowering.
 
 use lumen_compiler::compiler::lexer::Lexer;
-use lumen_compiler::compiler::lir::{IntrinsicId, OpCode};
 use lumen_compiler::compiler::lower::lower;
 use lumen_compiler::compiler::parser::Parser;
 use lumen_compiler::compiler::resolve::resolve;
 use lumen_compiler::compiler::typecheck::typecheck;
+use lumen_core::lir::{IntrinsicId, OpCode};
 
-fn compile_to_lir(src: &str) -> lumen_compiler::compiler::lir::LirModule {
+fn compile_to_lir(src: &str) -> lumen_core::lir::LirModule {
     let mut lexer = Lexer::new(src, 1, 0);
     let tokens = lexer.tokenize().expect("lex failed");
     let mut parser = Parser::new(tokens);
@@ -416,10 +416,7 @@ fn list_comprehension_uses_newlist_and_append() {
 /// Helper: for every Intrinsic instruction, verify arg_start (c) == dest (a) + 1
 /// for single-arg intrinsics (ToInt, ToFloat, ToString).
 #[allow(dead_code)]
-fn assert_intrinsic_registers_contiguous(
-    module: &lumen_compiler::compiler::lir::LirModule,
-    cell_name: &str,
-) {
+fn assert_intrinsic_registers_contiguous(module: &lumen_core::lir::LirModule, cell_name: &str) {
     let cell = module
         .cells
         .iter()

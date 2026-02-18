@@ -1,13 +1,13 @@
 //! Tests for is/as expressions and implicit returns.
 
 use lumen_compiler::compiler::lexer::Lexer;
-use lumen_compiler::compiler::lir::{IntrinsicId, OpCode};
+use lumen_core::lir::{IntrinsicId, OpCode};
 use lumen_compiler::compiler::lower::lower;
 use lumen_compiler::compiler::parser::Parser;
 use lumen_compiler::compiler::resolve::resolve;
 use lumen_compiler::compiler::typecheck::typecheck;
 
-fn compile_to_lir(src: &str) -> lumen_compiler::compiler::lir::LirModule {
+fn compile_to_lir(src: &str) -> lumen_core::lir::LirModule {
     let mut lexer = Lexer::new(src, 1, 0);
     let tokens = lexer.tokenize().expect("lex failed");
     let mut parser = Parser::new(tokens);
@@ -59,7 +59,7 @@ fn is_type_loads_type_string_constant() {
     let has_int_str = module.cells[0]
         .constants
         .iter()
-        .any(|c| matches!(c, lumen_compiler::compiler::lir::Constant::String(s) if s == "Int"));
+        .any(|c| matches!(c, lumen_core::lir::Constant::String(s) if s == "Int"));
     assert!(
         has_int_str,
         "should have 'Int' string constant for is type check"

@@ -886,6 +886,7 @@ impl VM {
             OpCode::LoadNil => self.check_register_span(a, b + 1, cell_registers),
 
             OpCode::Move
+            | OpCode::MoveOwn
             | OpCode::Neg
             | OpCode::BitNot
             | OpCode::Not
@@ -1498,16 +1499,46 @@ impl VM {
                                 };
 
                                 if run_jit {
-                                    // Extract i64 args from registers
+                                    // Extract i64 args from registers.
+                                    // Int → raw i64, Float → f64 bits as i64,
+                                    // String → heap-clone as *mut String cast to i64
+                                    // (the JIT owns this pointer and will free it).
                                     let callee_cell = &module.cells[target_idx];
                                     let mut i64_args: Vec<i64> = Vec::with_capacity(nargs);
+                                    let mut string_arg_ptrs: Vec<i64> = Vec::new();
                                     let mut args_ok = true;
                                     for i in 0..nargs {
                                         match &self.registers[base + a + 1 + i] {
                                             Value::Int(v) => i64_args.push(*v),
+                                            Value::Float(v) => i64_args.push(v.to_bits() as i64),
+                                            Value::String(s) => {
+                                                // Allocate a heap String for the JIT.
+                                                // The JIT takes ownership via *mut String.
+                                                let owned = match s {
+                                                    StringRef::Owned(o) => o.clone(),
+                                                    StringRef::Interned(id) => module
+                                                        .strings
+                                                        .get(*id as usize)
+                                                        .cloned()
+                                                        .unwrap_or_default(),
+                                                };
+                                                let boxed = Box::new(owned);
+                                                let ptr = Box::into_raw(boxed) as i64;
+                                                string_arg_ptrs.push(ptr);
+                                                i64_args.push(ptr);
+                                            }
+                                            Value::Bool(b) => i64_args.push(if *b { 1 } else { 0 }),
                                             _ => {
                                                 args_ok = false;
                                                 break;
+                                            }
+                                        }
+                                    }
+                                    if !args_ok {
+                                        // Clean up any string args we already allocated.
+                                        for ptr in string_arg_ptrs {
+                                            unsafe {
+                                                let _ = Box::from_raw(ptr as *mut String);
                                             }
                                         }
                                     }
@@ -1515,8 +1546,18 @@ impl VM {
                                         if let Some(result) =
                                             self.jit_tier.execute(&callee_cell.name, &i64_args)
                                         {
-                                            // Store result in callee register (return position)
-                                            self.registers[callee_reg] = Value::Int(result);
+                                            // Check if the JIT function returns a string pointer.
+                                            if self.jit_tier.returns_string(&callee_cell.name) {
+                                                // Convert the raw *mut String pointer back to a
+                                                // Value::String. This consumes the heap allocation.
+                                                let s = unsafe {
+                                                    lumen_codegen::jit::jit_take_string(result)
+                                                };
+                                                self.registers[callee_reg] =
+                                                    Value::String(StringRef::Owned(s));
+                                            } else {
+                                                self.registers[callee_reg] = Value::Int(result);
+                                            }
                                             continue;
                                         }
                                     }
@@ -1547,8 +1588,18 @@ impl VM {
                                         (dst as u16) < cell_regs,
                                         "register OOB in fast call"
                                     );
+                                    // Move arg value instead of cloning — avoids Rc refcount
+                                    // bump on every call. The caller's arg slot (base+a+1+i) is
+                                    // set to Null. This is safe because:
+                                    // 1. Arg registers are evaluation temporaries that held the
+                                    //    computed arguments; they are not read after the call.
+                                    // 2. The return value is written to a separate register
+                                    //    (callee_reg = base+a, not base+a+1+i).
+                                    // 3. If a register IS reused after return (rare edge case),
+                                    //    it reads Null — a clear runtime error, not silent
+                                    //    corruption.
                                     self.registers[new_base + dst] =
-                                        self.registers[base + a + 1 + i].clone();
+                                        std::mem::take(&mut self.registers[base + a + 1 + i]);
                                 }
                             }
 
@@ -1687,6 +1738,16 @@ impl VM {
                     // register, causing use-after-move bugs whenever the compiler
                     // emitted code that referenced the source register again.
                     self.registers[base + a] = self.registers[base + b].clone();
+                }
+                OpCode::MoveOwn => {
+                    // Destructive move: source register becomes Null.
+                    // The compiler guarantees the source is dead after this
+                    // instruction, so it is safe to take ownership without
+                    // cloning.  For Rc/Arc-wrapped collections this avoids a
+                    // refcount bump, which in turn lets subsequent in-place
+                    // mutations (Arc::make_mut, push_str, etc.) skip the
+                    // copy-on-write path.
+                    self.registers[base + a] = std::mem::take(&mut self.registers[base + b]);
                 }
                 OpCode::NewList => {
                     let mut list = Vec::with_capacity(b);

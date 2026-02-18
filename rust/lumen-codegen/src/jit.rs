@@ -53,6 +53,26 @@ extern "C" fn jit_rt_string_concat(a: i64, b: i64) -> i64 {
     Box::into_raw(boxed) as i64
 }
 
+/// Concatenate two heap strings with in-place optimization.
+/// Takes ownership of `a`, appends `b` to it, and returns the modified `a`.
+/// The string `a` is consumed and must not be used afterward.
+/// The string `b` is borrowed (not consumed).
+///
+/// This is used for the pattern `a = a + b` where we can reuse `a`'s allocation.
+///
+/// # Safety
+/// Both `a` and `b` must be valid `*mut String` pointers.
+/// After this call, `a` is consumed and the returned pointer should be used instead.
+extern "C" fn jit_rt_string_concat_mut(a: i64, b: i64) -> i64 {
+    let mut boxed_a = unsafe { Box::from_raw(a as *mut String) };
+    let sb = unsafe { &*(b as *const String) };
+
+    // Append b to a in-place (will reallocate if needed, but may reuse capacity)
+    boxed_a.push_str(sb);
+
+    Box::into_raw(boxed_a) as i64
+}
+
 /// Clone a heap string. Input is `*mut String` as i64.
 /// Returns a new `*mut String` as i64.
 ///
@@ -124,6 +144,10 @@ pub unsafe fn jit_take_string(ptr: i64) -> String {
 fn register_string_helpers(builder: &mut JITBuilder) {
     builder.symbol("jit_rt_string_alloc", jit_rt_string_alloc as *const u8);
     builder.symbol("jit_rt_string_concat", jit_rt_string_concat as *const u8);
+    builder.symbol(
+        "jit_rt_string_concat_mut",
+        jit_rt_string_concat_mut as *const u8,
+    );
     builder.symbol("jit_rt_string_clone", jit_rt_string_clone as *const u8);
     builder.symbol("jit_rt_string_eq", jit_rt_string_eq as *const u8);
     builder.symbol("jit_rt_string_cmp", jit_rt_string_cmp as *const u8);
@@ -2079,5 +2103,47 @@ mod tests {
             .expect("execute");
         let s = unsafe { jit_take_string(raw) };
         assert_eq!(s, "hello world");
+    }
+
+    #[test]
+    fn jit_string_concat_in_place_optimization() {
+        // Test the in-place optimization for `a = a + b` pattern.
+        // This should use jit_rt_string_concat_mut which reuses the allocation
+        // from r0 instead of creating a new string.
+        //
+        // cell concat_test() -> String
+        //   r0 = ""
+        //   r1 = "x"
+        //   r0 = r0 + r1    (in-place)
+        //   r0 = r0 + r1    (in-place)
+        //   r0 = r0 + r1    (in-place)
+        //   return r0
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "concat_test".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 3,
+            constants: vec![
+                Constant::String("".to_string()),
+                Constant::String("x".to_string()),
+            ],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),     // r0 = ""
+                Instruction::abx(OpCode::LoadK, 1, 1),     // r1 = "x"
+                Instruction::abc(OpCode::Add, 0, 0, 1),    // r0 = r0 + r1 (in-place!)
+                Instruction::abc(OpCode::Add, 0, 0, 1),    // r0 = r0 + r1 (in-place!)
+                Instruction::abc(OpCode::Add, 0, 0, 1),    // r0 = r0 + r1 (in-place!)
+                Instruction::abc(OpCode::Return, 0, 1, 0), // return r0
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("concat_test").expect("execute");
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "xxx");
     }
 }

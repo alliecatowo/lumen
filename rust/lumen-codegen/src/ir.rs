@@ -15,7 +15,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::stackslot::{StackSlotData, StackSlotKind};
-use cranelift_codegen::ir::{types, AbiParam, InstBuilder, Type as ClifType};
+use cranelift_codegen::ir::{types, AbiParam, InstBuilder, MemFlags, Type as ClifType};
 use cranelift_codegen::Context;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{FuncId, Linkage, Module};
@@ -100,17 +100,11 @@ pub fn lower_cell<M: Module>(
         };
         sig.params.push(AbiParam::new(abi_ty));
     }
-    let ret_ty = cell
-        .returns
-        .as_deref()
-        .map(|s| lir_type_str_to_cl_type(s, pointer_type))
-        .unwrap_or(pointer_type);
-    let abi_ret = if ret_ty == types::I8 {
-        types::I64
-    } else {
-        ret_ty
-    };
-    sig.returns.push(AbiParam::new(abi_ret));
+    // Always return I64 at the ABI level. Float results are bitcast to I64
+    // before returning so that execute_jit_nullary/unary (which transmute the
+    // fn ptr to `fn(...) -> i64`) work uniformly. Callers that expect a float
+    // result use `f64::from_bits(result as u64)`.
+    sig.returns.push(AbiParam::new(types::I64));
 
     let mut func = cranelift_codegen::ir::Function::with_name_signature(
         cranelift_codegen::ir::UserFuncName::user(0, func_id.as_u32()),
@@ -352,21 +346,84 @@ pub fn lower_cell<M: Module>(
     // Track the semantic type of each variable for type-aware code generation.
     let mut var_types: HashMap<u32, JitVarType> = HashMap::new();
 
-    // Pre-scan constants to determine which registers receive float/string values.
+    // Pre-scan constants and intrinsics to determine which registers receive float/string values.
+    // This is a forward pass so that intrinsic type-propagation works correctly
+    // (e.g., abs(float_reg) -> float_reg, sqrt(int_reg) -> float_reg).
     let mut float_regs: std::collections::HashSet<u16> = std::collections::HashSet::new();
     let mut string_regs: std::collections::HashSet<u16> = std::collections::HashSet::new();
+    // Seed float_regs from parameters
+    for (i, p) in cell.params.iter().enumerate() {
+        if p.ty == "Float" {
+            float_regs.insert(i as u16);
+        }
+    }
     for inst in &cell.instructions {
-        if inst.op == OpCode::LoadK {
-            let bx = inst.bx() as usize;
-            match cell.constants.get(bx) {
-                Some(Constant::Float(_)) => {
+        match inst.op {
+            OpCode::LoadK => {
+                let bx = inst.bx() as usize;
+                match cell.constants.get(bx) {
+                    Some(Constant::Float(_)) => {
+                        float_regs.insert(inst.a);
+                    }
+                    Some(Constant::String(_)) => {
+                        string_regs.insert(inst.a);
+                    }
+                    _ => {}
+                }
+            }
+            OpCode::Intrinsic => {
+                let intrinsic_id = inst.b as u32;
+                let arg_base = inst.c;
+                match intrinsic_id {
+                    // Intrinsics that ALWAYS produce float results
+                    57 | 58 | 59 | 60 | 62 | 63 | 64 | 123 | 124 | 127 | 128 => {
+                        // Round, Ceil, Floor, Sqrt, Log, Sin, Cos, Log2, Log10, MathPi, MathE
+                        float_regs.insert(inst.a);
+                    }
+                    // Intrinsics that produce float when input is float
+                    26 | 27 | 28 | 65 => {
+                        // Abs, Min, Max, Clamp
+                        if float_regs.contains(&arg_base) {
+                            float_regs.insert(inst.a);
+                        }
+                    }
+                    // Pow: float if base is float
+                    61 => {
+                        if float_regs.contains(&arg_base) {
+                            float_regs.insert(inst.a);
+                        }
+                    }
+                    // ToFloat / ParseFloat always produce float
+                    12 | 122 => {
+                        float_regs.insert(inst.a);
+                    }
+                    _ => {}
+                }
+            }
+            // Arithmetic ops propagate float: if either operand is float, result is float
+            OpCode::Add
+            | OpCode::Sub
+            | OpCode::Mul
+            | OpCode::Div
+            | OpCode::FloorDiv
+            | OpCode::Mod
+            | OpCode::Pow
+            | OpCode::Neg => {
+                if inst.op == OpCode::Neg {
+                    if float_regs.contains(&inst.b) {
+                        float_regs.insert(inst.a);
+                    }
+                } else if float_regs.contains(&inst.b) || float_regs.contains(&inst.c) {
                     float_regs.insert(inst.a);
                 }
-                Some(Constant::String(_)) => {
-                    string_regs.insert(inst.a);
-                }
-                _ => {}
             }
+            // Move/MoveOwn propagate float type
+            OpCode::Move | OpCode::MoveOwn => {
+                if float_regs.contains(&inst.b) {
+                    float_regs.insert(inst.a);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -567,10 +624,17 @@ pub fn lower_cell<M: Module>(
                         let old = use_var(&mut builder, &vars, inst.a);
                         builder.ins().call(str_drop_ref, &[old]);
                     }
-                    // Clone the string so both source and dest own independent copies.
+                    // Clone via inline refcount increment (3 instructions,
+                    // no function call). JitString layout: refcount is at
+                    // offset 0. We load it, add 1, store back. The result
+                    // is the same pointer — both source and dest share the
+                    // underlying string data.
                     let src = use_var(&mut builder, &vars, inst.b);
-                    let call = builder.ins().call(str_clone_ref, &[src]);
-                    builder.inst_results(call)[0]
+                    let flags = MemFlags::new();
+                    let rc = builder.ins().load(types::I64, flags, src, 0);
+                    let rc_plus_one = builder.ins().iadd_imm(rc, 1);
+                    builder.ins().store(flags, rc_plus_one, src, 0);
+                    src
                 } else {
                     use_var(&mut builder, &vars, inst.b)
                 };
@@ -1076,7 +1140,14 @@ pub fn lower_cell<M: Module>(
                     }
                 }
                 let val = use_var(&mut builder, &vars, ret_reg);
-                builder.ins().return_(&[val]);
+                // ABI always returns I64. If the register holds a float, bitcast
+                // the F64 bits into I64 so the caller can reconstruct via from_bits.
+                let ret_val = if var_types.get(&(ret_reg as u32)) == Some(&JitVarType::Float) {
+                    builder.ins().bitcast(types::I64, MemFlags::new(), val)
+                } else {
+                    val
+                };
+                builder.ins().return_(&[ret_val]);
                 terminated = true;
             }
             OpCode::Halt => {
@@ -1816,6 +1887,44 @@ pub fn lower_cell<M: Module>(
                         let e = builder.ins().f64const(std::f64::consts::E);
                         var_types.insert(inst.a as u32, JitVarType::Float);
                         def_var(&mut builder, &vars, inst.a, e);
+                    }
+
+                    // -------------------------------------------------------
+                    // 106: StringConcat — convert arg to string
+                    // VM semantics: if arg is a List, join all elements;
+                    // otherwise convert the single value to a string.
+                    // The JIT doesn't support Lists yet, so we handle the
+                    // scalar case (Str passthrough, Int/Float → to_string).
+                    // -------------------------------------------------------
+                    106 => {
+                        let arg_ty = var_types.get(&(arg_base as u32)).copied();
+                        match arg_ty {
+                            Some(JitVarType::Str) => {
+                                // Already a string — clone it
+                                let v = use_var(&mut builder, &vars, arg_base);
+                                let flags = MemFlags::new();
+                                let rc = builder.ins().load(types::I64, flags, v, 0);
+                                let rc1 = builder.ins().iadd_imm(rc, 1);
+                                builder.ins().store(flags, rc1, v, 0);
+                                var_types.insert(inst.a as u32, JitVarType::Str);
+                                def_var(&mut builder, &vars, inst.a, v);
+                            }
+                            Some(JitVarType::Float) => {
+                                let v = use_var(&mut builder, &vars, arg_base);
+                                let call = builder.ins().call(intrinsic_to_string_float_ref, &[v]);
+                                let result = builder.inst_results(call)[0];
+                                var_types.insert(inst.a as u32, JitVarType::Str);
+                                def_var(&mut builder, &vars, inst.a, result);
+                            }
+                            _ => {
+                                // Int or unknown — convert to string
+                                let v = use_var(&mut builder, &vars, arg_base);
+                                let call = builder.ins().call(intrinsic_to_string_int_ref, &[v]);
+                                let result = builder.inst_results(call)[0];
+                                var_types.insert(inst.a as u32, JitVarType::Str);
+                                def_var(&mut builder, &vars, inst.a, result);
+                            }
+                        }
                     }
 
                     // -------------------------------------------------------

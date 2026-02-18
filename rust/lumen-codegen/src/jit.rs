@@ -2951,4 +2951,878 @@ mod tests {
         let result = engine.execute_jit_nullary("test_len").expect("execute");
         assert_eq!(result, 5); // len("hello") = 5
     }
+
+    // --- New intrinsic tests (math, conversion, type) ----------------------
+
+    #[test]
+    fn jit_intrinsic_abs_float() {
+        // cell test_abs_float() -> Float
+        //   r0 = -3.5  (via LoadK Float constant)
+        //   r1 = abs(r0)  # Intrinsic(1, 26, 0)
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_abs_float".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 2,
+            constants: vec![Constant::Float(-3.5)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 26, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result_bits = engine
+            .execute_jit_nullary("test_abs_float")
+            .expect("execute");
+        let result = f64::from_bits(result_bits as u64);
+        assert!(
+            (result - 3.5).abs() < 1e-10,
+            "abs(-3.5) should be 3.5, got {result}"
+        );
+    }
+
+    #[test]
+    fn jit_intrinsic_min_int() {
+        // cell test_min() -> Int
+        //   r0 = 10
+        //   r1 = 3
+        //   r2 = min(r0, r1)  # Intrinsic(2, 27, 0) — args at r0, r1
+        //   return r2
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_min".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadInt, 0, 10),
+                Instruction::abx(OpCode::LoadInt, 1, 3),
+                Instruction::abc(OpCode::Intrinsic, 2, 27, 0),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result = engine.execute_jit_nullary("test_min").expect("execute");
+        assert_eq!(result, 3, "min(10, 3) = 3");
+    }
+
+    #[test]
+    fn jit_intrinsic_max_int() {
+        // cell test_max() -> Int
+        //   r0 = 10
+        //   r1 = 3
+        //   r2 = max(r0, r1)  # Intrinsic(2, 28, 0)
+        //   return r2
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_max".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadInt, 0, 10),
+                Instruction::abx(OpCode::LoadInt, 1, 3),
+                Instruction::abc(OpCode::Intrinsic, 2, 28, 0),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result = engine.execute_jit_nullary("test_max").expect("execute");
+        assert_eq!(result, 10, "max(10, 3) = 10");
+    }
+
+    #[test]
+    fn jit_intrinsic_sqrt_float() {
+        // cell test_sqrt() -> Float
+        //   r0 = 9.0
+        //   r1 = sqrt(r0)  # Intrinsic(1, 60, 0)
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_sqrt".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 2,
+            constants: vec![Constant::Float(9.0)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 60, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result_bits = engine.execute_jit_nullary("test_sqrt").expect("execute");
+        let result = f64::from_bits(result_bits as u64);
+        assert!(
+            (result - 3.0).abs() < 1e-10,
+            "sqrt(9.0) should be 3.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn jit_intrinsic_floor_float() {
+        // cell test_floor() -> Float
+        //   r0 = 3.7
+        //   r1 = floor(r0)  # Intrinsic(1, 59, 0)
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_floor".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 2,
+            constants: vec![Constant::Float(3.7)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 59, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result_bits = engine.execute_jit_nullary("test_floor").expect("execute");
+        let result = f64::from_bits(result_bits as u64);
+        assert!(
+            (result - 3.0).abs() < 1e-10,
+            "floor(3.7) should be 3.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn jit_intrinsic_ceil_float() {
+        // cell test_ceil() -> Float
+        //   r0 = 3.2
+        //   r1 = ceil(r0)  # Intrinsic(1, 58, 0)
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_ceil".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 2,
+            constants: vec![Constant::Float(3.2)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 58, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result_bits = engine.execute_jit_nullary("test_ceil").expect("execute");
+        let result = f64::from_bits(result_bits as u64);
+        assert!(
+            (result - 4.0).abs() < 1e-10,
+            "ceil(3.2) should be 4.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn jit_intrinsic_round_float() {
+        // cell test_round() -> Float
+        //   r0 = 3.5
+        //   r1 = round(r0)  # Intrinsic(1, 57, 0)
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_round".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 2,
+            constants: vec![Constant::Float(3.5)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 57, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result_bits = engine.execute_jit_nullary("test_round").expect("execute");
+        let result = f64::from_bits(result_bits as u64);
+        // Cranelift's `nearest` uses banker's rounding (round half to even)
+        // 3.5 rounds to 4.0 (nearest even)
+        assert!(
+            (result - 4.0).abs() < 1e-10,
+            "round(3.5) should be 4.0 (banker's rounding), got {result}"
+        );
+    }
+
+    #[test]
+    fn jit_intrinsic_sin() {
+        // cell test_sin() -> Float
+        //   r0 = 0.0
+        //   r1 = sin(r0)  # Intrinsic(1, 63, 0)
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_sin".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 2,
+            constants: vec![Constant::Float(0.0)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 63, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result_bits = engine.execute_jit_nullary("test_sin").expect("execute");
+        let result = f64::from_bits(result_bits as u64);
+        assert!(
+            (result - 0.0).abs() < 1e-10,
+            "sin(0.0) should be 0.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn jit_intrinsic_cos() {
+        // cell test_cos() -> Float
+        //   r0 = 0.0
+        //   r1 = cos(r0)  # Intrinsic(1, 64, 0)
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_cos".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 2,
+            constants: vec![Constant::Float(0.0)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 64, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result_bits = engine.execute_jit_nullary("test_cos").expect("execute");
+        let result = f64::from_bits(result_bits as u64);
+        assert!(
+            (result - 1.0).abs() < 1e-10,
+            "cos(0.0) should be 1.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn jit_intrinsic_log() {
+        // cell test_log() -> Float
+        //   r0 = 1.0
+        //   r1 = log(r0)  # Intrinsic(1, 62, 0) — ln(1.0) = 0.0
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_log".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 2,
+            constants: vec![Constant::Float(1.0)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 62, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result_bits = engine.execute_jit_nullary("test_log").expect("execute");
+        let result = f64::from_bits(result_bits as u64);
+        assert!(
+            (result - 0.0).abs() < 1e-10,
+            "log(1.0) should be 0.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn jit_intrinsic_pow_int() {
+        // cell test_pow() -> Int
+        //   r0 = 2
+        //   r1 = 10
+        //   r2 = pow(r0, r1)  # Intrinsic(2, 61, 0) — 2^10 = 1024
+        //   return r2
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_pow".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadInt, 0, 2),
+                Instruction::abx(OpCode::LoadInt, 1, 10),
+                Instruction::abc(OpCode::Intrinsic, 2, 61, 0),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result = engine.execute_jit_nullary("test_pow").expect("execute");
+        assert_eq!(result, 1024, "pow(2, 10) = 1024");
+    }
+
+    #[test]
+    fn jit_intrinsic_pow_float() {
+        // cell test_pow_f() -> Float
+        //   r0 = 2.0
+        //   r1 = 3.0
+        //   r2 = pow(r0, r1)  # Intrinsic(2, 61, 0) — 2.0^3.0 = 8.0
+        //   return r2
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_pow_f".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 3,
+            constants: vec![Constant::Float(2.0), Constant::Float(3.0)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Intrinsic, 2, 61, 0),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result_bits = engine.execute_jit_nullary("test_pow_f").expect("execute");
+        let result = f64::from_bits(result_bits as u64);
+        assert!(
+            (result - 8.0).abs() < 1e-10,
+            "pow(2.0, 3.0) should be 8.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn jit_intrinsic_clamp_int() {
+        // cell test_clamp() -> Int
+        //   r0 = 15       (value)
+        //   r1 = 0        (lo)
+        //   r2 = 10       (hi)
+        //   r3 = clamp(r0, r1, r2)  # Intrinsic(3, 65, 0) — clamp(15, 0, 10) = 10
+        //   return r3
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_clamp".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 4,
+            constants: vec![],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadInt, 0, 15),
+                Instruction::abx(OpCode::LoadInt, 1, 0),
+                Instruction::abx(OpCode::LoadInt, 2, 10),
+                Instruction::abc(OpCode::Intrinsic, 3, 65, 0),
+                Instruction::abc(OpCode::Return, 3, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result = engine.execute_jit_nullary("test_clamp").expect("execute");
+        assert_eq!(result, 10, "clamp(15, 0, 10) = 10");
+    }
+
+    #[test]
+    fn jit_intrinsic_math_pi() {
+        // cell test_pi() -> Float
+        //   r0 = math_pi()  # Intrinsic(0, 127, 0) — no args needed
+        //   return r0
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_pi".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 1,
+            constants: vec![],
+            instructions: vec![
+                Instruction::abc(OpCode::Intrinsic, 0, 127, 0),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result_bits = engine.execute_jit_nullary("test_pi").expect("execute");
+        let result = f64::from_bits(result_bits as u64);
+        assert!(
+            (result - std::f64::consts::PI).abs() < 1e-10,
+            "math_pi should be π, got {result}"
+        );
+    }
+
+    #[test]
+    fn jit_intrinsic_math_e() {
+        // cell test_e() -> Float
+        //   r0 = math_e()  # Intrinsic(0, 128, 0)
+        //   return r0
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_e".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 1,
+            constants: vec![],
+            instructions: vec![
+                Instruction::abc(OpCode::Intrinsic, 0, 128, 0),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result_bits = engine.execute_jit_nullary("test_e").expect("execute");
+        let result = f64::from_bits(result_bits as u64);
+        assert!(
+            (result - std::f64::consts::E).abs() < 1e-10,
+            "math_e should be e, got {result}"
+        );
+    }
+
+    #[test]
+    fn jit_intrinsic_is_nan() {
+        // cell test_is_nan() -> Int
+        //   r0 = NaN (0.0/0.0 via constants)
+        //   r1 = is_nan(r0)  # Intrinsic(1, 125, 0)
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_is_nan".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 2,
+            constants: vec![Constant::Float(f64::NAN)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 125, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result = engine.execute_jit_nullary("test_is_nan").expect("execute");
+        assert_eq!(result, 1, "is_nan(NaN) should be 1 (true)");
+    }
+
+    #[test]
+    fn jit_intrinsic_is_nan_false() {
+        // cell test_not_nan() -> Int
+        //   r0 = 42.0
+        //   r1 = is_nan(r0)  # Intrinsic(1, 125, 0)
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_not_nan".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 2,
+            constants: vec![Constant::Float(42.0)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 125, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result = engine.execute_jit_nullary("test_not_nan").expect("execute");
+        assert_eq!(result, 0, "is_nan(42.0) should be 0 (false)");
+    }
+
+    #[test]
+    fn jit_intrinsic_is_infinite() {
+        // cell test_is_inf() -> Int
+        //   r0 = +inf
+        //   r1 = is_infinite(r0)  # Intrinsic(1, 126, 0)
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_is_inf".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 2,
+            constants: vec![Constant::Float(f64::INFINITY)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 126, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result = engine.execute_jit_nullary("test_is_inf").expect("execute");
+        assert_eq!(result, 1, "is_infinite(+inf) should be 1 (true)");
+    }
+
+    #[test]
+    fn jit_intrinsic_is_infinite_neg() {
+        // cell test_is_neg_inf() -> Int
+        //   r0 = -inf
+        //   r1 = is_infinite(r0)  # Intrinsic(1, 126, 0)
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_is_neg_inf".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 2,
+            constants: vec![Constant::Float(f64::NEG_INFINITY)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 126, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result = engine
+            .execute_jit_nullary("test_is_neg_inf")
+            .expect("execute");
+        assert_eq!(result, 1, "is_infinite(-inf) should be 1 (true)");
+    }
+
+    #[test]
+    fn jit_intrinsic_to_int_from_float() {
+        // cell test_to_int() -> Int
+        //   r0 = 3.7
+        //   r1 = to_int(r0)  # Intrinsic(1, 11, 0) — truncates to 3
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_to_int".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 2,
+            constants: vec![Constant::Float(3.7)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 11, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result = engine.execute_jit_nullary("test_to_int").expect("execute");
+        assert_eq!(result, 3, "to_int(3.7) should be 3");
+    }
+
+    #[test]
+    fn jit_intrinsic_to_float_from_int() {
+        // cell test_to_float() -> Float
+        //   r0 = 42
+        //   r1 = to_float(r0)  # Intrinsic(1, 12, 0)
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_to_float".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 2,
+            constants: vec![],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadInt, 0, 42),
+                Instruction::abc(OpCode::Intrinsic, 1, 12, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result_bits = engine
+            .execute_jit_nullary("test_to_float")
+            .expect("execute");
+        let result = f64::from_bits(result_bits as u64);
+        assert!(
+            (result - 42.0).abs() < 1e-10,
+            "to_float(42) should be 42.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn jit_intrinsic_log2() {
+        // cell test_log2() -> Float
+        //   r0 = 8.0
+        //   r1 = log2(r0)  # Intrinsic(1, 123, 0) — log2(8) = 3.0
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_log2".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 2,
+            constants: vec![Constant::Float(8.0)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 123, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result_bits = engine.execute_jit_nullary("test_log2").expect("execute");
+        let result = f64::from_bits(result_bits as u64);
+        assert!(
+            (result - 3.0).abs() < 1e-10,
+            "log2(8.0) should be 3.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn jit_intrinsic_log10() {
+        // cell test_log10() -> Float
+        //   r0 = 100.0
+        //   r1 = log10(r0)  # Intrinsic(1, 124, 0) — log10(100) = 2.0
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_log10".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 2,
+            constants: vec![Constant::Float(100.0)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 124, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result_bits = engine.execute_jit_nullary("test_log10").expect("execute");
+        let result = f64::from_bits(result_bits as u64);
+        assert!(
+            (result - 2.0).abs() < 1e-10,
+            "log10(100.0) should be 2.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn jit_intrinsic_is_empty_string() {
+        // cell test_is_empty() -> Int
+        //   r0 = ""
+        //   r1 = is_empty(r0)  # Intrinsic(1, 50, 0)
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_is_empty".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 2,
+            constants: vec![Constant::String("".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 50, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result = engine
+            .execute_jit_nullary("test_is_empty")
+            .expect("execute");
+        assert_eq!(result, 1, "is_empty(\"\") should be 1 (true)");
+    }
+
+    #[test]
+    fn jit_intrinsic_is_empty_nonempty() {
+        // cell test_not_empty() -> Int
+        //   r0 = "hi"
+        //   r1 = is_empty(r0)  # Intrinsic(1, 50, 0)
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_not_empty".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 2,
+            constants: vec![Constant::String("hi".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 50, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result = engine
+            .execute_jit_nullary("test_not_empty")
+            .expect("execute");
+        assert_eq!(result, 0, "is_empty(\"hi\") should be 0 (false)");
+    }
+
+    #[test]
+    fn jit_intrinsic_string_concat_str() {
+        // cell test_str_concat() -> String
+        //   r0 = "hello"
+        //   r1 = string_concat(r0)  # Intrinsic(1, 106, 0) — passthrough
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_str_concat".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 2,
+            constants: vec![Constant::String("hello".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 106, 0), // string_concat(r0)
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine
+            .execute_jit_nullary("test_str_concat")
+            .expect("execute");
+        assert_ne!(raw, 0, "string pointer should be non-null");
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "hello", "string_concat(\"hello\") should be \"hello\"");
+    }
+
+    #[test]
+    fn jit_intrinsic_string_concat_int() {
+        // cell test_str_concat_int() -> String
+        //   r0 = 42
+        //   r1 = string_concat(r0)  # Intrinsic(1, 106, 0) — int to string
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_str_concat_int".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 2,
+            constants: vec![],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadInt, 0, 42),
+                Instruction::abc(OpCode::Intrinsic, 1, 106, 0), // string_concat(42)
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine
+            .execute_jit_nullary("test_str_concat_int")
+            .expect("execute");
+        assert_ne!(raw, 0, "string pointer should be non-null");
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "42", "string_concat(42) should be \"42\"");
+    }
+
+    #[test]
+    fn jit_intrinsic_string_concat_float() {
+        // cell test_str_concat_float() -> String
+        //   r0 = 3.14
+        //   r1 = string_concat(r0)  # Intrinsic(1, 106, 0) — float to string
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_str_concat_float".to_string(),
+            params: Vec::new(),
+            returns: Some("String".to_string()),
+            registers: 2,
+            constants: vec![Constant::Float(3.14)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 106, 0), // string_concat(3.14)
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine
+            .execute_jit_nullary("test_str_concat_float")
+            .expect("execute");
+        assert_ne!(raw, 0, "string pointer should be non-null");
+        let s = unsafe { jit_take_string(raw) };
+        assert_eq!(s, "3.14", "string_concat(3.14) should be \"3.14\"");
+    }
 }

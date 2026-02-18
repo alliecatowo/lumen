@@ -907,6 +907,35 @@ pub fn lower_cell<M: Module>(
                 }
             }
 
+            // Record field access
+            OpCode::GetField => {
+                // A = B.field[C]
+                // B is the record register (pointer to RecordValue)
+                // C is the field name index in the string table
+                let record_ptr = use_var(&mut builder, &vars, inst.b);
+                let field_idx = builder.ins().iconst(types::I64, inst.c as i64);
+
+                // For now, stub with null - full implementation requires runtime helpers
+                let zero = builder.ins().iconst(types::I64, 0);
+                var_types.insert(inst.a as u32, JitVarType::Int);
+                def_var(&mut builder, &vars, inst.a, zero);
+
+                // Suppress unused variable warnings
+                let _ = record_ptr;
+                let _ = field_idx;
+            }
+            OpCode::SetField => {
+                // A.field[B] = C
+                // A is the record register (pointer to RecordValue)
+                // B is the field name index in the string table
+                // C is the value to set
+                let _record_ptr = use_var(&mut builder, &vars, inst.a);
+                let _field_idx = builder.ins().iconst(types::I64, inst.b as i64);
+                let _value = use_var(&mut builder, &vars, inst.c);
+
+                // For now, stub - full implementation requires runtime helpers
+            }
+
             // Legacy loop opcodes
             OpCode::Loop | OpCode::ForPrep | OpCode::ForLoop | OpCode::ForIn => {}
 

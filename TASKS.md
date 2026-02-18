@@ -1,23 +1,42 @@
-# Lumen Implementation Tasks — Nuclear Option Phase
+# Lumen Implementation Tasks — Production Hardening & Performance
 
-## Phase 4: 64-bit Migration (Priority: High)
-- [x] T600: Update `lumen-core/src/lir.rs`: Promote `Instruction` to 64-bit.
-- [ ] T601: Update `lumen-compiler/src/compiler/lower.rs` to emit 64-bit instructions.
-- [ ] T602: Update `lumen-codegen/src/ir.rs` to lower 64-bit instructions.
-- [ ] T603: Update `lumen-rt/src/vm/mod.rs` to execute 64-bit instructions.
-- [ ] T604: Verify: `cargo check --workspace` and `cargo test --workspace`.
-- [ ] T605: [compiler] Update `RegAlloc` to support `u16` register indices.
+## Phase 7: Cranelift JIT World-Class (Priority: Critical)
+- [ ] P701: Audit JIT opcode coverage — identify missing opcodes in `is_cell_jit_compilable`
+- [ ] P702: Implement missing JIT opcodes: `Intrinsic`, `GetField`, `SetField`, `GetIndex`, `SetIndex`, `NewList`, `NewRecord`
+- [ ] P703: Expand JIT arity limit from 3 → N arguments
+- [ ] P704: Implement OSR (On-Stack Replacement) for hot loops
+- [ ] P705: Add speculative type guards and deoptimization
+- [ ] P706: Profile-Guided Optimization (PGO) infrastructure
+- [ ] P707: JIT inline caching for property access
 
-## Phase 5: Deegen-style Stencils (Priority: High)
-- [ ] T610: Stencil Definition: Create `lumen-rt/src/stencils/impl.rs`.
-- [ ] T611: Stencil Extraction: Create `lumen-rt/build.rs`.
-- [ ] T612: Stencil Generator: Implement `StencilGenerator` in `lumen-rt`.
-- [ ] T613: Word-Stream Support: Implement multi-word instructions (e.g., `LoadConst64`).
-- [ ] T614: [vm] Implement Inline Cache (IC) slots in Word-Stream for `GetField`.
+## Phase 8: WASM World-Class (Priority: High)
+- [ ] P801: Implement WASM control flow: `block`, `loop`, `br`, `br_if`, `return`
+- [ ] P802: Add WASM linear memory and string support
+- [ ] P803: Implement WASM exception handling
+- [ ] P804: WASM SIMD support for numerical operations
+- [ ] P805: WASM bulk memory operations
+- [ ] P806: Cranelift WASM backend integration (replace hand-rolled)
 
-## Phase 6: Tooling & Polish (Priority: Low)
-- [ ] T620: Improve `run_all.sh` benchmark script.
-- [ ] T621: Implement DAP (Debug Adapter Protocol).
-- [ ] T622: Fix Markdown multi-line comments in LSP.
-- [ ] T623: [test] Stress tests for 65k register usage.
-- [ ] T624: [infra] CI check for stencil extraction correctness.
+## Phase 9: Performance & Benchmarks (Priority: High)
+- [ ] P901: Fix string concat benchmark — O(n²) → O(n) optimization
+- [ ] P902: Run all benchmarks and identify bottlenecks
+- [ ] P903: Implement escape analysis for stack allocation
+- [ ] P904: Optimize interpreter dispatch (direct threading or computed goto)
+- [ ] P905: Constant pool optimization — inline small constants
+- [ ] P906: Register allocator improvements
+
+## Phase 10: Codebase Hardening (Priority: Medium)
+- [ ] P1001: Audit all `todo!()`, `unimplemented!()`, `panic!()` — replace with proper error handling
+- [ ] P1002: Identify stub implementations and implement real functionality
+- [ ] P1003: Improve error messages with source location context
+- [ ] P1004: Add comprehensive logging/tracing throughout pipeline
+- [ ] P1005: Security audit — input validation, bounds checking
+- [ ] P1006: Documentation completeness audit
+
+## Phase 11: CI/CD & Tooling (Priority: Medium)
+- [ ] P1101: Ensure all GitHub Actions workflows pass
+- [ ] P1102: Add benchmark regression testing to CI
+- [ ] P1103: Improve `run_all.sh` script performance and reliability
+- [ ] P1104: Add code coverage reporting
+- [ ] P1105: Implement DAP (Debug Adapter Protocol)
+- [ ] P1106: Fix LSP markdown comment handling

@@ -1,9 +1,23 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "instructions": [
+    "AGENTS.md",
     "CLAUDE.md",
     "SPEC.md",
-    "docs/GRAMMAR.md"
+    "docs/GRAMMAR.md",
+    "rust/lumen-compiler/AGENTS.md",
+    "rust/lumen-rt/AGENTS.md",
+    "rust/lumen-cli/AGENTS.md"
+  ],
+  "skills": [
+    ".opencode/skills/compiler-pipeline/SKILL.md",
+    ".opencode/skills/vm-architecture/SKILL.md",
+    ".opencode/skills/lir-encoding/SKILL.md",
+    ".opencode/skills/lumen-syntax/SKILL.md",
+    ".opencode/skills/runtime-tools/SKILL.md",
+    ".opencode/skills/cli-commands/SKILL.md",
+    ".opencode/skills/testing-guide/SKILL.md",
+    ".opencode/skills/security-infra/SKILL.md"
   ],
   "permission": {
     "*": "allow",

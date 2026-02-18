@@ -5,7 +5,7 @@
 use lumen_core::values::{UnionValue, Value};
 use std::sync::Arc;
 
-const NAN_BOX_NULL: i64 = 0x7ff8_0000_0000_0001;
+const NAN_BOX_NULL: i64 = 0x7ff8_0000_0000_0000;
 
 /// Create a new union value (enum variant).
 /// `tag_ptr` and `tag_len` describe a UTF-8 string for the variant tag.
@@ -80,7 +80,10 @@ pub extern "C" fn jit_rt_union_is_variant(
 }
 
 /// Extract the payload from a union value.
-/// Returns a new `*mut Value` containing the payload (cloned).
+/// Returns a pointer to the payload `Value` via `Arc::into_raw`, avoiding both
+/// a deep clone and a `Box` heap allocation.  The caller effectively "owns" one
+/// `Arc` refcount — the pointed-to `Value` stays alive as long as this refcount
+/// is not reclaimed.
 /// Returns null (0) if the input is not a union.
 ///
 /// # Safety
@@ -93,7 +96,11 @@ pub extern "C" fn jit_rt_union_unbox(union_ptr: i64) -> i64 {
 
     let value = unsafe { &*(union_ptr as *const Value) };
     match value {
-        Value::Union(u) => Box::into_raw(Box::new((*u.payload).clone())) as i64,
+        Value::Union(u) => {
+            // Bump the Arc refcount (O(1)) and leak the raw pointer.
+            // This avoids cloning the Value and allocating a new Box.
+            Arc::into_raw(Arc::clone(&u.payload)) as i64
+        }
         _ => 0,
     }
 }

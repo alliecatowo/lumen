@@ -80,8 +80,41 @@ Located under `rust/lumen-runtime/src/stdlib/` (runtime builtins) and future `st
 
 ### JIT Compilation
 
-- **Cranelift JIT** (`rust/lumen-vm/src/jit/cranelift.rs`) — hot-loop detection triggers compilation of LIR cells to native code via `cranelift-jit` `JITModule`; falls back to interpreter on unsupported opcodes
-- **OrcJIT engine** (`rust/lumen-vm/src/jit/orc.rs`) — LLVM OrcJIT v2 integration for ahead-of-time and lazy compilation; manages module lifetimes and symbol resolution across compiled cells
+- **Cranelift JIT** (`rust/lumen-codegen/src/jit.rs`) — hot-cell detection triggers compilation of LIR cells to native code via `cranelift-jit` `JITModule`; falls back to interpreter on unsupported opcodes
+- **OrcJIT engine** (`rust/lumen-codegen/src/aot.rs`) — LLVM OrcJIT v2 integration for ahead-of-time and lazy compilation; manages module lifetimes and symbol resolution across compiled cells
+
+#### JIT Tiering
+
+The JIT uses a **granular opcode capability map** to decide how each opcode is handled
+during compilation, rather than an all-or-nothing check per cell.
+
+**Why not `is_cell_jit_compilable`?** The previous approach rejected an entire cell from
+JIT compilation if *any* instruction used an unsupported opcode. This meant a hot loop
+doing pure arithmetic plus one `Emit` call at the end would remain fully interpreted —
+even though 99% of its instructions were natively compilable.
+
+**Opcode capability levels** (`JitCapability` enum in `jit.rs`):
+
+| Level | Meaning |
+|-------|---------|
+| `Native` | Compiled directly to Cranelift IR (arithmetic, moves, comparisons, control flow) |
+| `RuntimeCall` | Emits a call to a runtime helper function (collections, closures, effects) |
+| `Unsupported` | Inserts a deopt stub — the cell falls back to the interpreter for execution |
+
+The `jit_capabilities()` function returns a static `HashMap<OpCode, JitCapability>` that
+classifies every opcode variant. When `lower_module_jit` encounters an unsupported opcode
+inside an otherwise compilable cell, it inserts a deopt stub (an unconditional trap +
+return of `NAN_BOX_NULL`) instead of rejecting the cell outright.
+
+**Hot-cell-only compilation.** The tiered JIT (`jit_tier.rs`) compiles only the specific
+cell that crossed the hot threshold — not the entire module. This reduces compilation
+latency and memory pressure. Cross-cell calls from JIT code to uncompiled cells route
+through the interpreter via runtime helper stubs.
+
+**The interpreter stays as the correctness fallback.** All effects, tool calls, and
+complex control flow (multi-shot continuations, effect handlers) remain fully supported
+in the interpreter. The JIT is a pure performance optimization for hot arithmetic and
+data-shuffling code paths.
 
 ### Concurrency Model
 

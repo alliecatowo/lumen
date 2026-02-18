@@ -1,20 +1,19 @@
-//! Optimized JSON parsing with fast paths for common cases.
+//! Optimized JSON parsing with single-pass recursive descent.
 //!
-//! Performance targets:
-//! - Small objects (<100 bytes): < 2μs
-//! - Medium arrays (20 numbers): < 5μs  
-//! - Large nested (1KB): < 20μs
+//! Performance strategy: parse JSON directly into Lumen `Value` in one pass,
+//! avoiding the double-conversion overhead of simd-json → OwnedValue → Value.
 //!
-//! Strategies:
-//! 1. Fast path for simple literals and small objects (zero-alloc where possible)
-//! 2. Hand-rolled integer parser (avoids str::parse overhead)
-//! 3. simd-json with OwnedValue for large inputs (single-pass, no double conversion)
-//! 4. Pre-allocated capacity hints for Vec/BTreeMap construction
+//! Fast paths for top-level scalars (integers, floats, bools, null, simple strings)
+//! avoid entering the recursive parser entirely. For structured JSON (objects, arrays),
+//! a hand-rolled recursive descent parser builds Lumen Values directly.
+//!
+//! Falls back to simd-json only when our parser cannot handle the input (e.g.,
+//! unusual numeric formats that our fast integer parser rejects).
 
 use crate::values::{StringRef, Value};
 use std::collections::BTreeMap;
 
-/// Fast-path JSON parsing with multiple optimization strategies.
+/// Main entry point: fast-path JSON parsing with multiple optimization tiers.
 pub fn parse_json_optimized(input: &str) -> Result<Value, String> {
     let bytes = input.as_bytes();
     let len = bytes.len();
@@ -25,65 +24,85 @@ pub fn parse_json_optimized(input: &str) -> Result<Value, String> {
     }
 
     // Find the first non-whitespace byte to dispatch on
-    let first = match bytes.iter().position(|b| !b.is_ascii_whitespace()) {
-        Some(pos) => bytes[pos],
+    let start = match bytes.iter().position(|b| !b.is_ascii_whitespace()) {
+        Some(pos) => pos,
         None => return Ok(Value::Null), // all whitespace
     };
+    let first = bytes[start];
 
-    // Fast path: bare literals (exact match, no trailing content check needed
-    // since JSON spec says top-level must be a single value)
+    // Fast path: bare literals (exact match for top-level scalars)
     match first {
-        b'n' if bytes.ends_with(b"null") && len <= 6 => return Ok(Value::Null),
-        b't' if bytes.ends_with(b"true") && len <= 6 => return Ok(Value::Bool(true)),
-        b'f' if bytes.ends_with(b"false") && len <= 7 => return Ok(Value::Bool(false)),
+        b'n' if bytes[start..].starts_with(b"null") => {
+            // Verify no trailing non-whitespace
+            if bytes[start + 4..].iter().all(|b| b.is_ascii_whitespace()) {
+                return Ok(Value::Null);
+            }
+        }
+        b't' if bytes[start..].starts_with(b"true") => {
+            if bytes[start + 4..].iter().all(|b| b.is_ascii_whitespace()) {
+                return Ok(Value::Bool(true));
+            }
+        }
+        b'f' if bytes[start..].starts_with(b"false") => {
+            if bytes[start + 5..].iter().all(|b| b.is_ascii_whitespace()) {
+                return Ok(Value::Bool(false));
+            }
+        }
         _ => {}
     }
 
-    // Fast path: integer (no decimal point, no exponent)
+    // Fast path: top-level integer
     if matches!(first, b'-' | b'0'..=b'9') {
         if let Some(val) = try_parse_integer_fast(bytes) {
             return Ok(val);
         }
-        // Could be a float, or an integer that overflowed i64 — try parsing as f64
+        // Could be a float, or an integer that overflowed i64
         if let Some(val) = try_parse_float_fast(bytes) {
             return Ok(val);
         }
     }
 
-    // Fast path: simple string (quoted, no escapes)
-    if first == b'"' && len >= 2 && bytes[len - 1] == b'"' {
-        let inner = &bytes[1..len - 1];
-        if !inner.iter().any(|&b| b == b'\\' || b == b'"') {
-            // SAFETY: input is &str so bytes are valid UTF-8; substring of valid
-            // UTF-8 that contains no multi-byte escape sequences is still valid.
-            if let Ok(s) = std::str::from_utf8(inner) {
-                return Ok(Value::String(StringRef::Owned(s.to_string())));
+    // Fast path: top-level simple string (no escapes)
+    if first == b'"' {
+        let inner = &bytes[start + 1..];
+        if let Some(end_quote) = inner.iter().position(|&b| b == b'"' || b == b'\\') {
+            if inner[end_quote] == b'"' {
+                // Check no trailing non-whitespace after closing quote
+                let after = start + 1 + end_quote + 1;
+                if bytes[after..].iter().all(|b| b.is_ascii_whitespace()) {
+                    if let Ok(s) = std::str::from_utf8(&inner[..end_quote]) {
+                        return Ok(Value::String(StringRef::Owned(s.to_string())));
+                    }
+                }
             }
         }
     }
 
-    // Fast path: small flat object with simple keys (common API responses)
-    if first == b'{' && len < 256 {
-        if let Some(val) = try_parse_small_object(bytes) {
-            return Ok(val);
+    // Recursive descent parser for all structured JSON
+    let mut pos = start;
+    match parse_value(bytes, &mut pos) {
+        Some(val) => {
+            // Verify we consumed everything (minus trailing whitespace)
+            while pos < len && bytes[pos].is_ascii_whitespace() {
+                pos += 1;
+            }
+            if pos == len {
+                Ok(val)
+            } else {
+                // Trailing garbage — fall back to simd-json for error reporting
+                parse_with_simd(input)
+            }
         }
+        None => parse_with_simd(input),
     }
-
-    // Fast path: array of simple values (numbers, strings, bools, null)
-    if first == b'[' && len < 4096 {
-        if let Some(val) = try_parse_simple_array(bytes) {
-            return Ok(val);
-        }
-    }
-
-    // Fall back to SIMD-accelerated parser
-    parse_with_simd(input)
 }
 
-/// Hand-rolled integer parser — avoids str::parse overhead for the common case.
-/// Handles optional leading whitespace, optional sign, up to 19 digits (i64 range).
-/// Returns None if the input contains non-integer characters (decimal point, exponent,
-/// trailing garbage).
+// ---------------------------------------------------------------------------
+// Top-level scalar fast paths
+// ---------------------------------------------------------------------------
+
+/// Hand-rolled integer parser for top-level integers.
+/// Avoids str::parse overhead. Handles optional sign, up to 19 digits (i64 range).
 #[inline]
 fn try_parse_integer_fast(bytes: &[u8]) -> Option<Value> {
     let mut i = 0;
@@ -105,17 +124,14 @@ fn try_parse_integer_fast(bytes: &[u8]) -> Option<Value> {
         }
     }
 
-    // Must start with a digit
     if !bytes[i].is_ascii_digit() {
         return None;
     }
 
-    // Accumulate digits
-    let mut val: u64 = 0;
     let digit_start = i;
+    let mut val: u64 = 0;
     while i < len && bytes[i].is_ascii_digit() {
         let d = (bytes[i] - b'0') as u64;
-        // Overflow check: 19 digits max for u64
         val = val.checked_mul(10)?.checked_add(d)?;
         i += 1;
     }
@@ -125,7 +141,7 @@ fn try_parse_integer_fast(bytes: &[u8]) -> Option<Value> {
         i += 1;
     }
 
-    // Must have consumed everything, no decimal point/exponent
+    // Must have consumed everything — no decimal point, exponent, or trailing chars
     if i != len {
         return None;
     }
@@ -136,7 +152,6 @@ fn try_parse_integer_fast(bytes: &[u8]) -> Option<Value> {
     }
 
     if negative {
-        // i64::MIN magnitude is 9223372036854775808, one more than i64::MAX
         if val > (i64::MAX as u64) + 1 {
             return None;
         }
@@ -152,305 +167,467 @@ fn try_parse_integer_fast(bytes: &[u8]) -> Option<Value> {
     }
 }
 
-/// Fast float parser — delegates to str::parse for the actual conversion.
-/// Handles both explicit floats (with `.` or `e`/`E`) and integer overflow
-/// cases (pure digits that exceeded i64 range).
+/// Fast float parser for top-level floats (or integer overflow to f64).
 #[inline]
 fn try_parse_float_fast(bytes: &[u8]) -> Option<Value> {
-    // All digits (with optional sign) are also valid float candidates
-    // when the integer parser overflows.
     let s = std::str::from_utf8(bytes).ok()?;
     let f = s.trim().parse::<f64>().ok()?;
     Some(Value::Float(f))
 }
 
-/// Try to parse small objects with simple structure quickly.
-/// Pattern: {"key1":"val1","key2":123,"key3":true}
-/// Handles only flat objects (no nested objects/arrays). Falls back to simd-json
-/// for anything complex.
-fn try_parse_small_object(bytes: &[u8]) -> Option<Value> {
-    let mut map = BTreeMap::new();
-    let len = bytes.len();
-    let mut i = 1; // Skip opening {
+// ---------------------------------------------------------------------------
+// Recursive descent JSON parser — builds Value directly in one pass
+// ---------------------------------------------------------------------------
 
-    loop {
-        // Skip whitespace
-        while i < len && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-
-        if i >= len {
-            return None;
-        }
-
-        // End of object?
-        if bytes[i] == b'}' {
-            return Some(Value::new_map(map));
-        }
-
-        // Skip comma
-        if bytes[i] == b',' {
-            i += 1;
-            while i < len && bytes[i].is_ascii_whitespace() {
-                i += 1;
-            }
-        }
-
-        // Parse key (must be quoted string)
-        if i >= len || bytes[i] != b'"' {
-            return None;
-        }
-        i += 1;
-
-        let key_start = i;
-        while i < len && bytes[i] != b'"' {
-            if bytes[i] == b'\\' {
-                return None; // No escape support in fast path
-            }
-            i += 1;
-        }
-
-        if i >= len {
-            return None;
-        }
-
-        let key = std::str::from_utf8(&bytes[key_start..i]).ok()?;
-        i += 1; // Skip closing "
-
-        // Skip whitespace and colon
-        while i < len && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i >= len || bytes[i] != b':' {
-            return None;
-        }
-        i += 1;
-        while i < len && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-
-        // Parse value
-        if i >= len {
-            return None;
-        }
-        let (value, consumed) = parse_simple_value(&bytes[i..])?;
-        map.insert(key.to_string(), value);
-        i += consumed;
+/// Skip whitespace bytes starting at `pos`.
+#[inline(always)]
+fn skip_ws(bytes: &[u8], pos: &mut usize) {
+    while *pos < bytes.len() && bytes[*pos].is_ascii_whitespace() {
+        *pos += 1;
     }
 }
 
-/// Parse a simple JSON value (no nesting, for fast path only).
-fn parse_simple_value(bytes: &[u8]) -> Option<(Value, usize)> {
-    if bytes.is_empty() {
+/// Parse any JSON value at the current position.
+/// Returns None if the input at `pos` is not valid JSON.
+fn parse_value(bytes: &[u8], pos: &mut usize) -> Option<Value> {
+    skip_ws(bytes, pos);
+    if *pos >= bytes.len() {
         return None;
     }
 
-    match bytes[0] {
-        b'n' if bytes.starts_with(b"null") => Some((Value::Null, 4)),
-        b't' if bytes.starts_with(b"true") => Some((Value::Bool(true), 4)),
-        b'f' if bytes.starts_with(b"false") => Some((Value::Bool(false), 5)),
-        b'"' => {
-            // Simple string
-            let mut i = 1;
-            while i < bytes.len() && bytes[i] != b'"' {
-                if bytes[i] == b'\\' {
-                    return None; // No escape support
-                }
-                i += 1;
-            }
-            if i >= bytes.len() {
-                return None;
-            }
-            let s = std::str::from_utf8(&bytes[1..i]).ok()?;
-            Some((Value::String(StringRef::Owned(s.to_string())), i + 1))
-        }
-        b'-' | b'0'..=b'9' => parse_number_value(bytes),
-        b'[' => parse_nested_simple_array(bytes),
-        // Nested object — bail to simd-json
-        b'{' => None,
+    match bytes[*pos] {
+        b'"' => parse_string(bytes, pos),
+        b'{' => parse_object(bytes, pos),
+        b'[' => parse_array(bytes, pos),
+        b't' => parse_true(bytes, pos),
+        b'f' => parse_false(bytes, pos),
+        b'n' => parse_null(bytes, pos),
+        b'-' | b'0'..=b'9' => parse_number(bytes, pos),
         _ => None,
     }
 }
 
-/// Parse a nested array of simple values within a larger structure.
-/// Returns the parsed value and total bytes consumed (including brackets).
-fn parse_nested_simple_array(bytes: &[u8]) -> Option<(Value, usize)> {
-    let len = bytes.len();
-    let estimated_len = bytes
-        .iter()
-        .take_while(|&&b| b != b']')
-        .filter(|&&b| b == b',')
-        .count()
-        + 1;
-    let mut values = Vec::with_capacity(estimated_len);
-    let mut i = 1; // Skip [
-
-    loop {
-        // Skip whitespace
-        while i < len && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-
-        if i >= len {
-            return None;
-        }
-
-        // End of array?
-        if bytes[i] == b']' {
-            return Some((Value::new_list(values), i + 1));
-        }
-
-        // Skip comma
-        if bytes[i] == b',' {
-            i += 1;
-            while i < len && bytes[i].is_ascii_whitespace() {
-                i += 1;
-            }
-        }
-
-        if i >= len {
-            return None;
-        }
-
-        // Try to parse element — but don't recurse into nested arrays/objects
-        let (val, consumed) = match bytes[i] {
-            b'n' if bytes[i..].starts_with(b"null") => (Value::Null, 4),
-            b't' if bytes[i..].starts_with(b"true") => (Value::Bool(true), 4),
-            b'f' if bytes[i..].starts_with(b"false") => (Value::Bool(false), 5),
-            b'"' => {
-                let mut j = i + 1;
-                while j < len && bytes[j] != b'"' {
-                    if bytes[j] == b'\\' {
-                        return None;
-                    }
-                    j += 1;
-                }
-                if j >= len {
-                    return None;
-                }
-                let s = std::str::from_utf8(&bytes[i + 1..j]).ok()?;
-                (Value::String(StringRef::Owned(s.to_string())), j - i + 1)
-            }
-            b'-' | b'0'..=b'9' => parse_number_value(&bytes[i..])?,
-            // Nested arrays/objects in array — bail
-            _ => return None,
-        };
-        values.push(val);
-        i += consumed;
+/// Parse `true`.
+#[inline]
+fn parse_true(bytes: &[u8], pos: &mut usize) -> Option<Value> {
+    if bytes[*pos..].starts_with(b"true") {
+        *pos += 4;
+        Some(Value::Bool(true))
+    } else {
+        None
     }
 }
 
-/// Parse a JSON number from bytes, returning the value and number of bytes consumed.
+/// Parse `false`.
 #[inline]
-fn parse_number_value(bytes: &[u8]) -> Option<(Value, usize)> {
-    let mut i = 0;
-    let negative = bytes[i] == b'-';
+fn parse_false(bytes: &[u8], pos: &mut usize) -> Option<Value> {
+    if bytes[*pos..].starts_with(b"false") {
+        *pos += 5;
+        Some(Value::Bool(false))
+    } else {
+        None
+    }
+}
+
+/// Parse `null`.
+#[inline]
+fn parse_null(bytes: &[u8], pos: &mut usize) -> Option<Value> {
+    if bytes[*pos..].starts_with(b"null") {
+        *pos += 4;
+        Some(Value::Null)
+    } else {
+        None
+    }
+}
+
+/// Parse a JSON number (integer or float) and advance `pos`.
+#[inline]
+fn parse_number(bytes: &[u8], pos: &mut usize) -> Option<Value> {
+    let start = *pos;
+    let len = bytes.len();
+
+    let negative = bytes[*pos] == b'-';
     if negative {
-        i += 1;
+        *pos += 1;
+        if *pos >= len || !bytes[*pos].is_ascii_digit() {
+            *pos = start;
+            return None;
+        }
     }
 
-    if i >= bytes.len() || !bytes[i].is_ascii_digit() {
-        return None;
+    // Integer part
+    let digit_start = *pos;
+    while *pos < len && bytes[*pos].is_ascii_digit() {
+        *pos += 1;
     }
 
-    let digit_start = i;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
-        i += 1;
+    // Check for fractional or exponent part
+    let mut is_float = false;
+    if *pos < len && bytes[*pos] == b'.' {
+        is_float = true;
+        *pos += 1;
+        while *pos < len && bytes[*pos].is_ascii_digit() {
+            *pos += 1;
+        }
     }
-
-    let is_float = i < bytes.len() && (bytes[i] == b'.' || bytes[i] == b'e' || bytes[i] == b'E');
+    if *pos < len && (bytes[*pos] == b'e' || bytes[*pos] == b'E') {
+        is_float = true;
+        *pos += 1;
+        if *pos < len && (bytes[*pos] == b'+' || bytes[*pos] == b'-') {
+            *pos += 1;
+        }
+        while *pos < len && bytes[*pos].is_ascii_digit() {
+            *pos += 1;
+        }
+    }
 
     if is_float {
-        if i < bytes.len() && bytes[i] == b'.' {
-            i += 1;
-            while i < bytes.len() && bytes[i].is_ascii_digit() {
-                i += 1;
-            }
-        }
-        if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
-            i += 1;
-            if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
-                i += 1;
-            }
-            while i < bytes.len() && bytes[i].is_ascii_digit() {
-                i += 1;
-            }
-        }
-        let s = std::str::from_utf8(&bytes[..i]).ok()?;
+        let s = std::str::from_utf8(&bytes[start..*pos]).ok()?;
         let f = s.parse::<f64>().ok()?;
-        Some((Value::Float(f), i))
+        Some(Value::Float(f))
     } else {
-        // Hand-roll integer parse to avoid str::parse overhead
+        // Hand-rolled integer parse
         let mut val: u64 = 0;
-        for &b in &bytes[digit_start..i] {
-            val = val.checked_mul(10)?.checked_add((b - b'0') as u64)?;
+        for &b in &bytes[digit_start..*pos] {
+            val = match val.checked_mul(10) {
+                Some(v) => match v.checked_add((b - b'0') as u64) {
+                    Some(v2) => v2,
+                    None => {
+                        // Overflow — parse as float instead
+                        let s = std::str::from_utf8(&bytes[start..*pos]).ok()?;
+                        let f = s.parse::<f64>().ok()?;
+                        return Some(Value::Float(f));
+                    }
+                },
+                None => {
+                    let s = std::str::from_utf8(&bytes[start..*pos]).ok()?;
+                    let f = s.parse::<f64>().ok()?;
+                    return Some(Value::Float(f));
+                }
+            };
         }
-        let result = if negative {
+
+        if negative {
             if val > (i64::MAX as u64) + 1 {
-                return None;
+                // Overflow — parse as float
+                let s = std::str::from_utf8(&bytes[start..*pos]).ok()?;
+                let f = s.parse::<f64>().ok()?;
+                return Some(Value::Float(f));
             }
             if val == (i64::MAX as u64) + 1 {
-                i64::MIN
+                Some(Value::Int(i64::MIN))
             } else {
-                -(val as i64)
+                Some(Value::Int(-(val as i64)))
             }
         } else {
             if val > i64::MAX as u64 {
-                return None;
+                let s = std::str::from_utf8(&bytes[start..*pos]).ok()?;
+                let f = s.parse::<f64>().ok()?;
+                return Some(Value::Float(f));
             }
-            val as i64
-        };
-        Some((Value::Int(result), i))
+            Some(Value::Int(val as i64))
+        }
     }
 }
 
-/// Fast path for arrays of simple values: [1,2,3,"hello",true,null]
-/// Handles numbers, strings, bools, and null. Bails out on nested arrays/objects.
-fn try_parse_simple_array(bytes: &[u8]) -> Option<Value> {
+/// Parse a JSON string (with escape support) and advance `pos`.
+fn parse_string(bytes: &[u8], pos: &mut usize) -> Option<Value> {
+    debug_assert_eq!(bytes[*pos], b'"');
+    *pos += 1; // skip opening "
+
+    let start = *pos;
     let len = bytes.len();
-    // Estimate capacity: rough count of commas + 1
-    let estimated_len = bytes.iter().filter(|&&b| b == b',').count() + 1;
-    let mut values = Vec::with_capacity(estimated_len);
-    let mut i = 1; // Skip [
+
+    // Fast scan: look for end quote or backslash
+    let mut has_escapes = false;
+    let mut end = start;
+    while end < len {
+        match bytes[end] {
+            b'"' => break,
+            b'\\' => {
+                has_escapes = true;
+                end += 2; // skip escape + next char
+                if end > len {
+                    return None;
+                }
+            }
+            _ => end += 1,
+        }
+    }
+
+    if end >= len {
+        return None;
+    }
+
+    if !has_escapes {
+        // No escapes — zero-copy path
+        let s = std::str::from_utf8(&bytes[start..end]).ok()?;
+        *pos = end + 1; // skip closing "
+        Some(Value::String(StringRef::Owned(s.to_string())))
+    } else {
+        // Has escapes — need to process them
+        let mut result = String::with_capacity(end - start);
+        let mut i = start;
+        while i < len {
+            match bytes[i] {
+                b'"' => {
+                    *pos = i + 1;
+                    return Some(Value::String(StringRef::Owned(result)));
+                }
+                b'\\' => {
+                    i += 1;
+                    if i >= len {
+                        return None;
+                    }
+                    match bytes[i] {
+                        b'"' => result.push('"'),
+                        b'\\' => result.push('\\'),
+                        b'/' => result.push('/'),
+                        b'b' => result.push('\u{0008}'),
+                        b'f' => result.push('\u{000C}'),
+                        b'n' => result.push('\n'),
+                        b'r' => result.push('\r'),
+                        b't' => result.push('\t'),
+                        b'u' => {
+                            // Unicode escape: \uXXXX
+                            if i + 4 >= len {
+                                return None;
+                            }
+                            let hex = std::str::from_utf8(&bytes[i + 1..i + 5]).ok()?;
+                            let code = u16::from_str_radix(hex, 16).ok()?;
+                            i += 4;
+
+                            // Handle surrogate pairs
+                            if (0xD800..=0xDBFF).contains(&code) {
+                                // High surrogate — expect \uXXXX low surrogate
+                                if i + 6 < len && bytes[i + 1] == b'\\' && bytes[i + 2] == b'u' {
+                                    let hex2 = std::str::from_utf8(&bytes[i + 3..i + 7]).ok()?;
+                                    let low = u16::from_str_radix(hex2, 16).ok()?;
+                                    if (0xDC00..=0xDFFF).contains(&low) {
+                                        let cp = 0x10000
+                                            + ((code as u32 - 0xD800) << 10)
+                                            + (low as u32 - 0xDC00);
+                                        result.push(char::from_u32(cp)?);
+                                        i += 6;
+                                    } else {
+                                        return None;
+                                    }
+                                } else {
+                                    return None;
+                                }
+                            } else {
+                                result.push(char::from_u32(code as u32)?);
+                            }
+                        }
+                        _ => return None,
+                    }
+                    i += 1;
+                }
+                other => {
+                    result.push(other as char);
+                    i += 1;
+                }
+            }
+        }
+        None // unterminated string
+    }
+}
+
+/// Parse a JSON object and advance `pos`.
+fn parse_object(bytes: &[u8], pos: &mut usize) -> Option<Value> {
+    debug_assert_eq!(bytes[*pos], b'{');
+    *pos += 1; // skip {
+
+    let mut map = BTreeMap::new();
+    let len = bytes.len();
+
+    skip_ws(bytes, pos);
+    if *pos < len && bytes[*pos] == b'}' {
+        *pos += 1;
+        return Some(Value::new_map(map));
+    }
 
     loop {
-        // Skip whitespace
-        while i < len && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-
-        if i >= len {
+        skip_ws(bytes, pos);
+        if *pos >= len || bytes[*pos] != b'"' {
             return None;
         }
 
-        // End of array?
-        if bytes[i] == b']' {
-            return Some(Value::new_list(values));
+        // Parse key — extract string content directly (avoid Value wrapping)
+        let key = parse_string_raw(bytes, pos)?;
+
+        skip_ws(bytes, pos);
+        if *pos >= len || bytes[*pos] != b':' {
+            return None;
+        }
+        *pos += 1; // skip :
+
+        let value = parse_value(bytes, pos)?;
+        map.insert(key, value);
+
+        skip_ws(bytes, pos);
+        if *pos >= len {
+            return None;
         }
 
-        // Skip comma
-        if bytes[i] == b',' {
-            i += 1;
-            while i < len && bytes[i].is_ascii_whitespace() {
-                i += 1;
+        match bytes[*pos] {
+            b',' => {
+                *pos += 1;
             }
+            b'}' => {
+                *pos += 1;
+                return Some(Value::new_map(map));
+            }
+            _ => return None,
         }
-
-        if i >= len {
-            return None;
-        }
-
-        // Try to parse the value
-        let (val, consumed) = parse_simple_value(&bytes[i..])?;
-        values.push(val);
-        i += consumed;
     }
 }
 
-/// Parse using simd-json with OwnedValue for better performance on larger inputs.
-/// OwnedValue owns its strings, avoiding the borrow-then-copy pattern of BorrowedValue.
+/// Parse a JSON string and return the raw String (not wrapped in Value).
+/// Used by object key parsing to avoid wrapping/unwrapping.
+#[inline]
+fn parse_string_raw(bytes: &[u8], pos: &mut usize) -> Option<String> {
+    debug_assert_eq!(bytes[*pos], b'"');
+    *pos += 1;
+
+    let start = *pos;
+    let len = bytes.len();
+
+    // Fast scan for end quote or backslash
+    let mut has_escapes = false;
+    let mut end = start;
+    while end < len {
+        match bytes[end] {
+            b'"' => break,
+            b'\\' => {
+                has_escapes = true;
+                end += 2;
+                if end > len {
+                    return None;
+                }
+            }
+            _ => end += 1,
+        }
+    }
+
+    if end >= len {
+        return None;
+    }
+
+    if !has_escapes {
+        let s = std::str::from_utf8(&bytes[start..end]).ok()?;
+        *pos = end + 1;
+        Some(s.to_string())
+    } else {
+        // Reuse the escape-processing logic from parse_string
+        let mut result = String::with_capacity(end - start);
+        let mut i = start;
+        while i < len {
+            match bytes[i] {
+                b'"' => {
+                    *pos = i + 1;
+                    return Some(result);
+                }
+                b'\\' => {
+                    i += 1;
+                    if i >= len {
+                        return None;
+                    }
+                    match bytes[i] {
+                        b'"' => result.push('"'),
+                        b'\\' => result.push('\\'),
+                        b'/' => result.push('/'),
+                        b'b' => result.push('\u{0008}'),
+                        b'f' => result.push('\u{000C}'),
+                        b'n' => result.push('\n'),
+                        b'r' => result.push('\r'),
+                        b't' => result.push('\t'),
+                        b'u' => {
+                            if i + 4 >= len {
+                                return None;
+                            }
+                            let hex = std::str::from_utf8(&bytes[i + 1..i + 5]).ok()?;
+                            let code = u16::from_str_radix(hex, 16).ok()?;
+                            i += 4;
+                            if (0xD800..=0xDBFF).contains(&code) {
+                                if i + 6 < len && bytes[i + 1] == b'\\' && bytes[i + 2] == b'u' {
+                                    let hex2 = std::str::from_utf8(&bytes[i + 3..i + 7]).ok()?;
+                                    let low = u16::from_str_radix(hex2, 16).ok()?;
+                                    if (0xDC00..=0xDFFF).contains(&low) {
+                                        let cp = 0x10000
+                                            + ((code as u32 - 0xD800) << 10)
+                                            + (low as u32 - 0xDC00);
+                                        result.push(char::from_u32(cp)?);
+                                        i += 6;
+                                    } else {
+                                        return None;
+                                    }
+                                } else {
+                                    return None;
+                                }
+                            } else {
+                                result.push(char::from_u32(code as u32)?);
+                            }
+                        }
+                        _ => return None,
+                    }
+                    i += 1;
+                }
+                other => {
+                    result.push(other as char);
+                    i += 1;
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Parse a JSON array and advance `pos`.
+fn parse_array(bytes: &[u8], pos: &mut usize) -> Option<Value> {
+    debug_assert_eq!(bytes[*pos], b'[');
+    *pos += 1; // skip [
+    let len = bytes.len();
+
+    skip_ws(bytes, pos);
+    if *pos < len && bytes[*pos] == b']' {
+        *pos += 1;
+        return Some(Value::new_list(Vec::new()));
+    }
+
+    // Estimate capacity from remaining bytes (rough heuristic: ~4 bytes per element)
+    let remaining = len.saturating_sub(*pos);
+    let est_cap = (remaining / 4).min(64); // cap at 64 to avoid over-allocation
+    let mut values = Vec::with_capacity(est_cap);
+
+    loop {
+        let val = parse_value(bytes, pos)?;
+        values.push(val);
+
+        skip_ws(bytes, pos);
+        if *pos >= len {
+            return None;
+        }
+
+        match bytes[*pos] {
+            b',' => {
+                *pos += 1;
+            }
+            b']' => {
+                *pos += 1;
+                return Some(Value::new_list(values));
+            }
+            _ => return None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// simd-json fallback (for inputs our parser rejects)
+// ---------------------------------------------------------------------------
+
+/// Parse using simd-json with OwnedValue for larger/unusual inputs.
 fn parse_with_simd(input: &str) -> Result<Value, String> {
-    // simd-json requires mutable input for in-place parsing
     let mut bytes = input.as_bytes().to_vec();
 
     match simd_json::to_owned_value(&mut bytes) {
@@ -460,8 +637,6 @@ fn parse_with_simd(input: &str) -> Result<Value, String> {
 }
 
 /// Convert simd_json::OwnedValue to Lumen Value.
-/// Takes ownership to avoid cloning strings — simd_json::OwnedValue::String
-/// already owns its String, so we just move it into StringRef::Owned.
 fn owned_json_to_value(val: simd_json::OwnedValue) -> Value {
     use simd_json::OwnedValue;
 
@@ -609,11 +784,27 @@ mod tests {
     }
 
     #[test]
-    fn test_nested_fallback() {
-        // Should fall back to simd-json for complex cases
+    fn test_nested_object() {
         let val = parse_json_optimized(r#"{"users":[{"name":"Alice"}]}"#).unwrap();
-        match val {
-            Value::Map(_) => {}
+        match &val {
+            Value::Map(m) => {
+                assert!(m.contains_key("users"));
+                match m.get("users") {
+                    Some(Value::List(l)) => {
+                        assert_eq!(l.len(), 1);
+                        match &l[0] {
+                            Value::Map(inner) => {
+                                assert_eq!(
+                                    inner.get("name"),
+                                    Some(&Value::String(StringRef::Owned("Alice".to_string())))
+                                );
+                            }
+                            _ => panic!("Expected inner map"),
+                        }
+                    }
+                    other => panic!("Expected list, got {:?}", other),
+                }
+            }
             _ => panic!("Expected map"),
         }
     }
@@ -626,8 +817,59 @@ mod tests {
             Value::Map(m) => {
                 assert!(m.contains_key("users"));
                 assert!(m.contains_key("meta"));
+                match m.get("users") {
+                    Some(Value::List(l)) => assert_eq!(l.len(), 2),
+                    other => panic!("Expected list of users, got {:?}", other),
+                }
+                match m.get("meta") {
+                    Some(Value::Map(meta)) => {
+                        assert_eq!(meta.get("total"), Some(&Value::Int(2)));
+                        assert_eq!(meta.get("page"), Some(&Value::Int(1)));
+                    }
+                    other => panic!("Expected meta map, got {:?}", other),
+                }
             }
             _ => panic!("Expected map, got {:?}", val),
+        }
+    }
+
+    #[test]
+    fn test_deeply_nested() {
+        let val = parse_json_optimized(r#"{"a":{"b":{"c":{"d":42}}}}"#).unwrap();
+        match &val {
+            Value::Map(m) => match m.get("a") {
+                Some(Value::Map(m2)) => match m2.get("b") {
+                    Some(Value::Map(m3)) => match m3.get("c") {
+                        Some(Value::Map(m4)) => {
+                            assert_eq!(m4.get("d"), Some(&Value::Int(42)));
+                        }
+                        other => panic!("Expected c map, got {:?}", other),
+                    },
+                    other => panic!("Expected b map, got {:?}", other),
+                },
+                other => panic!("Expected a map, got {:?}", other),
+            },
+            _ => panic!("Expected map"),
+        }
+    }
+
+    #[test]
+    fn test_array_of_objects() {
+        let val = parse_json_optimized(r#"[{"x":1,"y":2},{"x":3,"y":4},{"x":5,"y":6}]"#).unwrap();
+        match &val {
+            Value::List(l) => {
+                assert_eq!(l.len(), 3);
+                for item in l.iter() {
+                    match item {
+                        Value::Map(m) => {
+                            assert!(m.contains_key("x"));
+                            assert!(m.contains_key("y"));
+                        }
+                        _ => panic!("Expected map in array"),
+                    }
+                }
+            }
+            _ => panic!("Expected list"),
         }
     }
 
@@ -640,17 +882,15 @@ mod tests {
 
     #[test]
     fn test_integer_overflow_falls_to_float() {
-        // Very large number that exceeds i64 — should still parse as float via simd-json
         let val = parse_json_optimized("99999999999999999999").unwrap();
         match val {
-            Value::Float(_) | Value::Int(_) => {} // either is acceptable
+            Value::Float(_) | Value::Int(_) => {}
             _ => panic!("Expected numeric value"),
         }
     }
 
     #[test]
-    fn test_escaped_string_falls_through() {
-        // String with escapes should NOT use the fast path but still work via simd-json
+    fn test_escaped_string() {
         let val = parse_json_optimized(r#""hello \"world\"""#).unwrap();
         match val {
             Value::String(StringRef::Owned(s)) => assert_eq!(s, r#"hello "world""#),
@@ -659,8 +899,28 @@ mod tests {
     }
 
     #[test]
-    fn test_object_with_nested_array_falls_through() {
-        // Small object with nested array should bail from fast path to simd-json
+    fn test_escaped_string_in_object() {
+        let val = parse_json_optimized(r#"{"msg":"hello\nworld"}"#).unwrap();
+        match &val {
+            Value::Map(m) => match m.get("msg") {
+                Some(Value::String(StringRef::Owned(s))) => assert_eq!(s, "hello\nworld"),
+                other => panic!("Expected string, got {:?}", other),
+            },
+            _ => panic!("Expected map"),
+        }
+    }
+
+    #[test]
+    fn test_unicode_escape() {
+        let val = parse_json_optimized(r#""\u0041\u0042\u0043""#).unwrap();
+        match val {
+            Value::String(StringRef::Owned(s)) => assert_eq!(s, "ABC"),
+            _ => panic!("Expected string"),
+        }
+    }
+
+    #[test]
+    fn test_object_with_nested_array() {
         let val = parse_json_optimized(r#"{"data":[1,2,3]}"#).unwrap();
         match val {
             Value::Map(m) => {
@@ -671,6 +931,125 @@ mod tests {
                 }
             }
             _ => panic!("Expected map"),
+        }
+    }
+
+    #[test]
+    fn test_empty_object() {
+        let val = parse_json_optimized("{}").unwrap();
+        match val {
+            Value::Map(m) => assert!(m.is_empty()),
+            _ => panic!("Expected empty map"),
+        }
+    }
+
+    #[test]
+    fn test_empty_array() {
+        let val = parse_json_optimized("[]").unwrap();
+        match val {
+            Value::List(l) => assert!(l.is_empty()),
+            _ => panic!("Expected empty list"),
+        }
+    }
+
+    #[test]
+    fn test_nested_empty_structures() {
+        let val = parse_json_optimized(r#"{"a":[],"b":{},"c":[{},{}]}"#).unwrap();
+        match &val {
+            Value::Map(m) => {
+                assert_eq!(m.len(), 3);
+                match m.get("a") {
+                    Some(Value::List(l)) => assert!(l.is_empty()),
+                    other => panic!("Expected empty list, got {:?}", other),
+                }
+                match m.get("b") {
+                    Some(Value::Map(m2)) => assert!(m2.is_empty()),
+                    other => panic!("Expected empty map, got {:?}", other),
+                }
+            }
+            _ => panic!("Expected map"),
+        }
+    }
+
+    #[test]
+    fn test_benchmark_large_input() {
+        // This is the exact input used in the benchmark
+        let large_json = r#"{
+            "users": [
+                {"id":1,"name":"Alice","email":"alice@example.com","active":true},
+                {"id":2,"name":"Bob","email":"bob@example.com","active":false},
+                {"id":3,"name":"Charlie","email":"charlie@example.com","active":true},
+                {"id":4,"name":"Diana","email":"diana@example.com","active":true},
+                {"id":5,"name":"Eve","email":"eve@example.com","active":false}
+            ],
+            "meta": {"total":5,"page":1,"per_page":10}
+        }"#;
+        let val = parse_json_optimized(large_json).unwrap();
+        match &val {
+            Value::Map(m) => {
+                match m.get("users") {
+                    Some(Value::List(l)) => {
+                        assert_eq!(l.len(), 5);
+                        // Check first user
+                        match &l[0] {
+                            Value::Map(user) => {
+                                assert_eq!(user.get("id"), Some(&Value::Int(1)));
+                                assert_eq!(
+                                    user.get("name"),
+                                    Some(&Value::String(StringRef::Owned("Alice".to_string())))
+                                );
+                                assert_eq!(user.get("active"), Some(&Value::Bool(true)));
+                            }
+                            _ => panic!("Expected user map"),
+                        }
+                    }
+                    other => panic!("Expected users list, got {:?}", other),
+                }
+                match m.get("meta") {
+                    Some(Value::Map(meta)) => {
+                        assert_eq!(meta.get("total"), Some(&Value::Int(5)));
+                        assert_eq!(meta.get("per_page"), Some(&Value::Int(10)));
+                    }
+                    other => panic!("Expected meta map, got {:?}", other),
+                }
+            }
+            _ => panic!("Expected map"),
+        }
+    }
+
+    #[test]
+    fn test_float_values_in_object() {
+        let val = parse_json_optimized(r#"{"pi":3.14159,"e":2.71828}"#).unwrap();
+        match &val {
+            Value::Map(m) => match m.get("pi") {
+                Some(Value::Float(f)) => assert!((*f - 3.14159).abs() < 1e-10),
+                other => panic!("Expected float, got {:?}", other),
+            },
+            _ => panic!("Expected map"),
+        }
+    }
+
+    #[test]
+    fn test_negative_numbers_in_array() {
+        let val = parse_json_optimized("[-1,-2,-3,0,1]").unwrap();
+        match val {
+            Value::List(l) => {
+                assert_eq!(l[0], Value::Int(-1));
+                assert_eq!(l[1], Value::Int(-2));
+                assert_eq!(l[2], Value::Int(-3));
+                assert_eq!(l[3], Value::Int(0));
+                assert_eq!(l[4], Value::Int(1));
+            }
+            _ => panic!("Expected list"),
+        }
+    }
+
+    #[test]
+    fn test_scientific_notation() {
+        let val = parse_json_optimized("1.5e10").unwrap();
+        match val {
+            Value::Float(f) => assert!((f - 1.5e10).abs() < 1.0),
+            _ => panic!("Expected float"),
         }
     }
 }

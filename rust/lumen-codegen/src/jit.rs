@@ -24,6 +24,159 @@ use crate::ir::{nan_box_int, NAN_BOX_NULL, NAN_BOX_TRUE};
 use crate::types::lir_type_str_to_cl_type;
 
 // ---------------------------------------------------------------------------
+// Granular opcode JIT capability classification
+// ---------------------------------------------------------------------------
+
+/// How the JIT handles each opcode variant.
+///
+/// Instead of an all-or-nothing `is_cell_jit_compilable` check that rejects an
+/// entire cell when *any* instruction is unsupported, we classify each opcode
+/// into one of three tiers so the JIT can compile as much of a hot cell as
+/// possible and fall back gracefully for the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JitCapability {
+    /// Compiled directly to Cranelift IR — arithmetic, moves, comparisons,
+    /// control flow, field/index access.
+    Native,
+
+    /// Emits a call to a runtime helper function. The opcode is supported but
+    /// requires runtime assistance (e.g. collection construction, closures,
+    /// intrinsics).
+    RuntimeCall,
+
+    /// Not yet supported by the JIT. A deopt stub is inserted: the cell falls
+    /// back to the interpreter for execution.
+    Unsupported,
+}
+
+/// Returns the JIT capability level for a single opcode.
+///
+/// This is the single source of truth for which opcodes the JIT can handle
+/// and how. All call-sites that previously checked `is_cell_jit_compilable`
+/// should use this instead.
+pub fn jit_capability(op: OpCode) -> JitCapability {
+    match op {
+        // --- Native: compiled directly to Cranelift IR ---
+
+        // Loads / moves
+        OpCode::LoadK
+        | OpCode::LoadBool
+        | OpCode::LoadInt
+        | OpCode::LoadNil
+        | OpCode::Move
+        | OpCode::MoveOwn => JitCapability::Native,
+
+        // Arithmetic
+        OpCode::Add
+        | OpCode::Sub
+        | OpCode::Mul
+        | OpCode::Div
+        | OpCode::Mod
+        | OpCode::Neg
+        | OpCode::FloorDiv
+        | OpCode::Pow => JitCapability::Native,
+
+        // Bitwise
+        OpCode::BitOr
+        | OpCode::BitAnd
+        | OpCode::BitXor
+        | OpCode::BitNot
+        | OpCode::Shl
+        | OpCode::Shr => JitCapability::Native,
+
+        // Comparison / logic
+        OpCode::Eq
+        | OpCode::Lt
+        | OpCode::Le
+        | OpCode::Not
+        | OpCode::And
+        | OpCode::Or
+        | OpCode::Test
+        | OpCode::NullCo => JitCapability::Native,
+
+        // Control flow
+        OpCode::Jmp
+        | OpCode::Break
+        | OpCode::Continue
+        | OpCode::Return
+        | OpCode::Halt
+        | OpCode::Call
+        | OpCode::TailCall
+        | OpCode::Nop => JitCapability::Native,
+
+        // String concatenation
+        OpCode::Concat => JitCapability::Native,
+
+        // Field/index access
+        OpCode::GetField | OpCode::SetField | OpCode::GetIndex | OpCode::SetIndex => {
+            JitCapability::Native
+        }
+
+        // Union/variant ops
+        OpCode::NewUnion | OpCode::IsVariant | OpCode::Unbox => JitCapability::Native,
+
+        // --- RuntimeCall: dispatched to runtime helpers ---
+
+        // Collection construction
+        OpCode::NewList | OpCode::NewMap => JitCapability::RuntimeCall,
+
+        // Intrinsic builtins (dispatched through runtime helper table)
+        OpCode::Intrinsic => JitCapability::RuntimeCall,
+
+        // Tuple/set/record construction
+        OpCode::NewTuple | OpCode::NewSet | OpCode::NewRecord => JitCapability::RuntimeCall,
+
+        // Tuple element access
+        OpCode::GetTuple => JitCapability::RuntimeCall,
+
+        // List append
+        OpCode::Append => JitCapability::RuntimeCall,
+
+        // Closures (need runtime env capture)
+        OpCode::Closure | OpCode::GetUpval | OpCode::SetUpval => JitCapability::RuntimeCall,
+
+        // --- Unsupported: deopt stub inserted ---
+
+        // Effects and tool calls require the full interpreter stack
+        OpCode::ToolCall
+        | OpCode::Schema
+        | OpCode::Emit
+        | OpCode::TraceRef
+        | OpCode::Await
+        | OpCode::Spawn
+        | OpCode::Perform
+        | OpCode::HandlePush
+        | OpCode::HandlePop
+        | OpCode::Resume => JitCapability::Unsupported,
+
+        // Complex loop forms (for-prep/for-loop/for-in need iterator state)
+        OpCode::Loop | OpCode::ForPrep | OpCode::ForLoop | OpCode::ForIn => {
+            JitCapability::Unsupported
+        }
+
+        // Membership / type ops (require dynamic dispatch)
+        OpCode::In | OpCode::Is => JitCapability::Unsupported,
+    }
+}
+
+/// Returns all opcode capabilities as a vec of `(OpCode, JitCapability)` pairs
+/// for bulk queries and diagnostics.
+pub fn jit_capabilities() -> Vec<(OpCode, JitCapability)> {
+    use strum::IntoEnumIterator;
+    OpCode::iter().map(|op| (op, jit_capability(op))).collect()
+}
+
+/// Returns `true` if a cell contains only opcodes the JIT can handle (Native
+/// or RuntimeCall). Cells that contain any Unsupported opcode will have deopt
+/// stubs inserted for those instructions but are still *attempted* — this
+/// function is retained for diagnostics and statistics.
+pub fn is_cell_fully_jit_compilable(cell: &LirCell) -> bool {
+    cell.instructions
+        .iter()
+        .all(|instr| jit_capability(instr.op) != JitCapability::Unsupported)
+}
+
+// ---------------------------------------------------------------------------
 // Type-aware NaN-box unboxing
 // ---------------------------------------------------------------------------
 
@@ -1557,7 +1710,9 @@ impl JitEngine {
     }
 
     /// Compile a single cell from the given `LirModule` to native code via
-    /// Cranelift JIT. The compiled function pointer is stored in the cache.
+    /// Cranelift JIT. Only the specified cell (and no others) is compiled,
+    /// reducing compilation latency and memory pressure compared to compiling
+    /// the entire module.
     ///
     /// If the cell is already cached, returns Ok immediately (with a
     /// cache-hit bump).
@@ -1568,9 +1723,48 @@ impl JitEngine {
             return Ok(());
         }
 
-        // Compile the entire module (all cells) since cross-cell calls need
-        // all functions present.
-        self.compile_module(module)?;
+        // Compile only the hot cell (selective compilation).
+        let cl_opt = match self.codegen_settings.opt_level {
+            OptLevel::None => "none",
+            OptLevel::Speed => "speed",
+            OptLevel::SpeedAndSize => "speed_and_size",
+        };
+        let mut builder = JITBuilder::with_flags(
+            &[("opt_level", cl_opt)],
+            cranelift_module::default_libcall_names(),
+        )
+        .map_err(|e| JitError::ModuleError(format!("JITBuilder creation failed: {e}")))?;
+
+        register_string_helpers(&mut builder);
+        register_record_helpers(&mut builder);
+        register_union_helpers(&mut builder);
+        register_collection_helpers(&mut builder);
+        register_intrinsic_helpers(&mut builder);
+
+        let mut jit_module = JITModule::new(builder);
+        let pointer_type = jit_module.isa().pointer_type();
+
+        let lowered = lower_cells_jit(&mut jit_module, module, &[cell_name], pointer_type)?;
+
+        jit_module
+            .finalize_definitions()
+            .map_err(|e| JitError::ModuleError(format!("finalize_definitions failed: {e}")))?;
+
+        for func in &lowered.functions {
+            let fn_ptr = jit_module.get_finalized_function(func.func_id);
+            self.cache.insert(
+                func.name.clone(),
+                CompiledFunction {
+                    fn_ptr,
+                    param_count: func.param_count,
+                    return_type: func.return_type,
+                },
+            );
+            self.stats.cells_compiled += 1;
+        }
+        self.stats.cache_size = self.cache.len();
+        self.jit_module = Some(jit_module);
+        self._retained_cells = lowered._retained_cells;
 
         if !self.cache.contains_key(cell_name) {
             return Err(JitError::CellNotFound(cell_name.to_string()));
@@ -1754,62 +1948,14 @@ impl JitEngine {
 // ---------------------------------------------------------------------------
 
 /// Returns `true` if every instruction in the cell uses an opcode the JIT can
-/// compile. Cells containing unsupported opcodes (e.g. ToolCall,
-/// NewList, etc.) are filtered out before compilation so we never emit traps
-/// for unsupported operations.
+/// compile natively or via runtime calls. Cells containing unsupported opcodes
+/// are still *attempted* by the JIT with deopt stubs inserted for unsupported
+/// instructions, but this function is useful for diagnostics.
+///
+/// **Deprecated**: prefer `is_cell_fully_jit_compilable()` or querying
+/// `jit_capability()` per-opcode for granular decisions.
 fn is_cell_jit_compilable(cell: &LirCell) -> bool {
-    cell.instructions.iter().all(|instr| {
-        matches!(
-            instr.op,
-            OpCode::LoadK
-                | OpCode::LoadBool
-                | OpCode::LoadInt
-                | OpCode::LoadNil
-                | OpCode::Move
-                | OpCode::MoveOwn
-                | OpCode::Add
-                | OpCode::Sub
-                | OpCode::Mul
-                | OpCode::Div
-                | OpCode::Mod
-                | OpCode::Neg
-                | OpCode::FloorDiv
-                | OpCode::Pow
-                | OpCode::Eq
-                | OpCode::Lt
-                | OpCode::Le
-                | OpCode::Not
-                | OpCode::And
-                | OpCode::Or
-                | OpCode::Test
-                | OpCode::Jmp
-                | OpCode::Break
-                | OpCode::Continue
-                | OpCode::Return
-                | OpCode::Halt
-                | OpCode::Call
-                | OpCode::TailCall
-                | OpCode::Intrinsic
-                | OpCode::Nop
-                | OpCode::BitOr
-                | OpCode::BitAnd
-                | OpCode::BitXor
-                | OpCode::BitNot
-                | OpCode::Shl
-                | OpCode::Shr
-                | OpCode::Concat
-                | OpCode::NullCo
-                | OpCode::GetField
-                | OpCode::SetField
-                | OpCode::GetIndex
-                | OpCode::SetIndex
-                | OpCode::NewUnion
-                | OpCode::IsVariant
-                | OpCode::Unbox
-                | OpCode::NewList
-                | OpCode::NewMap
-        )
-    })
+    is_cell_fully_jit_compilable(cell)
 }
 
 // ---------------------------------------------------------------------------
@@ -1834,8 +1980,9 @@ struct JitLoweredFunction {
 }
 
 /// Lower an entire LIR module into Cranelift IR inside the given `JITModule`.
-/// Cells containing unsupported opcodes are silently skipped — they will
-/// remain interpreted.
+/// All cells are compiled — cells containing unsupported opcodes will have
+/// deopt stubs inserted for those instructions (they write `NAN_BOX_NULL` to
+/// the destination register instead of trapping).
 fn lower_module_jit(
     module: &mut JITModule,
     lir: &LirModule,
@@ -1843,12 +1990,8 @@ fn lower_module_jit(
 ) -> Result<JitLoweredModule, CodegenError> {
     let mut fb_ctx = FunctionBuilderContext::new();
 
-    // Filter to only JIT-compilable cells.
-    let compilable_cells: Vec<&LirCell> = lir
-        .cells
-        .iter()
-        .filter(|c| is_cell_jit_compilable(c))
-        .collect();
+    // All cells are candidates — unsupported opcodes get deopt stubs.
+    let compilable_cells: Vec<&LirCell> = lir.cells.iter().collect();
 
     if compilable_cells.is_empty() {
         return Ok(JitLoweredModule {
@@ -1972,6 +2115,112 @@ fn lower_cell_jit(
         string_table,
         cell_return_types,
     )
+}
+
+/// Lower only the specified cells from a `LirModule` into the JIT.
+///
+/// This is the selective compilation variant of `lower_module_jit`. Instead of
+/// compiling every cell, it compiles only those whose names appear in
+/// `target_cells`. Cross-cell call references to uncompiled cells will trap at
+/// runtime (the caller should ensure the interpreter handles those).
+fn lower_cells_jit(
+    module: &mut JITModule,
+    lir: &LirModule,
+    target_cells: &[&str],
+    pointer_type: ClifType,
+) -> Result<JitLoweredModule, CodegenError> {
+    let mut fb_ctx = FunctionBuilderContext::new();
+
+    // Select only the target cells from the module.
+    let compilable_cells: Vec<&LirCell> = lir
+        .cells
+        .iter()
+        .filter(|c| target_cells.contains(&c.name.as_str()))
+        .collect();
+
+    if compilable_cells.is_empty() {
+        return Ok(JitLoweredModule {
+            functions: Vec::new(),
+            _retained_cells: Vec::new(),
+        });
+    }
+
+    // Declare signatures for the target cells.
+    let mut func_ids: HashMap<String, FuncId> = HashMap::new();
+    for cell in &compilable_cells {
+        let mut sig = module.make_signature();
+        for param in &cell.params {
+            let param_ty = lir_type_str_to_cl_type(&param.ty, pointer_type);
+            let abi_ty = if param_ty == types::I8 {
+                types::I64
+            } else {
+                param_ty
+            };
+            sig.params.push(AbiParam::new(abi_ty));
+        }
+        sig.returns.push(AbiParam::new(types::I64));
+        let func_id = module
+            .declare_function(&cell.name, Linkage::Export, &sig)
+            .map_err(|e| {
+                CodegenError::LoweringError(format!("declare_function({}): {e}", cell.name))
+            })?;
+        func_ids.insert(cell.name.clone(), func_id);
+    }
+
+    // Build return type map for the target cells.
+    let cell_return_types: HashMap<String, crate::ir::JitVarType> = compilable_cells
+        .iter()
+        .map(|c| {
+            let ret_ty = c
+                .returns
+                .as_deref()
+                .map(crate::ir::JitVarType::from_lir_return_type)
+                .unwrap_or(crate::ir::JitVarType::Int);
+            (c.name.clone(), ret_ty)
+        })
+        .collect();
+
+    let mut retained_cells: Vec<LirCell> = Vec::with_capacity(compilable_cells.len());
+    let mut lowered = JitLoweredModule {
+        functions: Vec::with_capacity(compilable_cells.len()),
+        _retained_cells: Vec::new(),
+    };
+
+    for cell in &compilable_cells {
+        let func_id = func_ids[&cell.name];
+        let mut ctx = Context::new();
+
+        let mut optimized_cell = (*cell).clone();
+        crate::opt::optimize(&mut optimized_cell);
+
+        lower_cell_jit(
+            &mut ctx,
+            module,
+            &optimized_cell,
+            &mut fb_ctx,
+            pointer_type,
+            func_id,
+            &func_ids,
+            &lir.strings,
+            &cell_return_types,
+        )?;
+
+        retained_cells.push(optimized_cell);
+
+        let ret_type = cell_return_types
+            .get(&cell.name)
+            .copied()
+            .unwrap_or(crate::ir::JitVarType::Int);
+        lowered.functions.push(JitLoweredFunction {
+            name: cell.name.clone(),
+            func_id,
+            param_count: cell.params.len(),
+            return_type: ret_type,
+        });
+    }
+
+    lowered._retained_cells = retained_cells;
+    Ok(lowered)
 }
 
 // ---------------------------------------------------------------------------

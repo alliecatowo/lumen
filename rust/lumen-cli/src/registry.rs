@@ -282,12 +282,70 @@ impl RegistryClient {
 
     fn verify_signature(
         &self,
-        _metadata: &RegistryVersionMetadata,
-        _sig: &PackageSignature,
+        metadata: &RegistryVersionMetadata,
+        sig: &PackageSignature,
     ) -> Result<(), String> {
-        // TODO: Implement actual signature verification
-        // For v0, we just check that a signature exists
-        Ok(())
+        // Only ed25519 is currently supported
+        if sig.algorithm != "ed25519" {
+            return Err(format!(
+                "Unsupported signature algorithm: {}. Only ed25519 is currently supported.",
+                sig.algorithm
+            ));
+        }
+
+        // Decode the base64-encoded signature
+        let signature_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&sig.signature)
+            .map_err(|e| format!("Failed to decode signature: {}", e))?;
+
+        // Decode the base64-encoded public key (key_id)
+        let public_key_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&sig.key_id)
+            .map_err(|e| format!("Failed to decode public key: {}", e))?;
+
+        #[cfg(feature = "ed25519")]
+        {
+            use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+            // Parse the public key
+            let public_key = VerifyingKey::from_bytes(
+                public_key_bytes
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| "Invalid public key length (expected 32 bytes)".to_string())?,
+            )
+            .map_err(|e| format!("Invalid Ed25519 public key: {}", e))?;
+
+            // Parse the signature
+            let signature = Signature::from_bytes(
+                signature_bytes
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| "Invalid signature length (expected 64 bytes)".to_string())?,
+            );
+
+            // Create the canonical message to verify
+            // We sign the JSON representation of the metadata WITHOUT the signature field
+            let mut unsigned_metadata = metadata.clone();
+            unsigned_metadata.signature = None;
+            let message = serde_json::to_string(&unsigned_metadata)
+                .map_err(|e| format!("Failed to serialize metadata for verification: {}", e))?;
+
+            // Verify the signature
+            public_key
+                .verify(message.as_bytes(), &signature)
+                .map_err(|e| format!("Signature verification failed: {}", e))?;
+
+            Ok(())
+        }
+
+        #[cfg(not(feature = "ed25519"))]
+        {
+            Err(
+                "Ed25519 signature verification is disabled. Rebuild with --features ed25519"
+                    .to_string(),
+            )
+        }
     }
 }
 
@@ -1563,6 +1621,279 @@ r2_access_key = "key_id:secret_key"
         assert_eq!(config.account_id, "my_account");
         assert_eq!(config.access_key_id, "key_id");
         assert_eq!(config.secret_access_key, "secret_key");
+    }
+
+    #[test]
+    #[cfg(feature = "ed25519")]
+    fn test_signature_verification_valid() {
+        use ed25519_dalek::{Signer, SigningKey};
+        use rand::rngs::OsRng;
+
+        // Generate a keypair
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
+
+        // Create test metadata
+        let mut metadata = RegistryVersionMetadata {
+            name: "@test/package".to_string(),
+            version: "1.0.0".to_string(),
+            deps: BTreeMap::new(),
+            optional_deps: BTreeMap::new(),
+            artifacts: vec![ArtifactInfo {
+                kind: "tar".to_string(),
+                url: Some("artifacts/test.tar".to_string()),
+                hash: "sha256:abc123".to_string(),
+                size: Some(1024),
+                arch: None,
+                os: None,
+            }],
+            integrity: None,
+            signature: None,
+            transparency: None,
+            yanked: false,
+            yank_reason: None,
+            published_at: None,
+            publisher: None,
+            license: Some("MIT".to_string()),
+            description: Some("A test package".to_string()),
+            readme: None,
+            documentation: None,
+            repository: None,
+            keywords: Vec::new(),
+        };
+
+        // Create canonical message (without signature field)
+        let message = serde_json::to_string(&metadata).unwrap();
+
+        // Sign the message
+        let signature = signing_key.sign(message.as_bytes());
+
+        // Create signature object
+        let sig = PackageSignature {
+            algorithm: "ed25519".to_string(),
+            signature: base64::engine::general_purpose::STANDARD.encode(signature.to_bytes()),
+            key_id: base64::engine::general_purpose::STANDARD.encode(verifying_key.to_bytes()),
+            signed_at: Some(chrono::Utc::now().to_rfc3339()),
+            rekor_bundle: None,
+        };
+
+        // Add signature to metadata
+        metadata.signature = Some(sig.clone());
+
+        // Create client and verify
+        let client = RegistryClient::new("https://test.registry");
+        let result = client.verify_signature(&metadata, &sig);
+
+        assert!(result.is_ok(), "Valid signature should verify successfully");
+    }
+
+    #[test]
+    #[cfg(feature = "ed25519")]
+    fn test_signature_verification_invalid_signature() {
+        use ed25519_dalek::{Signer, SigningKey};
+        use rand::rngs::OsRng;
+
+        // Generate a keypair
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
+
+        // Create test metadata
+        let mut metadata = RegistryVersionMetadata {
+            name: "@test/package".to_string(),
+            version: "1.0.0".to_string(),
+            deps: BTreeMap::new(),
+            optional_deps: BTreeMap::new(),
+            artifacts: vec![],
+            integrity: None,
+            signature: None,
+            transparency: None,
+            yanked: false,
+            yank_reason: None,
+            published_at: None,
+            publisher: None,
+            license: None,
+            description: Some("A test package".to_string()),
+            readme: None,
+            documentation: None,
+            repository: None,
+            keywords: Vec::new(),
+        };
+
+        // Sign the original message
+        let message = serde_json::to_string(&metadata).unwrap();
+        let signature = signing_key.sign(message.as_bytes());
+
+        // Create signature object
+        let sig = PackageSignature {
+            algorithm: "ed25519".to_string(),
+            signature: base64::engine::general_purpose::STANDARD.encode(signature.to_bytes()),
+            key_id: base64::engine::general_purpose::STANDARD.encode(verifying_key.to_bytes()),
+            signed_at: Some(chrono::Utc::now().to_rfc3339()),
+            rekor_bundle: None,
+        };
+
+        metadata.signature = Some(sig.clone());
+
+        // MODIFY the metadata after signing (tamper with it)
+        metadata.version = "1.0.1".to_string();
+
+        // Create client and verify - should FAIL
+        let client = RegistryClient::new("https://test.registry");
+        let result = client.verify_signature(&metadata, &sig);
+
+        assert!(
+            result.is_err(),
+            "Tampered metadata should fail verification"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Signature verification failed"),
+            "Error should indicate signature verification failure"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "ed25519")]
+    fn test_signature_verification_wrong_key() {
+        use ed25519_dalek::{Signer, SigningKey};
+        use rand::rngs::OsRng;
+
+        // Generate TWO keypairs
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let wrong_key = SigningKey::generate(&mut OsRng);
+        let wrong_verifying_key = wrong_key.verifying_key();
+
+        // Create test metadata
+        let mut metadata = RegistryVersionMetadata {
+            name: "@test/package".to_string(),
+            version: "1.0.0".to_string(),
+            deps: BTreeMap::new(),
+            optional_deps: BTreeMap::new(),
+            artifacts: vec![],
+            integrity: None,
+            signature: None,
+            transparency: None,
+            yanked: false,
+            yank_reason: None,
+            published_at: None,
+            publisher: None,
+            license: None,
+            description: Some("A test package".to_string()),
+            readme: None,
+            documentation: None,
+            repository: None,
+            keywords: Vec::new(),
+        };
+
+        // Sign with one key
+        let message = serde_json::to_string(&metadata).unwrap();
+        let signature = signing_key.sign(message.as_bytes());
+
+        // But provide WRONG public key for verification
+        let sig = PackageSignature {
+            algorithm: "ed25519".to_string(),
+            signature: base64::engine::general_purpose::STANDARD.encode(signature.to_bytes()),
+            key_id: base64::engine::general_purpose::STANDARD
+                .encode(wrong_verifying_key.to_bytes()),
+            signed_at: Some(chrono::Utc::now().to_rfc3339()),
+            rekor_bundle: None,
+        };
+
+        metadata.signature = Some(sig.clone());
+
+        // Create client and verify - should FAIL
+        let client = RegistryClient::new("https://test.registry");
+        let result = client.verify_signature(&metadata, &sig);
+
+        assert!(
+            result.is_err(),
+            "Signature should fail when verified with wrong public key"
+        );
+    }
+
+    #[test]
+    fn test_signature_verification_unsupported_algorithm() {
+        let metadata = RegistryVersionMetadata {
+            name: "@test/package".to_string(),
+            version: "1.0.0".to_string(),
+            deps: BTreeMap::new(),
+            optional_deps: BTreeMap::new(),
+            artifacts: vec![],
+            integrity: None,
+            signature: None,
+            transparency: None,
+            yanked: false,
+            yank_reason: None,
+            published_at: None,
+            publisher: None,
+            license: None,
+            description: Some("A test package".to_string()),
+            readme: None,
+            documentation: None,
+            repository: None,
+            keywords: Vec::new(),
+        };
+
+        let sig = PackageSignature {
+            algorithm: "rsa-pss".to_string(), // Unsupported algorithm
+            signature: "dummy".to_string(),
+            key_id: "dummy".to_string(),
+            signed_at: None,
+            rekor_bundle: None,
+        };
+
+        let client = RegistryClient::new("https://test.registry");
+        let result = client.verify_signature(&metadata, &sig);
+
+        assert!(result.is_err(), "Unsupported algorithm should fail");
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Unsupported signature algorithm"),
+            "Error should mention unsupported algorithm"
+        );
+    }
+
+    #[test]
+    fn test_signature_verification_invalid_base64() {
+        let metadata = RegistryVersionMetadata {
+            name: "@test/package".to_string(),
+            version: "1.0.0".to_string(),
+            deps: BTreeMap::new(),
+            optional_deps: BTreeMap::new(),
+            artifacts: vec![],
+            integrity: None,
+            signature: None,
+            transparency: None,
+            yanked: false,
+            yank_reason: None,
+            published_at: None,
+            publisher: None,
+            license: None,
+            description: Some("A test package".to_string()),
+            readme: None,
+            documentation: None,
+            repository: None,
+            keywords: Vec::new(),
+        };
+
+        let sig = PackageSignature {
+            algorithm: "ed25519".to_string(),
+            signature: "not-valid-base64!!!".to_string(), // Invalid base64
+            key_id: "also-invalid!!!".to_string(),
+            signed_at: None,
+            rekor_bundle: None,
+        };
+
+        let client = RegistryClient::new("https://test.registry");
+        let result = client.verify_signature(&metadata, &sig);
+
+        assert!(result.is_err(), "Invalid base64 should fail");
+        assert!(
+            result.unwrap_err().contains("Failed to decode signature"),
+            "Error should mention failed decoding"
+        );
     }
 }
 

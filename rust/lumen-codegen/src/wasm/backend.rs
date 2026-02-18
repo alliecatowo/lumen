@@ -18,10 +18,10 @@
 //!
 //! The public entry point is [`compile_to_wasm`].
 
-use lumen_core::lir::{Constant, LirCell, LirModule};
+use lumen_core::lir::{LirCell, LirModule};
 use wasm_encoder::{
-    CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction, MemorySection,
-    MemoryType, Module, TypeSection, ValType,
+    CodeSection, ExportKind, ExportSection, Function, FunctionSection, MemorySection, MemoryType,
+    Module, TypeSection, ValType,
 };
 
 use super::control;

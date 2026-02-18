@@ -19,6 +19,7 @@ target-lexicon = "0.13"
 lumen-core = { path = "../lumen-core", version = "0.1.0" }
 lumen-compiler = { path = "../lumen-compiler" }
 thiserror = { workspace = true }
+wasm-encoder = "0.218"
 
 [[bench]]
 name = "codegen_bench"

@@ -606,6 +606,111 @@ extern "C" fn jit_rt_record_set_field(
     Box::into_raw(Box::new(result)) as i64
 }
 
+/// Get an element from a List or Map by index/key.
+/// Returns a `*mut Value` as i64 (boxed Value).
+/// If the collection is null, the index is out of bounds, or the key doesn't exist, returns a boxed Value::Null.
+///
+/// # Safety
+/// `collection_ptr` must be a valid `*mut Value` pointer pointing to a `Value::List` or `Value::Map`.
+/// `index_ptr` must be a valid `*mut Value` pointer.
+extern "C" fn jit_rt_get_index(collection_ptr: i64, index_ptr: i64) -> i64 {
+    if collection_ptr == 0 || collection_ptr == NAN_BOX_NULL {
+        // Null collection, return boxed null
+        return Box::into_raw(Box::new(Value::Null)) as i64;
+    }
+    if index_ptr == 0 || index_ptr == NAN_BOX_NULL {
+        // Null index, return boxed null
+        return Box::into_raw(Box::new(Value::Null)) as i64;
+    }
+
+    let collection = unsafe { &*(collection_ptr as *const Value) };
+    let index = unsafe { &*(index_ptr as *const Value) };
+
+    let result = match (collection, index) {
+        (Value::List(l), Value::Int(i)) => {
+            let ii = *i;
+            let len = l.len() as i64;
+            let effective = if ii < 0 { ii + len } else { ii };
+            if effective < 0 || effective >= len {
+                // Out of bounds, return null
+                Value::Null
+            } else {
+                l[effective as usize].clone()
+            }
+        }
+        (Value::Tuple(t), Value::Int(i)) => {
+            let ii = *i;
+            let len = t.len() as i64;
+            let effective = if ii < 0 { ii + len } else { ii };
+            if effective < 0 || effective >= len {
+                // Out of bounds, return null
+                Value::Null
+            } else {
+                t[effective as usize].clone()
+            }
+        }
+        (Value::Map(m), _) => {
+            // Map keys are strings - convert index to string
+            let key = index.as_string();
+            m.get(&key).cloned().unwrap_or(Value::Null)
+        }
+        _ => Value::Null,
+    };
+
+    Box::into_raw(Box::new(result)) as i64
+}
+
+/// Set an element in a List or Map by index/key.
+/// Creates a new List/Map with the updated element (copy-on-write).
+/// Returns a `*mut Value` as i64 (boxed Value::List or Value::Map).
+///
+/// # Safety
+/// `collection_ptr` must be a valid `*mut Value` pointer pointing to a `Value::List` or `Value::Map`.
+/// `index_ptr` must be a valid `*mut Value` pointer.
+/// `value_ptr` must be a valid `*mut Value` pointer.
+extern "C" fn jit_rt_set_index(collection_ptr: i64, index_ptr: i64, value_ptr: i64) -> i64 {
+    if collection_ptr == 0 || collection_ptr == NAN_BOX_NULL {
+        // Can't set on null, return null
+        return Box::into_raw(Box::new(Value::Null)) as i64;
+    }
+
+    let collection = unsafe { &*(collection_ptr as *const Value) };
+    let index = unsafe { &*(index_ptr as *const Value) };
+    let new_value = if value_ptr == 0 || value_ptr == NAN_BOX_NULL {
+        Value::Null
+    } else {
+        unsafe { (*(value_ptr as *const Value)).clone() }
+    };
+
+    let result = match (collection, index) {
+        (Value::List(l), Value::Int(i)) => {
+            let ii = *i;
+            let len = l.len() as i64;
+            let effective = if ii < 0 { ii + len } else { ii };
+            if effective < 0 || effective >= len {
+                // Out of bounds, return the original list unchanged
+                collection.clone()
+            } else {
+                // Clone the list and update the element
+                let mut new_list = (**l).clone();
+                new_list[effective as usize] = new_value;
+                Value::new_list(new_list)
+            }
+        }
+        (Value::Map(m), _) => {
+            // Map keys are strings - convert index to string
+            let key = index.as_string();
+            // Clone the map and insert the new value
+            let mut new_map = (**m).clone();
+            new_map.insert(key, new_value);
+            Value::new_map(new_map)
+        }
+        _ => collection.clone(),
+    };
+
+    Box::into_raw(Box::new(result)) as i64
+}
+
 /// Clone a Value (for record field access results).
 /// Returns a new `*mut Value` as i64.
 ///
@@ -642,6 +747,8 @@ fn register_record_helpers(builder: &mut JITBuilder) {
         "jit_rt_record_set_field",
         jit_rt_record_set_field as *const u8,
     );
+    builder.symbol("jit_rt_get_index", jit_rt_get_index as *const u8);
+    builder.symbol("jit_rt_set_index", jit_rt_set_index as *const u8);
     builder.symbol("jit_rt_value_clone", jit_rt_value_clone as *const u8);
     builder.symbol("jit_rt_value_drop", jit_rt_value_drop as *const u8);
 }
@@ -659,6 +766,18 @@ fn register_union_helpers(builder: &mut JITBuilder) {
     builder.symbol(
         "jit_rt_union_unbox",
         crate::union_helpers::jit_rt_union_unbox as *const u8,
+    );
+}
+
+/// Register all JIT collection runtime helper symbols with a JITBuilder.
+fn register_collection_helpers(builder: &mut JITBuilder) {
+    builder.symbol(
+        "jit_rt_new_list",
+        crate::collection_helpers::jit_rt_new_list as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_new_map",
+        crate::collection_helpers::jit_rt_new_map as *const u8,
     );
 }
 
@@ -1392,6 +1511,9 @@ impl JitEngine {
         // Register union runtime helper symbols so JIT code can call them.
         register_union_helpers(&mut builder);
 
+        // Register collection runtime helper symbols so JIT code can call them.
+        register_collection_helpers(&mut builder);
+
         // Register intrinsic runtime helper symbols so JIT code can call builtins.
         register_intrinsic_helpers(&mut builder);
 
@@ -1675,9 +1797,13 @@ fn is_cell_jit_compilable(cell: &LirCell) -> bool {
                 | OpCode::NullCo
                 | OpCode::GetField
                 | OpCode::SetField
+                | OpCode::GetIndex
+                | OpCode::SetIndex
                 | OpCode::NewUnion
                 | OpCode::IsVariant
                 | OpCode::Unbox
+                | OpCode::NewList
+                | OpCode::NewMap
         )
     })
 }

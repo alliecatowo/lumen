@@ -11,6 +11,7 @@ pub mod ir;
 pub mod jit;
 pub mod opt;
 pub mod types;
+pub mod union_helpers;
 pub mod wasm;
 pub mod wit;
 

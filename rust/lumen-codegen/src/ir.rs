@@ -518,6 +518,28 @@ pub(crate) fn lower_cell<M: Module>(
         &[types::I64, types::I64, types::I64, types::I64], // record_ptr, field_name_ptr, field_name_len, value_ptr
         &[types::I64],
     )?;
+    // Declare union runtime helper functions (for JIT enum support).
+    let union_new_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_union_new",
+        &[types::I64, types::I64, types::I64], // tag_ptr, tag_len, payload_ptr
+        &[types::I64],
+    )?;
+    let union_is_variant_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_union_is_variant",
+        &[types::I64, types::I64, types::I64], // union_ptr, tag_ptr, tag_len
+        &[types::I64],
+    )?;
+    let union_unbox_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_union_unbox",
+        &[types::I64],
+        &[types::I64],
+    )?;
     // Declare intrinsic runtime helper functions (for JIT builtin support).
     let intrinsic_print_int_ref =
         declare_helper_func(module, &mut func, "jit_rt_print_int", &[types::I64], &[])?;
@@ -1010,17 +1032,19 @@ pub(crate) fn lower_cell<M: Module>(
                                 // individual malloc + field stores, enabling constant
                                 // folding of struct fields and dead-store elimination.
                                 //
-                                // JitString layout (32 bytes, repr(C)):
-                                //   offset  0: refcount (i64) = 1
-                                //   offset  8: len      (i64)
-                                //   offset 16: cap      (i64) = len
-                                //   offset 24: ptr      (*mut u8)
+                                // JitString layout (40 bytes, repr(C)):
+                                //   offset  0: refcount   (i64) = 1
+                                //   offset  8: len        (i64) - byte length
+                                //   offset 16: char_count (i64) - Unicode character count
+                                //   offset 24: cap        (i64) = len
+                                //   offset 32: ptr        (*mut u8)
                                 let str_bytes = s.as_bytes();
                                 let len = str_bytes.len() as i64;
+                                let char_count = s.chars().count() as i64;
                                 let flags = MemFlags::new();
 
-                                // 1. Allocate the 32-byte JitString struct.
-                                let struct_size = builder.ins().iconst(types::I64, 32);
+                                // 1. Allocate the 40-byte JitString struct.
+                                let struct_size = builder.ins().iconst(types::I64, 40);
                                 let struct_call = builder.ins().call(malloc_ref, &[struct_size]);
                                 let struct_ptr = builder.inst_results(struct_call)[0];
 
@@ -1029,7 +1053,9 @@ pub(crate) fn lower_cell<M: Module>(
                                 builder.ins().store(flags, rc_one, struct_ptr, 0); // refcount
                                 let len_val = builder.ins().iconst(types::I64, len);
                                 builder.ins().store(flags, len_val, struct_ptr, 8); // len
-                                builder.ins().store(flags, len_val, struct_ptr, 16); // cap = len
+                                let char_count_val = builder.ins().iconst(types::I64, char_count);
+                                builder.ins().store(flags, char_count_val, struct_ptr, 16); // char_count
+                                builder.ins().store(flags, len_val, struct_ptr, 24); // cap = len
 
                                 // 3. Allocate data buffer and copy string bytes.
                                 //    Uses alloc_bytes_ref (Vec-compatible) so that
@@ -1042,11 +1068,11 @@ pub(crate) fn lower_cell<M: Module>(
                                     builder
                                         .ins()
                                         .call(memcpy_ref, &[data_ptr, src_ptr, len_val]);
-                                    builder.ins().store(flags, data_ptr, struct_ptr, 24);
+                                    builder.ins().store(flags, data_ptr, struct_ptr, 32);
                                 // ptr
                                 } else {
                                     let null_ptr = builder.ins().iconst(types::I64, 0);
-                                    builder.ins().store(flags, null_ptr, struct_ptr, 24);
+                                    builder.ins().store(flags, null_ptr, struct_ptr, 32);
                                     // ptr = null
                                 }
 
@@ -2110,6 +2136,60 @@ pub(crate) fn lower_cell<M: Module>(
                 def_var(&mut builder, &mut regs, inst.a, result);
             }
 
+            // NewUnion: Create a union (enum) value
+            // r[a] = Union(tag=strings[b], payload=r[c])
+            OpCode::NewUnion => {
+                let tag_str = if (inst.b as usize) < string_table.len() {
+                    &string_table[inst.b as usize]
+                } else {
+                    ""
+                };
+                let tag_bytes = tag_str.as_bytes();
+                let tag_ptr = builder.ins().iconst(types::I64, tag_bytes.as_ptr() as i64);
+                let tag_len = builder.ins().iconst(types::I64, tag_bytes.len() as i64);
+                let payload_ptr = use_var(&mut builder, &regs, &var_types, inst.c);
+                let call = builder
+                    .ins()
+                    .call(union_new_ref, &[tag_ptr, tag_len, payload_ptr]);
+                let result = builder.inst_results(call)[0];
+                var_types.insert(inst.a as u32, JitVarType::Int);
+                def_var(&mut builder, &mut regs, inst.a, result);
+            }
+
+            // IsVariant: Check if union has a specific variant tag
+            // Skip next instruction if r[a] is Union with tag=strings[bx]
+            OpCode::IsVariant => {
+                let union_ptr = use_var(&mut builder, &regs, &var_types, inst.a);
+                let tag_idx = inst.bx() as usize;
+                let tag_str = if tag_idx < string_table.len() {
+                    &string_table[tag_idx]
+                } else {
+                    ""
+                };
+                let tag_bytes = tag_str.as_bytes();
+                let tag_ptr = builder.ins().iconst(types::I64, tag_bytes.as_ptr() as i64);
+                let tag_len = builder.ins().iconst(types::I64, tag_bytes.len() as i64);
+                let call = builder
+                    .ins()
+                    .call(union_is_variant_ref, &[union_ptr, tag_ptr, tag_len]);
+                let result = builder.inst_results(call)[0];
+                // IsVariant doesn't store result in a register, it's a control flow instruction
+                // For now, we'll skip implementing the conditional jump logic in JIT
+                // This requires more complex control flow handling
+                // TODO: Implement proper conditional branching for IsVariant
+                let _ = result; // silence unused warning
+            }
+
+            // Unbox: Extract payload from union
+            // r[a] = payload of Union in r[b]
+            OpCode::Unbox => {
+                let union_ptr = use_var(&mut builder, &regs, &var_types, inst.b);
+                let call = builder.ins().call(union_unbox_ref, &[union_ptr]);
+                let result = builder.inst_results(call)[0];
+                var_types.insert(inst.a as u32, JitVarType::Int);
+                def_var(&mut builder, &mut regs, inst.a, result);
+            }
+
             // Intrinsic (builtin function call)
             OpCode::Intrinsic => {
                 let intrinsic_id = inst.b as u32;
@@ -2285,17 +2365,20 @@ pub(crate) fn lower_cell<M: Module>(
                         };
                         // Inline JitString allocation for the type name.
                         let len = type_str.len() as i64;
+                        let char_count = type_str.len() as i64; // ASCII type names
                         let flags = MemFlags::new();
 
-                        let struct_size = builder.ins().iconst(types::I64, 32);
+                        let struct_size = builder.ins().iconst(types::I64, 40);
                         let struct_call = builder.ins().call(malloc_ref, &[struct_size]);
                         let struct_ptr = builder.inst_results(struct_call)[0];
 
                         let rc_one = builder.ins().iconst(types::I64, 1);
-                        builder.ins().store(flags, rc_one, struct_ptr, 0);
+                        builder.ins().store(flags, rc_one, struct_ptr, 0); // refcount
                         let len_val = builder.ins().iconst(types::I64, len);
-                        builder.ins().store(flags, len_val, struct_ptr, 8);
-                        builder.ins().store(flags, len_val, struct_ptr, 16);
+                        builder.ins().store(flags, len_val, struct_ptr, 8); // len
+                        let char_count_val = builder.ins().iconst(types::I64, char_count);
+                        builder.ins().store(flags, char_count_val, struct_ptr, 16); // char_count
+                        builder.ins().store(flags, len_val, struct_ptr, 24); // cap = len
 
                         // Type names are always non-empty (3-7 bytes).
                         // Uses alloc_bytes_ref (Vec-compatible) so that
@@ -2306,7 +2389,7 @@ pub(crate) fn lower_cell<M: Module>(
                         builder
                             .ins()
                             .call(memcpy_ref, &[data_ptr, src_ptr, len_val]);
-                        builder.ins().store(flags, data_ptr, struct_ptr, 24);
+                        builder.ins().store(flags, data_ptr, struct_ptr, 32); // ptr
 
                         var_types.insert(inst.a as u32, JitVarType::Str);
                         def_var(&mut builder, &mut regs, inst.a, struct_ptr);

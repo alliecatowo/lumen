@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use cranelift_codegen::ir::{AbiParam, Type as ClifType};
+use cranelift_codegen::settings::Configurable;
 use cranelift_codegen::Context;
 use cranelift_frontend::FunctionBuilderContext;
 use cranelift_module::{FuncId, Linkage, Module};
@@ -41,10 +42,15 @@ pub fn compile_object_module(
     // Create target ISA and ObjectModule
     let isa_builder = cranelift_native::builder()
         .map_err(|e| CodegenError::TargetError(format!("failed to create ISA builder: {e}")))?;
+    let mut settings_builder = cranelift_codegen::settings::builder();
+    // Enable Cranelift's egraph-based optimization pass for AOT output.
+    // Without this the ISA defaults to opt_level=none, producing
+    // unoptimized machine code.
+    settings_builder
+        .set("opt_level", "speed")
+        .expect("valid cranelift setting");
     let isa = isa_builder
-        .finish(cranelift_codegen::settings::Flags::new(
-            cranelift_codegen::settings::builder(),
-        ))
+        .finish(cranelift_codegen::settings::Flags::new(settings_builder))
         .map_err(|e| CodegenError::TargetError(format!("failed to create ISA: {e}")))?;
 
     let obj_builder = cranelift_object::ObjectBuilder::new(

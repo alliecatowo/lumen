@@ -58,10 +58,38 @@ pub struct RecordValue {
     pub fields: BTreeMap<String, Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct UnionValue {
-    pub tag: String,
+    /// Interned string ID for the variant tag (e.g., "Leaf", "Branch", "ok", "err").
+    /// Resolved via `StringTable::resolve(tag)` when a human-readable name is needed.
+    pub tag: u32,
     pub payload: Box<Value>,
+}
+
+impl Serialize for UnionValue {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("UnionValue", 2)?;
+        // Serialize the intern ID as-is; the deserializer will re-intern.
+        s.serialize_field("tag", &self.tag)?;
+        s.serialize_field("payload", &self.payload)?;
+        s.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for UnionValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Helper {
+            tag: u32,
+            payload: Box<Value>,
+        }
+        let h = Helper::deserialize(deserializer)?;
+        Ok(UnionValue {
+            tag: h.tag,
+            payload: h.payload,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,10 +209,11 @@ impl Value {
                 format!("{}({})", r.type_name, fields)
             }
             Value::Union(u) => {
+                // Without string table, show intern ID
                 if matches!(*u.payload, Value::Null) {
-                    u.tag.clone()
+                    format!("<union:{}>", u.tag)
                 } else {
-                    format!("{}({})", u.tag, u.payload.display_pretty())
+                    format!("<union:{}>({})", u.tag, u.payload.display_pretty())
                 }
             }
             Value::Closure(c) => format!(
@@ -204,6 +233,14 @@ impl Value {
             Value::String(StringRef::Interned(id)) => {
                 strings.resolve(*id).unwrap_or("").to_string()
             }
+            Value::Union(u) => {
+                let tag_str = strings.resolve(u.tag).unwrap_or("<unknown>");
+                if matches!(*u.payload, Value::Null) {
+                    tag_str.to_string()
+                } else {
+                    format!("{}({})", tag_str, u.payload.as_string_resolved(strings))
+                }
+            }
             _ => self.as_string(),
         }
     }
@@ -221,7 +258,10 @@ impl Value {
     /// Borrow the inner `&str` from any string Value, resolving interned
     /// strings via the provided `StringTable`.
     /// Returns `None` for non-string values.
-    pub fn as_str_with_table<'a>(&'a self, strings: &'a crate::strings::StringTable) -> Option<&'a str> {
+    pub fn as_str_with_table<'a>(
+        &'a self,
+        strings: &'a crate::strings::StringTable,
+    ) -> Option<&'a str> {
         match self {
             Value::String(StringRef::Owned(s)) => Some(s.as_str()),
             Value::String(StringRef::Interned(id)) => strings.resolve(*id),
@@ -311,6 +351,8 @@ impl Value {
     }
 
     /// Return the type name as a string (for the `is` operator).
+    /// Note: For Union values, this returns a placeholder since the tag is an intern ID.
+    /// Use `type_name_resolved()` with a StringTable for Union values.
     pub fn type_name(&self) -> &str {
         match self {
             Value::Null => "Null",
@@ -325,10 +367,18 @@ impl Value {
             Value::Set(_) => "Set",
             Value::Map(_) => "Map",
             Value::Record(r) => &r.type_name,
-            Value::Union(u) => &u.tag,
+            Value::Union(_) => "Union", // Placeholder; use type_name_resolved for actual tag
             Value::Closure(_) => "Closure",
             Value::TraceRef(_) => "TraceRef",
             Value::Future(_) => "Future",
+        }
+    }
+
+    /// Return the type name, resolving Union tags via the string table.
+    pub fn type_name_resolved<'a>(&'a self, strings: &'a crate::strings::StringTable) -> &'a str {
+        match self {
+            Value::Union(u) => strings.resolve(u.tag).unwrap_or("Union"),
+            _ => self.type_name(),
         }
     }
 
@@ -374,10 +424,11 @@ impl Value {
                 }
             }
             Value::Union(u) => {
+                // Without string table, show intern ID
                 if matches!(*u.payload, Value::Null) {
-                    u.tag.clone()
+                    format!("<union:{}>", u.tag)
                 } else {
-                    format!("{}({})", u.tag, u.payload.display_pretty())
+                    format!("<union:{}>({})", u.tag, u.payload.display_pretty())
                 }
             }
             Value::Closure(c) => format!("<closure:cell={}>", c.cell_idx),

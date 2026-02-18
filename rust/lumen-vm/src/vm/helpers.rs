@@ -219,7 +219,10 @@ pub(crate) fn parse_bool_like(raw: &str) -> Option<bool> {
 }
 
 /// Convert a Lumen Value to a serde_json Value.
-pub(crate) fn value_to_json(val: &Value) -> serde_json::Value {
+pub(crate) fn value_to_json(
+    val: &Value,
+    strings: &crate::strings::StringTable,
+) -> serde_json::Value {
     match val {
         Value::Null => serde_json::Value::Null,
         Value::Bool(b) => serde_json::Value::Bool(*b),
@@ -227,13 +230,19 @@ pub(crate) fn value_to_json(val: &Value) -> serde_json::Value {
         Value::Float(f) => serde_json::json!(*f),
         Value::String(StringRef::Owned(s)) => serde_json::Value::String(s.clone()),
         Value::String(StringRef::Interned(_)) => serde_json::Value::String(val.as_string()),
-        Value::List(l) => serde_json::Value::Array(l.iter().map(value_to_json).collect()),
-        Value::Tuple(t) => serde_json::Value::Array(t.iter().map(value_to_json).collect()),
-        Value::Set(s) => serde_json::Value::Array(s.iter().map(value_to_json).collect()),
+        Value::List(l) => {
+            serde_json::Value::Array(l.iter().map(|v| value_to_json(v, strings)).collect())
+        }
+        Value::Tuple(t) => {
+            serde_json::Value::Array(t.iter().map(|v| value_to_json(v, strings)).collect())
+        }
+        Value::Set(s) => {
+            serde_json::Value::Array(s.iter().map(|v| value_to_json(v, strings)).collect())
+        }
         Value::Map(m) => {
             let obj: serde_json::Map<String, serde_json::Value> = m
                 .iter()
-                .map(|(k, v)| (k.clone(), value_to_json(v)))
+                .map(|(k, v)| (k.clone(), value_to_json(v, strings)))
                 .collect();
             serde_json::Value::Object(obj)
         }
@@ -244,17 +253,15 @@ pub(crate) fn value_to_json(val: &Value) -> serde_json::Value {
                 serde_json::Value::String(r.type_name.clone()),
             );
             for (k, v) in &r.fields {
-                obj.insert(k.clone(), value_to_json(v));
+                obj.insert(k.clone(), value_to_json(v, strings));
             }
             serde_json::Value::Object(obj)
         }
         Value::Union(u) => {
             let mut obj = serde_json::Map::new();
-            obj.insert(
-                "__tag".to_string(),
-                serde_json::Value::String(u.tag.clone()),
-            );
-            obj.insert("__payload".to_string(), value_to_json(&u.payload));
+            let tag_str = strings.resolve(u.tag).unwrap_or("?").to_string();
+            obj.insert("__tag".to_string(), serde_json::Value::String(tag_str));
+            obj.insert("__payload".to_string(), value_to_json(&u.payload, strings));
             serde_json::Value::Object(obj)
         }
         _ => serde_json::Value::Null,

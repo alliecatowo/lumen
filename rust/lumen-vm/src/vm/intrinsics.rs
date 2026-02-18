@@ -686,19 +686,25 @@ impl VM {
             // Result type operations
             "is_ok" => {
                 let arg = &self.registers[base + a + 1];
-                Ok(Value::Bool(matches!(arg, Value::Union(u) if u.tag == "ok")))
+                let tag_ok = self.tag_ok;
+                Ok(Value::Bool(
+                    matches!(arg, Value::Union(u) if u.tag == tag_ok),
+                ))
             }
             "is_err" => {
                 let arg = &self.registers[base + a + 1];
+                let tag_err = self.tag_err;
                 Ok(Value::Bool(
-                    matches!(arg, Value::Union(u) if u.tag == "err"),
+                    matches!(arg, Value::Union(u) if u.tag == tag_err),
                 ))
             }
             "unwrap" => {
                 let arg = &self.registers[base + a + 1];
+                let tag_ok = self.tag_ok;
+                let tag_err = self.tag_err;
                 match arg {
-                    Value::Union(u) if u.tag == "ok" => Ok(*u.payload.clone()),
-                    Value::Union(u) if u.tag == "err" => {
+                    Value::Union(u) if u.tag == tag_ok => Ok(*u.payload.clone()),
+                    Value::Union(u) if u.tag == tag_err => {
                         Err(VmError::Runtime(format!("unwrap on err: {}", u.payload)))
                     }
                     _ => Ok(arg.clone()),
@@ -707,8 +713,9 @@ impl VM {
             "unwrap_or" => {
                 let arg = &self.registers[base + a + 1];
                 let default = self.registers[base + a + 2].clone();
+                let tag_ok = self.tag_ok;
                 match arg {
-                    Value::Union(u) if u.tag == "ok" => Ok(*u.payload.clone()),
+                    Value::Union(u) if u.tag == tag_ok => Ok(*u.payload.clone()),
                     _ => Ok(default),
                 }
             }
@@ -818,12 +825,12 @@ impl VM {
             }
             "json_encode" | "to_json" => {
                 let val = &self.registers[base + a + 1];
-                let j = value_to_json(val);
+                let j = value_to_json(val, &self.strings);
                 Ok(Value::String(StringRef::Owned(j.to_string())))
             }
             "json_pretty" => {
                 let val = &self.registers[base + a + 1];
-                let j = value_to_json(val);
+                let j = value_to_json(val, &self.strings);
                 let pretty = serde_json::to_string_pretty(&j)
                     .map_err(|e| VmError::Runtime(format!("json_pretty failed: {}", e)))?;
                 Ok(Value::String(StringRef::Owned(pretty)))
@@ -1500,18 +1507,20 @@ impl VM {
             // ── String-to-number parsing: parse_int / parse_float ──
             "parse_int" => {
                 let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
+                let tag_ok = self.tag_ok;
+                let tag_err = self.tag_err;
                 match s.trim().parse::<i64>() {
                     Ok(n) => Ok(Value::Union(UnionValue {
-                        tag: "ok".to_string(),
+                        tag: tag_ok,
                         payload: Box::new(Value::Int(n)),
                     })),
                     Err(_) => match s.trim().parse::<BigInt>() {
                         Ok(n) => Ok(Value::Union(UnionValue {
-                            tag: "ok".to_string(),
+                            tag: tag_ok,
                             payload: Box::new(Value::BigInt(n)),
                         })),
                         Err(_) => Ok(Value::Union(UnionValue {
-                            tag: "err".to_string(),
+                            tag: tag_err,
                             payload: Box::new(Value::String(StringRef::Owned(format!(
                                 "invalid integer: {}",
                                 s
@@ -1522,13 +1531,15 @@ impl VM {
             }
             "parse_float" => {
                 let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
+                let tag_ok = self.tag_ok;
+                let tag_err = self.tag_err;
                 match s.trim().parse::<f64>() {
                     Ok(f) => Ok(Value::Union(UnionValue {
-                        tag: "ok".to_string(),
+                        tag: tag_ok,
                         payload: Box::new(Value::Float(f)),
                     })),
                     Err(_) => Ok(Value::Union(UnionValue {
-                        tag: "err".to_string(),
+                        tag: tag_err,
                         payload: Box::new(Value::String(StringRef::Owned(format!(
                             "invalid float: {}",
                             s
@@ -2061,20 +2072,22 @@ impl VM {
             "binary_search" => {
                 let arg = &self.registers[base + a + 1];
                 let target = self.registers[base + a + 2].clone();
+                let tag_ok = self.tag_ok;
+                let tag_err = self.tag_err;
                 if let Value::List(l) = arg {
                     match l.binary_search(&target) {
                         Ok(idx) => Ok(Value::Union(UnionValue {
-                            tag: "ok".to_string(),
+                            tag: tag_ok,
                             payload: Box::new(Value::Int(idx as i64)),
                         })),
                         Err(idx) => Ok(Value::Union(UnionValue {
-                            tag: "err".to_string(),
+                            tag: tag_err,
                             payload: Box::new(Value::Int(idx as i64)),
                         })),
                     }
                 } else {
                     Ok(Value::Union(UnionValue {
-                        tag: "err".to_string(),
+                        tag: tag_err,
                         payload: Box::new(Value::Int(0)),
                     }))
                 }
@@ -3590,20 +3603,22 @@ impl VM {
             121 => {
                 // PARSE_INT: parse string to int, return result type
                 let s = value_to_str_cow(arg, &self.strings);
+                let tag_ok = self.tag_ok;
+                let tag_err = self.tag_err;
                 match s.trim().parse::<i64>() {
                     Ok(n) => Ok(Value::Union(UnionValue {
-                        tag: "ok".to_string(),
+                        tag: tag_ok,
                         payload: Box::new(Value::Int(n)),
                     })),
                     Err(_) => {
                         // Try BigInt
                         match s.trim().parse::<BigInt>() {
                             Ok(n) => Ok(Value::Union(UnionValue {
-                                tag: "ok".to_string(),
+                                tag: tag_ok,
                                 payload: Box::new(Value::BigInt(n)),
                             })),
                             Err(_) => Ok(Value::Union(UnionValue {
-                                tag: "err".to_string(),
+                                tag: tag_err,
                                 payload: Box::new(Value::String(StringRef::Owned(format!(
                                     "invalid integer: {}",
                                     s
@@ -3616,13 +3631,15 @@ impl VM {
             122 => {
                 // PARSE_FLOAT: parse string to float, return result type
                 let s = value_to_str_cow(arg, &self.strings);
+                let tag_ok = self.tag_ok;
+                let tag_err = self.tag_err;
                 match s.trim().parse::<f64>() {
                     Ok(f) => Ok(Value::Union(UnionValue {
-                        tag: "ok".to_string(),
+                        tag: tag_ok,
                         payload: Box::new(Value::Float(f)),
                     })),
                     Err(_) => Ok(Value::Union(UnionValue {
-                        tag: "err".to_string(),
+                        tag: tag_err,
                         payload: Box::new(Value::String(StringRef::Owned(format!(
                             "invalid float: {}",
                             s
@@ -3722,20 +3739,22 @@ impl VM {
             132 => {
                 // BINARY_SEARCH: binary search sorted list, return result[Int, Int]
                 let target = self.registers[base + arg_reg + 1].clone();
+                let tag_ok = self.tag_ok;
+                let tag_err = self.tag_err;
                 if let Value::List(l) = arg {
                     match l.binary_search(&target) {
                         Ok(idx) => Ok(Value::Union(UnionValue {
-                            tag: "ok".to_string(),
+                            tag: tag_ok,
                             payload: Box::new(Value::Int(idx as i64)),
                         })),
                         Err(idx) => Ok(Value::Union(UnionValue {
-                            tag: "err".to_string(),
+                            tag: tag_err,
                             payload: Box::new(Value::Int(idx as i64)),
                         })),
                     }
                 } else {
                     Ok(Value::Union(UnionValue {
-                        tag: "err".to_string(),
+                        tag: tag_err,
                         payload: Box::new(Value::Int(0)),
                     }))
                 }

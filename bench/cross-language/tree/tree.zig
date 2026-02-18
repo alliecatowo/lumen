@@ -33,8 +33,11 @@ pub fn main() !void {
     const tree = buildTree(18);
     const checksum = checkTree(tree);
 
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("Checksum: {d}\n", .{checksum});
+    const stdout_file = std.fs.File.stdout();
+    var buf: [4096]u8 = undefined;
+    var w = stdout_file.writer(&buf);
+    try w.interface.print("Checksum: {d}\n", .{checksum});
+    try w.interface.flush();
 
     arena.deinit();
 }

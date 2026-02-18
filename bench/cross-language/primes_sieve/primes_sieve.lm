@@ -1,0 +1,43 @@
+# Sieve of Eratosthenes — primes up to 1,000,000
+# Lumen limitation: No index assignment (list[i] = val doesn't work).
+# Lumen limitation: Function calls inside while loops that update outer
+# variables cause register clobbering, so prime check is inlined.
+# Uses trial division as a workaround. Same output, different algorithm.
+# Trial division is O(n*sqrt(n)) vs sieve's O(n*log(log(n))), so this
+# will be significantly slower — that's expected and noted.
+
+cell main() -> Null
+  let limit = 1000000
+  let count = 0
+  let n = 2
+  while n <= limit
+    # Inline trial division
+    let is_prime = true
+    if n < 2
+      is_prime = false
+    end
+    if n >= 4
+      if n % 2 == 0
+        is_prime = false
+      end
+    end
+    if is_prime
+      if n >= 9
+        let i = 3
+        while i * i <= n
+          if n % i == 0
+            is_prime = false
+          end
+          i = i + 2
+        end
+      end
+    end
+    if is_prime
+      count = count + 1
+    end
+    n = n + 1
+  end
+
+  print("primes_sieve(1000000): count = " + to_string(count))
+  return null
+end

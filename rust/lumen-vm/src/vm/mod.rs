@@ -342,6 +342,9 @@ pub struct VM {
     /// Tiered JIT compilation engine. Tracks call counts and compiles hot cells
     /// to native code via Cranelift.
     pub jit_tier: JitTier,
+    /// Pre-interned tag IDs for common union tags ("ok", "err").
+    pub tag_ok: u32,
+    pub tag_err: u32,
 }
 
 const MAX_AWAIT_RETRIES: u32 = 10_000;
@@ -349,8 +352,11 @@ const DEFAULT_MAX_INSTRUCTIONS: u64 = 10_000_000_000;
 
 impl VM {
     pub fn new() -> Self {
+        let mut strings = StringTable::new();
+        let tag_ok = strings.intern("ok");
+        let tag_err = strings.intern("err");
         Self {
-            strings: StringTable::new(),
+            strings,
             types: TypeTable::new(),
             registers: Vec::new(),
             frames: Vec::new(),
@@ -381,6 +387,8 @@ impl VM {
             effect_budgets: HashMap::new(),
             cell_index_cache: HashMap::new(),
             jit_tier: JitTier::disabled(),
+            tag_ok,
+            tag_err,
         }
     }
 
@@ -1708,8 +1716,9 @@ impl VM {
                     self.registers[base + a] = Value::new_record(RecordValue { type_name, fields });
                 }
                 OpCode::NewUnion => {
-                    let tag =
+                    let tag_str =
                         value_to_str_cow(&self.registers[base + b], &self.strings).into_owned();
+                    let tag = self.strings.intern(&tag_str);
                     let payload = Box::new(self.registers[base + c].clone());
                     self.registers[base + a] = Value::Union(UnionValue { tag, payload });
                 }
@@ -2228,7 +2237,7 @@ impl VM {
                 OpCode::Is => {
                     let val = &self.registers[base + b];
                     let type_str = value_to_str_cow(&self.registers[base + c], &self.strings);
-                    let matches = val.type_name() == type_str.as_ref();
+                    let matches = val.type_name_resolved(&self.strings) == type_str.as_ref();
                     self.registers[base + a] = Value::Bool(matches);
                 }
                 OpCode::NullCo => {
@@ -2483,7 +2492,7 @@ impl VM {
                     if let Some(arg_map_reg) = arg_map_reg {
                         if let Some(Value::Map(m)) = self.registers.get(arg_map_reg) {
                             for (k, v) in m.iter() {
-                                args_map.insert(k.clone(), value_to_json(v));
+                                args_map.insert(k.clone(), value_to_json(v, &self.strings));
                             }
                         }
                     }
@@ -2685,9 +2694,9 @@ impl VM {
                 // Type checks
                 OpCode::IsVariant => {
                     let val = &self.registers[base + a];
-                    let tag = self.strings.resolve(instr.bx() as u32).unwrap_or("");
+                    let tag_id = instr.bx() as u32;
                     let matched = match val {
-                        Value::Union(u) => u.tag == tag,
+                        Value::Union(u) => u.tag == tag_id,
                         _ => false,
                     };
                     if matched {
@@ -2695,10 +2704,15 @@ impl VM {
                     }
                 }
                 OpCode::Unbox => {
-                    let val = &self.registers[base + b];
+                    // Move-semantics: take ownership of the source register to avoid
+                    // cloning the Box<Value> payload. The source register is left as
+                    // Null (safe because the compiler treats it as consumed).
+                    let val = std::mem::replace(&mut self.registers[base + b], Value::Null);
                     if let Value::Union(u) = val {
-                        self.registers[base + a] = *u.payload.clone();
+                        self.registers[base + a] = *u.payload;
                     } else {
+                        // Not a union — put the value back and set dest to Null
+                        self.registers[base + b] = val;
                         self.registers[base + a] = Value::Null;
                     }
                 }

@@ -7,7 +7,7 @@
 //! [`CheckpointEngine`] wraps a store and provides higher-level operations such
 //! as `latest()` and `prune()`.
 
-use crate::snapshot::{Snapshot, SnapshotError, SnapshotId};
+use crate::services::snapshot::{Snapshot, SnapshotError, SnapshotId};
 use std::fs;
 use std::path::PathBuf;
 
@@ -204,7 +204,7 @@ impl CheckpointEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::snapshot::*;
+    use crate::services::snapshot::*;
     use std::env;
 
     /// Create a throwaway temp dir that won't collide with other tests.

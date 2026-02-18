@@ -9,7 +9,7 @@
 //! # Example
 //!
 //! ```rust
-//! use lumen_runtime::idempotency::IdempotencyStore;
+//! use lumen_rt::services::idempotency::IdempotencyStore;
 //!
 //! let mut store = IdempotencyStore::new();
 //! let result = store.check_or_execute("fetch-user-42", || {

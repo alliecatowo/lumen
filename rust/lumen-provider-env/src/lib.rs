@@ -12,7 +12,7 @@
 //!
 //! All tools return JSON values compatible with Lumen's type system.
 
-use lumen_runtime::tools::{ToolError, ToolProvider, ToolSchema};
+use lumen_rt::services::tools::{ToolError, ToolProvider, ToolSchema};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;

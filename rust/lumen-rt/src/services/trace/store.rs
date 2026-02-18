@@ -1,7 +1,7 @@
 //! JSONL trace file writer with hash-chaining.
 
-use crate::trace::events::{TraceEvent, TraceEventKind};
-use crate::trace::hasher::{canonical_json, sha256_hash};
+use crate::services::trace::events::{TraceEvent, TraceEventKind};
+use crate::services::trace::hasher::{canonical_json, sha256_hash};
 use chrono::Utc;
 use serde_json::json;
 use std::fs::{self, File, OpenOptions};

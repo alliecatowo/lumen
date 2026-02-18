@@ -20,4 +20,4 @@ num-bigint = { workspace = true, features = ["serde"] }
 num-traits = { workspace = true }
 
 [dev-dependencies]
-lumen-vm = { path = "../lumen-vm", version = "0.5.0" }
+lumen-rt = { path = "../lumen-rt", version = "0.5.0" }

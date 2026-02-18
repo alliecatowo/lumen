@@ -2,8 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use lumen_compiler::{compile_raw_with_imports, compile_with_imports};
-use lumen_vm::values::Value;
-use lumen_vm::vm::VM;
+use lumen_rt::values::Value;
+use lumen_rt::vm::VM;
 
 fn std_testing_module_source() -> String {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

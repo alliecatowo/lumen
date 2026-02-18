@@ -20,9 +20,9 @@
 //! Each spawned task runs on its own OS thread (via [`std::thread::spawn`]).
 //! This matches the current Lumen scheduler model which uses OS threads with
 //! work-stealing.  A future iteration may integrate directly with the
-//! [`Scheduler`](crate::scheduler::Scheduler) thread pool.
+//! [`Scheduler`](crate::services::scheduler::Scheduler) thread pool.
 
-use crate::process::ProcessId;
+use crate::services::process::ProcessId;
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};

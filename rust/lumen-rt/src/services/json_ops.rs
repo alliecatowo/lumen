@@ -7,7 +7,7 @@
 //! # Example
 //!
 //! ```rust
-//! use lumen_runtime::json_ops::{json_get, json_merge, json_flatten, json_diff};
+//! use lumen_rt::services::json_ops::{json_get, json_merge, json_flatten, json_diff};
 //! use serde_json::json;
 //!
 //! let data = json!({"user": {"name": "Alice", "age": 30}});
@@ -29,7 +29,7 @@ use serde_json::{Map, Value};
 /// # Examples
 ///
 /// ```rust
-/// use lumen_runtime::json_ops::json_get;
+/// use lumen_rt::services::json_ops::json_get;
 /// use serde_json::{json, Value};
 ///
 /// let v = json!({"a": {"b": [10, 20, 30]}});
@@ -81,7 +81,7 @@ pub fn json_get(value: &Value, path: &str) -> Value {
 /// # Examples
 ///
 /// ```rust
-/// use lumen_runtime::json_ops::json_merge;
+/// use lumen_rt::services::json_ops::json_merge;
 /// use serde_json::json;
 ///
 /// let a = json!({"x": 1, "nested": {"a": 1}});
@@ -121,7 +121,7 @@ pub fn json_merge(a: &Value, b: &Value) -> Value {
 /// # Examples
 ///
 /// ```rust
-/// use lumen_runtime::json_ops::json_flatten;
+/// use lumen_rt::services::json_ops::json_flatten;
 /// use serde_json::json;
 ///
 /// let v = json!({"a": {"b": 1, "c": [2, 3]}});
@@ -185,7 +185,7 @@ fn flatten_recursive(value: &Value, prefix: &str, out: &mut Map<String, Value>) 
 /// # Examples
 ///
 /// ```rust
-/// use lumen_runtime::json_ops::json_diff;
+/// use lumen_rt::services::json_ops::json_diff;
 /// use serde_json::json;
 ///
 /// let a = json!({"x": 1, "y": 2});

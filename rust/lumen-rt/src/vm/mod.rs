@@ -21,7 +21,7 @@ use lumen_core::values::{
     UnionValue, Value,
 };
 
-use lumen_runtime::tools::{ProviderRegistry, ToolDispatcher, ToolRequest};
+use crate::services::tools::{ProviderRegistry, ToolDispatcher, ToolRequest};
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -3327,10 +3327,10 @@ impl Default for VM {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lumen_compiler::compile as compile_lumen;
-    use lumen_runtime::tools::{
+    use crate::services::tools::{
         StubDispatcher, ToolError as RtToolError, ToolProvider, ToolSchema,
     };
+    use lumen_compiler::compile as compile_lumen;
 
     fn run_main(source: &str) -> Value {
         let md = format!("# test\n\n```lumen\n{}\n```\n", source.trim());

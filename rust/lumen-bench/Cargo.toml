@@ -8,7 +8,7 @@ publish = false
 
 [dependencies]
 lumen-compiler = { path = "../lumen-compiler" }
-lumen-vm = { path = "../lumen-vm" }
+lumen-rt = { path = "../lumen-rt" }
 criterion = { version = "0.5", features = ["html_reports"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

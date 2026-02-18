@@ -7,6 +7,8 @@
 pub mod arena;
 pub mod gc;
 pub mod immix;
+pub mod interpreter;
+pub mod intrinsics;
 pub mod jit_tier;
 pub mod parity_concurrency;
 pub mod tagged;

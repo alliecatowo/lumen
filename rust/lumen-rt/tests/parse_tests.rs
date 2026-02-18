@@ -3,8 +3,8 @@
 //! (Union with "ok"/"err" tags) instead of null on failure.
 
 use lumen_compiler::compile;
-use lumen_vm::values::{UnionValue, Value};
-use lumen_vm::vm::VM;
+use lumen_rt::values::{UnionValue, Value};
+use lumen_rt::vm::VM;
 use std::sync::Arc;
 
 /// Helper: wrap raw Lumen code in markdown, compile, run `main`, return the VM and result.

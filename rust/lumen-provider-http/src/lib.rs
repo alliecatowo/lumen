@@ -9,7 +9,7 @@
 //! Each tool accepts a JSON object with `url`, optional `headers`, and optional `body`,
 //! and returns a JSON object with `status`, `body`, and `headers`.
 
-use lumen_runtime::tools::{ToolError, ToolProvider, ToolSchema};
+use lumen_rt::services::tools::{ToolError, ToolProvider, ToolSchema};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

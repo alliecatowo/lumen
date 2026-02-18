@@ -1,10 +1,92 @@
 # lumen-wasm
 
-WebAssembly bindings for the Lumen compiler and VM.
+**WebAssembly bindings for the Lumen compiler and VM.**
 
-This crate provides a WASM-compatible interface for compiling and executing Lumen programs in browser and WASI environments.
+## Overview
 
-## Prerequisites
+`lumen-wasm` provides WASM-compatible JavaScript/TypeScript bindings for compiling and executing Lumen programs in browser and Node.js environments. It compiles the entire Lumen compiler and VM to WebAssembly using Rust's wasm-pack toolchain, enabling zero-latency AI inference and Lumen code execution directly in web browsers or server-side JavaScript runtimes.
+
+The crate exposes four main functions (`check`, `compile`, `run`, `version`) via wasm-bindgen, allowing JavaScript applications to type-check, compile, and execute Lumen source code without requiring a native Lumen installation. This enables use cases like interactive code playgrounds, browser-based AI agents, edge function execution, and client-side model inference with Lumen's AI-native features.
+
+The VM-to-WASM compilation strategy leverages the existing compiler and runtime infrastructure with minimal WASM-specific glue code. All core language features work in WASM except those requiring OS-level I/O (filesystem access in browsers, though WASI supports filesystem operations). See `docs/WASM_STRATEGY.md` for the complete architectural rationale and roadmap.
+
+## Architecture
+
+The crate is organized as a thin wasm-bindgen wrapper around the core Lumen compiler and VM:
+
+| Module | Path | Purpose |
+|--------|------|---------|
+| **Main module** | `src/lib.rs` | WASM entry points (`check`, `compile`, `run`, `version`) |
+| **Result wrapper** | `src/lib.rs` (LumenResult) | JavaScript-friendly result type with `.is_ok()`, `.is_err()`, `.to_json()` |
+
+**Build targets:**
+- **Web** (`--target web`) — ES modules for browsers
+- **Node.js** (`--target nodejs`) — CommonJS for Node.js
+- **WASI** (`--target wasm32-wasi`) — WASI for Wasmtime, Wasmer, etc.
+
+**Key design decisions:**
+- **Full VM compilation**: Compiles the entire VM to WASM instead of implementing a separate WASM-specific runtime
+- **Single-file execution**: No multi-file imports yet (planned for future phase)
+- **Synchronous API**: All functions are synchronous (no async/await) for simplicity
+- **JSON serialization**: Results are JSON strings for easy JavaScript interop
+- **Size optimization**: Profile optimized for small binary size (`opt-level = "z"`, LTO enabled)
+
+## Key Types
+
+### LumenResult
+
+The main result type returned by all WASM functions:
+
+```rust
+#[wasm_bindgen]
+pub struct LumenResult {
+    success: bool,
+    data: String,
+}
+```
+
+**Methods:**
+- `is_ok() -> bool` — Returns `true` if successful
+- `is_err() -> bool` — Returns `true` if failed
+- `to_json() -> String` — Returns JSON string: `{"ok": "..."}` or `{"error": "..."}`
+
+## WASM API
+
+### check(source: &str) -> LumenResult
+
+Type-check Lumen source code without compiling or executing.
+
+**Returns:**
+- Success: `{"ok": "Type-checked successfully"}`
+- Error: `{"error": "error message with diagnostics"}`
+
+### compile(source: &str) -> LumenResult
+
+Compile Lumen source to LIR JSON (intermediate representation).
+
+**Returns:**
+- Success: `{"ok": "<LIR JSON>"}`
+- Error: `{"error": "error message with diagnostics"}`
+
+### run(source: &str, cell_name: Option<String>) -> LumenResult
+
+Compile and execute Lumen source code, returning the result.
+
+**Parameters:**
+- `source` — Lumen source code string
+- `cell_name` — Cell to execute (default: `"main"`)
+
+**Returns:**
+- Success: `{"ok": "<output>"}`
+- Error: `{"error": "error message"}`
+
+### version() -> String
+
+Get the Lumen compiler version string (e.g., `"0.5.0"`).
+
+## Usage
+
+### Prerequisites
 
 Install wasm-pack:
 
@@ -12,203 +94,214 @@ Install wasm-pack:
 cargo install wasm-pack
 ```
 
-## Building
-
-### Browser Target
+Install the `wasm32-wasi` target for WASI builds:
 
 ```bash
-wasm-pack build --target web
+rustup target add wasm32-wasi
 ```
 
-Or use the CLI:
+### Building for Browser (Web Target)
 
 ```bash
+# Using wasm-pack directly
+wasm-pack build --target web
+
+# Or using Lumen CLI
 lumen build wasm --target web
 ```
 
-Output in `pkg/`:
-- `lumen_wasm.js` - JavaScript glue code
-- `lumen_wasm_bg.wasm` - WASM binary
-- `lumen_wasm.d.ts` - TypeScript definitions
+**Output in `pkg/` directory:**
+- `lumen_wasm.js` — JavaScript glue code (ES modules)
+- `lumen_wasm_bg.wasm` — WebAssembly binary
+- `lumen_wasm.d.ts` — TypeScript type definitions
 
-### Node.js Target
+### Building for Node.js
 
 ```bash
+# Using wasm-pack directly
 wasm-pack build --target nodejs
-```
 
-Or:
-
-```bash
+# Or using Lumen CLI
 lumen build wasm --target nodejs
 ```
 
-### WASI Target
+**Output:** CommonJS-compatible JavaScript in `pkg/`
+
+### Building for WASI
 
 ```bash
-cargo build --target wasm32-wasi
+cargo build --target wasm32-wasi --release
 ```
 
-(Requires `wasm32-wasi` target installed: `rustup target add wasm32-wasi`)
+**Output:** `target/wasm32-wasi/release/lumen_wasm.wasm`
 
-## Usage
-
-### Browser
+### Browser Usage
 
 ```html
-<script type="module">
-import init, { run, compile, check, version } from './pkg/lumen_wasm.js';
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Lumen WASM Demo</title>
+</head>
+<body>
+    <script type="module">
+    import init, { run, compile, check, version } from './pkg/lumen_wasm.js';
 
-await init();
+    // Initialize the WASM module
+    await init();
 
-const source = `
-cell main() -> Int
-    42
-end
-`;
+    const source = `
+    cell factorial(n: Int) -> Int
+        if n <= 1
+            return 1
+        end
+        return n * factorial(n - 1)
+    end
 
-// Type-check
-const checkResult = check(source);
-console.log(checkResult.to_json());
+    cell main() -> Int
+        return factorial(5)
+    end
+    `;
 
-// Compile to LIR
-const lirResult = compile(source);
-console.log(lirResult.to_json());
+    // Type-check
+    const checkResult = check(source);
+    console.log("Type-check:", checkResult.to_json());
 
-// Execute
-const runResult = run(source, "main");
-console.log(runResult.to_json());
+    // Compile to LIR
+    const lirResult = compile(source);
+    if (lirResult.is_ok()) {
+        console.log("Compiled LIR:", JSON.parse(lirResult.to_json()).ok);
+    }
 
-// Get version
-console.log("Lumen version:", version());
-</script>
+    // Execute
+    const runResult = run(source, "main");
+    const parsed = JSON.parse(runResult.to_json());
+    
+    if (parsed.ok) {
+        console.log("Execution result:", parsed.ok);  // "120"
+    } else {
+        console.error("Execution error:", parsed.error);
+    }
+
+    // Get version
+    console.log("Lumen version:", version());
+    </script>
+</body>
+</html>
 ```
 
-### Node.js
+### Node.js Usage
 
 ```javascript
 const { run, check, compile, version } = require('./pkg/lumen_wasm.js');
 
 const source = `
-cell factorial(n: Int) -> Int
-    if n <= 1
-        1
-    else
-        n * factorial(n - 1)
-    end
+cell add(a: Int, b: Int) -> Int
+    return a + b
 end
 
 cell main() -> Int
-    factorial(5)
+    return add(40, 2)
 end
 `;
 
-const result = run(source, "main");
-const parsed = JSON.parse(result.to_json());
+// Type-check
+const checkResult = check(source);
+console.log("Type-check:", checkResult.to_json());
+
+// Compile
+const compileResult = compile(source);
+if (compileResult.is_ok()) {
+    console.log("Compiled successfully");
+}
+
+// Execute
+const runResult = run(source, "main");
+const parsed = JSON.parse(runResult.to_json());
 
 if (parsed.ok) {
-    console.log("Result:", parsed.ok);
+    console.log("Result:", parsed.ok);  // "42"
 } else {
     console.error("Error:", parsed.error);
 }
+
+console.log("Version:", version());  // "0.5.0"
 ```
 
-### Wasmtime (WASI)
+### WASI Usage with Wasmtime
 
 ```bash
+# Build for WASI
 cargo build --target wasm32-wasi --release
+
+# Run with Wasmtime
 wasmtime target/wasm32-wasi/release/lumen_wasm.wasm
 ```
 
-## API
+WASI targets support filesystem access and other OS-level features not available in browsers.
 
-### `check(source: &str) -> LumenResult`
+## Testing
 
-Type-check Lumen source code.
+Run Rust tests:
 
-Returns:
-- Success: `{"ok": "Type-checked successfully"}`
-- Error: `{"error": "error message with diagnostics"}`
+```bash
+cargo test -p lumen-wasm
+```
 
-### `compile(source: &str) -> LumenResult`
+Run WASM tests in headless browser:
 
-Compile Lumen source to LIR JSON.
+```bash
+# Firefox
+wasm-pack test --headless --firefox
 
-Returns:
-- Success: `{"ok": "<LIR JSON>"}`
-- Error: `{"error": "error message with diagnostics"}`
+# Chrome
+wasm-pack test --headless --chrome
+```
 
-### `run(source: &str, cell_name: Option<String>) -> LumenResult`
-
-Compile and execute Lumen source.
-
-Parameters:
-- `source` - Lumen source code
-- `cell_name` - Cell to execute (default: "main")
-
-Returns:
-- Success: `{"ok": "<output>"}`
-- Error: `{"error": "error message"}`
-
-### `version() -> String`
-
-Get the Lumen compiler version.
-
-### `LumenResult`
-
-Result wrapper with helper methods:
-
-- `is_ok() -> bool` - Returns true if successful
-- `is_err() -> bool` - Returns true if failed
-- `to_json() -> String` - Get result as JSON string
-
-## Examples
-
-See `examples/wasm_hello.lm.md` for Lumen code examples.
-
-See `examples/wasm_browser.html` for a complete browser demo.
-
-## Current Limitations
-
-- No filesystem access in browser (WASI supports filesystem)
-- No tool providers yet (coming in Phase 3)
-- No trace recording (requires file I/O)
-- No multi-file imports yet
+The test suite validates all public API functions (`check`, `compile`, `run`, `version`) and error handling.
 
 ## Size Optimization
 
-The release profile is optimized for small binary size:
+The WASM binary is optimized for small size using aggressive compiler settings:
 
 ```toml
 [profile.release]
-opt-level = "z"       # Optimize for size
+opt-level = "z"       # Optimize aggressively for size
 lto = true            # Link-time optimization
-codegen-units = 1     # Single codegen unit
-panic = "abort"       # Smaller panic handler
+codegen-units = 1     # Single codegen unit (slower build, smaller binary)
+panic = "abort"       # Abort on panic (smaller handler)
 ```
 
-Further optimize with `wasm-opt`:
+Further optimize using `wasm-opt` from Binaryen:
 
 ```bash
+# Install wasm-opt (part of Binaryen)
+npm install -g wasm-opt
+
+# Optimize for size
 wasm-opt -Oz -o optimized.wasm pkg/lumen_wasm_bg.wasm
 ```
 
-## Development
+The `-Oz` flag applies maximum size optimizations. Typical reductions: 10-30% smaller than unoptimized builds.
 
-Run tests:
+## Current Limitations
 
-```bash
-cargo test
-```
+- **No filesystem in browsers**: File I/O operations will fail (use WASI target for filesystem access)
+- **No tool providers yet**: HTTP, JSON, FS providers not yet available in WASM (planned for Phase 3)
+- **No trace recording**: Requires file I/O (trace system not yet WASM-compatible)
+- **No multi-file imports**: Only single-file compilation supported (module system work in progress)
+- **Synchronous API**: All operations block (async support planned)
 
-Run WASM tests:
+See `docs/WASM_STRATEGY.md` for the full roadmap and planned enhancements.
 
-```bash
-wasm-pack test --headless --firefox
-```
+## Examples
 
-## See Also
+- **`examples/wasm_hello.lm.md`** — Example Lumen programs demonstrating WASM features
+- **`examples/wasm_browser.html`** — Complete interactive browser demo with editor
 
-- `docs/WASM_STRATEGY.md` - Overall WASM compilation strategy
-- `examples/wasm_hello.lm.md` - Example Lumen programs for WASM
-- `examples/wasm_browser.html` - Interactive browser demo
+## Related Crates
+
+- **[lumen-compiler](../lumen-compiler/)** — Compiler pipeline (compiled to WASM)
+- **[lumen-rt](../lumen-rt/)** — VM and runtime (compiled to WASM)
+- **[lumen-core](../lumen-core/)** — Shared types (LIR, values, types)
+- **[docs/WASM_STRATEGY.md](../../docs/WASM_STRATEGY.md)** — Overall WASM strategy and roadmap

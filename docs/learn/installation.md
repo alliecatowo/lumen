@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- **Rust** 1.70+ (for building from source)
+- **Rust** 1.75+ (2021 edition) (for building from source)
 - **Cargo** (comes with Rust)
 
 ## Install from Crates.io

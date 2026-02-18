@@ -155,6 +155,127 @@ fn register_string_helpers(builder: &mut JITBuilder) {
 }
 
 // ---------------------------------------------------------------------------
+// Record runtime helpers (extern "C" functions callable from JIT code)
+// ---------------------------------------------------------------------------
+
+use lumen_core::values::{RecordValue, Value};
+
+/// Get a field from a Record by field name.
+/// Returns a `*mut Value` as i64 (boxed Value).
+/// If the record is null or the field doesn't exist, returns a boxed Value::Null.
+///
+/// # Safety
+/// `record_ptr` must be a valid `*mut Value` pointer pointing to a `Value::Record`.
+/// `field_name_ptr` must be a valid `*const u8` pointer to UTF-8 bytes.
+extern "C" fn jit_rt_record_get_field(
+    record_ptr: i64,
+    field_name_ptr: *const u8,
+    field_name_len: usize,
+) -> i64 {
+    if record_ptr == 0 {
+        // Null record, return boxed null
+        return Box::into_raw(Box::new(Value::Null)) as i64;
+    }
+
+    let value = unsafe { &*(record_ptr as *const Value) };
+    let field_name = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(field_name_ptr, field_name_len))
+    };
+
+    let result = match value {
+        Value::Record(r) => r.fields.get(field_name).cloned().unwrap_or(Value::Null),
+        _ => Value::Null,
+    };
+
+    Box::into_raw(Box::new(result)) as i64
+}
+
+/// Set a field in a Record by field name.
+/// Creates a new Record with the updated field (copy-on-write).
+/// Returns a `*mut Value` as i64 (boxed Value::Record).
+///
+/// # Safety
+/// `record_ptr` must be a valid `*mut Value` pointer pointing to a `Value::Record`.
+/// `field_name_ptr` must be a valid `*const u8` pointer to UTF-8 bytes.
+/// `value_ptr` must be a valid `*mut Value` pointer.
+extern "C" fn jit_rt_record_set_field(
+    record_ptr: i64,
+    field_name_ptr: *const u8,
+    field_name_len: usize,
+    value_ptr: i64,
+) -> i64 {
+    if record_ptr == 0 {
+        // Can't set field on null, return null
+        return Box::into_raw(Box::new(Value::Null)) as i64;
+    }
+
+    let value = unsafe { &*(record_ptr as *const Value) };
+    let field_name = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(field_name_ptr, field_name_len))
+    };
+    let new_value = if value_ptr == 0 {
+        Value::Null
+    } else {
+        unsafe { (*(value_ptr as *const Value)).clone() }
+    };
+
+    let result = match value {
+        Value::Record(r) => {
+            // Clone the record and update the field
+            let mut new_fields = r.fields.clone();
+            new_fields.insert(field_name.to_string(), new_value);
+            Value::new_record(RecordValue {
+                type_name: r.type_name.clone(),
+                fields: new_fields,
+            })
+        }
+        _ => Value::Null,
+    };
+
+    Box::into_raw(Box::new(result)) as i64
+}
+
+/// Clone a Value (for record field access results).
+/// Returns a new `*mut Value` as i64.
+///
+/// # Safety
+/// `value_ptr` must be a valid `*mut Value` pointer.
+extern "C" fn jit_rt_value_clone(value_ptr: i64) -> i64 {
+    if value_ptr == 0 {
+        return 0;
+    }
+    let value = unsafe { &*(value_ptr as *const Value) };
+    Box::into_raw(Box::new(value.clone())) as i64
+}
+
+/// Free a boxed Value.
+///
+/// # Safety
+/// `value_ptr` must be a valid `*mut Value` pointer that was created by one of the
+/// JIT runtime functions. Must not be called twice on the same pointer.
+extern "C" fn jit_rt_value_drop(value_ptr: i64) {
+    if value_ptr != 0 {
+        unsafe {
+            let _ = Box::from_raw(value_ptr as *mut Value);
+        }
+    }
+}
+
+/// Register all JIT record runtime helper symbols with a JITBuilder.
+fn register_record_helpers(builder: &mut JITBuilder) {
+    builder.symbol(
+        "jit_rt_record_get_field",
+        jit_rt_record_get_field as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_record_set_field",
+        jit_rt_record_set_field as *const u8,
+    );
+    builder.symbol("jit_rt_value_clone", jit_rt_value_clone as *const u8);
+    builder.symbol("jit_rt_value_drop", jit_rt_value_drop as *const u8);
+}
+
+// ---------------------------------------------------------------------------
 // JIT Intrinsic Runtime Helpers
 // ---------------------------------------------------------------------------
 
@@ -450,6 +571,9 @@ impl JitEngine {
 
         // Register string runtime helper symbols so JIT code can call them.
         register_string_helpers(&mut builder);
+
+        // Register record runtime helper symbols so JIT code can call them.
+        register_record_helpers(&mut builder);
 
         // Register intrinsic runtime helper symbols so JIT code can call builtins.
         register_intrinsic_helpers(&mut builder);
@@ -829,6 +953,7 @@ fn lower_module_jit(
             pointer_type,
             func_id,
             &func_ids,
+            &lir.strings,
         )?;
 
         // Keep the cell alive so string constant pointers remain valid.
@@ -863,9 +988,19 @@ fn lower_cell_jit(
     pointer_type: ClifType,
     func_id: FuncId,
     func_ids: &HashMap<String, FuncId>,
+    string_table: &[String],
 ) -> Result<(), CodegenError> {
     // Delegate to the unified IR builder
-    crate::ir::lower_cell(ctx, fb_ctx, cell, module, pointer_type, func_id, func_ids)
+    crate::ir::lower_cell(
+        ctx,
+        fb_ctx,
+        cell,
+        module,
+        pointer_type,
+        func_id,
+        func_ids,
+        string_table,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1515,9 +1650,9 @@ mod tests {
 
     #[test]
     fn jit_compile_record_field_access() {
-        // Test that cells with GetField/SetField compile without errors.
-        // The stub implementation returns 0 for GetField and is a no-op for SetField,
-        // but the important thing is that compilation succeeds.
+        // Test that cells with GetField/SetField compile and execute without errors.
+        // GetField on a null record returns a boxed Value::Null (non-zero pointer).
+        // SetField on a null record returns a boxed Value::Null (non-zero pointer).
         let lir = make_module_with_cells(vec![
             LirCell {
                 name: "access_field".to_string(),
@@ -1526,7 +1661,7 @@ mod tests {
                 registers: 3,
                 constants: vec![],
                 instructions: vec![
-                    Instruction::abx(OpCode::LoadInt, 0, 0), // r0 = 0 (stub record ptr)
+                    Instruction::abx(OpCode::LoadInt, 0, 0), // r0 = 0 (null record ptr)
                     Instruction::abc(OpCode::GetField, 1, 0, 0), // r1 = r0.field[0]
                     Instruction::abc(OpCode::Return, 1, 1, 0), // return r1
                 ],
@@ -1539,9 +1674,9 @@ mod tests {
                 registers: 3,
                 constants: vec![],
                 instructions: vec![
-                    Instruction::abx(OpCode::LoadInt, 0, 0), // r0 = 0 (stub record ptr)
+                    Instruction::abx(OpCode::LoadInt, 0, 0), // r0 = 0 (null record ptr)
                     Instruction::abx(OpCode::LoadInt, 1, 42), // r1 = 42
-                    Instruction::abc(OpCode::SetField, 0, 0, 1), // r0.field[0] = r1
+                    Instruction::abc(OpCode::SetField, 0, 0, 1), // r0.field[0] = r1 (updates r0)
                     Instruction::abc(OpCode::Return, 1, 1, 0), // return r1
                 ],
                 effect_handler_metas: Vec::new(),
@@ -1567,15 +1702,19 @@ mod tests {
         );
 
         // Execute to ensure no runtime traps
+        // GetField on null record returns a boxed Value::Null (non-zero pointer)
         let result = engine
             .execute_jit_nullary("access_field")
-            .expect("GetField stub should execute");
-        assert_eq!(result, 0, "GetField stub returns 0");
+            .expect("GetField should execute");
+        assert_ne!(
+            result, 0,
+            "GetField on null returns boxed Value::Null pointer"
+        );
 
         let result2 = engine
             .execute_jit_nullary("set_field")
-            .expect("SetField stub should execute");
-        assert_eq!(result2, 42, "SetField should return the value register");
+            .expect("SetField should execute");
+        assert_eq!(result2, 42, "SetField returns the value register unchanged");
     }
 
     #[test]

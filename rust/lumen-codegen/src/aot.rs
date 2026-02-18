@@ -107,6 +107,7 @@ pub fn compile_object_module(
             pointer_type,
             func_id,
             &func_ids,
+            &lir.strings,
         )?;
     }
 

@@ -703,7 +703,7 @@ impl VM {
                 let tag_ok = self.tag_ok;
                 let tag_err = self.tag_err;
                 match arg {
-                    Value::Union(u) if u.tag == tag_ok => Ok(*u.payload.clone()),
+                    Value::Union(u) if u.tag == tag_ok => Ok((*u.payload).clone()),
                     Value::Union(u) if u.tag == tag_err => {
                         Err(VmError::Runtime(format!("unwrap on err: {}", u.payload)))
                     }
@@ -715,7 +715,7 @@ impl VM {
                 let default = self.registers[base + a + 2].clone();
                 let tag_ok = self.tag_ok;
                 match arg {
-                    Value::Union(u) if u.tag == tag_ok => Ok(*u.payload.clone()),
+                    Value::Union(u) if u.tag == tag_ok => Ok((*u.payload).clone()),
                     _ => Ok(default),
                 }
             }
@@ -1512,16 +1512,16 @@ impl VM {
                 match s.trim().parse::<i64>() {
                     Ok(n) => Ok(Value::Union(UnionValue {
                         tag: tag_ok,
-                        payload: Box::new(Value::Int(n)),
+                        payload: Arc::new(Value::Int(n)),
                     })),
                     Err(_) => match s.trim().parse::<BigInt>() {
                         Ok(n) => Ok(Value::Union(UnionValue {
                             tag: tag_ok,
-                            payload: Box::new(Value::BigInt(n)),
+                            payload: Arc::new(Value::BigInt(n)),
                         })),
                         Err(_) => Ok(Value::Union(UnionValue {
                             tag: tag_err,
-                            payload: Box::new(Value::String(StringRef::Owned(format!(
+                            payload: Arc::new(Value::String(StringRef::Owned(format!(
                                 "invalid integer: {}",
                                 s
                             )))),
@@ -1536,11 +1536,11 @@ impl VM {
                 match s.trim().parse::<f64>() {
                     Ok(f) => Ok(Value::Union(UnionValue {
                         tag: tag_ok,
-                        payload: Box::new(Value::Float(f)),
+                        payload: Arc::new(Value::Float(f)),
                     })),
                     Err(_) => Ok(Value::Union(UnionValue {
                         tag: tag_err,
-                        payload: Box::new(Value::String(StringRef::Owned(format!(
+                        payload: Arc::new(Value::String(StringRef::Owned(format!(
                             "invalid float: {}",
                             s
                         )))),
@@ -2078,17 +2078,17 @@ impl VM {
                     match l.binary_search(&target) {
                         Ok(idx) => Ok(Value::Union(UnionValue {
                             tag: tag_ok,
-                            payload: Box::new(Value::Int(idx as i64)),
+                            payload: Arc::new(Value::Int(idx as i64)),
                         })),
                         Err(idx) => Ok(Value::Union(UnionValue {
                             tag: tag_err,
-                            payload: Box::new(Value::Int(idx as i64)),
+                            payload: Arc::new(Value::Int(idx as i64)),
                         })),
                     }
                 } else {
                     Ok(Value::Union(UnionValue {
                         tag: tag_err,
-                        payload: Box::new(Value::Int(0)),
+                        payload: Arc::new(Value::Int(0)),
                     }))
                 }
             }
@@ -3608,18 +3608,18 @@ impl VM {
                 match s.trim().parse::<i64>() {
                     Ok(n) => Ok(Value::Union(UnionValue {
                         tag: tag_ok,
-                        payload: Box::new(Value::Int(n)),
+                        payload: Arc::new(Value::Int(n)),
                     })),
                     Err(_) => {
                         // Try BigInt
                         match s.trim().parse::<BigInt>() {
                             Ok(n) => Ok(Value::Union(UnionValue {
                                 tag: tag_ok,
-                                payload: Box::new(Value::BigInt(n)),
+                                payload: Arc::new(Value::BigInt(n)),
                             })),
                             Err(_) => Ok(Value::Union(UnionValue {
                                 tag: tag_err,
-                                payload: Box::new(Value::String(StringRef::Owned(format!(
+                                payload: Arc::new(Value::String(StringRef::Owned(format!(
                                     "invalid integer: {}",
                                     s
                                 )))),
@@ -3636,11 +3636,11 @@ impl VM {
                 match s.trim().parse::<f64>() {
                     Ok(f) => Ok(Value::Union(UnionValue {
                         tag: tag_ok,
-                        payload: Box::new(Value::Float(f)),
+                        payload: Arc::new(Value::Float(f)),
                     })),
                     Err(_) => Ok(Value::Union(UnionValue {
                         tag: tag_err,
-                        payload: Box::new(Value::String(StringRef::Owned(format!(
+                        payload: Arc::new(Value::String(StringRef::Owned(format!(
                             "invalid float: {}",
                             s
                         )))),
@@ -3745,17 +3745,17 @@ impl VM {
                     match l.binary_search(&target) {
                         Ok(idx) => Ok(Value::Union(UnionValue {
                             tag: tag_ok,
-                            payload: Box::new(Value::Int(idx as i64)),
+                            payload: Arc::new(Value::Int(idx as i64)),
                         })),
                         Err(idx) => Ok(Value::Union(UnionValue {
                             tag: tag_err,
-                            payload: Box::new(Value::Int(idx as i64)),
+                            payload: Arc::new(Value::Int(idx as i64)),
                         })),
                     }
                 } else {
                     Ok(Value::Union(UnionValue {
                         tag: tag_err,
-                        payload: Box::new(Value::Int(0)),
+                        payload: Arc::new(Value::Int(0)),
                     }))
                 }
             }

@@ -1,0 +1,15 @@
+# Simple enum test for JIT
+enum Color
+  Red
+  Green
+  Blue
+end
+
+cell make_color() -> Color
+  return Red
+end
+
+cell main() -> Int
+  let c = make_color()
+  return 42
+end

@@ -1,9 +1,9 @@
 //! Wave-26 tests: T166 — Concurrency safety parity checklist.
 //!
 //! At least 35 tests covering every public type, method, and invariant
-//! exposed by `lumen_vm::parity_concurrency`.
+//! exposed by `lumen_rt::parity_concurrency`.
 
-use lumen_vm::parity_concurrency::*;
+use lumen_rt::parity_concurrency::*;
 
 // ===========================================================================
 // ConcurrencyCategory — Display

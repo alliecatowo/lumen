@@ -12,7 +12,7 @@
 //! # Typical usage
 //!
 //! ```rust
-//! use lumen_runtime::reduction::ReductionCounter;
+//! use lumen_rt::services::reduction::ReductionCounter;
 //!
 //! let mut counter = ReductionCounter::new(2000);
 //! // In the VM dispatch loop:

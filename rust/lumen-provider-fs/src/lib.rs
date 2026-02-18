@@ -8,7 +8,7 @@
 //! - `fs.mkdir` — Create directory (recursive)
 //! - `fs.remove` — Remove file or empty directory
 
-use lumen_runtime::tools::{ToolError, ToolProvider, ToolSchema};
+use lumen_rt::services::tools::{ToolError, ToolProvider, ToolSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::Path;

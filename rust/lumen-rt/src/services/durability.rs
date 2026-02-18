@@ -5,7 +5,7 @@
 //! input).  On replay the same log is fed back so that the replayed execution
 //! is bit-for-bit identical to the original.
 
-use crate::snapshot::SnapshotId;
+use crate::services::snapshot::SnapshotId;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::Path;

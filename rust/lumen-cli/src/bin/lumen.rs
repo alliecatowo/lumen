@@ -227,7 +227,7 @@ enum CacheCommands {
 
 /// Register all provider crates into the runtime registry.
 fn register_providers(
-    registry: &mut lumen_runtime::tools::ProviderRegistry,
+    registry: &mut lumen_rt::services::tools::ProviderRegistry,
     #[allow(unused_variables)] config: &config::LumenConfig,
 ) {
     // Auto-register built-in providers (always available by default)
@@ -1097,12 +1097,12 @@ fn cmd_run(
 
     // Load project config and build provider registry
     let config = config::LumenConfig::load();
-    let mut registry = lumen_runtime::tools::ProviderRegistry::new();
+    let mut registry = lumen_rt::services::tools::ProviderRegistry::new();
     register_providers(&mut registry, &config);
 
     // Optionally set up tracing
     let trace_store = trace_dir.map(|dir| {
-        Arc::new(Mutex::new(lumen_runtime::trace::store::TraceStore::new(
+        Arc::new(Mutex::new(lumen_rt::services::trace::store::TraceStore::new(
             &dir,
         )))
     });
@@ -1116,7 +1116,7 @@ fn cmd_run(
     }
 
     println!("{} {}", status_label("Running"), cyan(cell));
-    let mut vm = lumen_vm::vm::VM::new();
+    let mut vm = lumen_rt::vm::VM::new();
     // Enable tiered JIT: with --jit-threshold=0 (default), eligible cells are
     // compiled to native code on their very first call. Use a higher value to
     // defer compilation to only hot cells.
@@ -1132,16 +1132,16 @@ fn cmd_run(
                 return;
             };
             match event {
-                lumen_vm::vm::DebugEvent::Step {
+                lumen_rt::vm::DebugEvent::Step {
                     cell_name,
                     ip,
                     opcode,
                 } => ts.vm_step(cell_name, *ip, opcode),
-                lumen_vm::vm::DebugEvent::CallEnter { cell_name } => ts.call_enter(cell_name),
-                lumen_vm::vm::DebugEvent::CallExit { cell_name, result } => {
+                lumen_rt::vm::DebugEvent::CallEnter { cell_name } => ts.call_enter(cell_name),
+                lumen_rt::vm::DebugEvent::CallExit { cell_name, result } => {
                     ts.call_exit(cell_name, result.type_name())
                 }
-                lumen_vm::vm::DebugEvent::ToolCall {
+                lumen_rt::vm::DebugEvent::ToolCall {
                     cell_name,
                     tool_id,
                     tool_version,
@@ -1157,7 +1157,7 @@ fn cmd_run(
                     *success,
                     message.as_deref(),
                 ),
-                lumen_vm::vm::DebugEvent::SchemaValidate {
+                lumen_rt::vm::DebugEvent::SchemaValidate {
                     cell_name,
                     schema,
                     valid,
@@ -1297,7 +1297,7 @@ fn cmd_trace_show(run_id: &str, trace_dir: &Path, format: TraceShowFormat, verif
     }
 }
 
-fn read_trace_events(path: &Path) -> Result<Vec<lumen_runtime::trace::events::TraceEvent>, String> {
+fn read_trace_events(path: &Path) -> Result<Vec<lumen_rt::services::trace::events::TraceEvent>, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read trace '{}': {}", path.display(), e))?;
 
@@ -1305,28 +1305,28 @@ fn read_trace_events(path: &Path) -> Result<Vec<lumen_runtime::trace::events::Tr
         .lines()
         .enumerate()
         .map(|(idx, line)| {
-            serde_json::from_str::<lumen_runtime::trace::events::TraceEvent>(line)
+            serde_json::from_str::<lumen_rt::services::trace::events::TraceEvent>(line)
                 .map_err(|e| format!("invalid JSON in trace at line {}: {}", idx + 1, e))
         })
         .collect()
 }
 
-fn verify_trace_chain(events: &[lumen_runtime::trace::events::TraceEvent]) -> Result<(), String> {
-    lumen_runtime::trace::store::verify_event_chain(events)
+fn verify_trace_chain(events: &[lumen_rt::services::trace::events::TraceEvent]) -> Result<(), String> {
+    lumen_rt::services::trace::store::verify_event_chain(events)
 }
 
-fn replay_line(event: &lumen_runtime::trace::events::TraceEvent) -> String {
+fn replay_line(event: &lumen_rt::services::trace::events::TraceEvent) -> String {
     let kind = match event.kind {
-        lumen_runtime::trace::events::TraceEventKind::RunStart => "run_start",
-        lumen_runtime::trace::events::TraceEventKind::CellStart => "cell_start",
-        lumen_runtime::trace::events::TraceEventKind::CellEnd => "cell_end",
-        lumen_runtime::trace::events::TraceEventKind::CallEnter => "call_enter",
-        lumen_runtime::trace::events::TraceEventKind::CallExit => "call_exit",
-        lumen_runtime::trace::events::TraceEventKind::VmStep => "vm_step",
-        lumen_runtime::trace::events::TraceEventKind::ToolCall => "tool_call",
-        lumen_runtime::trace::events::TraceEventKind::SchemaValidate => "schema_validate",
-        lumen_runtime::trace::events::TraceEventKind::Error => "error",
-        lumen_runtime::trace::events::TraceEventKind::RunEnd => "run_end",
+        lumen_rt::services::trace::events::TraceEventKind::RunStart => "run_start",
+        lumen_rt::services::trace::events::TraceEventKind::CellStart => "cell_start",
+        lumen_rt::services::trace::events::TraceEventKind::CellEnd => "cell_end",
+        lumen_rt::services::trace::events::TraceEventKind::CallEnter => "call_enter",
+        lumen_rt::services::trace::events::TraceEventKind::CallExit => "call_exit",
+        lumen_rt::services::trace::events::TraceEventKind::VmStep => "vm_step",
+        lumen_rt::services::trace::events::TraceEventKind::ToolCall => "tool_call",
+        lumen_rt::services::trace::events::TraceEventKind::SchemaValidate => "schema_validate",
+        lumen_rt::services::trace::events::TraceEventKind::Error => "error",
+        lumen_rt::services::trace::events::TraceEventKind::RunEnd => "run_end",
     };
 
     let mut parts = vec![format!("{:06}", event.seq), kind.to_string()];
@@ -1355,7 +1355,7 @@ fn replay_line(event: &lumen_runtime::trace::events::TraceEvent) -> String {
 
     if let Some(details) = event.details.as_ref() {
         match event.kind {
-            lumen_runtime::trace::events::TraceEventKind::VmStep => {
+            lumen_rt::services::trace::events::TraceEventKind::VmStep => {
                 if let Some(ip) = details.get("ip").and_then(|value| value.as_u64()) {
                     parts.push(format!("ip={}", ip));
                 }
@@ -1363,7 +1363,7 @@ fn replay_line(event: &lumen_runtime::trace::events::TraceEvent) -> String {
                     parts.push(format!("opcode={}", opcode));
                 }
             }
-            lumen_runtime::trace::events::TraceEventKind::SchemaValidate => {
+            lumen_rt::services::trace::events::TraceEventKind::SchemaValidate => {
                 if let Some(schema) = details.get("schema").and_then(|value| value.as_str()) {
                     parts.push(format!("schema={}", schema));
                 }
@@ -1371,14 +1371,14 @@ fn replay_line(event: &lumen_runtime::trace::events::TraceEvent) -> String {
                     parts.push(format!("valid={}", valid));
                 }
             }
-            lumen_runtime::trace::events::TraceEventKind::CallExit => {
+            lumen_rt::services::trace::events::TraceEventKind::CallExit => {
                 if let Some(result_type) =
                     details.get("result_type").and_then(|value| value.as_str())
                 {
                     parts.push(format!("result_type={}", result_type));
                 }
             }
-            lumen_runtime::trace::events::TraceEventKind::ToolCall => {
+            lumen_rt::services::trace::events::TraceEventKind::ToolCall => {
                 if let Some(success) = details.get("success").and_then(|value| value.as_bool()) {
                     parts.push(format!("success={}", success));
                 }

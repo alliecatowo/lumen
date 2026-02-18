@@ -249,7 +249,7 @@ pub fn decompress(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
 /// Prunes snapshot collections to keep only the N most recent entries.
 ///
 /// Works with any ordered collection of [`Snapshot`] objects (in-memory) or
-/// with a [`CheckpointStore`](crate::checkpoint::CheckpointStore) (on-disk).
+/// with a [`CheckpointStore`](crate::services::checkpoint::CheckpointStore) (on-disk).
 pub struct SnapshotPruner {
     /// Maximum number of snapshots to retain.
     max_retained: usize,
@@ -289,14 +289,14 @@ impl SnapshotPruner {
         removed
     }
 
-    /// Prune snapshots from a [`CheckpointStore`](crate::checkpoint::CheckpointStore),
+    /// Prune snapshots from a [`CheckpointStore`](crate::services::checkpoint::CheckpointStore),
     /// keeping only the `max_retained` most recent snapshot IDs.
     ///
     /// Returns the number of snapshots deleted.
     pub fn prune_store(
         &self,
-        store: &dyn crate::checkpoint::CheckpointStore,
-    ) -> Result<usize, crate::checkpoint::CheckpointError> {
+        store: &dyn crate::services::checkpoint::CheckpointStore,
+    ) -> Result<usize, crate::services::checkpoint::CheckpointError> {
         let mut ids = store.list()?;
         if ids.len() <= self.max_retained {
             return Ok(0);
@@ -637,7 +637,7 @@ mod tests {
 
     #[test]
     fn pruner_store_integration() {
-        use crate::checkpoint::{CheckpointStore, FileCheckpointStore};
+        use crate::services::checkpoint::{CheckpointStore, FileCheckpointStore};
 
         let dir = std::env::temp_dir().join(format!("lumen-pruner-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

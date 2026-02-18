@@ -9,6 +9,7 @@ pub mod emit;
 pub mod ffi;
 pub mod ir;
 pub mod jit;
+pub mod opt;
 pub mod types;
 pub mod wasm;
 pub mod wit;

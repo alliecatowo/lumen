@@ -559,6 +559,13 @@ pub(crate) fn lower_cell<M: Module>(
         &[types::I64, types::I64], // kvpairs_ptr, count
         &[types::I64],
     )?;
+    let collection_len_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_collection_len",
+        &[types::I64], // value_ptr
+        &[types::I64],
+    )?;
     // Declare union runtime helper functions (for JIT enum support).
     let union_new_ref = declare_helper_func(
         module,

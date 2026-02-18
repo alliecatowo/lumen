@@ -3089,12 +3089,19 @@ impl VM {
             }
             71 => {
                 // MERGE - merge two maps (second overwrites first)
+                // Optimized with COW semantics: only clone if Arc has multiple owners
                 let other = &self.registers[base + arg_reg + 1];
                 Ok(match (arg, other) {
                     (Value::Map(m1), Value::Map(m2)) => {
-                        let mut result: BTreeMap<String, Value> = (**m1).clone();
-                        result.extend(m2.iter().map(|(k, v)| (k.clone(), v.clone())));
-                        Value::new_map(result)
+                        // Clone the Arc wrapper first
+                        let mut map_arc = Arc::clone(m1);
+                        // Use make_mut for COW: only clones the BTreeMap if strong_count > 1
+                        let map_mut = Arc::make_mut(&mut map_arc);
+                        // Insert entries from m2
+                        for (k, v) in m2.iter() {
+                            map_mut.insert(k.clone(), v.clone());
+                        }
+                        Value::Map(map_arc)
                     }
                     _ => arg.clone(),
                 })

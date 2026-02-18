@@ -1,0 +1,9 @@
+benchmark,language,run,time_ms
+ackermann,lumen,1,810
+call_overhead,lumen,1,1533
+mandelbrot,lumen,1,26
+int_fib,lumen,1,60
+int_primes,lumen,1,40
+int_sum_loop,lumen,1,389
+list_sum,lumen,1,7
+string_concat,lumen,1,6

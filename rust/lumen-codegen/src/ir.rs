@@ -234,6 +234,8 @@ fn classify_multi_block_regs(
             | OpCode::Intrinsic
             | OpCode::GetField
             | OpCode::SetField
+            | OpCode::GetIndex
+            | OpCode::SetIndex
             | OpCode::Call => {
                 def_blocks_no_init.entry(inst.a).or_default().insert(blk);
             }
@@ -320,6 +322,15 @@ fn classify_multi_block_regs(
             }
             OpCode::SetField => {
                 read_blocks.entry(inst.a).or_default().insert(blk);
+                read_blocks.entry(inst.c).or_default().insert(blk);
+            }
+            OpCode::GetIndex => {
+                read_blocks.entry(inst.b).or_default().insert(blk);
+                read_blocks.entry(inst.c).or_default().insert(blk);
+            }
+            OpCode::SetIndex => {
+                read_blocks.entry(inst.a).or_default().insert(blk);
+                read_blocks.entry(inst.b).or_default().insert(blk);
                 read_blocks.entry(inst.c).or_default().insert(blk);
             }
             _ => {}
@@ -516,6 +527,36 @@ pub(crate) fn lower_cell<M: Module>(
         &mut func,
         "jit_rt_record_set_field",
         &[types::I64, types::I64, types::I64, types::I64], // record_ptr, field_name_ptr, field_name_len, value_ptr
+        &[types::I64],
+    )?;
+    // Declare collection index runtime helper functions (for JIT list/map indexing).
+    let get_index_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_get_index",
+        &[types::I64, types::I64], // collection_ptr, index_ptr
+        &[types::I64],
+    )?;
+    let set_index_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_set_index",
+        &[types::I64, types::I64, types::I64], // collection_ptr, index_ptr, value_ptr
+        &[types::I64],
+    )?;
+    // Declare collection runtime helper functions (for JIT List/Map construction).
+    let new_list_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_new_list",
+        &[types::I64, types::I64], // values_ptr, count
+        &[types::I64],
+    )?;
+    let new_map_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_new_map",
+        &[types::I64, types::I64], // kvpairs_ptr, count
         &[types::I64],
     )?;
     // Declare union runtime helper functions (for JIT enum support).
@@ -2131,6 +2172,101 @@ pub(crate) fn lower_cell<M: Module>(
                     record_set_field_ref,
                     &[record_ptr, field_name_ptr, field_name_len, value_ptr],
                 );
+                let result = builder.inst_results(call)[0];
+                var_types.insert(inst.a as u32, JitVarType::Int);
+                def_var(&mut builder, &mut regs, inst.a, result);
+            }
+
+            // GetIndex: Get element from list/map by index/key
+            // r[a] = r[b][r[c]]
+            OpCode::GetIndex => {
+                let collection_ptr = use_var(&mut builder, &regs, &var_types, inst.b);
+                let index_ptr = use_var(&mut builder, &regs, &var_types, inst.c);
+                let call = builder
+                    .ins()
+                    .call(get_index_ref, &[collection_ptr, index_ptr]);
+                let result = builder.inst_results(call)[0];
+                var_types.insert(inst.a as u32, JitVarType::Int);
+                def_var(&mut builder, &mut regs, inst.a, result);
+            }
+
+            // SetIndex: Set element in list/map by index/key
+            // r[a][r[b]] = r[c]
+            OpCode::SetIndex => {
+                let collection_ptr = use_var(&mut builder, &regs, &var_types, inst.a);
+                let index_ptr = use_var(&mut builder, &regs, &var_types, inst.b);
+                let value_ptr = use_var(&mut builder, &regs, &var_types, inst.c);
+                let call = builder
+                    .ins()
+                    .call(set_index_ref, &[collection_ptr, index_ptr, value_ptr]);
+                let result = builder.inst_results(call)[0];
+                var_types.insert(inst.a as u32, JitVarType::Int);
+                def_var(&mut builder, &mut regs, inst.a, result);
+            }
+
+            // NewList: Create a list from register values
+            // r[a] = List([r[a+1], ..., r[a+b]])
+            OpCode::NewList => {
+                let count = inst.b as usize;
+
+                // Allocate stack space for the array of value pointers
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    (count * 8) as u32,
+                    8,
+                ));
+                let array_ptr = builder.ins().stack_addr(types::I64, slot, 0);
+
+                // Fill the array with pointers from registers r[a+1] through r[a+b]
+                for i in 0..count {
+                    let value = use_var(&mut builder, &regs, &var_types, inst.a + 1 + i as u16);
+                    let offset = (i * 8) as i32;
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), value, array_ptr, offset);
+                }
+
+                // Call jit_rt_new_list(array_ptr, count)
+                let count_val = builder.ins().iconst(types::I64, count as i64);
+                let call = builder.ins().call(new_list_ref, &[array_ptr, count_val]);
+                let result = builder.inst_results(call)[0];
+                var_types.insert(inst.a as u32, JitVarType::Int);
+                def_var(&mut builder, &mut regs, inst.a, result);
+            }
+
+            // NewMap: Create a map from key-value pairs
+            // r[a] = Map({r[a+1]: r[a+2], r[a+3]: r[a+4], ...})
+            OpCode::NewMap => {
+                let count = inst.b as usize; // number of key-value pairs
+
+                // Allocate stack space for the array of key-value pointers (count * 2 * 8 bytes)
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    (count * 2 * 8) as u32,
+                    8,
+                ));
+                let array_ptr = builder.ins().stack_addr(types::I64, slot, 0);
+
+                // Fill the array with alternating key and value pointers
+                for i in 0..count {
+                    let key = use_var(&mut builder, &regs, &var_types, inst.a + 1 + (i * 2) as u16);
+                    let value =
+                        use_var(&mut builder, &regs, &var_types, inst.a + 2 + (i * 2) as u16);
+
+                    let key_offset = (i * 2 * 8) as i32;
+                    let value_offset = ((i * 2 + 1) * 8) as i32;
+
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), key, array_ptr, key_offset);
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), value, array_ptr, value_offset);
+                }
+
+                // Call jit_rt_new_map(array_ptr, count)
+                let count_val = builder.ins().iconst(types::I64, count as i64);
+                let call = builder.ins().call(new_map_ref, &[array_ptr, count_val]);
                 let result = builder.inst_results(call)[0];
                 var_types.insert(inst.a as u32, JitVarType::Int);
                 def_var(&mut builder, &mut regs, inst.a, result);

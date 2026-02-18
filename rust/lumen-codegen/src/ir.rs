@@ -130,6 +130,13 @@ pub fn lower_cell<M: Module>(
         &[types::I64, types::I64],
         &[types::I64],
     )?;
+    let str_concat_mut_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_string_concat_mut",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )?;
     let str_alloc_ref = declare_helper_func(
         module,
         &mut func,
@@ -420,26 +427,38 @@ pub fn lower_cell<M: Module>(
                         .get(&(inst.a as u32))
                         .copied()
                         .unwrap_or(JitVarType::Int);
-                    let old_dest =
-                        if dest_ty == JitVarType::Str && inst.a != inst.b && inst.a != inst.c {
-                            Some(use_var(&mut builder, &vars, inst.a))
-                        } else {
-                            None
-                        };
 
-                    let call = builder.ins().call(str_concat_ref, &[lhs, rhs]);
-                    let result = builder.inst_results(call)[0];
+                    // Optimization: if dest == lhs (a = a + c), use in-place mutation
+                    if dest_ty == JitVarType::Str && inst.a == inst.b {
+                        // In-place: a = a + c
+                        // Use jit_rt_string_concat_mut which takes ownership of lhs
+                        let call = builder.ins().call(str_concat_mut_ref, &[lhs, rhs]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Str);
+                        def_var(&mut builder, &vars, inst.a, result);
+                        // Note: lhs is consumed by concat_mut, no need to drop
+                    } else {
+                        // Standard case: create new string
+                        let old_dest =
+                            if dest_ty == JitVarType::Str && inst.a != inst.b && inst.a != inst.c {
+                                Some(use_var(&mut builder, &vars, inst.a))
+                            } else {
+                                None
+                            };
 
-                    if let Some(old) = old_dest {
-                        builder.ins().call(str_drop_ref, &[old]);
-                    } else if dest_ty == JitVarType::Str && inst.a == inst.b {
-                        builder.ins().call(str_drop_ref, &[lhs]);
-                    } else if dest_ty == JitVarType::Str && inst.a == inst.c {
-                        builder.ins().call(str_drop_ref, &[rhs]);
+                        let call = builder.ins().call(str_concat_ref, &[lhs, rhs]);
+                        let result = builder.inst_results(call)[0];
+
+                        if let Some(old) = old_dest {
+                            builder.ins().call(str_drop_ref, &[old]);
+                        } else if dest_ty == JitVarType::Str && inst.a == inst.c {
+                            // a = b + a: drop the old value of a (which is rhs)
+                            builder.ins().call(str_drop_ref, &[rhs]);
+                        }
+
+                        var_types.insert(inst.a as u32, JitVarType::Str);
+                        def_var(&mut builder, &vars, inst.a, result);
                     }
-
-                    var_types.insert(inst.a as u32, JitVarType::Str);
-                    def_var(&mut builder, &vars, inst.a, result);
                 } else if lhs_ty == JitVarType::Float || rhs_ty == JitVarType::Float {
                     let res = builder.ins().fadd(lhs, rhs);
                     var_types.insert(inst.a as u32, JitVarType::Float);

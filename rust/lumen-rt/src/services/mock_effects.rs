@@ -4,7 +4,7 @@
 //! operations, and a [`MockToolDispatcher`] that implements `ToolDispatcher`
 //! while recording all calls for post-hoc verification.
 
-use crate::tools::{ToolDispatcher, ToolError, ToolRequest, ToolResponse};
+use crate::services::tools::{ToolDispatcher, ToolError, ToolRequest, ToolResponse};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------

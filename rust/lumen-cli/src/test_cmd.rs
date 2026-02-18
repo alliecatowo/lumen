@@ -1,7 +1,7 @@
 //! Lumen test runner — discovers and executes test_* cells.
 
-use lumen_vm::values::Value;
-use lumen_vm::vm::VM;
+use lumen_rt::values::Value;
+use lumen_rt::vm::VM;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -131,7 +131,7 @@ pub fn run_tests(
         for cell in test_cells {
             let test_name = cell.name.clone();
             let mut vm = VM::new();
-            let registry = lumen_runtime::tools::ProviderRegistry::new();
+            let registry = lumen_rt::services::tools::ProviderRegistry::new();
             vm.set_provider_registry(registry);
             vm.load(module.clone());
 

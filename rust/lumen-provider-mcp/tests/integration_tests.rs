@@ -1,5 +1,5 @@
 use lumen_provider_mcp::*;
-use lumen_runtime::tools::ToolProvider;
+use lumen_rt::services::tools::ToolProvider;
 use serde_json::json;
 use std::path::PathBuf;
 

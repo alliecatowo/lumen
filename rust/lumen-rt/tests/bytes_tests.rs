@@ -1,8 +1,8 @@
 //! Wave-20 tests: T195 — Bytes literals and bytes builtins.
 
 use lumen_compiler::compile;
-use lumen_vm::values::{StringRef, Value};
-use lumen_vm::vm::VM;
+use lumen_rt::values::{StringRef, Value};
+use lumen_rt::vm::VM;
 
 /// Helper: wrap raw Lumen code in markdown, compile, run `main`, return the result.
 fn run_main(source: &str) -> Value {

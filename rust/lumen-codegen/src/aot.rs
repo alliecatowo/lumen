@@ -94,10 +94,15 @@ pub fn compile_object_module(
     for cell in &lir.cells {
         let func_id = func_ids[&cell.name];
         let mut ctx = Context::new();
+
+        // Optimize before lowering to IR
+        let mut optimized_cell = cell.clone();
+        crate::opt::optimize(&mut optimized_cell);
+
         crate::ir::lower_cell(
             &mut ctx,
             &mut fb_ctx,
-            cell,
+            &optimized_cell,
             &mut module,
             pointer_type,
             func_id,

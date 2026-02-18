@@ -12,7 +12,7 @@
 //! - [`VersionedSnapshot`] — a [`HeapSnapshot`] paired with its schema version.
 //! - [`migrate_snapshot`] — top-level helper that applies a chain of migrations.
 
-use crate::snapshot::HeapSnapshot;
+use crate::services::snapshot::HeapSnapshot;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -266,7 +266,7 @@ pub fn migrate_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::snapshot::{HeapObject, HeapSnapshot};
+    use crate::services::snapshot::{HeapObject, HeapSnapshot};
 
     // -- Test helpers -------------------------------------------------------
 
@@ -708,8 +708,8 @@ mod tests {
 
     #[test]
     fn simulate_kill_save_checkpoint_restore() {
-        use crate::checkpoint::{CheckpointEngine, FileCheckpointStore};
-        use crate::snapshot::*;
+        use crate::services::checkpoint::{CheckpointEngine, FileCheckpointStore};
+        use crate::services::snapshot::*;
         use std::env;
         use std::fs;
 
@@ -783,8 +783,8 @@ mod tests {
 
     #[test]
     fn simulate_kill_clear_state_restore_verify() {
-        use crate::checkpoint::{CheckpointEngine, FileCheckpointStore};
-        use crate::snapshot::*;
+        use crate::services::checkpoint::{CheckpointEngine, FileCheckpointStore};
+        use crate::services::snapshot::*;
         use std::env;
         use std::fs;
 

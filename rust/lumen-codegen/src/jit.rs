@@ -17,7 +17,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 use std::collections::HashMap;
 
-use lumen_core::lir::{Constant, Instruction, LirCell, LirModule, OpCode};
+use lumen_core::lir::{LirCell, LirModule, OpCode};
 
 use crate::emit::CodegenError;
 use crate::types::lir_type_str_to_cl_type;
@@ -314,6 +314,10 @@ pub struct JitEngine {
     codegen_settings: CodegenSettings,
     /// Compilation statistics.
     stats: JitStats,
+    /// Retained optimized cells whose string constant data is referenced by
+    /// raw pointers baked into the JIT machine code. Must live as long as
+    /// `jit_module`.
+    _retained_cells: Vec<LirCell>,
 }
 
 impl JitEngine {
@@ -326,6 +330,7 @@ impl JitEngine {
             cache: HashMap::new(),
             codegen_settings: settings,
             stats: JitStats::default(),
+            _retained_cells: Vec::new(),
         }
     }
 
@@ -387,6 +392,9 @@ impl JitEngine {
 
         // Store the JIT module so its memory stays alive.
         self.jit_module = Some(jit_module);
+
+        // Retain optimized cells so string constant pointers stay valid.
+        self._retained_cells = lowered._retained_cells;
 
         Ok(())
     }
@@ -630,6 +638,11 @@ fn is_cell_jit_compilable(cell: &LirCell) -> bool {
 /// Result of lowering an entire LIR module into the JIT.
 struct JitLoweredModule {
     functions: Vec<JitLoweredFunction>,
+    /// Retain optimized cells so that string constant data (whose raw pointers
+    /// are baked into the generated machine code as immediates for
+    /// `jit_rt_string_alloc` calls) stays alive for the lifetime of the JIT
+    /// code.
+    _retained_cells: Vec<LirCell>,
 }
 
 struct JitLoweredFunction {
@@ -659,6 +672,7 @@ fn lower_module_jit(
     if compilable_cells.is_empty() {
         return Ok(JitLoweredModule {
             functions: Vec::new(),
+            _retained_cells: Vec::new(),
         });
     }
 
@@ -697,22 +711,36 @@ fn lower_module_jit(
     }
 
     // Second pass: lower each cell body.
+    // We collect optimized cells so their constant string data (whose raw
+    // pointers are baked into the machine code) stays alive as long as the
+    // JIT module.
+    let mut retained_cells: Vec<LirCell> = Vec::with_capacity(compilable_cells.len());
     let mut lowered = JitLoweredModule {
         functions: Vec::with_capacity(compilable_cells.len()),
+        _retained_cells: Vec::new(), // filled after the loop
     };
 
     for cell in &compilable_cells {
         let func_id = func_ids[&cell.name];
         let mut ctx = Context::new();
+
+        // Optimize before lowering to IR
+        let mut optimized_cell = (*cell).clone();
+        crate::opt::optimize(&mut optimized_cell);
+
         lower_cell_jit(
             &mut ctx,
             module,
-            cell,
+            &optimized_cell,
             &mut fb_ctx,
             pointer_type,
             func_id,
             &func_ids,
         )?;
+
+        // Keep the cell alive so string constant pointers remain valid.
+        retained_cells.push(optimized_cell);
+
         let ret_is_string = cell
             .returns
             .as_deref()
@@ -726,6 +754,7 @@ fn lower_module_jit(
         });
     }
 
+    lowered._retained_cells = retained_cells;
     Ok(lowered)
 }
 

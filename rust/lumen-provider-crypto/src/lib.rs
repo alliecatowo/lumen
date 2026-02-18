@@ -19,7 +19,7 @@ pub mod ed25519;
 pub use ed25519::Ed25519Provider;
 
 use hmac::{Hmac, Mac};
-use lumen_runtime::tools::{ToolError, ToolProvider, ToolSchema};
+use lumen_rt::services::tools::{ToolError, ToolProvider, ToolSchema};
 use md5::Md5;
 use rand::Rng;
 use serde::Deserialize;

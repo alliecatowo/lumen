@@ -14,7 +14,7 @@
 //! The actual CLI front-end will live in `lumen-cli`; this module only provides
 //! the session / state management layer.
 
-use crate::snapshot::{InstructionPointer, SerializedValue};
+use crate::services::snapshot::{InstructionPointer, SerializedValue};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
@@ -549,7 +549,7 @@ impl DebugSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::snapshot::SerializedValue;
+    use crate::services::snapshot::SerializedValue;
 
     fn make_state(step: u64, pc: usize, line: Option<usize>) -> DebugState {
         let mut vars = BTreeMap::new();

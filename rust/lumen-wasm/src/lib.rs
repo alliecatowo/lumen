@@ -5,7 +5,7 @@
 
 pub mod wasi;
 
-use lumen_vm::vm::VM;
+use lumen_rt::vm::VM;
 use wasm_bindgen::prelude::*;
 
 /// Result of a compilation or execution operation.

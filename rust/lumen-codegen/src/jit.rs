@@ -1947,17 +1947,6 @@ impl JitEngine {
 // Pre-scan: check if a cell only uses JIT-supported opcodes
 // ---------------------------------------------------------------------------
 
-/// Returns `true` if every instruction in the cell uses an opcode the JIT can
-/// compile natively or via runtime calls. Cells containing unsupported opcodes
-/// are still *attempted* by the JIT with deopt stubs inserted for unsupported
-/// instructions, but this function is useful for diagnostics.
-///
-/// **Deprecated**: prefer `is_cell_fully_jit_compilable()` or querying
-/// `jit_capability()` per-opcode for granular decisions.
-fn is_cell_jit_compilable(cell: &LirCell) -> bool {
-    is_cell_fully_jit_compilable(cell)
-}
-
 // ---------------------------------------------------------------------------
 // JIT-specific lowering (mirrors lower.rs but targets JITModule)
 // ---------------------------------------------------------------------------
@@ -2859,11 +2848,11 @@ mod tests {
         };
 
         assert!(
-            is_cell_jit_compilable(&get_field_cell),
+            is_cell_fully_jit_compilable(&get_field_cell),
             "GetField should be JIT-compilable"
         );
         assert!(
-            is_cell_jit_compilable(&set_field_cell),
+            is_cell_fully_jit_compilable(&set_field_cell),
             "SetField should be JIT-compilable"
         );
     }
@@ -5750,5 +5739,334 @@ mod tests {
             (result - (-2.0)).abs() < 1e-10,
             "trunc(-2.9) should be -2.0, got {result}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // JitCapability / granular opcode classification tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn jit_capability_native_opcodes() {
+        // Spot-check representative Native opcodes.
+        let native_ops = [
+            OpCode::LoadK,
+            OpCode::LoadBool,
+            OpCode::LoadInt,
+            OpCode::LoadNil,
+            OpCode::Move,
+            OpCode::MoveOwn,
+            OpCode::Add,
+            OpCode::Sub,
+            OpCode::Mul,
+            OpCode::Div,
+            OpCode::Mod,
+            OpCode::Neg,
+            OpCode::FloorDiv,
+            OpCode::Pow,
+            OpCode::BitOr,
+            OpCode::BitAnd,
+            OpCode::BitXor,
+            OpCode::BitNot,
+            OpCode::Shl,
+            OpCode::Shr,
+            OpCode::Eq,
+            OpCode::Lt,
+            OpCode::Le,
+            OpCode::Not,
+            OpCode::And,
+            OpCode::Or,
+            OpCode::Test,
+            OpCode::NullCo,
+            OpCode::Jmp,
+            OpCode::Break,
+            OpCode::Continue,
+            OpCode::Return,
+            OpCode::Halt,
+            OpCode::Call,
+            OpCode::TailCall,
+            OpCode::Nop,
+            OpCode::Concat,
+            OpCode::GetField,
+            OpCode::SetField,
+            OpCode::GetIndex,
+            OpCode::SetIndex,
+            OpCode::NewUnion,
+            OpCode::IsVariant,
+            OpCode::Unbox,
+        ];
+        for op in native_ops {
+            assert_eq!(
+                jit_capability(op),
+                JitCapability::Native,
+                "{op:?} should be Native"
+            );
+        }
+    }
+
+    #[test]
+    fn jit_capability_runtime_call_opcodes() {
+        let runtime_ops = [
+            OpCode::NewList,
+            OpCode::NewMap,
+            OpCode::Intrinsic,
+            OpCode::NewTuple,
+            OpCode::NewSet,
+            OpCode::NewRecord,
+            OpCode::GetTuple,
+            OpCode::Append,
+            OpCode::Closure,
+            OpCode::GetUpval,
+            OpCode::SetUpval,
+        ];
+        for op in runtime_ops {
+            assert_eq!(
+                jit_capability(op),
+                JitCapability::RuntimeCall,
+                "{op:?} should be RuntimeCall"
+            );
+        }
+    }
+
+    #[test]
+    fn jit_capability_unsupported_opcodes() {
+        let unsupported_ops = [
+            OpCode::ToolCall,
+            OpCode::Schema,
+            OpCode::Emit,
+            OpCode::TraceRef,
+            OpCode::Await,
+            OpCode::Spawn,
+            OpCode::Perform,
+            OpCode::HandlePush,
+            OpCode::HandlePop,
+            OpCode::Resume,
+            OpCode::Loop,
+            OpCode::ForPrep,
+            OpCode::ForLoop,
+            OpCode::ForIn,
+            OpCode::In,
+            OpCode::Is,
+        ];
+        for op in unsupported_ops {
+            assert_eq!(
+                jit_capability(op),
+                JitCapability::Unsupported,
+                "{op:?} should be Unsupported"
+            );
+        }
+    }
+
+    #[test]
+    fn jit_capabilities_covers_all_opcodes() {
+        use strum::{EnumCount, IntoEnumIterator};
+
+        let caps = jit_capabilities();
+        // Must have exactly one entry per OpCode variant.
+        assert_eq!(
+            caps.len(),
+            OpCode::COUNT,
+            "jit_capabilities() must cover all {} OpCode variants, got {}",
+            OpCode::COUNT,
+            caps.len()
+        );
+
+        // Every OpCode variant must appear exactly once.
+        let seen: std::collections::HashSet<OpCode> = caps.iter().map(|(op, _)| *op).collect();
+        for op in OpCode::iter() {
+            assert!(
+                seen.contains(&op),
+                "OpCode::{op:?} missing from jit_capabilities()"
+            );
+        }
+    }
+
+    #[test]
+    fn jit_capabilities_consistent_with_jit_capability() {
+        // The bulk query must agree with the per-opcode function.
+        for (op, cap) in jit_capabilities() {
+            assert_eq!(
+                cap,
+                jit_capability(op),
+                "jit_capabilities() and jit_capability() disagree on {op:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn is_cell_fully_jit_compilable_all_native() {
+        // A cell with only Native opcodes is fully compilable.
+        let cell = LirCell {
+            name: "pure_arith".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![Constant::Int(10), Constant::Int(20)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Add, 2, 0, 1),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+        assert!(is_cell_fully_jit_compilable(&cell));
+    }
+
+    #[test]
+    fn is_cell_fully_jit_compilable_with_runtime_call() {
+        // A cell with RuntimeCall opcodes (but no Unsupported) is still fully compilable.
+        let cell = LirCell {
+            name: "with_list".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![],
+            instructions: vec![
+                Instruction::abc(OpCode::LoadNil, 0, 0, 0),
+                Instruction::abc(OpCode::NewList, 1, 0, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+        assert!(
+            is_cell_fully_jit_compilable(&cell),
+            "Cell with only Native + RuntimeCall opcodes should be fully compilable"
+        );
+    }
+
+    #[test]
+    fn is_cell_fully_jit_compilable_with_unsupported() {
+        // A cell containing an Unsupported opcode is NOT fully compilable.
+        let cell = LirCell {
+            name: "with_emit".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 2,
+            constants: vec![Constant::Int(42)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Emit, 0, 0, 0), // Unsupported
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+        assert!(
+            !is_cell_fully_jit_compilable(&cell),
+            "Cell with Emit (Unsupported) should NOT be fully compilable"
+        );
+    }
+
+    #[test]
+    fn compile_hot_single_cell_only() {
+        // Module with two cells; compile_hot should only compile the requested one.
+        let lir = make_module_with_cells(vec![
+            LirCell {
+                name: "hot_cell".to_string(),
+                params: Vec::new(),
+                returns: Some("Int".to_string()),
+                registers: 2,
+                constants: vec![Constant::Int(99)],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                ],
+                effect_handler_metas: Vec::new(),
+            },
+            LirCell {
+                name: "cold_cell".to_string(),
+                params: Vec::new(),
+                returns: Some("Int".to_string()),
+                registers: 2,
+                constants: vec![Constant::Int(1)],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                ],
+                effect_handler_metas: Vec::new(),
+            },
+        ]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_hot("hot_cell", &lir).expect("compile_hot");
+
+        // hot_cell should be cached.
+        assert!(
+            engine.cache.contains_key("hot_cell"),
+            "hot_cell should be in JIT cache after compile_hot"
+        );
+        // cold_cell should NOT be cached — we only compiled the hot cell.
+        assert!(
+            !engine.cache.contains_key("cold_cell"),
+            "cold_cell should NOT be in JIT cache after compile_hot(\"hot_cell\")"
+        );
+
+        // Execute the hot cell to verify it works.
+        let result = engine.execute_jit_nullary("hot_cell").expect("execute");
+        assert_eq!(result, 99, "hot_cell should return 99");
+    }
+
+    #[test]
+    fn compile_hot_cell_not_found() {
+        let lir = simple_lir_module(); // contains only "answer"
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+
+        let result = engine.compile_hot("nonexistent", &lir);
+        assert!(
+            result.is_err(),
+            "compile_hot for nonexistent cell should fail"
+        );
+    }
+
+    #[test]
+    fn compile_hot_with_unsupported_opcode_succeeds() {
+        // A cell with an Unsupported opcode (Emit) should still compile via
+        // compile_hot — the unsupported instruction becomes a deopt stub that
+        // writes NAN_BOX_NULL to the destination register.
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "with_emit".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 2,
+            constants: vec![Constant::Int(42)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),     // r0 = 42
+                Instruction::abc(OpCode::Emit, 1, 0, 0),   // r1 = deopt stub (NAN_BOX_NULL)
+                Instruction::abc(OpCode::Return, 0, 1, 0), // return r0
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+
+        // Must not panic or return an error.
+        engine
+            .compile_hot("with_emit", &lir)
+            .expect("compile_hot should succeed even with Unsupported opcodes");
+
+        // Execution should work — the Emit is a no-op deopt stub.
+        let result = engine.execute_jit_nullary("with_emit").expect("execute");
+        assert_eq!(
+            result, 42,
+            "Cell should return 42; Emit deopt stub is a no-op"
+        );
+    }
+
+    #[test]
+    fn compile_hot_caches_and_skips_recompile() {
+        let lir = simple_lir_module();
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+
+        engine.compile_hot("answer", &lir).expect("first compile");
+        assert_eq!(engine.stats.cells_compiled, 1);
+        assert_eq!(engine.stats.cache_hits, 0);
+
+        // Second compile_hot for the same cell should be a cache hit.
+        engine.compile_hot("answer", &lir).expect("second compile");
+        assert_eq!(engine.stats.cells_compiled, 1, "should not recompile");
+        assert_eq!(engine.stats.cache_hits, 1, "should register a cache hit");
     }
 }

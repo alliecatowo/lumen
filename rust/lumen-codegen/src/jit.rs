@@ -605,7 +605,7 @@ impl JitEngine {
 // ---------------------------------------------------------------------------
 
 /// Returns `true` if every instruction in the cell uses an opcode the JIT can
-/// compile. Cells containing unsupported opcodes (e.g. Intrinsic, ToolCall,
+/// compile. Cells containing unsupported opcodes (e.g. ToolCall,
 /// NewList, etc.) are filtered out before compilation so we never emit traps
 /// for unsupported operations.
 fn is_cell_jit_compilable(cell: &LirCell) -> bool {
@@ -640,6 +640,7 @@ fn is_cell_jit_compilable(cell: &LirCell) -> bool {
                 | OpCode::Halt
                 | OpCode::Call
                 | OpCode::TailCall
+                | OpCode::Intrinsic
                 | OpCode::Nop
                 | OpCode::Loop
                 | OpCode::ForPrep

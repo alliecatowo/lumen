@@ -8,7 +8,6 @@ pub mod fixit;
 pub mod gadts;
 pub mod grammar;
 pub mod lexer;
-pub mod lir;
 pub mod lower;
 pub mod macros;
 pub mod ownership;

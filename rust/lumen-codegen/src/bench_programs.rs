@@ -3,7 +3,7 @@
 //! Each function returns a self-contained `LirModule` suitable for passing
 //! to `lower_module` + `emit_object`.
 
-use lumen_compiler::compiler::lir::{Constant, Instruction, LirCell, LirModule, LirParam, OpCode};
+use lumen_core::lir::{Constant, Instruction, LirCell, LirModule, LirParam, OpCode};
 
 /// Create an empty `LirModule` shell that can hold cells.
 fn empty_module(cells: Vec<LirCell>) -> LirModule {
@@ -281,15 +281,13 @@ pub fn tail_recursive_countdown_lir() -> LirModule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::CodegenContext;
+    use crate::aot::compile_object_module;
     use crate::emit::emit_object;
-    use crate::lower::lower_module;
 
     fn compile_lir(lir: &LirModule) -> Vec<u8> {
-        let mut ctx = CodegenContext::new().expect("host context");
-        let ptr_ty = ctx.pointer_type();
-        lower_module(&mut ctx.module, lir, ptr_ty).expect("lowering should succeed");
-        emit_object(ctx.module).expect("emission should succeed")
+        let ptr_ty = cranelift_codegen::ir::types::I64;
+        let module = compile_object_module(lir, ptr_ty).expect("compilation should succeed");
+        emit_object(module).expect("emission should succeed")
     }
 
     #[test]

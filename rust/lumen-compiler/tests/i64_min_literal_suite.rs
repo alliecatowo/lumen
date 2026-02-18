@@ -22,7 +22,7 @@ fn parse(src: &str) -> lumen_compiler::compiler::ast::Program {
     parser.parse_program(vec![]).expect("parse failed")
 }
 
-fn compile_to_lir(src: &str) -> lumen_compiler::compiler::lir::LirModule {
+fn compile_to_lir(src: &str) -> lumen_core::lir::LirModule {
     let mut lexer = Lexer::new(src, 1, 0);
     let tokens = lexer.tokenize().expect("lex failed");
     let mut parser = Parser::new(tokens);
@@ -161,7 +161,7 @@ fn i64_min_compiles_to_lir() {
     let has_min = module.cells[0]
         .constants
         .iter()
-        .any(|c| matches!(c, lumen_compiler::compiler::lir::Constant::Int(n) if *n == i64::MIN));
+        .any(|c| matches!(c, lumen_core::lir::Constant::Int(n) if *n == i64::MIN));
     assert!(
         has_min,
         "constant pool should contain i64::MIN (-9223372036854775808)"

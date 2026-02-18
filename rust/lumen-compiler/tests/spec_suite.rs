@@ -1568,7 +1568,7 @@ fn regression_while_loop_backward_jump_is_negative() {
     // Verify that while loops emit a negative (backward) Jmp offset.
     // The bug was that backward jumps used unsigned ax() instead of sax(),
     // causing the offset to wrap to a large positive value.
-    use lumen_compiler::compiler::lir::OpCode;
+    use lumen_core::lir::OpCode;
 
     let md = markdown_from_code(
         r#"
@@ -1605,7 +1605,7 @@ end
 #[test]
 fn regression_while_loop_countdown_has_backward_jump() {
     // Another variant: counting down. Ensures backward jump works for countdown loops.
-    use lumen_compiler::compiler::lir::OpCode;
+    use lumen_core::lir::OpCode;
 
     let md = markdown_from_code(
         r#"
@@ -1640,7 +1640,7 @@ end
 fn regression_match_literal_does_not_clobber_param_register() {
     // The bug was Eq(0, subj, lit) writing the bool result into register 0,
     // clobbering the first parameter. Verify no Eq instruction targets r0.
-    use lumen_compiler::compiler::lir::OpCode;
+    use lumen_core::lir::OpCode;
 
     let md = markdown_from_code(
         r#"
@@ -1679,7 +1679,7 @@ end
 #[test]
 fn regression_nested_while_loops_both_have_backward_jumps() {
     // Ensure nested while loops both produce backward jumps correctly.
-    use lumen_compiler::compiler::lir::OpCode;
+    use lumen_core::lir::OpCode;
 
     let md = markdown_from_code(
         r#"

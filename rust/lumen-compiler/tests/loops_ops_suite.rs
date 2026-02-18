@@ -2,14 +2,14 @@
 
 use lumen_compiler::compiler::ast::{BinOp, CompoundOp, Expr, Stmt};
 use lumen_compiler::compiler::lexer::Lexer;
-use lumen_compiler::compiler::lir::OpCode;
 use lumen_compiler::compiler::lower::lower;
 use lumen_compiler::compiler::parser::Parser;
 use lumen_compiler::compiler::resolve::resolve;
 use lumen_compiler::compiler::tokens::TokenKind;
 use lumen_compiler::compiler::typecheck::typecheck;
+use lumen_core::lir::OpCode;
 
-fn compile_to_lir(src: &str) -> lumen_compiler::compiler::lir::LirModule {
+fn compile_to_lir(src: &str) -> lumen_core::lir::LirModule {
     let mut lexer = Lexer::new(src, 1, 0);
     let tokens = lexer.tokenize().expect("lex failed");
     let mut parser = Parser::new(tokens);

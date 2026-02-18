@@ -1,10 +1,10 @@
 //! AST → LIR lowering. Converts typed AST to LIR instructions.
 
 use crate::compiler::ast::*;
-use crate::compiler::lir::*;
 use crate::compiler::regalloc::RegAlloc;
 use crate::compiler::resolve::SymbolTable;
 use crate::compiler::tokens::Span;
+use lumen_core::lir::*;
 use num_bigint::BigInt;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;

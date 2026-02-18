@@ -7,9 +7,12 @@ pub mod diagnostics;
 pub mod lang_ref;
 pub mod markdown;
 
+// Re-export LIR types from lumen-core for backward compatibility
+pub use lumen_core::lir;
+
 use compiler::ast::{Directive, ImportDecl, ImportList, Item};
-use compiler::lir::LirModule;
 use compiler::resolve::SymbolTable;
+use lumen_core::lir::LirModule;
 use std::collections::HashSet;
 
 use thiserror::Error;

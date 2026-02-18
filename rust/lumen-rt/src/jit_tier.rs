@@ -27,7 +27,7 @@
 
 #[cfg(feature = "jit")]
 use lumen_codegen::jit::{CodegenSettings, JitEngine, JitStats, OptLevel};
-use lumen_compiler::compiler::lir::LirModule;
+use lumen_core::lir::LirModule;
 use std::collections::HashSet;
 
 /// Configuration for the tiered JIT.

@@ -6,13 +6,13 @@
 //! - Closure captures (single and nested)
 
 use lumen_compiler::compiler::lexer::Lexer;
-use lumen_compiler::compiler::lir::OpCode;
+use lumen_core::lir::OpCode;
 use lumen_compiler::compiler::lower::lower;
 use lumen_compiler::compiler::parser::Parser;
 use lumen_compiler::compiler::resolve::resolve;
 use lumen_compiler::compiler::typecheck::typecheck;
 
-fn compile_and_typecheck(src: &str) -> Result<lumen_compiler::compiler::lir::LirModule, String> {
+fn compile_and_typecheck(src: &str) -> Result<lumen_core::lir::LirModule, String> {
     let mut lexer = Lexer::new(src, 1, 0);
     let tokens = lexer.tokenize().map_err(|e| format!("{:?}", e))?;
     let mut parser = Parser::new(tokens);

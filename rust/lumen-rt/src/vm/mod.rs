@@ -1602,24 +1602,33 @@ impl VM {
                                         if let Some(result) =
                                             self.jit_tier.execute(&callee_cell.name, &i64_args)
                                         {
-                                            // Check if the JIT function returns a string pointer.
-                                            if self.jit_tier.returns_string(&callee_cell.name) {
-                                                // Convert the raw *mut String pointer back to a
-                                                // Value::String. This consumes the heap allocation.
-                                                #[cfg(feature = "jit")]
-                                                {
-                                                    let s = unsafe {
-                                                        lumen_codegen::jit::jit_take_string(result)
-                                                    };
-                                                    self.registers[callee_reg] =
-                                                        Value::String(StringRef::Owned(s));
-                                                }
-                                                #[cfg(not(feature = "jit"))]
-                                                {
-                                                    // This path should never be reached without JIT feature
-                                                    self.registers[callee_reg] = Value::Int(result);
-                                                }
-                                            } else {
+                                            // Convert i64 result back to Value using
+                                            // the compile-time return type.
+                                            #[cfg(feature = "jit")]
+                                            {
+                                                use lumen_codegen::jit::JitVarType;
+                                                let ret_ty = self
+                                                    .jit_tier
+                                                    .return_type(&callee_cell.name)
+                                                    .unwrap_or(JitVarType::Int);
+                                                self.registers[callee_reg] = match ret_ty {
+                                                    JitVarType::Str => {
+                                                        let s = unsafe {
+                                                            lumen_codegen::jit::jit_take_string(
+                                                                result,
+                                                            )
+                                                        };
+                                                        Value::String(StringRef::Owned(s))
+                                                    }
+                                                    JitVarType::Float => {
+                                                        Value::Float(f64::from_bits(result as u64))
+                                                    }
+                                                    JitVarType::Bool => Value::Bool(result != 0),
+                                                    JitVarType::Int => Value::Int(result),
+                                                };
+                                            }
+                                            #[cfg(not(feature = "jit"))]
+                                            {
                                                 self.registers[callee_reg] = Value::Int(result);
                                             }
                                             continue;
@@ -1802,26 +1811,33 @@ impl VM {
                                         if let Some(result) =
                                             self.jit_tier.execute(&callee_cell.name, &i64_args)
                                         {
-                                            // Convert i64 result back to Value
-                                            let result_value = if self
-                                                .jit_tier
-                                                .returns_string(&callee_cell.name)
-                                            {
-                                                #[cfg(feature = "jit")]
-                                                {
-                                                    let s = unsafe {
-                                                        lumen_codegen::jit::jit_take_string(result)
-                                                    };
-                                                    Value::String(StringRef::Owned(s))
+                                            // Convert i64 result back to Value using
+                                            // the compile-time return type.
+                                            #[cfg(feature = "jit")]
+                                            let result_value = {
+                                                use lumen_codegen::jit::JitVarType;
+                                                let ret_ty = self
+                                                    .jit_tier
+                                                    .return_type(&callee_cell.name)
+                                                    .unwrap_or(JitVarType::Int);
+                                                match ret_ty {
+                                                    JitVarType::Str => {
+                                                        let s = unsafe {
+                                                            lumen_codegen::jit::jit_take_string(
+                                                                result,
+                                                            )
+                                                        };
+                                                        Value::String(StringRef::Owned(s))
+                                                    }
+                                                    JitVarType::Float => {
+                                                        Value::Float(f64::from_bits(result as u64))
+                                                    }
+                                                    JitVarType::Bool => Value::Bool(result != 0),
+                                                    JitVarType::Int => Value::Int(result),
                                                 }
-                                                #[cfg(not(feature = "jit"))]
-                                                {
-                                                    // This path should never be reached without JIT feature
-                                                    Value::Int(result)
-                                                }
-                                            } else {
-                                                Value::Int(result)
                                             };
+                                            #[cfg(not(feature = "jit"))]
+                                            let result_value = Value::Int(result);
 
                                             // TailCall JIT success: simulate Return.
                                             // Pop current frame and write result to caller.

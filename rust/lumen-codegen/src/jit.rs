@@ -20,7 +20,41 @@ use std::collections::HashMap;
 use lumen_core::lir::{LirCell, LirModule, OpCode};
 
 use crate::emit::CodegenError;
+use crate::ir::{nan_box_int, NAN_BOX_NULL, NAN_BOX_TRUE};
 use crate::types::lir_type_str_to_cl_type;
+
+// ---------------------------------------------------------------------------
+// Type-aware NaN-box unboxing
+// ---------------------------------------------------------------------------
+
+/// Unbox a NaN-boxed JIT result using the known return type.
+///
+/// Unlike [`nan_unbox_jit_result`] which uses a heuristic `(v & 1) == 1` test
+/// (incorrectly matching some float bit patterns), this function uses the
+/// compile-time return type to perform correct unboxing:
+///
+/// - **Int**: `(raw >> 1)` — removes the `(val << 1) | 1` tag
+/// - **Float**: pass-through — raw f64 bits already in i64 form
+/// - **Bool**: sentinel check — `NAN_BOX_TRUE` → 1, `NAN_BOX_FALSE` → 0
+/// - **Str**: pass-through — raw `*mut JitString` pointer as i64
+fn nan_unbox_typed(raw: i64, ret_type: JitVarType) -> i64 {
+    match ret_type {
+        JitVarType::Int => raw >> 1,
+        JitVarType::Float => raw, // raw f64 bits
+        JitVarType::Bool => {
+            if raw == NAN_BOX_TRUE {
+                1
+            } else {
+                0
+            }
+        }
+        JitVarType::Str => raw, // raw pointer
+    }
+}
+
+// Re-export JitVarType so consumers (e.g. lumen-rt) can use it alongside
+// other jit types without reaching into crate::ir directly.
+pub use crate::ir::JitVarType;
 
 // ---------------------------------------------------------------------------
 // JitString — refcounted string with C-compatible layout
@@ -117,6 +151,10 @@ impl JitString {
 
     /// Increment refcount and return the same pointer.
     unsafe fn clone_ref(ptr: *mut JitString) -> *mut JitString {
+        let addr = ptr as usize;
+        if ptr.is_null() || addr < 4096 || (addr & 7) != 0 {
+            return ptr;
+        }
         (*ptr).refcount += 1;
         ptr
     }
@@ -124,6 +162,13 @@ impl JitString {
     /// Decrement refcount. If it reaches 0, free data buffer and struct.
     unsafe fn drop_ref(ptr: *mut JitString) {
         if ptr.is_null() {
+            return;
+        }
+        // Guard against non-pointer values (e.g. NaN-boxed ints which have
+        // low bit set, or other small sentinel values). Valid heap pointers
+        // are always 8-byte aligned and above a reasonable minimum address.
+        let addr = ptr as usize;
+        if addr < 4096 || (addr & 7) != 0 {
             return;
         }
         (*ptr).refcount -= 1;
@@ -242,6 +287,21 @@ extern "C" fn jit_rt_string_concat_mut(a: i64, b: i64) -> i64 {
         // Drop old reference
         JitString::drop_ref(pa);
         new as i64
+    }
+}
+
+/// Thin wrapper around `ptr::copy_nonoverlapping` for JIT-emitted inline
+/// string concatenation fast paths.  The JIT calls this instead of linking
+/// directly to libc `memcpy` so that symbol registration stays uniform.
+///
+/// # Safety
+/// `dst` and `src` must be valid, non-overlapping pointers with at least
+/// `len` bytes available.
+extern "C" fn jit_rt_memcpy(dst: i64, src: i64, len: i64) {
+    if len > 0 {
+        unsafe {
+            std::ptr::copy_nonoverlapping(src as *const u8, dst as *mut u8, len as usize);
+        }
     }
 }
 
@@ -400,6 +460,7 @@ fn register_string_helpers(builder: &mut JITBuilder) {
     builder.symbol("jit_rt_string_eq", jit_rt_string_eq as *const u8);
     builder.symbol("jit_rt_string_cmp", jit_rt_string_cmp as *const u8);
     builder.symbol("jit_rt_string_drop", jit_rt_string_drop as *const u8);
+    builder.symbol("jit_rt_memcpy", jit_rt_memcpy as *const u8);
 }
 
 // ---------------------------------------------------------------------------
@@ -420,7 +481,7 @@ extern "C" fn jit_rt_record_get_field(
     field_name_ptr: *const u8,
     field_name_len: usize,
 ) -> i64 {
-    if record_ptr == 0 {
+    if record_ptr == 0 || record_ptr == NAN_BOX_NULL {
         // Null record, return boxed null
         return Box::into_raw(Box::new(Value::Null)) as i64;
     }
@@ -452,7 +513,7 @@ extern "C" fn jit_rt_record_set_field(
     field_name_len: usize,
     value_ptr: i64,
 ) -> i64 {
-    if record_ptr == 0 {
+    if record_ptr == 0 || record_ptr == NAN_BOX_NULL {
         // Can't set field on null, return null
         return Box::into_raw(Box::new(Value::Null)) as i64;
     }
@@ -461,7 +522,7 @@ extern "C" fn jit_rt_record_set_field(
     let field_name = unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(field_name_ptr, field_name_len))
     };
-    let new_value = if value_ptr == 0 {
+    let new_value = if value_ptr == 0 || value_ptr == NAN_BOX_NULL {
         Value::Null
     } else {
         unsafe { (*(value_ptr as *const Value)).clone() }
@@ -613,16 +674,6 @@ extern "C" fn jit_rt_pow_int(base: i64, exp: i64) -> i64 {
         return 0; // integer power with negative exponent → 0 (truncation)
     }
     (base as i128).pow(exp as u32) as i64
-}
-
-/// Absolute value of a float.
-extern "C" fn jit_rt_abs_float(value: f64) -> f64 {
-    value.abs()
-}
-
-/// Absolute value of an integer.
-extern "C" fn jit_rt_abs_int(value: i64) -> i64 {
-    value.wrapping_abs()
 }
 
 // ---------------------------------------------------------------------------
@@ -892,8 +943,6 @@ fn register_intrinsic_helpers(builder: &mut JITBuilder) {
     builder.symbol("jit_rt_pow_float", jit_rt_pow_float as *const u8);
     builder.symbol("jit_rt_pow_int", jit_rt_pow_int as *const u8);
     builder.symbol("jit_rt_fmod", jit_rt_fmod as *const u8);
-    builder.symbol("jit_rt_abs_float", jit_rt_abs_float as *const u8);
-    builder.symbol("jit_rt_abs_int", jit_rt_abs_int as *const u8);
 
     // Conversion helpers
     builder.symbol("jit_rt_to_string_int", jit_rt_to_string_int as *const u8);
@@ -1102,8 +1151,9 @@ struct CompiledFunction {
     fn_ptr: *const u8,
     /// Number of parameters the function expects.
     param_count: usize,
-    /// True if the function returns a heap-allocated string pointer.
-    returns_string: bool,
+    /// The NaN-boxing type of the function's return value.
+    /// Used by the boundary layer to perform type-aware unboxing.
+    return_type: crate::ir::JitVarType,
 }
 
 // Safety: The function pointers are valid for the lifetime of the JITModule
@@ -1214,7 +1264,7 @@ impl JitEngine {
                 CompiledFunction {
                     fn_ptr,
                     param_count: func.param_count,
-                    returns_string: func.returns_string,
+                    return_type: func.return_type,
                 },
             );
             self.stats.cells_compiled += 1;
@@ -1257,10 +1307,16 @@ impl JitEngine {
     }
 
     /// Execute a JIT-compiled function with no arguments.
-    /// Returns the i64 result.
+    ///
+    /// The returned i64 is type-aware unboxed according to the function's
+    /// declared return type:
+    /// - Int:   NaN-boxed integer → plain i64
+    /// - Float: raw f64 bits passed through as i64
+    /// - Bool:  NAN_BOX_TRUE → 1, NAN_BOX_FALSE → 0
+    /// - Str:   raw `*mut JitString` pointer passed through as i64
     ///
     /// # Safety
-    /// The caller must ensure that the function was compiled with the
+    /// The caller must ensure this engine has a compiled function with the
     /// correct signature (no params, returns i64).
     pub fn execute_jit_nullary(&mut self, cell_name: &str) -> Result<i64, JitError> {
         let compiled = self
@@ -1269,20 +1325,21 @@ impl JitEngine {
             .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
 
         let fn_ptr = compiled.fn_ptr;
+        let ret_type = compiled.return_type;
         self.stats.executions += 1;
 
         // SAFETY: The function pointer was produced by Cranelift JIT and is
         // valid for the lifetime of the JITModule (which we own). The
         // caller guarantees the signature matches.
-        let result = unsafe {
+        let raw = unsafe {
             let code_fn: fn() -> i64 = std::mem::transmute(fn_ptr);
             code_fn()
         };
-        Ok(result)
+        Ok(nan_unbox_typed(raw, ret_type))
     }
 
     /// Execute a JIT-compiled function with one i64 argument.
-    /// Returns the i64 result.
+    /// Arguments are NaN-boxed at the boundary; result is type-aware unboxed.
     pub fn execute_jit_unary(&mut self, cell_name: &str, arg: i64) -> Result<i64, JitError> {
         let compiled = self
             .cache
@@ -1290,17 +1347,18 @@ impl JitEngine {
             .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
 
         let fn_ptr = compiled.fn_ptr;
+        let ret_type = compiled.return_type;
         self.stats.executions += 1;
 
-        let result = unsafe {
+        let raw = unsafe {
             let code_fn: fn(i64) -> i64 = std::mem::transmute(fn_ptr);
-            code_fn(arg)
+            code_fn(nan_box_int(arg))
         };
-        Ok(result)
+        Ok(nan_unbox_typed(raw, ret_type))
     }
 
     /// Execute a JIT-compiled function with two i64 arguments.
-    /// Returns the i64 result.
+    /// Arguments are NaN-boxed at the boundary; result is type-aware unboxed.
     pub fn execute_jit_binary(
         &mut self,
         cell_name: &str,
@@ -1313,17 +1371,18 @@ impl JitEngine {
             .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
 
         let fn_ptr = compiled.fn_ptr;
+        let ret_type = compiled.return_type;
         self.stats.executions += 1;
 
-        let result = unsafe {
+        let raw = unsafe {
             let code_fn: fn(i64, i64) -> i64 = std::mem::transmute(fn_ptr);
-            code_fn(arg1, arg2)
+            code_fn(nan_box_int(arg1), nan_box_int(arg2))
         };
-        Ok(result)
+        Ok(nan_unbox_typed(raw, ret_type))
     }
 
     /// Execute a JIT-compiled function with three i64 arguments.
-    /// Returns the i64 result.
+    /// Arguments are NaN-boxed at the boundary; result is type-aware unboxed.
     pub fn execute_jit_ternary(
         &mut self,
         cell_name: &str,
@@ -1337,13 +1396,14 @@ impl JitEngine {
             .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
 
         let fn_ptr = compiled.fn_ptr;
+        let ret_type = compiled.return_type;
         self.stats.executions += 1;
 
-        let result = unsafe {
+        let raw = unsafe {
             let code_fn: fn(i64, i64, i64) -> i64 = std::mem::transmute(fn_ptr);
-            code_fn(arg1, arg2, arg3)
+            code_fn(nan_box_int(arg1), nan_box_int(arg2), nan_box_int(arg3))
         };
-        Ok(result)
+        Ok(nan_unbox_typed(raw, ret_type))
     }
 
     /// Generic JIT execution dispatching on arity. Supports 0..=3 i64
@@ -1402,8 +1462,14 @@ impl JitEngine {
     pub fn returns_string(&self, cell_name: &str) -> bool {
         self.cache
             .get(cell_name)
-            .map(|c| c.returns_string)
+            .map(|c| c.return_type == crate::ir::JitVarType::Str)
             .unwrap_or(false)
+    }
+
+    /// Get the NaN-boxing return type for a compiled cell.
+    /// Returns `None` if the cell is not compiled.
+    pub fn return_type(&self, cell_name: &str) -> Option<crate::ir::JitVarType> {
+        self.cache.get(cell_name).map(|c| c.return_type)
     }
 }
 
@@ -1456,6 +1522,7 @@ fn is_cell_jit_compilable(cell: &LirCell) -> bool {
                 | OpCode::Shl
                 | OpCode::Shr
                 | OpCode::Concat
+                | OpCode::NullCo
                 | OpCode::GetField
                 | OpCode::SetField
         )
@@ -1480,7 +1547,7 @@ struct JitLoweredFunction {
     name: String,
     func_id: FuncId,
     param_count: usize,
-    returns_string: bool,
+    return_type: crate::ir::JitVarType,
 }
 
 /// Lower an entire LIR module into Cranelift IR inside the given `JITModule`.
@@ -1579,16 +1646,15 @@ fn lower_module_jit(
         // Keep the cell alive so string constant pointers remain valid.
         retained_cells.push(optimized_cell);
 
-        let ret_is_string = cell
-            .returns
-            .as_deref()
-            .map(|s| s == "String")
-            .unwrap_or(false);
+        let ret_type = cell_return_types
+            .get(&cell.name)
+            .copied()
+            .unwrap_or(crate::ir::JitVarType::Int);
         lowered.functions.push(JitLoweredFunction {
             name: cell.name.clone(),
             func_id,
             param_count: cell.params.len(),
-            returns_string: ret_is_string,
+            return_type: ret_type,
         });
     }
 
@@ -2283,9 +2349,9 @@ mod tests {
                 registers: 3,
                 constants: vec![],
                 instructions: vec![
-                    Instruction::abx(OpCode::LoadInt, 0, 0), // r0 = 0 (null record ptr)
+                    Instruction::abc(OpCode::LoadNil, 0, 0, 0), // r0 = null (NAN_BOX_NULL)
                     Instruction::abc(OpCode::GetField, 1, 0, 0), // r1 = r0.field[0]
-                    Instruction::abc(OpCode::Return, 1, 1, 0), // return r1
+                    Instruction::abc(OpCode::Return, 1, 1, 0),  // return r1
                 ],
                 effect_handler_metas: Vec::new(),
             },
@@ -2296,10 +2362,10 @@ mod tests {
                 registers: 3,
                 constants: vec![],
                 instructions: vec![
-                    Instruction::abx(OpCode::LoadInt, 0, 0), // r0 = 0 (null record ptr)
-                    Instruction::abx(OpCode::LoadInt, 1, 42), // r1 = 42
+                    Instruction::abc(OpCode::LoadNil, 0, 0, 0), // r0 = null (NAN_BOX_NULL)
+                    Instruction::abx(OpCode::LoadInt, 1, 42),   // r1 = 42
                     Instruction::abc(OpCode::SetField, 0, 0, 1), // r0.field[0] = r1 (updates r0)
-                    Instruction::abc(OpCode::Return, 1, 1, 0), // return r1
+                    Instruction::abc(OpCode::Return, 1, 1, 0),  // return r1
                 ],
                 effect_handler_metas: Vec::new(),
             },
@@ -2336,7 +2402,8 @@ mod tests {
         let result2 = engine
             .execute_jit_nullary("set_field")
             .expect("SetField should execute");
-        assert_eq!(result2, 42, "SetField returns the value register unchanged");
+        // Boundary unboxes NaN-boxed 42 → 42
+        assert_eq!(result2, 42, "SetField returns 42");
     }
 
     #[test]
@@ -3655,14 +3722,14 @@ mod tests {
 
     #[test]
     fn jit_intrinsic_is_nan() {
-        // cell test_is_nan() -> Int
+        // cell test_is_nan() -> Bool
         //   r0 = NaN (0.0/0.0 via constants)
         //   r1 = is_nan(r0)  # Intrinsic(1, 125, 0)
         //   return r1
         let lir = make_module_with_cells(vec![LirCell {
             name: "test_is_nan".to_string(),
             params: Vec::new(),
-            returns: Some("Int".to_string()),
+            returns: Some("Bool".to_string()),
             registers: 2,
             constants: vec![Constant::Float(f64::NAN)],
             instructions: vec![
@@ -3683,14 +3750,14 @@ mod tests {
 
     #[test]
     fn jit_intrinsic_is_nan_false() {
-        // cell test_not_nan() -> Int
+        // cell test_not_nan() -> Bool
         //   r0 = 42.0
         //   r1 = is_nan(r0)  # Intrinsic(1, 125, 0)
         //   return r1
         let lir = make_module_with_cells(vec![LirCell {
             name: "test_not_nan".to_string(),
             params: Vec::new(),
-            returns: Some("Int".to_string()),
+            returns: Some("Bool".to_string()),
             registers: 2,
             constants: vec![Constant::Float(42.0)],
             instructions: vec![
@@ -3711,14 +3778,14 @@ mod tests {
 
     #[test]
     fn jit_intrinsic_is_infinite() {
-        // cell test_is_inf() -> Int
+        // cell test_is_inf() -> Bool
         //   r0 = +inf
         //   r1 = is_infinite(r0)  # Intrinsic(1, 126, 0)
         //   return r1
         let lir = make_module_with_cells(vec![LirCell {
             name: "test_is_inf".to_string(),
             params: Vec::new(),
-            returns: Some("Int".to_string()),
+            returns: Some("Bool".to_string()),
             registers: 2,
             constants: vec![Constant::Float(f64::INFINITY)],
             instructions: vec![
@@ -3739,14 +3806,14 @@ mod tests {
 
     #[test]
     fn jit_intrinsic_is_infinite_neg() {
-        // cell test_is_neg_inf() -> Int
+        // cell test_is_neg_inf() -> Bool
         //   r0 = -inf
         //   r1 = is_infinite(r0)  # Intrinsic(1, 126, 0)
         //   return r1
         let lir = make_module_with_cells(vec![LirCell {
             name: "test_is_neg_inf".to_string(),
             params: Vec::new(),
-            returns: Some("Int".to_string()),
+            returns: Some("Bool".to_string()),
             registers: 2,
             constants: vec![Constant::Float(f64::NEG_INFINITY)],
             instructions: vec![
@@ -3902,7 +3969,7 @@ mod tests {
         let lir = make_module_with_cells(vec![LirCell {
             name: "test_is_empty".to_string(),
             params: Vec::new(),
-            returns: Some("Int".to_string()),
+            returns: Some("Bool".to_string()),
             registers: 2,
             constants: vec![Constant::String("".to_string())],
             instructions: vec![
@@ -3932,7 +3999,7 @@ mod tests {
         let lir = make_module_with_cells(vec![LirCell {
             name: "test_not_empty".to_string(),
             params: Vec::new(),
-            returns: Some("Int".to_string()),
+            returns: Some("Bool".to_string()),
             registers: 2,
             constants: vec![Constant::String("hi".to_string())],
             instructions: vec![
@@ -4478,7 +4545,7 @@ mod tests {
         let lir = make_module_with_cells(vec![LirCell {
             name: "test_contains".to_string(),
             params: Vec::new(),
-            returns: Some("Int".to_string()),
+            returns: Some("Bool".to_string()),
             registers: 3,
             constants: vec![
                 Constant::String("hello world".to_string()),
@@ -4509,7 +4576,7 @@ mod tests {
         let lir = make_module_with_cells(vec![LirCell {
             name: "test_contains_f".to_string(),
             params: Vec::new(),
-            returns: Some("Int".to_string()),
+            returns: Some("Bool".to_string()),
             registers: 3,
             constants: vec![
                 Constant::String("hello".to_string()),
@@ -4540,7 +4607,7 @@ mod tests {
         let lir = make_module_with_cells(vec![LirCell {
             name: "test_sw".to_string(),
             params: Vec::new(),
-            returns: Some("Int".to_string()),
+            returns: Some("Bool".to_string()),
             registers: 3,
             constants: vec![
                 Constant::String("hello world".to_string()),
@@ -4569,7 +4636,7 @@ mod tests {
         let lir = make_module_with_cells(vec![LirCell {
             name: "test_sw_f".to_string(),
             params: Vec::new(),
-            returns: Some("Int".to_string()),
+            returns: Some("Bool".to_string()),
             registers: 3,
             constants: vec![
                 Constant::String("hello world".to_string()),
@@ -4598,7 +4665,7 @@ mod tests {
         let lir = make_module_with_cells(vec![LirCell {
             name: "test_ew".to_string(),
             params: Vec::new(),
-            returns: Some("Int".to_string()),
+            returns: Some("Bool".to_string()),
             registers: 3,
             constants: vec![
                 Constant::String("hello world".to_string()),
@@ -4627,7 +4694,7 @@ mod tests {
         let lir = make_module_with_cells(vec![LirCell {
             name: "test_ew_f".to_string(),
             params: Vec::new(),
-            returns: Some("Int".to_string()),
+            returns: Some("Bool".to_string()),
             registers: 3,
             constants: vec![
                 Constant::String("hello world".to_string()),

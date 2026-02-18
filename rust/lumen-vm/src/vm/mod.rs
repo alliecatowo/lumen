@@ -782,12 +782,12 @@ impl VM {
     }
 
     #[inline]
-    fn check_register(&self, reg: usize, cell_registers: u8) -> Result<(), VmError> {
+    fn check_register(&self, reg: usize, cell_registers: u16) -> Result<(), VmError> {
         if reg < cell_registers as usize {
             Ok(())
         } else {
             let offending = reg.min(u8::MAX as usize) as u8;
-            Err(VmError::RegisterOOB(offending, cell_registers))
+            Err(VmError::RegisterOOB(offending, cell_registers as u8))
         }
     }
 
@@ -797,7 +797,7 @@ impl VM {
         &self,
         start: usize,
         len: usize,
-        cell_registers: u8,
+        cell_registers: u16,
     ) -> Result<(), VmError> {
         if len == 0 {
             return Ok(());
@@ -815,7 +815,7 @@ impl VM {
         arg_base: usize,
         nargs: usize,
         param_offset: usize,
-        cell_registers: u8,
+        cell_registers: u16,
     ) -> Result<(), VmError> {
         // If param_offset exceeds params length, there are no params to fill
         if param_offset >= params.len() {
@@ -859,7 +859,7 @@ impl VM {
     fn validate_instruction_registers(
         &self,
         instr: Instruction,
-        cell_registers: u8,
+        cell_registers: u16,
     ) -> Result<(), VmError> {
         let a = instr.a as usize;
         let b = instr.b as usize;
@@ -1544,7 +1544,7 @@ impl VM {
                                 if i < params_ptr.len() {
                                     let dst = params_ptr[i].register as usize;
                                     debug_assert!(
-                                        (dst as u8) < cell_regs,
+                                        (dst as u16) < cell_regs,
                                         "register OOB in fast call"
                                     );
                                     self.registers[new_base + dst] =

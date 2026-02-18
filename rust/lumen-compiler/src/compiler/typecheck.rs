@@ -1017,28 +1017,48 @@ impl<'a> TypeChecker<'a> {
             }
             Stmt::Assign(asgn) => {
                 let val_type = self.infer_expr(&asgn.value);
-                // Check mutability (only for simple variable targets)
-                if let Some(var_name) = asgn.target.as_variable() {
-                    if let Some(&is_mut) = self.mutables.get(var_name) {
-                        if !is_mut {
-                            self.errors.push(TypeError::ImmutableAssign {
-                                name: var_name.to_string(),
-                                line: asgn.span.line,
-                            });
-                        }
-                    }
-                    self.locals.insert(var_name.to_string(), val_type);
-                }
-                // For Index/Field targets, also typecheck the base and index expressions
+                // Check mutability
                 match &asgn.target {
+                    AssignTarget::Variable(var_name) => {
+                        if let Some(&is_mut) = self.mutables.get(var_name.as_str()) {
+                            if !is_mut {
+                                self.errors.push(TypeError::ImmutableAssign {
+                                    name: var_name.to_string(),
+                                    line: asgn.span.line,
+                                });
+                            }
+                        }
+                        self.locals.insert(var_name.to_string(), val_type);
+                    }
                     AssignTarget::Index(base, idx) => {
+                        // Check that the base variable is mutable
+                        if let Expr::Ident(base_name, _) = base.as_ref() {
+                            if let Some(&is_mut) = self.mutables.get(base_name.as_str()) {
+                                if !is_mut {
+                                    self.errors.push(TypeError::ImmutableAssign {
+                                        name: base_name.to_string(),
+                                        line: asgn.span.line,
+                                    });
+                                }
+                            }
+                        }
                         self.infer_expr(base);
                         self.infer_expr(idx);
                     }
                     AssignTarget::Field(base, _) => {
+                        // Check that the base variable is mutable
+                        if let Expr::Ident(base_name, _) = base.as_ref() {
+                            if let Some(&is_mut) = self.mutables.get(base_name.as_str()) {
+                                if !is_mut {
+                                    self.errors.push(TypeError::ImmutableAssign {
+                                        name: base_name.to_string(),
+                                        line: asgn.span.line,
+                                    });
+                                }
+                            }
+                        }
                         self.infer_expr(base);
                     }
-                    AssignTarget::Variable(_) => {}
                 }
             }
             Stmt::Expr(es) => {
@@ -1086,53 +1106,73 @@ impl<'a> TypeChecker<'a> {
             }
             Stmt::CompoundAssign(ca) => {
                 let val_type = self.infer_expr(&ca.value);
-                // Check mutability (only for simple variable targets)
-                if let Some(var_name) = ca.target.as_variable() {
-                    if let Some(&is_mut) = self.mutables.get(var_name) {
-                        if !is_mut {
-                            self.errors.push(TypeError::ImmutableAssign {
-                                name: var_name.to_string(),
-                                line: ca.span.line,
-                            });
-                        }
-                    }
-                    if let Some(existing) = self.locals.get(var_name).cloned() {
-                        // Bitwise compound assignments require Int operands
-                        match ca.op {
-                            CompoundOp::BitAndAssign
-                            | CompoundOp::BitOrAssign
-                            | CompoundOp::BitXorAssign => {
-                                if existing != Type::Any && existing != Type::Int {
-                                    self.errors.push(TypeError::Mismatch {
-                                        expected: "Int".into(),
-                                        actual: format!("{}", existing),
-                                        line: ca.span.line,
-                                    });
-                                }
-                                if val_type != Type::Any && val_type != Type::Int {
-                                    self.errors.push(TypeError::Mismatch {
-                                        expected: "Int".into(),
-                                        actual: format!("{}", val_type),
-                                        line: ca.span.line,
-                                    });
-                                }
-                            }
-                            _ => {
-                                self.check_compat(&existing, &val_type, ca.span.line);
-                            }
-                        }
-                    }
-                }
-                // For Index/Field targets, also typecheck the base and index expressions
+                // Check mutability and types
                 match &ca.target {
+                    AssignTarget::Variable(var_name) => {
+                        if let Some(&is_mut) = self.mutables.get(var_name.as_str()) {
+                            if !is_mut {
+                                self.errors.push(TypeError::ImmutableAssign {
+                                    name: var_name.to_string(),
+                                    line: ca.span.line,
+                                });
+                            }
+                        }
+                        if let Some(existing) = self.locals.get(var_name.as_str()).cloned() {
+                            // Bitwise compound assignments require Int operands
+                            match ca.op {
+                                CompoundOp::BitAndAssign
+                                | CompoundOp::BitOrAssign
+                                | CompoundOp::BitXorAssign => {
+                                    if existing != Type::Any && existing != Type::Int {
+                                        self.errors.push(TypeError::Mismatch {
+                                            expected: "Int".into(),
+                                            actual: format!("{}", existing),
+                                            line: ca.span.line,
+                                        });
+                                    }
+                                    if val_type != Type::Any && val_type != Type::Int {
+                                        self.errors.push(TypeError::Mismatch {
+                                            expected: "Int".into(),
+                                            actual: format!("{}", val_type),
+                                            line: ca.span.line,
+                                        });
+                                    }
+                                }
+                                _ => {
+                                    self.check_compat(&existing, &val_type, ca.span.line);
+                                }
+                            }
+                        }
+                    }
                     AssignTarget::Index(base, idx) => {
+                        // Check that the base variable is mutable
+                        if let Expr::Ident(base_name, _) = base.as_ref() {
+                            if let Some(&is_mut) = self.mutables.get(base_name.as_str()) {
+                                if !is_mut {
+                                    self.errors.push(TypeError::ImmutableAssign {
+                                        name: base_name.to_string(),
+                                        line: ca.span.line,
+                                    });
+                                }
+                            }
+                        }
                         self.infer_expr(base);
                         self.infer_expr(idx);
                     }
                     AssignTarget::Field(base, _) => {
+                        // Check that the base variable is mutable
+                        if let Expr::Ident(base_name, _) = base.as_ref() {
+                            if let Some(&is_mut) = self.mutables.get(base_name.as_str()) {
+                                if !is_mut {
+                                    self.errors.push(TypeError::ImmutableAssign {
+                                        name: base_name.to_string(),
+                                        line: ca.span.line,
+                                    });
+                                }
+                            }
+                        }
                         self.infer_expr(base);
                     }
-                    AssignTarget::Variable(_) => {}
                 }
             }
             // Local definitions — types/cells are already registered at module level

@@ -4078,7 +4078,38 @@ impl Parser {
 
     fn parse_expr_stmt(&mut self) -> Result<Stmt, ParseError> {
         let expr = self.parse_expr(0)?;
-        let mut span = expr.span();
+        let start_span = expr.span();
+
+        // Check if this is an index or field assignment: expr[i] = val, expr.f = val
+        if matches!(self.peek_kind(), TokenKind::Assign) {
+            if let Some(target) = Self::expr_to_assign_target(&expr) {
+                self.advance(); // consume '='
+                let value = self.parse_expr(0)?;
+                let span = start_span.merge(value.span());
+                return Ok(Stmt::Assign(AssignStmt {
+                    target,
+                    value,
+                    span,
+                }));
+            }
+        }
+
+        // Check if this is an index or field compound assignment: expr[i] += val, etc.
+        if let Some(op) = Self::peek_compound_op(self.peek_kind()) {
+            if let Some(target) = Self::expr_to_assign_target(&expr) {
+                self.advance(); // consume the compound assign token
+                let value = self.parse_expr(0)?;
+                let span = start_span.merge(value.span());
+                return Ok(Stmt::CompoundAssign(CompoundAssignStmt {
+                    target,
+                    op,
+                    value,
+                    span,
+                }));
+            }
+        }
+
+        let mut span = start_span;
         if matches!(self.peek_kind(), TokenKind::In) {
             self.advance();
             self.skip_newlines();
@@ -4094,6 +4125,40 @@ impl Parser {
             }
         }
         Ok(Stmt::Expr(ExprStmt { expr, span }))
+    }
+
+    /// Try to convert an expression into an assignment target.
+    /// Returns `Some(target)` for Index and Field access expressions,
+    /// `None` for anything else (simple variables are handled elsewhere).
+    fn expr_to_assign_target(expr: &Expr) -> Option<AssignTarget> {
+        match expr {
+            Expr::IndexAccess(base, index, _) => {
+                Some(AssignTarget::Index(base.clone(), index.clone()))
+            }
+            Expr::DotAccess(base, field, _) => {
+                Some(AssignTarget::Field(base.clone(), field.clone()))
+            }
+            Expr::Ident(name, _) => Some(AssignTarget::Variable(name.clone())),
+            _ => None,
+        }
+    }
+
+    /// Check if a token kind is a compound assignment operator and return
+    /// the corresponding `CompoundOp`.
+    fn peek_compound_op(kind: &TokenKind) -> Option<CompoundOp> {
+        match kind {
+            TokenKind::PlusAssign => Some(CompoundOp::AddAssign),
+            TokenKind::MinusAssign => Some(CompoundOp::SubAssign),
+            TokenKind::StarAssign => Some(CompoundOp::MulAssign),
+            TokenKind::SlashAssign => Some(CompoundOp::DivAssign),
+            TokenKind::FloorDivAssign => Some(CompoundOp::FloorDivAssign),
+            TokenKind::PercentAssign => Some(CompoundOp::ModAssign),
+            TokenKind::StarStarAssign => Some(CompoundOp::PowAssign),
+            TokenKind::AmpAssign => Some(CompoundOp::BitAndAssign),
+            TokenKind::PipeAssign => Some(CompoundOp::BitOrAssign),
+            TokenKind::CaretAssign => Some(CompoundOp::BitXorAssign),
+            _ => None,
+        }
     }
 
     /// Check if the current position is an assignment (ident followed by =)
@@ -4559,16 +4624,20 @@ impl Parser {
                 TokenKind::Ampersand => (BinOp::BitAnd, (16, 17)),
                 TokenKind::LeftShift => (BinOp::Shl, (20, 21)),
                 TokenKind::RightShift => (BinOp::Shr, (20, 21)),
-                TokenKind::PlusAssign => (BinOp::Add, (2, 3)),
-                TokenKind::MinusAssign => (BinOp::Sub, (2, 3)),
-                TokenKind::StarAssign => (BinOp::Mul, (2, 3)),
-                TokenKind::SlashAssign => (BinOp::Div, (2, 3)),
-                TokenKind::FloorDivAssign => (BinOp::FloorDiv, (2, 3)),
-                TokenKind::PercentAssign => (BinOp::Mod, (2, 3)),
-                TokenKind::StarStarAssign => (BinOp::Pow, (2, 3)),
-                TokenKind::AmpAssign => (BinOp::BitAnd, (2, 3)),
-                TokenKind::PipeAssign => (BinOp::BitOr, (2, 3)),
-                TokenKind::CaretAssign => (BinOp::BitXor, (2, 3)),
+                // Compound assignment operators: stop expression parsing so
+                // parse_expr_stmt can handle them as assignments.
+                TokenKind::PlusAssign
+                | TokenKind::MinusAssign
+                | TokenKind::StarAssign
+                | TokenKind::SlashAssign
+                | TokenKind::FloorDivAssign
+                | TokenKind::PercentAssign
+                | TokenKind::StarStarAssign
+                | TokenKind::AmpAssign
+                | TokenKind::PipeAssign
+                | TokenKind::CaretAssign => {
+                    break;
+                }
                 // Null coalescing
                 TokenKind::QuestionQuestion => {
                     if min_bp > 8 {

@@ -155,6 +155,69 @@ fn register_string_helpers(builder: &mut JITBuilder) {
 }
 
 // ---------------------------------------------------------------------------
+// JIT Intrinsic Runtime Helpers
+// ---------------------------------------------------------------------------
+
+/// Print an integer to stdout (intrinsic #2: PRINT)
+/// For JIT-compiled code, simplified to print just integers.
+///
+/// # Safety
+/// None - operates on a simple i64 value.
+extern "C" fn jit_rt_print_int(value: i64) {
+    println!("{}", value);
+}
+
+/// Print a string to stdout (intrinsic #2: PRINT)
+/// For JIT-compiled code, prints a single string argument.
+///
+/// # Safety
+/// `s` must be a valid `*mut String` pointer.
+extern "C" fn jit_rt_print_str(s: i64) {
+    if s != 0 {
+        let string = unsafe { &*(s as *const String) };
+        println!("{}", string);
+    }
+}
+
+/// Get the length of a string (intrinsic #0: LENGTH)
+/// Returns the number of Unicode characters (not bytes).
+///
+/// # Safety
+/// `s` must be a valid `*mut String` pointer.
+extern "C" fn jit_rt_string_len(s: i64) -> i64 {
+    if s == 0 {
+        return 0;
+    }
+    let string = unsafe { &*(s as *const String) };
+    string.chars().count() as i64
+}
+
+/// Absolute value of an integer (intrinsic #16: ABS)
+///
+/// # Safety
+/// None - operates on a simple i64 value.
+extern "C" fn jit_rt_abs_int(value: i64) -> i64 {
+    value.abs()
+}
+
+/// Absolute value of a float (intrinsic #16: ABS)
+///
+/// # Safety
+/// None - operates on a simple f64 value.
+extern "C" fn jit_rt_abs_float(value: f64) -> f64 {
+    value.abs()
+}
+
+/// Register all JIT intrinsic runtime helper symbols with a JITBuilder.
+fn register_intrinsic_helpers(builder: &mut JITBuilder) {
+    builder.symbol("jit_rt_print_int", jit_rt_print_int as *const u8);
+    builder.symbol("jit_rt_print_str", jit_rt_print_str as *const u8);
+    builder.symbol("jit_rt_string_len", jit_rt_string_len as *const u8);
+    builder.symbol("jit_rt_abs_int", jit_rt_abs_int as *const u8);
+    builder.symbol("jit_rt_abs_float", jit_rt_abs_float as *const u8);
+}
+
+// ---------------------------------------------------------------------------
 // Execution profiling
 // ---------------------------------------------------------------------------
 
@@ -387,6 +450,9 @@ impl JitEngine {
 
         // Register string runtime helper symbols so JIT code can call them.
         register_string_helpers(&mut builder);
+
+        // Register intrinsic runtime helper symbols so JIT code can call builtins.
+        register_intrinsic_helpers(&mut builder);
 
         let mut jit_module = JITModule::new(builder);
         let pointer_type = jit_module.isa().pointer_type();
@@ -2255,5 +2321,96 @@ mod tests {
         let raw = engine.execute_jit_nullary("concat_test").expect("execute");
         let s = unsafe { jit_take_string(raw) };
         assert_eq!(s, "xxx");
+    }
+
+    #[test]
+    fn jit_intrinsic_abs_int() {
+        // Test abs() intrinsic with integer argument
+        // cell test_abs() -> Int
+        //   r0 = -10
+        //   r1 = abs(r0)   # Intrinsic(1, 26, 0) - IntrinsicId::Abs = 26
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_abs".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 2,
+            constants: vec![],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadInt, 0, (-10i32) as u32), // r0 = -10
+                Instruction::abc(OpCode::Intrinsic, 1, 26, 0),         // r1 = abs(r0)
+                Instruction::abc(OpCode::Return, 1, 1, 0),             // return r1
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result = engine.execute_jit_nullary("test_abs").expect("execute");
+        assert_eq!(result, 10); // abs(-10) = 10
+    }
+
+    #[test]
+    fn jit_intrinsic_print_int() {
+        // Test print() intrinsic with integer argument
+        // cell test_print() -> Int
+        //   r0 = 42
+        //   r1 = print(r0)  # Intrinsic(1, 9, 0) - IntrinsicId::Print = 9
+        //   r2 = 0
+        //   return r2
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_print".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadInt, 0, 42),     // r0 = 42
+                Instruction::abc(OpCode::Intrinsic, 1, 9, 0), // r1 = print(r0)
+                Instruction::abx(OpCode::LoadInt, 2, 0),      // r2 = 0
+                Instruction::abc(OpCode::Return, 2, 1, 0),    // return r2
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        // Just verify it compiles and executes without crashing
+        // (print goes to stdout, we don't capture it here)
+        let result = engine.execute_jit_nullary("test_print").expect("execute");
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn jit_intrinsic_len_string() {
+        // Test len() intrinsic with string argument
+        // cell test_len() -> Int
+        //   r0 = "hello"
+        //   r1 = len(r0)     # Intrinsic(1, 0, 0) - IntrinsicId::Length = 0
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_len".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 2,
+            constants: vec![Constant::String("hello".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),        // r0 = "hello"
+                Instruction::abc(OpCode::Intrinsic, 1, 0, 0), // r1 = len(r0)
+                Instruction::abc(OpCode::Return, 1, 1, 0),    // return r1
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result = engine.execute_jit_nullary("test_len").expect("execute");
+        assert_eq!(result, 5); // len("hello") = 5
     }
 }

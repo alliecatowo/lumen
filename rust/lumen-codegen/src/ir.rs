@@ -168,6 +168,33 @@ pub fn lower_cell<M: Module>(
     let str_drop_ref =
         declare_helper_func(module, &mut func, "jit_rt_string_drop", &[types::I64], &[])?;
 
+    // Declare intrinsic runtime helper functions (for JIT builtin support).
+    let intrinsic_print_int_ref =
+        declare_helper_func(module, &mut func, "jit_rt_print_int", &[types::I64], &[])?;
+    let intrinsic_print_str_ref =
+        declare_helper_func(module, &mut func, "jit_rt_print_str", &[types::I64], &[])?;
+    let intrinsic_string_len_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_string_len",
+        &[types::I64],
+        &[types::I64],
+    )?;
+    let intrinsic_abs_int_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_abs_int",
+        &[types::I64],
+        &[types::I64],
+    )?;
+    let intrinsic_abs_float_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_abs_float",
+        &[types::F64],
+        &[types::F64],
+    )?;
+
     // Suppress unused-variable warnings for helpers not yet used in all paths.
     let _ = str_clone_ref;
 
@@ -934,6 +961,82 @@ pub fn lower_cell<M: Module>(
                 let _value = use_var(&mut builder, &vars, inst.c);
 
                 // For now, stub - full implementation requires runtime helpers
+            }
+
+            // Intrinsic (builtin function call)
+            OpCode::Intrinsic => {
+                // Instruction format: Intrinsic A, B, C
+                // A = destination register for result
+                // B = intrinsic ID (from IntrinsicId enum, 0-137)
+                // C = base register for arguments
+
+                let intrinsic_id = inst.b as u32;
+                let arg_base = inst.c;
+
+                // For now, implement a subset of common intrinsics.
+                // Full implementation requires complex Value type support.
+                match intrinsic_id {
+                    0 => {
+                        // LENGTH (IntrinsicId::Length)
+                        // For strings: call jit_rt_string_len(str_ptr)
+                        // For now, only handle string case
+                        if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Str) {
+                            let str_ptr = use_var(&mut builder, &vars, arg_base);
+                            let call = builder.ins().call(intrinsic_string_len_ref, &[str_ptr]);
+                            let result = builder.inst_results(call)[0];
+                            var_types.insert(inst.a as u32, JitVarType::Int);
+                            def_var(&mut builder, &vars, inst.a, result);
+                        } else {
+                            // For other types, return 0 (stub)
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            var_types.insert(inst.a as u32, JitVarType::Int);
+                            def_var(&mut builder, &vars, inst.a, zero);
+                        }
+                    }
+                    9 => {
+                        // PRINT (IntrinsicId::Print)
+                        // Determine the type of the first argument
+                        if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Str) {
+                            // Print string
+                            let str_ptr = use_var(&mut builder, &vars, arg_base);
+                            builder.ins().call(intrinsic_print_str_ref, &[str_ptr]);
+                        } else {
+                            // Print integer
+                            let int_val = use_var(&mut builder, &vars, arg_base);
+                            builder.ins().call(intrinsic_print_int_ref, &[int_val]);
+                        }
+                        // Print returns Null (represented as 0)
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        var_types.insert(inst.a as u32, JitVarType::Int);
+                        def_var(&mut builder, &vars, inst.a, zero);
+                    }
+                    26 => {
+                        // ABS (IntrinsicId::Abs)
+                        // Determine if the argument is Int or Float
+                        if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Float) {
+                            // Absolute value of float
+                            let float_val = use_var(&mut builder, &vars, arg_base);
+                            let call = builder.ins().call(intrinsic_abs_float_ref, &[float_val]);
+                            let result = builder.inst_results(call)[0];
+                            var_types.insert(inst.a as u32, JitVarType::Float);
+                            def_var(&mut builder, &vars, inst.a, result);
+                        } else {
+                            // Absolute value of integer
+                            let int_val = use_var(&mut builder, &vars, arg_base);
+                            let call = builder.ins().call(intrinsic_abs_int_ref, &[int_val]);
+                            let result = builder.inst_results(call)[0];
+                            var_types.insert(inst.a as u32, JitVarType::Int);
+                            def_var(&mut builder, &vars, inst.a, result);
+                        }
+                    }
+                    _ => {
+                        // Unsupported intrinsic - return 0 for now
+                        // TODO: Implement more intrinsics or fall back to interpreter
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        var_types.insert(inst.a as u32, JitVarType::Int);
+                        def_var(&mut builder, &vars, inst.a, zero);
+                    }
+                }
             }
 
             // Legacy loop opcodes

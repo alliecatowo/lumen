@@ -28,6 +28,7 @@ pub enum OpCode {
     LoadBool = 0x03, // A, B, C: load bool B into A; if C, skip next
     LoadInt = 0x04,  // A, sB: R[A] = sB as i64 (small integer)
     Move = 0x05,     // A, B:  copy register B to A
+    MoveOwn = 0x0C,  // A, B:  move register B to A (B becomes Null) — used when B is dead after
 
     // Data construction
     NewList = 0x06,   // A, B:  create list from B values at A+1..

@@ -108,6 +108,11 @@ fn opcode_info(op: &OpCode) -> (&str, &str, &str) {
             "Load/Move",
         ),
         Move => ("A, B", "Copy register B to register A", "Load/Move"),
+        MoveOwn => (
+            "A, B",
+            "Move register B to A (B becomes Null); used when B is dead after",
+            "Load/Move",
+        ),
 
         // Data Construction
         NewList => (

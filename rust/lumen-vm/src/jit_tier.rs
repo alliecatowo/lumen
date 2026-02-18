@@ -21,9 +21,9 @@
 //! └─────────────┘           └──────────────┘
 //! ```
 //!
-//! Eligible cells must have all-Int parameters and an Int return type (the
-//! current Cranelift backend operates on i64 values only). Non-eligible cells
-//! remain interpreted forever.
+//! All cells are eligible for JIT compilation attempt. If a cell contains
+//! unsupported opcodes, compilation fails gracefully and the cell falls back
+//! to the interpreter.
 
 #[cfg(feature = "jit")]
 use lumen_codegen::jit::{CodegenSettings, JitEngine, JitStats, OptLevel};
@@ -65,7 +65,7 @@ impl Default for JitTierConfig {
 enum CellEligibility {
     /// Not yet checked.
     Unknown,
-    /// Eligible for JIT compilation (all-Int params, Int return).
+    /// Eligible for JIT compilation.
     Eligible,
     /// Not eligible — will remain interpreted.
     NotEligible,
@@ -148,8 +148,9 @@ impl JitTier {
     }
 
     /// Check and cache JIT eligibility for a cell.
-    /// A cell is eligible if ALL params have type "Int" and return type is "Int".
-    pub fn check_eligibility(&mut self, cell_idx: usize, module: &LirModule) -> bool {
+    /// All cells are eligible — if compilation fails for unsupported opcodes,
+    /// the cell gracefully falls back to the interpreter.
+    pub fn check_eligibility(&mut self, cell_idx: usize, _module: &LirModule) -> bool {
         if cell_idx >= self.eligibility.len() {
             return false;
         }
@@ -157,16 +158,10 @@ impl JitTier {
             CellEligibility::Eligible => true,
             CellEligibility::NotEligible => false,
             CellEligibility::Unknown => {
-                let cell = &module.cells[cell_idx];
-                let all_int_params = cell.params.iter().all(|p| p.ty == "Int");
-                let returns_int = cell.returns.as_deref() == Some("Int");
-                let eligible = all_int_params && returns_int;
-                self.eligibility[cell_idx] = if eligible {
-                    CellEligibility::Eligible
-                } else {
-                    CellEligibility::NotEligible
-                };
-                eligible
+                // All cells are eligible for JIT compilation attempt.
+                // If compilation fails (unsupported opcodes), the cell falls back to interpreter.
+                self.eligibility[cell_idx] = CellEligibility::Eligible;
+                true
             }
         }
     }
@@ -193,58 +188,17 @@ impl JitTier {
     /// Attempt to compile a hot cell. Returns `true` on success.
     ///
     /// On the `jit` feature, this creates/updates the Cranelift JIT engine and
-    /// compiles all Int-eligible cells from the module. Non-Int cells are
-    /// filtered out so mixed-type modules can still benefit from JIT for their
-    /// Int-only hot paths.
+    /// compiles all cells from the module. Cells with unsupported opcodes will
+    /// cause compilation to fail gracefully, falling back to the interpreter.
     ///
     /// On no-jit builds, this is a no-op that returns `false`.
     pub fn try_compile(&mut self, _cell_idx: usize, module: &LirModule) -> bool {
         #[cfg(feature = "jit")]
         {
-            // Build a filtered module containing only Int-eligible cells.
-            // This allows JIT compilation of hot Int-only cells even when the
-            // module contains cells using strings, records, etc.
-            let int_cells: Vec<_> = module
-                .cells
-                .iter()
-                .filter(|c| {
-                    let params_ok = c.params.iter().all(|p| p.ty == "Int");
-                    let ret_ok = c.returns.as_deref() == Some("Int");
-                    params_ok && ret_ok
-                })
-                .cloned()
-                .collect();
-
-            if int_cells.is_empty() {
+            if module.cells.is_empty() {
                 self.stats.compile_failures += 1;
                 return false;
             }
-
-            // Check that the target cell is in the filtered set.
-            let target_name = &module.cells[_cell_idx].name;
-            if !int_cells.iter().any(|c| c.name == *target_name) {
-                if _cell_idx < self.eligibility.len() {
-                    self.eligibility[_cell_idx] = CellEligibility::NotEligible;
-                }
-                self.stats.compile_failures += 1;
-                return false;
-            }
-
-            // Create a minimal LirModule with only Int-eligible cells.
-            let filtered_module = LirModule {
-                version: module.version.clone(),
-                cells: int_cells,
-                strings: module.strings.clone(),
-                types: module.types.clone(),
-                tools: Vec::new(),
-                policies: Vec::new(),
-                agents: Vec::new(),
-                handlers: Vec::new(),
-                addons: Vec::new(),
-                effects: Vec::new(),
-                effect_binds: Vec::new(),
-                doc_hash: module.doc_hash.clone(),
-            };
 
             let opt = match self.config.opt_level {
                 JitOptLevel::None => OptLevel::None,
@@ -259,22 +213,22 @@ impl JitTier {
             // Create a new engine each time (Cranelift JITModule doesn't support
             // incremental addition of functions after finalize_definitions).
             let mut engine = JitEngine::new(settings, 0);
-            match engine.compile_module(&filtered_module) {
+            match engine.compile_module(module) {
                 Ok(()) => {
-                    // Mark ALL Int-eligible cells as compiled. We need to map
-                    // back to the original module indices.
-                    for (idx, cell) in module.cells.iter().enumerate() {
-                        let params_ok = cell.params.iter().all(|p| p.ty == "Int");
-                        let ret_ok = cell.returns.as_deref() == Some("Int");
-                        if params_ok && ret_ok {
-                            self.compiled.insert(idx);
-                            self.stats.cells_compiled += 1;
-                        }
+                    // Mark ALL cells as compiled.
+                    for (idx, _cell) in module.cells.iter().enumerate() {
+                        self.compiled.insert(idx);
+                        self.stats.cells_compiled += 1;
                     }
                     self.engine = Some(engine);
                     true
                 }
                 Err(_e) => {
+                    // Compilation failed — mark the target cell as not eligible
+                    // so we don't retry it.
+                    if _cell_idx < self.eligibility.len() {
+                        self.eligibility[_cell_idx] = CellEligibility::NotEligible;
+                    }
                     self.stats.compile_failures += 1;
                     false
                 }
@@ -311,6 +265,26 @@ impl JitTier {
         {
             let _ = (cell_name, args);
             None
+        }
+    }
+
+    /// Check if a compiled cell returns a heap-allocated string pointer.
+    /// When true, the i64 result from `execute` is a `*mut String` that must
+    /// be consumed via `lumen_codegen::jit::jit_take_string`.
+    pub fn returns_string(&self, cell_name: &str) -> bool {
+        #[cfg(feature = "jit")]
+        {
+            if let Some(ref engine) = self.engine {
+                engine.returns_string(cell_name)
+            } else {
+                false
+            }
+        }
+
+        #[cfg(not(feature = "jit"))]
+        {
+            let _ = cell_name;
+            false
         }
     }
 

@@ -133,6 +133,7 @@ fn remove_nops(cell: &mut LirCell) {
 /// Currently we perform a conservative optimization that only removes the `Test`
 /// and updates the `Eq` to use its built-in skip-next. Full dead-register analysis
 /// is not yet implemented, so we assume the pattern is intentional when found.
+#[allow(dead_code)]
 fn optimize_eq_test_sequences(cell: &mut LirCell) {
     let mut i = 0;
     let mut to_remove = Vec::new();

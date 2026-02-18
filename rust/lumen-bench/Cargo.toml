@@ -16,3 +16,7 @@ serde_json = "1"
 [[bench]]
 name = "compiler_bench"
 harness = false
+
+[[bench]]
+name = "sort_bench"
+harness = false

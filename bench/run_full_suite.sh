@@ -119,6 +119,84 @@ CROSS_BENCHMARKS=(
   "primes_sieve:primes_sieve"
 )
 
+# Canonical N values per benchmark — all languages MUST use these sizes.
+# If a benchmark file uses a different N, results are incomparable.
+declare -A CANONICAL_N=(
+  [sort]=1000000
+  [nbody]=1000000        # steps
+  [fibonacci]=35
+  [matrix_mult]=200
+  [fannkuch]=10
+  [primes_sieve]=1000000
+  # json_parse, string_ops, tree: N embedded in test data, not a single parameter
+)
+
+# Validate that benchmark source files use the canonical N.
+# Extracts the primary size parameter from each source file and checks it.
+validate_benchmark_sizes() {
+  local bench_name="$1"
+  local canonical="${CANONICAL_N[$bench_name]:-}"
+  if [ -z "$canonical" ]; then
+    return 0  # No canonical N defined for this benchmark
+  fi
+
+  local bench_dir="$CROSS_DIR/$bench_name"
+  local mismatches=()
+
+  for src_file in "$bench_dir"/*; do
+    [ -f "$src_file" ] || continue
+    local ext="${src_file##*.}"
+    local found_n=""
+
+    case "$bench_name" in
+      sort)
+        found_n=$(grep -oP '(?:let n|const n|n :=|int n|n =)\s*[:=]?\s*([0-9_]+)' "$src_file" \
+                  | grep -oP '[0-9_]+$' | head -1 | tr -d '_')
+        ;;
+      nbody)
+        # Look for step count in loop or function call
+        found_n=$(grep -oP '(?:for.*0\.\.|(range|<)\s*)([0-9_]+)' "$src_file" \
+                  | grep -oP '[0-9_]+' | tail -1 | tr -d '_')
+        if [ -z "$found_n" ]; then
+          # Lumen uses function argument
+          found_n=$(grep -oP 'advance\(.*,\s*([0-9_]+)\s*\)' "$src_file" \
+                    | grep -oP '[0-9_]+' | tail -1 | tr -d '_')
+        fi
+        ;;
+      fibonacci)
+        found_n=$(grep -oP '(?:fibonacci|fib)\s*\(\s*([0-9]+)' "$src_file" \
+                  | grep -oP '[0-9]+' | tail -1)
+        ;;
+      matrix_mult)
+        found_n=$(grep -oP '(?:let n|const N|N :=|#define N|N =)\s*[:=]?\s*([0-9_]+)' "$src_file" \
+                  | grep -oP '[0-9_]+$' | head -1 | tr -d '_')
+        ;;
+      fannkuch)
+        found_n=$(grep -oP '(?:let n|const N|N :=|#define N|N =)\s*[:=]?\s*([0-9_]+)' "$src_file" \
+                  | grep -oP '[0-9_]+$' | head -1 | tr -d '_')
+        ;;
+      primes_sieve)
+        found_n=$(grep -oP '(?:let limit|const limit|limit :=|int limit|limit =)\s*[:=]?\s*([0-9_]+)' "$src_file" \
+                  | grep -oP '[0-9_]+$' | head -1 | tr -d '_')
+        ;;
+    esac
+
+    if [ -n "$found_n" ] && [ "$found_n" != "$canonical" ]; then
+      mismatches+=("$(basename "$src_file"): N=$found_n (expected $canonical)")
+    fi
+  done
+
+  if [ ${#mismatches[@]} -gt 0 ]; then
+    echo "  ⚠ SIZE MISMATCH in $bench_name (canonical N=$canonical):"
+    for m in "${mismatches[@]}"; do
+      echo "    - $m"
+    done
+    echo "  Results for mismatched files are NOT comparable!"
+    return 1
+  fi
+  return 0
+}
+
 # Lumen-specific benchmarks
 LUMEN_BENCHMARKS=(
   "b_ackermann.lm:ackermann"
@@ -131,7 +209,7 @@ LUMEN_BENCHMARKS=(
   "b_string_concat.lm:string_concat"
 )
 
-# Results array: "benchmark,language,run,time_ms"
+# Results array: "benchmark,language,run,time_ms,n"
 RESULTS=()
 
 # Time a command, return elapsed milliseconds
@@ -161,6 +239,7 @@ run_benchmark() {
   local bench="$1"
   local lang="$2"
   local cmd="$3"
+  local n="${CANONICAL_N[$bench]:-}"
   
   # Skip if language filter is set and doesn't match
   if [ -n "$FILTER_LANG" ] && [ "$lang" != "$FILTER_LANG" ]; then
@@ -170,7 +249,7 @@ run_benchmark() {
   for run in $(seq 1 "$RUNS"); do
     local ms
     ms=$(time_ms bash -c "$cmd") || ms="ERROR"
-    RESULTS+=("$bench,$lang,$run,$ms")
+    RESULTS+=("$bench,$lang,$run,$ms,$n")
     
     if [ "$ms" = "ERROR" ]; then
       printf "    [%d/%d] %-18s %-12s ERROR\n" "$run" "$RUNS" "$bench" "$lang"
@@ -193,6 +272,15 @@ if [ "$ONLY_LUMEN" = false ] && [ "$NO_CROSS" = false ]; then
   for bench_spec in "${CROSS_BENCHMARKS[@]}"; do
     IFS=':' read -r bench_name prefix <<< "$bench_spec"
     echo "▶ $bench_name"
+    
+    # Validate benchmark sizes across languages
+    validate_benchmark_sizes "$bench_name" || true
+    
+    # Log canonical N if defined
+    local canonical_n="${CANONICAL_N[$bench_name]:-}"
+    if [ -n "$canonical_n" ]; then
+      echo "  N=$canonical_n"
+    fi
     
     # C
     if $HAS_GCC && [ -f "$CROSS_DIR/$bench_name/${prefix}.c" ]; then
@@ -288,7 +376,7 @@ echo ""
 
 # Write CSV if requested
 if [ -n "$CSV_FILE" ]; then
-  echo "benchmark,language,run,time_ms" > "$CSV_FILE"
+  echo "benchmark,language,run,time_ms,n" > "$CSV_FILE"
   for row in "${RESULTS[@]}"; do
     echo "$row" >> "$CSV_FILE"
   done
@@ -303,14 +391,14 @@ echo ""
 # Build unique benchmark list
 declare -A benchmarks_seen
 for row in "${RESULTS[@]}"; do
-  IFS=',' read -r rb rl rr rt <<< "$row"
+  IFS=',' read -r rb rl rr rt rn <<< "$row"
   benchmarks_seen["$rb"]=1
 done
 
 # Build unique language list
 declare -A langs_seen
 for row in "${RESULTS[@]}"; do
-  IFS=',' read -r rb rl rr rt <<< "$row"
+  IFS=',' read -r rb rl rr rt rn <<< "$row"
   langs_seen["$rl"]=1
 done
 
@@ -321,7 +409,7 @@ for bench in "${!benchmarks_seen[@]}"; do
   for lang in "${!langs_seen[@]}"; do
     times=()
     for row in "${RESULTS[@]}"; do
-      IFS=',' read -r rb rl rr rt <<< "$row"
+      IFS=',' read -r rb rl rr rt rn <<< "$row"
       if [ "$rb" = "$bench" ] && [ "$rl" = "$lang" ] && [ "$rt" != "ERROR" ]; then
         times+=("$rt")
       fi

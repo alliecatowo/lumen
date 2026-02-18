@@ -1,4 +1,4 @@
-# Sort benchmark — builtin sort on 1,000,000 integers
+# Sort benchmark — builtin sort on 1,000,000 integers (N must match all languages)
 # Uses Lumen's builtin sort() which delegates to Rust's stable sort (O(n log n))
 
 # Simple linear congruential generator for deterministic "random" data

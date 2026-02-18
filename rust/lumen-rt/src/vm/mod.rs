@@ -5759,6 +5759,62 @@ end
     }
 
     #[test]
+    fn test_intrinsic_sort_floats() {
+        let result = run_main(
+            r#"
+cell main() -> list[Float]
+  let xs = [3.14, 1.41, 2.71, 0.0, -1.5]
+  return sort(xs)
+end
+"#,
+        );
+        assert_eq!(
+            result,
+            Value::new_list(vec![
+                Value::Float(-1.5),
+                Value::Float(0.0),
+                Value::Float(1.41),
+                Value::Float(2.71),
+                Value::Float(3.14),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_intrinsic_sort_strings() {
+        let result = run_main(
+            r#"
+cell main() -> list[String]
+  let xs = ["zebra", "apple", "mango", "banana"]
+  return sort(xs)
+end
+"#,
+        );
+        assert_eq!(
+            result,
+            Value::new_list(vec![
+                Value::String(StringRef::Owned("apple".to_string())),
+                Value::String(StringRef::Owned("banana".to_string())),
+                Value::String(StringRef::Owned("mango".to_string())),
+                Value::String(StringRef::Owned("zebra".to_string())),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_intrinsic_sort_empty() {
+        let result = run_main(
+            r#"
+cell main() -> list[Int]
+  let xs: list[Int] = []
+  return sort(xs)
+end
+"#,
+        );
+        assert_eq!(result, Value::new_list(vec![]));
+    }
+
+    #[test]
     fn test_intrinsic_reverse() {
         let result = run_main(
             r#"

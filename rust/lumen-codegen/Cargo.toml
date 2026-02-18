@@ -18,6 +18,7 @@ cranelift-jit = { version = "0.116", features = ["selinux-fix"] }
 target-lexicon = "0.13"
 lumen-core = { path = "../lumen-core", version = "0.1.0" }
 lumen-compiler = { path = "../lumen-compiler" }
+strum = { version = "0.26", features = ["derive"] }
 thiserror = { workspace = true }
 wasm-encoder = "0.218"
 

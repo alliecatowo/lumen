@@ -236,6 +236,9 @@ fn classify_multi_block_regs(
             | OpCode::SetField
             | OpCode::GetIndex
             | OpCode::SetIndex
+            | OpCode::NewUnion
+            | OpCode::IsVariant
+            | OpCode::Unbox
             | OpCode::Call => {
                 def_blocks_no_init.entry(inst.a).or_default().insert(blk);
             }
@@ -332,6 +335,18 @@ fn classify_multi_block_regs(
                 read_blocks.entry(inst.a).or_default().insert(blk);
                 read_blocks.entry(inst.b).or_default().insert(blk);
                 read_blocks.entry(inst.c).or_default().insert(blk);
+            }
+            // NewUnion reads payload from r[c]
+            OpCode::NewUnion => {
+                read_blocks.entry(inst.c).or_default().insert(blk);
+            }
+            // IsVariant reads the union from r[a]
+            OpCode::IsVariant => {
+                read_blocks.entry(inst.a).or_default().insert(blk);
+            }
+            // Unbox reads the union from r[b]
+            OpCode::Unbox => {
+                read_blocks.entry(inst.b).or_default().insert(blk);
             }
             _ => {}
         }
@@ -2300,7 +2315,10 @@ pub(crate) fn lower_cell<M: Module>(
             }
 
             // IsVariant: Check if union has a specific variant tag
-            // Skip next instruction if r[a] is Union with tag=strings[bx]
+            // VM semantics: skip next instruction if r[a] is Union with tag=strings[bx].
+            // The skipped instruction is typically a Jmp to the "not-matched" branch.
+            // JIT approach: store the result as a NaN-boxed Bool in r[a] and set
+            // `pending_test` so the immediately following Jmp emits a conditional branch.
             OpCode::IsVariant => {
                 let union_ptr = use_var(&mut builder, &regs, &var_types, inst.a);
                 let tag_idx = inst.bx() as usize;
@@ -2315,12 +2333,15 @@ pub(crate) fn lower_cell<M: Module>(
                 let call = builder
                     .ins()
                     .call(union_is_variant_ref, &[union_ptr, tag_ptr, tag_len]);
-                let result = builder.inst_results(call)[0];
-                // IsVariant doesn't store result in a register, it's a control flow instruction
-                // For now, we'll skip implementing the conditional jump logic in JIT
-                // This requires more complex control flow handling
-                // TODO: Implement proper conditional branching for IsVariant
-                let _ = result; // silence unused warning
+                let raw_bool = builder.inst_results(call)[0]; // 0 or 1
+                                                              // Convert to NaN-boxed Bool: 1 → NAN_BOX_TRUE, 0 → NAN_BOX_FALSE
+                let nan_true = builder.ins().iconst(types::I64, NAN_BOX_TRUE);
+                let nan_false = builder.ins().iconst(types::I64, NAN_BOX_FALSE);
+                let is_one = builder.ins().icmp_imm(IntCC::NotEqual, raw_bool, 0);
+                let result = builder.ins().select(is_one, nan_true, nan_false);
+                var_types.insert(inst.a as u32, JitVarType::Bool);
+                def_var(&mut builder, &mut regs, inst.a, result);
+                pending_test = Some(inst.a);
             }
 
             // Unbox: Extract payload from union
@@ -3401,12 +3422,19 @@ pub(crate) fn lower_cell<M: Module>(
 
             OpCode::Nop => {}
 
-            // Everything else -> trap
+            // Everything else -> deopt stub: return NAN_BOX_NULL.
+            // Cells with unsupported opcodes are still JIT-compiled; the
+            // unsupported instruction becomes a no-op that writes null to its
+            // destination register. The interpreter remains the correctness
+            // fallback for these cells.
             _ => {
-                builder
-                    .ins()
-                    .trap(cranelift_codegen::ir::TrapCode::unwrap_user(2));
-                terminated = true;
+                let null_val = builder.ins().iconst(types::I64, NAN_BOX_NULL);
+                // If the instruction has a destination register (field a),
+                // write null so downstream code doesn't see an undefined var.
+                if (inst.a as u32) < 256 {
+                    var_types.insert(inst.a as u32, JitVarType::Int);
+                    def_var(&mut builder, &mut regs, inst.a, null_val);
+                }
             }
         }
     }

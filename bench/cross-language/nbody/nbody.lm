@@ -1,7 +1,6 @@
-# N-body gravitational simulation — 5-body solar system
+# N-body gravitational simulation — 5-body solar system, 1,000,000 steps
 # Flat parallel arrays with index assignment for in-place updates.
 # Correct symmetric force updates matching the C reference.
-# Step count = 50,000 (interpreter-friendly; C uses 1,000,000).
 
 cell energy(x: list[Float], y: list[Float], z: list[Float], vx: list[Float], vy: list[Float], vz: list[Float], mass: list[Float]) -> Float
   let mut e = 0.0
@@ -97,7 +96,7 @@ cell main() -> String
 
   let e0 = to_string(energy(x, y, z, vx, vy, vz, mass))
   print(e0)
-  let e1 = advance(x, y, z, vx, vy, vz, mass, 50000)
+  let e1 = advance(x, y, z, vx, vy, vz, mass, 1000000)
   print(e1)
   return "done"
 end

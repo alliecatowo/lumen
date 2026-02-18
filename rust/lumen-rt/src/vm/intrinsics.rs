@@ -1342,6 +1342,16 @@ impl VM {
                     _ => Value::Null,
                 })
             }
+            // Math: truncate toward zero
+            "trunc" => {
+                let arg = &self.registers[base + a + 1];
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.trunc()),
+                    Value::Int(_) => arg.clone(),
+                    Value::BigInt(_) => arg.clone(),
+                    _ => Value::Null,
+                })
+            }
             // Random integer in range [min, max]
             "random_int" => {
                 let min_val = match &self.registers[base + a + 1] {
@@ -3844,6 +3854,24 @@ impl VM {
                     map.insert(key, Value::String(StringRef::Owned(value)));
                 }
                 Ok(Value::new_map(map))
+            }
+            138 => {
+                // TAN
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.tan()),
+                    Value::Int(n) => Value::Float((*n as f64).tan()),
+                    Value::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::NAN).tan()),
+                    _ => Value::Null,
+                })
+            }
+            139 => {
+                // TRUNC
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.trunc()),
+                    Value::Int(_) => arg.clone(),
+                    Value::BigInt(_) => arg.clone(),
+                    _ => Value::Null,
+                })
             }
             _ => Err(VmError::Runtime(format!(
                 "Unknown intrinsic ID {} - this is a compiler/VM mismatch bug",

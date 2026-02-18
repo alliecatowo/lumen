@@ -22,7 +22,7 @@ use dap::server::ServerOutput;
 use dap::types::*;
 
 use lumen_compiler::CompileError;
-use lumen_core::lir::{LirCell, LirModule, LirParam};
+use lumen_core::lir::LirModule;
 use lumen_core::values::Value;
 use lumen_rt::vm::{self, DebugEvent, VM};
 
@@ -109,6 +109,7 @@ impl StoppedReason {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum OutputCategory {
     Console,
     Stdout,
@@ -116,6 +117,7 @@ enum OutputCategory {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct DapStackFrame {
     id: i64,
     name: String,
@@ -147,14 +149,18 @@ struct DebuggerState {
     /// Source file path.
     source_path: PathBuf,
     /// Source text.
+    #[allow(dead_code)]
     source_text: String,
     /// Cell names that have breakpoints set on entry.
     function_breakpoints: HashSet<String>,
     /// Whether we should stop on next instruction (single-step mode).
+    #[allow(dead_code)]
     step_mode: StepMode,
     /// Current call depth when step-over/step-out was initiated.
+    #[allow(dead_code)]
     step_depth: usize,
     /// Whether a pause was requested.
+    #[allow(dead_code)]
     pause_requested: bool,
     /// Whether we should stop on entry.
     stop_on_entry: bool,
@@ -179,6 +185,7 @@ enum StepMode {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct CachedFrame {
     cell_name: String,
     cell_idx: usize,
@@ -213,6 +220,7 @@ pub fn run_dap_server_on<R: Read, W: Write>(
     let (event_tx, event_rx) = mpsc::channel::<DapEvent>();
 
     // Clone server output handle for sending events from this thread.
+    // server.output is Arc<Mutex<ServerOutput<W>>>
     let server_output = server.output.clone();
 
     // Read and compile source.
@@ -271,7 +279,7 @@ pub fn run_dap_server_on<R: Read, W: Write>(
 
 fn run_dap_io_loop<R: Read, W: Write>(
     server: &mut Server<R, W>,
-    server_output: &ServerOutput,
+    server_output: &Arc<Mutex<ServerOutput<W>>>,
     cmd_tx: &mpsc::Sender<DapCommand>,
     event_rx: &mpsc::Receiver<DapEvent>,
     file: &Path,
@@ -328,9 +336,9 @@ fn run_dap_io_loop<R: Read, W: Write>(
     let _ = cmd_tx.send(DapCommand::Disconnect);
 }
 
-fn handle_request<R: Read, W: Write>(
+fn handle_request<W: Write>(
     req: &Request,
-    server_output: &ServerOutput,
+    server_output: &Arc<Mutex<ServerOutput<W>>>,
     cmd_tx: &mpsc::Sender<DapCommand>,
     event_rx: &mpsc::Receiver<DapEvent>,
     file: &Path,
@@ -339,7 +347,7 @@ fn handle_request<R: Read, W: Write>(
     running: &mut bool,
 ) -> Option<Response> {
     match &req.command {
-        Command::Initialize(args) => {
+        Command::Initialize(_args) => {
             let caps = types::Capabilities {
                 supports_configuration_done_request: Some(true),
                 supports_function_breakpoints: Some(true),
@@ -350,15 +358,10 @@ fn handle_request<R: Read, W: Write>(
             };
             *initialized = true;
 
-            // Send Initialized event after responding.
-            let output = server_output.clone();
-            // We'll send the event after the response.
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                send_initialized_event(&output);
-            });
+            // Send Initialized event inline.
+            send_initialized_event(server_output);
 
-            Some(req.success(ResponseBody::Initialize(caps)))
+            Some(req.clone().success(ResponseBody::Initialize(caps)))
         }
 
         Command::Launch(args) => {
@@ -371,10 +374,10 @@ fn handle_request<R: Read, W: Write>(
 
             let _ = cmd_tx.send(DapCommand::Launch { stop_on_entry });
 
-            Some(req.success(ResponseBody::Launch))
+            Some(req.clone().success(ResponseBody::Launch))
         }
 
-        Command::ConfigurationDone => Some(req.success(ResponseBody::ConfigurationDone)),
+        Command::ConfigurationDone => Some(req.clone().success(ResponseBody::ConfigurationDone)),
 
         Command::SetBreakpoints(args) => {
             // We don't support source-line breakpoints (no source map in LIR).
@@ -395,7 +398,7 @@ fn handle_request<R: Read, W: Write>(
                 vec![]
             };
 
-            Some(req.success(ResponseBody::SetBreakpoints(
+            Some(req.clone().success(ResponseBody::SetBreakpoints(
                 responses::SetBreakpointsResponse { breakpoints },
             )))
         }
@@ -427,7 +430,7 @@ fn handle_request<R: Read, W: Write>(
                     .collect(),
             });
 
-            Some(req.success(ResponseBody::SetFunctionBreakpoints(
+            Some(req.clone().success(ResponseBody::SetFunctionBreakpoints(
                 responses::SetFunctionBreakpointsResponse { breakpoints },
             )))
         }
@@ -438,13 +441,14 @@ fn handle_request<R: Read, W: Write>(
                 name: "main".to_string(),
             }];
             Some(
-                req.success(ResponseBody::Threads(responses::ThreadsResponse {
-                    threads,
-                })),
+                req.clone()
+                    .success(ResponseBody::Threads(responses::ThreadsResponse {
+                        threads,
+                    })),
             )
         }
 
-        Command::StackTrace(args) => {
+        Command::StackTrace(_args) => {
             let _ = cmd_tx.send(DapCommand::GetStackTrace);
 
             // Wait for stack trace result from VM thread.
@@ -481,19 +485,19 @@ fn handle_request<R: Read, W: Write>(
                         .collect();
 
                     let total = stack_frames.len() as i64;
-                    Some(
-                        req.success(ResponseBody::StackTrace(responses::StackTraceResponse {
+                    Some(req.clone().success(ResponseBody::StackTrace(
+                        responses::StackTraceResponse {
                             stack_frames,
                             total_frames: Some(total),
-                        })),
-                    )
+                        },
+                    )))
                 }
-                _ => Some(
-                    req.success(ResponseBody::StackTrace(responses::StackTraceResponse {
+                _ => Some(req.clone().success(ResponseBody::StackTrace(
+                    responses::StackTraceResponse {
                         stack_frames: vec![],
                         total_frames: Some(0),
-                    })),
-                ),
+                    },
+                ))),
             }
         }
 
@@ -513,13 +517,19 @@ fn handle_request<R: Read, W: Write>(
                         })
                         .collect();
 
-                    Some(req.success(ResponseBody::Scopes(responses::ScopesResponse {
-                        scopes: dap_scopes,
-                    })))
+                    Some(
+                        req.clone()
+                            .success(ResponseBody::Scopes(responses::ScopesResponse {
+                                scopes: dap_scopes,
+                            })),
+                    )
                 }
-                _ => Some(req.success(ResponseBody::Scopes(responses::ScopesResponse {
-                    scopes: vec![],
-                }))),
+                _ => Some(
+                    req.clone()
+                        .success(ResponseBody::Scopes(responses::ScopesResponse {
+                            scopes: vec![],
+                        })),
+                ),
             }
         }
 
@@ -542,59 +552,58 @@ fn handle_request<R: Read, W: Write>(
                         })
                         .collect();
 
-                    Some(
-                        req.success(ResponseBody::Variables(responses::VariablesResponse {
+                    Some(req.clone().success(ResponseBody::Variables(
+                        responses::VariablesResponse {
                             variables: dap_vars,
-                        })),
-                    )
+                        },
+                    )))
                 }
-                _ => Some(
-                    req.success(ResponseBody::Variables(responses::VariablesResponse {
-                        variables: vec![],
-                    })),
-                ),
+                _ => Some(req.clone().success(ResponseBody::Variables(
+                    responses::VariablesResponse { variables: vec![] },
+                ))),
             }
         }
 
         Command::Continue(_) => {
             let _ = cmd_tx.send(DapCommand::Continue);
             Some(
-                req.success(ResponseBody::Continue(responses::ContinueResponse {
-                    all_threads_continued: Some(true),
-                })),
+                req.clone()
+                    .success(ResponseBody::Continue(responses::ContinueResponse {
+                        all_threads_continued: Some(true),
+                    })),
             )
         }
 
         Command::Next(_) => {
             let _ = cmd_tx.send(DapCommand::Next);
-            Some(req.success(ResponseBody::Next))
+            Some(req.clone().success(ResponseBody::Next))
         }
 
         Command::StepIn(_) => {
             let _ = cmd_tx.send(DapCommand::StepIn);
-            Some(req.success(ResponseBody::StepIn))
+            Some(req.clone().success(ResponseBody::StepIn))
         }
 
         Command::StepOut(_) => {
             let _ = cmd_tx.send(DapCommand::StepOut);
-            Some(req.success(ResponseBody::StepOut))
+            Some(req.clone().success(ResponseBody::StepOut))
         }
 
         Command::Pause(_) => {
             let _ = cmd_tx.send(DapCommand::Pause);
-            Some(req.success(ResponseBody::Pause))
+            Some(req.clone().success(ResponseBody::Pause))
         }
 
         Command::Disconnect(_) => {
             let _ = cmd_tx.send(DapCommand::Disconnect);
             *running = false;
-            Some(req.success(ResponseBody::Disconnect))
+            Some(req.clone().success(ResponseBody::Disconnect))
         }
 
         Command::Terminate(_) => {
             let _ = cmd_tx.send(DapCommand::Disconnect);
             *running = false;
-            Some(req.success(ResponseBody::Terminate))
+            Some(req.clone().success(ResponseBody::Terminate))
         }
 
         Command::LoadedSources => {
@@ -608,13 +617,13 @@ fn handle_request<R: Read, W: Write>(
                 path: Some(file.display().to_string()),
                 ..Default::default()
             }];
-            Some(req.success(ResponseBody::LoadedSources(
+            Some(req.clone().success(ResponseBody::LoadedSources(
                 responses::LoadedSourcesResponse { sources },
             )))
         }
 
         // Unhandled commands — acknowledge them.
-        _ => req.ack().ok(),
+        _ => req.clone().ack().ok(),
     }
 }
 
@@ -803,10 +812,7 @@ fn run_debuggee(state: &mut DebuggerState, cmd_rx: &mpsc::Receiver<DapCommand>) 
             state,
             cmd_rx,
             &mut vm,
-            &break_flag,
-            &pause_flag,
             &cell_breakpoints,
-            &stop_reason,
             &step_mode_flag,
             &step_depth_flag,
             &call_depth,
@@ -878,10 +884,7 @@ fn run_debuggee(state: &mut DebuggerState, cmd_rx: &mpsc::Receiver<DapCommand>) 
                         state,
                         cmd_rx,
                         &mut vm,
-                        &break_flag,
-                        &pause_flag,
                         &cell_breakpoints,
-                        &stop_reason,
                         &step_mode_flag,
                         &step_depth_flag,
                         &call_depth,
@@ -914,10 +917,7 @@ fn run_debuggee(state: &mut DebuggerState, cmd_rx: &mpsc::Receiver<DapCommand>) 
                     state,
                     cmd_rx,
                     &mut vm,
-                    &break_flag,
-                    &pause_flag,
                     &cell_breakpoints,
-                    &stop_reason,
                     &step_mode_flag,
                     &step_depth_flag,
                     &call_depth,
@@ -933,10 +933,7 @@ fn process_stopped_commands(
     state: &mut DebuggerState,
     cmd_rx: &mpsc::Receiver<DapCommand>,
     vm: &mut VM,
-    break_flag: &Arc<Mutex<bool>>,
-    pause_flag: &Arc<Mutex<bool>>,
     cell_breakpoints: &Arc<Mutex<HashSet<String>>>,
-    stop_reason: &Arc<Mutex<Option<StoppedReason>>>,
     step_mode_flag: &Arc<Mutex<StepMode>>,
     step_depth_flag: &Arc<Mutex<usize>>,
     call_depth: &Arc<Mutex<usize>>,
@@ -992,7 +989,7 @@ fn process_stopped_commands(
             Ok(DapCommand::GetVariables {
                 variables_reference,
             }) => {
-                let variables = build_variables(state, vm, variables_reference);
+                let variables = build_variables(vm, variables_reference);
                 let _ = state.event_tx.send(DapEvent::VariablesResult { variables });
             }
             Ok(DapCommand::Pause) => {
@@ -1016,7 +1013,7 @@ fn cache_vm_state(state: &mut DebuggerState, vm: &VM) {
     state.cached_variables.clear();
 
     if let Some(module) = vm.module() {
-        for (i, frame) in vm.frames().iter().enumerate() {
+        for (_i, frame) in vm.frames().iter().enumerate() {
             let cell_name = if frame.cell_idx < module.cells.len() {
                 module.cells[frame.cell_idx].name.clone()
             } else {
@@ -1068,7 +1065,7 @@ fn build_scopes(frame_id: i64) -> Vec<DapScope> {
     }]
 }
 
-fn build_variables(state: &DebuggerState, vm: &VM, variables_reference: i64) -> Vec<DapVariable> {
+fn build_variables(vm: &VM, variables_reference: i64) -> Vec<DapVariable> {
     let module = match vm.module() {
         Some(m) => m,
         None => return vec![],
@@ -1200,8 +1197,8 @@ fn format_value_short(value: &Value) -> String {
             format!("{}(...)", rv.type_name)
         }
         Value::Union(uv) => {
-            let uv = uv.as_ref();
-            format!("{}({})", uv.tag, format_value_short(&uv.value))
+            // uv.tag is u32 (interned string ID), uv.payload is Arc<Value>
+            format!("variant#{}({})", uv.tag, format_value_short(&uv.payload))
         }
         Value::Closure(_) => "<closure>".to_string(),
         Value::Future(_) => "<future>".to_string(),
@@ -1220,7 +1217,7 @@ fn is_composite(value: &Value) -> bool {
 
 // ─── Event Helpers ──────────────────────────────────────────────────────────
 
-fn handle_vm_event<W: Write>(server_output: &ServerOutput, event: &DapEvent) {
+fn handle_vm_event<W: Write>(server_output: &Arc<Mutex<ServerOutput<W>>>, event: &DapEvent) {
     match event {
         DapEvent::Stopped {
             reason,
@@ -1247,12 +1244,14 @@ fn handle_vm_event<W: Write>(server_output: &ServerOutput, event: &DapEvent) {
     }
 }
 
-fn send_initialized_event<W: Write>(server_output: &ServerOutput) {
-    let _ = server_output.send_event(Event::Initialized);
+fn send_initialized_event<W: Write>(server_output: &Arc<Mutex<ServerOutput<W>>>) {
+    if let Ok(mut out) = server_output.lock() {
+        let _ = out.send_event(Event::Initialized);
+    }
 }
 
 fn send_stopped_event<W: Write>(
-    server_output: &ServerOutput,
+    server_output: &Arc<Mutex<ServerOutput<W>>>,
     reason: &str,
     description: Option<&str>,
 ) {
@@ -1273,19 +1272,29 @@ fn send_stopped_event<W: Write>(
         all_threads_stopped: Some(true),
         hit_breakpoint_ids: None,
     };
-    let _ = server_output.send_event(Event::Stopped(body));
+    if let Ok(mut out) = server_output.lock() {
+        let _ = out.send_event(Event::Stopped(body));
+    }
 }
 
-fn send_terminated_event<W: Write>(server_output: &ServerOutput) {
-    let _ = server_output.send_event(Event::Terminated(None));
+fn send_terminated_event<W: Write>(server_output: &Arc<Mutex<ServerOutput<W>>>) {
+    if let Ok(mut out) = server_output.lock() {
+        let _ = out.send_event(Event::Terminated(None));
+    }
 }
 
-fn send_exited_event<W: Write>(server_output: &ServerOutput, exit_code: i64) {
+fn send_exited_event<W: Write>(server_output: &Arc<Mutex<ServerOutput<W>>>, exit_code: i64) {
     let body = events::ExitedEventBody { exit_code };
-    let _ = server_output.send_event(Event::Exited(body));
+    if let Ok(mut out) = server_output.lock() {
+        let _ = out.send_event(Event::Exited(body));
+    }
 }
 
-fn send_output_event<W: Write>(server_output: &ServerOutput, output: &str, category: &str) {
+fn send_output_event<W: Write>(
+    server_output: &Arc<Mutex<ServerOutput<W>>>,
+    output: &str,
+    category: &str,
+) {
     let cat = match category {
         "console" => OutputEventCategory::Console,
         "stdout" => OutputEventCategory::Stdout,
@@ -1297,10 +1306,13 @@ fn send_output_event<W: Write>(server_output: &ServerOutput, output: &str, categ
         output: output.to_string(),
         ..Default::default()
     };
-    let _ = server_output.send_event(Event::Output(body));
+    if let Ok(mut out) = server_output.lock() {
+        let _ = out.send_event(Event::Output(body));
+    }
 }
 
-fn send_thread_event<W: Write>(server_output: &ServerOutput, started: bool) {
+#[allow(dead_code)]
+fn send_thread_event<W: Write>(server_output: &Arc<Mutex<ServerOutput<W>>>, started: bool) {
     let body = events::ThreadEventBody {
         reason: if started {
             ThreadEventReason::Started
@@ -1309,7 +1321,9 @@ fn send_thread_event<W: Write>(server_output: &ServerOutput, started: bool) {
         },
         thread_id: THREAD_ID,
     };
-    let _ = server_output.send_event(Event::Thread(body));
+    if let Ok(mut out) = server_output.lock() {
+        let _ = out.send_event(Event::Thread(body));
+    }
 }
 
 /// Wait for a specific event type from the VM thread, with a timeout.

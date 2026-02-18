@@ -45,6 +45,7 @@
 //! - Cache-Control headers for optimal CDN caching
 //! - Redirect support for artifact downloads
 
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;

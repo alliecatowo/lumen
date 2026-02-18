@@ -66,14 +66,15 @@ pub use crate::ir::JitVarType;
 /// is that cloning is O(1) (refcount increment) instead of O(n) (heap copy),
 /// and length queries are O(1) field reads instead of function calls.
 ///
-/// # Layout (32 bytes, all fields i64-aligned)
+/// # Layout (40 bytes, all fields i64-aligned)
 ///
-/// | Offset | Field    | Description                              |
-/// |--------|----------|------------------------------------------|
-/// | 0      | refcount | Reference count (i64, starts at 1)       |
-/// | 8      | len      | Byte length of the string (i64)          |
-/// | 16     | cap      | Capacity of the data buffer (i64)        |
-/// | 24     | ptr      | Pointer to UTF-8 data buffer (*mut u8)   |
+/// | Offset | Field      | Description                              |
+/// |--------|------------|------------------------------------------|
+/// | 0      | refcount   | Reference count (i64, starts at 1)       |
+/// | 8      | len        | Byte length of the string (i64)          |
+/// | 16     | char_count | Unicode character count (i64)            |
+/// | 24     | cap        | Capacity of the data buffer (i64)        |
+/// | 32     | ptr        | Pointer to UTF-8 data buffer (*mut u8)   |
 ///
 /// When refcount drops to 0, both the data buffer and the JitString struct
 /// are freed.
@@ -81,6 +82,7 @@ pub use crate::ir::JitVarType;
 struct JitString {
     refcount: i64,
     len: i64,
+    char_count: i64,
     cap: i64,
     ptr: *mut u8,
 }
@@ -89,6 +91,16 @@ impl JitString {
     /// Allocate a new JitString from raw UTF-8 bytes.
     fn from_bytes(data: &[u8]) -> *mut JitString {
         let len = data.len();
+        // Compute character count once at creation (O(N) here, O(1) for all future queries)
+        let char_count = if len > 0 {
+            // Safety: data is valid UTF-8 (caller responsibility)
+            std::str::from_utf8(data)
+                .map(|s| s.chars().count())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
         // Allocate data buffer
         let data_ptr = if len > 0 {
             let mut buf = Vec::with_capacity(len);
@@ -103,6 +115,7 @@ impl JitString {
         let js = Box::new(JitString {
             refcount: 1,
             len: len as i64,
+            char_count: char_count as i64,
             cap: len as i64,
             ptr: data_ptr,
         });
@@ -123,6 +136,7 @@ impl JitString {
         let js = Box::new(JitString {
             refcount: 1,
             len: 0,
+            char_count: 0,
             cap: cap as i64,
             ptr: data_ptr,
         });
@@ -193,7 +207,7 @@ impl JitString {
 /// Allocate `size` bytes of zeroed memory with 8-byte alignment, returning a
 /// pointer as i64.
 ///
-/// This is the JIT-callable malloc used for JitString struct allocation (32
+/// This is the JIT-callable malloc used for JitString struct allocation (40
 /// bytes). The memory is zeroed so partially-initialized structs don't contain
 /// garbage. The returned pointer is compatible with `Box::from_raw::<JitString>`.
 ///
@@ -259,6 +273,7 @@ extern "C" fn jit_rt_string_concat(a: i64, b: i64) -> i64 {
             std::ptr::copy_nonoverlapping(sb.ptr, (*new).ptr.add(sa.len as usize), sb.len as usize);
         }
         (*new).len = total as i64;
+        (*new).char_count = sa.char_count + sb.char_count;
         new as i64
     }
 }
@@ -291,6 +306,7 @@ extern "C" fn jit_rt_string_concat_mut(a: i64, b: i64) -> i64 {
                 // Fast path: append in-place, capacity suffices
                 std::ptr::copy_nonoverlapping(sb.ptr, (*pa).ptr.add(a_len), b_len);
                 (*pa).len = new_len as i64;
+                (*pa).char_count += sb.char_count;
                 return a;
             }
 
@@ -311,6 +327,7 @@ extern "C" fn jit_rt_string_concat_mut(a: i64, b: i64) -> i64 {
 
             (*pa).ptr = new_ptr;
             (*pa).len = new_len as i64;
+            (*pa).char_count += sb.char_count;
             (*pa).cap = new_cap as i64;
             return a;
         }
@@ -324,6 +341,7 @@ extern "C" fn jit_rt_string_concat_mut(a: i64, b: i64) -> i64 {
         }
         std::ptr::copy_nonoverlapping(sb.ptr, (*new).ptr.add(sa.len as usize), b_len);
         (*new).len = total as i64;
+        (*new).char_count = sa.char_count + sb.char_count;
         // Drop old reference
         JitString::drop_ref(pa);
         new as i64
@@ -436,12 +454,14 @@ extern "C" fn jit_rt_string_concat_multi(ptrs: *const i64, count: usize) -> i64 
 
     let slice = unsafe { std::slice::from_raw_parts(ptrs, count) };
 
-    // First pass: compute total length.
+    // First pass: compute total length and char count.
     let mut total_len = 0usize;
+    let mut total_char_count = 0i64;
     for &ptr in slice {
         if ptr != 0 {
             let s = unsafe { &*(ptr as *const JitString) };
             total_len += s.len as usize;
+            total_char_count += s.char_count;
         }
     }
 
@@ -462,6 +482,7 @@ extern "C" fn jit_rt_string_concat_multi(ptrs: *const i64, count: usize) -> i64 
             }
         }
         (*new).len = total_len as i64;
+        (*new).char_count = total_char_count;
     }
 
     new as i64
@@ -625,6 +646,22 @@ fn register_record_helpers(builder: &mut JITBuilder) {
     builder.symbol("jit_rt_value_drop", jit_rt_value_drop as *const u8);
 }
 
+/// Register all JIT union runtime helper symbols with a JITBuilder.
+fn register_union_helpers(builder: &mut JITBuilder) {
+    builder.symbol(
+        "jit_rt_union_new",
+        crate::union_helpers::jit_rt_union_new as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_union_is_variant",
+        crate::union_helpers::jit_rt_union_is_variant as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_union_unbox",
+        crate::union_helpers::jit_rt_union_unbox as *const u8,
+    );
+}
+
 // ---------------------------------------------------------------------------
 // JIT Intrinsic Runtime Helpers
 // ---------------------------------------------------------------------------
@@ -653,6 +690,7 @@ extern "C" fn jit_rt_print_str(s: i64) {
 
 /// Get the length of a JitString (intrinsic #0: LENGTH)
 /// Returns the number of Unicode characters (not bytes).
+/// This is now O(1) by reading the cached char_count field.
 ///
 /// # Safety
 /// `s` must be a valid `*mut JitString` pointer.
@@ -661,8 +699,7 @@ extern "C" fn jit_rt_string_len(s: i64) -> i64 {
         return 0;
     }
     let string = unsafe { &*(s as *const JitString) };
-    let str_data = unsafe { string.as_str() };
-    str_data.chars().count() as i64
+    string.char_count
 }
 
 // ---------------------------------------------------------------------------
@@ -914,7 +951,7 @@ extern "C" fn jit_rt_string_slice(s: i64, start: i64, end: i64) -> i64 {
     }
     let js = unsafe { &*(s as *const JitString) };
     let text = unsafe { js.as_str() };
-    let char_count = text.chars().count() as i64;
+    let char_count = js.char_count;
     let start = if start < 0 { 0 } else { start.min(char_count) } as usize;
     let end = if end < 0 { 0 } else { end.min(char_count) } as usize;
     if start >= end {
@@ -933,7 +970,7 @@ extern "C" fn jit_rt_string_pad_left(s: i64, width: i64) -> i64 {
     }
     let js = unsafe { &*(s as *const JitString) };
     let text = unsafe { js.as_str() };
-    let current_len = text.chars().count() as i64;
+    let current_len = js.char_count;
     if current_len >= width {
         // Already wide enough — clone
         return JitString::from_bytes(text.as_bytes()) as i64;
@@ -953,7 +990,7 @@ extern "C" fn jit_rt_string_pad_right(s: i64, width: i64) -> i64 {
     }
     let js = unsafe { &*(s as *const JitString) };
     let text = unsafe { js.as_str() };
-    let current_len = text.chars().count() as i64;
+    let current_len = js.char_count;
     if current_len >= width {
         return JitString::from_bytes(text.as_bytes()) as i64;
     }
@@ -1352,6 +1389,9 @@ impl JitEngine {
         // Register record runtime helper symbols so JIT code can call them.
         register_record_helpers(&mut builder);
 
+        // Register union runtime helper symbols so JIT code can call them.
+        register_union_helpers(&mut builder);
+
         // Register intrinsic runtime helper symbols so JIT code can call builtins.
         register_intrinsic_helpers(&mut builder);
 
@@ -1635,6 +1675,9 @@ fn is_cell_jit_compilable(cell: &LirCell) -> bool {
                 | OpCode::NullCo
                 | OpCode::GetField
                 | OpCode::SetField
+                | OpCode::NewUnion
+                | OpCode::IsVariant
+                | OpCode::Unbox
         )
     })
 }
@@ -5197,6 +5240,136 @@ mod tests {
         eprintln!(
             "jit_string_concat_loop_ideal_pattern: {}us for {n} iterations",
             elapsed.as_micros()
+        );
+    }
+
+    #[test]
+    fn jit_intrinsic_tan() {
+        // cell test_tan() -> Float
+        //   r0 = 0.0
+        //   r1 = tan(r0)  # Intrinsic(1, 138, 0)
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_tan".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 2,
+            constants: vec![Constant::Float(0.0)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 138, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result_bits = engine.execute_jit_nullary("test_tan").expect("execute");
+        let result = f64::from_bits(result_bits as u64);
+        assert!(
+            (result - 0.0).abs() < 1e-10,
+            "tan(0.0) should be 0.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn jit_intrinsic_tan_nonzero() {
+        // cell test_tan_pi4() -> Float
+        //   r0 = π/4
+        //   r1 = tan(r0)  # Intrinsic(1, 138, 0)
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_tan_pi4".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 2,
+            constants: vec![Constant::Float(std::f64::consts::FRAC_PI_4)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 138, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result_bits = engine.execute_jit_nullary("test_tan_pi4").expect("execute");
+        let result = f64::from_bits(result_bits as u64);
+        assert!(
+            (result - 1.0).abs() < 1e-10,
+            "tan(π/4) should be 1.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn jit_intrinsic_trunc_float() {
+        // cell test_trunc() -> Float
+        //   r0 = 3.7
+        //   r1 = trunc(r0)  # Intrinsic(1, 139, 0)
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_trunc".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 2,
+            constants: vec![Constant::Float(3.7)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 139, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result_bits = engine.execute_jit_nullary("test_trunc").expect("execute");
+        let result = f64::from_bits(result_bits as u64);
+        assert!(
+            (result - 3.0).abs() < 1e-10,
+            "trunc(3.7) should be 3.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn jit_intrinsic_trunc_negative() {
+        // cell test_trunc_neg() -> Float
+        //   r0 = -2.9
+        //   r1 = trunc(r0)  # Intrinsic(1, 139, 0)
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "test_trunc_neg".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 2,
+            constants: vec![Constant::Float(-2.9)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 139, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let result_bits = engine
+            .execute_jit_nullary("test_trunc_neg")
+            .expect("execute");
+        let result = f64::from_bits(result_bits as u64);
+        assert!(
+            (result - (-2.0)).abs() < 1e-10,
+            "trunc(-2.9) should be -2.0, got {result}"
         );
     }
 }

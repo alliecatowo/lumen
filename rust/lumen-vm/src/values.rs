@@ -64,7 +64,7 @@ pub struct UnionValue {
     /// Interned string ID for the variant tag (e.g., "Leaf", "Branch", "ok", "err").
     /// Resolved via `StringTable::resolve(tag)` when a human-readable name is needed.
     pub tag: u32,
-    pub payload: Box<Value>,
+    pub payload: Arc<Value>,
 }
 
 impl Serialize for UnionValue {
@@ -83,12 +83,12 @@ impl<'de> Deserialize<'de> for UnionValue {
         #[derive(Deserialize)]
         struct Helper {
             tag: u32,
-            payload: Box<Value>,
+            payload: Value,
         }
         let h = Helper::deserialize(deserializer)?;
         Ok(UnionValue {
             tag: h.tag,
-            payload: h.payload,
+            payload: Arc::new(h.payload),
         })
     }
 }

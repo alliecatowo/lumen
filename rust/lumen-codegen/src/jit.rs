@@ -10,7 +10,7 @@
 //! functions are cached as callable function pointers — subsequent calls
 //! bypass the interpreter entirely.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{types, AbiParam, InstBuilder, Type as ClifType};
@@ -384,8 +384,15 @@ impl JitEngine {
     /// cache-hit bump).
     pub fn compile_module(&mut self, module: &LirModule) -> Result<(), JitError> {
         // Create a new JIT module for this compilation batch.
-        let mut builder = JITBuilder::new(cranelift_module::default_libcall_names())
-            .map_err(|e| JitError::ModuleError(format!("JITBuilder creation failed: {e}")))?;
+        // Enable Cranelift's `speed` optimization level so the generated
+        // native code is competitive with ahead-of-time compilers. Without
+        // this, Cranelift defaults to `none` (no optimizations), resulting
+        // in 20-50x slower code for compute-heavy workloads like fibonacci.
+        let mut builder = JITBuilder::with_flags(
+            &[("opt_level", "speed")],
+            cranelift_module::default_libcall_names(),
+        )
+        .map_err(|e| JitError::ModuleError(format!("JITBuilder creation failed: {e}")))?;
 
         // Register string runtime helper symbols so JIT code can call them.
         register_string_helpers(&mut builder);
@@ -937,6 +944,154 @@ fn lower_cell_jit(
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Pre-scan: identify registers that hold string constants used ONLY as
+    // Call/TailCall callee names in a straight-line code sequence (no branches
+    // between the LoadK and the Call). For these registers we skip the heap
+    // string allocation entirely, eliminating millions of alloc/free cycles in
+    // recursive workloads like fibonacci.
+    //
+    // For each LoadK String at register R, we walk forward looking for the
+    // pattern: LoadK R -> optional Moves -> Call/TailCall with R (or Move-dest)
+    // as the base register. If we encounter any branch, return, or other use
+    // of R before finding the Call, we conservatively bail out.
+    // -----------------------------------------------------------------------
+    let call_name_regs: HashSet<u8> = {
+        let mut result: HashSet<u8> = HashSet::new();
+        let instructions = &cell.instructions;
+
+        for (loadk_pc, loadk_inst) in instructions.iter().enumerate() {
+            if loadk_inst.op != OpCode::LoadK {
+                continue;
+            }
+            let bx = loadk_inst.bx() as usize;
+            if !matches!(cell.constants.get(bx), Some(Constant::String(_))) {
+                continue;
+            }
+
+            let origin_reg = loadk_inst.a;
+            let mut aliases: HashSet<u8> = HashSet::new();
+            aliases.insert(origin_reg);
+            let mut found_call_use = false;
+            let mut invalidated = false;
+
+            // Walk forward from the instruction after LoadK.
+            for inst in &instructions[(loadk_pc + 1)..] {
+                match inst.op {
+                    OpCode::Call | OpCode::TailCall => {
+                        let base = inst.a;
+                        let num_args = inst.b as usize;
+                        // Check if any alias is used as an argument (not callee name).
+                        for i in 0..num_args {
+                            let arg_reg = base + 1 + i as u8;
+                            if aliases.contains(&arg_reg) {
+                                invalidated = true;
+                                break;
+                            }
+                        }
+                        if invalidated {
+                            break;
+                        }
+                        // If the base register is an alias, this is a callee-name use.
+                        if aliases.contains(&base) {
+                            found_call_use = true;
+                            aliases.remove(&base);
+                        }
+                    }
+                    OpCode::Move | OpCode::MoveOwn => {
+                        let dest = inst.a;
+                        let src = inst.b;
+                        if aliases.contains(&src) {
+                            aliases.insert(dest);
+                        } else if aliases.contains(&dest) {
+                            // dest is being overwritten from a non-alias source.
+                            aliases.remove(&dest);
+                        }
+                    }
+                    OpCode::LoadK | OpCode::LoadBool | OpCode::LoadInt | OpCode::LoadNil => {
+                        // Redefines inst.a — kill the alias if present.
+                        aliases.remove(&inst.a);
+                    }
+                    OpCode::Jmp | OpCode::Break | OpCode::Continue => {
+                        // Branch instruction — we can't safely track aliases
+                        // across control flow. If any alias is still live,
+                        // conservatively bail out.
+                        if !aliases.is_empty() {
+                            invalidated = true;
+                        }
+                        break;
+                    }
+                    OpCode::Halt
+                    | OpCode::Nop
+                    | OpCode::Loop
+                    | OpCode::ForPrep
+                    | OpCode::ForLoop
+                    | OpCode::ForIn => {
+                        // No register reads/writes of concern.
+                    }
+                    OpCode::Test => {
+                        if aliases.contains(&inst.a) {
+                            invalidated = true;
+                            break;
+                        }
+                    }
+                    OpCode::Return => {
+                        if aliases.contains(&inst.a) {
+                            invalidated = true;
+                        }
+                        break;
+                    }
+                    _ => {
+                        // Arithmetic, etc. — read b/c, write a.
+                        if aliases.contains(&inst.b) || aliases.contains(&inst.c) {
+                            invalidated = true;
+                            break;
+                        }
+                        aliases.remove(&inst.a);
+                    }
+                }
+
+                if aliases.is_empty() {
+                    break;
+                }
+            }
+
+            if found_call_use && !invalidated {
+                result.insert(origin_reg);
+                // Also include Move destinations of this origin in the result,
+                // so the Move handler skips string clone for them too.
+                let mut propagated: HashSet<u8> = HashSet::new();
+                propagated.insert(origin_reg);
+                for inst in &instructions[(loadk_pc + 1)..] {
+                    if (inst.op == OpCode::Move || inst.op == OpCode::MoveOwn)
+                        && propagated.contains(&inst.b)
+                    {
+                        propagated.insert(inst.a);
+                    }
+                    // Stop propagating through redefinitions.
+                    if matches!(
+                        inst.op,
+                        OpCode::LoadK | OpCode::LoadBool | OpCode::LoadInt | OpCode::LoadNil
+                    ) {
+                        propagated.remove(&inst.a);
+                    }
+                    if matches!(inst.op, OpCode::Call | OpCode::TailCall)
+                        && propagated.contains(&inst.a)
+                    {
+                        propagated.remove(&inst.a);
+                    }
+                    // Stop at branches.
+                    if matches!(inst.op, OpCode::Jmp | OpCode::Break | OpCode::Continue) {
+                        break;
+                    }
+                }
+                result.extend(propagated);
+            }
+        }
+
+        result
+    };
+
     // All Cranelift variables are declared as I64 (both ints and string pointers
     // are I64; only floats are F64). The semantic distinction is in var_types.
     for i in 0..num_regs {
@@ -1036,20 +1191,31 @@ fn lower_cell_jit(
                 if let Some(constant) = cell.constants.get(bx) {
                     match constant {
                         Constant::String(s) => {
-                            // Drop the old string value if the dest register held one.
-                            if var_types.get(&(a as u32)) == Some(&JitVarType::Str) {
-                                let old = use_var(&mut builder, &vars, a);
-                                builder.ins().call(str_drop_ref, &[old]);
+                            if call_name_regs.contains(&a) {
+                                // This register is only used as a Call/TailCall
+                                // base (callee name). The Call handler resolves
+                                // the name at compile time, so we can skip the
+                                // heap string allocation entirely.
+                                let dummy = builder.ins().iconst(types::I64, 0);
+                                var_types.insert(a as u32, JitVarType::Int);
+                                def_var(&mut builder, &vars, a, dummy);
+                            } else {
+                                // Drop the old string value if the dest register held one.
+                                if var_types.get(&(a as u32)) == Some(&JitVarType::Str) {
+                                    let old = use_var(&mut builder, &vars, a);
+                                    builder.ins().call(str_drop_ref, &[old]);
+                                }
+                                // Allocate the string on the heap via runtime helper.
+                                let str_bytes = s.as_bytes();
+                                let ptr_val =
+                                    builder.ins().iconst(types::I64, str_bytes.as_ptr() as i64);
+                                let len_val =
+                                    builder.ins().iconst(types::I64, str_bytes.len() as i64);
+                                let call = builder.ins().call(str_alloc_ref, &[ptr_val, len_val]);
+                                let result = builder.inst_results(call)[0];
+                                var_types.insert(a as u32, JitVarType::Str);
+                                def_var(&mut builder, &vars, a, result);
                             }
-                            // Allocate the string on the heap via runtime helper.
-                            let str_bytes = s.as_bytes();
-                            let ptr_val =
-                                builder.ins().iconst(types::I64, str_bytes.as_ptr() as i64);
-                            let len_val = builder.ins().iconst(types::I64, str_bytes.len() as i64);
-                            let call = builder.ins().call(str_alloc_ref, &[ptr_val, len_val]);
-                            let result = builder.inst_results(call)[0];
-                            var_types.insert(a as u32, JitVarType::Str);
-                            def_var(&mut builder, &vars, a, result);
                         }
                         Constant::Float(_) => {
                             let val = lower_constant(&mut builder, cell, bx)?;
@@ -1096,7 +1262,7 @@ fn lower_cell_jit(
                     .get(&(inst.b as u32))
                     .copied()
                     .unwrap_or(JitVarType::Int);
-                let val = if src_ty == JitVarType::Str {
+                let val = if src_ty == JitVarType::Str && !call_name_regs.contains(&inst.b) {
                     // Drop old destination string if it held one and differs from source.
                     if var_types.get(&(inst.a as u32)) == Some(&JitVarType::Str) && inst.a != inst.b
                     {
@@ -1110,7 +1276,12 @@ fn lower_cell_jit(
                 } else {
                     use_var(&mut builder, &vars, inst.b)
                 };
-                var_types.insert(inst.a as u32, src_ty);
+                let actual_ty = if call_name_regs.contains(&inst.b) {
+                    JitVarType::Int
+                } else {
+                    src_ty
+                };
+                var_types.insert(inst.a as u32, actual_ty);
                 def_var(&mut builder, &vars, inst.a, val);
             }
             OpCode::MoveOwn => {
@@ -1476,11 +1647,12 @@ fn lower_cell_jit(
                 // to the caller (VM converts it back via jit_take_string).
                 let ret_reg = inst.a;
                 for (&reg_id, &ty) in &var_types {
-                    if ty == JitVarType::Str && reg_id != ret_reg as u32 {
-                        if (reg_id as usize) < vars.len() {
-                            let v = use_var(&mut builder, &vars, reg_id as u8);
-                            builder.ins().call(str_drop_ref, &[v]);
-                        }
+                    if ty == JitVarType::Str
+                        && reg_id != ret_reg as u32
+                        && (reg_id as usize) < vars.len()
+                    {
+                        let v = use_var(&mut builder, &vars, reg_id as u8);
+                        builder.ins().call(str_drop_ref, &[v]);
                     }
                 }
                 let val = use_var(&mut builder, &vars, ret_reg);
@@ -1507,17 +1679,14 @@ fn lower_cell_jit(
                     builder.ins().call(str_drop_ref, &[old]);
                 }
 
-                // Argument registers are consumed by the call; drop any that
-                // are typed as Str and remove them from var_types so the
-                // Return cleanup doesn't double-free or leak.
+                // Collect which argument registers are string-typed so we can
+                // drop them AFTER the call instruction (not before, to avoid
+                // use-after-free when the call reads the argument values).
+                let mut str_arg_regs: Vec<u32> = Vec::new();
                 for i in 0..num_args {
                     let arg_reg = (base + 1 + i as u8) as u32;
                     if var_types.get(&arg_reg) == Some(&JitVarType::Str) {
-                        if (arg_reg as usize) < vars.len() {
-                            let v = use_var(&mut builder, &vars, arg_reg as u8);
-                            builder.ins().call(str_drop_ref, &[v]);
-                        }
-                        var_types.remove(&arg_reg);
+                        str_arg_regs.push(arg_reg);
                     }
                 }
 
@@ -1544,6 +1713,17 @@ fn lower_cell_jit(
                 } else {
                     let zero = builder.ins().iconst(types::I64, 0);
                     def_var(&mut builder, &vars, base, zero);
+                }
+
+                // Now drop string-typed argument registers AFTER the call
+                // has read them, and remove from var_types so Return cleanup
+                // doesn't double-free.
+                for arg_reg in str_arg_regs {
+                    if (arg_reg as usize) < vars.len() {
+                        let v = use_var(&mut builder, &vars, arg_reg as u8);
+                        builder.ins().call(str_drop_ref, &[v]);
+                    }
+                    var_types.remove(&arg_reg);
                 }
 
                 // The call result is an integer (or float), not a string.

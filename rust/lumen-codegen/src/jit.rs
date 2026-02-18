@@ -1052,16 +1052,16 @@ mod tests {
             registers: 5,
             constants: vec![],
             instructions: vec![
-                Instruction::abc(OpCode::LoadInt, 1, 1, 0), // 0: r1 = 1
-                Instruction::abc(OpCode::LoadInt, 2, 1, 0), // 1: r2 = 1
-                Instruction::abc(OpCode::LoadInt, 3, 0, 0), // 2: r3 = 0
-                Instruction::abc(OpCode::Lt, 4, 3, 0),      // 3: r4 = 0 < n
-                Instruction::abc(OpCode::Test, 4, 0, 0),    // 4: test
-                Instruction::sax(OpCode::Jmp, 3),           // 5: -> 9 (exit)
-                Instruction::abc(OpCode::Mul, 1, 1, 0),     // 6: r1 *= n
-                Instruction::abc(OpCode::Sub, 0, 0, 2),     // 7: n -= 1
-                Instruction::sax(OpCode::Jmp, -6),          // 8: -> 3 (loop)
-                Instruction::abc(OpCode::Return, 1, 1, 0),  // 9: return r1
+                Instruction::abx(OpCode::LoadInt, 1, 1),   // 0: r1 = 1
+                Instruction::abx(OpCode::LoadInt, 2, 1),   // 1: r2 = 1
+                Instruction::abx(OpCode::LoadInt, 3, 0),   // 2: r3 = 0
+                Instruction::abc(OpCode::Lt, 4, 3, 0),     // 3: r4 = 0 < n
+                Instruction::abc(OpCode::Test, 4, 0, 0),   // 4: test
+                Instruction::sax(OpCode::Jmp, 3),          // 5: -> 9 (exit)
+                Instruction::abc(OpCode::Mul, 1, 1, 0),    // 6: r1 *= n
+                Instruction::abc(OpCode::Sub, 0, 0, 2),    // 7: n -= 1
+                Instruction::sax(OpCode::Jmp, -6),         // 8: -> 3 (loop)
+                Instruction::abc(OpCode::Return, 1, 1, 0), // 9: return r1
             ],
             effect_handler_metas: Vec::new(),
         }]);
@@ -1124,13 +1124,13 @@ mod tests {
             registers: 9,
             constants: vec![Constant::String("fib_acc".to_string())],
             instructions: vec![
-                Instruction::abc(OpCode::LoadInt, 3, 0, 0),  // 0: r3 = 0
+                Instruction::abx(OpCode::LoadInt, 3, 0),     // 0: r3 = 0
                 Instruction::abc(OpCode::Le, 4, 0, 3),       // 1: r4 = n <= 0
                 Instruction::abc(OpCode::Test, 4, 0, 0),     // 2: test
                 Instruction::sax(OpCode::Jmp, 1),            // 3: -> 5
                 Instruction::abc(OpCode::Return, 1, 1, 0),   // 4: return a
                 Instruction::abx(OpCode::LoadK, 5, 0),       // 5: r5 = "fib_acc"
-                Instruction::abc(OpCode::LoadInt, 8, 1, 0),  // 6: r8 = 1
+                Instruction::abx(OpCode::LoadInt, 8, 1),     // 6: r8 = 1
                 Instruction::abc(OpCode::Sub, 6, 0, 8),      // 7: r6 = n - 1
                 Instruction::abc(OpCode::Move, 7, 2, 0),     // 8: r7 = b
                 Instruction::abc(OpCode::Add, 8, 1, 2),      // 9: r8 = a + b
@@ -1282,10 +1282,10 @@ mod tests {
         //  3: Jmp       +2             (-> 6: else)
         //  4: LoadInt   r3, 100
         //  5: Jmp       +1             (-> 7: end)
-        //  6: LoadInt   r3, -56        -- NOTE: LoadInt uses i8, so we use small vals
+        //  6: LoadInt   r3, 50         -- LoadInt uses sbx (signed 32-bit) for the value
         //  7: Return    r3
         //
-        // LoadInt stores b as u8 interpreted as i8 for the value.
+        // LoadInt stores the value in the Bx field (signed 32-bit via sbx()).
         // 100 fits in i8 (0x64). For the else branch let's use 50.
         let lir = make_module_with_cells(vec![LirCell {
             name: "choose".to_string(),
@@ -1299,14 +1299,14 @@ mod tests {
             registers: 4,
             constants: vec![],
             instructions: vec![
-                Instruction::abc(OpCode::LoadInt, 1, 0, 0),   // 0: r1 = 0
-                Instruction::abc(OpCode::Lt, 2, 1, 0),        // 1: r2 = 0 < x
-                Instruction::abc(OpCode::Test, 2, 0, 0),      // 2: test
-                Instruction::sax(OpCode::Jmp, 2),             // 3: -> 6 (else)
-                Instruction::abc(OpCode::LoadInt, 3, 100, 0), // 4: r3 = 100
-                Instruction::sax(OpCode::Jmp, 1),             // 5: -> 7 (end)
-                Instruction::abc(OpCode::LoadInt, 3, 50, 0),  // 6: r3 = 50
-                Instruction::abc(OpCode::Return, 3, 1, 0),    // 7: return r3
+                Instruction::abx(OpCode::LoadInt, 1, 0),   // 0: r1 = 0
+                Instruction::abc(OpCode::Lt, 2, 1, 0),     // 1: r2 = 0 < x
+                Instruction::abc(OpCode::Test, 2, 0, 0),   // 2: test
+                Instruction::sax(OpCode::Jmp, 2),          // 3: -> 6 (else)
+                Instruction::abx(OpCode::LoadInt, 3, 100), // 4: r3 = 100
+                Instruction::sax(OpCode::Jmp, 1),          // 5: -> 7 (end)
+                Instruction::abx(OpCode::LoadInt, 3, 50),  // 6: r3 = 50
+                Instruction::abc(OpCode::Return, 3, 1, 0), // 7: return r3
             ],
             effect_handler_metas: Vec::new(),
         }]);
@@ -1775,18 +1775,18 @@ mod tests {
                 Constant::String("x".to_string()),
             ],
             instructions: vec![
-                Instruction::abx(OpCode::LoadK, 0, 0),      // 0: r0 = ""
-                Instruction::abx(OpCode::LoadK, 1, 1),      // 1: r1 = "x"
-                Instruction::abc(OpCode::LoadInt, 2, 3, 0), // 2: r2 = 3
-                Instruction::abc(OpCode::LoadInt, 3, 0, 0), // 3: r3 = 0
-                Instruction::abc(OpCode::LoadInt, 4, 1, 0), // 4: r4 = 1
-                Instruction::abc(OpCode::Lt, 5, 3, 2),      // 5: r5 = 0 < counter
-                Instruction::abc(OpCode::Test, 5, 0, 0),    // 6: test
-                Instruction::sax(OpCode::Jmp, 3),           // 7: -> 11 (end)
-                Instruction::abc(OpCode::Add, 0, 0, 1),     // 8: r0 = r0 + r1
-                Instruction::abc(OpCode::Sub, 2, 2, 4),     // 9: r2 -= 1
-                Instruction::sax(OpCode::Jmp, -6),          // 10: -> 5 (loop)
-                Instruction::abc(OpCode::Return, 0, 1, 0),  // 11: return r0
+                Instruction::abx(OpCode::LoadK, 0, 0),     // 0: r0 = ""
+                Instruction::abx(OpCode::LoadK, 1, 1),     // 1: r1 = "x"
+                Instruction::abx(OpCode::LoadInt, 2, 3),   // 2: r2 = 3
+                Instruction::abx(OpCode::LoadInt, 3, 0),   // 3: r3 = 0
+                Instruction::abx(OpCode::LoadInt, 4, 1),   // 4: r4 = 1
+                Instruction::abc(OpCode::Lt, 5, 3, 2),     // 5: r5 = 0 < counter
+                Instruction::abc(OpCode::Test, 5, 0, 0),   // 6: test
+                Instruction::sax(OpCode::Jmp, 3),          // 7: -> 11 (end)
+                Instruction::abc(OpCode::Add, 0, 0, 1),    // 8: r0 = r0 + r1
+                Instruction::abc(OpCode::Sub, 2, 2, 4),    // 9: r2 -= 1
+                Instruction::sax(OpCode::Jmp, -6),         // 10: -> 5 (loop)
+                Instruction::abc(OpCode::Return, 0, 1, 0), // 11: return r0
             ],
             effect_handler_metas: Vec::new(),
         }]);
@@ -1828,14 +1828,14 @@ mod tests {
                 Constant::String("non-positive".to_string()),
             ],
             instructions: vec![
-                Instruction::abc(OpCode::LoadInt, 1, 0, 0), // 0: r1 = 0
-                Instruction::abc(OpCode::Lt, 2, 1, 0),      // 1: r2 = 0 < x
-                Instruction::abc(OpCode::Test, 2, 0, 0),    // 2: test
-                Instruction::sax(OpCode::Jmp, 2),           // 3: -> 6 (else)
-                Instruction::abx(OpCode::LoadK, 3, 0),      // 4: r3 = "positive"
-                Instruction::sax(OpCode::Jmp, 1),           // 5: -> 7 (end)
-                Instruction::abx(OpCode::LoadK, 3, 1),      // 6: r3 = "non-positive"
-                Instruction::abc(OpCode::Return, 3, 1, 0),  // 7: return r3
+                Instruction::abx(OpCode::LoadInt, 1, 0),   // 0: r1 = 0
+                Instruction::abc(OpCode::Lt, 2, 1, 0),     // 1: r2 = 0 < x
+                Instruction::abc(OpCode::Test, 2, 0, 0),   // 2: test
+                Instruction::sax(OpCode::Jmp, 2),          // 3: -> 6 (else)
+                Instruction::abx(OpCode::LoadK, 3, 0),     // 4: r3 = "positive"
+                Instruction::sax(OpCode::Jmp, 1),          // 5: -> 7 (end)
+                Instruction::abx(OpCode::LoadK, 3, 1),     // 6: r3 = "non-positive"
+                Instruction::abc(OpCode::Return, 3, 1, 0), // 7: return r3
             ],
             effect_handler_metas: Vec::new(),
         }]);
@@ -1955,9 +1955,9 @@ mod tests {
                 Instruction::abc(OpCode::Eq, 2, 0, 1),
                 Instruction::abc(OpCode::Test, 2, 0, 0),
                 Instruction::sax(OpCode::Jmp, 2),
-                Instruction::abc(OpCode::LoadInt, 3, 100, 0),
+                Instruction::abx(OpCode::LoadInt, 3, 100),
                 Instruction::sax(OpCode::Jmp, 1),
-                Instruction::abc(OpCode::LoadInt, 3, 50, 0),
+                Instruction::abx(OpCode::LoadInt, 3, 50),
                 Instruction::abc(OpCode::Return, 3, 1, 0),
             ],
             effect_handler_metas: Vec::new(),

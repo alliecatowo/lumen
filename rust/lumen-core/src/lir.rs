@@ -1,5 +1,5 @@
 //! LIR (Lumen Intermediate Representation) data types.
-//! 32-bit fixed-width instructions, Lua-style register VM.
+//! 64-bit fixed-width instructions, Lua-style register VM.
 
 use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
@@ -276,94 +276,18 @@ pub enum IntrinsicId {
     EnvVars = 137,
 }
 
-/// A 32-bit instruction
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct Instruction {
-    pub op: OpCode,
-    pub a: u8,
-    pub b: u8,
-    pub c: u8,
-}
-
-impl Instruction {
-    pub fn abc(op: OpCode, a: u8, b: u8, c: u8) -> Self {
-        Self { op, a, b, c }
-    }
-    pub fn abx(op: OpCode, a: u8, bx: u16) -> Self {
-        Self {
-            op,
-            a,
-            b: (bx >> 8) as u8,
-            c: (bx & 0xFF) as u8,
-        }
-    }
-    pub fn ax(op: OpCode, ax: u32) -> Self {
-        Self {
-            op,
-            a: ((ax >> 16) & 0xFF) as u8,
-            b: ((ax >> 8) & 0xFF) as u8,
-            c: (ax & 0xFF) as u8,
-        }
-    }
-    /// Signed 24-bit AX constructor for jump offsets (supports negative values)
-    pub fn sax(op: OpCode, offset: i32) -> Self {
-        let bits = (offset as u32) & 0xFFFFFF;
-        Self {
-            op,
-            a: ((bits >> 16) & 0xFF) as u8,
-            b: ((bits >> 8) & 0xFF) as u8,
-            c: (bits & 0xFF) as u8,
-        }
-    }
-    pub fn bx(&self) -> u16 {
-        ((self.b as u16) << 8) | (self.c as u16)
-    }
-    pub fn ax_val(&self) -> u32 {
-        ((self.a as u32) << 16) | ((self.b as u32) << 8) | (self.c as u32)
-    }
-    /// Signed 24-bit AX value with sign extension for jump offsets
-    pub fn sax_val(&self) -> i32 {
-        let raw = self.ax_val();
-        if raw & 0x800000 != 0 {
-            (raw | 0xFF000000) as i32
-        } else {
-            raw as i32
-        }
-    }
-    pub fn sbx(&self) -> i16 {
-        self.bx() as i16
-    }
-
-    /// Losslessly widen this 32-bit instruction to 64-bit encoding.
-    /// All field values are zero-extended from 8-bit to 16-bit.
-    pub fn widen(&self) -> Instruction64 {
-        Instruction64 {
-            op: self.op,
-            a: self.a as u16,
-            b: self.b as u16,
-            c: self.c as u16,
-            pad: 0,
-        }
-    }
-}
-
-/// A 64-bit instruction — experimental wider encoding for cells that exceed
-/// the 32-bit `Instruction`'s 256-register / 64K-constant limits.
+/// A 64-bit instruction.
 ///
 /// Layout (8 bytes total, fixed-width):
 ///
 /// ```text
-/// ABC format:  [op:8][a:16][b:16][c:16][pad:8]  — 65,536 registers per operand
-/// ABx format:  [op:8][a:16][bx_hi:16][bx_lo:16][pad:8]  — 32-bit constant index
-/// Ax  format:  [op:8][ax_hi:16][ax_mid:16][ax_lo:16][pad:8]  — 48-bit immediate
+/// ABC format:  [op:8][pad:8][a:16][b:16][c:16]  — 65,536 registers per operand
+/// ABx format:  [op:8][pad:8][a:16][bx_hi:16][bx_lo:16]  — 32-bit constant index
+/// Ax  format:  [op:8][pad:8][ax_hi:16][ax_mid:16][ax_lo:16]  — 48-bit immediate
 /// ```
-///
-/// This type is **additive** — it does not replace `Instruction`. Existing code
-/// continues to use the 32-bit encoding. This type is available for future use
-/// when a cell exceeds the 32-bit limits.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[repr(C)]
-pub struct Instruction64 {
+pub struct Instruction {
     pub op: OpCode,
     pub pad: u8,
     pub a: u16,
@@ -371,7 +295,7 @@ pub struct Instruction64 {
     pub c: u16,
 }
 
-impl Instruction64 {
+impl Instruction {
     /// Three-register constructor (ABC format).
     pub fn abc(op: OpCode, a: u16, b: u16, c: u16) -> Self {
         Self {
@@ -449,20 +373,6 @@ impl Instruction64 {
     pub const fn size_bytes() -> usize {
         8
     }
-
-    /// Try to narrow this 64-bit instruction to 32-bit encoding.
-    /// Returns `None` if any register operand exceeds `u8::MAX` (255).
-    pub fn narrow(&self) -> Option<Instruction> {
-        if self.a > 255 || self.b > 255 || self.c > 255 {
-            return None;
-        }
-        Some(Instruction {
-            op: self.op,
-            a: self.a as u8,
-            b: self.b as u8,
-            c: self.c as u8,
-        })
-    }
 }
 
 /// Constant value in the constant pool
@@ -520,7 +430,7 @@ pub struct LirParam {
     pub name: String,
     #[serde(rename = "type")]
     pub ty: String,
-    pub register: u8,
+    pub register: u16,
     #[serde(default)]
     pub variadic: bool,
 }

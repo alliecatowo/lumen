@@ -58,10 +58,10 @@ fn remove_nops(cell: &mut LirCell) {
     // Update jump targets BEFORE removing instructions
     for (old_pc, instr) in cell.instructions.iter_mut().enumerate() {
         match instr.op {
-            // Instructions with signed 24-bit jump offsets (sAx format)
+            // Instructions with signed jump offsets (sAx format)
             OpCode::Jmp | OpCode::Break | OpCode::Continue | OpCode::HandlePush => {
                 let old_offset = instr.sax_val();
-                let old_target = (old_pc as i32 + old_offset) as usize;
+                let old_target = (old_pc as isize + old_offset as isize) as usize;
 
                 // Map both pc and target to new indices
                 let new_pc = index_map[old_pc];
@@ -73,16 +73,16 @@ fn remove_nops(cell: &mut LirCell) {
                 };
 
                 // Compute new offset
-                let new_offset = new_target as i32 - new_pc as i32;
+                let new_offset = new_target as i64 - new_pc as i64;
 
                 // Update instruction with new offset
                 *instr = Instruction::sax(instr.op, new_offset);
             }
 
-            // ForPrep and ForLoop use signed 16-bit offsets in the b field (sBx format)
+            // ForPrep and ForLoop use signed offsets in the Bx field (sBx format)
             OpCode::ForPrep | OpCode::ForLoop => {
                 let old_offset = instr.sbx();
-                let old_target = (old_pc as i32 + old_offset as i32) as usize;
+                let old_target = (old_pc as isize + old_offset as isize) as usize;
 
                 let new_pc = index_map[old_pc];
                 let new_target = if old_target < index_map.len() {
@@ -94,7 +94,7 @@ fn remove_nops(cell: &mut LirCell) {
                 let new_offset = (new_target as i32 - new_pc as i32) as i16;
 
                 // Reconstruct instruction with new offset in Bx field
-                *instr = Instruction::abx(instr.op, instr.a, new_offset as u16);
+                *instr = Instruction::abx(instr.op, instr.a, new_offset as u32);
             }
 
             _ => {
@@ -209,22 +209,25 @@ fn optimize_eq_test_sequences(cell: &mut LirCell) {
             match instr.op {
                 OpCode::Jmp | OpCode::Break | OpCode::Continue | OpCode::HandlePush => {
                     let old_offset = instr.sax_val();
-                    let old_target = (old_pc as i32 + old_offset) as usize;
+                    let old_target = (old_pc as i64 + old_offset) as usize;
 
+                    // Map both pc and target to new indices
                     let new_pc = index_map[old_pc];
                     let new_target = if old_target < index_map.len() {
                         index_map[old_target]
                     } else {
+                        // Jump beyond end - preserve relative distance
                         new_index + (old_target - index_map.len())
                     };
 
-                    let new_offset = new_target as i32 - new_pc as i32;
+                    // Compute new offset
+                    let new_offset = new_target as i64 - new_pc as i64;
                     *instr = Instruction::sax(instr.op, new_offset);
                 }
 
                 OpCode::ForPrep | OpCode::ForLoop => {
                     let old_offset = instr.sbx();
-                    let old_target = (old_pc as i32 + old_offset as i32) as usize;
+                    let old_target = (old_pc as isize + old_offset as isize) as usize;
 
                     let new_pc = index_map[old_pc];
                     let new_target = if old_target < index_map.len() {
@@ -233,8 +236,8 @@ fn optimize_eq_test_sequences(cell: &mut LirCell) {
                         new_index + (old_target - index_map.len())
                     };
 
-                    let new_offset = (new_target as i32 - new_pc as i32) as i16;
-                    *instr = Instruction::abx(instr.op, instr.a, new_offset as u16);
+                    let new_offset = (new_target as i64 - new_pc as i64) as i32;
+                    *instr = Instruction::abx(instr.op, instr.a, new_offset as u32);
                 }
 
                 _ => {}

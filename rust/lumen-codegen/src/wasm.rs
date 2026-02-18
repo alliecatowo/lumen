@@ -279,7 +279,7 @@ fn encode_function_body(cell: &LirCell, _lir: &LirModule) -> Result<Vec<u8>, Cod
             }
             OpCode::LoadInt => {
                 let a = inst.a;
-                let imm = inst.b as i8 as i64;
+                let imm = inst.sbx() as i64;
                 // i64.const imm
                 buf.push(0x42);
                 encode_i64_leb128(&mut buf, imm);
@@ -477,7 +477,7 @@ fn emit_wasm_load_constant(
     buf: &mut Vec<u8>,
     cell: &LirCell,
     const_idx: usize,
-    dest_reg: u8,
+    dest_reg: u16,
 ) -> Result<(), CodegenError> {
     let constant = cell.constants.get(const_idx).ok_or_else(|| {
         CodegenError::LoweringError(format!(

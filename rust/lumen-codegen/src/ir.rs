@@ -25,7 +25,8 @@ use crate::emit::CodegenError;
 use crate::types::lir_type_str_to_cl_type;
 
 /// Maximum number of virtual registers we support per cell.
-const MAX_REGS: usize = 256;
+/// With 64-bit instructions, register fields are 16 bits wide (up to 65,536).
+const MAX_REGS: usize = 65_536;
 
 /// Tracks the semantic type of each JIT variable/register.
 /// At the Cranelift IR level, both Int and Str are I64, but we need to
@@ -174,8 +175,8 @@ pub fn lower_cell<M: Module>(
     let mut var_types: HashMap<u32, JitVarType> = HashMap::new();
 
     // Pre-scan constants to determine which registers receive float/string values.
-    let mut float_regs: std::collections::HashSet<u8> = std::collections::HashSet::new();
-    let mut string_regs: std::collections::HashSet<u8> = std::collections::HashSet::new();
+    let mut float_regs: std::collections::HashSet<u16> = std::collections::HashSet::new();
+    let mut string_regs: std::collections::HashSet<u16> = std::collections::HashSet::new();
     for inst in &cell.instructions {
         if inst.op == OpCode::LoadK {
             let bx = inst.bx() as usize;
@@ -208,7 +209,7 @@ pub fn lower_cell<M: Module>(
             } else {
                 (JitVarType::Int, types::I64)
             }
-        } else if float_regs.contains(&(i as u8)) {
+        } else if float_regs.contains(&(i as u16)) {
             (JitVarType::Float, types::F64)
         } else {
             // Both int and string regs use I64 at the Cranelift level.
@@ -273,7 +274,7 @@ pub fn lower_cell<M: Module>(
     }
 
     let mut terminated = false;
-    let mut pending_test: Option<u8> = None;
+    let mut pending_test: Option<u16> = None;
 
     for (pc, inst) in cell.instructions.iter().enumerate() {
         if let Some(&target_block) = block_map.get(&pc) {
@@ -344,7 +345,7 @@ pub fn lower_cell<M: Module>(
             }
             OpCode::LoadInt => {
                 let a = inst.a;
-                let imm = inst.b as i8 as i64;
+                let imm = inst.sbx() as i64;
                 let val = builder.ins().iconst(types::I64, imm);
                 def_var(&mut builder, &vars, a, val);
             }
@@ -711,7 +712,7 @@ pub fn lower_cell<M: Module>(
             // Control flow
             OpCode::Jmp | OpCode::Break | OpCode::Continue => {
                 let offset = inst.sax_val();
-                let target_pc = (pc as i32 + 1 + offset) as usize;
+                let target_pc = (pc as isize + 1 + offset as isize) as usize;
                 let fallthrough_pc = pc + 1;
 
                 let target_block = get_or_create_block(&mut builder, &mut block_map, target_pc);
@@ -740,7 +741,7 @@ pub fn lower_cell<M: Module>(
                         && reg_id != ret_reg as u32
                         && (reg_id as usize) < vars.len()
                     {
-                        let v = use_var(&mut builder, &vars, reg_id as u8);
+                        let v = use_var(&mut builder, &vars, reg_id as u16);
                         builder.ins().call(str_drop_ref, &[v]);
                     }
                 }
@@ -770,7 +771,7 @@ pub fn lower_cell<M: Module>(
                 // Collect string-typed argument registers for cleanup.
                 let mut str_arg_regs: Vec<u32> = Vec::new();
                 for i in 0..num_args {
-                    let arg_reg = (base + 1 + i as u8) as u32;
+                    let arg_reg = (base + 1 + i as u16) as u32;
                     if var_types.get(&arg_reg) == Some(&JitVarType::Str) {
                         str_arg_regs.push(arg_reg);
                     }
@@ -782,7 +783,7 @@ pub fn lower_cell<M: Module>(
                             let mut args: Vec<cranelift_codegen::ir::Value> =
                                 Vec::with_capacity(num_args);
                             for i in 0..num_args {
-                                let arg_reg = base + 1 + i as u8;
+                                let arg_reg = base + 1 + i as u16;
                                 args.push(use_var(&mut builder, &vars, arg_reg));
                             }
                             let call = builder.ins().call(func_ref, &args);
@@ -804,7 +805,7 @@ pub fn lower_cell<M: Module>(
                 // Drop string-typed argument registers after the call.
                 for arg_reg in str_arg_regs {
                     if (arg_reg as usize) < vars.len() {
-                        let v = use_var(&mut builder, &vars, arg_reg as u8);
+                        let v = use_var(&mut builder, &vars, arg_reg as u16);
                         builder.ins().call(str_drop_ref, &[v]);
                     }
                     var_types.remove(&arg_reg);
@@ -831,10 +832,10 @@ pub fn lower_cell<M: Module>(
 
                 // Drop any string-typed argument registers.
                 for i in 0..num_args {
-                    let arg_reg = (base + 1 + i as u8) as u32;
+                    let arg_reg = (base + 1 + i as u16) as u32;
                     if var_types.get(&arg_reg) == Some(&JitVarType::Str) {
                         if (arg_reg as usize) < vars.len() {
-                            let v = use_var(&mut builder, &vars, arg_reg as u8);
+                            let v = use_var(&mut builder, &vars, arg_reg as u16);
                             builder.ins().call(str_drop_ref, &[v]);
                         }
                         var_types.remove(&arg_reg);
@@ -846,7 +847,7 @@ pub fn lower_cell<M: Module>(
                         let mut new_args: Vec<cranelift_codegen::ir::Value> =
                             Vec::with_capacity(num_args);
                         for i in 0..num_args {
-                            let arg_reg = base + 1 + i as u8;
+                            let arg_reg = base + 1 + i as u16;
                             new_args.push(use_var(&mut builder, &vars, arg_reg));
                         }
                         for (i, &val) in new_args.iter().enumerate() {
@@ -863,7 +864,7 @@ pub fn lower_cell<M: Module>(
                             let mut args: Vec<cranelift_codegen::ir::Value> =
                                 Vec::with_capacity(num_args);
                             for i in 0..num_args {
-                                let arg_reg = base + 1 + i as u8;
+                                let arg_reg = base + 1 + i as u16;
                                 args.push(use_var(&mut builder, &vars, arg_reg));
                             }
                             let call = builder.ins().call(func_ref, &args);
@@ -947,7 +948,7 @@ fn declare_helper_func<M: Module>(
 fn use_var(
     builder: &mut FunctionBuilder,
     vars: &[Variable],
-    reg: u8,
+    reg: u16,
 ) -> cranelift_codegen::ir::Value {
     let idx = reg as usize;
     if idx < vars.len() {
@@ -960,7 +961,7 @@ fn use_var(
 fn def_var(
     builder: &mut FunctionBuilder,
     vars: &[Variable],
-    reg: u8,
+    reg: u16,
     val: cranelift_codegen::ir::Value,
 ) {
     let idx = reg as usize;
@@ -1010,7 +1011,7 @@ fn collect_block_starts(instructions: &[Instruction]) -> BTreeSet<usize> {
         match inst.op {
             OpCode::Jmp | OpCode::Break | OpCode::Continue => {
                 let offset = inst.sax_val();
-                let target = (pc as i32 + 1 + offset) as usize;
+                let target = (pc as isize + 1 + offset as isize) as usize;
                 targets.insert(target);
                 if pc + 1 < instructions.len() {
                     targets.insert(pc + 1);
@@ -1046,7 +1047,7 @@ fn find_callee_name(
     cell: &LirCell,
     instructions: &[Instruction],
     call_pc: usize,
-    base_reg: u8,
+    base_reg: u16,
 ) -> Option<String> {
     for i in (0..call_pc).rev() {
         let inst = &instructions[i];
@@ -1069,17 +1070,17 @@ fn find_callee_name(
     None
 }
 
-fn is_float_op(var_types: &HashMap<u32, JitVarType>, lhs_reg: u8, rhs_reg: u8) -> bool {
+fn is_float_op(var_types: &HashMap<u32, JitVarType>, lhs_reg: u16, rhs_reg: u16) -> bool {
     var_types.get(&(lhs_reg as u32)).copied() == Some(JitVarType::Float)
         || var_types.get(&(rhs_reg as u32)).copied() == Some(JitVarType::Float)
 }
 
 /// Identify registers that hold string constants used ONLY as Call/TailCall
 /// callee names in straight-line code. For these we skip heap string allocation.
-fn identify_call_name_registers(cell: &LirCell) -> std::collections::HashSet<u8> {
+fn identify_call_name_registers(cell: &LirCell) -> std::collections::HashSet<u16> {
     use std::collections::HashSet;
 
-    let mut result: HashSet<u8> = HashSet::new();
+    let mut result: HashSet<u16> = HashSet::new();
     let instructions = &cell.instructions;
 
     for (loadk_pc, loadk_inst) in instructions.iter().enumerate() {
@@ -1092,7 +1093,7 @@ fn identify_call_name_registers(cell: &LirCell) -> std::collections::HashSet<u8>
         }
 
         let origin_reg = loadk_inst.a;
-        let mut aliases: HashSet<u8> = HashSet::new();
+        let mut aliases: HashSet<u16> = HashSet::new();
         aliases.insert(origin_reg);
         let mut found_call_use = false;
         let mut invalidated = false;
@@ -1103,7 +1104,7 @@ fn identify_call_name_registers(cell: &LirCell) -> std::collections::HashSet<u8>
                     let base = inst.a;
                     let num_args = inst.b as usize;
                     for i in 0..num_args {
-                        let arg_reg = base + 1 + i as u8;
+                        let arg_reg = base + 1 + i as u16;
                         if aliases.contains(&arg_reg) {
                             invalidated = true;
                             break;
@@ -1169,7 +1170,7 @@ fn identify_call_name_registers(cell: &LirCell) -> std::collections::HashSet<u8>
 
         if found_call_use && !invalidated {
             result.insert(origin_reg);
-            let mut propagated: HashSet<u8> = HashSet::new();
+            let mut propagated: HashSet<u16> = HashSet::new();
             propagated.insert(origin_reg);
             for inst in &instructions[(loadk_pc + 1)..] {
                 if (inst.op == OpCode::Move || inst.op == OpCode::MoveOwn)

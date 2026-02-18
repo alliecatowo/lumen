@@ -87,7 +87,7 @@ fn intrinsic_upper() {
         .iter()
         .find(|i| i.op == OpCode::Intrinsic)
         .expect("should emit Intrinsic opcode");
-    assert_eq!(intr.b, IntrinsicId::Upper as u8);
+    assert_eq!(intr.b, IntrinsicId::Upper as u16);
 }
 
 #[test]
@@ -99,7 +99,7 @@ fn intrinsic_lower() {
         .iter()
         .find(|i| i.op == OpCode::Intrinsic)
         .expect("should emit Intrinsic opcode");
-    assert_eq!(intr.b, IntrinsicId::Lower as u8);
+    assert_eq!(intr.b, IntrinsicId::Lower as u16);
 }
 
 #[test]
@@ -111,7 +111,7 @@ fn intrinsic_trim() {
         .iter()
         .find(|i| i.op == OpCode::Intrinsic)
         .expect("should emit Intrinsic opcode");
-    assert_eq!(intr.b, IntrinsicId::Trim as u8);
+    assert_eq!(intr.b, IntrinsicId::Trim as u16);
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn intrinsic_sort() {
         .iter()
         .find(|i| i.op == OpCode::Intrinsic)
         .expect("should emit Intrinsic opcode");
-    assert_eq!(intr.b, IntrinsicId::Sort as u8);
+    assert_eq!(intr.b, IntrinsicId::Sort as u16);
 }
 
 #[test]
@@ -135,7 +135,7 @@ fn intrinsic_reverse() {
         .iter()
         .find(|i| i.op == OpCode::Intrinsic)
         .expect("should emit Intrinsic opcode");
-    assert_eq!(intr.b, IntrinsicId::Reverse as u8);
+    assert_eq!(intr.b, IntrinsicId::Reverse as u16);
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn intrinsic_filter() {
         .iter()
         .find(|i| i.op == OpCode::Intrinsic)
         .expect("should emit Intrinsic opcode");
-    assert_eq!(intr.b, IntrinsicId::Filter as u8);
+    assert_eq!(intr.b, IntrinsicId::Filter as u16);
 }
 
 #[test]
@@ -161,7 +161,7 @@ fn intrinsic_map() {
         .iter()
         .find(|i| i.op == OpCode::Intrinsic)
         .expect("should emit Intrinsic opcode");
-    assert_eq!(intr.b, IntrinsicId::Map as u8);
+    assert_eq!(intr.b, IntrinsicId::Map as u16);
 }
 
 #[test]
@@ -173,7 +173,7 @@ fn intrinsic_reduce() {
         .iter()
         .find(|i| i.op == OpCode::Intrinsic)
         .expect("should emit Intrinsic opcode");
-    assert_eq!(intr.b, IntrinsicId::Reduce as u8);
+    assert_eq!(intr.b, IntrinsicId::Reduce as u16);
 }
 
 #[test]
@@ -205,9 +205,9 @@ fn intrinsic_first_last_is_empty() {
         .unwrap()
         .b;
 
-    assert_eq!(id1, IntrinsicId::First as u8);
-    assert_eq!(id2, IntrinsicId::Last as u8);
-    assert_eq!(id3, IntrinsicId::IsEmpty as u8);
+    assert_eq!(id1, IntrinsicId::First as u16);
+    assert_eq!(id2, IntrinsicId::Last as u16);
+    assert_eq!(id3, IntrinsicId::IsEmpty as u16);
 }
 
 #[test]
@@ -231,8 +231,8 @@ fn intrinsic_starts_with_ends_with() {
         .unwrap()
         .b;
 
-    assert_eq!(id1, IntrinsicId::StartsWith as u8);
-    assert_eq!(id2, IntrinsicId::EndsWith as u8);
+    assert_eq!(id1, IntrinsicId::StartsWith as u16);
+    assert_eq!(id2, IntrinsicId::EndsWith as u16);
 }
 
 #[test]
@@ -244,7 +244,7 @@ fn intrinsic_chars() {
         .iter()
         .find(|i| i.op == OpCode::Intrinsic)
         .expect("should emit Intrinsic opcode");
-    assert_eq!(intr.b, IntrinsicId::Chars as u8);
+    assert_eq!(intr.b, IntrinsicId::Chars as u16);
 }
 
 #[test]
@@ -257,7 +257,7 @@ fn intrinsic_replace() {
         .iter()
         .find(|i| i.op == OpCode::Intrinsic)
         .expect("should emit Intrinsic opcode");
-    assert_eq!(intr.b, IntrinsicId::Replace as u8);
+    assert_eq!(intr.b, IntrinsicId::Replace as u16);
 }
 
 #[test]
@@ -269,7 +269,7 @@ fn intrinsic_flatten() {
         .iter()
         .find(|i| i.op == OpCode::Intrinsic)
         .expect("should emit Intrinsic opcode");
-    assert_eq!(intr.b, IntrinsicId::Flatten as u8);
+    assert_eq!(intr.b, IntrinsicId::Flatten as u16);
 }
 
 #[test]
@@ -281,7 +281,7 @@ fn intrinsic_unique() {
         .iter()
         .find(|i| i.op == OpCode::Intrinsic)
         .expect("should emit Intrinsic opcode");
-    assert_eq!(intr.b, IntrinsicId::Unique as u8);
+    assert_eq!(intr.b, IntrinsicId::Unique as u16);
 }
 
 #[test]
@@ -305,8 +305,8 @@ fn intrinsic_take_drop() {
         .unwrap()
         .b;
 
-    assert_eq!(id1, IntrinsicId::Take as u8);
-    assert_eq!(id2, IntrinsicId::Drop as u8);
+    assert_eq!(id1, IntrinsicId::Take as u16);
+    assert_eq!(id2, IntrinsicId::Drop as u16);
 }
 
 // ============================================================================
@@ -324,14 +324,14 @@ fn set_comprehension_uses_append_and_toset() {
         "set comprehension should use Append during iteration"
     );
 
-    let intrinsics: Vec<u8> = module.cells[0]
+    let intrinsics: Vec<u16> = module.cells[0]
         .instructions
         .iter()
         .filter(|i| i.op == OpCode::Intrinsic)
         .map(|i| i.b)
         .collect();
     assert!(
-        intrinsics.contains(&(IntrinsicId::ToSet as u8)),
+        intrinsics.contains(&(IntrinsicId::ToSet as u16)),
         "set comprehension should use ToSet intrinsic to convert list to set"
     );
 }
@@ -351,14 +351,14 @@ fn set_comprehension_with_condition() {
         "condition x > 2 should use Lt (swapped)"
     );
 
-    let intrinsics: Vec<u8> = module.cells[0]
+    let intrinsics: Vec<u16> = module.cells[0]
         .instructions
         .iter()
         .filter(|i| i.op == OpCode::Intrinsic)
         .map(|i| i.b)
         .collect();
     assert!(
-        intrinsics.contains(&(IntrinsicId::ToSet as u8)),
+        intrinsics.contains(&(IntrinsicId::ToSet as u16)),
         "set comprehension should use ToSet intrinsic"
     );
 }
@@ -432,9 +432,9 @@ fn assert_intrinsic_registers_contiguous(module: &lumen_core::lir::LirModule, ce
             // are tested individually.
             let is_single_arg = matches!(
                 instr.b,
-                b if b == IntrinsicId::ToInt as u8
-                    || b == IntrinsicId::ToFloat as u8
-                    || b == IntrinsicId::ToString as u8
+                b if b == IntrinsicId::ToInt as u16
+                    || b == IntrinsicId::ToFloat as u16
+                    || b == IntrinsicId::ToString as u16
             );
             if is_single_arg {
                 assert_eq!(
@@ -508,7 +508,7 @@ end";
         .expect("main cell");
 
     for (idx, instr) in main.instructions.iter().enumerate() {
-        if instr.op == OpCode::Intrinsic && instr.b == IntrinsicId::ToFloat as u8 {
+        if instr.op == OpCode::Intrinsic && instr.b == IntrinsicId::ToFloat as u16 {
             assert_eq!(
                 instr.a + 1,
                 instr.c,
@@ -541,7 +541,7 @@ end";
         .expect("main cell");
 
     for (idx, instr) in main.instructions.iter().enumerate() {
-        if instr.op == OpCode::Intrinsic && instr.b == IntrinsicId::ToString as u8 {
+        if instr.op == OpCode::Intrinsic && instr.b == IntrinsicId::ToString as u16 {
             assert_eq!(
                 instr.a + 1,
                 instr.c,
@@ -619,7 +619,7 @@ end";
         .find(|c| c.name == "compute")
         .expect("compute cell");
 
-    let param_regs: Vec<u8> = (0..cell.params.len() as u8).collect();
+    let param_regs: Vec<u16> = (0..cell.params.len() as u16).collect();
 
     for (idx, instr) in cell.instructions.iter().enumerate() {
         if instr.op == OpCode::Intrinsic {
@@ -661,12 +661,12 @@ end";
         .expect("main cell");
 
     for (idx, instr) in main.instructions.iter().enumerate() {
-        if instr.op == OpCode::Intrinsic && instr.b == IntrinsicId::Range as u8 {
+        if instr.op == OpCode::Intrinsic && instr.b == IntrinsicId::Range as u16 {
             // For Range, the C field is arg_start where start is at C and
             // end is at C+1. They must be contiguous (guaranteed by alloc_block).
             // dest (A) is allocated separately, so A+1 != C is acceptable.
             // But C must not overlap with any parameter register.
-            let param_regs: Vec<u8> = (0..main.params.len() as u8).collect();
+            let param_regs: Vec<u16> = (0..main.params.len() as u16).collect();
             assert!(
                 !param_regs.contains(&instr.c),
                 "T193: Range arg_start=r{} at index {} overlaps param register",
@@ -764,7 +764,7 @@ end";
     );
 
     // All Call instructions should have distinct result registers
-    let call_results: Vec<u8> = main
+    let call_results: Vec<u16> = main
         .instructions
         .iter()
         .filter(|i| i.op == OpCode::Call)
@@ -807,7 +807,7 @@ end";
         .expect("main cell");
 
     for (idx, instr) in main.instructions.iter().enumerate() {
-        if instr.op == OpCode::Intrinsic && instr.b == IntrinsicId::ToFloat as u8 {
+        if instr.op == OpCode::Intrinsic && instr.b == IntrinsicId::ToFloat as u16 {
             assert_eq!(
                 instr.a + 1,
                 instr.c,
@@ -848,7 +848,7 @@ end";
 
     // Verify ToString intrinsic has contiguous registers
     for (idx, instr) in main.instructions.iter().enumerate() {
-        if instr.op == OpCode::Intrinsic && instr.b == IntrinsicId::ToString as u8 {
+        if instr.op == OpCode::Intrinsic && instr.b == IntrinsicId::ToString as u16 {
             assert_eq!(
                 instr.a + 1,
                 instr.c,
@@ -865,7 +865,7 @@ end";
     for (idx, instr) in main.instructions.iter().enumerate() {
         if instr.op == OpCode::Intrinsic {
             assert!(
-                instr.c >= named_high as u8,
+                instr.c >= named_high as u16,
                 "T193: Intrinsic at index {} has arg_start=r{} which is \
                  within named binding range [0..{})",
                 idx,

@@ -2344,6 +2344,7 @@ pub(crate) fn lower_cell<M: Module>(
                     // -------------------------------------------------------
                     0 | 1 | 72 => {
                         if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Str) {
+                            // String type - use string_len
                             let str_ptr = use_var(&mut builder, &regs, &var_types, arg_base);
                             let call = builder.ins().call(intrinsic_string_len_ref, &[str_ptr]);
                             let raw_len = builder.inst_results(call)[0];
@@ -2352,9 +2353,14 @@ pub(crate) fn lower_cell<M: Module>(
                             var_types.insert(inst.a as u32, JitVarType::Int);
                             def_var(&mut builder, &mut regs, inst.a, result);
                         } else {
-                            let zero = builder.ins().iconst(types::I64, nan_box_int(0));
+                            // Collection type (List/Map/Set/Tuple) - use collection_len
+                            let value_ptr = use_var(&mut builder, &regs, &var_types, arg_base);
+                            let call = builder.ins().call(collection_len_ref, &[value_ptr]);
+                            let raw_len = builder.inst_results(call)[0];
+                            // collection_len returns raw i64 — NaN-box it
+                            let result = emit_box_int(&mut builder, raw_len);
                             var_types.insert(inst.a as u32, JitVarType::Int);
-                            def_var(&mut builder, &mut regs, inst.a, zero);
+                            def_var(&mut builder, &mut regs, inst.a, result);
                         }
                     }
 

@@ -249,7 +249,7 @@ fn desugar_pipe_application(input: &Expr, stage: &Expr, span: Span) -> Expr {
 ///
 /// This is safe when rX (the temporary) is not read again before being
 /// overwritten or the end of the basic block.
-fn eliminate_redundant_moves(instrs: &mut Vec<Instruction>) {
+fn eliminate_redundant_moves(instrs: &mut [Instruction]) {
     let len = instrs.len();
     if len < 2 {
         return;
@@ -328,8 +328,7 @@ fn is_unary_op(op: OpCode) -> bool {
 /// write to `reg` or end of basic block. Returns true if the register is
 /// still live (i.e., someone will read it).
 fn is_reg_live_after(instrs: &[Instruction], start: usize, reg: u8) -> bool {
-    for j in start..instrs.len() {
-        let instr = &instrs[j];
+    for instr in &instrs[start..] {
         // Hit a basic-block boundary — conservatively assume live
         if is_block_boundary(instr.op) {
             // But first check if this boundary instruction itself reads reg
@@ -359,7 +358,7 @@ fn is_reg_live_after(instrs: &[Instruction], start: usize, reg: u8) -> bool {
 /// This eliminates unnecessary Rc refcount increments so that subsequent
 /// `Arc::make_mut()` on lists/strings can mutate in-place, turning O(n²)
 /// accumulation patterns into O(n).
-fn optimize_move_own(instrs: &mut Vec<Instruction>) {
+fn optimize_move_own(instrs: &mut [Instruction]) {
     let len = instrs.len();
     for i in 0..len {
         if instrs[i].op != OpCode::Move {
@@ -396,8 +395,7 @@ fn optimize_move_own(instrs: &mut Vec<Instruction>) {
                             // Scan from the jump target through instructions
                             // before the Move at `i`.
                             let mut loop_safe = false;
-                            for k in target..i {
-                                let kinstr = &instrs[k];
+                            for kinstr in &instrs[target..i] {
                                 // If this instruction reads `src`, it's still
                                 // live — cannot convert.
                                 if instr_reads_reg(kinstr, src) {
@@ -675,11 +673,14 @@ fn hoist_loop_invariants(instrs: &mut Vec<Instruction>) {
             let dest = inst.a;
             // Check that no *other* instruction in the loop writes to `dest`.
             let mut other_writes = false;
-            for pc2 in header..=back_edge {
+            for (pc2, i2) in instrs[header..=back_edge]
+                .iter()
+                .enumerate()
+                .map(|(idx, i)| (header + idx, i))
+            {
                 if pc2 == pc {
                     continue;
                 }
-                let i2 = instrs[pc2];
                 if instr_writes_to_a(i2.op) && i2.a == dest {
                     other_writes = true;
                     break;
@@ -721,8 +722,8 @@ fn hoist_loop_invariants(instrs: &mut Vec<Instruction>) {
         //   new_src = src + (src >= insert_point ? n : 0)
         //   new_tgt = tgt + (tgt >= insert_point ? n : 0)
         //   new_offset = (new_tgt - new_src - 1)
-        for i in 0..instrs.len() {
-            let inst = instrs[i];
+        for (i, slot) in instrs.iter_mut().enumerate() {
+            let inst = *slot;
             if matches!(inst.op, OpCode::Jmp | OpCode::Break | OpCode::Continue) {
                 let old_offset = inst.sax_val();
                 let old_tgt = (i as i32 + 1 + old_offset) as usize;
@@ -734,7 +735,7 @@ fn hoist_loop_invariants(instrs: &mut Vec<Instruction>) {
                 };
                 let new_offset = new_tgt as i32 - new_src as i32 - 1;
                 if new_offset != old_offset {
-                    instrs[i] = Instruction::sax(inst.op, new_offset);
+                    *slot = Instruction::sax(inst.op, new_offset);
                 }
             }
             // HandlePush also uses Ax as a forward offset.
@@ -749,7 +750,7 @@ fn hoist_loop_invariants(instrs: &mut Vec<Instruction>) {
                 };
                 let new_offset = new_tgt as i32 - new_src as i32 - 1;
                 if new_offset != old_offset {
-                    instrs[i] = Instruction::sax(inst.op, new_offset);
+                    *slot = Instruction::sax(inst.op, new_offset);
                 }
             }
         }
@@ -759,6 +760,168 @@ fn hoist_loop_invariants(instrs: &mut Vec<Instruction>) {
             instrs.insert(insert_point + idx, inst);
         }
     }
+}
+
+/// Peephole pass: eliminate redundant `Eq(bool, true)` comparisons.
+///
+/// The lowerer generates the following pattern for boolean conditions in
+/// `if`/`while`/`for` guards:
+///
+/// ```text
+/// [i]   <cmp> a=X ...       # produces Bool in rX  (Lt, Le, Eq, etc.)
+/// [i+1] LoadBool a=Y, b=1   # load `true` into rY
+/// [i+2] Eq a=Z, b=X, c=Y   # Z = (X == true), which is just X
+/// [i+3] Test a=Z            # test Z
+/// ```
+///
+/// The `LoadBool + Eq` is redundant because comparing a boolean to `true`
+/// yields the same boolean. This pass replaces the pattern with:
+///
+/// ```text
+/// [i]   <cmp> a=X ...       # produces Bool in rX
+/// [i+1] Nop                 # was LoadBool
+/// [i+2] Nop                 # was Eq
+/// [i+3] Test a=X            # test X directly
+/// ```
+///
+/// The Nops are cleaned up by the subsequent `strip_nops` pass.
+fn eliminate_redundant_bool_eq(instrs: &mut [Instruction]) {
+    if instrs.len() < 4 {
+        return;
+    }
+    let mut i = 0;
+    while i + 3 < instrs.len() {
+        let cmp_instr = instrs[i];
+        let loadbool = instrs[i + 1];
+        let eq_instr = instrs[i + 2];
+        let test_instr = instrs[i + 3];
+
+        // Check pattern:
+        // [i]   comparison op that writes Bool to cmp_instr.a
+        // [i+1] LoadBool rY, 1, 0   (load true)
+        // [i+2] Eq rZ, rX, rY       (where rX == cmp_instr.a, rY == loadbool.a)
+        // [i+3] Test rZ              (where rZ == eq_instr.a)
+        let is_comparison = matches!(
+            cmp_instr.op,
+            OpCode::Lt | OpCode::Le | OpCode::Eq | OpCode::Not | OpCode::In | OpCode::Is
+        );
+        if is_comparison
+            && loadbool.op == OpCode::LoadBool
+            && loadbool.b == 1           // loading `true`
+            && loadbool.c == 0           // no skip
+            && eq_instr.op == OpCode::Eq
+            && eq_instr.b == cmp_instr.a // comparing the comparison result
+            && eq_instr.c == loadbool.a  // against the `true` register
+            && test_instr.op == OpCode::Test
+            && test_instr.a == eq_instr.a
+        // testing the Eq result
+        {
+            // Replace: Test the comparison result directly
+            instrs[i + 1] = Instruction::abc(OpCode::Nop, 0, 0, 0);
+            instrs[i + 2] = Instruction::abc(OpCode::Nop, 0, 0, 0);
+            instrs[i + 3] = Instruction::abc(OpCode::Test, cmp_instr.a, test_instr.b, test_instr.c);
+            i += 4;
+        } else {
+            i += 1;
+        }
+    }
+}
+
+/// Post-lowering pass: remove all `Nop` instructions from the instruction
+/// stream and adjust jump offsets to maintain correct control flow.
+///
+/// This runs as the final optimization pass, after all other passes that may
+/// leave Nop placeholders (loop-invariant hoisting, redundant-Move
+/// elimination, redundant bool-eq elimination).
+///
+/// Algorithm:
+/// 1. Build a mapping from old instruction index to new index (skipping Nops).
+///    Nop positions map to the next non-Nop position (for jump targets that
+///    land on a Nop).
+/// 2. For each jump instruction (`Jmp`, `Break`, `Continue`), recalculate the
+///    offset using the mapping.
+/// 3. For each `HandlePush` instruction, recalculate the `bx` offset.
+/// 4. Remove all Nop instructions.
+fn strip_nops(instrs: &mut Vec<Instruction>) {
+    if instrs.is_empty() {
+        return;
+    }
+
+    // Count Nops early to skip work when there are none.
+    let nop_count = instrs.iter().filter(|i| i.op == OpCode::Nop).count();
+    if nop_count == 0 {
+        return;
+    }
+
+    let old_len = instrs.len();
+
+    // Build old_to_new mapping. For non-Nop instructions, this is their new
+    // position. For Nop instructions, they map to the next non-Nop's new
+    // position (so jumps targeting the Nop land on the correct successor).
+    let mut old_to_new = vec![0usize; old_len + 1];
+    let mut new_idx: usize = 0;
+    for old_idx in 0..old_len {
+        old_to_new[old_idx] = new_idx;
+        if instrs[old_idx].op != OpCode::Nop {
+            new_idx += 1;
+        }
+    }
+    // Sentinel: one past the end (used when a jump targets past the last
+    // instruction, e.g. break jumps to after_loop).
+    old_to_new[old_len] = new_idx;
+
+    // Nop positions map forward to the next non-Nop's new position. Walk
+    // backwards to propagate: if a Nop is at the end, it maps to the
+    // sentinel. Otherwise it maps to the same new_idx as the next entry.
+    // Actually, the above forward pass already does this correctly for Nops:
+    // consecutive Nops all get the same new_idx because new_idx doesn't
+    // advance for Nops. Let's verify with an example:
+    //   instr: [A, Nop, Nop, B, Nop, C]
+    //   new_idx: A→0, Nop→1, Nop→1, B→1, Nop→2, C→2, sentinel→3
+    // A Jmp targeting old=1 (first Nop) maps to new=1 which is B's position.
+    // A Jmp targeting old=4 (Nop before C) maps to new=2 which is C's position.
+    // This is correct — jumps to Nops land on the next real instruction.
+
+    // Adjust jump offsets. The VM semantics for Jmp/Break/Continue:
+    //   target = (pos + 1) + offset  =>  offset = target - pos - 1
+    // After remapping:
+    //   new_offset = new_target - new_pos - 1
+    for old_pos in 0..old_len {
+        let inst = instrs[old_pos];
+        match inst.op {
+            OpCode::Jmp | OpCode::Break | OpCode::Continue => {
+                let old_offset = inst.sax_val();
+                // Compute old target: ip is pos+1 after fetch, then ip += offset
+                let old_target = (old_pos as i32 + 1 + old_offset) as usize;
+                // Clamp to valid range for the mapping lookup
+                let old_target_clamped = old_target.min(old_len);
+                let new_pos = old_to_new[old_pos];
+                let new_target = old_to_new[old_target_clamped];
+                let new_offset = new_target as i32 - new_pos as i32 - 1;
+                if new_offset != old_offset {
+                    instrs[old_pos] = Instruction::sax(inst.op, new_offset);
+                }
+            }
+            OpCode::HandlePush => {
+                // HandlePush uses abx encoding: bx = offset
+                // VM semantics: handler_ip = (ip - 1) + offset = pos + offset
+                // So old_target = pos + bx
+                let old_bx = inst.bx() as usize;
+                let old_target = old_pos + old_bx;
+                let old_target_clamped = old_target.min(old_len);
+                let new_pos = old_to_new[old_pos];
+                let new_target = old_to_new[old_target_clamped];
+                let new_bx = new_target - new_pos;
+                if new_bx != old_bx {
+                    instrs[old_pos] = Instruction::abx(OpCode::HandlePush, inst.a, new_bx as u16);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Remove all Nop instructions by retaining only non-Nops.
+    instrs.retain(|i| i.op != OpCode::Nop);
 }
 
 /// Recursively scan a cell body for local definitions and lift them to module
@@ -1906,6 +2069,8 @@ impl<'a> Lowerer<'a> {
         hoist_loop_invariants(&mut instructions);
         eliminate_redundant_moves(&mut instructions);
         optimize_move_own(&mut instructions);
+        eliminate_redundant_bool_eq(&mut instructions);
+        strip_nops(&mut instructions);
 
         LirCell {
             name: cell.name.clone(),

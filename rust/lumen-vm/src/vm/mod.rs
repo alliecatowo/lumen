@@ -339,6 +339,9 @@ pub struct VM {
     pub(crate) effect_budgets: HashMap<String, (u32, u32)>,
     /// Cache mapping cell names to their index in module.cells for O(1) dispatch.
     cell_index_cache: HashMap<String, usize>,
+    /// Logical top of the register file. Registers beyond this index are unused.
+    /// We pre-allocate a large Vec and use this watermark to avoid resize/truncate costs.
+    pub(crate) register_top: usize,
     /// Tiered JIT compilation engine. Tracks call counts and compiles hot cells
     /// to native code via Cranelift.
     pub jit_tier: JitTier,
@@ -358,7 +361,7 @@ impl VM {
         Self {
             strings,
             types: TypeTable::new(),
-            registers: Vec::new(),
+            registers: Vec::with_capacity(4096),
             frames: Vec::new(),
             module: None,
             output: Vec::new(),
@@ -386,6 +389,7 @@ impl VM {
             trace_seq: 0,
             effect_budgets: HashMap::new(),
             cell_index_cache: HashMap::new(),
+            register_top: 0,
             jit_tier: JitTier::disabled(),
             tag_ok,
             tag_err,
@@ -423,6 +427,35 @@ impl VM {
     /// Get tiered JIT statistics.
     pub fn jit_stats(&self) -> crate::jit_tier::JitTierStats {
         self.jit_tier.tier_stats()
+    }
+
+    /// Grow register file for a new call frame. Returns the new base index.
+    /// Uses the `register_top` watermark to avoid unnecessary resize/truncate.
+    #[inline(always)]
+    fn grow_registers(&mut self, num_regs: usize) -> usize {
+        let new_base = self.register_top;
+        let needed = new_base + num_regs;
+        if needed > self.registers.len() {
+            self.registers.resize(needed, Value::Null);
+        } else {
+            // Clear the reused region to Null
+            for r in &mut self.registers[new_base..needed] {
+                *r = Value::Null;
+            }
+        }
+        self.register_top = needed;
+        new_base
+    }
+
+    /// Shrink register file back after a return. Clears the callee region
+    /// and resets the watermark without reallocating.
+    #[inline(always)]
+    fn shrink_registers(&mut self, new_top: usize) {
+        // Drop values in the range being reclaimed to free memory
+        for r in &mut self.registers[new_top..self.register_top] {
+            *r = Value::Null;
+        }
+        self.register_top = new_top;
     }
 
     pub(crate) fn validate_schema(&self, val: &Value, schema_name: &str) -> bool {
@@ -1051,12 +1084,12 @@ impl VM {
                 let callee_cell = &module.cells[cell_idx];
                 let num_regs = (callee_cell.registers as usize).max(16);
                 let params = callee_cell.params.clone();
-                let new_base = self.registers.len();
-                self.registers.resize(new_base + num_regs, Value::Null);
+                let cell_regs = callee_cell.registers;
+                let new_base = self.grow_registers(num_regs);
                 for (i, arg) in task.args.into_iter().enumerate() {
                     if i < params.len() {
                         let dst = params[i].register as usize;
-                        self.check_register(dst, callee_cell.registers)?;
+                        self.check_register(dst, cell_regs)?;
                         self.registers[new_base + dst] = arg;
                     }
                 }
@@ -1082,17 +1115,17 @@ impl VM {
                 let callee_cell = &module.cells[cv.cell_idx];
                 let num_regs = (callee_cell.registers as usize).max(16);
                 let params = callee_cell.params.clone();
-                let new_base = self.registers.len();
-                self.registers.resize(new_base + num_regs, Value::Null);
+                let cell_regs = callee_cell.registers;
+                let new_base = self.grow_registers(num_regs);
                 for (i, cap) in cv.captures.iter().enumerate() {
-                    self.check_register(i, callee_cell.registers)?;
+                    self.check_register(i, cell_regs)?;
                     self.registers[new_base + i] = cap.clone();
                 }
                 let cap_count = cv.captures.len();
                 for (i, arg) in task.args.into_iter().enumerate() {
                     if cap_count + i < params.len() {
                         let dst = params[cap_count + i].register as usize;
-                        self.check_register(dst, callee_cell.registers)?;
+                        self.check_register(dst, cell_regs)?;
                         self.registers[new_base + dst] = arg;
                     }
                 }
@@ -1287,16 +1320,17 @@ impl VM {
 
         let cell = &module.cells[cell_idx];
         let num_regs = cell.registers as usize;
+        let params = cell.params.clone();
+        let cell_regs = cell.registers;
 
         // Grow register file
-        let base = self.registers.len();
-        self.registers.resize(base + num_regs.max(16), Value::Null);
+        let base = self.grow_registers(num_regs.max(16));
 
         // Load arguments into parameter registers
         for (i, arg) in args.into_iter().enumerate() {
-            if i < cell.params.len() {
-                let dst = cell.params[i].register as usize;
-                self.check_register(dst, cell.registers)?;
+            if i < params.len() {
+                let dst = params[i].register as usize;
+                self.check_register(dst, cell_regs)?;
                 self.registers[base + dst] = arg;
             }
         }
@@ -1572,9 +1606,7 @@ impl VM {
                             }
                             let callee_cell = &module.cells[target_idx];
                             let num_regs = callee_cell.registers as usize;
-                            let new_base = self.registers.len();
-                            self.registers
-                                .resize(new_base + num_regs.max(16), Value::Null);
+                            let new_base = self.grow_registers(num_regs.max(16));
 
                             // Inline arg copy — avoid cloning params Vec.
                             // Use raw pointer to access params from module (no borrow conflict).
@@ -1650,6 +1682,165 @@ impl VM {
                         continue;
                     }
                     OpCode::TailCall => {
+                        // ─── JIT TIER: TailCall fast path ────────────────
+                        // Same JIT dispatch as Call, but on success we
+                        // simulate Return (pop frame, write to caller)
+                        // instead of continuing in the current frame.
+                        let callee_reg = base + a;
+                        let nargs = b;
+                        let mut jit_handled = false;
+
+                        if self.jit_tier.is_enabled() {
+                            // Resolve cell index from callee register
+                            let fast_cell_idx = match &self.registers[callee_reg] {
+                                Value::String(sr) => {
+                                    let name_str = match sr {
+                                        StringRef::Owned(s) => s.as_str(),
+                                        StringRef::Interned(id) => {
+                                            self.strings.resolve(*id).unwrap_or("")
+                                        }
+                                    };
+                                    if name_str == cell.name {
+                                        Some(cell_idx)
+                                    } else if let Some(&cached) =
+                                        self.cell_index_cache.get(name_str)
+                                    {
+                                        Some(cached)
+                                    } else if let Some(idx) =
+                                        module.cells.iter().position(|c| c.name == name_str)
+                                    {
+                                        self.cell_index_cache.insert(name_str.to_string(), idx);
+                                        Some(idx)
+                                    } else {
+                                        None
+                                    }
+                                }
+                                _ => None,
+                            };
+
+                            if let Some(target_idx) = fast_cell_idx {
+                                let run_jit = if self.jit_tier.is_compiled(target_idx) {
+                                    true
+                                } else if self.jit_tier.record_call(target_idx) {
+                                    if self.jit_tier.check_eligibility(target_idx, module) {
+                                        self.jit_tier.try_compile(target_idx, module)
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                };
+
+                                if run_jit {
+                                    let callee_cell = &module.cells[target_idx];
+                                    let mut i64_args: Vec<i64> = Vec::with_capacity(nargs);
+                                    let mut string_arg_ptrs: Vec<i64> = Vec::new();
+                                    let mut args_ok = true;
+                                    for i in 0..nargs {
+                                        match &self.registers[base + a + 1 + i] {
+                                            Value::Int(v) => i64_args.push(*v),
+                                            Value::Float(v) => i64_args.push(v.to_bits() as i64),
+                                            Value::String(s) => {
+                                                let owned = match s {
+                                                    StringRef::Owned(o) => o.clone(),
+                                                    StringRef::Interned(id) => module
+                                                        .strings
+                                                        .get(*id as usize)
+                                                        .cloned()
+                                                        .unwrap_or_default(),
+                                                };
+                                                let boxed = Box::new(owned);
+                                                let ptr = Box::into_raw(boxed) as i64;
+                                                string_arg_ptrs.push(ptr);
+                                                i64_args.push(ptr);
+                                            }
+                                            Value::Bool(b) => i64_args.push(if *b { 1 } else { 0 }),
+                                            _ => {
+                                                args_ok = false;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if !args_ok {
+                                        for ptr in string_arg_ptrs {
+                                            unsafe {
+                                                let _ = Box::from_raw(ptr as *mut String);
+                                            }
+                                        }
+                                    }
+                                    if args_ok {
+                                        if let Some(result) =
+                                            self.jit_tier.execute(&callee_cell.name, &i64_args)
+                                        {
+                                            // Convert i64 result back to Value
+                                            let result_value = if self
+                                                .jit_tier
+                                                .returns_string(&callee_cell.name)
+                                            {
+                                                let s = unsafe {
+                                                    lumen_codegen::jit::jit_take_string(result)
+                                                };
+                                                Value::String(StringRef::Owned(s))
+                                            } else {
+                                                Value::Int(result)
+                                            };
+
+                                            // TailCall JIT success: simulate Return.
+                                            // Pop current frame and write result to caller.
+                                            let frame = self.frames.pop().ok_or_else(|| {
+                                                VmError::Runtime(
+                                                    "call stack underflow on tailcall JIT".into(),
+                                                )
+                                            })?;
+
+                                            if has_debug {
+                                                let cname =
+                                                    module.cells[frame.cell_idx].name.clone();
+                                                self.emit_debug_event(DebugEvent::CallExit {
+                                                    cell_name: cname,
+                                                    result: result_value.clone(),
+                                                });
+                                            }
+
+                                            self.shrink_registers(frame.base_register);
+
+                                            if let Some(fid) = frame.future_id {
+                                                self.future_states.insert(
+                                                    fid,
+                                                    FutureState::Completed(result_value),
+                                                );
+                                                if self.frames.len() <= limit {
+                                                    return Ok(Value::Null);
+                                                }
+                                                let f = self.frames.last().unwrap();
+                                                cell_idx = f.cell_idx;
+                                                base = f.base_register;
+                                                ip = f.ip;
+                                                cell = &module.cells[cell_idx];
+                                                continue;
+                                            }
+                                            if self.frames.len() <= limit {
+                                                return Ok(result_value);
+                                            }
+                                            self.registers[frame.return_register] = result_value;
+                                            let f = self.frames.last().unwrap();
+                                            cell_idx = f.cell_idx;
+                                            base = f.base_register;
+                                            ip = f.ip;
+                                            cell = &module.cells[cell_idx];
+                                            jit_handled = true;
+                                        }
+                                    }
+                                    // JIT execution failed — fall through to interpreter
+                                }
+                            }
+                        }
+                        // ─── END JIT TIER (TailCall) ─────────────────────
+
+                        if jit_handled {
+                            continue;
+                        }
+
                         if let Err(err) = self.dispatch_tailcall(base, a, b) {
                             if self.fail_current_future(err.to_string()) {
                                 if self.frames.len() <= limit {
@@ -1781,7 +1972,7 @@ impl VM {
                     let tag_str =
                         value_to_str_cow(&self.registers[base + b], &self.strings).into_owned();
                     let tag = self.strings.intern(&tag_str);
-                    let payload = Box::new(self.registers[base + c].clone());
+                    let payload = Arc::new(self.registers[base + c].clone());
                     self.registers[base + a] = Value::Union(UnionValue { tag, payload });
                 }
                 OpCode::NewTuple => {
@@ -1963,15 +2154,17 @@ impl VM {
                         // take the left value out and push_str in-place to avoid
                         // allocating a new String. Otherwise we must clone to avoid
                         // nulling a register that may be read again later.
-                        let rhs_owned: String =
-                            value_to_str_cow(&self.registers[base + c], &self.strings).into_owned();
                         if a == b {
+                            // Read RHS as borrowed &str before mutating LHS
+                            let rhs_cow =
+                                value_to_str_cow(&self.registers[base + c], &self.strings);
+                            let rhs_str: String = rhs_cow.into_owned();
                             // Safe in-place: destination overwrites source
                             let left_val =
                                 std::mem::replace(&mut self.registers[base + b], Value::Null);
                             let result = match left_val {
                                 Value::String(StringRef::Owned(mut s)) => {
-                                    s.push_str(&rhs_owned);
+                                    s.push_str(&rhs_str);
                                     Value::String(StringRef::Owned(s))
                                 }
                                 other => {
@@ -1982,21 +2175,22 @@ impl VM {
                                         _ => other.as_string(),
                                     };
                                     let mut s =
-                                        String::with_capacity(left_str.len() + rhs_owned.len());
+                                        String::with_capacity(left_str.len() + rhs_str.len());
                                     s.push_str(&left_str);
-                                    s.push_str(&rhs_owned);
+                                    s.push_str(&rhs_str);
                                     Value::String(StringRef::Owned(s))
                                 }
                             };
                             self.registers[base + a] = result;
                         } else {
-                            // Not safe to take: clone the left operand
-                            let left_str =
-                                value_to_str_cow(&self.registers[base + b], &self.strings)
-                                    .into_owned();
-                            let mut s = String::with_capacity(left_str.len() + rhs_owned.len());
-                            s.push_str(&left_str);
-                            s.push_str(&rhs_owned);
+                            // Not safe to take: borrow both operands
+                            let lhs_cow =
+                                value_to_str_cow(&self.registers[base + b], &self.strings);
+                            let rhs_cow =
+                                value_to_str_cow(&self.registers[base + c], &self.strings);
+                            let mut s = String::with_capacity(lhs_cow.len() + rhs_cow.len());
+                            s.push_str(&lhs_cow);
+                            s.push_str(&rhs_cow);
                             self.registers[base + a] = Value::String(StringRef::Owned(s));
                         }
                     } else if matches!(lhs, Value::List(_)) && matches!(rhs, Value::List(_)) {
@@ -2068,15 +2262,15 @@ impl VM {
                         _ => {
                             // In-place string concat optimization (same as Add path):
                             // only take from source when destination IS the source (a == b).
-                            let rhs_owned: String =
-                                value_to_str_cow(&self.registers[base + c], &self.strings)
-                                    .into_owned();
                             if a == b {
+                                let rhs_cow =
+                                    value_to_str_cow(&self.registers[base + c], &self.strings);
+                                let rhs_str: String = rhs_cow.into_owned();
                                 let left_val =
                                     std::mem::replace(&mut self.registers[base + b], Value::Null);
                                 match left_val {
                                     Value::String(StringRef::Owned(mut s)) => {
-                                        s.push_str(&rhs_owned);
+                                        s.push_str(&rhs_str);
                                         Value::String(StringRef::Owned(s))
                                     }
                                     other => {
@@ -2087,19 +2281,20 @@ impl VM {
                                             _ => other.as_string(),
                                         };
                                         let mut s =
-                                            String::with_capacity(left_str.len() + rhs_owned.len());
+                                            String::with_capacity(left_str.len() + rhs_str.len());
                                         s.push_str(&left_str);
-                                        s.push_str(&rhs_owned);
+                                        s.push_str(&rhs_str);
                                         Value::String(StringRef::Owned(s))
                                     }
                                 }
                             } else {
-                                let left_str =
-                                    value_to_str_cow(&self.registers[base + b], &self.strings)
-                                        .into_owned();
-                                let mut s = String::with_capacity(left_str.len() + rhs_owned.len());
-                                s.push_str(&left_str);
-                                s.push_str(&rhs_owned);
+                                let lhs_cow =
+                                    value_to_str_cow(&self.registers[base + b], &self.strings);
+                                let rhs_cow =
+                                    value_to_str_cow(&self.registers[base + c], &self.strings);
+                                let mut s = String::with_capacity(lhs_cow.len() + rhs_cow.len());
+                                s.push_str(&lhs_cow);
+                                s.push_str(&rhs_cow);
                                 Value::String(StringRef::Owned(s))
                             }
                         }
@@ -2355,10 +2550,10 @@ impl VM {
                         });
                     }
 
-                    // Truncate register file back to caller's frame.
+                    // Shrink register file back to caller's frame.
                     // This prevents unbounded register growth from deep recursion
                     // and avoids massive memory overhead from abandoned callee registers.
-                    self.registers.truncate(frame.base_register);
+                    self.shrink_registers(frame.base_register);
 
                     if let Some(fid) = frame.future_id {
                         self.future_states
@@ -2952,9 +3147,7 @@ impl VM {
                     let params: Vec<LirParam> = callee_cell.params.clone();
                     let cell_regs = callee_cell.registers;
                     let _ = module;
-                    let new_base = self.registers.len();
-                    self.registers
-                        .resize(new_base + num_regs.max(16), Value::Null);
+                    let new_base = self.grow_registers(num_regs.max(16));
                     self.copy_args_to_params(&params, new_base, base + a + 1, nargs, 0, cell_regs)?;
                     self.frames.push(CallFrame {
                         cell_idx: idx,
@@ -2985,9 +3178,7 @@ impl VM {
                 let params: Vec<LirParam> = callee_cell.params.clone();
                 let cell_regs = callee_cell.registers;
                 let _ = module;
-                let new_base = self.registers.len();
-                self.registers
-                    .resize(new_base + num_regs.max(16), Value::Null);
+                let new_base = self.grow_registers(num_regs.max(16));
                 for (i, cap) in cv.captures.iter().enumerate() {
                     self.check_register(i, cell_regs)?;
                     self.registers[new_base + i] = cap.clone();

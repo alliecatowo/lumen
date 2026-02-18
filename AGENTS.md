@@ -122,10 +122,12 @@ This project uses a specialized agent team managed by the Delegator:
 
 | Agent | Model | Role |
 |-------|-------|------|
-| **delegator** | `github-copilot/claude-sonnet-4.5` | Orchestrator (primary) -- manages tasks, delegates, commits |
+| **delegator** | `google/gemini-3-pro-preview` | Orchestrator (primary) -- manages tasks, delegates, commits |
 | **auditor** | `google/gemini-3-pro-preview` | Deep codebase auditor, planner, researcher |
+| **competitive-auditor** | `google/gemini-3-pro-preview` (temp 0.8) | Ambitious cross-language competitive analysis, gap closure strategist |
 | **debugger** | `github-copilot/claude-opus-4.6` | Hardcore LIR/VM/compiler debugging |
 | **coder** | `github-copilot/claude-sonnet-4.5` | Feature implementation, refactoring |
+| **worker** | `github-copilot/claude-haiku-4.5` | Fast general-purpose tasks, small fixes, bulk edits |
 | **tester** | `google/gemini-3-flash-preview` | Fast QA -- writes and runs tests |
 | **task-manager** | `google/gemini-3-flash-preview` | Task list management, planning |
 | **performance** | `github-copilot/claude-opus-4.6` | Optimization, architecture enforcement |

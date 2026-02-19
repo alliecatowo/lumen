@@ -1,6 +1,8 @@
 //! Register VM dispatch loop for executing LIR bytecode.
 
 pub mod continuations;
+pub mod fiber;
+pub mod fiber_effects;
 mod helpers;
 mod intrinsics;
 mod ops;
@@ -17,11 +19,13 @@ use lumen_core::lir::*;
 use lumen_core::strings::StringTable;
 use lumen_core::types::{RuntimeField, RuntimeType, RuntimeTypeKind, RuntimeVariant, TypeTable};
 use lumen_core::values::{
-    values_equal, ClosureValue, FutureStatus, FutureValue, RecordValue, StringRef, TraceRefValue,
-    UnionValue, Value,
+    values_equal, ClosureValue, FutureStatus, FutureValue, NbValue, RecordValue, StringRef,
+    TraceRefValue, UnionValue, Value,
 };
 
 use crate::services::tools::{ProviderRegistry, ToolDispatcher, ToolRequest};
+use crate::vm::fiber::{Fiber, FiberStatus};
+use lumen_core::vm_context::VmContext;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -60,6 +64,13 @@ pub enum DebugEvent {
         schema: String,
         valid: bool,
     },
+    /// Fiber switch event: reason, from_fiber_id, to_fiber_id.
+    /// Emitted when the VM switches between fibers for algebraic effects.
+    FiberSwitch {
+        reason: String,
+        from_fiber: u64,
+        to_fiber: u64,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -79,7 +90,7 @@ pub enum VmError {
     #[error("undefined cell: {0}")]
     UndefinedCell(String),
     #[error("register out of bounds: r{0} in cell with {1} registers")]
-    RegisterOOB(u8, u8),
+    RegisterOOB(u16, u16),
     #[error("tool call error: {0}")]
     ToolError(String),
     #[error("type error at runtime: {0}")]
@@ -288,10 +299,22 @@ pub(crate) struct EffectScope {
 }
 
 /// A suspended continuation for algebraic effects (one-shot).
-#[derive(Debug, Clone)]
+///
+/// # Deprecation Notice
+///
+/// This structure is superseded by the fiber-based `FiberEffectStack` in
+/// `fiber_effects.rs`. It remains in use for the interpreter's IP-jumping
+/// effect dispatch but should not be used for new JIT-compiled code paths.
+/// New code should call `lm_rt_handle_push` / `lm_rt_perform` / `lm_rt_resume`
+/// via the `VmContext` instead.
+///
+/// # Safety
+/// The `registers` field contains `NbValue`s which may hold heap pointers
+/// (TAG_PTR). Custom `Drop` ensures these are freed. `Clone` performs deep
+/// cloning of heap-pointed values to avoid aliased raw pointers.
 pub(crate) struct SuspendedContinuation {
     pub frames: Vec<CallFrame>,
-    pub registers: Vec<Value>,
+    pub registers: Vec<NbValue>,
     #[allow(dead_code)]
     pub resume_ip: usize,
     #[allow(dead_code)]
@@ -299,11 +322,97 @@ pub(crate) struct SuspendedContinuation {
     pub result_reg: usize,
 }
 
+impl Drop for SuspendedContinuation {
+    fn drop(&mut self) {
+        for reg in &self.registers {
+            reg.drop_heap();
+        }
+    }
+}
+
+impl Clone for SuspendedContinuation {
+    fn clone(&self) -> Self {
+        // Deep-clone NbValues: for heap pointers, clone the underlying LegacyValue
+        let registers = self.registers.iter().map(|v| {
+            if v.is_nan_boxed() && v.tag() == NbValue::TAG_PTR && v.payload() != 0 {
+                // Clone the heap value to avoid aliased raw pointers
+                let legacy = v.peek_legacy();
+                NbValue::from_legacy(legacy)
+            } else {
+                *v // Scalar copy
+            }
+        }).collect();
+        SuspendedContinuation {
+            frames: self.frames.clone(),
+            registers,
+            resume_ip: self.resume_ip,
+            resume_frame_count: self.resume_frame_count,
+            result_reg: self.result_reg,
+        }
+    }
+}
+
+impl std::fmt::Debug for SuspendedContinuation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SuspendedContinuation")
+            .field("frames", &self.frames.len())
+            .field("registers", &self.registers.len())
+            .field("resume_ip", &self.resume_ip)
+            .field("resume_frame_count", &self.resume_frame_count)
+            .field("result_reg", &self.result_reg)
+            .finish()
+    }
+}
+
+/// RAII owner of a `VmContext` that automatically frees the `FiberEffectStack`
+/// when dropped. Wrapping `VmContext` in this type instead of implementing
+/// `Drop` on `VM` itself preserves Rust's ability to partially move fields
+/// out of `VM` (e.g. `vm.output` in tests).
+pub(crate) struct OwnedVmCtx {
+    inner: Box<VmContext>,
+}
+
+impl OwnedVmCtx {
+    /// Allocate a new `VmContext` and initialize an empty `FiberEffectStack` in it.
+    fn new() -> Self {
+        let mut inner = Box::new(VmContext::new());
+        // Safety: inner is valid and stable (Box heap allocation).
+        unsafe { fiber_effects::lm_rt_effect_stack_init(&mut *inner as *mut VmContext) }
+        OwnedVmCtx { inner }
+    }
+
+    /// Return a raw mutable pointer to the inner `VmContext`.
+    #[inline]
+    pub fn as_ptr(&mut self) -> *mut VmContext {
+        &mut *self.inner as *mut VmContext
+    }
+
+    /// Free the current `FiberEffectStack` and replace it with a fresh empty one.
+    ///
+    /// Called on `VM::load()` to discard any handlers left over from the
+    /// previous module execution before starting a new one.
+    fn reset_effect_stack(&mut self) {
+        // Safety: inner is always valid during the lifetime of OwnedVmCtx.
+        unsafe {
+            let ctx_ptr = &mut *self.inner as *mut VmContext;
+            fiber_effects::lm_rt_effect_stack_free(ctx_ptr);
+            fiber_effects::lm_rt_effect_stack_init(ctx_ptr);
+        }
+    }
+}
+
+impl Drop for OwnedVmCtx {
+    fn drop(&mut self) {
+        // Safety: inner is valid; we're in drop so no one else holds a reference.
+        unsafe { fiber_effects::lm_rt_effect_stack_free(&mut *self.inner as *mut VmContext) }
+    }
+}
+
 /// The Lumen register VM.
 pub struct VM {
     pub strings: StringTable,
     pub types: TypeTable,
-    pub(crate) registers: Vec<Value>,
+    pub(crate) registers: Vec<NbValue>,
     pub(crate) frames: Vec<CallFrame>,
     pub(crate) module: Option<LirModule>,
     /// Captured stdout output (for testing and tracing)
@@ -327,6 +436,18 @@ pub struct VM {
     pub(crate) await_fuel: u32,
     pub(crate) effect_handlers: Vec<EffectScope>,
     pub(crate) suspended_continuation: Option<SuspendedContinuation>,
+    /// VM context for JIT interop and fiber-based effect handling.
+    /// Owns the `FiberEffectStack` (via `effect_stack` raw pointer) and
+    /// tracks `current_fiber` for the interpreter's main thread.
+    /// Uses `OwnedVmCtx` so that `VM` itself does not implement `Drop`,
+    /// preserving Rust's ability to partially move fields out of `VM`.
+    pub(crate) vm_ctx: OwnedVmCtx,
+    /// Stub fiber representing the interpreter's main thread.
+    /// Has a null `stack_bottom` (no real stack allocated) and `pinned = true`
+    /// so it is never fiber-switched. Its address is stored in `vm_ctx.current_fiber`.
+    /// The field is "kept alive" to ensure the heap allocation outlives `vm_ctx`.
+    #[allow(dead_code)]
+    pub(crate) main_fiber: Box<Fiber>,
     pub(crate) max_instructions: u64,
     pub(crate) instruction_count: u64,
     /// Optional fuel counter. Each instruction decrements fuel by 1.
@@ -358,6 +479,36 @@ impl VM {
         let mut strings = StringTable::new();
         let tag_ok = strings.intern("ok");
         let tag_err = strings.intern("err");
+
+        // Stub fiber representing the interpreter's main thread.
+        // stack_bottom = null ⇒ Fiber::Drop is a no-op (no mmap to unmap).
+        // pinned = true ⇒ the fiber system will not fiber-switch to/from it.
+        let mut main_fiber = Box::new(Fiber {
+            saved_rsp: 0,
+            saved_rbp: 0,
+            saved_rbx: 0,
+            saved_r12: 0,
+            saved_r13: 0,
+            saved_r14: 0,
+            saved_r15: 0,
+            stack_bottom: std::ptr::null_mut(),
+            stack_top: std::ptr::null_mut(),
+            stack_size: 0,
+            parent: std::ptr::null_mut(),
+            status: FiberStatus::Running,
+            pinned: true,
+            user_data: 0,
+        });
+
+        // OwnedVmCtx initializes the FiberEffectStack internally.
+        let mut vm_ctx = OwnedVmCtx::new();
+        // Wire current_fiber to the stub main fiber so that fiber_effects
+        // can identify which fiber is "current" during interpreter execution.
+        // Safety: main_fiber is Box-pinned, so its heap address is stable.
+        unsafe {
+            (*vm_ctx.as_ptr()).current_fiber = &mut *main_fiber as *mut Fiber as *mut ();
+        }
+
         Self {
             strings,
             types: TypeTable::new(),
@@ -382,6 +533,8 @@ impl VM {
             await_fuel: MAX_AWAIT_RETRIES,
             effect_handlers: Vec::new(),
             suspended_continuation: None,
+            vm_ctx,
+            main_fiber,
             max_instructions: DEFAULT_MAX_INSTRUCTIONS,
             instruction_count: 0,
             fuel: None,
@@ -412,11 +565,7 @@ impl VM {
     ///
     /// Default threshold is 10 (compile after 10 calls).
     pub fn enable_jit(&mut self, threshold: u64) {
-        self.jit_tier = JitTier::new(JitTierConfig {
-            hot_threshold: threshold,
-            enabled: true,
-            ..Default::default()
-        });
+        self.jit_tier = JitTier::new(JitTierConfig::from_threshold(threshold));
     }
 
     /// Enable tiered JIT with full configuration.
@@ -436,11 +585,12 @@ impl VM {
         let new_base = self.register_top;
         let needed = new_base + num_regs;
         if needed > self.registers.len() {
-            self.registers.resize(needed, Value::Null);
+            self.registers.resize(needed, NbValue::new_null());
         } else {
             // Clear the reused region to Null
             for r in &mut self.registers[new_base..needed] {
-                *r = Value::Null;
+                r.drop_heap();
+                *r = NbValue::new_null();
             }
         }
         self.register_top = needed;
@@ -453,9 +603,61 @@ impl VM {
     fn shrink_registers(&mut self, new_top: usize) {
         // Drop values in the range being reclaimed to free memory
         for r in &mut self.registers[new_top..self.register_top] {
-            *r = Value::Null;
+            r.drop_heap();
+            *r = NbValue::new_null();
         }
         self.register_top = new_top;
+    }
+
+    // ── NbValue bridge methods ──────────────────────────────────────
+    // These provide a compatibility layer between the NbValue register file
+    // and existing code that works with LegacyValue (Value).
+
+    /// Read a register, converting from NbValue to Value (non-destructive clone).
+    #[inline(always)]
+    pub(crate) fn reg(&self, idx: usize) -> Value {
+        self.registers[idx].peek_legacy()
+    }
+
+    /// Read a register by reference. Returns a reference to the raw NbValue.
+    /// Use this when you need to inspect the NbValue tag without converting.
+    #[inline(always)]
+    pub(crate) fn reg_nb(&self, idx: usize) -> NbValue {
+        self.registers[idx]
+    }
+
+    /// Write a Value into a register, converting to NbValue.
+    /// Drops any heap allocation in the previous register value.
+    #[inline(always)]
+    pub(crate) fn set_reg(&mut self, idx: usize, val: Value) {
+        let old = self.registers[idx];
+        old.drop_heap();
+        self.registers[idx] = NbValue::from_legacy(val);
+    }
+
+    /// Write a raw NbValue into a register.
+    /// Drops any heap allocation in the previous register value.
+    #[inline(always)]
+    pub(crate) fn set_reg_nb(&mut self, idx: usize, nb: NbValue) {
+        let old = self.registers[idx];
+        old.drop_heap();
+        self.registers[idx] = nb;
+    }
+
+    /// Clone a register's Value (same as reg() but named for clarity at call sites
+    /// that previously used `.clone()`).
+    #[inline(always)]
+    pub(crate) fn reg_clone(&self, idx: usize) -> Value {
+        self.registers[idx].peek_legacy()
+    }
+
+    /// Take a register value, replacing it with Null. Equivalent to std::mem::take
+    /// on the old Vec<Value>. Returns the Value and leaves Null in the register.
+    #[inline(always)]
+    pub(crate) fn reg_take(&mut self, idx: usize) -> Value {
+        let old = self.registers[idx];
+        self.registers[idx] = NbValue::new_null();
+        old.to_legacy() // Destructive is OK here since we took ownership
     }
 
     pub(crate) fn validate_schema(&self, val: &Value, schema_name: &str) -> bool {
@@ -567,6 +769,9 @@ impl VM {
         self.await_fuel = MAX_AWAIT_RETRIES;
         self.effect_handlers.clear();
         self.suspended_continuation = None;
+        // Reset FiberEffectStack: free any leftover handler fibers from the
+        // previous module, then install a fresh empty stack for the new one.
+        self.vm_ctx.reset_effect_stack();
         self.instruction_count = 0;
         self.cell_index_cache.clear();
         let mut machine_initials: BTreeMap<String, String> = BTreeMap::new();
@@ -815,22 +1020,26 @@ impl VM {
 
     /// Read a register value by absolute index. Returns `Value::Null` if out of bounds.
     pub fn read_register(&self, index: usize) -> Value {
-        self.registers.get(index).cloned().unwrap_or(Value::Null)
-    }
-
-    /// Checked register access (read-only).
-    #[inline]
-    #[allow(dead_code)]
-    fn reg(&self, index: usize) -> Result<&Value, VmError> {
         self.registers
             .get(index)
+            .map(|nb| nb.peek_legacy())
+            .unwrap_or(Value::Null)
+    }
+
+    /// Checked register access (read-only, returns NbValue).
+    #[inline]
+    #[allow(dead_code)]
+    fn reg_checked(&self, index: usize) -> Result<NbValue, VmError> {
+        self.registers
+            .get(index)
+            .copied()
             .ok_or(VmError::RegisterOutOfBounds(index))
     }
 
-    /// Checked register access (mutable).
+    /// Checked register access (mutable, returns &mut NbValue).
     #[inline]
     #[allow(dead_code)]
-    fn reg_mut(&mut self, index: usize) -> Result<&mut Value, VmError> {
+    fn reg_mut_checked(&mut self, index: usize) -> Result<&mut NbValue, VmError> {
         self.registers
             .get_mut(index)
             .ok_or(VmError::RegisterOutOfBounds(index))
@@ -841,8 +1050,8 @@ impl VM {
         if reg < cell_registers as usize {
             Ok(())
         } else {
-            let offending = reg.min(u8::MAX as usize) as u8;
-            Err(VmError::RegisterOOB(offending, cell_registers as u8))
+            let offending = reg.min(u16::MAX as usize) as u16;
+            Err(VmError::RegisterOOB(offending, cell_registers))
         }
     }
 
@@ -888,22 +1097,22 @@ impl VM {
             for i in 0..fixed_count.min(nargs) {
                 let dst = params[param_offset + i].register as usize;
                 self.check_register(dst, cell_registers)?;
-                self.registers[new_base + dst] = self.registers[arg_base + i].clone();
+                self.set_reg(new_base + dst, self.reg(arg_base + i));
             }
             // Pack remaining args into a list for the variadic param
             let variadic_args: Vec<Value> = (fixed_count..nargs)
-                .map(|i| self.registers[arg_base + i].clone())
+                .map(|i| self.reg(arg_base + i))
                 .collect();
             let dst = params[vi].register as usize;
             self.check_register(dst, cell_registers)?;
-            self.registers[new_base + dst] = Value::new_list(variadic_args);
+            self.set_reg(new_base + dst, Value::new_list(variadic_args));
         } else {
             // No variadic param — copy args 1:1 as before
             for i in 0..nargs {
                 if param_offset + i < params.len() {
                     let dst = params[param_offset + i].register as usize;
                     self.check_register(dst, cell_registers)?;
-                    self.registers[new_base + dst] = self.registers[arg_base + i].clone();
+                    self.set_reg(new_base + dst, self.reg(arg_base + i));
                 }
             }
         }
@@ -1026,6 +1235,9 @@ impl VM {
             OpCode::Perform => self.check_register(a, cell_registers),
             OpCode::HandlePush | OpCode::HandlePop => Ok(()),
             OpCode::Resume => self.check_register(a, cell_registers),
+
+            // OsrCheck is a no-op in the interpreter (JIT-only hint)
+            OpCode::OsrCheck => Ok(()),
         }
     }
 
@@ -1112,7 +1324,7 @@ impl VM {
                     if i < params.len() {
                         let dst = params[i].register as usize;
                         self.check_register(dst, cell_regs)?;
-                        self.registers[new_base + dst] = arg;
+                        self.set_reg(new_base + dst, arg);
                     }
                 }
                 self.frames.push(CallFrame {
@@ -1141,14 +1353,14 @@ impl VM {
                 let new_base = self.grow_registers(num_regs);
                 for (i, cap) in cv.captures.iter().enumerate() {
                     self.check_register(i, cell_regs)?;
-                    self.registers[new_base + i] = cap.clone();
+                    self.set_reg(new_base + i, cap.clone());
                 }
                 let cap_count = cv.captures.len();
                 for (i, arg) in task.args.into_iter().enumerate() {
                     if cap_count + i < params.len() {
                         let dst = params[cap_count + i].register as usize;
                         self.check_register(dst, cell_regs)?;
-                        self.registers[new_base + dst] = arg;
+                        self.set_reg(new_base + dst, arg);
                     }
                 }
                 self.frames.push(CallFrame {
@@ -1353,7 +1565,7 @@ impl VM {
             if i < params.len() {
                 let dst = params[i].register as usize;
                 self.check_register(dst, cell_regs)?;
-                self.registers[base + dst] = arg;
+                self.set_reg(base + dst, arg);
             }
         }
 
@@ -1509,9 +1721,9 @@ impl VM {
                         // This avoids heap-allocating a String clone on every call.
                         let callee_reg = base + a;
                         let nargs = b;
-                        let fast_cell_idx = match &self.registers[callee_reg] {
+                        let fast_cell_idx = match self.reg(callee_reg) {
                             Value::String(sr) => {
-                                let name_str = match sr {
+                                let name_str = match &sr {
                                     StringRef::Owned(s) => s.as_str(),
                                     StringRef::Interned(id) => {
                                         self.strings.resolve(*id).unwrap_or("")
@@ -1564,13 +1776,13 @@ impl VM {
                                     let mut string_arg_ptrs: Vec<i64> = Vec::new();
                                     let mut args_ok = true;
                                     for i in 0..nargs {
-                                        match &self.registers[base + a + 1 + i] {
-                                            Value::Int(v) => i64_args.push(*v),
+                                        match self.reg(base + a + 1 + i) {
+                                            Value::Int(v) => i64_args.push(v),
                                             Value::Float(v) => i64_args.push(v.to_bits() as i64),
                                             Value::String(s) => {
                                                 // Allocate a heap String for the JIT.
                                                 // The JIT takes ownership via *mut String.
-                                                let owned = match s {
+                                                let owned = match &s {
                                                     StringRef::Owned(o) => o.clone(),
                                                     StringRef::Interned(id) => module
                                                         .strings
@@ -1583,7 +1795,7 @@ impl VM {
                                                 string_arg_ptrs.push(ptr);
                                                 i64_args.push(ptr);
                                             }
-                                            Value::Bool(b) => i64_args.push(if *b { 1 } else { 0 }),
+                                            Value::Bool(b) => i64_args.push(if b { 1 } else { 0 }),
                                             _ => {
                                                 args_ok = false;
                                                 break;
@@ -1599,9 +1811,15 @@ impl VM {
                                         }
                                     }
                                     if args_ok {
-                                        if let Some(result) =
-                                            self.jit_tier.execute(&callee_cell.name, &i64_args)
-                                        {
+                                        // Pass the VM's string table so JIT helpers
+                                        // intern variant tags with the same IDs.
+                                        let st_ptr = &mut self.strings
+                                            as *mut lumen_core::strings::StringTable;
+                                        if let Some(result) = self.jit_tier.execute(
+                                            &callee_cell.name,
+                                            &i64_args,
+                                            st_ptr,
+                                        ) {
                                             // Convert i64 result back to Value using
                                             // the compile-time return type.
                                             #[cfg(feature = "jit")]
@@ -1611,7 +1829,7 @@ impl VM {
                                                     .jit_tier
                                                     .return_type(&callee_cell.name)
                                                     .unwrap_or(JitVarType::Int);
-                                                self.registers[callee_reg] = match ret_ty {
+                                                let converted_val = match ret_ty {
                                                     JitVarType::Str => {
                                                         let s = unsafe {
                                                             lumen_codegen::jit::jit_take_string(
@@ -1625,11 +1843,26 @@ impl VM {
                                                     }
                                                     JitVarType::Bool => Value::Bool(result != 0),
                                                     JitVarType::Int => Value::Int(result),
+                                                    JitVarType::Ptr => {
+                                                        // Heap-allocated *mut Value — take ownership
+                                                        if result == 0
+                                                            || result
+                                                                == 0x7FF8_0000_0000_0000_u64 as i64
+                                                        {
+                                                            Value::Null
+                                                        } else {
+                                                            let boxed = unsafe {
+                                                                Box::from_raw(result as *mut Value)
+                                                            };
+                                                            *boxed
+                                                        }
+                                                    }
                                                 };
+                                                self.set_reg(callee_reg, converted_val);
                                             }
                                             #[cfg(not(feature = "jit"))]
                                             {
-                                                self.registers[callee_reg] = Value::Int(result);
+                                                self.set_reg(callee_reg, Value::Int(result));
                                             }
                                             continue;
                                         }
@@ -1669,8 +1902,8 @@ impl VM {
                                     // 3. If a register IS reused after return (rare edge case),
                                     //    it reads Null — a clear runtime error, not silent
                                     //    corruption.
-                                    self.registers[new_base + dst] =
-                                        std::mem::take(&mut self.registers[base + a + 1 + i]);
+                                    let taken = self.reg_take(base + a + 1 + i);
+                                    self.set_reg(new_base + dst, taken);
                                 }
                             }
 
@@ -1731,9 +1964,9 @@ impl VM {
 
                         if self.jit_tier.is_enabled() {
                             // Resolve cell index from callee register
-                            let fast_cell_idx = match &self.registers[callee_reg] {
+                            let fast_cell_idx = match self.reg(callee_reg) {
                                 Value::String(sr) => {
-                                    let name_str = match sr {
+                                    let name_str = match &sr {
                                         StringRef::Owned(s) => s.as_str(),
                                         StringRef::Interned(id) => {
                                             self.strings.resolve(*id).unwrap_or("")
@@ -1776,15 +2009,15 @@ impl VM {
                                     let mut string_arg_ptrs: Vec<i64> = Vec::new();
                                     let mut args_ok = true;
                                     for i in 0..nargs {
-                                        match &self.registers[base + a + 1 + i] {
-                                            Value::Int(v) => i64_args.push(*v),
+                                        match self.reg(base + a + 1 + i) {
+                                            Value::Int(v) => i64_args.push(v),
                                             Value::Float(v) => i64_args.push(v.to_bits() as i64),
                                             Value::String(s) => {
                                                 let owned = match s {
                                                     StringRef::Owned(o) => o.clone(),
                                                     StringRef::Interned(id) => module
                                                         .strings
-                                                        .get(*id as usize)
+                                                        .get(id as usize)
                                                         .cloned()
                                                         .unwrap_or_default(),
                                                 };
@@ -1793,7 +2026,7 @@ impl VM {
                                                 string_arg_ptrs.push(ptr);
                                                 i64_args.push(ptr);
                                             }
-                                            Value::Bool(b) => i64_args.push(if *b { 1 } else { 0 }),
+                                            Value::Bool(b) => i64_args.push(if b { 1 } else { 0 }),
                                             _ => {
                                                 args_ok = false;
                                                 break;
@@ -1808,9 +2041,13 @@ impl VM {
                                         }
                                     }
                                     if args_ok {
-                                        if let Some(result) =
-                                            self.jit_tier.execute(&callee_cell.name, &i64_args)
-                                        {
+                                        let st_ptr = &mut self.strings
+                                            as *mut lumen_core::strings::StringTable;
+                                        if let Some(result) = self.jit_tier.execute(
+                                            &callee_cell.name,
+                                            &i64_args,
+                                            st_ptr,
+                                        ) {
                                             // Convert i64 result back to Value using
                                             // the compile-time return type.
                                             #[cfg(feature = "jit")]
@@ -1834,6 +2071,20 @@ impl VM {
                                                     }
                                                     JitVarType::Bool => Value::Bool(result != 0),
                                                     JitVarType::Int => Value::Int(result),
+                                                    JitVarType::Ptr => {
+                                                        // Heap-allocated *mut Value — take ownership
+                                                        if result == 0
+                                                            || result
+                                                                == 0x7FF8_0000_0000_0000_u64 as i64
+                                                        {
+                                                            Value::Null
+                                                        } else {
+                                                            let boxed = unsafe {
+                                                                Box::from_raw(result as *mut Value)
+                                                            };
+                                                            *boxed
+                                                        }
+                                                    }
                                                 }
                                             };
                                             #[cfg(not(feature = "jit"))]
@@ -1876,7 +2127,7 @@ impl VM {
                                             if self.frames.len() <= limit {
                                                 return Ok(result_value);
                                             }
-                                            self.registers[frame.return_register] = result_value;
+                                            self.set_reg(frame.return_register, result_value);
                                             let f = self.frames.last().unwrap();
                                             cell_idx = f.cell_idx;
                                             base = f.base_register;
@@ -1935,7 +2186,7 @@ impl VM {
                                 return Err(err);
                             }
                         };
-                        self.registers[base + a] = result;
+                        self.set_reg(base + a, result);
                         continue;
                     }
                     _ => unreachable!("guarded by matches! above"),
@@ -1957,23 +2208,30 @@ impl VM {
                         Constant::BigInt(v) => Value::BigInt(v.clone()),
                         Constant::Float(v) => Value::Float(*v),
                         Constant::String(v) => Value::String(StringRef::Owned(v.clone())),
+                        Constant::NbValue(raw) => {
+                            // Pre-boxed NaN-boxed value: decode back to legacy Value
+                            // for interpreter execution. The JIT path uses raw u64 directly.
+                            use lumen_core::values::NbValue;
+                            let nb = NbValue(*raw);
+                            nb.to_legacy()
+                        }
                     };
-                    self.registers[base + a] = val;
+                    self.set_reg(base + a, val);
                 }
                 OpCode::LoadNil => {
                     for i in 0..=b {
-                        self.registers[base + a + i] = Value::Null;
+                        self.set_reg(base + a + i, Value::Null);
                     }
                 }
                 OpCode::LoadBool => {
-                    self.registers[base + a] = Value::Bool(b != 0);
+                    self.set_reg(base + a, Value::Bool(b != 0));
                     if c != 0 {
                         ip += 1;
                     }
                 }
                 OpCode::LoadInt => {
                     let sb = instr.sbx();
-                    self.registers[base + a] = Value::Int(sb as i64);
+                    self.set_reg(base + a, Value::Int(sb as i64));
                 }
                 OpCode::Move => {
                     // Clone the source register. With Rc-wrapped collections this
@@ -1982,7 +2240,8 @@ impl VM {
                     // `std::mem::replace` approach destructively nulled the source
                     // register, causing use-after-move bugs whenever the compiler
                     // emitted code that referenced the source register again.
-                    self.registers[base + a] = self.registers[base + b].clone();
+                    let val = self.reg(base + b);
+                    self.set_reg(base + a, val);
                 }
                 OpCode::MoveOwn => {
                     // Destructive move: source register becomes Null.
@@ -1992,25 +2251,25 @@ impl VM {
                     // refcount bump, which in turn lets subsequent in-place
                     // mutations (Arc::make_mut, push_str, etc.) skip the
                     // copy-on-write path.
-                    self.registers[base + a] = std::mem::take(&mut self.registers[base + b]);
+                    let val = self.reg_take(base + b);
+                    self.set_reg(base + a, val);
                 }
                 OpCode::NewList => {
                     let mut list = Vec::with_capacity(b);
                     for i in 1..=b {
-                        list.push(self.registers[base + a + i].clone());
+                        list.push(self.reg(base + a + i));
                     }
-                    self.registers[base + a] = Value::new_list(list);
+                    self.set_reg(base + a, Value::new_list(list));
                 }
                 OpCode::NewMap => {
                     let mut map = BTreeMap::new();
                     for i in 0..b {
-                        let k =
-                            value_to_str_cow(&self.registers[base + a + 1 + i * 2], &self.strings)
-                                .into_owned();
-                        let v = self.registers[base + a + 2 + i * 2].clone();
+                        let k = value_to_str_cow(&self.reg(base + a + 1 + i * 2), &self.strings)
+                            .into_owned();
+                        let v = self.reg(base + a + 2 + i * 2);
                         map.insert(k, v);
                     }
-                    self.registers[base + a] = Value::new_map(map);
+                    self.set_reg(base + a, Value::new_map(map));
                 }
                 OpCode::NewRecord => {
                     let bx = instr.bx() as usize;
@@ -2020,65 +2279,69 @@ impl VM {
                         "Unknown".to_string()
                     };
                     let fields = BTreeMap::new();
-                    self.registers[base + a] = Value::new_record(RecordValue { type_name, fields });
+                    self.set_reg(
+                        base + a,
+                        Value::new_record(RecordValue { type_name, fields }),
+                    );
                 }
                 OpCode::NewUnion => {
-                    let tag_str =
-                        value_to_str_cow(&self.registers[base + b], &self.strings).into_owned();
+                    let tag_str = value_to_str_cow(&self.reg(base + b), &self.strings).into_owned();
                     let tag = self.strings.intern(&tag_str);
-                    let payload = Arc::new(self.registers[base + c].clone());
-                    self.registers[base + a] = Value::Union(UnionValue { tag, payload });
+                    let payload = Arc::new(self.reg(base + c));
+                    self.set_reg(base + a, Value::Union(UnionValue { tag, payload }));
                 }
                 OpCode::NewTuple => {
                     let mut elems = Vec::with_capacity(b);
                     for i in 1..=b {
-                        elems.push(self.registers[base + a + i].clone());
+                        elems.push(self.reg(base + a + i));
                     }
-                    self.registers[base + a] = Value::new_tuple(elems);
+                    self.set_reg(base + a, Value::new_tuple(elems));
                 }
                 OpCode::NewSet => {
                     let mut elems = Vec::with_capacity(b);
                     for i in 1..=b {
-                        let v = self.registers[base + a + i].clone();
+                        let v = self.reg(base + a + i);
                         if !elems.contains(&v) {
                             elems.push(v);
                         }
                     }
-                    self.registers[base + a] = Value::new_set_from_vec(elems);
+                    self.set_reg(base + a, Value::new_set_from_vec(elems));
                 }
 
                 // Access
                 OpCode::GetField => {
-                    let obj = &self.registers[base + b];
+                    let obj = self.reg(base + b);
                     let field_name = if c < module.strings.len() {
                         &module.strings[c]
                     } else {
                         ""
                     };
-                    let val = match obj {
+                    let val = match &obj {
                         Value::Record(r) => {
                             r.fields.get(field_name).cloned().unwrap_or(Value::Null)
                         }
                         Value::Map(m) => m.get(field_name).cloned().unwrap_or(Value::Null),
                         _ => Value::Null,
                     };
-                    self.registers[base + a] = val;
+                    self.set_reg(base + a, val);
                 }
                 OpCode::SetField => {
-                    let val = self.registers[base + c].clone();
+                    let val = self.reg(base + c);
                     let field_name = if b < module.strings.len() {
                         module.strings[b].clone()
                     } else {
                         String::new()
                     };
-                    if let Value::Record(ref mut r) = self.registers[base + a] {
+                    let mut target = self.reg_take(base + a);
+                    if let Value::Record(ref mut r) = target {
                         Arc::make_mut(r).fields.insert(field_name, val);
                     }
+                    self.set_reg(base + a, target);
                 }
                 OpCode::GetIndex => {
-                    let obj = &self.registers[base + b];
-                    let idx = &self.registers[base + c];
-                    let val = match (obj, idx) {
+                    let obj = self.reg(base + b);
+                    let idx = self.reg(base + c);
+                    let val = match (&obj, &idx) {
                         (Value::List(l), Value::Int(i)) => {
                             let ii = *i;
                             let len = l.len() as i64;
@@ -2129,17 +2392,20 @@ impl VM {
                         }
                         _ => Value::Null,
                     };
-                    self.registers[base + a] = val;
+                    self.set_reg(base + a, val);
                 }
                 OpCode::SetIndex => {
-                    let val = self.registers[base + c].clone();
-                    let key = self.registers[base + b].clone();
-                    match &mut self.registers[base + a] {
+                    let val = self.reg(base + c);
+                    let key = self.reg(base + b);
+                    let mut target = self.reg_take(base + a);
+                    match &mut target {
                         Value::List(l) => {
                             if let Some(i) = key.as_int() {
                                 let len = l.len() as i64;
                                 let effective = if i < 0 { i + len } else { i };
                                 if effective < 0 || effective >= len {
+                                    // Put target back before returning error
+                                    self.set_reg(base + a, target);
                                     return Err(VmError::Runtime(format!(
                                         "index {} out of bounds for list of length {}",
                                         i, len
@@ -2147,6 +2413,7 @@ impl VM {
                                 }
                                 Arc::make_mut(l)[effective as usize] = val;
                             } else {
+                                self.set_reg(base + a, target);
                                 return Err(VmError::TypeError(format!(
                                     "list index must be an integer, got {}",
                                     key.type_name()
@@ -2161,17 +2428,20 @@ impl VM {
                                 .fields
                                 .insert(key.as_string_resolved(&self.strings), val);
                         }
-                        target => {
+                        _ => {
+                            let type_name = target.type_name().to_string();
+                            self.set_reg(base + a, target);
                             return Err(VmError::TypeError(format!(
                                 "cannot assign by index on {} (expected list, map, or record)",
-                                target.type_name()
+                                type_name
                             )));
                         }
                     }
+                    self.set_reg(base + a, target);
                 }
                 OpCode::GetTuple => {
-                    let obj = &self.registers[base + b];
-                    let val = match obj {
+                    let obj = self.reg(base + b);
+                    let val = match &obj {
                         Value::Tuple(t) => {
                             if c >= t.len() {
                                 return Err(VmError::Runtime(format!(
@@ -2194,13 +2464,13 @@ impl VM {
                         }
                         _ => Value::Null,
                     };
-                    self.registers[base + a] = val;
+                    self.set_reg(base + a, val);
                 }
 
                 // Arithmetic
                 OpCode::Add => {
-                    let lhs = &self.registers[base + b];
-                    let rhs = &self.registers[base + c];
+                    let lhs = self.reg(base + b);
+                    let rhs = self.reg(base + c);
                     // Check for strings first for concatenation
                     if matches!(lhs, Value::String(_)) || matches!(rhs, Value::String(_)) {
                         // In-place string concat optimization: when the destination
@@ -2209,13 +2479,11 @@ impl VM {
                         // allocating a new String. Otherwise we must clone to avoid
                         // nulling a register that may be read again later.
                         if a == b {
-                            // Read RHS as borrowed &str before mutating LHS
-                            let rhs_cow =
-                                value_to_str_cow(&self.registers[base + c], &self.strings);
+                            // Read RHS as string
+                            let rhs_cow = value_to_str_cow(&rhs, &self.strings);
                             let rhs_str: String = rhs_cow.into_owned();
                             // Safe in-place: destination overwrites source
-                            let left_val =
-                                std::mem::replace(&mut self.registers[base + b], Value::Null);
+                            let left_val = self.reg_take(base + b);
                             let result = match left_val {
                                 Value::String(StringRef::Owned(mut s)) => {
                                     s.push_str(&rhs_str);
@@ -2235,25 +2503,23 @@ impl VM {
                                     Value::String(StringRef::Owned(s))
                                 }
                             };
-                            self.registers[base + a] = result;
+                            self.set_reg(base + a, result);
                         } else {
-                            // Not safe to take: borrow both operands
-                            let lhs_cow =
-                                value_to_str_cow(&self.registers[base + b], &self.strings);
-                            let rhs_cow =
-                                value_to_str_cow(&self.registers[base + c], &self.strings);
+                            // Not safe to take: use already-read values
+                            let lhs_cow = value_to_str_cow(&lhs, &self.strings);
+                            let rhs_cow = value_to_str_cow(&rhs, &self.strings);
                             let mut s = String::with_capacity(lhs_cow.len() + rhs_cow.len());
                             s.push_str(&lhs_cow);
                             s.push_str(&rhs_cow);
-                            self.registers[base + a] = Value::String(StringRef::Owned(s));
+                            self.set_reg(base + a, Value::String(StringRef::Owned(s)));
                         }
                     } else if matches!(lhs, Value::List(_)) && matches!(rhs, Value::List(_)) {
                         // List concatenation with pre-allocated capacity
-                        if let (Value::List(l), Value::List(r)) = (lhs, rhs) {
+                        if let (Value::List(l), Value::List(r)) = (&lhs, &rhs) {
                             let mut combined = Vec::with_capacity(l.len() + r.len());
                             combined.extend(l.iter().cloned());
                             combined.extend(r.iter().cloned());
-                            self.registers[base + a] = Value::new_list(combined);
+                            self.set_reg(base + a, Value::new_list(combined));
                         }
                     } else {
                         // Numeric addition with promotion
@@ -2268,11 +2534,12 @@ impl VM {
                 }
                 OpCode::Div => {
                     // Pre-check for integer division by zero
-                    if matches!(
-                        (&self.registers[base + b], &self.registers[base + c]),
-                        (Value::Int(_), Value::Int(0))
-                    ) {
-                        return Err(VmError::DivisionByZero);
+                    {
+                        let lhs = self.reg(base + b);
+                        let rhs = self.reg(base + c);
+                        if matches!((&lhs, &rhs), (Value::Int(_), Value::Int(0))) {
+                            return Err(VmError::DivisionByZero);
+                        }
                     }
                     self.arith_op(base, a, b, c, BinaryOp::Div)?;
                 }
@@ -2281,11 +2548,12 @@ impl VM {
                 }
                 OpCode::Mod => {
                     // Pre-check for integer modulo by zero
-                    if matches!(
-                        (&self.registers[base + b], &self.registers[base + c]),
-                        (Value::Int(_), Value::Int(0))
-                    ) {
-                        return Err(VmError::DivisionByZero);
+                    {
+                        let lhs = self.reg(base + b);
+                        let rhs = self.reg(base + c);
+                        if matches!((&lhs, &rhs), (Value::Int(_), Value::Int(0))) {
+                            return Err(VmError::DivisionByZero);
+                        }
                     }
                     self.arith_op(base, a, b, c, BinaryOp::Mod)?;
                 }
@@ -2293,8 +2561,8 @@ impl VM {
                     self.arith_op(base, a, b, c, BinaryOp::Pow)?;
                 }
                 OpCode::Neg => {
-                    let val = &self.registers[base + b];
-                    self.registers[base + a] = match val {
+                    let val = self.reg(base + b);
+                    let result = match &val {
                         Value::Int(n) => n
                             .checked_neg()
                             .map(Value::Int)
@@ -2302,11 +2570,12 @@ impl VM {
                         Value::Float(f) => Value::Float(-f),
                         _ => return Err(VmError::TypeError(format!("cannot negate {}", val))),
                     };
+                    self.set_reg(base + a, result);
                 }
                 OpCode::Concat => {
-                    let lhs = &self.registers[base + b];
-                    let rhs = &self.registers[base + c];
-                    let result = match (lhs, rhs) {
+                    let lhs = self.reg(base + b);
+                    let rhs = self.reg(base + c);
+                    let result = match (&lhs, &rhs) {
                         (Value::List(la), Value::List(lb)) => {
                             let mut combined = Vec::with_capacity(la.len() + lb.len());
                             combined.extend(la.iter().cloned());
@@ -2317,11 +2586,9 @@ impl VM {
                             // In-place string concat optimization (same as Add path):
                             // only take from source when destination IS the source (a == b).
                             if a == b {
-                                let rhs_cow =
-                                    value_to_str_cow(&self.registers[base + c], &self.strings);
+                                let rhs_cow = value_to_str_cow(&rhs, &self.strings);
                                 let rhs_str: String = rhs_cow.into_owned();
-                                let left_val =
-                                    std::mem::replace(&mut self.registers[base + b], Value::Null);
+                                let left_val = self.reg_take(base + b);
                                 match left_val {
                                     Value::String(StringRef::Owned(mut s)) => {
                                         s.push_str(&rhs_str);
@@ -2342,10 +2609,8 @@ impl VM {
                                     }
                                 }
                             } else {
-                                let lhs_cow =
-                                    value_to_str_cow(&self.registers[base + b], &self.strings);
-                                let rhs_cow =
-                                    value_to_str_cow(&self.registers[base + c], &self.strings);
+                                let lhs_cow = value_to_str_cow(&lhs, &self.strings);
+                                let rhs_cow = value_to_str_cow(&rhs, &self.strings);
                                 let mut s = String::with_capacity(lhs_cow.len() + rhs_cow.len());
                                 s.push_str(&lhs_cow);
                                 s.push_str(&rhs_cow);
@@ -2353,49 +2618,53 @@ impl VM {
                             }
                         }
                     };
-                    self.registers[base + a] = result;
+                    self.set_reg(base + a, result);
                 }
 
                 // Bitwise
                 OpCode::BitOr => {
-                    let lhs = &self.registers[base + b];
-                    let rhs = &self.registers[base + c];
-                    self.registers[base + a] = match (lhs, rhs) {
+                    let lhs = self.reg(base + b);
+                    let rhs = self.reg(base + c);
+                    let result = match (&lhs, &rhs) {
                         (Value::Int(x), Value::Int(y)) => Value::Int(x | y),
                         _ => return Err(VmError::TypeError("bitwise or requires integers".into())),
                     };
+                    self.set_reg(base + a, result);
                 }
                 OpCode::BitAnd => {
-                    let lhs = &self.registers[base + b];
-                    let rhs = &self.registers[base + c];
-                    self.registers[base + a] = match (lhs, rhs) {
+                    let lhs = self.reg(base + b);
+                    let rhs = self.reg(base + c);
+                    let result = match (&lhs, &rhs) {
                         (Value::Int(x), Value::Int(y)) => Value::Int(x & y),
                         _ => {
                             return Err(VmError::TypeError("bitwise and requires integers".into()))
                         }
                     };
+                    self.set_reg(base + a, result);
                 }
                 OpCode::BitXor => {
-                    let lhs = &self.registers[base + b];
-                    let rhs = &self.registers[base + c];
-                    self.registers[base + a] = match (lhs, rhs) {
+                    let lhs = self.reg(base + b);
+                    let rhs = self.reg(base + c);
+                    let result = match (&lhs, &rhs) {
                         (Value::Int(x), Value::Int(y)) => Value::Int(x ^ y),
                         _ => {
                             return Err(VmError::TypeError("bitwise xor requires integers".into()))
                         }
                     };
+                    self.set_reg(base + a, result);
                 }
                 OpCode::BitNot => {
-                    let val = &self.registers[base + b];
-                    self.registers[base + a] = match val {
+                    let val = self.reg(base + b);
+                    let result = match &val {
                         Value::Int(x) => Value::Int(!x),
                         _ => return Err(VmError::TypeError("bitwise not requires integer".into())),
                     };
+                    self.set_reg(base + a, result);
                 }
                 OpCode::Shl => {
-                    let lhs = &self.registers[base + b];
-                    let rhs = &self.registers[base + c];
-                    self.registers[base + a] = match (lhs, rhs) {
+                    let lhs = self.reg(base + b);
+                    let rhs = self.reg(base + c);
+                    let result = match (&lhs, &rhs) {
                         (Value::Int(x), Value::Int(y)) => {
                             if *y < 0 || *y > 63 {
                                 return Err(VmError::Runtime(
@@ -2406,11 +2675,12 @@ impl VM {
                         }
                         _ => return Err(VmError::TypeError("shift left requires integers".into())),
                     };
+                    self.set_reg(base + a, result);
                 }
                 OpCode::Shr => {
-                    let lhs = &self.registers[base + b];
-                    let rhs = &self.registers[base + c];
-                    self.registers[base + a] = match (lhs, rhs) {
+                    let lhs = self.reg(base + b);
+                    let rhs = self.reg(base + c);
+                    let result = match (&lhs, &rhs) {
                         (Value::Int(x), Value::Int(y)) => {
                             if *y < 0 || *y > 63 {
                                 return Err(VmError::Runtime(
@@ -2423,19 +2693,20 @@ impl VM {
                             return Err(VmError::TypeError("shift right requires integers".into()))
                         }
                     };
+                    self.set_reg(base + a, result);
                 }
 
                 // Comparison / logic
                 OpCode::Eq => {
-                    let lhs = &self.registers[base + b];
-                    let rhs = &self.registers[base + c];
-                    let eq = values_equal(lhs, rhs, &self.strings);
-                    self.registers[base + a] = Value::Bool(eq);
+                    let lhs = self.reg(base + b);
+                    let rhs = self.reg(base + c);
+                    let eq = values_equal(&lhs, &rhs, &self.strings);
+                    self.set_reg(base + a, Value::Bool(eq));
                 }
                 OpCode::Lt => {
-                    let b_val = &self.registers[base + b];
-                    let c_val = &self.registers[base + c];
-                    let result = match (b_val, c_val) {
+                    let b_val = self.reg(base + b);
+                    let c_val = self.reg(base + c);
+                    let result = match (&b_val, &c_val) {
                         (Value::Int(x), Value::Int(y)) => x < y,
                         (Value::Float(x), Value::Float(y)) => x < y,
                         (Value::Int(x), Value::Float(y)) => (*x as f64) < *y,
@@ -2476,12 +2747,12 @@ impl VM {
                         }
                         _ => false,
                     };
-                    self.registers[base + a] = Value::Bool(result);
+                    self.set_reg(base + a, Value::Bool(result));
                 }
                 OpCode::Le => {
-                    let b_val = &self.registers[base + b];
-                    let c_val = &self.registers[base + c];
-                    let result = match (b_val, c_val) {
+                    let b_val = self.reg(base + b);
+                    let c_val = self.reg(base + c);
+                    let result = match (&b_val, &c_val) {
                         (Value::Int(x), Value::Int(y)) => x <= y,
                         (Value::Float(x), Value::Float(y)) => x <= y,
                         (Value::Int(x), Value::Float(y)) => (*x as f64) <= *y,
@@ -2522,56 +2793,64 @@ impl VM {
                         }
                         _ => false,
                     };
-                    self.registers[base + a] = Value::Bool(result);
+                    self.set_reg(base + a, Value::Bool(result));
                 }
                 OpCode::Not => {
-                    let truthy = self.value_is_truthy(&self.registers[base + b]);
-                    self.registers[base + a] = Value::Bool(!truthy);
+                    let val = self.reg(base + b);
+                    let truthy = self.value_is_truthy(&val);
+                    self.set_reg(base + a, Value::Bool(!truthy));
                 }
                 OpCode::And => {
-                    let lt = self.value_is_truthy(&self.registers[base + b]);
-                    let rt = self.value_is_truthy(&self.registers[base + c]);
-                    self.registers[base + a] = Value::Bool(lt && rt);
+                    let lval = self.reg(base + b);
+                    let rval = self.reg(base + c);
+                    let lt = self.value_is_truthy(&lval);
+                    let rt = self.value_is_truthy(&rval);
+                    self.set_reg(base + a, Value::Bool(lt && rt));
                 }
                 OpCode::Or => {
-                    let lt = self.value_is_truthy(&self.registers[base + b]);
-                    let rt = self.value_is_truthy(&self.registers[base + c]);
-                    self.registers[base + a] = Value::Bool(lt || rt);
+                    let lval = self.reg(base + b);
+                    let rval = self.reg(base + c);
+                    let lt = self.value_is_truthy(&lval);
+                    let rt = self.value_is_truthy(&rval);
+                    self.set_reg(base + a, Value::Bool(lt || rt));
                 }
                 OpCode::In => {
-                    let needle = &self.registers[base + b];
-                    let haystack = &self.registers[base + c];
-                    let result = match haystack {
-                        Value::List(l) => l.contains(needle),
-                        Value::Set(s) => s.contains(needle),
+                    let needle = self.reg(base + b);
+                    let haystack = self.reg(base + c);
+                    let result = match &haystack {
+                        Value::List(l) => l.contains(&needle),
+                        Value::Set(s) => s.contains(&needle),
                         Value::Map(m) => {
-                            let needle_str = value_to_str_cow(needle, &self.strings);
+                            let needle_str = value_to_str_cow(&needle, &self.strings);
                             m.contains_key(needle_str.as_ref())
                         }
                         Value::String(StringRef::Owned(s)) => {
-                            let needle_str = value_to_str_cow(needle, &self.strings);
+                            let needle_str = value_to_str_cow(&needle, &self.strings);
                             s.contains(needle_str.as_ref())
                         }
                         _ => false,
                     };
-                    self.registers[base + a] = Value::Bool(result);
+                    self.set_reg(base + a, Value::Bool(result));
                 }
                 OpCode::Is => {
-                    let val = &self.registers[base + b];
-                    let type_str = value_to_str_cow(&self.registers[base + c], &self.strings);
+                    let val = self.reg(base + b);
+                    let type_val = self.reg(base + c);
+                    let type_str = value_to_str_cow(&type_val, &self.strings);
                     let matches = val.type_name_resolved(&self.strings) == type_str.as_ref();
-                    self.registers[base + a] = Value::Bool(matches);
+                    self.set_reg(base + a, Value::Bool(matches));
                 }
                 OpCode::NullCo => {
-                    let val = &self.registers[base + b];
+                    let val = self.reg(base + b);
                     if matches!(val, Value::Null) {
-                        self.registers[base + a] = self.registers[base + c].clone();
+                        let fallback = self.reg(base + c);
+                        self.set_reg(base + a, fallback);
                     } else {
-                        self.registers[base + a] = val.clone();
+                        self.set_reg(base + a, val);
                     }
                 }
                 OpCode::Test => {
-                    let truthy = self.value_is_truthy(&self.registers[base + a]);
+                    let val = self.reg(base + a);
+                    let truthy = self.value_is_truthy(&val);
                     if truthy != (c != 0) {
                         ip += 1;
                     }
@@ -2580,7 +2859,7 @@ impl VM {
                 // Control flow
                 OpCode::Jmp => {
                     let offset = instr.sax_val();
-                    ip = (ip as i32 + offset) as usize;
+                    ip = (ip as i64 + offset) as usize;
                 }
                 // Call and TailCall are handled in the pre-match above
                 OpCode::Call | OpCode::TailCall => {
@@ -2588,8 +2867,7 @@ impl VM {
                 }
                 OpCode::Return => {
                     // Take the return value instead of cloning when possible.
-                    let mut return_val =
-                        std::mem::replace(&mut self.registers[base + a], Value::Null);
+                    let mut return_val = self.reg_take(base + a);
                     self.ensure_process_instance(&mut return_val);
                     let frame = self
                         .frames
@@ -2626,7 +2904,7 @@ impl VM {
                     if self.frames.len() <= limit {
                         return Ok(return_val);
                     }
-                    self.registers[frame.return_register] = return_val;
+                    self.set_reg(frame.return_register, return_val);
                     // Reload frame state after return
                     let f = self.frames.last().unwrap();
                     cell_idx = f.cell_idx;
@@ -2635,8 +2913,8 @@ impl VM {
                     cell = &module.cells[cell_idx];
                 }
                 OpCode::Halt => {
-                    let msg =
-                        value_to_str_cow(&self.registers[base + a], &self.strings).into_owned();
+                    let halt_val = self.reg(base + a);
+                    let msg = value_to_str_cow(&halt_val, &self.strings).into_owned();
                     if let Some(fid) = self.current_future_id() {
                         let _ = self.frames.pop();
                         self.future_states.insert(fid, FutureState::Error(msg));
@@ -2656,17 +2934,19 @@ impl VM {
                 OpCode::Loop => {
                     // A = counter register, sB = jump offset
                     let sb = instr.sbx() as i32;
-                    if let Value::Int(ref mut n) = self.registers[base + a] {
+                    let mut counter = self.reg_take(base + a);
+                    if let Value::Int(ref mut n) = counter {
                         *n -= 1;
                         if *n > 0 {
                             ip = (ip as i32 + sb) as usize;
                         }
                     }
+                    self.set_reg(base + a, counter);
                 }
                 OpCode::ForPrep => {
                     let bx = instr.bx() as usize;
-                    let iter_val = &self.registers[base + a];
-                    let len = match iter_val {
+                    let iter_val = self.reg(base + a);
+                    let len = match &iter_val {
                         Value::List(l) => l.len(),
                         Value::Set(s) => s.len(),
                         Value::Tuple(t) => t.len(),
@@ -2675,16 +2955,18 @@ impl VM {
                     if len == 0 {
                         ip += bx;
                     }
-                    self.registers[base + a + 1] = Value::Int(0);
-                    self.registers[base + a + 2] = Value::Int(len as i64);
+                    self.set_reg(base + a + 1, Value::Int(0));
+                    self.set_reg(base + a + 2, Value::Int(len as i64));
                 }
                 OpCode::ForLoop => {
                     let bx = instr.bx();
-                    let idx = self.registers[base + a + 1].as_int().unwrap_or(0);
-                    let len = self.registers[base + a + 2].as_int().unwrap_or(0);
+                    let idx_val = self.reg(base + a + 1);
+                    let len_val = self.reg(base + a + 2);
+                    let idx = idx_val.as_int().unwrap_or(0);
+                    let len = len_val.as_int().unwrap_or(0);
                     if idx < len {
-                        let iter = &self.registers[base + a];
-                        let elem = match iter {
+                        let iter = self.reg(base + a);
+                        let elem = match &iter {
                             Value::List(l) => l.get(idx as usize).cloned().unwrap_or(Value::Null),
                             Value::Set(s) => {
                                 s.iter().nth(idx as usize).cloned().unwrap_or(Value::Null)
@@ -2692,17 +2974,18 @@ impl VM {
                             Value::Tuple(t) => t.get(idx as usize).cloned().unwrap_or(Value::Null),
                             _ => Value::Null,
                         };
-                        self.registers[base + a + 3] = elem;
-                        self.registers[base + a + 1] = Value::Int(idx + 1);
+                        self.set_reg(base + a + 3, elem);
+                        self.set_reg(base + a + 1, Value::Int(idx + 1));
                         ip = (ip as i32 - bx as i32) as usize;
                     }
                 }
                 OpCode::ForIn => {
                     // A = base, B = iterator reg, C = element dest
                     // Similar to ForLoop but more generic
-                    let idx = self.registers[base + a + 1].as_int().unwrap_or(0);
-                    let iter = &self.registers[base + b];
-                    let (elem, has_more) = match iter {
+                    let idx_val = self.reg(base + a + 1);
+                    let idx = idx_val.as_int().unwrap_or(0);
+                    let iter = self.reg(base + b);
+                    let (elem, has_more) = match &iter {
                         Value::List(l) => {
                             if (idx as usize) < l.len() {
                                 (l[idx as usize].clone(), true)
@@ -2736,19 +3019,19 @@ impl VM {
                         }
                         _ => (Value::Null, false),
                     };
-                    self.registers[base + c] = elem;
-                    self.registers[base + a + 1] = Value::Int(idx + 1);
-                    self.registers[base + a] = Value::Bool(has_more);
+                    self.set_reg(base + c, elem);
+                    self.set_reg(base + a + 1, Value::Int(idx + 1));
+                    self.set_reg(base + a, Value::Bool(has_more));
                 }
                 OpCode::Break => {
                     // Jump to loop end (offset in Ax)
                     let offset = instr.sax_val();
-                    ip = (ip as i32 + offset) as usize;
+                    ip = (ip as i64 + offset) as usize;
                 }
                 OpCode::Continue => {
                     // Jump to loop start (offset in Ax)
                     let offset = instr.sax_val();
-                    ip = (ip as i32 + offset) as usize;
+                    ip = (ip as i64 + offset) as usize;
                 }
 
                 // Intrinsic is handled in the pre-match above
@@ -2761,29 +3044,35 @@ impl VM {
                     let bx = instr.bx() as usize;
                     // Create closure with empty captures; subsequent SetUpval
                     // instructions will populate the captures vector.
-                    self.registers[base + a] = Value::Closure(ClosureValue {
-                        cell_idx: bx,
-                        captures: Vec::new(),
-                    });
+                    self.set_reg(
+                        base + a,
+                        Value::Closure(ClosureValue {
+                            cell_idx: bx,
+                            captures: Vec::new(),
+                        }),
+                    );
                 }
                 OpCode::GetUpval => {
                     // Get upvalue from current closure's captures
                     // The current frame must be running a closure
                     // base == current frame's base_register
-                    if b < 256 {
-                        self.registers[base + a] = self.registers[base + b].clone();
+                    if b < 65536 {
+                        let val = self.reg(base + b);
+                        self.set_reg(base + a, val);
                     }
                 }
                 OpCode::SetUpval => {
                     // A = source register, B = capture index, C = closure register
-                    let val = self.registers[base + a].clone();
-                    if let Value::Closure(ref mut cv) = self.registers[base + c] {
+                    let val = self.reg(base + a);
+                    let mut closure = self.reg_take(base + c);
+                    if let Value::Closure(ref mut cv) = closure {
                         // Grow captures vector if needed and insert at index B
                         while cv.captures.len() <= b {
                             cv.captures.push(Value::Null);
                         }
                         cv.captures[b] = val;
                     }
+                    self.set_reg(base + c, closure);
                 }
 
                 // Effects
@@ -2792,7 +3081,7 @@ impl VM {
                     let tool = if let Some(tool) = module.tools.get(bx) {
                         tool
                     } else {
-                        self.registers[base + a] = Value::Null;
+                        self.set_reg(base + a, Value::Null);
                         self.emit_debug_event(DebugEvent::ToolCall {
                             cell_name: cell.name.clone(),
                             tool_id: String::new(),
@@ -2806,15 +3095,23 @@ impl VM {
 
                     let mut args_map = serde_json::Map::new();
                     let primary = base + a;
-                    let arg_map_reg = match self.registers.get(primary) {
+                    let primary_val = if primary < self.registers.len() {
+                        Some(self.reg(primary))
+                    } else {
+                        None
+                    };
+                    let arg_map_reg = match &primary_val {
                         Some(Value::Map(_)) => Some(primary),
                         Some(_) => primary.checked_add(1),
                         None => None,
                     };
                     if let Some(arg_map_reg) = arg_map_reg {
-                        if let Some(Value::Map(m)) = self.registers.get(arg_map_reg) {
-                            for (k, v) in m.iter() {
-                                args_map.insert(k.clone(), value_to_json(v, &self.strings));
+                        if arg_map_reg < self.registers.len() {
+                            let map_val = self.reg(arg_map_reg);
+                            if let Value::Map(m) = &map_val {
+                                for (k, v) in m.iter() {
+                                    args_map.insert(k.clone(), value_to_json(v, &self.strings));
+                                }
                             }
                         }
                     }
@@ -2866,7 +3163,7 @@ impl VM {
                     if let Some(dispatcher) = self.tool_dispatcher.as_ref() {
                         match dispatcher.dispatch(&request) {
                             Ok(response) => {
-                                self.registers[base + a] = json_to_value(&response.outputs);
+                                self.set_reg(base + a, json_to_value(&response.outputs));
                                 self.emit_debug_event(DebugEvent::ToolCall {
                                     cell_name: cell.name.clone(),
                                     tool_id,
@@ -2894,8 +3191,10 @@ impl VM {
                         }
                     } else {
                         let message = "<<tool call pending>>";
-                        self.registers[base + a] =
-                            Value::String(StringRef::Owned(message.to_string()));
+                        self.set_reg(
+                            base + a,
+                            Value::String(StringRef::Owned(message.to_string())),
+                        );
                         self.emit_debug_event(DebugEvent::ToolCall {
                             cell_name: cell.name.clone(),
                             tool_id,
@@ -2913,7 +3212,7 @@ impl VM {
                     } else {
                         String::new()
                     };
-                    let val = self.registers[base + a].clone();
+                    let val = self.reg(base + a);
 
                     let valid = match type_name.as_str() {
                         "Int" => matches!(val, Value::Int(_)),
@@ -2944,12 +3243,14 @@ impl VM {
                     }
                 }
                 OpCode::Emit => {
-                    let val = self.registers[base + a].display_pretty();
+                    let emit_val = self.reg(base + a);
+                    let val = emit_val.display_pretty();
                     println!("{}", val);
                     self.output.push(val);
                 }
                 OpCode::TraceRef => {
-                    self.registers[base + a] = Value::TraceRef(self.next_trace_ref());
+                    let trace_ref = self.next_trace_ref();
+                    self.set_reg(base + a, Value::TraceRef(trace_ref));
                 }
                 OpCode::Await => {
                     // Save the Await instruction's IP (rewound) so that when we
@@ -2959,10 +3260,11 @@ impl VM {
                     if let Some(f) = self.frames.last_mut() {
                         f.ip = await_ip;
                     }
-                    let awaited = self.await_value_recursive(self.registers[base + b].clone())?;
+                    let awaited_val = self.reg(base + b);
+                    let awaited = self.await_value_recursive(awaited_val)?;
                     match awaited {
                         Some(value) => {
-                            self.registers[base + a] = value;
+                            self.set_reg(base + a, value);
                             self.await_fuel = MAX_AWAIT_RETRIES;
                             // Advance IP past the Await instruction (already done by ip += 1)
                             // Restore the advanced IP in the frame
@@ -2995,8 +3297,8 @@ impl VM {
                         f.ip = ip;
                     }
                     let bx = instr.bx() as usize;
-                    self.registers[base + a] =
-                        self.spawn_future(FutureTarget::Cell(bx), Vec::new())?;
+                    let spawn_result = self.spawn_future(FutureTarget::Cell(bx), Vec::new())?;
+                    self.set_reg(base + a, spawn_result);
                     // Reload frame state (spawn may have pushed a new frame)
                     let f = self.frames.last().unwrap();
                     cell_idx = f.cell_idx;
@@ -3007,15 +3309,17 @@ impl VM {
 
                 // List ops
                 OpCode::Append => {
-                    let val = self.registers[base + b].clone();
-                    if let Value::List(ref mut l) = self.registers[base + a] {
+                    let val = self.reg(base + b);
+                    let mut target = self.reg_take(base + a);
+                    if let Value::List(ref mut l) = target {
                         Arc::make_mut(l).push(val);
                     }
+                    self.set_reg(base + a, target);
                 }
 
                 // Type checks
                 OpCode::IsVariant => {
-                    let val = &self.registers[base + a];
+                    let val = self.reg(base + a);
                     let tag_idx = instr.bx() as usize;
                     // The bx field is an index into module.strings. We need to
                     // resolve it to an interned string ID to compare against the
@@ -3025,7 +3329,7 @@ impl VM {
                     } else {
                         u32::MAX // will never match
                     };
-                    let matched = match val {
+                    let matched = match &val {
                         Value::Union(u) => u.tag == tag_id,
                         _ => false,
                     };
@@ -3037,11 +3341,11 @@ impl VM {
                     // Clone the union payload instead of destructively taking
                     // from the source register, which could null out a variable
                     // that is still needed later (e.g. in multi-branch match).
-                    let val = &self.registers[base + b];
-                    if let Value::Union(u) = val {
-                        self.registers[base + a] = (*u.payload).clone();
+                    let val = self.reg(base + b);
+                    if let Value::Union(u) = &val {
+                        self.set_reg(base + a, (*u.payload).clone());
                     } else {
-                        self.registers[base + a] = Value::Null;
+                        self.set_reg(base + a, Value::Null);
                     }
                 }
 
@@ -3067,9 +3371,27 @@ impl VM {
                         effect_name: eff_name,
                         operation: op_name,
                     });
+
+                    // Sync FiberEffectStack for JIT interop. The interpreter does not
+                    // use fiber_switch for dispatch (it jumps IPs), so we pass a no-op
+                    // handler_entry. The FiberEffectStack entry provides the data layer
+                    // needed by JIT-compiled code that shares this VM context.
+                    unsafe {
+                        extern "C" fn interp_effect_noop(_arg: u64) {}
+                        fiber_effects::lm_rt_handle_push(
+                            self.vm_ctx.as_ptr(),
+                            meta_idx as u32,
+                            meta_idx as u32,
+                            interp_effect_noop,
+                        );
+                    }
                 }
                 OpCode::HandlePop => {
                     self.effect_handlers.pop();
+                    // Sync FiberEffectStack for JIT interop.
+                    unsafe {
+                        fiber_effects::lm_rt_handle_pop(self.vm_ctx.as_ptr());
+                    }
                 }
                 OpCode::Perform => {
                     // Use cached cell reference directly (no re-borrow needed)
@@ -3140,15 +3462,21 @@ impl VM {
                     }
                 }
                 OpCode::Resume => {
-                    if let Some(cont) = self.suspended_continuation.take() {
+                    if let Some(mut cont) = self.suspended_continuation.take() {
                         // The lowerer emits: Resume dest, val_reg, 0
                         // The resume value is in register B (val_reg), not A (dest).
-                        let resume_value = self.registers[base + b].clone();
-                        // Restore the suspended state
-                        self.frames = cont.frames;
-                        self.registers = cont.registers;
+                        let resume_value = self.reg(base + b);
+                        let result_reg = cont.result_reg;
+                        // Restore the suspended state — use mem::replace to move
+                        // fields out of `cont` without triggering its Drop impl.
+                        let saved_frames = std::mem::replace(&mut cont.frames, Vec::new());
+                        let saved_registers = std::mem::replace(&mut cont.registers, Vec::new());
+                        // Drop cont now with empty vecs so its Drop is a no-op
+                        drop(cont);
+                        self.frames = saved_frames;
+                        self.registers = saved_registers;
                         // Put the resume value into the result register
-                        self.registers[cont.result_reg] = resume_value;
+                        self.set_reg(result_reg, resume_value);
                         // Reload frame state after restoration
                         let f = self.frames.last().unwrap();
                         cell_idx = f.cell_idx;
@@ -3161,13 +3489,16 @@ impl VM {
                         ));
                     }
                 }
+
+                // OsrCheck is a JIT-only hint — no-op in the interpreter
+                OpCode::OsrCheck => { /* no-op in interpreter */ }
             }
         }
     }
 
     /// Dispatch a CALL instruction, handling cells, closures, and built-in functions.
     fn dispatch_call(&mut self, base: usize, a: usize, nargs: usize) -> Result<(), VmError> {
-        let callee = self.registers[base + a].clone();
+        let callee = self.reg(base + a);
         match callee {
             Value::String(ref sr) => {
                 let name = match sr {
@@ -3218,7 +3549,7 @@ impl VM {
                 } else {
                     let _ = module;
                     let result = self.call_builtin(&name, base, a, nargs)?;
-                    self.registers[base + a] = result;
+                    self.set_reg(base + a, result);
                 }
             }
             Value::Closure(ref cv) => {
@@ -3235,7 +3566,7 @@ impl VM {
                 let new_base = self.grow_registers(num_regs.max(16));
                 for (i, cap) in cv.captures.iter().enumerate() {
                     self.check_register(i, cell_regs)?;
-                    self.registers[new_base + i] = cap.clone();
+                    self.set_reg(new_base + i, cap.clone());
                 }
                 let cap_count = cv.captures.len();
                 self.copy_args_to_params(
@@ -3289,7 +3620,7 @@ impl VM {
 
     /// Dispatch a TAILCALL instruction: reuse current frame.
     fn dispatch_tailcall(&mut self, base: usize, a: usize, nargs: usize) -> Result<(), VmError> {
-        let callee = self.registers[base + a].clone();
+        let callee = self.reg(base + a);
         match callee {
             Value::String(ref sr) => {
                 let name = match sr {
@@ -3327,7 +3658,7 @@ impl VM {
                 } else {
                     let _ = module;
                     let result = self.call_builtin(&name, base, a, nargs)?;
-                    self.registers[base + a] = result;
+                    self.set_reg(base + a, result);
                 }
             }
             Value::Closure(ref cv) => {
@@ -3339,7 +3670,7 @@ impl VM {
                 let _ = module;
                 for (i, cap) in cv.captures.iter().enumerate() {
                     self.check_register(i, cell_regs)?;
-                    self.registers[base + i] = cap.clone();
+                    self.set_reg(base + i, cap.clone());
                 }
                 let cap_count = cv.captures.len();
                 self.copy_args_to_params(&params, base, base + a + 1, nargs, cap_count, cell_regs)?;
@@ -5344,7 +5675,7 @@ end
                     registers: 8,
                     constants: vec![],
                     instructions: vec![
-                        Instruction::abx(OpCode::LoadInt, 0, 42_u16), // r0 = 42
+                        Instruction::abx(OpCode::LoadInt, 0, 42_u32), // r0 = 42
                         Instruction::abx(OpCode::Closure, 1, 1),      // r1 = Closure(cell 1)
                         Instruction::abc(OpCode::SetUpval, 0, 0, 1), // capture r0 -> closure[0] in r1
                         Instruction::abc(OpCode::Call, 1, 0, 0),     // call r1 with 0 args
@@ -5397,8 +5728,8 @@ end
                     registers: 8,
                     constants: vec![],
                     instructions: vec![
-                        Instruction::abx(OpCode::LoadInt, 0, 10_u16), // r0 = 10
-                        Instruction::abx(OpCode::LoadInt, 1, 20_u16), // r1 = 20
+                        Instruction::abx(OpCode::LoadInt, 0, 10_u32), // r0 = 10
+                        Instruction::abx(OpCode::LoadInt, 1, 20_u32), // r1 = 20
                         Instruction::abx(OpCode::Closure, 2, 1),      // r2 = Closure(cell 1)
                         Instruction::abc(OpCode::SetUpval, 0, 0, 2),  // capture r0 -> closure[0]
                         Instruction::abc(OpCode::SetUpval, 1, 1, 2),  // capture r1 -> closure[1]
@@ -5527,8 +5858,8 @@ end
         // execute() will create a frame at base = current registers.len().
         // So we pre-size and set up r1 at the right offset.
         let base = vm.registers.len();
-        vm.registers.resize(base + 256, Value::Null);
-        vm.registers[base + 1] = Value::String(StringRef::Interned(interned_id));
+        vm.registers.resize(base + 256, NbValue::new_null());
+        vm.registers[base + 1] = NbValue::from_legacy(Value::String(StringRef::Interned(interned_id)));
 
         vm.frames.push(CallFrame {
             cell_idx: 0,

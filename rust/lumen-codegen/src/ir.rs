@@ -32,41 +32,88 @@ const MAX_REGS: usize = 65_536;
 // ---------------------------------------------------------------------------
 // NaN-boxing constants and helpers
 //
-// All values are stored as 64-bit integers in registers.  The encoding:
-//   - **Integers**:  `(val << 1) | 1`  (tagged as odd numbers)
-//   - **Floats**:    raw IEEE 754 f64 bits reinterpreted as i64 (bitcast)
-//   - **Null**:      canonical quiet NaN  `0x7FF8_0000_0000_0000`
-//   - **True**:      quiet NaN payload 1  `0x7FF8_0000_0000_0001`
-//   - **False**:     quiet NaN payload 2  `0x7FF8_0000_0000_0002`
-//   - **Pointers** (Strings, Records): raw pointers stored unchanged
+// All values are stored as 64-bit integers in registers.  The encoding
+// matches NbValue in lumen-core exactly:
+//
+//   NAN_MASK = 0x7FF8_0000_0000_0000 (quiet-NaN bits: exponent all 1, quiet bit set)
+//   TAG_SHIFT = 48
+//   PAYLOAD_MASK = 0x0000_FFFF_FFFF_FFFF
+//
+//   Encoding: NAN_MASK | (tag << TAG_SHIFT) | (payload & PAYLOAD_MASK)
+//
+//   - **Floats**:    raw IEEE 754 f64 bits (NOT NaN-boxed; discriminated by
+//                   checking if NAN_MASK bits are absent)
+//   - **Integers**:  NAN_MASK | (TAG_INT=1 << 48) | (val & 0x0000_FFFF_FFFF_FFFF)
+//                   → 0x7FF9_xxxx_xxxx_xxxx  (48-bit two's complement)
+//   - **True**:      NAN_MASK | (TAG_BOOL=3 << 48) | 1  → 0x7FFB_0000_0000_0001
+//   - **False**:     NAN_MASK | (TAG_BOOL=3 << 48) | 0  → 0x7FFB_0000_0000_0000
+//   - **Null**:      NAN_MASK | (TAG_NULL=4 << 48)       → 0x7FFC_0000_0000_0000
+//   - **Pointers**:  NAN_MASK | (TAG_PTR=0 << 48) | addr → 0x7FF8_xxxx_xxxx_xxxx
+//                   (Strings, Records: raw pointer in lower 48 bits)
 // ---------------------------------------------------------------------------
 
-/// NaN-boxed representation of `null`.
-pub const NAN_BOX_NULL: i64 = 0x7FF8_0000_0000_0000_u64 as i64;
+/// Quiet-NaN mask — bits 52-62 all set.  All NaN-boxed values have these bits set.
+const NAN_MASK_U: u64 = 0x7FF8_0000_0000_0000;
+/// 48-bit payload mask.
+const PAYLOAD_MASK_U: u64 = 0x0000_FFFF_FFFF_FFFF;
 
-/// NaN-boxed representation of `true`.
-pub const NAN_BOX_TRUE: i64 = 0x7FF8_0000_0000_0001_u64 as i64;
+/// NaN-boxed representation of `null`  (TAG_NULL=4).
+pub const NAN_BOX_NULL: i64 = 0x7FFC_0000_0000_0000_u64 as i64;
 
-/// NaN-boxed representation of `false`.
-pub const NAN_BOX_FALSE: i64 = 0x7FF8_0000_0000_0002_u64 as i64;
+/// NaN-boxed representation of `true`  (TAG_BOOL=3, payload=1).
+pub const NAN_BOX_TRUE: i64 = 0x7FFB_0000_0000_0001_u64 as i64;
 
-/// Emit IR to NaN-box an integer: `(val << 1) | 1`.
+/// NaN-boxed representation of `false` (TAG_BOOL=3, payload=0).
+pub const NAN_BOX_FALSE: i64 = 0x7FFB_0000_0000_0000_u64 as i64;
+
+/// Base for NaN-boxed integers: NAN_MASK | (TAG_INT=1 << 48).
+const NAN_INT_BASE: i64 = 0x7FF9_0000_0000_0000_u64 as i64;
+
+/// Emit IR to NaN-box an integer using NbValue encoding:
+/// `NAN_MASK | (TAG_INT << 48) | (val & PAYLOAD_MASK)`.
 fn emit_box_int(
     builder: &mut FunctionBuilder,
     val: cranelift_codegen::ir::Value,
 ) -> cranelift_codegen::ir::Value {
-    let shifted = builder.ins().ishl_imm(val, 1);
-    builder.ins().bor_imm(shifted, 1)
+    let base = builder.ins().iconst(types::I64, NAN_INT_BASE);
+    let masked = builder.ins().band_imm(val, PAYLOAD_MASK_U as i64);
+    builder.ins().bor(base, masked)
 }
 
-/// Emit IR to unbox a NaN-boxed integer: arithmetic right shift by 1.
-/// Only valid when the value is known to be a NaN-boxed int (low bit = 1,
-/// not a boolean sentinel).
+/// Emit IR to unbox a NaN-boxed integer: extract bits 0-47 and sign-extend
+/// from bit 47.
+/// Only valid when the value is known to be a NaN-boxed int (tag == TAG_INT=1).
 fn emit_unbox_int(
     builder: &mut FunctionBuilder,
     val: cranelift_codegen::ir::Value,
 ) -> cranelift_codegen::ir::Value {
-    builder.ins().sshr_imm(val, 1)
+    // Mask to lower 48 bits, then sign-extend from bit 47 via ishl+sshr.
+    let masked = builder.ins().band_imm(val, PAYLOAD_MASK_U as i64);
+    let shl = builder.ins().ishl_imm(masked, 16);
+    builder.ins().sshr_imm(shl, 16)
+}
+
+/// Emit IR to NaN-box a boolean: converts i1 (0 or 1) to NAN_BOX_FALSE or NAN_BOX_TRUE.
+fn emit_box_bool(
+    builder: &mut FunctionBuilder,
+    val: cranelift_codegen::ir::Value,
+) -> cranelift_codegen::ir::Value {
+    // val is i1 (0 or 1)
+    // false (0) -> NAN_BOX_FALSE (0x7FFB_0000_0000_0000)
+    // true (1) -> NAN_BOX_TRUE  (0x7FFB_0000_0000_0001)
+    let false_const = builder.ins().iconst(types::I64, NAN_BOX_FALSE);
+    let true_const = builder.ins().iconst(types::I64, NAN_BOX_TRUE);
+    builder.ins().select(val, true_const, false_const)
+}
+
+/// Emit IR to NaN-box a boolean from an integer 0/1.
+fn emit_box_bool_from_int(
+    builder: &mut FunctionBuilder,
+    val: cranelift_codegen::ir::Value,
+) -> cranelift_codegen::ir::Value {
+    let zero = builder.ins().iconst(types::I64, 0);
+    let is_true = builder.ins().icmp(IntCC::NotEqual, val, zero);
+    emit_box_bool(builder, is_true)
 }
 
 /// Emit IR to NaN-box a float: bitcast F64 → I64.
@@ -85,14 +132,22 @@ fn emit_unbox_float(
     builder.ins().bitcast(types::F64, MemFlags::new(), val)
 }
 
-/// Pure Rust: NaN-box an integer value (for test assertions).
+/// Pure Rust: NaN-box an integer value using NbValue encoding.
+/// Matches `NbValue::new_int(v)` exactly.
 pub fn nan_box_int(v: i64) -> i64 {
-    (v << 1) | 1
+    (NAN_MASK_U | (1u64 << 48) | ((v as u64) & PAYLOAD_MASK_U)) as i64
 }
 
-/// Pure Rust: unbox a NaN-boxed integer (for test assertions).
+/// Pure Rust: unbox a NaN-boxed integer (extract 48-bit two's complement payload).
+/// Matches `NbValue::as_int()` exactly.
 pub fn nan_unbox_int(v: i64) -> i64 {
-    v >> 1
+    let raw = (v as u64) & PAYLOAD_MASK_U;
+    // Sign-extend from bit 47
+    if raw & (1 << 47) != 0 {
+        (raw | !PAYLOAD_MASK_U) as i64
+    } else {
+        raw as i64
+    }
 }
 
 /// Pure Rust: NaN-box a float value (for test assertions).
@@ -106,14 +161,12 @@ pub fn nan_unbox_float(v: i64) -> f64 {
 }
 
 /// Pure Rust: unbox a NaN-boxed JIT result to a plain i64 suitable for test
-/// assertions.  Handles integers (tagged with low bit = 1), booleans
+/// assertions.  Handles integers (NbValue TAG_INT), booleans
 /// (`NAN_BOX_TRUE` → 1, `NAN_BOX_FALSE` → 0), null (`NAN_BOX_NULL` → 0),
 /// and pass-through for anything else (float bits, pointers).
 ///
 /// # Deprecated
-/// This function uses a heuristic `(v & 1) == 1` test that incorrectly
-/// matches some float bit patterns (e.g. `f64::consts::E`). Use
-/// `nan_unbox_typed()` in `jit.rs` instead, which uses compile-time return
+/// Use `nan_unbox_typed()` in `jit.rs` instead, which uses compile-time return
 /// type information for correct unboxing.
 #[deprecated(note = "use nan_unbox_typed() with JitVarType for correct type-aware unboxing")]
 pub fn nan_unbox_jit_result(raw: i64) -> i64 {
@@ -121,8 +174,20 @@ pub fn nan_unbox_jit_result(raw: i64) -> i64 {
         NAN_BOX_TRUE => 1,
         NAN_BOX_FALSE => 0,
         NAN_BOX_NULL => 0,
-        v if (v & 1) == 1 => v >> 1, // NaN-boxed integer
-        other => other,              // float bits or pointer
+        v => {
+            let u = v as u64;
+            if (u & NAN_MASK_U) == NAN_MASK_U {
+                let tag = (u >> 48) & 0xF;
+                if tag == 1 {
+                    // TAG_INT: extract 48-bit payload and sign-extend
+                    nan_unbox_int(v)
+                } else {
+                    v // other NaN-boxed type (bool, ptr, etc.)
+                }
+            } else {
+                v // raw float bits or pointer
+            }
+        }
     }
 }
 
@@ -385,6 +450,10 @@ pub enum JitVarType {
     Str,
     /// Boolean value, NaN-boxed as sentinel values (NAN_BOX_TRUE / NAN_BOX_FALSE).
     Bool,
+    /// Heap-allocated `*mut Value` pointer (for Union, Tuple, List, Record, etc.).
+    /// The raw pointer is 8-byte aligned (low bit 0) and must be treated as an
+    /// opaque handle — NOT a NaN-boxed integer.
+    Ptr,
 }
 
 impl JitVarType {
@@ -400,10 +469,12 @@ impl JitVarType {
     /// Infer JitVarType from a LIR return-type string (e.g. "Int", "Float", "String", "Bool").
     pub(crate) fn from_lir_return_type(s: &str) -> Self {
         match s {
+            "Int" => JitVarType::Int,
             "Float" => JitVarType::Float,
             "String" => JitVarType::Str,
             "Bool" => JitVarType::Bool,
-            _ => JitVarType::Int,
+            "Null" => JitVarType::Int, // NaN-boxed sentinel
+            _ => JitVarType::Ptr,      // Union, Tuple, Record, List, etc. → heap pointer
         }
     }
 }
@@ -441,6 +512,7 @@ pub(crate) fn lower_cell<M: Module>(
 ) -> Result<(), CodegenError> {
     // Build signature
     let mut sig = module.make_signature();
+    sig.params.push(AbiParam::new(pointer_type));
     for param in &cell.params {
         let param_ty = lir_type_str_to_cl_type(&param.ty, pointer_type);
         // Cranelift ABI requires I8 to be extended; use I64 for Bool params.
@@ -474,59 +546,72 @@ pub(crate) fn lower_cell<M: Module>(
         module,
         &mut func,
         "jit_rt_string_concat",
-        &[types::I64, types::I64],
+        &[pointer_type, types::I64, types::I64],
         &[types::I64],
     )?;
     let str_concat_mut_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_string_concat_mut",
-        &[types::I64, types::I64],
+        &[pointer_type, types::I64, types::I64],
         &[types::I64],
     )?;
     let str_concat_multi_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_string_concat_multi",
-        &[types::I64, types::I64], // ptr to array, count
+        &[pointer_type, types::I64, types::I64], // ctx, ptr to array, count
         &[types::I64],
     )?;
     let malloc_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_malloc",
-        &[types::I64], // size
+        &[pointer_type, types::I64], // ctx, size
         &[types::I64],
     )?;
     let alloc_bytes_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_alloc_bytes",
-        &[types::I64], // size
+        &[pointer_type, types::I64], // ctx, size
         &[types::I64],
     )?;
     let str_eq_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_string_eq",
-        &[types::I64, types::I64],
+        &[pointer_type, types::I64, types::I64],
         &[types::I64],
     )?;
     let str_cmp_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_string_cmp",
-        &[types::I64, types::I64],
+        &[pointer_type, types::I64, types::I64],
         &[types::I64],
     )?;
-    let str_drop_ref =
-        declare_helper_func(module, &mut func, "jit_rt_string_drop", &[types::I64], &[])?;
+    let str_drop_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_string_drop",
+        &[pointer_type, types::I64],
+        &[],
+    )?;
     let memcpy_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_memcpy",
-        &[types::I64, types::I64, types::I64], // dst, src, len
+        &[pointer_type, types::I64, types::I64, types::I64], // ctx, dst, src, len
         &[],
+    )?;
+    // Trap helper: called by integer Div/FloorDiv/Mod when divisor is zero.
+    let trap_divzero_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_trap_divzero",
+        &[pointer_type], // ctx
+        &[types::I64],   // returns 0 as sentinel
     )?;
 
     // Declare record runtime helper functions (for JIT record support).
@@ -534,14 +619,14 @@ pub(crate) fn lower_cell<M: Module>(
         module,
         &mut func,
         "jit_rt_record_get_field",
-        &[types::I64, types::I64, types::I64], // record_ptr, field_name_ptr, field_name_len
+        &[pointer_type, types::I64, types::I64, types::I64], // ctx, record_ptr, field_name_ptr, field_name_len
         &[types::I64],
     )?;
     let record_set_field_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_record_set_field",
-        &[types::I64, types::I64, types::I64, types::I64], // record_ptr, field_name_ptr, field_name_len, value_ptr
+        &[pointer_type, types::I64, types::I64, types::I64, types::I64], // ctx, record_ptr, field_name_ptr, field_name_len, value_ptr
         &[types::I64],
     )?;
     // Declare collection index runtime helper functions (for JIT list/map indexing).
@@ -549,14 +634,14 @@ pub(crate) fn lower_cell<M: Module>(
         module,
         &mut func,
         "jit_rt_get_index",
-        &[types::I64, types::I64], // collection_ptr, index_ptr
+        &[pointer_type, types::I64, types::I64], // ctx, collection_ptr, index_ptr
         &[types::I64],
     )?;
     let set_index_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_set_index",
-        &[types::I64, types::I64, types::I64], // collection_ptr, index_ptr, value_ptr
+        &[pointer_type, types::I64, types::I64, types::I64], // ctx, collection_ptr, index_ptr, value_ptr
         &[types::I64],
     )?;
     // Declare collection runtime helper functions (for JIT List/Map construction).
@@ -564,21 +649,28 @@ pub(crate) fn lower_cell<M: Module>(
         module,
         &mut func,
         "jit_rt_new_list",
-        &[types::I64, types::I64], // values_ptr, count
+        &[pointer_type, types::I64, types::I64], // ctx, values_ptr, count
         &[types::I64],
     )?;
     let new_map_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_new_map",
-        &[types::I64, types::I64], // kvpairs_ptr, count
+        &[pointer_type, types::I64, types::I64], // ctx, kvpairs_ptr, count
+        &[types::I64],
+    )?;
+    let new_tuple_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_new_tuple",
+        &[pointer_type, types::I64, types::I64], // ctx, values_ptr, count
         &[types::I64],
     )?;
     let collection_len_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_collection_len",
-        &[types::I64], // value_ptr
+        &[pointer_type, types::I64], // ctx, value_ptr
         &[types::I64],
     )?;
     // Declare union runtime helper functions (for JIT enum support).
@@ -586,35 +678,50 @@ pub(crate) fn lower_cell<M: Module>(
         module,
         &mut func,
         "jit_rt_union_new",
-        &[types::I64, types::I64, types::I64], // tag_ptr, tag_len, payload_ptr
+        &[pointer_type, types::I64, types::I64, types::I64], // ctx, tag_ptr, tag_len, payload_ptr
         &[types::I64],
     )?;
     let union_is_variant_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_union_is_variant",
-        &[types::I64, types::I64, types::I64], // union_ptr, tag_ptr, tag_len
+        &[pointer_type, types::I64, types::I64, types::I64], // ctx, union_ptr, tag_ptr, tag_len
         &[types::I64],
     )?;
     let union_unbox_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_union_unbox",
-        &[types::I64],
+        &[pointer_type, types::I64],
         &[types::I64],
     )?;
     // Declare intrinsic runtime helper functions (for JIT builtin support).
-    let intrinsic_print_int_ref =
-        declare_helper_func(module, &mut func, "jit_rt_print_int", &[types::I64], &[])?;
-    let intrinsic_print_float_ref =
-        declare_helper_func(module, &mut func, "jit_rt_print_float", &[types::F64], &[])?;
-    let intrinsic_print_str_ref =
-        declare_helper_func(module, &mut func, "jit_rt_print_str", &[types::I64], &[])?;
+    let intrinsic_print_int_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_print_int",
+        &[pointer_type, types::I64],
+        &[],
+    )?;
+    let intrinsic_print_float_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_print_float",
+        &[pointer_type, types::F64],
+        &[],
+    )?;
+    let intrinsic_print_str_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_print_str",
+        &[pointer_type, types::I64],
+        &[],
+    )?;
     let intrinsic_string_len_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_string_len",
-        &[types::I64],
+        &[pointer_type, types::I64],
         &[types::I64],
     )?;
     // Math transcendental helpers (Cranelift can't do these natively)
@@ -622,63 +729,63 @@ pub(crate) fn lower_cell<M: Module>(
         module,
         &mut func,
         "jit_rt_sin",
-        &[types::F64],
+        &[pointer_type, types::F64],
         &[types::F64],
     )?;
     let intrinsic_cos_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_cos",
-        &[types::F64],
+        &[pointer_type, types::F64],
         &[types::F64],
     )?;
     let intrinsic_tan_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_tan",
-        &[types::F64],
+        &[pointer_type, types::F64],
         &[types::F64],
     )?;
     let intrinsic_log_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_log",
-        &[types::F64],
+        &[pointer_type, types::F64],
         &[types::F64],
     )?;
     let intrinsic_log2_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_log2",
-        &[types::F64],
+        &[pointer_type, types::F64],
         &[types::F64],
     )?;
     let intrinsic_log10_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_log10",
-        &[types::F64],
+        &[pointer_type, types::F64],
         &[types::F64],
     )?;
     let intrinsic_pow_float_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_pow_float",
-        &[types::F64, types::F64],
+        &[pointer_type, types::F64, types::F64],
         &[types::F64],
     )?;
     let intrinsic_pow_int_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_pow_int",
-        &[types::I64, types::I64],
+        &[pointer_type, types::I64, types::I64],
         &[types::I64],
     )?;
     let intrinsic_fmod_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_fmod",
-        &[types::F64, types::F64],
+        &[pointer_type, types::F64, types::F64],
         &[types::F64],
     )?;
     // Conversion helpers
@@ -686,42 +793,42 @@ pub(crate) fn lower_cell<M: Module>(
         module,
         &mut func,
         "jit_rt_to_string_int",
-        &[types::I64],
+        &[pointer_type, types::I64],
         &[types::I64],
     )?;
     let intrinsic_to_string_float_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_to_string_float",
-        &[types::F64],
+        &[pointer_type, types::F64],
         &[types::I64],
     )?;
     let intrinsic_to_int_from_float_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_to_int_from_float",
-        &[types::F64],
+        &[pointer_type, types::F64],
         &[types::I64],
     )?;
     let intrinsic_to_int_from_string_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_to_int_from_string",
-        &[types::I64],
+        &[pointer_type, types::I64],
         &[types::I64],
     )?;
     let intrinsic_to_float_from_int_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_to_float_from_int",
-        &[types::I64],
+        &[pointer_type, types::I64],
         &[types::F64],
     )?;
     let intrinsic_to_float_from_string_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_to_float_from_string",
-        &[types::I64],
+        &[pointer_type, types::I64],
         &[types::F64],
     )?;
 
@@ -730,100 +837,151 @@ pub(crate) fn lower_cell<M: Module>(
         module,
         &mut func,
         "jit_rt_string_upper",
-        &[types::I64],
+        &[pointer_type, types::I64],
         &[types::I64],
     )?;
     let intrinsic_string_lower_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_string_lower",
-        &[types::I64],
+        &[pointer_type, types::I64],
         &[types::I64],
     )?;
     let intrinsic_string_trim_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_string_trim",
-        &[types::I64],
+        &[pointer_type, types::I64],
         &[types::I64],
     )?;
     let intrinsic_string_contains_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_string_contains",
-        &[types::I64, types::I64],
+        &[pointer_type, types::I64, types::I64],
         &[types::I64],
     )?;
     let intrinsic_string_starts_with_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_string_starts_with",
-        &[types::I64, types::I64],
+        &[pointer_type, types::I64, types::I64],
         &[types::I64],
     )?;
     let intrinsic_string_ends_with_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_string_ends_with",
-        &[types::I64, types::I64],
+        &[pointer_type, types::I64, types::I64],
         &[types::I64],
     )?;
     let intrinsic_string_replace_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_string_replace",
-        &[types::I64, types::I64, types::I64],
+        &[pointer_type, types::I64, types::I64, types::I64],
         &[types::I64],
     )?;
     let intrinsic_string_index_of_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_string_index_of",
-        &[types::I64, types::I64],
+        &[pointer_type, types::I64, types::I64],
         &[types::I64],
     )?;
     let intrinsic_string_slice_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_string_slice",
-        &[types::I64, types::I64, types::I64],
+        &[pointer_type, types::I64, types::I64, types::I64],
         &[types::I64],
     )?;
     let intrinsic_string_pad_left_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_string_pad_left",
-        &[types::I64, types::I64],
+        &[pointer_type, types::I64, types::I64],
         &[types::I64],
     )?;
     let intrinsic_string_pad_right_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_string_pad_right",
-        &[types::I64, types::I64],
+        &[pointer_type, types::I64, types::I64],
         &[types::I64],
     )?;
-    let intrinsic_hrtime_ref =
-        declare_helper_func(module, &mut func, "jit_rt_hrtime", &[], &[types::I64])?;
+    let intrinsic_hrtime_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_hrtime",
+        &[pointer_type],
+        &[types::I64],
+    )?;
     let intrinsic_string_hash_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_string_hash",
-        &[types::I64],
+        &[pointer_type, types::I64],
         &[types::I64],
     )?;
     let intrinsic_string_split_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_string_split",
-        &[types::I64, types::I64],
+        &[pointer_type, types::I64, types::I64],
         &[types::I64],
     )?;
     let _intrinsic_string_join_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_string_join",
-        &[types::I64, types::I64],
+        &[pointer_type, types::I64, types::I64],
+        &[types::I64],
+    )?;
+
+    // Declare async runtime helper functions (spawn/await).
+    let async_spawn_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_spawn",
+        &[pointer_type, types::I32, pointer_type, types::I32],
+        &[types::I64],
+    )?;
+    let async_await_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_await",
+        &[pointer_type, types::I64],
+        &[types::I64],
+    )?;
+
+    // Declare tool system runtime helper functions (Phase 0.4).
+    let tool_call_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_tool_call",
+        &[pointer_type, types::I32, types::I64],
+        &[types::I64],
+    )?;
+    let schema_validate_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_schema_validate",
+        &[pointer_type, types::I64, types::I32],
+        &[types::I64],
+    )?;
+    let emit_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_emit",
+        &[pointer_type, types::I64],
+        &[types::I64],
+    )?;
+    let trace_ref_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_trace_ref",
+        &[pointer_type],
         &[types::I64],
     )?;
 
@@ -969,9 +1127,16 @@ pub(crate) fn lower_cell<M: Module>(
             }
         } else if float_regs.contains(&(i as u16)) {
             JitVarType::Float
+        } else if string_regs.contains(&(i as u16)) {
+            // Pre-classified string register: initialize as Str so the zero value
+            // is a null pointer (0) rather than nan_box_int(0).  Without this,
+            // multi-block string registers get nan_box_int(0) = 0x7FF9_0000_0000_0000
+            // as their initial Cranelift Variable value, which passes
+            // JitString::drop_ref's alignment guard (addr >= 4096 and addr & 7 == 0)
+            // and causes a SIGSEGV when generated code tries to drop the "old"
+            // register value in a block whose predecessors haven't assigned to it yet.
+            JitVarType::Str
         } else {
-            // Both int and string regs use I64 at the Cranelift level.
-            // The semantic type for string regs is set later when LoadK executes.
             JitVarType::Int
         };
         // NaN-boxing: all registers are I64 regardless of semantic type
@@ -987,6 +1152,7 @@ pub(crate) fn lower_cell<M: Module>(
 
     let entry_block = builder.create_block();
     builder.append_block_params_for_function_params(entry_block);
+    let vm_ctx_param = builder.block_params(entry_block)[0];
     builder.switch_to_block(entry_block);
 
     // Initialize function parameters from block params.
@@ -994,7 +1160,7 @@ pub(crate) fn lower_cell<M: Module>(
     // the values arrive already in NaN-boxed form. We just store them
     // directly into their registers.
     for (i, _param) in cell.params.iter().enumerate() {
-        let val = builder.block_params(entry_block)[i];
+        let val = builder.block_params(entry_block)[i + 1];
         if let Some(&var) = regs.vars.get(&(i as u16)) {
             builder.def_var(var, val);
         }
@@ -1019,7 +1185,7 @@ pub(crate) fn lower_cell<M: Module>(
                     builder.ins().iconst(types::I64, 0)
                 }
                 JitVarType::Int => {
-                    // NaN-boxed integer 0 = (0 << 1) | 1 = 1
+                    // NaN-boxed integer 0 = NAN_MASK | (TAG_INT << 48) | 0 = 0x7FF9_0000_0000_0000
                     builder.ins().iconst(types::I64, nan_box_int(0))
                 }
                 JitVarType::Bool => {
@@ -1029,6 +1195,10 @@ pub(crate) fn lower_cell<M: Module>(
                 JitVarType::Str => {
                     // Null/zero pointer
                     builder.ins().iconst(types::I64, 0)
+                }
+                JitVarType::Ptr => {
+                    // Null heap pointer sentinel
+                    builder.ins().iconst(types::I64, NAN_BOX_NULL)
                 }
             };
             builder.def_var(var, zero);
@@ -1089,7 +1259,7 @@ pub(crate) fn lower_cell<M: Module>(
                                 // Drop the old string value if the dest register held one.
                                 if var_types.get(&(a as u32)) == Some(&JitVarType::Str) {
                                     let old = use_var(&mut builder, &regs, &var_types, a);
-                                    builder.ins().call(str_drop_ref, &[old]);
+                                    builder.ins().call(str_drop_ref, &[vm_ctx_param, old]);
                                 }
                                 // Inline JitString allocation. Cranelift sees the
                                 // individual malloc + field stores, enabling constant
@@ -1108,7 +1278,8 @@ pub(crate) fn lower_cell<M: Module>(
 
                                 // 1. Allocate the 40-byte JitString struct.
                                 let struct_size = builder.ins().iconst(types::I64, 40);
-                                let struct_call = builder.ins().call(malloc_ref, &[struct_size]);
+                                let struct_call =
+                                    builder.ins().call(malloc_ref, &[vm_ctx_param, struct_size]);
                                 let struct_ptr = builder.inst_results(struct_call)[0];
 
                                 // 2. Store struct fields (all known at compile time).
@@ -1124,13 +1295,16 @@ pub(crate) fn lower_cell<M: Module>(
                                 //    Uses alloc_bytes_ref (Vec-compatible) so that
                                 //    JitString::drop_ref can free via Vec::from_raw_parts.
                                 if len > 0 {
-                                    let data_call = builder.ins().call(alloc_bytes_ref, &[len_val]);
+                                    let data_call = builder
+                                        .ins()
+                                        .call(alloc_bytes_ref, &[vm_ctx_param, len_val]);
                                     let data_ptr = builder.inst_results(data_call)[0];
                                     let src_ptr =
                                         builder.ins().iconst(types::I64, str_bytes.as_ptr() as i64);
-                                    builder
-                                        .ins()
-                                        .call(memcpy_ref, &[data_ptr, src_ptr, len_val]);
+                                    builder.ins().call(
+                                        memcpy_ref,
+                                        &[vm_ctx_param, data_ptr, src_ptr, len_val],
+                                    );
                                     builder.ins().store(flags, data_ptr, struct_ptr, 32);
                                 // ptr
                                 } else {
@@ -1170,6 +1344,8 @@ pub(crate) fn lower_cell<M: Module>(
                     NAN_BOX_FALSE
                 };
                 let val = builder.ins().iconst(types::I64, nan_boxed);
+                // Track as Bool so And/Or use the correct falsy sentinel (NAN_BOX_FALSE).
+                var_types.insert(a as u32, JitVarType::Bool);
                 def_var(&mut builder, &mut regs, a, val);
             }
             OpCode::LoadInt => {
@@ -1201,7 +1377,7 @@ pub(crate) fn lower_cell<M: Module>(
                     if var_types.get(&(inst.a as u32)) == Some(&JitVarType::Str) && inst.a != inst.b
                     {
                         let old = use_var(&mut builder, &regs, &var_types, inst.a);
-                        builder.ins().call(str_drop_ref, &[old]);
+                        builder.ins().call(str_drop_ref, &[vm_ctx_param, old]);
                     }
                     // Clone via inline refcount increment (3 instructions,
                     // no function call). JitString layout: refcount is at
@@ -1278,11 +1454,13 @@ pub(crate) fn lower_cell<M: Module>(
 
                         let addr = builder.ins().stack_addr(types::I64, slot, 0);
                         let count_val = builder.ins().iconst(types::I64, leaves.len() as i64);
-                        let call = builder.ins().call(str_concat_multi_ref, &[addr, count_val]);
+                        let call = builder
+                            .ins()
+                            .call(str_concat_multi_ref, &[vm_ctx_param, addr, count_val]);
                         let result = builder.inst_results(call)[0];
 
                         if let Some(old) = old_dest {
-                            builder.ins().call(str_drop_ref, &[old]);
+                            builder.ins().call(str_drop_ref, &[vm_ctx_param, old]);
                         }
 
                         var_types.insert(inst.a as u32, JitVarType::Str);
@@ -1343,14 +1521,18 @@ pub(crate) fn lower_cell<M: Module>(
                             let ptr_a = builder.ins().load(types::I64, flags, lhs, 24);
                             let ptr_b = builder.ins().load(types::I64, flags, rhs, 24);
                             let dst = builder.ins().iadd(ptr_a, len_a);
-                            builder.ins().call(memcpy_ref, &[dst, ptr_b, len_b]);
+                            builder
+                                .ins()
+                                .call(memcpy_ref, &[vm_ctx_param, dst, ptr_b, len_b]);
                             // Update len field in-place
                             builder.ins().store(flags, total_len, lhs, 8);
                             builder.ins().jump(merge_block, &[lhs]);
 
                             // --- Slow path block ---
                             builder.switch_to_block(slow_block);
-                            let call = builder.ins().call(str_concat_mut_ref, &[lhs, rhs]);
+                            let call = builder
+                                .ins()
+                                .call(str_concat_mut_ref, &[vm_ctx_param, lhs, rhs]);
                             let slow_result = builder.inst_results(call)[0];
                             builder.ins().jump(merge_block, &[slow_result]);
 
@@ -1371,14 +1553,16 @@ pub(crate) fn lower_cell<M: Module>(
                                 None
                             };
 
-                            let call = builder.ins().call(str_concat_ref, &[lhs, rhs]);
+                            let call = builder
+                                .ins()
+                                .call(str_concat_ref, &[vm_ctx_param, lhs, rhs]);
                             let result = builder.inst_results(call)[0];
 
                             if let Some(old) = old_dest {
-                                builder.ins().call(str_drop_ref, &[old]);
+                                builder.ins().call(str_drop_ref, &[vm_ctx_param, old]);
                             } else if dest_ty == JitVarType::Str && inst.a == inst.c {
                                 // a = b + a: drop the old value of a (which is rhs)
-                                builder.ins().call(str_drop_ref, &[rhs]);
+                                builder.ins().call(str_drop_ref, &[vm_ctx_param, rhs]);
                             }
 
                             var_types.insert(inst.a as u32, JitVarType::Str);
@@ -1437,11 +1621,13 @@ pub(crate) fn lower_cell<M: Module>(
 
                     let addr = builder.ins().stack_addr(types::I64, slot, 0);
                     let count_val = builder.ins().iconst(types::I64, leaves.len() as i64);
-                    let call = builder.ins().call(str_concat_multi_ref, &[addr, count_val]);
+                    let call = builder
+                        .ins()
+                        .call(str_concat_multi_ref, &[vm_ctx_param, addr, count_val]);
                     let result = builder.inst_results(call)[0];
 
                     if let Some(old) = old_dest {
-                        builder.ins().call(str_drop_ref, &[old]);
+                        builder.ins().call(str_drop_ref, &[vm_ctx_param, old]);
                     }
 
                     var_types.insert(inst.a as u32, JitVarType::Str);
@@ -1500,14 +1686,18 @@ pub(crate) fn lower_cell<M: Module>(
                         let ptr_a = builder.ins().load(types::I64, flags, lhs, 24);
                         let ptr_b = builder.ins().load(types::I64, flags, rhs, 24);
                         let dst = builder.ins().iadd(ptr_a, len_a);
-                        builder.ins().call(memcpy_ref, &[dst, ptr_b, len_b]);
+                        builder
+                            .ins()
+                            .call(memcpy_ref, &[vm_ctx_param, dst, ptr_b, len_b]);
                         // Update len field in-place
                         builder.ins().store(flags, total_len, lhs, 8);
                         builder.ins().jump(merge_block, &[lhs]);
 
                         // --- Slow path block ---
                         builder.switch_to_block(slow_block);
-                        let call = builder.ins().call(str_concat_mut_ref, &[lhs, rhs]);
+                        let call = builder
+                            .ins()
+                            .call(str_concat_mut_ref, &[vm_ctx_param, lhs, rhs]);
                         let slow_result = builder.inst_results(call)[0];
                         builder.ins().jump(merge_block, &[slow_result]);
 
@@ -1525,14 +1715,16 @@ pub(crate) fn lower_cell<M: Module>(
                                 None
                             };
 
-                        let call = builder.ins().call(str_concat_ref, &[lhs, rhs]);
+                        let call = builder
+                            .ins()
+                            .call(str_concat_ref, &[vm_ctx_param, lhs, rhs]);
                         let result = builder.inst_results(call)[0];
 
                         if let Some(old) = old_dest {
-                            builder.ins().call(str_drop_ref, &[old]);
+                            builder.ins().call(str_drop_ref, &[vm_ctx_param, old]);
                         } else if dest_ty == JitVarType::Str && inst.a == inst.c {
                             // a = b ++ a: drop the old value of a (which is rhs)
-                            builder.ins().call(str_drop_ref, &[rhs]);
+                            builder.ins().call(str_drop_ref, &[vm_ctx_param, rhs]);
                         }
 
                         var_types.insert(inst.a as u32, JitVarType::Str);
@@ -1598,15 +1790,57 @@ pub(crate) fn lower_cell<M: Module>(
                 let rhs = use_var(&mut builder, &regs, &var_types, inst.c);
                 let is_float = is_float_op(&var_types, inst.b, inst.c);
                 let res = if is_float {
-                    let lhs_f = emit_unbox_float(&mut builder, lhs);
                     let rhs_f = emit_unbox_float(&mut builder, rhs);
+                    let zero_f = builder.ins().f64const(0.0);
+                    let is_zero = builder.ins().fcmp(FloatCC::Equal, rhs_f, zero_f);
+                    let trap_block = builder.create_block();
+                    let div_block = builder.create_block();
+                    let merge_block = builder.create_block();
+                    builder.append_block_param(merge_block, types::I64);
+                    builder.ins().brif(is_zero, trap_block, &[], div_block, &[]);
+                    builder.switch_to_block(trap_block);
+                    builder.seal_block(trap_block);
+                    let sentinel = builder.ins().call(trap_divzero_ref, &[vm_ctx_param]);
+                    let sentinel_val = builder.inst_results(sentinel)[0];
+                    let boxed_sentinel = emit_box_int(&mut builder, sentinel_val);
+                    builder.ins().jump(merge_block, &[boxed_sentinel]);
+                    builder.switch_to_block(div_block);
+                    builder.seal_block(div_block);
+                    let lhs_f = emit_unbox_float(&mut builder, lhs);
                     let r = builder.ins().fdiv(lhs_f, rhs_f);
-                    emit_box_float(&mut builder, r)
+                    let boxed = emit_box_float(&mut builder, r);
+                    builder.ins().jump(merge_block, &[boxed]);
+                    builder.switch_to_block(merge_block);
+                    builder.seal_block(merge_block);
+                    builder.block_params(merge_block)[0]
                 } else {
                     let lhs_i = emit_unbox_int(&mut builder, lhs);
                     let rhs_i = emit_unbox_int(&mut builder, rhs);
+                    // Div-by-zero guard: branch to trap_block if rhs_i == 0.
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let is_zero = builder.ins().icmp(IntCC::Equal, rhs_i, zero);
+                    let trap_block = builder.create_block();
+                    let div_block = builder.create_block();
+                    let merge_block = builder.create_block();
+                    builder.append_block_param(merge_block, types::I64);
+                    builder.ins().brif(is_zero, trap_block, &[], div_block, &[]);
+                    // Trap block: call trap helper, jump to merge with sentinel 0.
+                    builder.switch_to_block(trap_block);
+                    builder.seal_block(trap_block);
+                    let sentinel = builder.ins().call(trap_divzero_ref, &[vm_ctx_param]);
+                    let sentinel_val = builder.inst_results(sentinel)[0];
+                    let boxed_sentinel = emit_box_int(&mut builder, sentinel_val);
+                    builder.ins().jump(merge_block, &[boxed_sentinel]);
+                    // Div block: perform the division, jump to merge with result.
+                    builder.switch_to_block(div_block);
+                    builder.seal_block(div_block);
                     let r = builder.ins().sdiv(lhs_i, rhs_i);
-                    emit_box_int(&mut builder, r)
+                    let boxed = emit_box_int(&mut builder, r);
+                    builder.ins().jump(merge_block, &[boxed]);
+                    // Merge block: result is the block param.
+                    builder.switch_to_block(merge_block);
+                    builder.seal_block(merge_block);
+                    builder.block_params(merge_block)[0]
                 };
                 var_types.insert(
                     inst.a as u32,
@@ -1624,21 +1858,61 @@ pub(crate) fn lower_cell<M: Module>(
                 let is_float = is_float_op(&var_types, inst.b, inst.c);
                 if is_float {
                     // NaN-boxing: unbox floats, call fmod, rebox
-                    let lhs_f = emit_unbox_float(&mut builder, lhs);
                     let rhs_f = emit_unbox_float(&mut builder, rhs);
-                    let call = builder.ins().call(intrinsic_fmod_ref, &[lhs_f, rhs_f]);
+                    let zero_f = builder.ins().f64const(0.0);
+                    let is_zero = builder.ins().fcmp(FloatCC::Equal, rhs_f, zero_f);
+                    let trap_block = builder.create_block();
+                    let mod_block = builder.create_block();
+                    let merge_block = builder.create_block();
+                    builder.append_block_param(merge_block, types::I64);
+                    builder.ins().brif(is_zero, trap_block, &[], mod_block, &[]);
+                    builder.switch_to_block(trap_block);
+                    builder.seal_block(trap_block);
+                    let sentinel = builder.ins().call(trap_divzero_ref, &[vm_ctx_param]);
+                    let sentinel_val = builder.inst_results(sentinel)[0];
+                    let boxed_sentinel = emit_box_int(&mut builder, sentinel_val);
+                    builder.ins().jump(merge_block, &[boxed_sentinel]);
+                    builder.switch_to_block(mod_block);
+                    builder.seal_block(mod_block);
+                    let lhs_f = emit_unbox_float(&mut builder, lhs);
+                    let call = builder
+                        .ins()
+                        .call(intrinsic_fmod_ref, &[vm_ctx_param, lhs_f, rhs_f]);
                     let result_f = builder.inst_results(call)[0];
                     let result = emit_box_float(&mut builder, result_f);
+                    builder.ins().jump(merge_block, &[result]);
+                    builder.switch_to_block(merge_block);
+                    builder.seal_block(merge_block);
+                    let merged = builder.block_params(merge_block)[0];
                     var_types.insert(inst.a as u32, JitVarType::Float);
-                    def_var(&mut builder, &mut regs, inst.a, result);
+                    def_var(&mut builder, &mut regs, inst.a, merged);
                 } else {
-                    // NaN-boxing: unbox ints, srem, rebox
+                    // NaN-boxing: unbox ints, srem with div-by-zero guard.
                     let lhs_i = emit_unbox_int(&mut builder, lhs);
                     let rhs_i = emit_unbox_int(&mut builder, rhs);
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let is_zero = builder.ins().icmp(IntCC::Equal, rhs_i, zero);
+                    let trap_block = builder.create_block();
+                    let rem_block = builder.create_block();
+                    let merge_block = builder.create_block();
+                    builder.append_block_param(merge_block, types::I64);
+                    builder.ins().brif(is_zero, trap_block, &[], rem_block, &[]);
+                    builder.switch_to_block(trap_block);
+                    builder.seal_block(trap_block);
+                    let sentinel = builder.ins().call(trap_divzero_ref, &[vm_ctx_param]);
+                    let sentinel_val = builder.inst_results(sentinel)[0];
+                    let boxed_sentinel = emit_box_int(&mut builder, sentinel_val);
+                    builder.ins().jump(merge_block, &[boxed_sentinel]);
+                    builder.switch_to_block(rem_block);
+                    builder.seal_block(rem_block);
                     let res_i = builder.ins().srem(lhs_i, rhs_i);
                     let res = emit_box_int(&mut builder, res_i);
+                    builder.ins().jump(merge_block, &[res]);
+                    builder.switch_to_block(merge_block);
+                    builder.seal_block(merge_block);
+                    let result = builder.block_params(merge_block)[0];
                     var_types.insert(inst.a as u32, JitVarType::Int);
-                    def_var(&mut builder, &mut regs, inst.a, res);
+                    def_var(&mut builder, &mut regs, inst.a, result);
                 }
             }
             OpCode::Neg => {
@@ -1668,16 +1942,55 @@ pub(crate) fn lower_cell<M: Module>(
                 let rhs = use_var(&mut builder, &regs, &var_types, inst.c);
                 let is_float = is_float_op(&var_types, inst.b, inst.c);
                 let res = if is_float {
-                    let lhs_f = emit_unbox_float(&mut builder, lhs);
                     let rhs_f = emit_unbox_float(&mut builder, rhs);
+                    let zero_f = builder.ins().f64const(0.0);
+                    let is_zero = builder.ins().fcmp(FloatCC::Equal, rhs_f, zero_f);
+                    let trap_block = builder.create_block();
+                    let div_block = builder.create_block();
+                    let merge_block = builder.create_block();
+                    builder.append_block_param(merge_block, types::I64);
+                    builder.ins().brif(is_zero, trap_block, &[], div_block, &[]);
+                    builder.switch_to_block(trap_block);
+                    builder.seal_block(trap_block);
+                    let sentinel = builder.ins().call(trap_divzero_ref, &[vm_ctx_param]);
+                    let sentinel_val = builder.inst_results(sentinel)[0];
+                    let boxed_sentinel = emit_box_int(&mut builder, sentinel_val);
+                    builder.ins().jump(merge_block, &[boxed_sentinel]);
+                    builder.switch_to_block(div_block);
+                    builder.seal_block(div_block);
+                    let lhs_f = emit_unbox_float(&mut builder, lhs);
                     let div = builder.ins().fdiv(lhs_f, rhs_f);
                     let floored = builder.ins().floor(div);
-                    emit_box_float(&mut builder, floored)
+                    let boxed = emit_box_float(&mut builder, floored);
+                    builder.ins().jump(merge_block, &[boxed]);
+                    builder.switch_to_block(merge_block);
+                    builder.seal_block(merge_block);
+                    builder.block_params(merge_block)[0]
                 } else {
                     let lhs_i = emit_unbox_int(&mut builder, lhs);
                     let rhs_i = emit_unbox_int(&mut builder, rhs);
+                    // Div-by-zero guard for integer floor division.
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let is_zero = builder.ins().icmp(IntCC::Equal, rhs_i, zero);
+                    let trap_block = builder.create_block();
+                    let div_block = builder.create_block();
+                    let merge_block = builder.create_block();
+                    builder.append_block_param(merge_block, types::I64);
+                    builder.ins().brif(is_zero, trap_block, &[], div_block, &[]);
+                    builder.switch_to_block(trap_block);
+                    builder.seal_block(trap_block);
+                    let sentinel = builder.ins().call(trap_divzero_ref, &[vm_ctx_param]);
+                    let sentinel_val = builder.inst_results(sentinel)[0];
+                    let boxed_sentinel = emit_box_int(&mut builder, sentinel_val);
+                    builder.ins().jump(merge_block, &[boxed_sentinel]);
+                    builder.switch_to_block(div_block);
+                    builder.seal_block(div_block);
                     let r = builder.ins().sdiv(lhs_i, rhs_i);
-                    emit_box_int(&mut builder, r)
+                    let boxed = emit_box_int(&mut builder, r);
+                    builder.ins().jump(merge_block, &[boxed]);
+                    builder.switch_to_block(merge_block);
+                    builder.seal_block(merge_block);
+                    builder.block_params(merge_block)[0]
                 };
                 var_types.insert(
                     inst.a as u32,
@@ -1697,7 +2010,9 @@ pub(crate) fn lower_cell<M: Module>(
                     // NaN-boxing: unbox floats, call pow, rebox
                     let lhs_f = emit_unbox_float(&mut builder, lhs);
                     let rhs_f = emit_unbox_float(&mut builder, rhs);
-                    let call = builder.ins().call(intrinsic_pow_float_ref, &[lhs_f, rhs_f]);
+                    let call = builder
+                        .ins()
+                        .call(intrinsic_pow_float_ref, &[vm_ctx_param, lhs_f, rhs_f]);
                     let result_f = builder.inst_results(call)[0];
                     let result = emit_box_float(&mut builder, result_f);
                     var_types.insert(inst.a as u32, JitVarType::Float);
@@ -1706,7 +2021,9 @@ pub(crate) fn lower_cell<M: Module>(
                     // NaN-boxing: unbox ints, call pow, rebox
                     let lhs_i = emit_unbox_int(&mut builder, lhs);
                     let rhs_i = emit_unbox_int(&mut builder, rhs);
-                    let call = builder.ins().call(intrinsic_pow_int_ref, &[lhs_i, rhs_i]);
+                    let call = builder
+                        .ins()
+                        .call(intrinsic_pow_int_ref, &[vm_ctx_param, lhs_i, rhs_i]);
                     let result_i = builder.inst_results(call)[0];
                     let result = emit_box_int(&mut builder, result_i);
                     var_types.insert(inst.a as u32, JitVarType::Int);
@@ -1769,7 +2086,7 @@ pub(crate) fn lower_cell<M: Module>(
             }
 
             // Comparison (type-aware)
-            // NaN-boxing: comparison results are NaN-boxed ints (0 or 1)
+            // NaN-boxing: comparison results are NaN-boxed booleans
             OpCode::Eq => {
                 let lhs = use_var(&mut builder, &regs, &var_types, inst.b);
                 let rhs = use_var(&mut builder, &regs, &var_types, inst.c);
@@ -1782,14 +2099,12 @@ pub(crate) fn lower_cell<M: Module>(
                     .copied()
                     .unwrap_or(JitVarType::Int);
                 let cmp_i1 = if lhs_ty == JitVarType::Str || rhs_ty == JitVarType::Str {
-                    // String equality returns raw 0/1 — need to NaN-box
-                    let call = builder.ins().call(str_eq_ref, &[lhs, rhs]);
+                    // String equality returns raw 0/1 i64, but we need i1 for emit_box_bool
+                    let call = builder.ins().call(str_eq_ref, &[vm_ctx_param, lhs, rhs]);
                     let raw = builder.inst_results(call)[0];
-                    // raw is already 0 or 1, box it
-                    let res = emit_box_int(&mut builder, raw);
-                    var_types.insert(inst.a as u32, JitVarType::Int);
-                    def_var(&mut builder, &mut regs, inst.a, res);
-                    continue;
+                    // raw is i64 (0 or 1), convert to i1
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    builder.ins().icmp(IntCC::NotEqual, raw, zero)
                 } else if lhs_ty == JitVarType::Float || rhs_ty == JitVarType::Float {
                     let lhs_f = emit_unbox_float(&mut builder, lhs);
                     let rhs_f = emit_unbox_float(&mut builder, rhs);
@@ -1798,9 +2113,11 @@ pub(crate) fn lower_cell<M: Module>(
                     // Int: can compare NaN-boxed values directly (monotonic)
                     builder.ins().icmp(IntCC::Equal, lhs, rhs)
                 };
-                let raw = builder.ins().uextend(types::I64, cmp_i1);
-                let res = emit_box_int(&mut builder, raw);
-                var_types.insert(inst.a as u32, JitVarType::Int);
+                let one = builder.ins().iconst(types::I64, 1);
+                let zero = builder.ins().iconst(types::I64, 0);
+                let cmp_int = builder.ins().select(cmp_i1, one, zero);
+                let res = emit_box_bool_from_int(&mut builder, cmp_int);
+                var_types.insert(inst.a as u32, JitVarType::Bool);
                 def_var(&mut builder, &mut regs, inst.a, res);
             }
             OpCode::Lt => {
@@ -1815,7 +2132,7 @@ pub(crate) fn lower_cell<M: Module>(
                     .copied()
                     .unwrap_or(JitVarType::Int);
                 let cmp_i1 = if lhs_ty == JitVarType::Str || rhs_ty == JitVarType::Str {
-                    let call = builder.ins().call(str_cmp_ref, &[lhs, rhs]);
+                    let call = builder.ins().call(str_cmp_ref, &[vm_ctx_param, lhs, rhs]);
                     let cmp_result = builder.inst_results(call)[0];
                     let zero = builder.ins().iconst(types::I64, 0);
                     builder.ins().icmp(IntCC::SignedLessThan, cmp_result, zero)
@@ -1824,12 +2141,17 @@ pub(crate) fn lower_cell<M: Module>(
                     let rhs_f = emit_unbox_float(&mut builder, rhs);
                     builder.ins().fcmp(FloatCC::LessThan, lhs_f, rhs_f)
                 } else {
-                    // Int: NaN-boxed ordering is preserved (2a+1 < 2b+1 iff a < b)
-                    builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs)
+                    // Int: must unbox before comparing — NbValue encoding does NOT preserve
+                    // signed ordering (negative values have high payload bits set).
+                    let lhs_i = emit_unbox_int(&mut builder, lhs);
+                    let rhs_i = emit_unbox_int(&mut builder, rhs);
+                    builder.ins().icmp(IntCC::SignedLessThan, lhs_i, rhs_i)
                 };
-                let raw = builder.ins().uextend(types::I64, cmp_i1);
-                let res = emit_box_int(&mut builder, raw);
-                var_types.insert(inst.a as u32, JitVarType::Int);
+                let one = builder.ins().iconst(types::I64, 1);
+                let zero = builder.ins().iconst(types::I64, 0);
+                let cmp_int = builder.ins().select(cmp_i1, one, zero);
+                let res = emit_box_bool_from_int(&mut builder, cmp_int);
+                var_types.insert(inst.a as u32, JitVarType::Bool);
                 def_var(&mut builder, &mut regs, inst.a, res);
             }
             OpCode::Le => {
@@ -1844,7 +2166,7 @@ pub(crate) fn lower_cell<M: Module>(
                     .copied()
                     .unwrap_or(JitVarType::Int);
                 let cmp_i1 = if lhs_ty == JitVarType::Str || rhs_ty == JitVarType::Str {
-                    let call = builder.ins().call(str_cmp_ref, &[lhs, rhs]);
+                    let call = builder.ins().call(str_cmp_ref, &[vm_ctx_param, lhs, rhs]);
                     let cmp_result = builder.inst_results(call)[0];
                     let zero = builder.ins().iconst(types::I64, 0);
                     builder
@@ -1855,11 +2177,17 @@ pub(crate) fn lower_cell<M: Module>(
                     let rhs_f = emit_unbox_float(&mut builder, rhs);
                     builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs_f, rhs_f)
                 } else {
-                    builder.ins().icmp(IntCC::SignedLessThanOrEqual, lhs, rhs)
+                    // Int: must unbox before comparing — NbValue encoding does NOT preserve
+                    // signed ordering (negative values have high payload bits set).
+                    let lhs_i = emit_unbox_int(&mut builder, lhs);
+                    let rhs_i = emit_unbox_int(&mut builder, rhs);
+                    builder.ins().icmp(IntCC::SignedLessThanOrEqual, lhs_i, rhs_i)
                 };
-                let raw = builder.ins().uextend(types::I64, cmp_i1);
-                let res = emit_box_int(&mut builder, raw);
-                var_types.insert(inst.a as u32, JitVarType::Int);
+                let one = builder.ins().iconst(types::I64, 1);
+                let zero = builder.ins().iconst(types::I64, 0);
+                let cmp_int = builder.ins().select(cmp_i1, one, zero);
+                let res = emit_box_bool_from_int(&mut builder, cmp_int);
+                var_types.insert(inst.a as u32, JitVarType::Bool);
                 def_var(&mut builder, &mut regs, inst.a, res);
             }
             OpCode::Not => {
@@ -1875,6 +2203,7 @@ pub(crate) fn lower_cell<M: Module>(
                     JitVarType::Float => builder.ins().iconst(types::I64, 0i64), // f64 0.0 bits
                     JitVarType::Bool => builder.ins().iconst(types::I64, NAN_BOX_FALSE),
                     JitVarType::Str => builder.ins().iconst(types::I64, 0i64), // null ptr
+                    JitVarType::Ptr => builder.ins().iconst(types::I64, NAN_BOX_NULL),
                 };
                 let is_falsy = builder.ins().icmp(IntCC::Equal, operand, falsy_val);
                 let t = builder.ins().iconst(types::I64, NAN_BOX_TRUE);
@@ -1886,47 +2215,77 @@ pub(crate) fn lower_cell<M: Module>(
 
             // Logic — short-circuit And/Or with NaN-boxing
             OpCode::And => {
-                // Short-circuit AND: if LHS is falsy, result = LHS; else result = RHS.
+                // Short-circuit AND: result is Bool (true iff both operands are truthy).
                 let lhs = use_var(&mut builder, &regs, &var_types, inst.b);
                 let rhs = use_var(&mut builder, &regs, &var_types, inst.c);
                 let b_ty = var_types
                     .get(&(inst.b as u32))
                     .copied()
                     .unwrap_or(JitVarType::Int);
-                let falsy_val = match b_ty {
-                    JitVarType::Int => builder.ins().iconst(types::I64, nan_box_int(0)),
-                    JitVarType::Float => builder.ins().iconst(types::I64, 0i64),
-                    JitVarType::Bool => builder.ins().iconst(types::I64, NAN_BOX_FALSE),
-                    JitVarType::Str => builder.ins().iconst(types::I64, 0i64),
-                };
-                let is_falsy = builder.ins().icmp(IntCC::Equal, lhs, falsy_val);
-                let res = builder.ins().select(is_falsy, lhs, rhs);
-                // Inherit type from RHS (the "truthy" branch value)
-                let rhs_ty = var_types
+                let c_ty = var_types
                     .get(&(inst.c as u32))
                     .copied()
                     .unwrap_or(JitVarType::Int);
-                var_types.insert(inst.a as u32, rhs_ty);
+                let lhs_falsy_val = match b_ty {
+                    JitVarType::Int => builder.ins().iconst(types::I64, nan_box_int(0)),
+                    JitVarType::Float => builder.ins().iconst(types::I64, 0i64),
+                    JitVarType::Bool => builder.ins().iconst(types::I64, NAN_BOX_FALSE),
+                    JitVarType::Str => builder.ins().iconst(types::I64, 0i64),
+                    JitVarType::Ptr => builder.ins().iconst(types::I64, NAN_BOX_NULL),
+                };
+                let rhs_falsy_val = match c_ty {
+                    JitVarType::Int => builder.ins().iconst(types::I64, nan_box_int(0)),
+                    JitVarType::Float => builder.ins().iconst(types::I64, 0i64),
+                    JitVarType::Bool => builder.ins().iconst(types::I64, NAN_BOX_FALSE),
+                    JitVarType::Str => builder.ins().iconst(types::I64, 0i64),
+                    JitVarType::Ptr => builder.ins().iconst(types::I64, NAN_BOX_NULL),
+                };
+                let lhs_is_falsy = builder.ins().icmp(IntCC::Equal, lhs, lhs_falsy_val);
+                let rhs_is_falsy = builder.ins().icmp(IntCC::Equal, rhs, rhs_falsy_val);
+                // AND is true iff both are truthy (neither is falsy)
+                let either_falsy = builder.ins().bor(lhs_is_falsy, rhs_is_falsy);
+                // either_falsy is i8 (i1); select NAN_BOX_FALSE if falsy, else NAN_BOX_TRUE
+                let t = builder.ins().iconst(types::I64, NAN_BOX_TRUE);
+                let f = builder.ins().iconst(types::I64, NAN_BOX_FALSE);
+                let res = builder.ins().select(either_falsy, f, t);
+                var_types.insert(inst.a as u32, JitVarType::Bool);
                 def_var(&mut builder, &mut regs, inst.a, res);
             }
             OpCode::Or => {
-                // Short-circuit OR: if LHS is truthy, result = LHS; else result = RHS.
+                // Short-circuit OR: result is Bool (true iff at least one operand is truthy).
                 let lhs = use_var(&mut builder, &regs, &var_types, inst.b);
                 let rhs = use_var(&mut builder, &regs, &var_types, inst.c);
                 let b_ty = var_types
                     .get(&(inst.b as u32))
                     .copied()
                     .unwrap_or(JitVarType::Int);
-                let falsy_val = match b_ty {
+                let c_ty = var_types
+                    .get(&(inst.c as u32))
+                    .copied()
+                    .unwrap_or(JitVarType::Int);
+                let lhs_falsy_val = match b_ty {
                     JitVarType::Int => builder.ins().iconst(types::I64, nan_box_int(0)),
                     JitVarType::Float => builder.ins().iconst(types::I64, 0i64),
                     JitVarType::Bool => builder.ins().iconst(types::I64, NAN_BOX_FALSE),
                     JitVarType::Str => builder.ins().iconst(types::I64, 0i64),
+                    JitVarType::Ptr => builder.ins().iconst(types::I64, NAN_BOX_NULL),
                 };
-                let is_falsy = builder.ins().icmp(IntCC::Equal, lhs, falsy_val);
-                let res = builder.ins().select(is_falsy, rhs, lhs);
-                // Inherit type from LHS (the "truthy" branch value)
-                var_types.insert(inst.a as u32, b_ty);
+                let rhs_falsy_val = match c_ty {
+                    JitVarType::Int => builder.ins().iconst(types::I64, nan_box_int(0)),
+                    JitVarType::Float => builder.ins().iconst(types::I64, 0i64),
+                    JitVarType::Bool => builder.ins().iconst(types::I64, NAN_BOX_FALSE),
+                    JitVarType::Str => builder.ins().iconst(types::I64, 0i64),
+                    JitVarType::Ptr => builder.ins().iconst(types::I64, NAN_BOX_NULL),
+                };
+                let lhs_is_falsy = builder.ins().icmp(IntCC::Equal, lhs, lhs_falsy_val);
+                let rhs_is_falsy = builder.ins().icmp(IntCC::Equal, rhs, rhs_falsy_val);
+                // OR is true iff at least one is truthy (not both falsy)
+                let both_falsy = builder.ins().band(lhs_is_falsy, rhs_is_falsy);
+                // both_falsy is i8 (i1); select NAN_BOX_FALSE if both falsy, else NAN_BOX_TRUE
+                let t = builder.ins().iconst(types::I64, NAN_BOX_TRUE);
+                let f = builder.ins().iconst(types::I64, NAN_BOX_FALSE);
+                let res = builder.ins().select(both_falsy, f, t);
+                var_types.insert(inst.a as u32, JitVarType::Bool);
                 def_var(&mut builder, &mut regs, inst.a, res);
             }
 
@@ -1972,6 +2331,7 @@ pub(crate) fn lower_cell<M: Module>(
                         JitVarType::Float => builder.ins().iconst(types::I64, 0i64),
                         JitVarType::Bool => builder.ins().iconst(types::I64, NAN_BOX_FALSE),
                         JitVarType::Str => builder.ins().iconst(types::I64, 0i64),
+                        JitVarType::Ptr => builder.ins().iconst(types::I64, NAN_BOX_NULL),
                     };
                     let is_truthy = builder.ins().icmp(IntCC::NotEqual, cond, falsy_val);
                     builder
@@ -1993,7 +2353,7 @@ pub(crate) fn lower_cell<M: Module>(
                         && (reg_id as usize) < regs.num_regs
                     {
                         let v = use_var(&mut builder, &regs, &var_types, reg_id as u16);
-                        builder.ins().call(str_drop_ref, &[v]);
+                        builder.ins().call(str_drop_ref, &[vm_ctx_param, v]);
                     }
                 }
                 let val = use_var(&mut builder, &regs, &var_types, ret_reg);
@@ -2017,7 +2377,7 @@ pub(crate) fn lower_cell<M: Module>(
                 // Drop the old string in the base register before overwriting.
                 if var_types.get(&(base as u32)) == Some(&JitVarType::Str) {
                     let old = use_var(&mut builder, &regs, &var_types, base);
-                    builder.ins().call(str_drop_ref, &[old]);
+                    builder.ins().call(str_drop_ref, &[vm_ctx_param, old]);
                 }
 
                 // Collect string-typed argument registers for cleanup.
@@ -2033,7 +2393,8 @@ pub(crate) fn lower_cell<M: Module>(
                     if let Some(&callee_func_id) = func_ids.get(name.as_str()) {
                         if let Some(&func_ref) = callee_refs.get(&callee_func_id) {
                             let mut args: Vec<cranelift_codegen::ir::Value> =
-                                Vec::with_capacity(num_args);
+                                Vec::with_capacity(num_args + 1);
+                            args.push(vm_ctx_param);
                             for i in 0..num_args {
                                 let arg_reg = base + 1 + i as u16;
                                 args.push(use_var(&mut builder, &regs, &var_types, arg_reg));
@@ -2058,7 +2419,7 @@ pub(crate) fn lower_cell<M: Module>(
                 for arg_reg in str_arg_regs {
                     if (arg_reg as usize) < regs.num_regs {
                         let v = use_var(&mut builder, &regs, &var_types, arg_reg as u16);
-                        builder.ins().call(str_drop_ref, &[v]);
+                        builder.ins().call(str_drop_ref, &[vm_ctx_param, v]);
                     }
                     var_types.remove(&arg_reg);
                 }
@@ -2069,13 +2430,12 @@ pub(crate) fn lower_cell<M: Module>(
                     .and_then(|n| cell_return_types.get(n.as_str()))
                     .copied()
                     .unwrap_or(JitVarType::Int);
-                // Only set Str; Float results stay as Int (I64 bits).
-                let effective_ty = if ret_ty == JitVarType::Str {
-                    JitVarType::Str
-                } else {
-                    JitVarType::Int
-                };
-                var_types.insert(base as u32, effective_ty);
+                // Propagate the actual return type so Ptr/Str/Float/Bool
+                // are tracked correctly for downstream instructions.
+                // NOTE: For non-Str/non-Ptr types, Int is fine since they
+                // are all NaN-boxed I64 anyway. The key distinction is
+                // Str (refcounted) and Ptr (heap Value*).
+                var_types.insert(base as u32, ret_ty);
             }
             OpCode::TailCall => {
                 let base = inst.a;
@@ -2090,7 +2450,7 @@ pub(crate) fn lower_cell<M: Module>(
                 // Drop the callee name string in base.
                 if var_types.get(&(base as u32)) == Some(&JitVarType::Str) {
                     let old = use_var(&mut builder, &regs, &var_types, base);
-                    builder.ins().call(str_drop_ref, &[old]);
+                    builder.ins().call(str_drop_ref, &[vm_ctx_param, old]);
                     var_types.remove(&(base as u32));
                 }
 
@@ -2100,7 +2460,7 @@ pub(crate) fn lower_cell<M: Module>(
                     if var_types.get(&arg_reg) == Some(&JitVarType::Str) {
                         if (arg_reg as usize) < regs.num_regs {
                             let v = use_var(&mut builder, &regs, &var_types, arg_reg as u16);
-                            builder.ins().call(str_drop_ref, &[v]);
+                            builder.ins().call(str_drop_ref, &[vm_ctx_param, v]);
                         }
                         var_types.remove(&arg_reg);
                     }
@@ -2126,7 +2486,8 @@ pub(crate) fn lower_cell<M: Module>(
                     if let Some(&callee_func_id) = func_ids.get(name.as_str()) {
                         if let Some(&func_ref) = callee_refs.get(&callee_func_id) {
                             let mut args: Vec<cranelift_codegen::ir::Value> =
-                                Vec::with_capacity(num_args);
+                                Vec::with_capacity(num_args + 1);
+                            args.push(vm_ctx_param);
                             for i in 0..num_args {
                                 let arg_reg = base + 1 + i as u16;
                                 args.push(use_var(&mut builder, &regs, &var_types, arg_reg));
@@ -2169,10 +2530,10 @@ pub(crate) fn lower_cell<M: Module>(
                     .iconst(types::I64, field_name_bytes.len() as i64);
                 let call = builder.ins().call(
                     record_get_field_ref,
-                    &[record_ptr, field_name_ptr, field_name_len],
+                    &[vm_ctx_param, record_ptr, field_name_ptr, field_name_len],
                 );
                 let result = builder.inst_results(call)[0];
-                var_types.insert(inst.a as u32, JitVarType::Int);
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
                 def_var(&mut builder, &mut regs, inst.a, result);
             }
             OpCode::SetField => {
@@ -2192,10 +2553,16 @@ pub(crate) fn lower_cell<M: Module>(
                     .iconst(types::I64, field_name_bytes.len() as i64);
                 let call = builder.ins().call(
                     record_set_field_ref,
-                    &[record_ptr, field_name_ptr, field_name_len, value_ptr],
+                    &[
+                        vm_ctx_param,
+                        record_ptr,
+                        field_name_ptr,
+                        field_name_len,
+                        value_ptr,
+                    ],
                 );
                 let result = builder.inst_results(call)[0];
-                var_types.insert(inst.a as u32, JitVarType::Int);
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
                 def_var(&mut builder, &mut regs, inst.a, result);
             }
 
@@ -2206,9 +2573,9 @@ pub(crate) fn lower_cell<M: Module>(
                 let index_ptr = use_var(&mut builder, &regs, &var_types, inst.c);
                 let call = builder
                     .ins()
-                    .call(get_index_ref, &[collection_ptr, index_ptr]);
+                    .call(get_index_ref, &[vm_ctx_param, collection_ptr, index_ptr]);
                 let result = builder.inst_results(call)[0];
-                var_types.insert(inst.a as u32, JitVarType::Int);
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
                 def_var(&mut builder, &mut regs, inst.a, result);
             }
 
@@ -2218,11 +2585,12 @@ pub(crate) fn lower_cell<M: Module>(
                 let collection_ptr = use_var(&mut builder, &regs, &var_types, inst.a);
                 let index_ptr = use_var(&mut builder, &regs, &var_types, inst.b);
                 let value_ptr = use_var(&mut builder, &regs, &var_types, inst.c);
-                let call = builder
-                    .ins()
-                    .call(set_index_ref, &[collection_ptr, index_ptr, value_ptr]);
+                let call = builder.ins().call(
+                    set_index_ref,
+                    &[vm_ctx_param, collection_ptr, index_ptr, value_ptr],
+                );
                 let result = builder.inst_results(call)[0];
-                var_types.insert(inst.a as u32, JitVarType::Int);
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
                 def_var(&mut builder, &mut regs, inst.a, result);
             }
 
@@ -2250,9 +2618,11 @@ pub(crate) fn lower_cell<M: Module>(
 
                 // Call jit_rt_new_list(array_ptr, count)
                 let count_val = builder.ins().iconst(types::I64, count as i64);
-                let call = builder.ins().call(new_list_ref, &[array_ptr, count_val]);
+                let call = builder
+                    .ins()
+                    .call(new_list_ref, &[vm_ctx_param, array_ptr, count_val]);
                 let result = builder.inst_results(call)[0];
-                var_types.insert(inst.a as u32, JitVarType::Int);
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
                 def_var(&mut builder, &mut regs, inst.a, result);
             }
 
@@ -2288,9 +2658,43 @@ pub(crate) fn lower_cell<M: Module>(
 
                 // Call jit_rt_new_map(array_ptr, count)
                 let count_val = builder.ins().iconst(types::I64, count as i64);
-                let call = builder.ins().call(new_map_ref, &[array_ptr, count_val]);
+                let call = builder
+                    .ins()
+                    .call(new_map_ref, &[vm_ctx_param, array_ptr, count_val]);
                 let result = builder.inst_results(call)[0];
-                var_types.insert(inst.a as u32, JitVarType::Int);
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
+                def_var(&mut builder, &mut regs, inst.a, result);
+            }
+
+            // NewTuple: Create a tuple from register values
+            // r[a] = Tuple([r[a+1], ..., r[a+b]])
+            OpCode::NewTuple => {
+                let count = inst.b as usize;
+
+                // Allocate stack space for the array of value pointers
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    (count * 8) as u32,
+                    8,
+                ));
+                let array_ptr = builder.ins().stack_addr(types::I64, slot, 0);
+
+                // Fill the array with values from registers r[a+1] through r[a+b]
+                for i in 0..count {
+                    let value = use_var(&mut builder, &regs, &var_types, inst.a + 1 + i as u16);
+                    let offset = (i * 8) as i32;
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), value, array_ptr, offset);
+                }
+
+                // Call jit_rt_new_tuple(array_ptr, count)
+                let count_val = builder.ins().iconst(types::I64, count as i64);
+                let call = builder
+                    .ins()
+                    .call(new_tuple_ref, &[vm_ctx_param, array_ptr, count_val]);
+                let result = builder.inst_results(call)[0];
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
                 def_var(&mut builder, &mut regs, inst.a, result);
             }
 
@@ -2306,11 +2710,12 @@ pub(crate) fn lower_cell<M: Module>(
                 let tag_ptr = builder.ins().iconst(types::I64, tag_bytes.as_ptr() as i64);
                 let tag_len = builder.ins().iconst(types::I64, tag_bytes.len() as i64);
                 let payload_ptr = use_var(&mut builder, &regs, &var_types, inst.c);
-                let call = builder
-                    .ins()
-                    .call(union_new_ref, &[tag_ptr, tag_len, payload_ptr]);
+                let call = builder.ins().call(
+                    union_new_ref,
+                    &[vm_ctx_param, tag_ptr, tag_len, payload_ptr],
+                );
                 let result = builder.inst_results(call)[0];
-                var_types.insert(inst.a as u32, JitVarType::Int);
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
                 def_var(&mut builder, &mut regs, inst.a, result);
             }
 
@@ -2330,9 +2735,10 @@ pub(crate) fn lower_cell<M: Module>(
                 let tag_bytes = tag_str.as_bytes();
                 let tag_ptr = builder.ins().iconst(types::I64, tag_bytes.as_ptr() as i64);
                 let tag_len = builder.ins().iconst(types::I64, tag_bytes.len() as i64);
-                let call = builder
-                    .ins()
-                    .call(union_is_variant_ref, &[union_ptr, tag_ptr, tag_len]);
+                let call = builder.ins().call(
+                    union_is_variant_ref,
+                    &[vm_ctx_param, union_ptr, tag_ptr, tag_len],
+                );
                 let raw_bool = builder.inst_results(call)[0]; // 0 or 1
                                                               // Convert to NaN-boxed Bool: 1 → NAN_BOX_TRUE, 0 → NAN_BOX_FALSE
                 let nan_true = builder.ins().iconst(types::I64, NAN_BOX_TRUE);
@@ -2348,9 +2754,15 @@ pub(crate) fn lower_cell<M: Module>(
             // r[a] = payload of Union in r[b]
             OpCode::Unbox => {
                 let union_ptr = use_var(&mut builder, &regs, &var_types, inst.b);
-                let call = builder.ins().call(union_unbox_ref, &[union_ptr]);
+                let call = builder
+                    .ins()
+                    .call(union_unbox_ref, &[vm_ctx_param, union_ptr]);
                 let result = builder.inst_results(call)[0];
-                var_types.insert(inst.a as u32, JitVarType::Int);
+                // Unboxed payload is NaN-boxed by value_to_nanbox: could be
+                // Int, Bool, Null, or a heap pointer (Tuple, Union, etc.).
+                // Use Ptr as a conservative type — truthiness check against
+                // NAN_BOX_NULL works for all NaN-boxed representations.
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
                 def_var(&mut builder, &mut regs, inst.a, result);
             }
 
@@ -2367,7 +2779,9 @@ pub(crate) fn lower_cell<M: Module>(
                         if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Str) {
                             // String type - use string_len
                             let str_ptr = use_var(&mut builder, &regs, &var_types, arg_base);
-                            let call = builder.ins().call(intrinsic_string_len_ref, &[str_ptr]);
+                            let call = builder
+                                .ins()
+                                .call(intrinsic_string_len_ref, &[vm_ctx_param, str_ptr]);
                             let raw_len = builder.inst_results(call)[0];
                             // string_len returns raw i64 — NaN-box it
                             let result = emit_box_int(&mut builder, raw_len);
@@ -2376,7 +2790,9 @@ pub(crate) fn lower_cell<M: Module>(
                         } else {
                             // Collection type (List/Map/Set/Tuple) - use collection_len
                             let value_ptr = use_var(&mut builder, &regs, &var_types, arg_base);
-                            let call = builder.ins().call(collection_len_ref, &[value_ptr]);
+                            let call = builder
+                                .ins()
+                                .call(collection_len_ref, &[vm_ctx_param, value_ptr]);
                             let raw_len = builder.inst_results(call)[0];
                             // collection_len returns raw i64 — NaN-box it
                             let result = emit_box_int(&mut builder, raw_len);
@@ -2393,19 +2809,25 @@ pub(crate) fn lower_cell<M: Module>(
                         match arg_ty {
                             Some(JitVarType::Str) => {
                                 let v = use_var(&mut builder, &regs, &var_types, arg_base);
-                                builder.ins().call(intrinsic_print_str_ref, &[v]);
+                                builder
+                                    .ins()
+                                    .call(intrinsic_print_str_ref, &[vm_ctx_param, v]);
                             }
                             Some(JitVarType::Float) => {
                                 let v = use_var(&mut builder, &regs, &var_types, arg_base);
                                 // Unbox float: bitcast I64 → F64 for the C function
                                 let fv = emit_unbox_float(&mut builder, v);
-                                builder.ins().call(intrinsic_print_float_ref, &[fv]);
+                                builder
+                                    .ins()
+                                    .call(intrinsic_print_float_ref, &[vm_ctx_param, fv]);
                             }
                             _ => {
                                 // Int or unknown — unbox int before printing
                                 let v = use_var(&mut builder, &regs, &var_types, arg_base);
                                 let unboxed = emit_unbox_int(&mut builder, v);
-                                builder.ins().call(intrinsic_print_int_ref, &[unboxed]);
+                                builder
+                                    .ins()
+                                    .call(intrinsic_print_int_ref, &[vm_ctx_param, unboxed]);
                             }
                         }
                         // print returns null
@@ -2433,7 +2855,9 @@ pub(crate) fn lower_cell<M: Module>(
                             Some(JitVarType::Float) => {
                                 let v = use_var(&mut builder, &regs, &var_types, arg_base);
                                 let fv = emit_unbox_float(&mut builder, v);
-                                let call = builder.ins().call(intrinsic_to_string_float_ref, &[fv]);
+                                let call = builder
+                                    .ins()
+                                    .call(intrinsic_to_string_float_ref, &[vm_ctx_param, fv]);
                                 let result = builder.inst_results(call)[0];
                                 var_types.insert(inst.a as u32, JitVarType::Str);
                                 def_var(&mut builder, &mut regs, inst.a, result);
@@ -2441,8 +2865,9 @@ pub(crate) fn lower_cell<M: Module>(
                             _ => {
                                 let v = use_var(&mut builder, &regs, &var_types, arg_base);
                                 let unboxed = emit_unbox_int(&mut builder, v);
-                                let call =
-                                    builder.ins().call(intrinsic_to_string_int_ref, &[unboxed]);
+                                let call = builder
+                                    .ins()
+                                    .call(intrinsic_to_string_int_ref, &[vm_ctx_param, unboxed]);
                                 let result = builder.inst_results(call)[0];
                                 var_types.insert(inst.a as u32, JitVarType::Str);
                                 def_var(&mut builder, &mut regs, inst.a, result);
@@ -2459,8 +2884,9 @@ pub(crate) fn lower_cell<M: Module>(
                             Some(JitVarType::Float) => {
                                 let v = use_var(&mut builder, &regs, &var_types, arg_base);
                                 let fv = emit_unbox_float(&mut builder, v);
-                                let call =
-                                    builder.ins().call(intrinsic_to_int_from_float_ref, &[fv]);
+                                let call = builder
+                                    .ins()
+                                    .call(intrinsic_to_int_from_float_ref, &[vm_ctx_param, fv]);
                                 let raw_result = builder.inst_results(call)[0];
                                 // to_int_from_float returns raw i64, NaN-box it
                                 let result = emit_box_int(&mut builder, raw_result);
@@ -2469,8 +2895,9 @@ pub(crate) fn lower_cell<M: Module>(
                             }
                             Some(JitVarType::Str) => {
                                 let v = use_var(&mut builder, &regs, &var_types, arg_base);
-                                let call =
-                                    builder.ins().call(intrinsic_to_int_from_string_ref, &[v]);
+                                let call = builder
+                                    .ins()
+                                    .call(intrinsic_to_int_from_string_ref, &[vm_ctx_param, v]);
                                 let raw_result = builder.inst_results(call)[0];
                                 // to_int_from_string returns raw i64, NaN-box it
                                 let result = emit_box_int(&mut builder, raw_result);
@@ -2495,9 +2922,10 @@ pub(crate) fn lower_cell<M: Module>(
                             Some(JitVarType::Int) => {
                                 let v = use_var(&mut builder, &regs, &var_types, arg_base);
                                 let unboxed = emit_unbox_int(&mut builder, v);
-                                let call = builder
-                                    .ins()
-                                    .call(intrinsic_to_float_from_int_ref, &[unboxed]);
+                                let call = builder.ins().call(
+                                    intrinsic_to_float_from_int_ref,
+                                    &[vm_ctx_param, unboxed],
+                                );
                                 let f64_result = builder.inst_results(call)[0];
                                 let result = emit_box_float(&mut builder, f64_result);
                                 var_types.insert(inst.a as u32, JitVarType::Float);
@@ -2505,8 +2933,9 @@ pub(crate) fn lower_cell<M: Module>(
                             }
                             Some(JitVarType::Str) => {
                                 let v = use_var(&mut builder, &regs, &var_types, arg_base);
-                                let call =
-                                    builder.ins().call(intrinsic_to_float_from_string_ref, &[v]);
+                                let call = builder
+                                    .ins()
+                                    .call(intrinsic_to_float_from_string_ref, &[vm_ctx_param, v]);
                                 let f64_result = builder.inst_results(call)[0];
                                 let result = emit_box_float(&mut builder, f64_result);
                                 var_types.insert(inst.a as u32, JitVarType::Float);
@@ -2531,6 +2960,7 @@ pub(crate) fn lower_cell<M: Module>(
                             Some(JitVarType::Float) => b"Float",
                             Some(JitVarType::Bool) => b"Bool",
                             Some(JitVarType::Str) => b"String",
+                            Some(JitVarType::Ptr) => b"Object",
                             None => b"Unknown",
                         };
                         // Inline JitString allocation for the type name.
@@ -2539,7 +2969,8 @@ pub(crate) fn lower_cell<M: Module>(
                         let flags = MemFlags::new();
 
                         let struct_size = builder.ins().iconst(types::I64, 40);
-                        let struct_call = builder.ins().call(malloc_ref, &[struct_size]);
+                        let struct_call =
+                            builder.ins().call(malloc_ref, &[vm_ctx_param, struct_size]);
                         let struct_ptr = builder.inst_results(struct_call)[0];
 
                         let rc_one = builder.ins().iconst(types::I64, 1);
@@ -2553,12 +2984,14 @@ pub(crate) fn lower_cell<M: Module>(
                         // Type names are always non-empty (3-7 bytes).
                         // Uses alloc_bytes_ref (Vec-compatible) so that
                         // JitString::drop_ref can free via Vec::from_raw_parts.
-                        let data_call = builder.ins().call(alloc_bytes_ref, &[len_val]);
+                        let data_call = builder
+                            .ins()
+                            .call(alloc_bytes_ref, &[vm_ctx_param, len_val]);
                         let data_ptr = builder.inst_results(data_call)[0];
                         let src_ptr = builder.ins().iconst(types::I64, type_str.as_ptr() as i64);
                         builder
                             .ins()
-                            .call(memcpy_ref, &[data_ptr, src_ptr, len_val]);
+                            .call(memcpy_ref, &[vm_ctx_param, data_ptr, src_ptr, len_val]);
                         builder.ins().store(flags, data_ptr, struct_ptr, 32); // ptr
 
                         var_types.insert(inst.a as u32, JitVarType::Str);
@@ -2648,7 +3081,9 @@ pub(crate) fn lower_cell<M: Module>(
                     50 => {
                         if var_types.get(&(arg_base as u32)) == Some(&JitVarType::Str) {
                             let str_ptr = use_var(&mut builder, &regs, &var_types, arg_base);
-                            let call = builder.ins().call(intrinsic_string_len_ref, &[str_ptr]);
+                            let call = builder
+                                .ins()
+                                .call(intrinsic_string_len_ref, &[vm_ctx_param, str_ptr]);
                             let len = builder.inst_results(call)[0];
                             let zero = builder.ins().iconst(types::I64, 0);
                             let is_empty = builder.ins().icmp(IntCC::Equal, len, zero);
@@ -2754,7 +3189,7 @@ pub(crate) fn lower_cell<M: Module>(
                             let exp_f = emit_unbox_float(&mut builder, exp_raw);
                             let call = builder
                                 .ins()
-                                .call(intrinsic_pow_float_ref, &[base_f, exp_f]);
+                                .call(intrinsic_pow_float_ref, &[vm_ctx_param, base_f, exp_f]);
                             let result_f = builder.inst_results(call)[0];
                             // Rebox: bitcast F64 -> I64
                             let result = emit_box_float(&mut builder, result_f);
@@ -2766,7 +3201,9 @@ pub(crate) fn lower_cell<M: Module>(
                             // Unbox NaN-boxed ints: arithmetic right shift by 1
                             let base_i = emit_unbox_int(&mut builder, base_raw);
                             let exp_i = emit_unbox_int(&mut builder, exp_raw);
-                            let call = builder.ins().call(intrinsic_pow_int_ref, &[base_i, exp_i]);
+                            let call = builder
+                                .ins()
+                                .call(intrinsic_pow_int_ref, &[vm_ctx_param, base_i, exp_i]);
                             let result_i = builder.inst_results(call)[0];
                             // Rebox: (val << 1) | 1
                             let result = emit_box_int(&mut builder, result_i);
@@ -2786,7 +3223,7 @@ pub(crate) fn lower_cell<M: Module>(
                             let raw = emit_unbox_int(&mut builder, v);
                             builder.ins().fcvt_from_sint(types::F64, raw)
                         };
-                        let call = builder.ins().call(intrinsic_log_ref, &[fv]);
+                        let call = builder.ins().call(intrinsic_log_ref, &[vm_ctx_param, fv]);
                         let f64_result = builder.inst_results(call)[0];
                         let result = emit_box_float(&mut builder, f64_result);
                         var_types.insert(inst.a as u32, JitVarType::Float);
@@ -2804,7 +3241,7 @@ pub(crate) fn lower_cell<M: Module>(
                             let raw = emit_unbox_int(&mut builder, v);
                             builder.ins().fcvt_from_sint(types::F64, raw)
                         };
-                        let call = builder.ins().call(intrinsic_sin_ref, &[fv]);
+                        let call = builder.ins().call(intrinsic_sin_ref, &[vm_ctx_param, fv]);
                         let f64_result = builder.inst_results(call)[0];
                         let result = emit_box_float(&mut builder, f64_result);
                         var_types.insert(inst.a as u32, JitVarType::Float);
@@ -2822,7 +3259,7 @@ pub(crate) fn lower_cell<M: Module>(
                             let raw = emit_unbox_int(&mut builder, v);
                             builder.ins().fcvt_from_sint(types::F64, raw)
                         };
-                        let call = builder.ins().call(intrinsic_cos_ref, &[fv]);
+                        let call = builder.ins().call(intrinsic_cos_ref, &[vm_ctx_param, fv]);
                         let f64_result = builder.inst_results(call)[0];
                         let result = emit_box_float(&mut builder, f64_result);
                         var_types.insert(inst.a as u32, JitVarType::Float);
@@ -2840,7 +3277,7 @@ pub(crate) fn lower_cell<M: Module>(
                             let raw = emit_unbox_int(&mut builder, v);
                             builder.ins().fcvt_from_sint(types::F64, raw)
                         };
-                        let call = builder.ins().call(intrinsic_tan_ref, &[fv]);
+                        let call = builder.ins().call(intrinsic_tan_ref, &[vm_ctx_param, fv]);
                         let f64_result = builder.inst_results(call)[0];
                         let result = emit_box_float(&mut builder, f64_result);
                         var_types.insert(inst.a as u32, JitVarType::Float);
@@ -2902,17 +3339,23 @@ pub(crate) fn lower_cell<M: Module>(
                         match arg_ty {
                             Some(JitVarType::Str) => {
                                 let v = use_var(&mut builder, &regs, &var_types, arg_base);
-                                builder.ins().call(intrinsic_print_str_ref, &[v]);
+                                builder
+                                    .ins()
+                                    .call(intrinsic_print_str_ref, &[vm_ctx_param, v]);
                             }
                             Some(JitVarType::Float) => {
                                 let v = use_var(&mut builder, &regs, &var_types, arg_base);
                                 let fv = emit_unbox_float(&mut builder, v);
-                                builder.ins().call(intrinsic_print_float_ref, &[fv]);
+                                builder
+                                    .ins()
+                                    .call(intrinsic_print_float_ref, &[vm_ctx_param, fv]);
                             }
                             _ => {
                                 let v = use_var(&mut builder, &regs, &var_types, arg_base);
                                 let unboxed = emit_unbox_int(&mut builder, v);
-                                builder.ins().call(intrinsic_print_int_ref, &[unboxed]);
+                                builder
+                                    .ins()
+                                    .call(intrinsic_print_int_ref, &[vm_ctx_param, unboxed]);
                             }
                         }
                         let null_val = builder.ins().iconst(types::I64, NAN_BOX_NULL);
@@ -2941,7 +3384,7 @@ pub(crate) fn lower_cell<M: Module>(
                             let raw = emit_unbox_int(&mut builder, v);
                             builder.ins().fcvt_from_sint(types::F64, raw)
                         };
-                        let call = builder.ins().call(intrinsic_log2_ref, &[fv]);
+                        let call = builder.ins().call(intrinsic_log2_ref, &[vm_ctx_param, fv]);
                         let f64_result = builder.inst_results(call)[0];
                         let result = emit_box_float(&mut builder, f64_result);
                         var_types.insert(inst.a as u32, JitVarType::Float);
@@ -2959,7 +3402,7 @@ pub(crate) fn lower_cell<M: Module>(
                             let raw = emit_unbox_int(&mut builder, v);
                             builder.ins().fcvt_from_sint(types::F64, raw)
                         };
-                        let call = builder.ins().call(intrinsic_log10_ref, &[fv]);
+                        let call = builder.ins().call(intrinsic_log10_ref, &[vm_ctx_param, fv]);
                         let f64_result = builder.inst_results(call)[0];
                         let result = emit_box_float(&mut builder, f64_result);
                         var_types.insert(inst.a as u32, JitVarType::Float);
@@ -3055,7 +3498,9 @@ pub(crate) fn lower_cell<M: Module>(
                             Some(JitVarType::Float) => {
                                 let v = use_var(&mut builder, &regs, &var_types, arg_base);
                                 let fv = emit_unbox_float(&mut builder, v);
-                                let call = builder.ins().call(intrinsic_to_string_float_ref, &[fv]);
+                                let call = builder
+                                    .ins()
+                                    .call(intrinsic_to_string_float_ref, &[vm_ctx_param, fv]);
                                 let result = builder.inst_results(call)[0];
                                 var_types.insert(inst.a as u32, JitVarType::Str);
                                 def_var(&mut builder, &mut regs, inst.a, result);
@@ -3064,8 +3509,9 @@ pub(crate) fn lower_cell<M: Module>(
                                 // Int or unknown — unbox int, convert to string
                                 let v = use_var(&mut builder, &regs, &var_types, arg_base);
                                 let unboxed = emit_unbox_int(&mut builder, v);
-                                let call =
-                                    builder.ins().call(intrinsic_to_string_int_ref, &[unboxed]);
+                                let call = builder
+                                    .ins()
+                                    .call(intrinsic_to_string_int_ref, &[vm_ctx_param, unboxed]);
                                 let result = builder.inst_results(call)[0];
                                 var_types.insert(inst.a as u32, JitVarType::Str);
                                 def_var(&mut builder, &mut regs, inst.a, result);
@@ -3079,7 +3525,9 @@ pub(crate) fn lower_cell<M: Module>(
                     16 => {
                         let a = use_var(&mut builder, &regs, &var_types, arg_base);
                         let b = use_var(&mut builder, &regs, &var_types, arg_base + 1);
-                        let call = builder.ins().call(intrinsic_string_contains_ref, &[a, b]);
+                        let call = builder
+                            .ins()
+                            .call(intrinsic_string_contains_ref, &[vm_ctx_param, a, b]);
                         let raw = builder.inst_results(call)[0];
                         // raw is 0 or 1 — NaN-box as bool
                         let zero = builder.ins().iconst(types::I64, 0);
@@ -3096,7 +3544,9 @@ pub(crate) fn lower_cell<M: Module>(
                     // -------------------------------------------------------
                     19 => {
                         let v = use_var(&mut builder, &regs, &var_types, arg_base);
-                        let call = builder.ins().call(intrinsic_string_trim_ref, &[v]);
+                        let call = builder
+                            .ins()
+                            .call(intrinsic_string_trim_ref, &[vm_ctx_param, v]);
                         let result = builder.inst_results(call)[0];
                         var_types.insert(inst.a as u32, JitVarType::Str);
                         def_var(&mut builder, &mut regs, inst.a, result);
@@ -3107,7 +3557,9 @@ pub(crate) fn lower_cell<M: Module>(
                     // -------------------------------------------------------
                     20 => {
                         let v = use_var(&mut builder, &regs, &var_types, arg_base);
-                        let call = builder.ins().call(intrinsic_string_upper_ref, &[v]);
+                        let call = builder
+                            .ins()
+                            .call(intrinsic_string_upper_ref, &[vm_ctx_param, v]);
                         let result = builder.inst_results(call)[0];
                         var_types.insert(inst.a as u32, JitVarType::Str);
                         def_var(&mut builder, &mut regs, inst.a, result);
@@ -3118,7 +3570,9 @@ pub(crate) fn lower_cell<M: Module>(
                     // -------------------------------------------------------
                     21 => {
                         let v = use_var(&mut builder, &regs, &var_types, arg_base);
-                        let call = builder.ins().call(intrinsic_string_lower_ref, &[v]);
+                        let call = builder
+                            .ins()
+                            .call(intrinsic_string_lower_ref, &[vm_ctx_param, v]);
                         let result = builder.inst_results(call)[0];
                         var_types.insert(inst.a as u32, JitVarType::Str);
                         def_var(&mut builder, &mut regs, inst.a, result);
@@ -3131,7 +3585,9 @@ pub(crate) fn lower_cell<M: Module>(
                         let a = use_var(&mut builder, &regs, &var_types, arg_base);
                         let b = use_var(&mut builder, &regs, &var_types, arg_base + 1);
                         let c = use_var(&mut builder, &regs, &var_types, arg_base + 2);
-                        let call = builder.ins().call(intrinsic_string_replace_ref, &[a, b, c]);
+                        let call = builder
+                            .ins()
+                            .call(intrinsic_string_replace_ref, &[vm_ctx_param, a, b, c]);
                         let result = builder.inst_results(call)[0];
                         var_types.insert(inst.a as u32, JitVarType::Str);
                         def_var(&mut builder, &mut regs, inst.a, result);
@@ -3147,7 +3603,9 @@ pub(crate) fn lower_cell<M: Module>(
                         // start and end are NaN-boxed ints — unbox before calling runtime
                         let b = emit_unbox_int(&mut builder, b_raw);
                         let c = emit_unbox_int(&mut builder, c_raw);
-                        let call = builder.ins().call(intrinsic_string_slice_ref, &[a, b, c]);
+                        let call = builder
+                            .ins()
+                            .call(intrinsic_string_slice_ref, &[vm_ctx_param, a, b, c]);
                         let result = builder.inst_results(call)[0];
                         var_types.insert(inst.a as u32, JitVarType::Str);
                         def_var(&mut builder, &mut regs, inst.a, result);
@@ -3161,7 +3619,7 @@ pub(crate) fn lower_cell<M: Module>(
                         let b = use_var(&mut builder, &regs, &var_types, arg_base + 1);
                         let call = builder
                             .ins()
-                            .call(intrinsic_string_starts_with_ref, &[a, b]);
+                            .call(intrinsic_string_starts_with_ref, &[vm_ctx_param, a, b]);
                         let raw = builder.inst_results(call)[0];
                         let zero = builder.ins().iconst(types::I64, 0);
                         let is_true = builder.ins().icmp(IntCC::NotEqual, raw, zero);
@@ -3178,7 +3636,9 @@ pub(crate) fn lower_cell<M: Module>(
                     53 => {
                         let a = use_var(&mut builder, &regs, &var_types, arg_base);
                         let b = use_var(&mut builder, &regs, &var_types, arg_base + 1);
-                        let call = builder.ins().call(intrinsic_string_ends_with_ref, &[a, b]);
+                        let call = builder
+                            .ins()
+                            .call(intrinsic_string_ends_with_ref, &[vm_ctx_param, a, b]);
                         let raw = builder.inst_results(call)[0];
                         let zero = builder.ins().iconst(types::I64, 0);
                         let is_true = builder.ins().icmp(IntCC::NotEqual, raw, zero);
@@ -3195,7 +3655,9 @@ pub(crate) fn lower_cell<M: Module>(
                     54 => {
                         let a = use_var(&mut builder, &regs, &var_types, arg_base);
                         let b = use_var(&mut builder, &regs, &var_types, arg_base + 1);
-                        let call = builder.ins().call(intrinsic_string_index_of_ref, &[a, b]);
+                        let call = builder
+                            .ins()
+                            .call(intrinsic_string_index_of_ref, &[vm_ctx_param, a, b]);
                         let raw = builder.inst_results(call)[0];
                         let result = emit_box_int(&mut builder, raw);
                         var_types.insert(inst.a as u32, JitVarType::Int);
@@ -3210,7 +3672,9 @@ pub(crate) fn lower_cell<M: Module>(
                         let b_raw = use_var(&mut builder, &regs, &var_types, arg_base + 1);
                         // width is a NaN-boxed int — unbox before calling runtime
                         let b = emit_unbox_int(&mut builder, b_raw);
-                        let call = builder.ins().call(intrinsic_string_pad_left_ref, &[a, b]);
+                        let call = builder
+                            .ins()
+                            .call(intrinsic_string_pad_left_ref, &[vm_ctx_param, a, b]);
                         let result = builder.inst_results(call)[0];
                         var_types.insert(inst.a as u32, JitVarType::Str);
                         def_var(&mut builder, &mut regs, inst.a, result);
@@ -3224,7 +3688,9 @@ pub(crate) fn lower_cell<M: Module>(
                         let b_raw = use_var(&mut builder, &regs, &var_types, arg_base + 1);
                         // width is a NaN-boxed int — unbox before calling runtime
                         let b = emit_unbox_int(&mut builder, b_raw);
-                        let call = builder.ins().call(intrinsic_string_pad_right_ref, &[a, b]);
+                        let call = builder
+                            .ins()
+                            .call(intrinsic_string_pad_right_ref, &[vm_ctx_param, a, b]);
                         let result = builder.inst_results(call)[0];
                         var_types.insert(inst.a as u32, JitVarType::Str);
                         def_var(&mut builder, &mut regs, inst.a, result);
@@ -3251,7 +3717,9 @@ pub(crate) fn lower_cell<M: Module>(
                             }
                             Some(JitVarType::Str) => {
                                 let v = use_var(&mut builder, &regs, &var_types, arg_base);
-                                let call = builder.ins().call(intrinsic_string_len_ref, &[v]);
+                                let call = builder
+                                    .ins()
+                                    .call(intrinsic_string_len_ref, &[vm_ctx_param, v]);
                                 let len = builder.inst_results(call)[0];
                                 let zero = builder.ins().iconst(types::I64, 0);
                                 let is_nonempty = builder.ins().icmp(IntCC::NotEqual, len, zero);
@@ -3287,18 +3755,23 @@ pub(crate) fn lower_cell<M: Module>(
                             Some(JitVarType::Float) => {
                                 let v = use_var(&mut builder, &regs, &var_types, arg_base);
                                 let fv = emit_unbox_float(&mut builder, v);
-                                let call = builder.ins().call(intrinsic_to_string_float_ref, &[fv]);
+                                let call = builder
+                                    .ins()
+                                    .call(intrinsic_to_string_float_ref, &[vm_ctx_param, fv]);
                                 builder.inst_results(call)[0]
                             }
                             _ => {
                                 let v = use_var(&mut builder, &regs, &var_types, arg_base);
                                 let unboxed = emit_unbox_int(&mut builder, v);
-                                let call =
-                                    builder.ins().call(intrinsic_to_string_int_ref, &[unboxed]);
+                                let call = builder
+                                    .ins()
+                                    .call(intrinsic_to_string_int_ref, &[vm_ctx_param, unboxed]);
                                 builder.inst_results(call)[0]
                             }
                         };
-                        let call = builder.ins().call(intrinsic_string_hash_ref, &[str_val]);
+                        let call = builder
+                            .ins()
+                            .call(intrinsic_string_hash_ref, &[vm_ctx_param, str_val]);
                         let result = builder.inst_results(call)[0];
                         var_types.insert(inst.a as u32, JitVarType::Str);
                         def_var(&mut builder, &mut regs, inst.a, result);
@@ -3310,7 +3783,9 @@ pub(crate) fn lower_cell<M: Module>(
                     18 => {
                         let a = use_var(&mut builder, &regs, &var_types, arg_base);
                         let b = use_var(&mut builder, &regs, &var_types, arg_base + 1);
-                        let call = builder.ins().call(intrinsic_string_split_ref, &[a, b]);
+                        let call = builder
+                            .ins()
+                            .call(intrinsic_string_split_ref, &[vm_ctx_param, a, b]);
                         let result = builder.inst_results(call)[0];
                         var_types.insert(inst.a as u32, JitVarType::Str);
                         def_var(&mut builder, &mut regs, inst.a, result);
@@ -3349,7 +3824,9 @@ pub(crate) fn lower_cell<M: Module>(
                         let result = if arg_ty == Some(JitVarType::Str) {
                             // Return the byte length of the string content
                             let v = use_var(&mut builder, &regs, &var_types, arg_base);
-                            let call = builder.ins().call(intrinsic_string_len_ref, &[v]);
+                            let call = builder
+                                .ins()
+                                .call(intrinsic_string_len_ref, &[vm_ctx_param, v]);
                             let raw_len = builder.inst_results(call)[0];
                             emit_box_int(&mut builder, raw_len)
                         } else {
@@ -3378,7 +3855,9 @@ pub(crate) fn lower_cell<M: Module>(
                             Some(JitVarType::Float) => {
                                 let v = use_var(&mut builder, &regs, &var_types, arg_base);
                                 let fv = emit_unbox_float(&mut builder, v);
-                                let call = builder.ins().call(intrinsic_to_string_float_ref, &[fv]);
+                                let call = builder
+                                    .ins()
+                                    .call(intrinsic_to_string_float_ref, &[vm_ctx_param, fv]);
                                 let result = builder.inst_results(call)[0];
                                 var_types.insert(inst.a as u32, JitVarType::Str);
                                 def_var(&mut builder, &mut regs, inst.a, result);
@@ -3386,8 +3865,9 @@ pub(crate) fn lower_cell<M: Module>(
                             _ => {
                                 let v = use_var(&mut builder, &regs, &var_types, arg_base);
                                 let unboxed = emit_unbox_int(&mut builder, v);
-                                let call =
-                                    builder.ins().call(intrinsic_to_string_int_ref, &[unboxed]);
+                                let call = builder
+                                    .ins()
+                                    .call(intrinsic_to_string_int_ref, &[vm_ctx_param, unboxed]);
                                 let result = builder.inst_results(call)[0];
                                 var_types.insert(inst.a as u32, JitVarType::Str);
                                 def_var(&mut builder, &mut regs, inst.a, result);
@@ -3399,7 +3879,7 @@ pub(crate) fn lower_cell<M: Module>(
                     // 133: Hrtime — high-resolution timer (nanoseconds)
                     // -------------------------------------------------------
                     133 => {
-                        let call = builder.ins().call(intrinsic_hrtime_ref, &[]);
+                        let call = builder.ins().call(intrinsic_hrtime_ref, &[vm_ctx_param]);
                         let raw = builder.inst_results(call)[0];
                         let result = emit_box_int(&mut builder, raw);
                         var_types.insert(inst.a as u32, JitVarType::Int);
@@ -3417,24 +3897,544 @@ pub(crate) fn lower_cell<M: Module>(
                 }
             }
 
-            // Legacy loop opcodes
-            OpCode::Loop | OpCode::ForPrep | OpCode::ForLoop | OpCode::ForIn => {}
+            // Async / concurrency opcodes
+            OpCode::Spawn => {
+                // Spawn async task from cell proto index.
+                // Instruction format: ABx (a=dest, bx=cell index)
+                // Runtime helper signature:
+                //   jit_rt_spawn(vm_ctx, cell_idx, args_ptr, arg_count) -> i64
+                //
+                let vm_ctx = vm_ctx_param;
+                let cell_idx = builder.ins().iconst(types::I32, inst.bx() as i64);
+                let args_ptr = builder.ins().iconst(pointer_type, 0);
+                let arg_count = builder.ins().iconst(types::I32, 0);
+                let call = builder
+                    .ins()
+                    .call(async_spawn_ref, &[vm_ctx, cell_idx, args_ptr, arg_count]);
+                let result = builder.inst_results(call)[0];
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
+                def_var(&mut builder, &mut regs, inst.a, result);
+            }
+            OpCode::Await => {
+                // Await a future value.
+                // Instruction format: ABC (a=dest, b=future_reg)
+                // Runtime helper signature:
+                //   jit_rt_await(vm_ctx, future_handle) -> i64
+                //
+                let vm_ctx = vm_ctx_param;
+                let future_handle = use_var(&mut builder, &regs, &var_types, inst.b);
+                let call = builder
+                    .ins()
+                    .call(async_await_ref, &[vm_ctx, future_handle]);
+                let result = builder.inst_results(call)[0];
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
+                def_var(&mut builder, &mut regs, inst.a, result);
+            }
+
+            // ---------------------------------------------------------------
+            // Effect System Opcodes (Phase 0.2)
+            // ---------------------------------------------------------------
+            OpCode::Perform => {
+                // Perform effect_name.operation(args)
+                // Instruction format: Perform dest, effect_const_idx, operation_const_idx
+                // Runtime helper signature:
+                //   jit_rt_perform(vm_ctx, effect_id, operation_id, args_ptr, arg_count) -> i64
+                //
+                // TODO: Implement once VmContext is defined. For now, emit a call
+                // to the stub helper that returns NAN_BOX_NULL.
+                //
+                // Full implementation will need:
+                // - vm_ctx pointer (first parameter to cell, or thread-local)
+                // - effect_id (inst.b) and operation_id (inst.c) as constant indices
+                // - args_ptr and arg_count (need to determine where args are stored)
+                //
+                // For now: declare the helper function and call it with dummy arguments.
+                let perform_sig = module.make_signature();
+                let perform_fn = module
+                    .declare_function("jit_rt_perform", Linkage::Import, &{
+                        let mut sig = perform_sig;
+                        sig.params.push(AbiParam::new(pointer_type)); // vm_ctx
+                        sig.params.push(AbiParam::new(types::I32)); // effect_id
+                        sig.params.push(AbiParam::new(types::I32)); // operation_id
+                        sig.params.push(AbiParam::new(pointer_type)); // args_ptr
+                        sig.params.push(AbiParam::new(pointer_type)); // arg_count (usize)
+                        sig.returns.push(AbiParam::new(types::I64)); // result
+                        sig
+                    })
+                    .map_err(|e| CodegenError::LoweringError(e.to_string()))?;
+                let perform_ref = module.declare_func_in_func(perform_fn, &mut builder.func);
+
+                // Placeholder call with dummy arguments (vm_ctx, effect_id=inst.b,
+                // operation_id=inst.c, args_ptr=null, arg_count=0)
+                let vm_ctx = vm_ctx_param;
+                let effect_id = builder.ins().iconst(types::I32, inst.b as i64);
+                let operation_id = builder.ins().iconst(types::I32, inst.c as i64);
+                let args_ptr = builder.ins().iconst(pointer_type, 0);
+                let arg_count = builder.ins().iconst(pointer_type, 0);
+                let call = builder.ins().call(
+                    perform_ref,
+                    &[vm_ctx, effect_id, operation_id, args_ptr, arg_count],
+                );
+                let result = builder.inst_results(call)[0];
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
+                def_var(&mut builder, &mut regs, inst.a, result);
+            }
+
+            OpCode::HandlePush => {
+                // HandlePush meta_idx, offset
+                // Instruction format: ABX (a=meta_idx, bx=offset to handler code)
+                // Runtime helper signature:
+                //   jit_rt_handle_push(vm_ctx, meta_idx, offset)
+                //
+                // TODO: Implement once VmContext is defined.
+                let handle_push_sig = module.make_signature();
+                let handle_push_fn = module
+                    .declare_function("jit_rt_handle_push", Linkage::Import, &{
+                        let mut sig = handle_push_sig;
+                        sig.params.push(AbiParam::new(pointer_type)); // vm_ctx
+                        sig.params.push(AbiParam::new(pointer_type)); // meta_idx (usize)
+                        sig.params.push(AbiParam::new(types::I32)); // offset (i32)
+                        sig
+                    })
+                    .map_err(|e| CodegenError::LoweringError(e.to_string()))?;
+                let handle_push_ref =
+                    module.declare_func_in_func(handle_push_fn, &mut builder.func);
+
+                let vm_ctx = vm_ctx_param;
+                let meta_idx = builder.ins().iconst(pointer_type, inst.a as i64);
+                let offset = builder.ins().iconst(types::I32, inst.bx() as i64);
+                builder
+                    .ins()
+                    .call(handle_push_ref, &[vm_ctx, meta_idx, offset]);
+            }
+
+            OpCode::HandlePop => {
+                // HandlePop
+                // Runtime helper signature:
+                //   jit_rt_handle_pop(vm_ctx)
+                //
+                // TODO: Implement once VmContext is defined.
+                let handle_pop_sig = module.make_signature();
+                let handle_pop_fn = module
+                    .declare_function("jit_rt_handle_pop", Linkage::Import, &{
+                        let mut sig = handle_pop_sig;
+                        sig.params.push(AbiParam::new(pointer_type)); // vm_ctx
+                        sig
+                    })
+                    .map_err(|e| CodegenError::LoweringError(e.to_string()))?;
+                let handle_pop_ref = module.declare_func_in_func(handle_pop_fn, &mut builder.func);
+
+                let vm_ctx = vm_ctx_param;
+                builder.ins().call(handle_pop_ref, &[vm_ctx]);
+            }
+
+            OpCode::Resume => {
+                // Resume dest, value_reg
+                // Instruction format: ABC (a=dest, b=value_reg)
+                // Runtime helper signature:
+                //   jit_rt_resume(vm_ctx, value) -> i64
+                //
+                // TODO: Implement once VmContext is defined.
+                let resume_sig = module.make_signature();
+                let resume_fn = module
+                    .declare_function("jit_rt_resume", Linkage::Import, &{
+                        let mut sig = resume_sig;
+                        sig.params.push(AbiParam::new(pointer_type)); // vm_ctx
+                        sig.params.push(AbiParam::new(types::I64)); // value (NaN-boxed)
+                        sig.returns.push(AbiParam::new(types::I64)); // result
+                        sig
+                    })
+                    .map_err(|e| CodegenError::LoweringError(e.to_string()))?;
+                let resume_ref = module.declare_func_in_func(resume_fn, &mut builder.func);
+
+                let vm_ctx = vm_ctx_param;
+                let value = use_var(&mut builder, &regs, &var_types, inst.b);
+                let call = builder.ins().call(resume_ref, &[vm_ctx, value]);
+                let result = builder.inst_results(call)[0];
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
+                def_var(&mut builder, &mut regs, inst.a, result);
+            }
+
+            // ---------------------------------------------------------------
+            // Iteration Opcodes (Phase 0.5)
+            // ---------------------------------------------------------------
+            OpCode::Loop => {
+                // Loop counter_reg, decrement_imm, jump_offset
+                // Instruction format: A = counter register, sB = signed jump offset
+                // VM semantics: decrement R[A] by 1, jump back if R[A] > 0
+                // Runtime helper signature:
+                //   jit_rt_loop(vm_ctx, counter, decrement) -> i64 (new counter)
+                //
+                // Returns the new counter value. We then test if > 0 and branch.
+                let loop_sig = module.make_signature();
+                let loop_fn = module
+                    .declare_function("jit_rt_loop", Linkage::Import, &{
+                        let mut sig = loop_sig;
+                        sig.params.push(AbiParam::new(pointer_type)); // vm_ctx
+                        sig.params.push(AbiParam::new(types::I64)); // counter (NaN-boxed Int)
+                        sig.params.push(AbiParam::new(types::I64)); // decrement (raw i64, always 1)
+                        sig.returns.push(AbiParam::new(types::I64)); // new counter (NaN-boxed Int)
+                        sig
+                    })
+                    .map_err(|e| CodegenError::LoweringError(e.to_string()))?;
+                let loop_ref = module.declare_func_in_func(loop_fn, &mut builder.func);
+
+                let vm_ctx = vm_ctx_param;
+                let counter = use_var(&mut builder, &regs, &var_types, inst.a);
+                let decrement = builder.ins().iconst(types::I64, 1); // Always decrement by 1
+                let call = builder.ins().call(loop_ref, &[vm_ctx, counter, decrement]);
+                let new_counter = builder.inst_results(call)[0];
+
+                // Store the new counter back
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
+                def_var(&mut builder, &mut regs, inst.a, new_counter);
+
+                // Extract the raw i64 value from NaN-boxed Int to test if > 0
+                let raw_counter = emit_unbox_int(&mut builder, new_counter);
+                let zero = builder.ins().iconst(types::I64, 0);
+                let is_positive = builder
+                    .ins()
+                    .icmp(IntCC::SignedGreaterThan, raw_counter, zero);
+
+                // Compute jump target
+                let offset = inst.sbx() as i32;
+                let target_pc = (pc as i32 + 1 + offset) as usize;
+                let fallthrough_pc = pc + 1;
+
+                let target_block = get_or_create_block(&mut builder, &mut block_map, target_pc);
+                let fallthrough_block =
+                    get_or_create_block(&mut builder, &mut block_map, fallthrough_pc);
+
+                builder
+                    .ins()
+                    .brif(is_positive, target_block, &[], fallthrough_block, &[]);
+                terminated = true;
+            }
+
+            OpCode::ForPrep => {
+                // ForPrep base_reg, skip_offset
+                // Instruction format: A = base register, sB = signed jump offset
+                // JIT semantics (numeric for-loop layout):
+                //   - R[A]   = init
+                //   - R[A+1] = limit
+                //   - R[A+2] = step
+                //   - Compute initial counter via helper, store in R[A]
+                //   - If loop is already exhausted, jump forward by sB
+                //
+                // Runtime helper signature:
+                //   jit_rt_for_prep(vm_ctx, init, limit, step) -> i64 (initial counter)
+                //
+                // The helper returns the initial counter value (raw i64).
+                let for_prep_sig = module.make_signature();
+                let for_prep_fn = module
+                    .declare_function("jit_rt_for_prep", Linkage::Import, &{
+                        let mut sig = for_prep_sig;
+                        sig.params.push(AbiParam::new(pointer_type)); // vm_ctx
+                        sig.params.push(AbiParam::new(types::I64)); // init (raw i64, always 0)
+                        sig.params.push(AbiParam::new(types::I64)); // limit (raw i64, length)
+                        sig.params.push(AbiParam::new(types::I64)); // step (raw i64, always 1)
+                        sig.returns.push(AbiParam::new(types::I64)); // initial counter (raw i64)
+                        sig
+                    })
+                    .map_err(|e| CodegenError::LoweringError(e.to_string()))?;
+                let for_prep_ref = module.declare_func_in_func(for_prep_fn, &mut builder.func);
+
+                let vm_ctx = vm_ctx_param;
+                let init_boxed = use_var(&mut builder, &regs, &var_types, inst.a);
+                let limit_boxed = use_var(&mut builder, &regs, &var_types, inst.a + 1);
+                let step_boxed = use_var(&mut builder, &regs, &var_types, inst.a + 2);
+                let init = emit_unbox_int(&mut builder, init_boxed);
+                let limit = emit_unbox_int(&mut builder, limit_boxed);
+                let step = emit_unbox_int(&mut builder, step_boxed);
+                let call = builder
+                    .ins()
+                    .call(for_prep_ref, &[vm_ctx, init, limit, step]);
+                let initial_counter = builder.inst_results(call)[0];
+
+                // Store initial counter at A (NaN-boxed)
+                let boxed_counter = emit_box_int(&mut builder, initial_counter);
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
+                def_var(&mut builder, &mut regs, inst.a, boxed_counter);
+
+                // Skip loop if already exhausted:
+                // step == 0 => skip
+                // step > 0  => skip if init >= limit
+                // step < 0  => skip if init <= limit
+                let zero = builder.ins().iconst(types::I64, 0);
+                let step_is_zero = builder.ins().icmp(IntCC::Equal, step, zero);
+                let step_is_pos = builder.ins().icmp(IntCC::SignedGreaterThan, step, zero);
+                let step_is_neg = builder.ins().icmp(IntCC::SignedLessThan, step, zero);
+                let init_ge_limit =
+                    builder
+                        .ins()
+                        .icmp(IntCC::SignedGreaterThanOrEqual, init, limit);
+                let init_le_limit = builder
+                    .ins()
+                    .icmp(IntCC::SignedLessThanOrEqual, init, limit);
+                let skip_pos = builder.ins().band(step_is_pos, init_ge_limit);
+                let skip_neg = builder.ins().band(step_is_neg, init_le_limit);
+                let skip_temp = builder.ins().bor(skip_pos, skip_neg);
+                let should_skip = builder.ins().bor(step_is_zero, skip_temp);
+
+                let skip_offset = inst.sbx() as i32;
+                let skip_pc = (pc as i32 + 1 + skip_offset) as usize;
+                let continue_pc = pc + 1;
+
+                let skip_block = get_or_create_block(&mut builder, &mut block_map, skip_pc);
+                let continue_block = get_or_create_block(&mut builder, &mut block_map, continue_pc);
+
+                builder
+                    .ins()
+                    .brif(should_skip, skip_block, &[], continue_block, &[]);
+                terminated = true;
+            }
+
+            OpCode::ForLoop => {
+                // ForLoop base_reg, back_jump_offset
+                // Instruction format: A = base register, sB = signed jump offset
+                // JIT semantics (numeric for-loop layout):
+                //   - R[A]   = counter
+                //   - R[A+1] = limit
+                //   - R[A+2] = step
+                //   - Update counter via helper; if exhausted, fall through
+                //
+                // Runtime helper signature:
+                //   jit_rt_for_loop(vm_ctx, counter, limit, step) -> i64
+                //   Returns new counter if continuing, or NAN_BOX_NULL if exhausted.
+                let for_loop_sig = module.make_signature();
+                let for_loop_fn = module
+                    .declare_function("jit_rt_for_loop", Linkage::Import, &{
+                        let mut sig = for_loop_sig;
+                        sig.params.push(AbiParam::new(pointer_type)); // vm_ctx
+                        sig.params.push(AbiParam::new(types::I64)); // counter (raw i64)
+                        sig.params.push(AbiParam::new(types::I64)); // limit (raw i64)
+                        sig.params.push(AbiParam::new(types::I64)); // step (raw i64, always 1)
+                        sig.returns.push(AbiParam::new(types::I64)); // new counter or NAN_BOX_NULL
+                        sig
+                    })
+                    .map_err(|e| CodegenError::LoweringError(e.to_string()))?;
+                let for_loop_ref = module.declare_func_in_func(for_loop_fn, &mut builder.func);
+
+                let vm_ctx = vm_ctx_param;
+                let counter_boxed = use_var(&mut builder, &regs, &var_types, inst.a);
+                let limit_boxed = use_var(&mut builder, &regs, &var_types, inst.a + 1);
+                let step_boxed = use_var(&mut builder, &regs, &var_types, inst.a + 2);
+                let counter = emit_unbox_int(&mut builder, counter_boxed);
+                let limit = emit_unbox_int(&mut builder, limit_boxed);
+                let step = emit_unbox_int(&mut builder, step_boxed);
+
+                let call = builder
+                    .ins()
+                    .call(for_loop_ref, &[vm_ctx, counter, limit, step]);
+                let result = builder.inst_results(call)[0];
+
+                // Check if result is NAN_BOX_NULL (exhausted)
+                let nan_box_null = builder.ins().iconst(types::I64, NAN_BOX_NULL);
+                let is_exhausted = builder.ins().icmp(IntCC::Equal, result, nan_box_null);
+
+                // Store updated counter (if exhausted, keep previous counter)
+                let selected_raw = builder.ins().select(is_exhausted, counter, result);
+                let boxed_result = emit_box_int(&mut builder, selected_raw);
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
+                def_var(&mut builder, &mut regs, inst.a, boxed_result);
+
+                // Compute jump target
+                let offset = inst.sbx() as i32;
+                let loop_pc = (pc as i32 + 1 + offset) as usize;
+                let exit_pc = pc + 1;
+
+                let loop_block = get_or_create_block(&mut builder, &mut block_map, loop_pc);
+                let exit_block = get_or_create_block(&mut builder, &mut block_map, exit_pc);
+
+                builder
+                    .ins()
+                    .brif(is_exhausted, exit_block, &[], loop_block, &[]);
+                terminated = true;
+            }
+
+            OpCode::ForIn => {
+                // ForIn base, iterator_reg, element_dest
+                // Instruction format: ABC (a=base, b=iterator_reg, c=element_dest)
+                // VM semantics:
+                //   - R[A+1] = current index
+                //   - R[B] = iterator (collection)
+                //   - R[C] = extracted element (output)
+                //   - R[A] = Bool(has_more)
+                //
+                // Runtime helper signature:
+                //   jit_rt_for_in(vm_ctx, iterator_ptr, index) -> i64 (element or NAN_BOX_NULL)
+                let for_in_sig = module.make_signature();
+                let for_in_fn = module
+                    .declare_function("jit_rt_for_in", Linkage::Import, &{
+                        let mut sig = for_in_sig;
+                        sig.params.push(AbiParam::new(pointer_type)); // vm_ctx
+                        sig.params.push(AbiParam::new(types::I64)); // iterator (NaN-boxed ptr)
+                        sig.params.push(AbiParam::new(types::I64)); // index (raw i64)
+                        sig.returns.push(AbiParam::new(types::I64)); // element (NaN-boxed) or NAN_BOX_NULL
+                        sig
+                    })
+                    .map_err(|e| CodegenError::LoweringError(e.to_string()))?;
+                let for_in_ref = module.declare_func_in_func(for_in_fn, &mut builder.func);
+
+                let vm_ctx = vm_ctx_param;
+                let iterator = use_var(&mut builder, &regs, &var_types, inst.b);
+                let index_boxed = use_var(&mut builder, &regs, &var_types, inst.a + 1);
+                let index = emit_unbox_int(&mut builder, index_boxed);
+
+                let call = builder.ins().call(for_in_ref, &[vm_ctx, iterator, index]);
+                let element = builder.inst_results(call)[0];
+
+                // Store element at dest register C
+                var_types.insert(inst.c as u32, JitVarType::Ptr);
+                def_var(&mut builder, &mut regs, inst.c, element);
+
+                // has_more = element != NAN_BOX_NULL
+                let nan_box_null = builder.ins().iconst(types::I64, NAN_BOX_NULL);
+                let has_more_raw = builder.ins().icmp(IntCC::NotEqual, element, nan_box_null);
+                let true_val = builder.ins().iconst(types::I64, NAN_BOX_TRUE);
+                let false_val = builder.ins().iconst(types::I64, NAN_BOX_FALSE);
+                let has_more = builder.ins().select(has_more_raw, true_val, false_val);
+                var_types.insert(inst.a as u32, JitVarType::Bool);
+                def_var(&mut builder, &mut regs, inst.a, has_more);
+
+                // Increment index at A+1
+                let one = builder.ins().iconst(types::I64, 1);
+                let new_index = builder.ins().iadd(index, one);
+                let boxed_new_index = emit_box_int(&mut builder, new_index);
+                var_types.insert((inst.a + 1) as u32, JitVarType::Int);
+                def_var(&mut builder, &mut regs, inst.a + 1, boxed_new_index);
+            }
+
+            // ---------------------------------------------------------------
+            // Type and Membership Opcodes (Phase 0.6)
+            // ---------------------------------------------------------------
+            OpCode::In => {
+                // In dest, needle_reg, haystack_reg
+                // Instruction format: ABC (a=dest, b=needle_reg, c=haystack_reg)
+                // Runtime helper signature:
+                //   jit_rt_in(vm_ctx, value_ptr, collection_ptr) -> i64
+                //
+                // Returns NAN_BOX_TRUE if needle is in haystack, NAN_BOX_FALSE otherwise.
+                let in_sig = module.make_signature();
+                let in_fn = module
+                    .declare_function("jit_rt_in", Linkage::Import, &{
+                        let mut sig = in_sig;
+                        sig.params.push(AbiParam::new(pointer_type)); // vm_ctx
+                        sig.params.push(AbiParam::new(types::I64)); // value (NaN-boxed needle)
+                        sig.params.push(AbiParam::new(types::I64)); // collection (NaN-boxed haystack)
+                        sig.returns.push(AbiParam::new(types::I64)); // result (NAN_BOX_TRUE/FALSE)
+                        sig
+                    })
+                    .map_err(|e| CodegenError::LoweringError(e.to_string()))?;
+                let in_ref = module.declare_func_in_func(in_fn, &mut builder.func);
+
+                let vm_ctx = vm_ctx_param;
+                let needle = use_var(&mut builder, &regs, &var_types, inst.b);
+                let haystack = use_var(&mut builder, &regs, &var_types, inst.c);
+                let call = builder.ins().call(in_ref, &[vm_ctx, needle, haystack]);
+                let result = builder.inst_results(call)[0];
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
+                def_var(&mut builder, &mut regs, inst.a, result);
+            }
+
+            OpCode::Is => {
+                // Is dest, val_reg, type_name_reg
+                // Instruction format: ABC (a=dest, b=val_reg, c=type_name_reg)
+                // Runtime helper signature:
+                //   jit_rt_is(vm_ctx, value_ptr, type_id) -> i64
+                //
+                // Returns NAN_BOX_TRUE if value's runtime type matches the type name,
+                // NAN_BOX_FALSE otherwise.
+                let is_sig = module.make_signature();
+                let is_fn = module
+                    .declare_function("jit_rt_is", Linkage::Import, &{
+                        let mut sig = is_sig;
+                        sig.params.push(AbiParam::new(pointer_type)); // vm_ctx
+                        sig.params.push(AbiParam::new(types::I64)); // value (NaN-boxed)
+                        sig.params.push(AbiParam::new(types::I64)); // type_id (NaN-boxed string or index)
+                        sig.returns.push(AbiParam::new(types::I64)); // result (NAN_BOX_TRUE/FALSE)
+                        sig
+                    })
+                    .map_err(|e| CodegenError::LoweringError(e.to_string()))?;
+                let is_ref = module.declare_func_in_func(is_fn, &mut builder.func);
+
+                let vm_ctx = vm_ctx_param;
+                let value = use_var(&mut builder, &regs, &var_types, inst.b);
+                let type_id = use_var(&mut builder, &regs, &var_types, inst.c);
+                let call = builder.ins().call(is_ref, &[vm_ctx, value, type_id]);
+                let result = builder.inst_results(call)[0];
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
+                def_var(&mut builder, &mut regs, inst.a, result);
+            }
+
+            // ---------------------------------------------------------------
+            // Tool System Opcodes (Phase 0.4)
+            // ---------------------------------------------------------------
+            OpCode::ToolCall => {
+                // ToolCall dest, tool_id_const_idx
+                // Instruction format: ABx (a=dest, bx=tool constant index)
+                // Runtime helper signature:
+                //   jit_rt_tool_call(vm_ctx, tool_id, args_map_ptr) -> i64
+                //
+                // The ToolCall lowering constructs an args map in the destination
+                // register (dest) via NewMap immediately before ToolCall. The
+                // runtime helper expects the args map pointer in that register.
+                let vm_ctx = vm_ctx_param;
+                let tool_id = builder.ins().iconst(types::I32, inst.bx() as i64);
+                let args_map = use_var(&mut builder, &regs, &var_types, inst.a);
+                let call = builder
+                    .ins()
+                    .call(tool_call_ref, &[vm_ctx, tool_id, args_map]);
+                let result = builder.inst_results(call)[0];
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
+                def_var(&mut builder, &mut regs, inst.a, result);
+            }
+
+            OpCode::Schema => {
+                // Schema value_reg, schema_id
+                // Instruction format: ABx (a=value_reg, bx=schema_id)
+                // Runtime helper signature:
+                //   jit_rt_schema_validate(vm_ctx, value_ptr, schema_id) -> i64 (bool)
+                let vm_ctx = vm_ctx_param;
+                let value = use_var(&mut builder, &regs, &var_types, inst.a);
+                let schema_id = builder.ins().iconst(types::I32, inst.bx() as i64);
+                builder
+                    .ins()
+                    .call(schema_validate_ref, &[vm_ctx, value, schema_id]);
+            }
+
+            OpCode::Emit => {
+                // Emit value_reg
+                // Instruction format: A (a=value_reg to emit)
+                // Runtime helper signature:
+                //   jit_rt_emit(vm_ctx, value_ptr) -> i64 (returns null)
+                // No result register needed; this is a side effect.
+                let vm_ctx = vm_ctx_param;
+                let value = use_var(&mut builder, &regs, &var_types, inst.a);
+                builder.ins().call(emit_ref, &[vm_ctx, value]);
+                // Emit has no destination register; it's a pure side effect.
+            }
+
+            OpCode::TraceRef => {
+                // TraceRef dest
+                // Instruction format: A (a=dest_reg)
+                // Runtime helper signature:
+                //   jit_rt_trace_ref(vm_ctx) -> i64
+                let vm_ctx = vm_ctx_param;
+                let call = builder.ins().call(trace_ref_ref, &[vm_ctx]);
+                let result = builder.inst_results(call)[0];
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
+                def_var(&mut builder, &mut regs, inst.a, result);
+            }
 
             OpCode::Nop => {}
 
-            // Everything else -> deopt stub: return NAN_BOX_NULL.
-            // Cells with unsupported opcodes are still JIT-compiled; the
-            // unsupported instruction becomes a no-op that writes null to its
-            // destination register. The interpreter remains the correctness
-            // fallback for these cells.
+            // All opcodes are expected to be handled above in Phase 0.7.
             _ => {
-                let null_val = builder.ins().iconst(types::I64, NAN_BOX_NULL);
-                // If the instruction has a destination register (field a),
-                // write null so downstream code doesn't see an undefined var.
-                if (inst.a as u32) < 256 {
-                    var_types.insert(inst.a as u32, JitVarType::Int);
-                    def_var(&mut builder, &mut regs, inst.a, null_val);
-                }
+                return Err(CodegenError::LoweringError(format!(
+                    "unhandled opcode in JIT lowering: {:?}",
+                    inst.op
+                )));
             }
         }
     }
@@ -3510,7 +4510,7 @@ fn use_var(
             builder.ins().iconst(types::I64, 0)
         }
         JitVarType::Int => {
-            // NaN-boxed integer 0 = (0 << 1) | 1 = 1
+            // NaN-boxed integer 0 = NAN_MASK | (TAG_INT << 48) | 0 = 0x7FF9_0000_0000_0000
             builder.ins().iconst(types::I64, nan_box_int(0))
         }
         JitVarType::Bool => {
@@ -3520,6 +4520,10 @@ fn use_var(
         JitVarType::Str => {
             // Null pointer
             builder.ins().iconst(types::I64, 0)
+        }
+        JitVarType::Ptr => {
+            // Null heap pointer sentinel
+            builder.ins().iconst(types::I64, NAN_BOX_NULL)
         }
     }
 }
@@ -3566,16 +4570,18 @@ fn lower_constant(
     })?;
 
     let val = match constant {
-        // NaN-box integers: (n << 1) | 1
+        // NaN-box integers: NAN_MASK | (TAG_INT << 48) | (n & PAYLOAD_MASK)
         Constant::Int(n) => builder.ins().iconst(types::I64, nan_box_int(*n)),
-        // NaN-box floats: raw f64 bits as i64
+        // Floats: raw f64 bits as i64 (NOT NaN-boxed)
         Constant::Float(f) => builder.ins().iconst(types::I64, nan_box_float(*f)),
-        // NaN-box booleans: quiet NaN payloads
+        // NaN-box booleans: TAG_BOOL sentinels
         Constant::Bool(b) => {
             let sentinel = if *b { NAN_BOX_TRUE } else { NAN_BOX_FALSE };
             builder.ins().iconst(types::I64, sentinel)
         }
-        // NaN-box null: canonical quiet NaN sentinel
+        // Pre-boxed NaN-boxed value stored directly.
+        Constant::NbValue(raw) => builder.ins().iconst(types::I64, *raw as i64),
+        // NaN-box null: TAG_NULL sentinel
         Constant::Null => builder.ins().iconst(types::I64, NAN_BOX_NULL),
         Constant::String(_) => builder.ins().iconst(types::I64, 0),
         Constant::BigInt(_) => builder.ins().iconst(types::I64, 0),

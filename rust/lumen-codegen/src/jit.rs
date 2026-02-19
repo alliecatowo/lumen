@@ -702,6 +702,34 @@ fn register_string_helpers(builder: &mut JITBuilder) {
 
 use lumen_core::values::{RecordValue, Value};
 
+// NbValue decoding constants (must match NbValue in lumen-core and ir.rs).
+const NBVAL_NAN_MASK: u64 = 0x7FF8_0000_0000_0000;
+const NBVAL_PAYLOAD_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
+
+/// Decode a NbValue-encoded i64 to a `Value` for use as a collection index.
+///
+/// NbValue integers are encoded as `NAN_MASK | (TAG_INT=1 << 48) | (payload & PAYLOAD_MASK)`.
+/// All other NaN-boxed or raw-pointer values are treated as heap pointers to `Value`.
+///
+/// # Safety
+/// If `val` is not a NbValue integer, it must be a valid `*const Value` pointer.
+fn decode_nbvalue_index(val: i64) -> Value {
+    let u = val as u64;
+    if (u & NBVAL_NAN_MASK) == NBVAL_NAN_MASK && ((u >> 48) & 0xF) == 1 {
+        // NbValue integer: TAG_INT=1. Extract 48-bit two's-complement payload.
+        let payload = u & NBVAL_PAYLOAD_MASK;
+        let signed = if payload & (1 << 47) != 0 {
+            (payload | !NBVAL_PAYLOAD_MASK) as i64
+        } else {
+            payload as i64
+        };
+        Value::Int(signed)
+    } else {
+        // Heap pointer to a Value.
+        unsafe { (*(val as *const Value)).clone() }
+    }
+}
+
 /// Get a field from a Record by field name.
 /// Returns a `*mut Value` as i64 (boxed Value).
 /// If the record is null or the field doesn't exist, returns a boxed Value::Null.
@@ -784,13 +812,13 @@ extern "C" fn jit_rt_record_set_field(
 /// If the collection is null, the index is out of bounds, or the key doesn't exist, returns a boxed Value::Null.
 ///
 /// The `index_ptr` may be either:
-/// - A NaN-boxed integer (low bit 1): decoded as `(val >> 1)` → used as integer index
+/// - A NbValue-boxed integer (NAN_MASK | TAG_INT=1 << 48 | payload): decoded via 48-bit sign extension
 /// - A NaN-boxed null sentinel (`NAN_BOX_NULL`): returns null
-/// - A heap pointer to a `Value` (8-byte aligned, low bit 0): dereferenced
+/// - A heap pointer to a `Value` (raw *const Value): dereferenced
 ///
 /// # Safety
 /// `collection_ptr` must be a valid `*mut Value` pointer pointing to a `Value::List` or `Value::Map`.
-/// If `index_ptr` has low bit 0 and is not a sentinel, it must be a valid `*const Value` pointer.
+/// If `index_ptr` is not a NbValue integer or sentinel, it must be a valid `*const Value` pointer.
 extern "C" fn jit_rt_get_index(_ctx: *mut VmContext, collection_ptr: i64, index_ptr: i64) -> i64 {
     if collection_ptr == 0 || collection_ptr == NAN_BOX_NULL {
         // Null collection, return boxed null
@@ -803,15 +831,11 @@ extern "C" fn jit_rt_get_index(_ctx: *mut VmContext, collection_ptr: i64, index_
 
     let collection = unsafe { &*(collection_ptr as *const Value) };
 
-    // Decode index: NaN-boxed integer (low bit 1) or heap pointer
-    let index_val: Value;
-    if (index_ptr & 1) == 1 {
-        // NaN-boxed integer: decode (val >> 1)
-        index_val = Value::Int(index_ptr >> 1);
-    } else {
-        // Heap pointer to a Value
-        index_val = unsafe { (*(index_ptr as *const Value)).clone() };
-    }
+    // Decode index using NbValue encoding (matches NbValue in lumen-core):
+    //   NAN_MASK = 0x7FF8_0000_0000_0000
+    //   TAG_INT  = 1  →  integer marker at bits [51:48]
+    //   Payload  = lower 48 bits (two's complement)
+    let index_val = decode_nbvalue_index(index_ptr);
 
     let result = match (collection, &index_val) {
         (Value::List(l), Value::Int(i)) => {
@@ -853,7 +877,7 @@ extern "C" fn jit_rt_get_index(_ctx: *mut VmContext, collection_ptr: i64, index_
 ///
 /// # Safety
 /// `collection_ptr` must be a valid `*mut Value` pointer pointing to a `Value::List` or `Value::Map`.
-/// `index_ptr` must be a valid `*mut Value` pointer.
+/// `index_ptr` is a NbValue-encoded i64 (integer or heap pointer to Value).
 /// `value_ptr` must be a valid `*mut Value` pointer.
 extern "C" fn jit_rt_set_index(
     _ctx: *mut VmContext,
@@ -867,7 +891,8 @@ extern "C" fn jit_rt_set_index(
     }
 
     let collection = unsafe { &*(collection_ptr as *const Value) };
-    let index = unsafe { &*(index_ptr as *const Value) };
+    let index_decoded = decode_nbvalue_index(index_ptr);
+    let index = &index_decoded;
     let new_value = if value_ptr == 0 || value_ptr == NAN_BOX_NULL {
         Value::Null
     } else {
@@ -2737,113 +2762,6 @@ fn lower_cell_jit(
         string_table,
         cell_return_types,
     )
-}
-
-/// Lower only the specified cells from a `LirModule` into the JIT.
-///
-/// This is the selective compilation variant of `lower_module_jit`. Instead of
-/// compiling every cell, it compiles only those whose names appear in
-/// `target_cells`. Cross-cell call references to uncompiled cells will trap at
-/// runtime (the caller should ensure the interpreter handles those).
-fn lower_cells_jit(
-    module: &mut JITModule,
-    lir: &LirModule,
-    target_cells: &[&str],
-    pointer_type: ClifType,
-) -> Result<JitLoweredModule, CodegenError> {
-    let mut fb_ctx = FunctionBuilderContext::new();
-
-    // Select only the target cells from the module.
-    let compilable_cells: Vec<&LirCell> = lir
-        .cells
-        .iter()
-        .filter(|c| target_cells.contains(&c.name.as_str()))
-        .collect();
-
-    if compilable_cells.is_empty() {
-        return Ok(JitLoweredModule {
-            functions: Vec::new(),
-            _retained_cells: Vec::new(),
-        });
-    }
-
-    // Declare signatures for the target cells.
-    let mut func_ids: HashMap<String, FuncId> = HashMap::new();
-    for cell in &compilable_cells {
-        let mut sig = module.make_signature();
-        sig.params.push(AbiParam::new(pointer_type));
-        for param in &cell.params {
-            let param_ty = lir_type_str_to_cl_type(&param.ty, pointer_type);
-            let abi_ty = if param_ty == types::I8 {
-                types::I64
-            } else {
-                param_ty
-            };
-            sig.params.push(AbiParam::new(abi_ty));
-        }
-        sig.returns.push(AbiParam::new(types::I64));
-        let func_id = module
-            .declare_function(&cell.name, Linkage::Export, &sig)
-            .map_err(|e| {
-                CodegenError::LoweringError(format!("declare_function({}): {e}", cell.name))
-            })?;
-        func_ids.insert(cell.name.clone(), func_id);
-    }
-
-    // Build return type map for the target cells.
-    let cell_return_types: HashMap<String, crate::ir::JitVarType> = compilable_cells
-        .iter()
-        .map(|c| {
-            let ret_ty = c
-                .returns
-                .as_deref()
-                .map(crate::ir::JitVarType::from_lir_return_type)
-                .unwrap_or(crate::ir::JitVarType::Int);
-            (c.name.clone(), ret_ty)
-        })
-        .collect();
-
-    let mut retained_cells: Vec<LirCell> = Vec::with_capacity(compilable_cells.len());
-    let mut lowered = JitLoweredModule {
-        functions: Vec::with_capacity(compilable_cells.len()),
-        _retained_cells: Vec::new(),
-    };
-
-    for cell in &compilable_cells {
-        let func_id = func_ids[&cell.name];
-        let mut ctx = Context::new();
-
-        let mut optimized_cell = (*cell).clone();
-        crate::opt::optimize(&mut optimized_cell);
-
-        lower_cell_jit(
-            &mut ctx,
-            module,
-            &optimized_cell,
-            &mut fb_ctx,
-            pointer_type,
-            func_id,
-            &func_ids,
-            &lir.strings,
-            &cell_return_types,
-        )?;
-
-        retained_cells.push(optimized_cell);
-
-        let ret_type = cell_return_types
-            .get(&cell.name)
-            .copied()
-            .unwrap_or(crate::ir::JitVarType::Int);
-        lowered.functions.push(JitLoweredFunction {
-            name: cell.name.clone(),
-            func_id,
-            param_count: cell.params.len(),
-            return_type: ret_type,
-        });
-    }
-
-    lowered._retained_cells = retained_cells;
-    Ok(lowered)
 }
 
 // ---------------------------------------------------------------------------

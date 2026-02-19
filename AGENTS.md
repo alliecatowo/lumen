@@ -6,13 +6,17 @@ Lumen is a statically typed programming language for AI-native systems. It compi
 
 ```bash
 cargo build --release                    # Build all crates
-cargo test --workspace                   # Run all tests (~5,300+ passing)
-cargo test -p lumen-compiler             # Compiler tests only
-cargo test -p lumen-rt                   # VM + runtime tests only
-cargo test -p lumen-cli                  # CLI tests only
-cargo test -p lumen-compiler -- spec_suite::test_name  # Single test
+timeout 180 cargo test --workspace       # All tests (~5,300+ passing)
+timeout 60 cargo test -p lumen-compiler  # Compiler tests only
+timeout 60 cargo test -p lumen-rt --test tier_parity  # Cross-tier parity (37 tests)
+timeout 60 cargo test -p lumen-compiler -- spec_suite::test_name  # Single test
+timeout 120 cargo check --workspace      # Type-check without building
 cargo clippy --workspace                 # Lint check
 ```
+
+**MANDATORY**: Always use `timeout` on test/check commands. The test harness can hang
+indefinitely (OSR Cranelift panic loops, fiber stack corruption). Never run bare
+`cargo test` or `cargo check` without a timeout wrapper.
 
 ## Workspace Layout
 
@@ -44,14 +48,81 @@ Source → [1.Markdown Extract] → [2.Lexer] → [3.Parser] → [4.Resolver] �
 6. **Constraints** (`compiler/constraints.rs`) — record `where` clause validation
 7. **Lowering** (`compiler/lower.rs`) — AST → 32-bit LIR bytecode
 
-## VM Architecture
+## VM Architecture — Transcendent Architecture (v0.5+)
 
-- Register-based interpreter with 32-bit fixed-width instructions (Lua-style)
-- ~100 opcodes, 80+ builtins, call-frame stack (max 256 depth)
-- Values: scalars inline, collections `Arc<T>` with COW
-- Algebraic effects: `Perform`/`HandlePush`/`HandlePop`/`Resume` (one-shot continuations)
-- Process runtimes: memory (KV), machine (state graphs), pipeline (auto-chain)
-- M:N work-stealing scheduler, actors, supervisors, nurseries
+The VM uses the **3-tier JIT + fiber-based effect system** ("Transcendent Architecture"):
+
+### Value Representation: NbValue (NaN-boxing)
+
+All VM registers are `NbValue` — a 64-bit NaN-boxed value in `lumen-core/src/nb_value.rs`:
+
+```
+Tag 0 = f64 float  |  Tag 1 = i32 SMI  |  Tag 2 = bool
+Tag 3 = null       |  Tag 4 = Arc<Value> heap ptr  |  Tag 5 = Arc<str>
+```
+
+SMI (small integer) fast-paths keep hot arithmetic loops **allocation-free**. The bridge
+to the legacy `Value` enum is `NbValue::peek_legacy()` / `NbValue::from_legacy()` — used
+only for tool dispatch, process runtimes, and effect handlers.
+
+### 3-Tier JIT
+
+| Tier | Trigger | Backend | Latency |
+|------|---------|---------|---------|
+| **Tier 0** | always | Interpreter (`vm/mod.rs`) | ~1–5 ns/op |
+| **Tier 1** | call count ≥ threshold, stencil enabled | Stencil stitcher (`lumen-codegen/stitcher.rs`) | ~0 compile latency |
+| **Tier 2** | call count ≥ threshold, JIT enabled | Cranelift (`lumen-codegen/jit.rs`) | ~ms compile, fastest runtime |
+
+`OsrCheck` safepoints are inserted at loop back-edges; when a cell goes hot mid-loop, the
+VM snapshot transfers to the JIT frame (OSR — On-Stack Replacement). See `vm/osr.rs`.
+
+### Fiber-Based Effects
+
+Effects use OS-level fiber stacks (not Rust async), implemented in `vm/fiber.rs`:
+
+- `lm_rt_handle_push(pool, performer, eff_id, op_id)` — allocates handler fiber, wires into parent chain
+- `lm_rt_perform(performer, eff_id, op_id, arg)` — walks parent chain, `fiber_switch`es to handler
+- `lm_rt_resume(handler, performer, val)` — `fiber_switch`es back, returns value
+- `lm_rt_handle_pop(pool, handler, performer)` — unwires from chain, returns stack to pool
+
+`fiber_switch` is pure assembly (x86_64 and aarch64). The pool recycles stacks to avoid `mmap` per perform.
+
+### ⚠️ Additional Gotchas for Transcendent Architecture
+
+- **Never use `ax`/`ax_val` for jumps** — always `sax`/`sax_val` (signed 24-bit offset)
+- **`lm_rt_handle_pop` takes 3 args**: `(pool, handler, performer)` — performer can be null in tests
+- **`NewListStack`/`NewTupleStack`** — stack-allocated variants emitted by escape analysis in opt.rs; the VM handles them identically to `NewList`/`NewTuple` at runtime
+- **JIT Tier 2 known gaps**: `Append` opcode not yet lowered in `ir.rs`; Cranelift verifier errors on some loop patterns (tracked in bench failures)
+- **Effect test `parity_effect_perform_resume`** is `#[ignore]` pending fiber heap fix
+
+### Key New Files (Transcendent Architecture)
+
+```
+rust/lumen-core/src/nb_value.rs       — NbValue type + constructors + accessors
+rust/lumen-core/src/vm_context.rs     — VmContext (#[repr(C)] for stencil ABI)
+rust/lumen-rt/src/vm/fiber.rs         — Fiber, FiberPool, fiber_switch, handle_push/pop
+rust/lumen-rt/src/vm/fiber_effects.rs — lm_rt_perform, lm_rt_resume C-ABI wrappers
+rust/lumen-rt/src/vm/osr.rs           — OSR snapshot and transfer logic
+rust/lumen-rt/src/jit_tier.rs         — JitTier (Tier 2 Cranelift integration)
+rust/lumen-rt/src/stencil_tier.rs     — StencilTier (Tier 1 stitcher integration)
+rust/lumen-codegen/src/opt.rs         — Optimization passes (nop, escape, MIC)
+rust/lumen-codegen/src/stencils.rs    — Pre-compiled C stencil templates
+rust/lumen-codegen/src/stitcher.rs    — Stencil stitcher (patch + link)
+rust/lumen-codegen/src/stackmap.rs    — OSR stackmap generation
+rust/lumen-rt/tests/tier_parity.rs    — Cross-tier correctness tests (37 cases)
+bench/results_baseline.md             — Benchmark baseline (run 2026-02-19)
+```
+
+### Legacy `Value` enum
+
+The `Value` enum (`lumen-core/src/values.rs`) still exists as the "heap representation" used by:
+- Tool dispatch (providers receive/return `serde_json::Value`)
+- Process runtimes (memory, machine, pipeline)
+- Complex collections (Arc-backed for COW semantics)
+- Effect handler arguments
+
+It is NOT dead code — it is the bridge between NbValue and the outside world. The conversion
+bridge in `vm/mod.rs` (`reg()` / `set_reg_legacy()`) is load-bearing.
 
 ## ⚠️ Critical Gotchas (READ THESE)
 

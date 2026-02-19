@@ -187,6 +187,10 @@ pub unsafe extern "C" fn lm_rt_effect_stack_init(ctx: *mut VmContext) {
     let stack = Box::new(FiberEffectStack::new());
     (*ctx).effect_stack = Box::into_raw(stack) as *mut lumen_core::vm_context::EffectScope;
     platform::set_current_fiber(std::ptr::null_mut());
+    #[cfg(unix)]
+    {
+        let _ = platform::ensure_thread_stack_growth_handler();
+    }
 }
 
 /// Free the `FiberEffectStack` owned by `ctx`.
@@ -607,7 +611,7 @@ mod tests {
     ///   - A handler fiber that receives the perform arg, adds 10, and resumes.
     ///   - Calls lm_rt_perform from "main" and checks the resume value is arg+10.
     #[test]
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", unix))]
     fn perform_resume_roundtrip() {
         use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -632,6 +636,15 @@ mod tests {
             let ctx = &mut *ctx_box as *mut VmContext;
             lm_rt_effect_stack_init(ctx);
             CTX_PTR.store(ctx as u64, Ordering::SeqCst);
+
+            assert!(
+                platform::install_stack_growth_handler(),
+                "stack overflow handler install failed"
+            );
+            assert!(
+                platform::ensure_thread_stack_growth_handler(),
+                "alt signal stack install failed"
+            );
 
             // Create a "main" fiber to represent the current execution context.
             // We don't actually allocate a stack for it — it IS the current stack.

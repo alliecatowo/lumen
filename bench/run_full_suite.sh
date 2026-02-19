@@ -277,7 +277,7 @@ if [ "$ONLY_LUMEN" = false ] && [ "$NO_CROSS" = false ]; then
     validate_benchmark_sizes "$bench_name" || true
     
     # Log canonical N if defined
-    local canonical_n="${CANONICAL_N[$bench_name]:-}"
+    canonical_n="${CANONICAL_N[$bench_name]:-}"
     if [ -n "$canonical_n" ]; then
       echo "  N=$canonical_n"
     fi

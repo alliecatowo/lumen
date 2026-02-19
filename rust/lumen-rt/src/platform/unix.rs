@@ -1,40 +1,119 @@
 //! Unix-specific stack handling with SIGSEGV recovery
 
 use crate::platform::GrowStackResult;
-use crate::vm::fiber::{Fiber, DEFAULT_MAX_STACK_SIZE};
-use libc::{sigaction, sigemptyset, SA_ONSTACK, SA_SIGINFO, SIGSEGV};
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use crate::vm::fiber::Fiber;
+use libc::{sigaction, sigaltstack, sigemptyset, SA_ONSTACK, SA_SIGINFO, SIGSEGV};
+use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Once;
 
-/// Global flag: are we in a stack growth operation?
-static GROWING_STACK: AtomicBool = AtomicBool::new(false);
-static CURRENT_FIBER: AtomicPtr<Fiber> = AtomicPtr::new(std::ptr::null_mut());
+thread_local! {
+    /// Global flag: are we in a stack growth operation?
+    static GROWING_STACK: Cell<bool> = Cell::new(false);
+    static CURRENT_FIBER: Cell<*mut Fiber> = Cell::new(std::ptr::null_mut());
+    static ALT_STACK_PTR: Cell<*mut libc::c_void> = Cell::new(std::ptr::null_mut());
+    static ALT_STACK_SIZE: Cell<usize> = Cell::new(0);
+}
+
+static INSTALL_HANDLER_ONCE: Once = Once::new();
+static INSTALL_OK: AtomicBool = AtomicBool::new(false);
+static PAGE_SIZE: AtomicUsize = AtomicUsize::new(0);
 
 const DEFAULT_PAGE_SIZE: usize = 4096;
 
 pub fn page_size() -> usize {
-    unsafe {
-        let size = libc::sysconf(libc::_SC_PAGESIZE);
-        if size <= 0 {
-            DEFAULT_PAGE_SIZE
-        } else {
-            size as usize
-        }
+    let cached = PAGE_SIZE.load(Ordering::Relaxed);
+    if cached != 0 {
+        return cached;
+    }
+    let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    let page = if size <= 0 {
+        DEFAULT_PAGE_SIZE
+    } else {
+        size as usize
+    };
+    PAGE_SIZE.store(page, Ordering::Relaxed);
+    page
+}
+
+#[inline]
+fn page_size_cached() -> usize {
+    let cached = PAGE_SIZE.load(Ordering::Relaxed);
+    if cached == 0 {
+        DEFAULT_PAGE_SIZE
+    } else {
+        cached
     }
 }
 
 /// Install SIGSEGV handler for stack growth
 pub unsafe fn install_stack_overflow_handler() -> bool {
-    let mut sa: sigaction = std::mem::zeroed();
-    sa.sa_sigaction = stack_overflow_handler as usize;
-    sigemptyset(&mut sa.sa_mask);
-    sa.sa_flags = SA_ONSTACK | SA_SIGINFO; // Use alternate signal stack
+    INSTALL_HANDLER_ONCE.call_once(|| {
+        let page = page_size();
+        PAGE_SIZE.store(page, Ordering::Relaxed);
+        if !install_alt_stack_for_thread() {
+            return;
+        }
+        let mut sa: sigaction = std::mem::zeroed();
+        sa.sa_sigaction = stack_overflow_handler as *const () as usize;
+        sigemptyset(&mut sa.sa_mask);
+        sa.sa_flags = SA_ONSTACK | SA_SIGINFO; // Use alternate signal stack
+        if sigaction(SIGSEGV, &sa, std::ptr::null_mut()) != 0 {
+            return;
+        }
+        INSTALL_OK.store(true, Ordering::Release);
+    });
+    INSTALL_OK.load(Ordering::Acquire)
+}
 
-    sigaction(SIGSEGV, &sa, std::ptr::null_mut()) == 0
+pub unsafe fn ensure_thread_stack_overflow_handler() -> bool {
+    install_alt_stack_for_thread()
 }
 
 /// Update the current fiber pointer for the calling thread.
 pub fn set_current_fiber(fiber: *mut Fiber) {
-    CURRENT_FIBER.store(fiber, Ordering::Release);
+    CURRENT_FIBER.with(|cell| cell.set(fiber));
+}
+
+unsafe fn install_alt_stack_for_thread() -> bool {
+    let already_installed = ALT_STACK_PTR.with(|cell| !cell.get().is_null());
+    if already_installed {
+        return true;
+    }
+
+    let mut size = libc::SIGSTKSZ.max(64 * 1024) as usize;
+    size = round_up(size, page_size());
+
+    let stack_ptr = libc::mmap(
+        std::ptr::null_mut(),
+        size,
+        libc::PROT_READ | libc::PROT_WRITE,
+        libc::MAP_ANONYMOUS | libc::MAP_PRIVATE,
+        -1,
+        0,
+    );
+    if stack_ptr == libc::MAP_FAILED {
+        return false;
+    }
+
+    let mut alt: libc::stack_t = std::mem::zeroed();
+    alt.ss_sp = stack_ptr;
+    alt.ss_size = size;
+    alt.ss_flags = 0;
+
+    if sigaltstack(&alt, std::ptr::null_mut()) != 0 {
+        libc::munmap(stack_ptr, size);
+        return false;
+    }
+
+    ALT_STACK_PTR.with(|cell| cell.set(stack_ptr));
+    ALT_STACK_SIZE.with(|cell| cell.set(size));
+    true
+}
+
+#[inline]
+unsafe fn fail_fast() -> ! {
+    libc::_exit(128 + SIGSEGV);
 }
 
 extern "C" fn stack_overflow_handler(
@@ -43,32 +122,51 @@ extern "C" fn stack_overflow_handler(
     ctx: *mut libc::c_void,
 ) {
     if info.is_null() || ctx.is_null() {
-        unsafe { libc::signal(SIGSEGV, libc::SIG_DFL) };
-        return;
+        unsafe { fail_fast() };
     }
 
     // Prevent re-entrancy.
-    if GROWING_STACK.swap(true, Ordering::AcqRel) {
-        unsafe { libc::signal(SIGSEGV, libc::SIG_DFL) };
-        return;
+    let reentered = GROWING_STACK.with(|flag| {
+        let was = flag.get();
+        if !was {
+            flag.set(true);
+        }
+        was
+    });
+    if reentered {
+        unsafe { fail_fast() };
     }
 
     let fault_addr = unsafe { (*info).si_addr() as *mut u8 };
-    let fiber = CURRENT_FIBER.load(Ordering::Acquire);
+    let fiber = CURRENT_FIBER.with(|cell| cell.get());
 
     let mut handled = false;
     if !fiber.is_null() {
         let fiber_ref = unsafe { &mut *fiber };
-        let guard_page_end = unsafe { fiber_ref.stack_bottom.add(page_size()) };
-        if fault_addr >= fiber_ref.stack_bottom && fault_addr < guard_page_end {
+        let guard_end = unsafe { fiber_ref.stack_bottom.add(page_size_cached()) };
+        if fault_addr >= fiber_ref.stack_bottom && fault_addr < guard_end {
+            if fault_addr != fiber_ref.stack_bottom {
+                let page = page_size_cached();
+                let aligned = (fault_addr as usize) & !(page - 1);
+                let size = guard_end as usize - aligned;
+                if size > 0 {
+                    unsafe {
+                        libc::mprotect(
+                            aligned as *mut libc::c_void,
+                            size,
+                            libc::PROT_READ | libc::PROT_WRITE,
+                        );
+                    }
+                }
+            }
             handled = unsafe { try_grow_stack(fiber_ref, ctx) };
         }
     }
 
-    GROWING_STACK.store(false, Ordering::Release);
+    GROWING_STACK.with(|flag| flag.set(false));
 
     if !handled {
-        unsafe { libc::signal(SIGSEGV, libc::SIG_DFL) };
+        unsafe { fail_fast() };
     }
 }
 
@@ -89,7 +187,7 @@ unsafe fn try_grow_stack(fiber: &mut Fiber, ctx: *mut libc::c_void) -> bool {
     #[cfg(not(target_arch = "x86_64"))]
     let (current_rsp, current_rbp) = (std::ptr::null_mut(), std::ptr::null_mut());
 
-    if current_rsp.is_null() || current_rbp.is_null() {
+    if current_rsp.is_null() {
         return false;
     }
 
@@ -97,7 +195,18 @@ unsafe fn try_grow_stack(fiber: &mut Fiber, ctx: *mut libc::c_void) -> bool {
         return false;
     }
 
-    let new_size = fiber.stack_capacity.saturating_mul(2);
+    let new_size = fiber
+        .stack_capacity
+        .saturating_mul(2)
+        .min(fiber.max_stack_size);
+    if new_size <= fiber.stack_capacity {
+        return false;
+    }
+    let old_bottom = fiber.stack_bottom;
+    let old_top = fiber.stack_top;
+    if current_rsp < old_bottom || current_rsp >= old_top {
+        return false;
+    }
     let Some(result) = grow_stack_copy(
         fiber.stack_bottom,
         fiber.stack_top,
@@ -119,7 +228,11 @@ unsafe fn try_grow_stack(fiber: &mut Fiber, ctx: *mut libc::c_void) -> bool {
     if fiber.saved_rsp != 0 {
         fiber.saved_rsp = result.new_rsp as u64;
     }
-    if fiber.saved_rbp != 0 {
+    if fiber.saved_rbp != 0
+        && !current_rbp.is_null()
+        && current_rbp >= old_bottom
+        && current_rbp < old_top
+    {
         fiber.saved_rbp = result.new_rbp as u64;
     }
 
@@ -127,7 +240,9 @@ unsafe fn try_grow_stack(fiber: &mut Fiber, ctx: *mut libc::c_void) -> bool {
     #[cfg(target_arch = "x86_64")]
     {
         context.uc_mcontext.gregs[libc::REG_RSP as usize] = result.new_rsp as libc::greg_t;
-        context.uc_mcontext.gregs[libc::REG_RBP as usize] = result.new_rbp as libc::greg_t;
+        if !current_rbp.is_null() && current_rbp >= old_bottom && current_rbp < old_top {
+            context.uc_mcontext.gregs[libc::REG_RBP as usize] = result.new_rbp as libc::greg_t;
+        }
     }
 
     true
@@ -203,47 +318,57 @@ pub fn current_stack_pointer() -> *mut u8 {
 /// - Must be called with valid old_top and new_top pointers
 /// - The RBP chain must be valid (no frame pointer omission)
 unsafe fn relocate_frame_pointers(
+    old_bottom: *mut u8,
     old_top: *mut u8,
     new_top: *mut u8,
-    new_rsp: *mut u8,
+    _new_rsp: *mut u8,
     current_rbp: *mut u8,
 ) -> *mut u8 {
     // Calculate the offset between old and new stacks
     let stack_offset = new_top as isize - old_top as isize;
-    
+
     // Start with the current RBP
     let mut old_frame_ptr = current_rbp;
+    if old_frame_ptr < old_bottom || old_frame_ptr >= old_top {
+        return current_rbp;
+    }
     let mut new_frame_ptr = current_rbp.offset(stack_offset);
-    
+
     // Walk the frame pointer chain and fix each saved RBP
     // Safety: We limit the walk to prevent infinite loops on corrupted stacks
     let max_frames = 10000;
     let mut frame_count = 0;
-    
-    while !old_frame_ptr.is_null() 
+
+    while !old_frame_ptr.is_null()
         && frame_count < max_frames
-        && old_frame_ptr >= old_top.sub(DEFAULT_MAX_STACK_SIZE) as *mut u8
+        && old_frame_ptr >= old_bottom
+        && old_frame_ptr < old_top
     {
         // The saved RBP is stored at [old_frame_ptr]
         // Read the old saved RBP from the old stack
         let saved_rbp = *(old_frame_ptr as *mut *mut u8);
-        
+
         if saved_rbp.is_null() {
             // End of chain - write null to new stack
             *(new_frame_ptr as *mut *mut u8) = std::ptr::null_mut();
             break;
         }
-        
+
+        if saved_rbp < old_bottom || saved_rbp >= old_top {
+            *(new_frame_ptr as *mut *mut u8) = std::ptr::null_mut();
+            break;
+        }
+
         // Calculate the new saved RBP position
         let new_saved_rbp = saved_rbp.offset(stack_offset);
         *(new_frame_ptr as *mut *mut u8) = new_saved_rbp;
-        
+
         // Move to next frame
         old_frame_ptr = saved_rbp;
         new_frame_ptr = new_saved_rbp;
         frame_count += 1;
     }
-    
+
     // Return the relocated RBP for the current frame
     current_rbp.offset(stack_offset)
 }
@@ -284,7 +409,14 @@ pub(crate) unsafe fn grow_stack_copy(
     let new_top = new_bottom.add(new_size);
 
     // Calculate how much of the stack is actually used
-    let used = old_top as usize - current_rsp as usize;
+    let usable_bottom = old_bottom.add(page_size_cached());
+    let copy_start = if current_rsp < usable_bottom {
+        usable_bottom
+    } else {
+        current_rsp
+    };
+    let skip = copy_start as usize - current_rsp as usize;
+    let used = old_top as usize - copy_start as usize;
     if used > old_size {
         // Stack pointer is corrupted or outside expected range
         free_stack(new_bottom, new_size);
@@ -292,14 +424,21 @@ pub(crate) unsafe fn grow_stack_copy(
     }
 
     // Copy the used portion to the new stack (at corresponding offset from top)
-    let new_rsp = new_top.sub(used);
-    std::ptr::copy_nonoverlapping(current_rsp, new_rsp, used);
+    let new_rsp = new_top.sub(old_top as usize - current_rsp as usize);
+    let copy_dest = unsafe { new_rsp.add(skip) };
+    std::ptr::copy_nonoverlapping(copy_start, copy_dest, used);
 
     // Relocate frame pointers - CRITICAL for stack unwinding
-    let new_rbp = relocate_frame_pointers(old_top, new_top, new_rsp, current_rbp);
+    let new_rbp = if current_rbp.is_null() {
+        current_rbp
+    } else {
+        relocate_frame_pointers(old_bottom, old_top, new_top, new_rsp, current_rbp)
+    };
 
     // Free the old stack
-    free_stack(old_bottom, old_size);
+    // Freeing the old stack inside a signal handler is risky; keep it mapped.
+    // The old stack may contain signal frames or unwinding metadata that are
+    // still referenced until we fully resume execution.
 
     Some(GrowStackResult {
         new_bottom,

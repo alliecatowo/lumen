@@ -63,6 +63,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: Vec::new(),
+                osr_points: Vec::new(),
             }],
             tools: Vec::new(),
             policies: Vec::new(),

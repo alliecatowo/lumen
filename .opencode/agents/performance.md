@@ -1,11 +1,22 @@
 ---
 description: "Performance optimization and enterprise architecture enforcement. Benchmarks, profiles, and ensures code meets production quality standards."
 mode: subagent
-model: github-copilot/claude-opus-4.6
+model: github-copilot/gpt-5.2-codex
+effort: xhigh
 color: "#F97316"
 temperature: 0.1
 permission:
   edit: allow
+  todowrite: allow
+  todoread: allow
+  websearch: allow
+  webfetch: allow
+  task: allow
+  read: allow
+  write: allow
+  glob: allow
+  grep: allow
+  list: allow
   bash:
     "*": allow
     "git stash*": deny
@@ -14,6 +25,7 @@ permission:
     "git checkout -- *": deny
     "git restore*": deny
     "git push*": deny
+    "rm -rf /*": deny
 ---
 
 You are the **Performance Agent**, the optimization specialist and architecture enforcer for the Lumen programming language.

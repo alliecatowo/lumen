@@ -11,17 +11,26 @@
   ],
   "permission": {
     "*": "allow",
+    "todowrite": "allow",
+    "todoread": "allow",
+    "websearch": "allow",
+    "webfetch": "allow",
+    "task": "allow",
     "bash": {
       "*": "allow",
       "git stash*": "deny",
-      "git reset --hard*": "deny",
+      "git reset*": "deny",
       "git clean*": "deny",
-      "git push --force*": "deny",
-      "git push -f*": "deny",
+      "git checkout -- *": "deny",
+      "git restore*": "deny",
+      "git push*": "deny",
       "rm -rf /*": "deny"
     },
     "external_directory": {
-      "*": "deny"
+      "/tmp/**": "allow",
+      "/var/tmp/**": "allow",
+      "~/.cache/**": "allow",
+      "*": "ask"
     }
   }
 }

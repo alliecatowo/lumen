@@ -486,6 +486,9 @@ fn emit_wasm_load_constant(
         Constant::BigInt(_) => {
             func.instruction(&WasmInst::I64Const(0));
         }
+        Constant::NbValue(raw) => {
+            func.instruction(&WasmInst::I64Const(*raw as i64));
+        }
     }
 
     func.instruction(&WasmInst::LocalSet(dest_reg as u32));

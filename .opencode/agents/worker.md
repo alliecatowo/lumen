@@ -1,11 +1,22 @@
 ---
 description: "Fast general-purpose task agent. Handles small fixes, bulk edits, simple refactors, mechanical changes, and routine coding work across the codebase."
 mode: subagent
-model: github-copilot/claude-haiku-4.5
+model: github-copilot/gpt-5.2-codex
+effort: low
 color: "#06B6D4"
 temperature: 0.2
 permission:
   edit: allow
+  todowrite: allow
+  todoread: allow
+  websearch: allow
+  webfetch: allow
+  task: allow
+  read: allow
+  write: allow
+  glob: allow
+  grep: allow
+  list: allow
   bash:
     "*": allow
     "git stash*": deny
@@ -14,6 +25,7 @@ permission:
     "git checkout -- *": deny
     "git restore*": deny
     "git push*": deny
+    "rm -rf /*": deny
 ---
 
 You are the **Worker**, the fast general-purpose task agent for the Lumen programming language.

@@ -60,6 +60,16 @@ impl Default for JitTierConfig {
     }
 }
 
+impl JitTierConfig {
+    /// Create a config with the given hot threshold.
+    pub fn from_threshold(hot_threshold: u64) -> Self {
+        Self {
+            hot_threshold,
+            ..Default::default()
+        }
+    }
+}
+
 /// Eligibility status for a cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CellEligibility {
@@ -248,11 +258,16 @@ impl JitTier {
     /// Execute a JIT-compiled cell with the given i64 arguments.
     /// Returns `Some(result)` on success, `None` if not compiled or execution fails.
     #[inline]
-    pub fn execute(&mut self, cell_name: &str, args: &[i64]) -> Option<i64> {
+    pub fn execute(
+        &mut self,
+        cell_name: &str,
+        args: &[i64],
+        vm_ctx: &lumen_codegen::vm_context::VmContext,
+    ) -> Option<i64> {
         #[cfg(feature = "jit")]
         {
             if let Some(ref mut engine) = self.engine {
-                match engine.execute_jit(cell_name, args) {
+                match engine.execute_jit(vm_ctx, cell_name, args) {
                     Ok(result) => {
                         self.stats.jit_executions += 1;
                         Some(result)

@@ -287,6 +287,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }
     }
 
@@ -302,6 +303,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }
     }
 
@@ -398,6 +400,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 7, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         };
         let lir = empty_lir_module(vec![cell]);
         let bytes =
@@ -435,6 +438,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         };
         let lir = empty_lir_module(vec![cell]);
         let bytes =
@@ -471,6 +475,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         };
         let lir = empty_lir_module(vec![cell]);
         let bytes =
@@ -501,6 +506,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         };
         let lir = empty_lir_module(vec![cell]);
         let bytes = compile_to_wasm(&lir, WasmTarget::Wasm32Unknown)
@@ -549,6 +555,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         };
         let lir = empty_lir_module(vec![cell]);
         let bytes = compile_to_wasm(&lir, WasmTarget::Wasm32Unknown).expect("loop should compile");
@@ -593,6 +600,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         };
         let lir = empty_lir_module(vec![cell]);
         let bytes =

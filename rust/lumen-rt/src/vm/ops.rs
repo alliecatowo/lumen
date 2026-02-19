@@ -328,16 +328,21 @@ impl VM {
     ) -> Result<(), VmError> {
         // Fast path: borrow registers and extract Copy types (Int, Float) directly.
         // This avoids any cloning or heap allocation for the 99% case.
-        let lhs_ref = &self.registers[base + b];
-        let rhs_ref = &self.registers[base + c];
+        // Get values as NbValue first, then convert patterns
+        let lhs_val = self.registers[base + b];
+        let rhs_val = self.registers[base + c];
+
+        // Convert to legacy Value for pattern matching (temporary until full NbValue migration)
+        let lhs_ref = lhs_val.peek_legacy();
+        let rhs_ref = rhs_val.peek_legacy();
 
         // HOT PATH: Int op Int — the vast majority of arithmetic in numeric code.
         // Using if-let instead of nested match to give the compiler the best branch layout.
-        if let (Value::Int(x), Value::Int(y)) = (lhs_ref, rhs_ref) {
+        if let (Value::Int(x), Value::Int(y)) = (&lhs_ref, &rhs_ref) {
             let x = *x;
             let y = *y;
             if let Some(res) = int_op(op, x, y) {
-                self.registers[base + a] = Value::Int(res);
+                self.set_reg(base + a, Value::Int(res));
                 return Ok(());
             } else {
                 return Err(VmError::ArithmeticOverflow(op_name(op).to_string()));
@@ -345,24 +350,24 @@ impl VM {
         }
 
         // WARM PATH: Float op Float
-        if let (Value::Float(x), Value::Float(y)) = (lhs_ref, rhs_ref) {
-            self.registers[base + a] = Value::Float(float_op(op, *x, *y));
+        if let (Value::Float(x), Value::Float(y)) = (&lhs_ref, &rhs_ref) {
+            self.set_reg(base + a, Value::Float(float_op(op, *x, *y)));
             return Ok(());
         }
 
         // WARM PATH: Mixed Int/Float promotion
-        if let (Value::Int(x), Value::Float(y)) = (lhs_ref, rhs_ref) {
-            self.registers[base + a] = Value::Float(float_op(op, *x as f64, *y));
+        if let (Value::Int(x), Value::Float(y)) = (&lhs_ref, &rhs_ref) {
+            self.set_reg(base + a, Value::Float(float_op(op, *x as f64, *y)));
             return Ok(());
         }
-        if let (Value::Float(x), Value::Int(y)) = (lhs_ref, rhs_ref) {
-            self.registers[base + a] = Value::Float(float_op(op, *x, *y as f64));
+        if let (Value::Float(x), Value::Int(y)) = (&lhs_ref, &rhs_ref) {
+            self.set_reg(base + a, Value::Float(float_op(op, *x, *y as f64)));
             return Ok(());
         }
 
         // COLD PATH: BigInt and error cases — delegated to a separate non-inlined function
         // so the compiler doesn't bloat the hot path's instruction cache footprint.
-        self.registers[base + a] = arith_op_slow(op, lhs_ref, rhs_ref)?;
+        self.set_reg(base + a, arith_op_slow(op, &lhs_ref, &rhs_ref)?);
         Ok(())
     }
 }

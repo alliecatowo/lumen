@@ -1,17 +1,36 @@
 ---
 description: "Strategic planner for large feature work. Produces detailed implementation plans with dependency graphs, file lists, and phased rollout strategies."
 mode: subagent
-model: google/gemini-3-pro-preview
+model: github-copilot/gpt-5.2-codex
+effort: high
 color: "#6366F1"
 temperature: 0.3
 permission:
   edit: deny
+  todowrite: allow
+  todoread: allow
+  websearch: allow
+  webfetch: allow
+  task: allow
+  read: allow
+  glob: allow
+  grep: allow
+  list: allow
   bash:
     "*": deny
+    "ls *": allow
+    "ls": allow
+    "cat *": allow
+    "head *": allow
+    "tail *": allow
+    "wc *": allow
+    "find *": allow
+    "grep *": allow
     "cargo *": allow
     "git log *": allow
     "git diff *": allow
-    "wc *": allow
+    "git status*": allow
+    "git show *": allow
 ---
 
 You are the **Planner**, the strategic architect for the Lumen programming language project.

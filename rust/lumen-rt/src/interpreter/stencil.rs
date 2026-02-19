@@ -124,6 +124,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0), // return R[0]
             ],
             effect_handler_metas: vec![],
+            osr_points: vec![],
         };
 
         let stencil = StencilGenerator::generate(&cell);
@@ -160,6 +161,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0), // return R[2]
             ],
             effect_handler_metas: vec![],
+            osr_points: vec![],
         };
 
         let stencil = StencilGenerator::generate(&cell);
@@ -179,6 +181,7 @@ mod tests {
             constants: vec![],
             instructions: vec![],
             effect_handler_metas: vec![],
+            osr_points: vec![],
         };
 
         let stencil = StencilGenerator::generate(&cell);
@@ -198,6 +201,7 @@ mod tests {
             constants: vec![],
             instructions: vec![Instruction::abc(OpCode::Nop, 0, 0, 0)],
             effect_handler_metas: vec![],
+            osr_points: vec![],
         };
 
         let stencil = StencilGenerator::generate(&cell);

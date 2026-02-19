@@ -113,9 +113,16 @@ pub enum OpCode {
     // List ops
     Append = 0x70, // A, B: append B to list A
 
+    // Stack allocations (optimization)
+    NewListStack = 0x74,  // A, B: create list from B values at A+1 on stack
+    NewTupleStack = 0x75, // A, B: create tuple from B values at A+1 on stack
+
     // Type checks
     IsVariant = 0x71, // A, Bx: if A is variant w/ tag Bx, skip next
     Unbox = 0x72,     // A, B: A = B.payload (for unions)
+
+    // JIT optimization
+    OsrCheck = 0x73, // On-Stack Replacement check for tiered compilation
 }
 
 /// Intrinsic function IDs
@@ -387,6 +394,8 @@ pub enum Constant {
     BigInt(BigInt),
     Float(f64),
     String(String),
+    /// NaN-boxed 64-bit value representation (JIT optimization)
+    NbValue(u64),
 }
 
 /// Type definition in LIR
@@ -426,6 +435,9 @@ pub struct LirCell {
     /// that the handler scope matches against.
     #[serde(default)]
     pub effect_handler_metas: Vec<LirEffectHandlerMeta>,
+    /// OSR metadata for safepoints and live values.
+    #[serde(default)]
+    pub osr_points: Vec<LirOsrPoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -505,6 +517,16 @@ pub struct LirEffectHandlerMeta {
     pub operation: String,
     pub param_count: u8,
     pub handler_ip: usize,
+}
+
+/// OSR metadata describing a safepoint within a cell.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LirOsrPoint {
+    /// Instruction offset where the OSR safepoint is inserted.
+    pub ip: usize,
+    /// Live registers at this point.
+    #[serde(default)]
+    pub live_registers: Vec<u16>,
 }
 
 /// Complete LIR module

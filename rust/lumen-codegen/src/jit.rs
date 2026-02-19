@@ -162,6 +162,9 @@ pub fn jit_capability(op: OpCode) -> JitCapability {
 
         // On-Stack Replacement check (handled via runtime helpers)
         OpCode::OsrCheck => JitCapability::RuntimeCall,
+
+        // Stack-allocated collections (handled via runtime helpers)
+        OpCode::NewListStack | OpCode::NewTupleStack => JitCapability::RuntimeCall,
     }
 }
 

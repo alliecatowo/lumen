@@ -157,15 +157,20 @@ For deeper context on specific areas, load these skills:
 
 ## Agent Team
 
-| Agent | Model | Role |
-|-------|-------|------|
-| **delegator** | gemini-3-pro-preview | Orchestrator — manages tasks, delegates, commits |
-| **auditor** | gemini-3-pro-preview | Deep codebase auditor, planner, researcher |
-| **competitive-auditor** | gemini-3-pro-preview (temp 0.8) | Cross-language competitive analysis |
-| **debugger** | claude-opus-4.6 | Hardcore LIR/VM/compiler debugging |
-| **coder** | claude-sonnet-4.5 | Feature implementation, refactoring |
-| **worker** | claude-haiku-4.5 | Fast general-purpose tasks |
-| **tester** | gemini-3-flash-preview | QA — writes and runs tests |
-| **task-manager** | gemini-3-flash-preview | Task list management |
-| **performance** | claude-opus-4.6 | Optimization, architecture enforcement |
-| **planner** | gemini-3-pro-preview | Strategic planning for large features |
+| Agent | Model | Effort | Role |
+|-------|-------|--------|------|
+| **delegator** | copilot/gpt-5.2-codex | xhigh | Orchestrator — manages tasks, delegates, commits |
+| **auditor** | copilot/gpt-5.2-codex | high | Deep codebase auditor, planner, researcher |
+| **competitive-auditor** | copilot/gpt-5.2-codex (temp 0.8) | high | Cross-language competitive analysis |
+| **security-auditor** | copilot/gpt-5.2-codex | high | Security reviews, crypto, auth, TUF |
+| **planner** | copilot/gpt-5.2-codex | high | Strategic planning for large features |
+| **debugger** | copilot/gpt-5.2-codex | xhigh | Hardcore LIR/VM/compiler debugging |
+| **coder** | copilot/gpt-5.2-codex | medium | Feature implementation, refactoring |
+| **refactoring-specialist** | copilot/gpt-5.2-codex | high | Complex restructuring, API migrations |
+| **worker** | copilot/gpt-5.2-codex | low | Fast general-purpose tasks |
+| **tester** | copilot/gpt-5.2-codex | low | QA — writes and runs tests |
+| **benchmark-runner** | copilot/gpt-5.2-codex | medium | Performance measurement, regression detection |
+| **performance** | copilot/gpt-5.2-codex | xhigh | Optimization, architecture enforcement |
+| **task-manager** | copilot/gpt-5.2-codex | low | Task list management |
+| **spec-validator** | copilot/gpt-5.2-codex | high | Spec compliance, gap analysis |
+| **docs-writer** | copilot/gpt-5.2-codex | medium | Documentation, examples, API refs |

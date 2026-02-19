@@ -91,6 +91,9 @@ pub struct CliEntry {
 fn opcode_info(op: &OpCode) -> (&str, &str, &str) {
     use OpCode::*;
     match op {
+        &lumen_core::lir::OpCode::NewListStack | &lumen_core::lir::OpCode::NewTupleStack => {
+            ("A, B", "Stack-allocated list/tuple from B values", "JIT")
+        }
         // Misc
         Nop => ("Ax", "No operation", "Misc"),
 
@@ -291,6 +294,7 @@ fn opcode_info(op: &OpCode) -> (&str, &str, &str) {
             "Type Checks",
         ),
         Unbox => ("A, B", "A = B.payload (unbox union value)", "Type Checks"),
+        OsrCheck => ("-", "On-Stack Replacement check for JIT tiering", "JIT"),
     }
 }
 

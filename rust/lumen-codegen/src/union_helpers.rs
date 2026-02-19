@@ -117,7 +117,7 @@ pub extern "C" fn jit_rt_union_is_variant(
     if (u & NAN_MASK_U) != NAN_MASK_U || ((u >> 48) & 0xF) != 0 || (u & PAYLOAD_MASK_U) <= 1 {
         return 0;
     }
-    let value = unsafe { &*(( u & PAYLOAD_MASK_U) as *const Value) };
+    let value = unsafe { &*((u & PAYLOAD_MASK_U) as *const Value) };
     let tag_str =
         unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(tag_ptr, tag_len)) };
 

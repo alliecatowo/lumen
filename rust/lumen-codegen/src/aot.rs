@@ -66,6 +66,7 @@ pub fn compile_object_module(
     let mut func_ids: HashMap<String, FuncId> = HashMap::new();
     for cell in &lir.cells {
         let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(pointer_type));
         for param in &cell.params {
             let param_ty = lir_type_str_to_cl_type(&param.ty, pointer_type);
             // Cranelift ABI requires I8 to be extended; use I64 for Bool params.
@@ -163,6 +164,7 @@ mod tests {
                 constants,
                 instructions,
                 effect_handler_metas: Vec::new(),
+                osr_points: Vec::new(),
             }],
             tools: Vec::new(),
             policies: Vec::new(),
@@ -317,6 +319,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         };
 
         let main_cell = LirCell {
@@ -332,6 +335,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         };
 
         let lir = make_multi_cell_module(vec![double_cell, main_cell]);

@@ -1843,6 +1843,7 @@ dependencies = [
  "crossbeam-channel",
  "crossbeam-deque",
  "flate2",
+ "libc",
  "lumen-codegen",
  "lumen-compiler",
  "lumen-core",

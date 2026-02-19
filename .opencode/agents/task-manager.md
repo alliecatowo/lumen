@@ -1,16 +1,31 @@
 ---
 description: "Task list gardener. Maintains the todo list, expands tasks, identifies next actions, manages dependency graphs. Always adds more tasks."
 mode: subagent
-model: google/gemini-3-flash-preview
+model: github-copilot/gpt-5.2-codex
+effort: low
 color: "#F59E0B"
 temperature: 0.2
-tools:
-  todowrite: true
-  todoread: true
 permission:
   edit: deny
+  todowrite: allow
+  todoread: allow
+  websearch: allow
+  webfetch: allow
+  task: allow
+  read: allow
+  glob: allow
+  grep: allow
+  list: allow
   bash:
     "*": deny
+    "ls *": allow
+    "ls": allow
+    "cat *": allow
+    "head *": allow
+    "tail *": allow
+    "wc *": allow
+    "find *": allow
+    "grep *": allow
     "git status*": allow
     "git log *": allow
     "git diff *": allow

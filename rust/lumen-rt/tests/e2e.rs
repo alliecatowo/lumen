@@ -20,7 +20,7 @@ fn run_main_with_output(source: &str) -> (Value, Vec<String>) {
     let mut vm = VM::new();
     vm.load(module);
     let result = vm.execute("main", vec![]).expect("main should execute");
-    (result, vm.output)
+    (result, vm.output.clone())
 }
 
 // ─── Simple arithmetic ───

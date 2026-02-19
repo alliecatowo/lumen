@@ -116,6 +116,21 @@ pub unsafe fn install_stack_growth_handler() -> bool {
     }
 }
 
+/// Ensure the current thread has an alternate signal stack for SIGSEGV handling.
+///
+/// This is required on any thread that will run fibers and may overflow their
+/// guard page. It is safe to call multiple times on the same thread.
+pub unsafe fn ensure_thread_stack_growth_handler() -> bool {
+    #[cfg(unix)]
+    {
+        unix::ensure_thread_stack_overflow_handler()
+    }
+    #[cfg(windows)]
+    {
+        false
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct GrowStackResult {
     pub new_bottom: *mut u8,

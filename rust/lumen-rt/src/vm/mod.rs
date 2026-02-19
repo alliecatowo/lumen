@@ -520,6 +520,9 @@ impl VM {
             if !platform::install_stack_overflow_handler() {
                 eprintln!("Warning: Could not install stack overflow handler");
             }
+            if !platform::ensure_thread_stack_growth_handler() {
+                eprintln!("Warning: Could not install signal alt stack");
+            }
         }
 
         // OwnedVmCtx initializes the FiberEffectStack internally.

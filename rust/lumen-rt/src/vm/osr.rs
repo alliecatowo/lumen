@@ -13,6 +13,7 @@
 
 use crate::vm::VM;
 use lumen_core::lir::LirModule;
+use lumen_core::nb_value::NbValue;
 use thiserror::Error;
 
 #[cfg(feature = "jit")]
@@ -60,6 +61,9 @@ pub mod osr_check {
         states: Vec<OsrState>,
         #[cfg(feature = "jit")]
         jit_engine: Option<JitEngine>,
+        /// Reference to the module for compilation
+        #[cfg(feature = "jit")]
+        module: Option<LirModule>,
     }
 
     impl OsrRuntime {
@@ -72,19 +76,28 @@ pub mod osr_check {
                 states,
                 #[cfg(feature = "jit")]
                 jit_engine: None,
+                #[cfg(feature = "jit")]
+                module: None,
             }
         }
 
         #[cfg(feature = "jit")]
-        pub fn init_jit(&mut self) {
+        pub fn init_jit(&mut self, module: LirModule) {
             use lumen_codegen::jit::CodegenSettings;
             let settings = CodegenSettings::default();
             self.jit_engine = Some(JitEngine::new(settings, 0));
+            self.module = Some(module);
         }
 
         pub fn get_state(&mut self, cell_idx: usize) -> &mut OsrState {
             if cell_idx >= self.states.len() {
+                // Expand the states vector if needed
+                let current_len = self.states.len();
                 self.states.resize(cell_idx + 1, OsrState::new(cell_idx));
+                // Fix up indices for newly created states
+                for i in current_len..self.states.len() {
+                    self.states[i] = OsrState::new(i);
+                }
             }
             &mut self.states[cell_idx]
         }
@@ -97,7 +110,12 @@ pub mod osr_check {
 
         /// Attempt to compile a cell for OSR
         #[cfg(feature = "jit")]
-        pub fn try_compile(&mut self, cell_idx: usize, module: &LirModule) -> bool {
+        pub fn try_compile(&mut self, cell_idx: usize) -> bool {
+            let module = match &self.module {
+                Some(m) => m,
+                None => return false,
+            };
+
             if cell_idx >= module.cells.len() {
                 return false;
             }
@@ -108,6 +126,7 @@ pub mod osr_check {
                 match engine.compile_hot(&cell_name, module) {
                     Ok(()) => {
                         if engine.is_compiled(&cell_name) {
+                            // Get the function pointer (needs immutable borrow)
                             if let Some(fn_ptr) = engine.get_compiled_fn(&cell_name) {
                                 let state = self.get_state(cell_idx);
                                 state.compiled = true;
@@ -121,6 +140,11 @@ pub mod osr_check {
                     }
                 }
             }
+            false
+        }
+
+        #[cfg(not(feature = "jit"))]
+        pub fn try_compile(&mut self, _cell_idx: usize) -> bool {
             false
         }
 
@@ -148,13 +172,11 @@ pub mod osr_check {
         // Record the check and see if we should tier up
         if osr_runtime.record_and_check(cell_idx) {
             // Need to compile - try to compile the cell
-            if let Some(ref module) = vm_ctx.module {
-                if osr_runtime.try_compile(cell_idx, module) {
-                    // Return the compiled function pointer
-                    return osr_runtime
-                        .get_compiled_fn(cell_idx)
-                        .unwrap_or(std::ptr::null());
-                }
+            if osr_runtime.try_compile(cell_idx) {
+                // Return the compiled function pointer
+                return osr_runtime
+                    .get_compiled_fn(cell_idx)
+                    .unwrap_or(std::ptr::null());
             }
         }
 
@@ -183,11 +205,47 @@ pub struct OsrEntry {
     pub ip: usize,
 }
 
-/// Capture a snapshot of the interpreter's register state.
-pub fn capture_register_state(vm: &VM, base: usize, register_count: usize) -> Vec<u64> {
-    (0..register_count)
-        .map(|idx| vm.reg_nb(base + idx).0)
-        .collect()
+/// Capture a snapshot of the interpreter's register state as NbValue slice.
+pub fn capture_register_state(vm: &VM, base: usize, register_count: usize) -> Vec<NbValue> {
+    vm.registers[base..base + register_count].to_vec()
+}
+
+/// Copy interpreter register state to compiled code's stack frame.
+///
+/// This implements the "transplant" logic: taking the interpreter's register
+/// file (Vec<NbValue>) and copying it into the format expected by the
+/// Cranelift-compiled code at the OSR entry point.
+///
+/// The layout follows the OSR calling convention from stackmap.rs:
+/// - Registers 0-5: passed in rdi, rsi, rdx, rcx, r8, r9
+/// - Registers 6+: passed on stack after return address and callee-saved regs
+pub fn transplant_registers(regs: &[NbValue], frame_pointer: *mut u8) {
+    use lumen_codegen::stackmap::osr_calling_convention::{
+        ARG_REGISTERS, CALLEE_SAVED, MAX_REG_ARGS,
+    };
+
+    // Copy each LIR register to its designated location
+    for (i, nbval) in regs.iter().enumerate() {
+        let i = i as u16;
+
+        if (i as usize) < MAX_REG_ARGS && (i as usize) < ARG_REGISTERS.len() {
+            // Move to argument register
+            // Note: This requires inline assembly or runtime helper
+            // For now, we'll use the stack-based approach
+        }
+
+        // Calculate stack offset:
+        // Stack layout: [ret_addr] [rbx] [r12] [r13] [r14] [r15] [reg0] [reg1] ...
+        let stack_offset = 8 + // return address
+            (CALLEE_SAVED.len() * 8) + // saved callee-saved regs
+            (i as usize * 8); // register location
+
+        // Write the NbValue to the stack frame
+        let slot_ptr = unsafe { frame_pointer.add(stack_offset) };
+        unsafe {
+            std::ptr::write(slot_ptr as *mut NbValue, *nbval);
+        }
+    }
 }
 
 /// Attempt to perform an OSR transition to compiled code.

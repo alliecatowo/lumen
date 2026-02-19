@@ -440,8 +440,21 @@ impl VM {
             }
             "hash" | "sha256" => {
                 use sha2::{Digest, Sha256};
-                let s = self.registers[base + a + 1].peek_legacy().display_pretty();
-                let h = format!("sha256:{:x}", Sha256::digest(s.as_bytes()));
+                let val = self.registers[base + a + 1].peek_legacy();
+                let owned = match &val {
+                    Value::String(StringRef::Owned(_)) | Value::String(StringRef::Interned(_)) => {
+                        None
+                    }
+                    _ => Some(val.as_string_resolved(&self.strings)),
+                };
+                let bytes = match &val {
+                    Value::String(StringRef::Owned(s)) => s.as_bytes(),
+                    Value::String(StringRef::Interned(id)) => {
+                        self.strings.resolve(*id).unwrap_or("").as_bytes()
+                    }
+                    _ => owned.as_ref().unwrap().as_bytes(),
+                };
+                let h = format!("sha256:{:x}", Sha256::digest(bytes));
                 Ok(Value::String(StringRef::Owned(h)))
             }
             "sort" => {
@@ -696,6 +709,134 @@ impl VM {
                     _ => Value::Null,
                 })
             }
+            "tan" => {
+                let arg = self.registers[base + a + 1].peek_legacy();
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.tan()),
+                    Value::Int(n) => Value::Float((n as f64).tan()),
+                    _ => Value::Null,
+                })
+            }
+            "exp" => {
+                let arg = self.registers[base + a + 1].peek_legacy();
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.exp()),
+                    Value::Int(n) => Value::Float((n as f64).exp()),
+                    _ => Value::Null,
+                })
+            }
+            "floor" => {
+                let arg = self.registers[base + a + 1].peek_legacy();
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.floor()),
+                    Value::Int(n) => Value::Int(n),
+                    _ => Value::Null,
+                })
+            }
+            "ceil" => {
+                let arg = self.registers[base + a + 1].peek_legacy();
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.ceil()),
+                    Value::Int(n) => Value::Int(n),
+                    _ => Value::Null,
+                })
+            }
+            "round" => {
+                let arg = self.registers[base + a + 1].peek_legacy();
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.round()),
+                    Value::Int(n) => Value::Int(n),
+                    _ => Value::Null,
+                })
+            }
+            "trim" => {
+                let arg = self.registers[base + a + 1].peek_legacy();
+                let s = arg.as_string_resolved(&self.strings);
+                Ok(Value::String(StringRef::Owned(s.trim().to_string())))
+            }
+            "trim_start" => {
+                let arg = self.registers[base + a + 1].peek_legacy();
+                let s = arg.as_string_resolved(&self.strings);
+                Ok(Value::String(StringRef::Owned(s.trim_start().to_string())))
+            }
+            "trim_end" => {
+                let arg = self.registers[base + a + 1].peek_legacy();
+                let s = arg.as_string_resolved(&self.strings);
+                Ok(Value::String(StringRef::Owned(s.trim_end().to_string())))
+            }
+            "hex_decode" => {
+                let arg = self.registers[base + a + 1].peek_legacy();
+                let s = arg.as_string_resolved(&self.strings);
+                if s.len() % 2 != 0 {
+                    return Ok(Value::Null);
+                }
+                if !s.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Ok(Value::Null);
+                }
+                let bytes: Vec<u8> = (0..s.len())
+                    .step_by(2)
+                    .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap_or(0))
+                    .collect();
+                Ok(Value::Bytes(bytes.into()))
+            }
+            "hex_encode" => {
+                let arg = self.registers[base + a + 1].peek_legacy();
+                let owned = match &arg {
+                    Value::String(StringRef::Owned(_)) | Value::String(StringRef::Interned(_)) => {
+                        None
+                    }
+                    _ => Some(arg.as_string_resolved(&self.strings)),
+                };
+                let bytes = match &arg {
+                    Value::String(StringRef::Owned(s)) => s.as_bytes(),
+                    Value::String(StringRef::Interned(id)) => {
+                        self.strings.resolve(*id).unwrap_or("").as_bytes()
+                    }
+                    _ => owned.as_ref().unwrap().as_bytes(),
+                };
+                let hex = bytes
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect::<String>();
+                Ok(Value::String(StringRef::Owned(hex)))
+            }
+            "ends_with" => {
+                let s = self.registers[base + a + 1]
+                    .peek_legacy()
+                    .as_string_resolved(&self.strings);
+                let suffix = self.registers[base + a + 2]
+                    .peek_legacy()
+                    .as_string_resolved(&self.strings);
+                Ok(Value::Bool(s.ends_with(&suffix)))
+            }
+            "pad_left" => {
+                let s = self.registers[base + a + 1]
+                    .peek_legacy()
+                    .as_string_resolved(&self.strings);
+                let len = match self.registers[base + a + 2].peek_legacy() {
+                    Value::Int(n) => n as usize,
+                    _ => return Ok(Value::Null),
+                };
+                if s.len() >= len {
+                    return Ok(Value::String(StringRef::Owned(s)));
+                }
+                let pad = " ".repeat(len - s.len());
+                Ok(Value::String(StringRef::Owned(pad + &s)))
+            }
+            "pad_right" => {
+                let s = self.registers[base + a + 1]
+                    .peek_legacy()
+                    .as_string_resolved(&self.strings);
+                let len = match self.registers[base + a + 2].peek_legacy() {
+                    Value::Int(n) => n as usize,
+                    _ => return Ok(Value::Null),
+                };
+                if s.len() >= len {
+                    return Ok(Value::String(StringRef::Owned(s)));
+                }
+                let pad = " ".repeat(len - s.len());
+                Ok(Value::String(StringRef::Owned(s + &pad)))
+            }
             "clamp" => {
                 let val = self.registers[base + a + 1].peek_legacy();
                 let lo = self.registers[base + a + 2].peek_legacy();
@@ -742,10 +883,21 @@ impl VM {
                 let path = self.registers[base + a + 1]
                     .peek_legacy()
                     .as_string_resolved(&self.strings);
-                let content = self.registers[base + a + 2]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
-                match std::fs::write(path, content.as_bytes()) {
+                let content = self.registers[base + a + 2].peek_legacy();
+                let owned = match &content {
+                    Value::String(StringRef::Owned(_)) | Value::String(StringRef::Interned(_)) => {
+                        None
+                    }
+                    _ => Some(content.as_string_resolved(&self.strings)),
+                };
+                let bytes = match &content {
+                    Value::String(StringRef::Owned(s)) => s.as_bytes(),
+                    Value::String(StringRef::Interned(id)) => {
+                        self.strings.resolve(*id).unwrap_or("").as_bytes()
+                    }
+                    _ => owned.as_ref().unwrap().as_bytes(),
+                };
+                match std::fs::write(path, bytes) {
                     Ok(()) => Ok(Value::Null),
                     Err(e) => Err(VmError::Runtime(format!("write_file failed: {}", e))),
                 }
@@ -775,6 +927,32 @@ impl VM {
             "uuid" => {
                 let id = uuid::Uuid::new_v4().to_string();
                 Ok(Value::String(StringRef::Owned(id)))
+            }
+            "random_int" => {
+                let min = match self.registers[base + a + 1].peek_legacy() {
+                    Value::Int(n) => n,
+                    _ => 0,
+                };
+                let max = match self.registers[base + a + 2].peek_legacy() {
+                    Value::Int(n) => n,
+                    _ => i64::MAX,
+                };
+                if min > max {
+                    return Err(VmError::Runtime(format!(
+                        "random_int: min ({}) must be less than or equal to max ({})",
+                        min, max
+                    )));
+                }
+                if min == max {
+                    return Ok(Value::Int(min));
+                }
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64;
+                let range = (max - min) as u64;
+                let result = (now % range) as i64 + min;
+                Ok(Value::Int(result))
             }
             "panic" => {
                 let msg = if nargs > 0 {
@@ -873,6 +1051,147 @@ impl VM {
             8 => {
                 // TRACEREF
                 Ok(Value::TraceRef(self.next_trace_ref()))
+            }
+            52 => {
+                // ENDS_WITH
+                let s = arg.as_string_resolved(&self.strings);
+                let suffix = self.registers[base + arg_reg + 1]
+                    .peek_legacy()
+                    .as_string_resolved(&self.strings);
+                Ok(Value::Bool(s.ends_with(&suffix)))
+            }
+            55 => {
+                // PAD_LEFT
+                let s = arg.as_string_resolved(&self.strings);
+                let len = match self.registers[base + arg_reg + 1].peek_legacy() {
+                    Value::Int(n) => n as usize,
+                    _ => return Ok(Value::Null),
+                };
+                if s.len() >= len {
+                    return Ok(Value::String(StringRef::Owned(s)));
+                }
+                let pad = " ".repeat(len - s.len());
+                Ok(Value::String(StringRef::Owned(pad + &s)))
+            }
+            56 => {
+                // PAD_RIGHT
+                let s = arg.as_string_resolved(&self.strings);
+                let len = match self.registers[base + arg_reg + 1].peek_legacy() {
+                    Value::Int(n) => n as usize,
+                    _ => return Ok(Value::Null),
+                };
+                if s.len() >= len {
+                    return Ok(Value::String(StringRef::Owned(s)));
+                }
+                let pad = " ".repeat(len - s.len());
+                Ok(Value::String(StringRef::Owned(s + &pad)))
+            }
+            57 => {
+                // ROUND
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.round()),
+                    Value::Int(n) => Value::Int(n),
+                    _ => Value::Null,
+                })
+            }
+            58 => {
+                // CEIL
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.ceil()),
+                    Value::Int(n) => Value::Int(n),
+                    _ => Value::Null,
+                })
+            }
+            59 => {
+                // FLOOR
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.floor()),
+                    Value::Int(n) => Value::Int(n),
+                    _ => Value::Null,
+                })
+            }
+            60 => {
+                // SQRT
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.sqrt()),
+                    Value::Int(n) => Value::Float((n as f64).sqrt()),
+                    _ => Value::Null,
+                })
+            }
+            61 => {
+                // POW
+                let exp = self.registers[base + arg_reg + 1].peek_legacy();
+                Ok(match (arg, exp) {
+                    (Value::Int(x), Value::Int(y)) => {
+                        if y >= 0 {
+                            if let Ok(y_u32) = u32::try_from(y) {
+                                if let Some(res) = x.checked_pow(y_u32) {
+                                    Value::Int(res)
+                                } else {
+                                    Value::BigInt(BigInt::from(x).pow(y_u32))
+                                }
+                            } else {
+                                Value::Null
+                            }
+                        } else {
+                            Value::Float((x as f64).powf(y as f64))
+                        }
+                    }
+                    (Value::Float(x), Value::Float(y)) => Value::Float(x.powf(y)),
+                    _ => Value::Null,
+                })
+            }
+            62 => {
+                // LOG
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.ln()),
+                    Value::Int(n) => Value::Float((n as f64).ln()),
+                    _ => Value::Null,
+                })
+            }
+            63 => {
+                // SIN
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.sin()),
+                    Value::Int(n) => Value::Float((n as f64).sin()),
+                    _ => Value::Null,
+                })
+            }
+            64 => {
+                // COS
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.cos()),
+                    Value::Int(n) => Value::Float((n as f64).cos()),
+                    _ => Value::Null,
+                })
+            }
+            65 => {
+                // CLAMP
+                let lo = self.registers[base + arg_reg + 1].peek_legacy();
+                let hi = self.registers[base + arg_reg + 2].peek_legacy();
+                Ok(match (arg, lo, hi) {
+                    (Value::Int(v), Value::Int(l), Value::Int(h)) => Value::Int(v.max(l).min(h)),
+                    (Value::Float(v), Value::Float(l), Value::Float(h)) => {
+                        Value::Float(v.max(l).min(h))
+                    }
+                    (v, _, _) => v,
+                })
+            }
+            138 => {
+                // TAN
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.tan()),
+                    Value::Int(n) => Value::Float((n as f64).tan()),
+                    _ => Value::Null,
+                })
+            }
+            139 => {
+                // TRUNC
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f.trunc()),
+                    Value::Int(n) => Value::Int(n),
+                    _ => Value::Null,
+                })
             }
             _ => Err(VmError::Runtime(format!(
                 "unknown intrinsic ID: {}",

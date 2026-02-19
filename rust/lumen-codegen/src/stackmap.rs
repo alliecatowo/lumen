@@ -229,6 +229,8 @@ impl OsrEntryPoint {
 /// Remaining registers are passed on the stack.
 #[cfg(target_arch = "x86_64")]
 pub mod osr_calling_convention {
+    use super::ValueLocation;
+
     /// Argument registers in order (SysV ABI)
     pub const ARG_REGISTERS: &[u16] = &[
         /* rdi */ 7, /* rsi */ 6, /* rdx */ 2, /* rcx */ 1, /* r8 */ 8,
@@ -249,7 +251,7 @@ pub mod osr_calling_convention {
     /// Returns:
     /// - `ValueLocation::NativeRegister(reg)` for first N registers
     /// - `ValueLocation::StackOffset(offset)` for remaining registers
-    pub fn lir_reg_to_location(lir_reg: u16, total_regs: u16) -> ValueLocation {
+    pub fn lir_reg_to_location(lir_reg: u16, _total_regs: u16) -> ValueLocation {
         let reg_idx = lir_reg as usize;
 
         // First few registers go in argument registers
@@ -258,8 +260,8 @@ pub mod osr_calling_convention {
         } else {
             // Remaining registers are on stack after return address and saved registers
             // Stack layout: [ret_addr] [rbx] [r12] [r13] [r14] [r15] [reg6] [reg7] ...
-            let stack_offset = 8 + // return address
-                (CALLEE_SAVED.len() * 8) + // saved callee-saved regs
+            let stack_offset = 8i32 + // return address
+                (CALLEE_SAVED.len() * 8) as i32 + // saved callee-saved regs
                 ((reg_idx - MAX_REG_ARGS) * 8) as i32; // remaining regs
             ValueLocation::StackOffset(stack_offset)
         }

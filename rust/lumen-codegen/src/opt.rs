@@ -2,6 +2,19 @@
 //!
 //! Performs peephole optimizations on LIR instruction streams before lowering
 //! to native code, eliminating redundant operations and improving JIT/AOT output.
+//!
+//! # Optimization Passes
+//!
+//! 1. **Nop removal** (`remove_nops`) — eliminates no-op instructions, adjusts jump offsets.
+//! 2. **Escape analysis** (`escape_analysis`) — promotes non-escaping `NewList`/`NewTuple` to
+//!    stack-allocated variants (`NewListStack`/`NewTupleStack`).
+//! 3. **Effect specialization** (`specialize_effects`) — identifies `Perform` operations whose
+//!    handler is statically visible in the same cell (currently analysis-only; full inlining
+//!    requires a `CallInternal` opcode not yet in LIR).
+//! 4. **MIC analysis** (`analyze_tool_call_mic`) — extracts per-callsite tool-name hints for
+//!    ToolCall opcodes. The JIT backend can use these to emit a fast-path direct dispatch
+//!    check (compare tool ID tag, call cached function pointer) before falling back to the
+//!    full registry lookup.
 
 use lumen_core::lir::{Constant, Instruction, LirCell, OpCode};
 
@@ -9,6 +22,8 @@ use lumen_core::lir::{Constant, Instruction, LirCell, OpCode};
 ///
 /// Current optimizations:
 /// - Remove `Nop` instructions
+/// - Escape analysis for `NewList`/`NewTuple`
+/// - Effect specialization analysis
 ///
 /// NOTE: The Eq+Test optimization is disabled because JIT/AOT IR lowering
 /// does not implement the VM's Eq skip-next semantics. Eq is always lowered
@@ -18,6 +33,75 @@ pub fn optimize(cell: &mut LirCell) {
     escape_analysis(cell);
     specialize_effects(cell);
     // optimize_eq_test_sequences(cell);  // Disabled - not supported by JIT/AOT
+}
+
+// ── Monomorphic Inline Cache (MIC) ────────────────────────────────────────────
+
+/// A per-callsite hint extracted from a `ToolCall` instruction.
+///
+/// The JIT backend uses this to emit a fast-path:
+/// 1. Compare the current tool ID tag against `tool_name`.
+/// 2. If it matches, jump directly to the cached function pointer.
+/// 3. Otherwise fall back to the full registry lookup and update the cache.
+///
+/// The cache slot itself lives in the JIT-generated code (patched at runtime).
+/// This struct contains only the static information available at compile time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCallMicInfo {
+    /// Instruction index of the `ToolCall` opcode in the cell.
+    pub callsite_pc: usize,
+    /// The tool alias name extracted from the cell's constant table, if available.
+    /// `None` means the tool ID is dynamic (computed at runtime) — no fast path.
+    pub tool_name: Option<String>,
+    /// Destination register (field `a` of the ToolCall instruction).
+    pub dest_reg: u16,
+    /// Constant table index for the tool name (field `bx` of the ToolCall instruction).
+    pub const_idx: u32,
+}
+
+/// Analyse all `ToolCall` sites in `cell` and return per-callsite MIC hints.
+///
+/// # Usage by JIT backends
+///
+/// ```text
+/// let mic_sites = analyze_tool_call_mic(&cell);
+/// for site in &mic_sites {
+///     if let Some(name) = &site.tool_name {
+///         // Emit: if cached_tool_id == TOOL_ID_FOR(name) { call cached_fn_ptr }
+///         // Else: { full_registry_lookup; update_cache }
+///     }
+/// }
+/// ```
+///
+/// The actual cache slot (a `u64` holding the last-seen tool function pointer) must
+/// be allocated per-callsite in the JIT code-object, not here.  This function only
+/// performs the static analysis pass.
+pub fn analyze_tool_call_mic(cell: &LirCell) -> Vec<ToolCallMicInfo> {
+    let mut sites = Vec::new();
+
+    for (pc, instr) in cell.instructions.iter().enumerate() {
+        if instr.op != OpCode::ToolCall {
+            continue;
+        }
+
+        let const_idx = instr.bx() as u32;
+        let tool_name = cell
+            .constants
+            .get(const_idx as usize)
+            .and_then(|c| match c {
+                Constant::String(s) => Some(s.clone()),
+                _ => None,
+            });
+
+        sites.push(ToolCallMicInfo {
+            callsite_pc: pc,
+            tool_name,
+            dest_reg: instr.a,
+            const_idx,
+        });
+    }
+
+    sites
 }
 
 /// Identify NewList/NewTuple that don't escape the fiber and use stack allocation.
@@ -680,5 +764,140 @@ mod tests {
         assert_eq!(cell.instructions[2].sax_val(), -1);
 
         assert_eq!(cell.instructions[3].op, OpCode::Return);
+    }
+
+    // ── MIC analysis tests ────────────────────────────────────────────────────
+
+    fn make_cell_with_constants(instructions: Vec<Instruction>, constants: Vec<Constant>) -> LirCell {
+        LirCell {
+            name: "test".to_string(),
+            params: vec![],
+            returns: Some("Int".to_string()),
+            registers: 10,
+            constants,
+            instructions,
+            effect_handler_metas: vec![],
+            osr_points: vec![],
+        }
+    }
+
+    #[test]
+    fn test_mic_no_tool_calls() {
+        let cell = make_test_cell(vec![
+            Instruction::abc(OpCode::LoadInt, 0, 42, 0),
+            Instruction::abc(OpCode::Return, 0, 1, 0),
+        ]);
+        let sites = analyze_tool_call_mic(&cell);
+        assert!(sites.is_empty(), "no ToolCall instructions → no MIC sites");
+    }
+
+    #[test]
+    fn test_mic_single_tool_call_with_name() {
+        let cell = make_cell_with_constants(
+            vec![
+                // ToolCall dest=r0, const_idx=0 (points to "HttpGet")
+                Instruction::abx(OpCode::ToolCall, 0, 0),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            vec![Constant::String("HttpGet".to_string())],
+        );
+        let sites = analyze_tool_call_mic(&cell);
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].callsite_pc, 0);
+        assert_eq!(sites[0].tool_name.as_deref(), Some("HttpGet"));
+        assert_eq!(sites[0].dest_reg, 0);
+        assert_eq!(sites[0].const_idx, 0);
+    }
+
+    #[test]
+    fn test_mic_multiple_tool_calls() {
+        let cell = make_cell_with_constants(
+            vec![
+                Instruction::abx(OpCode::ToolCall, 0, 0), // "ReadFile"
+                Instruction::abx(OpCode::ToolCall, 1, 1), // "WriteFile"
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            vec![
+                Constant::String("ReadFile".to_string()),
+                Constant::String("WriteFile".to_string()),
+            ],
+        );
+        let sites = analyze_tool_call_mic(&cell);
+        assert_eq!(sites.len(), 2);
+        assert_eq!(sites[0].callsite_pc, 0);
+        assert_eq!(sites[0].tool_name.as_deref(), Some("ReadFile"));
+        assert_eq!(sites[1].callsite_pc, 1);
+        assert_eq!(sites[1].tool_name.as_deref(), Some("WriteFile"));
+    }
+
+    #[test]
+    fn test_mic_tool_call_non_string_const() {
+        // ToolCall with const_idx pointing to an Int constant — no tool name.
+        let cell = make_cell_with_constants(
+            vec![
+                Instruction::abx(OpCode::ToolCall, 0, 0),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            vec![Constant::Int(42)],
+        );
+        let sites = analyze_tool_call_mic(&cell);
+        assert_eq!(sites.len(), 1);
+        assert!(
+            sites[0].tool_name.is_none(),
+            "non-string const → no tool_name hint"
+        );
+    }
+
+    #[test]
+    fn test_mic_tool_call_out_of_range_const() {
+        // ToolCall with const_idx beyond the constant table.
+        let cell = make_cell_with_constants(
+            vec![
+                // const_idx=99 is out of range
+                Instruction::abx(OpCode::ToolCall, 0, 99),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            vec![Constant::String("only_one".to_string())],
+        );
+        let sites = analyze_tool_call_mic(&cell);
+        assert_eq!(sites.len(), 1);
+        assert!(sites[0].tool_name.is_none(), "out-of-range const → no tool_name hint");
+    }
+
+    #[test]
+    fn test_escape_analysis_promotes_non_escaping_list() {
+        // NewList whose result is only used in a local read (GetIndex) — doesn't escape.
+        let mut cell = make_test_cell(vec![
+            Instruction::abc(OpCode::NewList, 5, 0, 0),   // r5 = []
+            Instruction::abc(OpCode::LoadInt, 6, 1, 0),   // r6 = 1
+            // GetIndex r7 = r5[r6] — r5 is read locally, doesn't escape
+            Instruction::abc(OpCode::GetIndex, 7, 5, 6),
+            Instruction::abc(OpCode::Return, 7, 1, 0),    // return r7 (an Int)
+        ]);
+
+        escape_analysis(&mut cell);
+
+        assert_eq!(
+            cell.instructions[0].op,
+            OpCode::NewListStack,
+            "non-escaping NewList should be promoted to NewListStack"
+        );
+    }
+
+    #[test]
+    fn test_escape_analysis_keeps_escaping_list() {
+        // NewList whose result is returned directly — must escape to heap.
+        let mut cell = make_test_cell(vec![
+            Instruction::abc(OpCode::NewList, 0, 0, 0),  // r0 = []
+            Instruction::abc(OpCode::Return, 0, 1, 0),   // return r0 — r0 escapes
+        ]);
+
+        escape_analysis(&mut cell);
+
+        assert_eq!(
+            cell.instructions[0].op,
+            OpCode::NewList,
+            "escaping NewList must not be promoted to stack allocation"
+        );
     }
 }

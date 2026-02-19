@@ -1519,6 +1519,8 @@ struct Lowerer<'a> {
     /// Accumulated effect handler metadata for the current cell being lowered.
     /// Each entry corresponds to one HandlePush instruction emitted.
     effect_handler_metas: Vec<LirEffectHandlerMeta>,
+    /// Accumulated OSR safepoint metadata for the current cell being lowered.
+    osr_points: Vec<LirOsrPoint>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -1544,7 +1546,15 @@ impl<'a> Lowerer<'a> {
             lambda_cells: Vec::new(),
             defer_stack: Vec::new(),
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }
+    }
+
+    fn record_osr_point(&mut self, ip: usize, ra: &RegAlloc) {
+        self.osr_points.push(LirOsrPoint {
+            ip,
+            live_registers: (0..ra.max_regs()).collect(),
+        });
     }
 
     fn intern_string(&mut self, s: &str) -> u16 {
@@ -1919,6 +1929,7 @@ impl<'a> Lowerer<'a> {
             constants,
             instructions,
             effect_handler_metas: vec![],
+            osr_points: vec![],
         }
     }
 
@@ -1957,6 +1968,7 @@ impl<'a> Lowerer<'a> {
             constants,
             instructions,
             effect_handler_metas: vec![],
+            osr_points: vec![],
         }
     }
 
@@ -1970,6 +1982,7 @@ impl<'a> Lowerer<'a> {
         let saved_defers = std::mem::take(&mut self.defer_stack);
         // Save and reset effect handler metas for this cell scope
         let saved_metas = std::mem::take(&mut self.effect_handler_metas);
+        let saved_osr_points = std::mem::take(&mut self.osr_points);
 
         // Allocate param registers
         let params: Vec<LirParam> = cell
@@ -2064,6 +2077,7 @@ impl<'a> Lowerer<'a> {
         // Restore defer stack and collect effect handler metas
         self.defer_stack = saved_defers;
         let effect_handler_metas = std::mem::replace(&mut self.effect_handler_metas, saved_metas);
+        let osr_points = std::mem::replace(&mut self.osr_points, saved_osr_points);
 
         // Peephole optimizations
         hoist_loop_invariants(&mut instructions);
@@ -2080,6 +2094,7 @@ impl<'a> Lowerer<'a> {
             constants,
             instructions,
             effect_handler_metas,
+            osr_points,
         }
     }
 
@@ -2170,6 +2185,8 @@ impl<'a> Lowerer<'a> {
                 ));
 
                 let loop_start = instrs.len();
+                instrs.push(Instruction::abc(OpCode::OsrCheck, 0, 0, 0));
+                self.record_osr_point(loop_start, ra);
                 // if idx >= len, break
                 // Lt evaluates to True if idx < len.
                 // We want to Continue (Skip Break) if idx < len.
@@ -2427,6 +2444,8 @@ impl<'a> Lowerer<'a> {
             }
             Stmt::While(ws) => {
                 let loop_start = instrs.len();
+                instrs.push(Instruction::abc(OpCode::OsrCheck, 0, 0, 0));
+                self.record_osr_point(loop_start, ra);
                 self.loop_stack.push(LoopContext {
                     label: ws.label.clone(),
                     break_jumps: Vec::new(),
@@ -2466,6 +2485,8 @@ impl<'a> Lowerer<'a> {
             }
             Stmt::Loop(ls) => {
                 let loop_start = instrs.len();
+                instrs.push(Instruction::abc(OpCode::OsrCheck, 0, 0, 0));
+                self.record_osr_point(loop_start, ra);
                 self.loop_stack.push(LoopContext {
                     label: ls.label.clone(),
                     break_jumps: Vec::new(),
@@ -3735,6 +3756,7 @@ impl<'a> Lowerer<'a> {
                         constants: vec![],
                         instructions: linstrs,
                         effect_handler_metas: vec![],
+                        osr_points: vec![],
                     });
 
                     // Create closure and capture f and g
@@ -4480,6 +4502,7 @@ impl<'a> Lowerer<'a> {
                     constants: lconsts,
                     instructions: linstrs,
                     effect_handler_metas: vec![],
+                    osr_points: vec![],
                 });
 
                 let dest = ra.alloc_temp();

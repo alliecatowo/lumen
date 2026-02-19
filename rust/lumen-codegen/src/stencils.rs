@@ -152,10 +152,10 @@ pub fn stencil_loadk() -> StencilDef {
         OpCode::LoadK as u8,
         "LoadK",
         code!(
-            [0x48u8, 0xB8],                         // movabs rax, ...
-            [0x00u8; 8],                             // hole: Constant64 (8 bytes)
-            [0x49u8, 0x89, 0x86],                    // mov [r14+disp32], rax
-            [0x00u8; 4],                             // hole: RegA (4 bytes)
+            [0x48u8, 0xB8],       // movabs rax, ...
+            [0x00u8; 8],          // hole: Constant64 (8 bytes)
+            [0x49u8, 0x89, 0x86], // mov [r14+disp32], rax
+            [0x00u8; 4],          // hole: RegA (4 bytes)
         ),
         vec![
             HoleDef::new(2, HoleType::Constant64, 8),
@@ -177,10 +177,10 @@ pub fn stencil_loadnil() -> StencilDef {
         OpCode::LoadNil as u8,
         "LoadNil",
         code!(
-            [0x48u8, 0xB8],   // movabs rax, ...
-            NULL_VALUE_LE,    // 0x7FFC_0000_0000_0000
+            [0x48u8, 0xB8], // movabs rax, ...
+            NULL_VALUE_LE,  // 0x7FFC_0000_0000_0000
             [0x49u8, 0x89, 0x86],
-            [0x00u8; 4],      // hole: RegA
+            [0x00u8; 4], // hole: RegA
         ),
         vec![HoleDef::new(13, HoleType::RegA, 4)],
     )
@@ -207,9 +207,9 @@ pub fn stencil_loadbool() -> StencilDef {
         "LoadBool",
         code!(
             [0x48u8, 0xB8],
-            [0x00u8; 8],    // hole: Constant64 — stitcher writes NbValue bool
+            [0x00u8; 8], // hole: Constant64 — stitcher writes NbValue bool
             [0x49u8, 0x89, 0x86],
-            [0x00u8; 4],    // hole: RegA
+            [0x00u8; 4], // hole: RegA
         ),
         vec![
             HoleDef::new(2, HoleType::Constant64, 8),
@@ -233,9 +233,9 @@ pub fn stencil_loadint() -> StencilDef {
         "LoadInt",
         code!(
             [0x48u8, 0xB8],
-            [0x00u8; 8],    // hole: Constant64 — stitcher writes NbValue::new_int(sbx)
+            [0x00u8; 8], // hole: Constant64 — stitcher writes NbValue::new_int(sbx)
             [0x49u8, 0x89, 0x86],
-            [0x00u8; 4],    // hole: RegA
+            [0x00u8; 4], // hole: RegA
         ),
         vec![
             HoleDef::new(2, HoleType::Constant64, 8),
@@ -256,9 +256,9 @@ pub fn stencil_move() -> StencilDef {
         "Move",
         code!(
             [0x49u8, 0x8B, 0x86],
-            [0x00u8; 4],    // hole: RegB (load source)
+            [0x00u8; 4], // hole: RegB (load source)
             [0x49u8, 0x89, 0x86],
-            [0x00u8; 4],    // hole: RegA (store dest)
+            [0x00u8; 4], // hole: RegA (store dest)
         ),
         vec![
             HoleDef::new(3, HoleType::RegB, 4),
@@ -346,10 +346,10 @@ pub fn stencil_moveown() -> StencilDef {
 /// of this sequence).
 fn tag_check_rax() -> Vec<u8> {
     code!(
-        [0x48u8, 0x89, 0xC2],                       // mov rdx, rax
-        [0x48u8, 0xC1, 0xEA, 0x30],                 // shr rdx, 48
-        [0x81u8, 0xFA, 0xF9, 0x7F, 0x00, 0x00],     // cmp edx, 0x7FF9
-        [0x0Fu8, 0x85, 0x00, 0x00, 0x00, 0x00],     // jne rel32
+        [0x48u8, 0x89, 0xC2],                   // mov rdx, rax
+        [0x48u8, 0xC1, 0xEA, 0x30],             // shr rdx, 48
+        [0x81u8, 0xFA, 0xF9, 0x7F, 0x00, 0x00], // cmp edx, 0x7FF9
+        [0x0Fu8, 0x85, 0x00, 0x00, 0x00, 0x00], // jne rel32
     )
 }
 
@@ -363,10 +363,10 @@ fn tag_check_rax() -> Vec<u8> {
 /// ```
 fn tag_check_rcx() -> Vec<u8> {
     code!(
-        [0x48u8, 0x89, 0xD2],                       // mov rdx, rcx
-        [0x48u8, 0xC1, 0xEA, 0x30],                 // shr rdx, 48
-        [0x81u8, 0xFA, 0xF9, 0x7F, 0x00, 0x00],     // cmp edx, 0x7FF9
-        [0x0Fu8, 0x85, 0x00, 0x00, 0x00, 0x00],     // jne rel32
+        [0x48u8, 0x89, 0xD2],                   // mov rdx, rcx
+        [0x48u8, 0xC1, 0xEA, 0x30],             // shr rdx, 48
+        [0x81u8, 0xFA, 0xF9, 0x7F, 0x00, 0x00], // cmp edx, 0x7FF9
+        [0x0Fu8, 0x85, 0x00, 0x00, 0x00, 0x00], // jne rel32
     )
 }
 
@@ -378,8 +378,8 @@ fn tag_check_rcx() -> Vec<u8> {
 /// ```
 fn sign_extend_rax() -> Vec<u8> {
     code!(
-        [0x48u8, 0xC1, 0xE0, 0x10],  // shl rax, 16
-        [0x48u8, 0xC1, 0xF8, 0x10],  // sar rax, 16
+        [0x48u8, 0xC1, 0xE0, 0x10], // shl rax, 16
+        [0x48u8, 0xC1, 0xF8, 0x10], // sar rax, 16
     )
 }
 
@@ -391,8 +391,8 @@ fn sign_extend_rax() -> Vec<u8> {
 /// ```
 fn sign_extend_rcx() -> Vec<u8> {
     code!(
-        [0x48u8, 0xC1, 0xE1, 0x10],  // shl rcx, 16
-        [0x48u8, 0xC1, 0xF9, 0x10],  // sar rcx, 16
+        [0x48u8, 0xC1, 0xE1, 0x10], // shl rcx, 16
+        [0x48u8, 0xC1, 0xF9, 0x10], // sar rcx, 16
     )
 }
 
@@ -406,12 +406,12 @@ fn sign_extend_rcx() -> Vec<u8> {
 /// ```
 fn rebox_int_rax() -> Vec<u8> {
     code!(
-        [0x48u8, 0xBA],  // movabs rdx, PAYLOAD_MASK
+        [0x48u8, 0xBA], // movabs rdx, PAYLOAD_MASK
         PAYLOAD_MASK_LE,
-        [0x48u8, 0x23, 0xC2],  // and rax, rdx
-        [0x48u8, 0xBA],  // movabs rdx, TAG_INT_BASE
+        [0x48u8, 0x23, 0xC2], // and rax, rdx
+        [0x48u8, 0xBA],       // movabs rdx, TAG_INT_BASE
         TAG_INT_BASE_LE,
-        [0x48u8, 0x0B, 0xC2],  // or rax, rdx
+        [0x48u8, 0x0B, 0xC2], // or rax, rdx
     )
 }
 
@@ -422,11 +422,7 @@ fn rebox_int_rax() -> Vec<u8> {
 /// and `rcx` (rhs), leaving the result in `rax`.
 ///
 /// Returns (code_bytes, holes).
-fn arith_stencil_abc(
-    opcode: u8,
-    name: &str,
-    compute_bytes: &[u8],
-) -> StencilDef {
+fn arith_stencil_abc(opcode: u8, name: &str, compute_bytes: &[u8]) -> StencilDef {
     // Offset tracking:
     // 0:  mov rax, [r14+B*8]   7 bytes  → hole RegB at 3
     // 7:  mov rcx, [r14+C*8]   7 bytes  → hole RegC at 10
@@ -443,8 +439,10 @@ fn arith_stencil_abc(
     let store_offset = 68 + compute_len + 26 + 3;
 
     let mut code = code!(
-        [0x49u8, 0x8B, 0x86], [0x00u8; 4],   // mov rax, [r14+B*8]
-        [0x49u8, 0x8B, 0x8E], [0x00u8; 4],   // mov rcx, [r14+C*8]
+        [0x49u8, 0x8B, 0x86],
+        [0x00u8; 4], // mov rax, [r14+B*8]
+        [0x49u8, 0x8B, 0x8E],
+        [0x00u8; 4], // mov rcx, [r14+C*8]
     );
     code.extend_from_slice(&tag_check_rax());
     code.extend_from_slice(&tag_check_rcx());
@@ -454,7 +452,7 @@ fn arith_stencil_abc(
     code.extend_from_slice(&rebox_int_rax());
     // mov [r14+A*8], rax
     code.extend_from_slice(&[0x49, 0x89, 0x86]);
-    code.extend_from_slice(&[0x00; 4]);   // hole: RegA
+    code.extend_from_slice(&[0x00; 4]); // hole: RegA
 
     let holes = vec![
         HoleDef::new(3, HoleType::RegB, 4),
@@ -514,7 +512,7 @@ pub fn stencil_div() -> StencilDef {
         OpCode::Div as u8,
         "Div",
         &[
-            0x48, 0x99,       // cqo
+            0x48, 0x99, // cqo
             0x48, 0xF7, 0xF9, // idiv rcx
         ],
     )
@@ -534,7 +532,7 @@ pub fn stencil_mod() -> StencilDef {
         OpCode::Mod as u8,
         "Mod",
         &[
-            0x48, 0x99,       // cqo
+            0x48, 0x99, // cqo
             0x48, 0xF7, 0xF9, // idiv rcx
             0x48, 0x89, 0xD0, // mov rax, rdx (remainder)
         ],
@@ -560,11 +558,12 @@ pub fn stencil_neg() -> StencilDef {
     // 37: rebox_int_rax (26 bytes)
     // 63: store A (7 bytes), hole RegA at 63+3 = 66
     let mut code = code!(
-        [0x49u8, 0x8B, 0x86], [0x00u8; 4],  // mov rax, [r14+B*8]
+        [0x49u8, 0x8B, 0x86],
+        [0x00u8; 4], // mov rax, [r14+B*8]
     );
     code.extend_from_slice(&tag_check_rax());
     code.extend_from_slice(&sign_extend_rax());
-    code.extend_from_slice(&[0x48, 0xF7, 0xD8]);  // neg rax
+    code.extend_from_slice(&[0x48, 0xF7, 0xD8]); // neg rax
     code.extend_from_slice(&rebox_int_rax());
     code.extend_from_slice(&[0x49, 0x89, 0x86]);
     code.extend_from_slice(&[0x00; 4]);
@@ -618,15 +617,15 @@ pub fn stencil_neg() -> StencilDef {
 /// ```
 fn cmp_rax_rcx_to_bool_rax(setcc_byte: u8) -> Vec<u8> {
     code!(
-        [0x48u8, 0x3B, 0xC1],                   // cmp rax, rcx
-        [0x0Fu8, setcc_byte, 0xC0],              // setXX al
-        [0x48u8, 0x0F, 0xB6, 0xC0],             // movzx rax, al  (zero-extend to 64 bits)
+        [0x48u8, 0x3B, 0xC1],       // cmp rax, rcx
+        [0x0Fu8, setcc_byte, 0xC0], // setXX al
+        [0x48u8, 0x0F, 0xB6, 0xC0], // movzx rax, al  (zero-extend to 64 bits)
         // Re-box: FALSE_VALUE + rax → bool NbValue
         // FALSE_VALUE=0x7FFB_0000_0000_0000, TRUE_VALUE=0x7FFB_0000_0000_0001
-        [0x48u8, 0xBA],                          // movabs rdx, FALSE_VALUE
+        [0x48u8, 0xBA], // movabs rdx, FALSE_VALUE
         FALSE_VALUE_LE,
-        [0x48u8, 0x03, 0xD0],                   // add rdx, rax
-        [0x48u8, 0x89, 0xD0],                   // mov rax, rdx
+        [0x48u8, 0x03, 0xD0], // add rdx, rax
+        [0x48u8, 0x89, 0xD0], // mov rax, rdx
     )
 }
 
@@ -648,8 +647,10 @@ fn cmp_stencil_abc(opcode: u8, name: &str, setcc_byte: u8) -> StencilDef {
     let store_offset = 68 + cmp_len + 3;
 
     let mut code = code!(
-        [0x49u8, 0x8B, 0x86], [0x00u8; 4],
-        [0x49u8, 0x8B, 0x8E], [0x00u8; 4],
+        [0x49u8, 0x8B, 0x86],
+        [0x00u8; 4],
+        [0x49u8, 0x8B, 0x8E],
+        [0x00u8; 4],
     );
     code.extend_from_slice(&tag_check_rax());
     code.extend_from_slice(&tag_check_rcx());
@@ -720,9 +721,11 @@ pub fn stencil_not() -> StencilDef {
         OpCode::Not as u8,
         "Not",
         code!(
-            [0x49u8, 0x8B, 0x86], [0x00u8; 4],   // mov rax, [r14+B*8]  hole RegB at 3
-            [0x48u8, 0x83, 0xF0, 0x01],           // xor rax, 1
-            [0x49u8, 0x89, 0x86], [0x00u8; 4],   // mov [r14+A*8], rax  hole RegA at 14
+            [0x49u8, 0x8B, 0x86],
+            [0x00u8; 4],                // mov rax, [r14+B*8]  hole RegB at 3
+            [0x48u8, 0x83, 0xF0, 0x01], // xor rax, 1
+            [0x49u8, 0x89, 0x86],
+            [0x00u8; 4], // mov [r14+A*8], rax  hole RegA at 14
         ),
         vec![
             HoleDef::new(3, HoleType::RegB, 4),
@@ -795,9 +798,10 @@ pub fn stencil_test() -> StencilDef {
         OpCode::Test as u8,
         "Test",
         code!(
-            [0x49u8, 0x8B, 0x86], [0x00u8; 4],  // mov rax, [r14+A*8]  hole RegA at 3
-            [0x83u8, 0xE0, 0x01],                // and eax, 1
-            [0x83u8, 0xF8, 0x00],                // cmp eax, <imm8>     hole RegCIndex at 12 (1 byte)
+            [0x49u8, 0x8B, 0x86],
+            [0x00u8; 4],                            // mov rax, [r14+A*8]  hole RegA at 3
+            [0x83u8, 0xE0, 0x01],                   // and eax, 1
+            [0x83u8, 0xF8, 0x00], // cmp eax, <imm8>     hole RegCIndex at 12 (1 byte)
             [0x0Fu8, 0x84, 0x00, 0x00, 0x00, 0x00], // je rel32         hole JumpOffset32 at 15
         ),
         vec![
@@ -851,10 +855,11 @@ pub fn stencil_return() -> StencilDef {
         OpCode::Return as u8,
         "Return",
         code!(
-            [0x4Cu8, 0x89, 0xFF],          // mov rdi, r15
+            [0x4Cu8, 0x89, 0xFF],             // mov rdi, r15
             [0xBEu8, 0x00, 0x00, 0x00, 0x00], // mov esi, <A> (imm32, low byte = A)
-            [0x48u8, 0xB8], [0x00u8; 8],   // movabs rax, <lm_rt_return>
-            [0xFFu8, 0xD0],                // call rax
+            [0x48u8, 0xB8],
+            [0x00u8; 8],    // movabs rax, <lm_rt_return>
+            [0xFFu8, 0xD0], // call rax
         ),
         vec![
             HoleDef::new(4, HoleType::RegAIndex, 1),
@@ -871,10 +876,11 @@ pub fn stencil_halt() -> StencilDef {
         OpCode::Halt as u8,
         "Halt",
         code!(
-            [0x4Cu8, 0x89, 0xFF],          // mov rdi, r15
+            [0x4Cu8, 0x89, 0xFF],             // mov rdi, r15
             [0xBEu8, 0x00, 0x00, 0x00, 0x00], // mov esi, <A>
-            [0x48u8, 0xB8], [0x00u8; 8],   // movabs rax, <lm_rt_halt>
-            [0xFFu8, 0xD0],                // call rax
+            [0x48u8, 0xB8],
+            [0x00u8; 8],    // movabs rax, <lm_rt_halt>
+            [0xFFu8, 0xD0], // call rax
         ),
         vec![
             HoleDef::new(4, HoleType::RegAIndex, 1),
@@ -911,11 +917,13 @@ pub fn stencil_call() -> StencilDef {
         OpCode::Call as u8,
         "Call",
         code!(
-            [0x4Cu8, 0x89, 0xFF],          // mov rdi, r15
-            [0x48u8, 0xB8], [0x00u8; 8],   // movabs rax, <instr_word>  hole at 5
-            [0x48u8, 0x89, 0xC6],          // mov rsi, rax
-            [0x48u8, 0xB8], [0x00u8; 8],   // movabs rax, <lm_rt_call>  hole at 18
-            [0xFFu8, 0xD0],                // call rax
+            [0x4Cu8, 0x89, 0xFF], // mov rdi, r15
+            [0x48u8, 0xB8],
+            [0x00u8; 8],          // movabs rax, <instr_word>  hole at 5
+            [0x48u8, 0x89, 0xC6], // mov rsi, rax
+            [0x48u8, 0xB8],
+            [0x00u8; 8],    // movabs rax, <lm_rt_call>  hole at 18
+            [0xFFu8, 0xD0], // call rax
         ),
         vec![
             HoleDef::new(5, HoleType::InstructionWord, 4),
@@ -946,9 +954,11 @@ pub fn stencil_intrinsic() -> StencilDef {
         "Intrinsic",
         code!(
             [0x4Cu8, 0x89, 0xFF],
-            [0x48u8, 0xB8], [0x00u8; 8],   // movabs rax, <instr_word>
+            [0x48u8, 0xB8],
+            [0x00u8; 8], // movabs rax, <instr_word>
             [0x48u8, 0x89, 0xC6],
-            [0x48u8, 0xB8], [0x00u8; 8],   // movabs rax, <lm_rt_intrinsic>
+            [0x48u8, 0xB8],
+            [0x00u8; 8], // movabs rax, <lm_rt_intrinsic>
             [0xFFu8, 0xD0],
         ),
         vec![
@@ -972,9 +982,11 @@ fn effect_stencil(opcode: u8, name: &str) -> StencilDef {
         name,
         code!(
             [0x4Cu8, 0x89, 0xFF],
-            [0x48u8, 0xB8], [0x00u8; 8],   // movabs rax, <instr_word>
+            [0x48u8, 0xB8],
+            [0x00u8; 8], // movabs rax, <instr_word>
             [0x48u8, 0x89, 0xC6],
-            [0x48u8, 0xB8], [0x00u8; 8],   // movabs rax, <runtime_func>
+            [0x48u8, 0xB8],
+            [0x00u8; 8], // movabs rax, <runtime_func>
             [0xFFu8, 0xD0],
         ),
         vec![
@@ -1065,14 +1077,36 @@ pub fn stencil_set_index() -> StencilDef {
 
 /// **OsrCheck** — increment hot-loop counter; tier-up if threshold reached.
 ///
-/// In the Tier 1 stitcher this is a `nop`; tier-up will be wired once the
-/// Cranelift OSR path is ready.
+/// Calls `lm_rt_osr_check(ctx, cell_idx, ip)` from the stencil JIT.
+///
+/// Arguments:
+/// - rdi: VmContext* (passed via r15)
+/// - rsi: cell_idx (from instruction field A)
+/// - rdx: current_ip (from instruction field B)
+///
+/// Returns:
+/// - rax: 0 if no tier-up needed, else function pointer to jump to
+///
+/// The stencil JIT will conditionally jump to the returned pointer if non-zero.
 pub fn stencil_osrcheck() -> StencilDef {
     StencilDef::new(
         OpCode::OsrCheck as u8,
         "OsrCheck",
-        vec![0x90], // nop
-        vec![],
+        code!(
+            [0x4Cu8, 0x89, 0xFF],             // mov rdi, r15 (VmContext*)
+            [0xBEu8, 0x00, 0x00, 0x00, 0x00], // mov esi, <A> (cell_idx)
+            [0xBAu8, 0x00, 0x00, 0x00, 0x00], // mov edx, <B> (current_ip)
+            [0x48u8, 0xB8],
+            [0x00u8; 8],    // movabs rax, <lm_rt_osr_check>
+            [0xFFu8, 0xD0], // call rax
+            // After call, rax contains fn pointer (0 = no tier-up, non-zero = jump to)
+            [0x90], // nop (padding, could be replaced with jmp rax)
+        ),
+        vec![
+            HoleDef::new(4, HoleType::RegAIndex, 1),  // cell_idx in esi
+            HoleDef::new(10, HoleType::RegBIndex, 1), // current_ip in edx
+            HoleDef::new(16, HoleType::RuntimeFuncAddr, 8), // function address
+        ],
     )
 }
 
@@ -1255,7 +1289,10 @@ mod tests {
         assert!(lib.get(OpCode::Return as u8).is_some(), "Return missing");
         assert!(lib.get(OpCode::Perform as u8).is_some(), "Perform missing");
         assert!(lib.get(OpCode::NewList as u8).is_some(), "NewList missing");
-        assert!(lib.get(OpCode::GetField as u8).is_some(), "GetField missing");
+        assert!(
+            lib.get(OpCode::GetField as u8).is_some(),
+            "GetField missing"
+        );
         // At least 30 stencils
         assert!(lib.len() >= 30, "expected ≥30 stencils, got {}", lib.len());
     }

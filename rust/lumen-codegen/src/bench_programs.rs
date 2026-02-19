@@ -84,6 +84,7 @@ pub fn fibonacci_lir() -> LirModule {
             Instruction::abc(OpCode::Return, 7, 1, 0),  // 14: return r7
         ],
         effect_handler_metas: Vec::new(),
+        osr_points: Vec::new(),
     };
 
     empty_module(vec![cell])
@@ -144,6 +145,7 @@ pub fn arithmetic_lir() -> LirModule {
             Instruction::abc(OpCode::Return, 9, 1, 0),
         ],
         effect_handler_metas: Vec::new(),
+        osr_points: Vec::new(),
     };
 
     empty_module(vec![cell])
@@ -189,6 +191,7 @@ pub fn simple_loop_lir() -> LirModule {
             Instruction::abc(OpCode::Return, 1, 1, 0), // 7: return r1
         ],
         effect_handler_metas: Vec::new(),
+        osr_points: Vec::new(),
     };
 
     empty_module(vec![cell])
@@ -233,6 +236,7 @@ pub fn multi_cell_lir(count: usize) -> LirModule {
                     Instruction::abc(OpCode::Return, 5, 1, 0),
                 ],
                 effect_handler_metas: Vec::new(),
+                osr_points: Vec::new(),
             }
         })
         .collect();
@@ -273,6 +277,7 @@ pub fn tail_recursive_countdown_lir() -> LirModule {
             Instruction::abc(OpCode::TailCall, 3, 1, 1), // 9: tail-call countdown(r4)
         ],
         effect_handler_metas: Vec::new(),
+        osr_points: Vec::new(),
     };
 
     empty_module(vec![cell])
@@ -325,6 +330,7 @@ pub fn string_concat_chain_lir() -> LirModule {
             Instruction::abc(OpCode::Return, 6, 1, 0), // return r6
         ],
         effect_handler_metas: Vec::new(),
+        osr_points: Vec::new(),
     };
 
     empty_module(vec![cell])

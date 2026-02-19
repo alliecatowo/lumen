@@ -1,5 +1,8 @@
 {
   "devDependencies": {
     "wrangler": "^4.65.0"
+  },
+  "dependencies": {
+    "opencode-kimi-code-auth": "^0.1.6"
   }
 }

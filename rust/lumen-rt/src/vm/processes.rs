@@ -86,13 +86,13 @@ impl VM {
             "machine" => Some(self.call_machine_method(owner, method, base, a, nargs)),
             "pipeline" if method == "run" => {
                 let args: Vec<Value> = (0..nargs)
-                    .map(|i| self.registers[base + a + 1 + i].clone())
+                    .map(|i| self.registers[base + a + 1 + i].peek_legacy())
                     .collect();
                 Some(self.call_pipeline_run(owner, &args))
             }
             "orchestration" if method == "run" => {
                 let args: Vec<Value> = (0..nargs)
-                    .map(|i| self.registers[base + a + 1 + i].clone())
+                    .map(|i| self.registers[base + a + 1 + i].peek_legacy())
                     .collect();
                 Some(self.call_orchestration_run(owner, &args))
             }
@@ -112,7 +112,7 @@ impl VM {
                         Ok(new_module) => {
                             if let Some(current_mod) = self.module.as_mut() {
                                 current_mod.merge(&new_module);
-                                let input_val = self.registers[base + a + 2].clone();
+                                let input_val = self.registers[base + a + 2].peek_legacy();
                                 Some(self.call_cell_sync(&cell_name, vec![input_val]))
                             } else {
                                 Some(Err(VmError::Runtime(
@@ -127,8 +127,8 @@ impl VM {
                     }
                 } else {
                     // Argument-based eval: run specific cell by name
-                    let cell_name_val = self.registers[base + a + 2].clone();
-                    let cell_name = cell_name_val.as_string();
+                    let cell_name_val = self.registers[base + a + 2].peek_legacy();
+                    let cell_name = cell_name_val.display_pretty();
                     if cell_name.is_empty() {
                         return Some(Err(VmError::Runtime(
                             "eval requires a cell name argument or 'source' config".to_string(),
@@ -139,7 +139,7 @@ impl VM {
                     let start_arg = base + a + 3;
                     let end_arg = base + a + 1 + nargs;
                     let call_args: Vec<Value> = (start_arg..end_arg)
-                        .map(|i| self.registers[i].clone())
+                        .map(|i| self.registers[i].peek_legacy())
                         .collect();
 
                     Some(self.call_cell_sync(&cell_name, call_args))
@@ -153,7 +153,7 @@ impl VM {
                 {
                     // Perform schema validation
                     if self.validate_schema(&value, &schema_name) {
-                        Some(Ok(value))
+                        Some(Ok(value.peek_legacy()))
                     } else {
                         Some(Err(VmError::Runtime(format!(
                             "Guardrail violation: value does not match schema '{}'",
@@ -162,11 +162,11 @@ impl VM {
                     }
                 } else {
                     // Passthrough if no schema configured
-                    Some(Ok(value))
+                    Some(Ok(value.peek_legacy()))
                 }
             }
             "pattern" if method == "run" => {
-                let value = self.registers[base + a + 2].as_string();
+                let value = self.registers[base + a + 2].peek_legacy().display_pretty();
                 let config = self.process_configs.get(owner);
                 if let Some(pattern_def) =
                     config.and_then(|c| c.get("pattern")).map(|v| v.as_string())
@@ -209,12 +209,12 @@ impl VM {
         let saved_registers = std::mem::take(&mut self.registers);
 
         // Set up a fresh execution context for the target cell
-        self.registers.resize(num_regs.max(16), Value::Null);
+        self.registers.resize(num_regs.max(16), NbValue::new_null());
         for (i, arg) in args.into_iter().enumerate() {
             if i < params.len() {
                 let dst = params[i].register as usize;
                 if dst < self.registers.len() {
-                    self.registers[dst] = arg;
+                    self.registers[dst] = NbValue::from_legacy(arg);
                 }
             }
         }
@@ -224,6 +224,7 @@ impl VM {
             ip: 0,
             return_register: 0,
             future_id: None,
+            osr_points: 0,
         });
 
         let result = self.run_until(0);
@@ -284,7 +285,7 @@ impl VM {
         nargs: usize,
     ) -> Result<Value, VmError> {
         let args: Vec<Value> = (0..nargs)
-            .map(|i| self.registers[base + a + 1 + i].clone())
+            .map(|i| self.registers[base + a + 1 + i].peek_legacy())
             .collect();
 
         let instance_id = helpers::process_instance_id(args.first()).ok_or_else(|| {
@@ -498,7 +499,7 @@ impl VM {
         nargs: usize,
     ) -> Result<Value, VmError> {
         let args: Vec<Value> = (0..nargs)
-            .map(|i| self.registers[base + a + 1 + i].clone())
+            .map(|i| self.registers[base + a + 1 + i].peek_legacy())
             .collect();
         let instance_id = helpers::process_instance_id(args.first()).ok_or_else(|| {
             VmError::TypeError(format!(
@@ -697,14 +698,14 @@ impl VM {
 
     pub(crate) fn orchestration_args(&self, base: usize, a: usize, nargs: usize) -> Vec<Value> {
         if nargs == 1 {
-            let first = self.registers[base + a + 1].clone();
+            let first = self.registers[base + a + 1].peek_legacy();
             if let Value::List(items) = first {
                 return (*items).clone();
             }
             return vec![first];
         }
         (0..nargs)
-            .map(|i| self.registers[base + a + 1 + i].clone())
+            .map(|i| self.registers[base + a + 1 + i].peek_legacy())
             .collect()
     }
 }

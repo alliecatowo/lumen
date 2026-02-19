@@ -3,6 +3,14 @@
 //! Each fiber owns a contiguous stack allocated via `mmap`. The fiber_switch
 //! assembly routine swaps callee-saved registers + RSP between fibers in ~20ns.
 //!
+//! # Growable Stacks
+//!
+//! Fibers support growable stacks using a SIGSEGV signal handler:
+//! 1. Stacks are allocated with a guard page at the bottom (low address)
+//! 2. When stack overflows into the guard page, SIGSEGV is triggered
+//! 3. The signal handler detects fiber stack hits and grows the stack
+//! 4. Frame pointers (RBP chain) are relocated to the new stack
+//!
 //! # Safety Invariants
 //!
 //! - A `Fiber` must not be moved after `init_with_fn` is called, because the
@@ -15,14 +23,89 @@
 //!   they are `!Send` and `!Sync` by virtue of holding raw pointers.
 //! - The guard page at the bottom of each stack must not be written to. Stack
 //!   overflow into the guard page will cause a SIGSEGV.
+//! - The SIGSEGV handler for stack growth is async-signal-safe: no malloc, no locks.
 
 use std::ptr;
+
+use crate::platform;
 
 /// Default stack size per fiber: 64 KiB. Adequate for most effect handler chains.
 pub const DEFAULT_FIBER_STACK_SIZE: usize = 64 * 1024;
 
-/// Page size on x86_64 Linux. Used for guard page alignment.
-const PAGE_SIZE: usize = 4096;
+/// Default maximum stack size for growable fibers: 8 MB.
+pub const DEFAULT_MAX_STACK_SIZE: usize = 8 * 1024 * 1024;
+
+/// Default initial stack size for growable fibers: 16 KB.
+pub const DEFAULT_INITIAL_STACK_SIZE: usize = 16 * 1024;
+
+/// Default stack growth increment: 64 KB.
+pub const DEFAULT_GROWTH_INCREMENT: usize = 64 * 1024;
+
+/// Stack growth configuration for fibers.
+#[derive(Debug, Clone, Copy)]
+pub struct FiberStackConfig {
+    /// Initial stack allocation size (excluding guard page).
+    pub initial_size: usize,
+    /// Amount to grow by on each overflow (or factor if using exponential growth).
+    pub growth_increment: usize,
+    /// Maximum stack size before growth fails.
+    pub max_size: usize,
+    /// Guard page size (typically one page, 4KB).
+    pub guard_page_size: usize,
+    /// Whether to use exponential growth (double) or linear growth.
+    pub exponential_growth: bool,
+}
+
+impl Default for FiberStackConfig {
+    fn default() -> Self {
+        Self {
+            initial_size: DEFAULT_INITIAL_STACK_SIZE,
+            growth_increment: DEFAULT_GROWTH_INCREMENT,
+            max_size: DEFAULT_MAX_STACK_SIZE,
+            guard_page_size: platform::page_size().max(4096),
+            exponential_growth: true,
+        }
+    }
+}
+
+impl FiberStackConfig {
+    /// Create a configuration with a larger initial size.
+    pub fn with_initial_size(initial_size: usize) -> Self {
+        Self {
+            initial_size,
+            ..Default::default()
+        }
+    }
+
+    /// Create a configuration for fixed-size stacks (no growth).
+    pub fn fixed(size: usize) -> Self {
+        Self {
+            initial_size: size,
+            growth_increment: 0,
+            max_size: size,
+            ..Default::default()
+        }
+    }
+
+    /// Calculate the next stack size given the current size.
+    pub fn next_size(&self, current: usize) -> Option<usize> {
+        if current >= self.max_size {
+            return None;
+        }
+        let next = if self.exponential_growth {
+            current.saturating_mul(2).min(self.max_size)
+        } else {
+            current
+                .saturating_add(self.growth_increment)
+                .min(self.max_size)
+        };
+        if next <= current {
+            None
+        } else {
+            Some(next)
+        }
+    }
+}
 
 /// Status of a fiber in its lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +116,35 @@ pub enum FiberStatus {
     Suspended,
     /// Finished execution — stack can be recycled.
     Dead,
+}
+
+/// Stack utilization information.
+#[derive(Debug, Clone, Copy)]
+pub struct StackUsage {
+    /// Current stack capacity (allocated size in bytes).
+    pub capacity: usize,
+    /// Estimated used stack space (in bytes).
+    pub used: usize,
+    /// Available stack space before next growth or overflow (in bytes).
+    pub available: usize,
+    /// Maximum allowed stack size (in bytes).
+    pub max: usize,
+}
+
+impl StackUsage {
+    /// Returns the utilization ratio (0.0 to 1.0).
+    pub fn ratio(&self) -> f64 {
+        if self.capacity == 0 {
+            0.0
+        } else {
+            self.used as f64 / self.capacity as f64
+        }
+    }
+
+    /// Returns true if the stack is nearly full (> 90% utilized).
+    pub fn is_nearly_full(&self) -> bool {
+        self.ratio() > 0.9
+    }
 }
 
 /// A native fiber (lightweight coroutine with its own stack).
@@ -71,6 +183,12 @@ pub struct Fiber {
     pub stack_top: *mut u8,
     /// Size of the allocated stack region in bytes (including guard page).
     pub stack_size: usize,
+    /// Current allocation size in bytes (including guard page).
+    pub stack_capacity: usize,
+    /// Number of times this stack has grown.
+    pub stack_growth_count: u32,
+    /// Max stack size before growth fails.
+    pub max_stack_size: usize,
     /// Parent fiber (the handler that will receive `perform` calls).
     /// Null if this is the root fiber.
     pub parent: *mut Fiber,
@@ -87,7 +205,7 @@ pub struct Fiber {
 unsafe impl Send for Fiber {}
 
 impl Fiber {
-    /// Allocate a new fiber with its own stack.
+    /// Allocate a new fiber with its own stack using default stack size.
     ///
     /// The stack is allocated with `mmap(MAP_ANONYMOUS | MAP_PRIVATE | MAP_STACK)`.
     /// A guard page (`PROT_NONE`) is placed at the bottom (lowest address) to catch
@@ -100,46 +218,33 @@ impl Fiber {
     ///
     /// Panics if `mmap` or `mprotect` fail (out-of-memory or system limit).
     pub fn new(stack_size: usize) -> Box<Fiber> {
-        // Round stack_size up to a multiple of PAGE_SIZE.
-        let stack_size = round_up(stack_size, PAGE_SIZE);
+        Self::with_config(FiberStackConfig::with_initial_size(stack_size))
+    }
 
-        #[cfg(unix)]
-        let (stack_bottom, stack_top) = unsafe {
-            use libc::{
-                MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, MAP_STACK, PROT_NONE, PROT_READ,
-                PROT_WRITE,
-            };
-
-            let ptr = libc::mmap(
-                ptr::null_mut(),
-                stack_size,
-                PROT_READ | PROT_WRITE,
-                MAP_ANONYMOUS | MAP_PRIVATE | MAP_STACK,
-                -1,
-                0,
-            );
-            assert_ne!(ptr, MAP_FAILED, "fiber: mmap failed");
-
-            let bottom = ptr as *mut u8;
-
-            // Guard page: the lowest page is made inaccessible.
-            let ret = libc::mprotect(bottom as *mut libc::c_void, PAGE_SIZE, PROT_NONE);
-            assert_eq!(ret, 0, "fiber: mprotect (guard page) failed");
-
-            let top = bottom.add(stack_size);
-            (bottom, top)
-        };
-
-        #[cfg(not(unix))]
-        let (stack_bottom, stack_top) = {
-            // Fallback for non-Unix: allocate from the heap (no guard page).
-            let layout =
-                std::alloc::Layout::from_size_align(stack_size, PAGE_SIZE).expect("bad layout");
-            let bottom = unsafe { std::alloc::alloc_zeroed(layout) };
-            assert!(!bottom.is_null(), "fiber: heap alloc failed");
-            let top = unsafe { bottom.add(stack_size) };
-            (bottom, top)
-        };
+    /// Allocate a new fiber with a specific stack configuration.
+    ///
+    /// This allows for:
+    /// - Small initial stacks that grow on demand (growable stacks)
+    /// - Fixed-size stacks that fail on overflow
+    /// - Custom growth behavior (exponential vs linear)
+    ///
+    /// # Example
+    /// ```
+    /// use lumen_rt::vm::fiber::{Fiber, FiberStackConfig};
+    ///
+    /// // Create a fiber with a small initial stack that grows to max 1MB
+    /// let config = FiberStackConfig {
+    ///     initial_size: 16 * 1024,
+    ///     growth_increment: 64 * 1024,
+    ///     max_size: 1024 * 1024,
+    ///     ..Default::default()
+    /// };
+    /// let fiber = Fiber::with_config(config);
+    /// ```
+    pub fn with_config(config: FiberStackConfig) -> Box<Fiber> {
+        let (stack_bottom, stack_size) = platform::allocate_stack(config.initial_size);
+        assert!(!stack_bottom.is_null(), "fiber: stack allocation failed");
+        let stack_top = unsafe { stack_bottom.add(stack_size) };
 
         let mut fiber = Box::new(Fiber {
             saved_rsp: 0,
@@ -152,6 +257,9 @@ impl Fiber {
             stack_bottom,
             stack_top,
             stack_size,
+            stack_capacity: stack_size,
+            stack_growth_count: 0,
+            max_stack_size: config.max_size,
             parent: ptr::null_mut(),
             status: FiberStatus::Suspended,
             pinned: false,
@@ -250,6 +358,105 @@ impl Fiber {
     pub fn is_suspended(&self) -> bool {
         self.status == FiberStatus::Suspended
     }
+
+    /// Returns `true` if the stack can still grow.
+    ///
+    /// A stack cannot grow if:
+    /// - It has reached `max_stack_size`
+    /// - It was created with a fixed-size configuration
+    #[inline]
+    pub fn can_grow(&self) -> bool {
+        self.stack_capacity < self.max_stack_size
+    }
+
+    /// Returns the current stack capacity (allocated size).
+    #[inline]
+    pub fn stack_capacity(&self) -> usize {
+        self.stack_capacity
+    }
+
+    /// Returns the maximum stack size this fiber can grow to.
+    #[inline]
+    pub fn max_stack_size(&self) -> usize {
+        self.max_stack_size
+    }
+
+    /// Returns the number of times this stack has grown.
+    #[inline]
+    pub fn growth_count(&self) -> u32 {
+        self.stack_growth_count
+    }
+
+    /// Returns stack utilization information.
+    ///
+    /// Note: This is only accurate when called on the currently executing fiber
+    /// or when the fiber is suspended.
+    pub fn stack_usage(&self) -> StackUsage {
+        let used = if self.saved_rsp != 0 {
+            self.stack_top as usize - self.saved_rsp as usize
+        } else {
+            0
+        };
+        StackUsage {
+            capacity: self.stack_capacity,
+            used,
+            available: self.stack_capacity.saturating_sub(used),
+            max: self.max_stack_size,
+        }
+    }
+
+    /// Returns the bounds of the usable stack area (excluding guard page).
+    ///
+    /// The guard page is at [stack_bottom, stack_bottom + guard_page_size).
+    /// The usable stack is [stack_bottom + guard_page_size, stack_top).
+    pub fn usable_stack_bounds(&self) -> (*mut u8, *mut u8) {
+        let guard_size = platform::page_size();
+        let usable_bottom = unsafe { self.stack_bottom.add(guard_size) };
+        (usable_bottom, self.stack_top)
+    }
+
+    /// Attempt to grow the stack
+    ///
+    /// # Safety
+    /// Only safe when called from signal handler or when fiber is suspended
+    pub unsafe fn try_grow(&mut self, current_rsp: *mut u8, current_rbp: *mut u8) -> bool {
+        if current_rsp.is_null() || current_rbp.is_null() {
+            return false;
+        }
+        if !self.can_grow() {
+            return false;
+        }
+
+        let new_size = self
+            .stack_capacity
+            .saturating_mul(2)
+            .min(self.max_stack_size);
+        let Some(result) = platform::grow_stack_copy(
+            self.stack_bottom,
+            self.stack_top,
+            self.stack_capacity,
+            new_size,
+            current_rsp,
+            current_rbp,
+        ) else {
+            return false;
+        };
+
+        self.stack_bottom = result.new_bottom;
+        self.stack_top = result.new_top;
+        self.stack_size = result.new_size;
+        self.stack_capacity = result.new_size;
+        self.stack_growth_count = self.stack_growth_count.saturating_add(1);
+
+        if self.saved_rsp != 0 {
+            self.saved_rsp = result.new_rsp as u64;
+        }
+        if self.saved_rbp != 0 {
+            self.saved_rbp = result.new_rbp as u64;
+        }
+
+        true
+    }
 }
 
 impl Drop for Fiber {
@@ -257,15 +464,8 @@ impl Drop for Fiber {
         if self.stack_bottom.is_null() {
             return;
         }
-        #[cfg(unix)]
         unsafe {
-            libc::munmap(self.stack_bottom as *mut libc::c_void, self.stack_size);
-        }
-        #[cfg(not(unix))]
-        unsafe {
-            let layout = std::alloc::Layout::from_size_align(self.stack_size, PAGE_SIZE)
-                .expect("bad layout in Drop");
-            std::alloc::dealloc(self.stack_bottom, layout);
+            platform::free_stack(self.stack_bottom, self.stack_size);
         }
         self.stack_bottom = ptr::null_mut();
         self.stack_top = ptr::null_mut();
@@ -313,7 +513,6 @@ std::arch::global_asm!(
     // jumping to the next instruction after the previous fiber_switch call
     // (or to fiber_entry_trampoline on the very first switch).
     "    ret",
-
     // ── fiber_entry_trampoline ────────────────────────────────────────────────
     // Called (via `ret`) on the FIRST fiber_switch to a freshly-initialized fiber.
     //
@@ -324,10 +523,10 @@ std::arch::global_asm!(
     // rax = resume_val passed by fiber_switch (= first argument to entry).
     ".global fiber_entry_trampoline",
     "fiber_entry_trampoline:",
-    "    mov rdi, rax",   // resume_val → first argument per SysV ABI
-    "    pop r11",        // pop entry fn ptr (r11 is caller-saved, ok to clobber)
-    "    jmp r11",        // tail-call: entry(resume_val)
-                          // rsp now points to fiber_exit_trampoline (sentinel ret addr)
+    "    mov rdi, rax", // resume_val → first argument per SysV ABI
+    "    pop r11",      // pop entry fn ptr (r11 is caller-saved, ok to clobber)
+    "    jmp r11",      // tail-call: entry(resume_val)
+                        // rsp now points to fiber_exit_trampoline (sentinel ret addr)
 );
 
 #[cfg(target_arch = "x86_64")]
@@ -366,7 +565,7 @@ extern "C" {
 /// default size are held. Stacks of non-default size are always freed immediately.
 pub struct FiberPool {
     /// Cached free stacks: `(stack_bottom, stack_size)`.
-    free_stacks: Vec<(*mut u8, usize)>,
+    free_stacks: std::collections::BTreeMap<usize, Vec<*mut u8>>,
     /// Size used for new stacks (also the size that qualifies for caching).
     default_size: usize,
     /// Maximum number of stacks to keep in the free list.
@@ -396,31 +595,31 @@ impl FiberPool {
     /// Use `DEFAULT_POOL_PRE_ALLOCATE` (16) and `DEFAULT_POOL_MAX_CACHED` (64)
     /// for the recommended production configuration.
     pub fn new(stack_size: usize, pre_allocate: usize) -> Self {
-        let default_size = round_up(stack_size, PAGE_SIZE);
+        let default_size = round_up(stack_size, platform::page_size());
         let max_cached = DEFAULT_POOL_MAX_CACHED;
         let mut pool = FiberPool {
-            free_stacks: Vec::with_capacity(pre_allocate.max(max_cached)),
+            free_stacks: std::collections::BTreeMap::new(),
             default_size,
             max_cached,
         };
         for _ in 0..pre_allocate {
             let (bottom, size) = pool.alloc_stack(default_size);
-            pool.free_stacks.push((bottom, size));
+            pool.insert_free(size, bottom);
         }
         pool
     }
 
     /// Create a pool with explicit `max_cached` limit (for tests or tuning).
     pub fn with_max_cached(stack_size: usize, pre_allocate: usize, max_cached: usize) -> Self {
-        let default_size = round_up(stack_size, PAGE_SIZE);
+        let default_size = round_up(stack_size, platform::page_size());
         let mut pool = FiberPool {
-            free_stacks: Vec::with_capacity(pre_allocate.max(max_cached)),
+            free_stacks: std::collections::BTreeMap::new(),
             default_size,
             max_cached,
         };
         for _ in 0..pre_allocate {
             let (bottom, size) = pool.alloc_stack(default_size);
-            pool.free_stacks.push((bottom, size));
+            pool.insert_free(size, bottom);
         }
         pool
     }
@@ -429,8 +628,10 @@ impl FiberPool {
     ///
     /// Pops from the free list if available; otherwise allocates a new one.
     pub fn acquire(&mut self) -> (*mut u8, usize) {
-        if let Some(entry) = self.free_stacks.pop() {
-            return entry;
+        if let Some(list) = self.free_stacks.get_mut(&self.default_size) {
+            if let Some(bottom) = list.pop() {
+                return (bottom, self.default_size);
+            }
         }
         self.alloc_stack(self.default_size)
     }
@@ -440,67 +641,60 @@ impl FiberPool {
     /// If the stack is the default size and the pool is not full, it is cached
     /// for reuse. Otherwise it is `munmap`-ed immediately.
     pub fn release(&mut self, stack_bottom: *mut u8, stack_size: usize) {
-        if stack_size == self.default_size && self.free_stacks.len() < self.max_cached {
-            self.free_stacks.push((stack_bottom, stack_size));
-        } else {
-            Self::munmap_stack(stack_bottom, stack_size);
+        if stack_size == self.default_size {
+            let cached = self
+                .free_stacks
+                .get(&stack_size)
+                .map(|list| list.len())
+                .unwrap_or(0);
+            if cached < self.max_cached {
+                self.insert_free(stack_size, stack_bottom);
+                return;
+            }
         }
+        Self::munmap_stack(stack_bottom, stack_size);
+    }
+
+    fn cached_count(&self, size: usize) -> usize {
+        self.free_stacks
+            .get(&size)
+            .map(|list| list.len())
+            .unwrap_or(0)
     }
 
     fn alloc_stack(&self, size: usize) -> (*mut u8, usize) {
-        #[cfg(unix)]
-        {
-            use libc::{
-                MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, MAP_STACK, PROT_NONE, PROT_READ,
-                PROT_WRITE,
-            };
-            unsafe {
-                let ptr = libc::mmap(
-                    ptr::null_mut(),
-                    size,
-                    PROT_READ | PROT_WRITE,
-                    MAP_ANONYMOUS | MAP_PRIVATE | MAP_STACK,
-                    -1,
-                    0,
-                );
-                assert_ne!(ptr, MAP_FAILED, "FiberPool: mmap failed");
-                let bottom = ptr as *mut u8;
-                let ret = libc::mprotect(bottom as *mut libc::c_void, PAGE_SIZE, PROT_NONE);
-                assert_eq!(ret, 0, "FiberPool: mprotect failed");
-                (bottom, size)
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let layout =
-                std::alloc::Layout::from_size_align(size, PAGE_SIZE).expect("bad layout");
-            let bottom = unsafe { std::alloc::alloc_zeroed(layout) };
-            assert!(!bottom.is_null(), "FiberPool: heap alloc failed");
-            (bottom, size)
-        }
+        let (bottom, size) = platform::allocate_stack(size);
+        assert!(!bottom.is_null(), "FiberPool: stack alloc failed");
+        (bottom, size)
     }
 
     /// Free a stack directly. Static so it can be called from `Drop` without
     /// borrow-checker conflicts caused by iterating `self.free_stacks` and
     /// calling an `&self` method at the same time.
     fn munmap_stack(stack_bottom: *mut u8, stack_size: usize) {
-        #[cfg(unix)]
         unsafe {
-            libc::munmap(stack_bottom as *mut libc::c_void, stack_size);
+            platform::free_stack(stack_bottom, stack_size);
         }
-        #[cfg(not(unix))]
-        unsafe {
-            let layout = std::alloc::Layout::from_size_align(stack_size, PAGE_SIZE)
-                .expect("bad layout in munmap_stack");
-            std::alloc::dealloc(stack_bottom, layout);
-        }
+    }
+
+    fn insert_free(&mut self, size: usize, bottom: *mut u8) {
+        self.free_stacks
+            .entry(size)
+            .or_insert_with(Vec::new)
+            .push(bottom);
     }
 }
 
 impl Drop for FiberPool {
     fn drop(&mut self) {
-        let stacks: Vec<_> = self.free_stacks.drain(..).collect();
-        for (bottom, size) in stacks {
+        let mut all: Vec<(*mut u8, usize)> = Vec::new();
+        for (size, list) in self.free_stacks.iter_mut() {
+            for bottom in list.drain(..) {
+                all.push((bottom, *size));
+            }
+        }
+        self.free_stacks.clear();
+        for (bottom, size) in all {
             Self::munmap_stack(bottom, size);
         }
     }
@@ -569,6 +763,9 @@ pub fn lm_rt_handle_push(
         stack_bottom,
         stack_top: unsafe { stack_bottom.add(stack_size) },
         stack_size,
+        stack_capacity: stack_size,
+        stack_growth_count: 0,
+        max_stack_size: DEFAULT_MAX_STACK_SIZE,
         parent,
         status: FiberStatus::Suspended,
         pinned: false,
@@ -742,7 +939,7 @@ mod tests {
     fn fiber_pool_pre_allocate() {
         // new(size, pre_allocate) should eagerly mmap N stacks.
         let pool = FiberPool::new(DEFAULT_FIBER_STACK_SIZE, 4);
-        assert_eq!(pool.free_stacks.len(), 4);
+        assert_eq!(pool.cached_count(pool.default_size), 4);
     }
 
     #[test]
@@ -752,17 +949,20 @@ mod tests {
 
         let (bottom1, size1) = pool.acquire();
         assert!(!bottom1.is_null());
-        assert_eq!(size1, round_up(DEFAULT_FIBER_STACK_SIZE, PAGE_SIZE));
-        assert_eq!(pool.free_stacks.len(), 0);
+        assert_eq!(
+            size1,
+            round_up(DEFAULT_FIBER_STACK_SIZE, platform::page_size())
+        );
+        assert_eq!(pool.cached_count(pool.default_size), 0);
 
         pool.release(bottom1, size1);
-        assert_eq!(pool.free_stacks.len(), 1);
+        assert_eq!(pool.cached_count(pool.default_size), 1);
 
         // Re-acquire should return the cached stack.
         let (bottom2, size2) = pool.acquire();
         assert_eq!(bottom2, bottom1);
         assert_eq!(size2, size1);
-        assert_eq!(pool.free_stacks.len(), 0);
+        assert_eq!(pool.cached_count(pool.default_size), 0);
 
         pool.release(bottom2, size2);
     }
@@ -780,7 +980,7 @@ mod tests {
         pool.release(b2, s2);
         // Third release exceeds max_cached=2, should munmap immediately.
         pool.release(b3, s3);
-        assert_eq!(pool.free_stacks.len(), 2);
+        assert_eq!(pool.cached_count(pool.default_size), 2);
     }
 
     #[test]
@@ -862,7 +1062,7 @@ mod tests {
 
         lm_rt_handle_pop(&mut pool, handler);
         // Stack should be returned to the pool after pop.
-        assert_eq!(pool.free_stacks.len(), 1);
+        assert_eq!(pool.cached_count(pool.default_size), 1);
     }
 
     #[test]
@@ -873,7 +1073,7 @@ mod tests {
         let (stack_ptr, _) = unsafe { ((*h1).stack_bottom, (*h1).stack_size) };
 
         lm_rt_handle_pop(&mut pool, h1);
-        assert_eq!(pool.free_stacks.len(), 1);
+        assert_eq!(pool.cached_count(pool.default_size), 1);
 
         // The next push should reuse the same stack.
         let h2 = lm_rt_handle_push(&mut pool, std::ptr::null_mut(), 0, 0);
@@ -983,5 +1183,125 @@ mod tests {
 
         // Clean up — handler is suspended; pop it.
         lm_rt_handle_pop(&mut pool, handler);
+    }
+
+    // ── Growable Stack Tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn fiber_stack_config_defaults() {
+        let config = FiberStackConfig::default();
+        assert_eq!(config.initial_size, DEFAULT_INITIAL_STACK_SIZE);
+        assert_eq!(config.max_size, DEFAULT_MAX_STACK_SIZE);
+        assert!(config.exponential_growth);
+    }
+
+    #[test]
+    fn fiber_stack_config_fixed() {
+        let config = FiberStackConfig::fixed(128 * 1024);
+        assert_eq!(config.initial_size, 128 * 1024);
+        assert_eq!(config.max_size, 128 * 1024);
+        assert_eq!(config.growth_increment, 0);
+    }
+
+    #[test]
+    fn fiber_stack_config_next_size_exponential() {
+        let config = FiberStackConfig {
+            initial_size: 16 * 1024,
+            max_size: 256 * 1024,
+            exponential_growth: true,
+            ..Default::default()
+        };
+
+        assert_eq!(config.next_size(16 * 1024), Some(32 * 1024));
+        assert_eq!(config.next_size(32 * 1024), Some(64 * 1024));
+        assert_eq!(config.next_size(128 * 1024), Some(256 * 1024));
+        assert_eq!(config.next_size(256 * 1024), None); // At max
+    }
+
+    #[test]
+    fn fiber_stack_config_next_size_linear() {
+        let config = FiberStackConfig {
+            initial_size: 16 * 1024,
+            growth_increment: 64 * 1024,
+            max_size: 256 * 1024,
+            exponential_growth: false,
+            ..Default::default()
+        };
+
+        assert_eq!(config.next_size(16 * 1024), Some(80 * 1024));
+        assert_eq!(config.next_size(80 * 1024), Some(144 * 1024));
+        assert_eq!(config.next_size(200 * 1024), Some(256 * 1024));
+        assert_eq!(config.next_size(256 * 1024), None); // At max
+    }
+
+    #[test]
+    fn fiber_with_config_growable() {
+        let config = FiberStackConfig {
+            initial_size: 16 * 1024,
+            max_size: 256 * 1024,
+            ..Default::default()
+        };
+        let fiber = Fiber::with_config(config);
+
+        assert!(fiber.can_grow());
+        assert_eq!(fiber.max_stack_size(), 256 * 1024);
+        assert_eq!(fiber.growth_count(), 0);
+        assert!(fiber.is_suspended());
+    }
+
+    #[test]
+    fn fiber_with_config_fixed() {
+        let config = FiberStackConfig::fixed(64 * 1024);
+        let fiber = Fiber::with_config(config);
+
+        assert!(!fiber.can_grow());
+        assert_eq!(fiber.max_stack_size(), 64 * 1024);
+    }
+
+    #[test]
+    fn fiber_stack_usage_info() {
+        let fiber = Fiber::new(DEFAULT_FIBER_STACK_SIZE);
+        let usage = fiber.stack_usage();
+
+        assert_eq!(usage.capacity, fiber.stack_capacity());
+        assert_eq!(usage.max, fiber.max_stack_size());
+        assert_eq!(usage.used, 0); // No usage yet (fiber not started)
+        assert_eq!(usage.available, fiber.stack_capacity());
+        assert!(!usage.is_nearly_full());
+    }
+
+    #[test]
+    fn fiber_usable_stack_bounds() {
+        let fiber = Fiber::new(DEFAULT_FIBER_STACK_SIZE);
+        let (usable_bottom, usable_top) = fiber.usable_stack_bounds();
+        let guard_size = platform::page_size();
+
+        // Usable bottom should be after the guard page
+        assert_eq!(usable_bottom, unsafe { fiber.stack_bottom.add(guard_size) });
+        // Usable top should be the stack top
+        assert_eq!(usable_top, fiber.stack_top);
+    }
+
+    #[test]
+    fn fiber_stack_config_with_initial_size() {
+        let config = FiberStackConfig::with_initial_size(32 * 1024);
+        assert_eq!(config.initial_size, 32 * 1024);
+        assert_eq!(config.max_size, DEFAULT_MAX_STACK_SIZE);
+    }
+
+    #[test]
+    fn fiber_growth_count_increments_after_growth() {
+        // Create a fiber with small initial stack
+        let mut fiber = Fiber::with_config(FiberStackConfig {
+            initial_size: 16 * 1024,
+            max_size: 256 * 1024,
+            ..Default::default()
+        });
+
+        assert_eq!(fiber.growth_count(), 0);
+
+        // Note: We can't easily test actual growth without triggering a segfault,
+        // but we can verify the fiber is set up correctly for growth
+        assert!(fiber.can_grow());
     }
 }

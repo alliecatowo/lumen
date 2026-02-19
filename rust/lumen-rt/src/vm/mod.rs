@@ -6,9 +6,11 @@ pub mod fiber_effects;
 mod helpers;
 mod intrinsics;
 mod ops;
+mod osr;
 pub(crate) mod processes;
 
 use helpers::*;
+pub(crate) use osr::osr_check::OsrRuntime;
 pub(crate) use processes::{
     MachineExpr, MachineGraphDef, MachineParamDef, MachineRuntime, MachineStateDef, MemoryRuntime,
 };
@@ -16,15 +18,17 @@ pub(crate) use processes::{
 use crate::jit_tier::{JitTier, JitTierConfig};
 use crate::vm::ops::BinaryOp;
 use lumen_core::lir::*;
+use lumen_core::nb_value::NbValue;
 use lumen_core::strings::StringTable;
 use lumen_core::types::{RuntimeField, RuntimeType, RuntimeTypeKind, RuntimeVariant, TypeTable};
 use lumen_core::values::{
-    values_equal, ClosureValue, FutureStatus, FutureValue, NbValue, RecordValue, StringRef,
-    TraceRefValue, UnionValue, Value,
+    values_equal, ClosureValue, FutureStatus, FutureValue, RecordValue, StringRef, TraceRefValue,
+    UnionValue, Value,
 };
 
+use crate::platform;
 use crate::services::tools::{ProviderRegistry, ToolDispatcher, ToolRequest};
-use crate::vm::fiber::{Fiber, FiberStatus};
+use crate::vm::fiber::{Fiber, FiberStatus, DEFAULT_MAX_STACK_SIZE};
 use lumen_core::vm_context::VmContext;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
@@ -79,7 +83,7 @@ pub struct StackFrame {
     pub ip: usize,
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum VmError {
     #[error("runtime error: {0}")]
     Runtime(String),
@@ -255,6 +259,7 @@ pub struct CallFrame {
     pub ip: usize,
     pub return_register: usize,
     pub future_id: Option<u64>,
+    pub osr_points: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -333,15 +338,19 @@ impl Drop for SuspendedContinuation {
 impl Clone for SuspendedContinuation {
     fn clone(&self) -> Self {
         // Deep-clone NbValues: for heap pointers, clone the underlying LegacyValue
-        let registers = self.registers.iter().map(|v| {
-            if v.is_nan_boxed() && v.tag() == NbValue::TAG_PTR && v.payload() != 0 {
-                // Clone the heap value to avoid aliased raw pointers
-                let legacy = v.peek_legacy();
-                NbValue::from_legacy(legacy)
-            } else {
-                *v // Scalar copy
-            }
-        }).collect();
+        let registers = self
+            .registers
+            .iter()
+            .map(|v| {
+                if v.is_nan_boxed() && v.tag() == NbValue::TAG_PTR && v.payload() != 0 {
+                    // Clone the heap value to avoid aliased raw pointers
+                    let legacy = v.peek_legacy();
+                    NbValue::from_legacy(legacy)
+                } else {
+                    *v // Scalar copy
+                }
+            })
+            .collect();
         SuspendedContinuation {
             frames: self.frames.clone(),
             registers,
@@ -466,6 +475,8 @@ pub struct VM {
     /// Tiered JIT compilation engine. Tracks call counts and compiles hot cells
     /// to native code via Cranelift.
     pub jit_tier: JitTier,
+    /// OSR runtime state for mid-execution tier transitions.
+    pub(crate) osr_runtime: OsrRuntime,
     /// Pre-interned tag IDs for common union tags ("ok", "err").
     pub tag_ok: u32,
     pub tag_err: u32,
@@ -494,11 +505,22 @@ impl VM {
             stack_bottom: std::ptr::null_mut(),
             stack_top: std::ptr::null_mut(),
             stack_size: 0,
+            stack_capacity: 0,
+            stack_growth_count: 0,
+            max_stack_size: DEFAULT_MAX_STACK_SIZE,
             parent: std::ptr::null_mut(),
             status: FiberStatus::Running,
             pinned: true,
             user_data: 0,
         });
+
+        // Install stack overflow handler (best effort).
+        #[cfg(unix)]
+        unsafe {
+            if !platform::install_stack_overflow_handler() {
+                eprintln!("Warning: Could not install stack overflow handler");
+            }
+        }
 
         // OwnedVmCtx initializes the FiberEffectStack internally.
         let mut vm_ctx = OwnedVmCtx::new();
@@ -544,6 +566,7 @@ impl VM {
             cell_index_cache: HashMap::new(),
             register_top: 0,
             jit_tier: JitTier::disabled(),
+            osr_runtime: OsrRuntime::new(0),
             tag_ok,
             tag_err,
         }
@@ -660,19 +683,20 @@ impl VM {
         old.to_legacy() // Destructive is OK here since we took ownership
     }
 
-    pub(crate) fn validate_schema(&self, val: &Value, schema_name: &str) -> bool {
+    pub(crate) fn validate_schema(&self, val: &NbValue, schema_name: &str) -> bool {
+        let legacy = val.peek_legacy();
         match schema_name {
-            "Int" | "int" => matches!(val, Value::Int(_)),
-            "Float" | "float" => matches!(val, Value::Float(_)),
-            "String" | "string" => matches!(val, Value::String(_)),
-            "Bool" | "bool" => matches!(val, Value::Bool(_)),
-            "List" | "list" => matches!(val, Value::List(_)),
-            "Map" | "map" => matches!(val, Value::Map(_)),
-            "Tuple" | "tuple" => matches!(val, Value::Tuple(_)),
-            "Set" | "set" => matches!(val, Value::Set(_)),
+            "Int" | "int" => matches!(legacy, Value::Int(_)),
+            "Float" | "float" => matches!(legacy, Value::Float(_)),
+            "String" | "string" => matches!(legacy, Value::String(_)),
+            "Bool" | "bool" => matches!(legacy, Value::Bool(_)),
+            "List" | "list" => matches!(legacy, Value::List(_)),
+            "Map" | "map" => matches!(legacy, Value::Map(_)),
+            "Tuple" | "tuple" => matches!(legacy, Value::Tuple(_)),
+            "Set" | "set" => matches!(legacy, Value::Set(_)),
             "Any" | "any" => true,
-            "Null" | "null" => matches!(val, Value::Null),
-            _ => match val {
+            "Null" | "null" => matches!(legacy, Value::Null),
+            _ => match legacy {
                 Value::Record(r) => r.type_name == schema_name,
                 _ => false,
             },
@@ -926,6 +950,8 @@ impl VM {
         let num_cells = module.cells.len();
         self.module = Some(module);
         self.jit_tier.init_for_module(num_cells);
+        // Initialize OSR runtime with the correct number of cells
+        self.osr_runtime = OsrRuntime::new(num_cells);
     }
 
     pub fn set_future_schedule(&mut self, schedule: FutureSchedule) {
@@ -1160,7 +1186,11 @@ impl VM {
                 self.check_register(b, cell_registers)
             }
 
-            OpCode::NewList | OpCode::NewTuple | OpCode::NewSet => {
+            OpCode::NewList
+            | OpCode::NewTuple
+            | OpCode::NewSet
+            | OpCode::NewListStack
+            | OpCode::NewTupleStack => {
                 self.check_register(a, cell_registers)?;
                 self.check_register_span(a + 1, b, cell_registers)
             }
@@ -1236,8 +1266,12 @@ impl VM {
             OpCode::HandlePush | OpCode::HandlePop => Ok(()),
             OpCode::Resume => self.check_register(a, cell_registers),
 
-            // OsrCheck is a no-op in the interpreter (JIT-only hint)
             OpCode::OsrCheck => Ok(()),
+
+            // Stack-allocated collections (not yet implemented in interpreter)
+            OpCode::NewListStack | OpCode::NewTupleStack => Err(VmError::Runtime(
+                "stack-allocated collections not implemented".to_string(),
+            )),
         }
     }
 
@@ -1333,6 +1367,7 @@ impl VM {
                     ip: 0,
                     return_register: 0,
                     future_id: Some(task.future_id),
+                    osr_points: 0,
                 });
             }
             FutureTarget::Closure(cv) => {
@@ -1369,6 +1404,7 @@ impl VM {
                     ip: 0,
                     return_register: 0,
                     future_id: Some(task.future_id),
+                    osr_points: 0,
                 });
             }
         }
@@ -1578,6 +1614,7 @@ impl VM {
             ip: 0,
             return_register: 0,
             future_id: None,
+            osr_points: 0,
         });
 
         // Execute
@@ -1813,12 +1850,10 @@ impl VM {
                                     if args_ok {
                                         // Pass the VM's string table so JIT helpers
                                         // intern variant tags with the same IDs.
-                                        let st_ptr = &mut self.strings
-                                            as *mut lumen_core::strings::StringTable;
                                         if let Some(result) = self.jit_tier.execute(
                                             &callee_cell.name,
                                             &i64_args,
-                                            st_ptr,
+                                            &self.vm_ctx.inner,
                                         ) {
                                             // Convert i64 result back to Value using
                                             // the compile-time return type.
@@ -1913,6 +1948,7 @@ impl VM {
                                 ip: 0,
                                 return_register: callee_reg,
                                 future_id: None,
+                                osr_points: 0,
                             });
 
                             if has_debug {
@@ -2041,12 +2077,10 @@ impl VM {
                                         }
                                     }
                                     if args_ok {
-                                        let st_ptr = &mut self.strings
-                                            as *mut lumen_core::strings::StringTable;
                                         if let Some(result) = self.jit_tier.execute(
                                             &callee_cell.name,
                                             &i64_args,
-                                            st_ptr,
+                                            &self.vm_ctx.inner,
                                         ) {
                                             // Convert i64 result back to Value using
                                             // the compile-time return type.
@@ -2171,8 +2205,9 @@ impl VM {
                     OpCode::Intrinsic => {
                         let result = match self.exec_intrinsic(base, a, b, c) {
                             Ok(v) => v,
-                            Err(err) => {
-                                if self.fail_current_future(err.to_string()) {
+                            Err(ref err) => {
+                                let err_msg = err.to_string();
+                                if self.fail_current_future(err_msg) {
                                     if self.frames.len() <= limit {
                                         return Ok(Value::Null);
                                     }
@@ -2183,7 +2218,7 @@ impl VM {
                                     cell = &module.cells[cell_idx];
                                     continue;
                                 }
-                                return Err(err);
+                                return Err(err.clone());
                             }
                         };
                         self.set_reg(base + a, result);
@@ -2211,7 +2246,7 @@ impl VM {
                         Constant::NbValue(raw) => {
                             // Pre-boxed NaN-boxed value: decode back to legacy Value
                             // for interpreter execution. The JIT path uses raw u64 directly.
-                            use lumen_core::values::NbValue;
+                            use lumen_core::nb_value::NbValue;
                             let nb = NbValue(*raw);
                             nb.to_legacy()
                         }
@@ -2260,6 +2295,22 @@ impl VM {
                         list.push(self.reg(base + a + i));
                     }
                     self.set_reg(base + a, Value::new_list(list));
+                }
+                OpCode::NewListStack => {
+                    // Basic support for stack-based list construction (stubbed)
+                    let mut list = Vec::with_capacity(b);
+                    for i in 1..=b {
+                        list.push(self.reg(base + a + i));
+                    }
+                    self.set_reg(base + a, Value::new_list(list));
+                }
+                OpCode::NewTupleStack => {
+                    // Basic support for stack-based tuple construction (stubbed)
+                    let mut elems = Vec::with_capacity(b);
+                    for i in 1..=b {
+                        elems.push(self.reg(base + a + i));
+                    }
+                    self.set_reg(base + a, Value::new_tuple(elems));
                 }
                 OpCode::NewMap => {
                     let mut map = BTreeMap::new();
@@ -3492,6 +3543,12 @@ impl VM {
 
                 // OsrCheck is a JIT-only hint — no-op in the interpreter
                 OpCode::OsrCheck => { /* no-op in interpreter */ }
+
+                // Stack-allocated collections (JIT-only, fall back to heap in interpreter)
+                OpCode::NewListStack | OpCode::NewTupleStack => {
+                    // Fall back to heap allocation in interpreter
+                    unimplemented!("stack-allocated collections only available in JIT tiers")
+                }
             }
         }
     }
@@ -3540,6 +3597,7 @@ impl VM {
                         ip: 0,
                         return_register: base + a,
                         future_id: None,
+                        osr_points: 0,
                     });
                     if self.debug_callback.is_some() {
                         self.emit_debug_event(DebugEvent::CallEnter {
@@ -3583,6 +3641,7 @@ impl VM {
                     ip: 0,
                     return_register: base + a,
                     future_id: None,
+                    osr_points: 0,
                 });
                 if self.debug_callback.is_some() {
                     let module = self.module.as_ref().ok_or(VmError::NoModule)?;
@@ -3738,6 +3797,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -3787,6 +3847,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -3818,6 +3879,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -3870,6 +3932,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -3929,6 +3992,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -3990,6 +4054,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -4029,6 +4094,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -4071,6 +4137,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -4109,6 +4176,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -4148,6 +4216,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -4187,6 +4256,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -4240,6 +4310,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -4287,6 +4358,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -4340,6 +4412,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -4389,6 +4462,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![LirTool {
                 alias: "HttpGet".into(),
@@ -4474,6 +4548,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5046,6 +5121,7 @@ end
                         Instruction::abc(OpCode::Return, 1, 1, 0),
                     ],
                     effect_handler_metas: vec![],
+                    osr_points: vec![],
                 },
                 LirCell {
                     name: "worker".into(),
@@ -5055,6 +5131,7 @@ end
                     constants: worker_consts,
                     instructions: worker_instrs,
                     effect_handler_metas: vec![],
+                    osr_points: vec![],
                 },
             ],
             tools: vec![],
@@ -5333,6 +5410,7 @@ end
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5372,6 +5450,7 @@ end
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5411,6 +5490,7 @@ end
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5450,6 +5530,7 @@ end
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5489,6 +5570,7 @@ end
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5530,6 +5612,7 @@ end
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5570,6 +5653,7 @@ end
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5609,6 +5693,7 @@ end
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5640,6 +5725,7 @@ end
                 ip: 0,
                 return_register: 0,
                 future_id: None,
+                osr_points: 0,
             });
         }
         assert_eq!(vm.frames.len(), MAX_CALL_DEPTH);
@@ -5682,6 +5768,7 @@ end
                         Instruction::abc(OpCode::Return, 1, 1, 0),   // return result
                     ],
                     effect_handler_metas: vec![],
+                    osr_points: vec![],
                 },
                 LirCell {
                     name: "__closure_0".into(),
@@ -5694,6 +5781,7 @@ end
                         Instruction::abc(OpCode::Return, 0, 1, 0),   // return r0
                     ],
                     effect_handler_metas: vec![],
+                    osr_points: vec![],
                 },
             ],
             tools: vec![],
@@ -5737,6 +5825,7 @@ end
                         Instruction::abc(OpCode::Return, 2, 1, 0),    // return result
                     ],
                     effect_handler_metas: vec![],
+                    osr_points: vec![],
                 },
                 LirCell {
                     name: "__closure_1".into(),
@@ -5751,6 +5840,7 @@ end
                         Instruction::abc(OpCode::Return, 2, 1, 0),   // return 30
                     ],
                     effect_handler_metas: vec![],
+                    osr_points: vec![],
                 },
             ],
             tools: vec![],
@@ -5839,6 +5929,7 @@ end
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -5859,7 +5950,8 @@ end
         // So we pre-size and set up r1 at the right offset.
         let base = vm.registers.len();
         vm.registers.resize(base + 256, NbValue::new_null());
-        vm.registers[base + 1] = NbValue::from_legacy(Value::String(StringRef::Interned(interned_id)));
+        vm.registers[base + 1] =
+            NbValue::from_legacy(Value::String(StringRef::Interned(interned_id)));
 
         vm.frames.push(CallFrame {
             cell_idx: 0,
@@ -5867,6 +5959,7 @@ end
             ip: 0,
             return_register: 0,
             future_id: None,
+            osr_points: 0,
         });
 
         let result = vm.run_until(0).unwrap();
@@ -6497,6 +6590,7 @@ end
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -6538,6 +6632,7 @@ end
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -6583,6 +6678,7 @@ end
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -6627,6 +6723,7 @@ end
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -6664,6 +6761,7 @@ end
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -6701,6 +6799,7 @@ end
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -6738,6 +6837,7 @@ end
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -6775,6 +6875,7 @@ end
                     Instruction::abc(OpCode::Return, 2, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -6829,6 +6930,7 @@ end
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -6870,6 +6972,7 @@ end
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -6903,6 +7006,7 @@ end
                 constants: vec![],
                 instructions: vec![Instruction::sax(OpCode::Jmp, -1)],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -6986,6 +7090,7 @@ end
                 constants: vec![],
                 instructions: vec![Instruction::sax(OpCode::Jmp, -1)],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -7028,6 +7133,7 @@ end
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -7064,6 +7170,7 @@ end
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -7127,6 +7234,7 @@ end
                     param_count: 0,
                     handler_ip: 4,
                 }],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -7214,6 +7322,7 @@ end
                     param_count: 1,
                     handler_ip: 5,
                 }],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -7270,6 +7379,7 @@ end
                     param_count: 1,
                     handler_ip: 4,
                 }],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -7356,6 +7466,7 @@ end
                         handler_ip: 10,
                     },
                 ],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -7504,6 +7615,7 @@ end
                     Instruction::abc(OpCode::Return, 1, 1, 0), // return r1
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![],
             policies: vec![],
@@ -7911,6 +8023,7 @@ end
                     Instruction::abc(OpCode::Return, 1, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![LirTool {
                 alias: "HttpGet".into(),
@@ -7971,6 +8084,7 @@ end
                     Instruction::abc(OpCode::Return, 1, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![LirTool {
                 alias: "MyHttp".into(),
@@ -8026,6 +8140,7 @@ end
                     Instruction::abc(OpCode::Return, 1, 1, 0),
                 ],
                 effect_handler_metas: vec![],
+                osr_points: vec![],
             }],
             tools: vec![LirTool {
                 alias: "HttpGet".into(),

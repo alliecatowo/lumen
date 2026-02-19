@@ -12,6 +12,7 @@ pub mod intrinsics;
 pub mod jit_tier;
 pub mod json_parser;
 pub mod parity_concurrency;
+pub mod platform;
 pub mod tagged;
 pub mod tlab;
 pub mod vm;

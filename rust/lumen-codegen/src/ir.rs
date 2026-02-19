@@ -2181,7 +2181,9 @@ pub(crate) fn lower_cell<M: Module>(
                     // signed ordering (negative values have high payload bits set).
                     let lhs_i = emit_unbox_int(&mut builder, lhs);
                     let rhs_i = emit_unbox_int(&mut builder, rhs);
-                    builder.ins().icmp(IntCC::SignedLessThanOrEqual, lhs_i, rhs_i)
+                    builder
+                        .ins()
+                        .icmp(IntCC::SignedLessThanOrEqual, lhs_i, rhs_i)
                 };
                 let one = builder.ins().iconst(types::I64, 1);
                 let zero = builder.ins().iconst(types::I64, 0);

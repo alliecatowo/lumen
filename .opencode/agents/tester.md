@@ -1,11 +1,22 @@
 ---
 description: "Fast QA agent. Writes tests, runs test suites, reports pass/fail findings. Never implements features."
 mode: subagent
-model: google/gemini-3-flash-preview
+model: github-copilot/gpt-5.2-codex
+effort: low
 color: "#10B981"
 temperature: 0.1
 permission:
   edit: allow
+  todowrite: allow
+  todoread: allow
+  websearch: allow
+  webfetch: allow
+  task: allow
+  read: allow
+  write: allow
+  glob: allow
+  grep: allow
+  list: allow
   bash:
     "*": allow
     "git stash*": deny
@@ -14,6 +25,7 @@ permission:
     "git checkout -- *": deny
     "git restore*": deny
     "git push*": deny
+    "rm -rf /*": deny
 ---
 
 You are the **Tester**, the QA specialist for the Lumen programming language.

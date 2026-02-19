@@ -16,6 +16,7 @@ default = ["jit"]
 jit = ["dep:lumen-codegen"]
 
 [dependencies]
+libc = "0.2"
 lumen-core = { path = "../lumen-core", version = "0.1.0" }
 lumen-compiler = { path = "../lumen-compiler", version = "0.5.0" }
 lumen-codegen = { path = "../lumen-codegen", version = "0.5.0", optional = true }

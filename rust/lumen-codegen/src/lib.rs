@@ -12,8 +12,10 @@ pub mod ir;
 pub mod jit;
 pub mod opcode_def;
 pub mod opt;
+pub mod stackmap;
 pub mod types;
 pub mod union_helpers;
+pub mod vm_context;
 pub mod wasm;
 pub mod wit;
 

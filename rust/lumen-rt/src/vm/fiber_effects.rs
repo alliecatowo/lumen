@@ -31,6 +31,7 @@
 //! - `fiber_switch` is only called with fibers in valid states.
 
 use super::fiber::{Fiber, FiberPool, FiberStatus, DEFAULT_FIBER_STACK_SIZE};
+use crate::platform;
 use lumen_core::nb_value::NbValue;
 use lumen_core::vm_context::VmContext;
 
@@ -168,6 +169,7 @@ unsafe fn current_fiber_of(ctx: *mut VmContext) -> *mut Fiber {
 #[inline(always)]
 unsafe fn set_current_fiber(ctx: *mut VmContext, fiber: *mut Fiber) {
     (*ctx).current_fiber = fiber as *mut ();
+    platform::set_current_fiber(fiber);
 }
 
 // ── Public C-ABI runtime helpers ─────────────────────────────────────────────
@@ -184,6 +186,7 @@ unsafe fn set_current_fiber(ctx: *mut VmContext, fiber: *mut Fiber) {
 pub unsafe extern "C" fn lm_rt_effect_stack_init(ctx: *mut VmContext) {
     let stack = Box::new(FiberEffectStack::new());
     (*ctx).effect_stack = Box::into_raw(stack) as *mut lumen_core::vm_context::EffectScope;
+    platform::set_current_fiber(std::ptr::null_mut());
 }
 
 /// Free the `FiberEffectStack` owned by `ctx`.
@@ -323,7 +326,10 @@ pub unsafe extern "C" fn lm_rt_perform(
     };
 
     let performer_fiber = current_fiber_of(ctx);
-    debug_assert!(!performer_fiber.is_null(), "lm_rt_perform: no current fiber");
+    debug_assert!(
+        !performer_fiber.is_null(),
+        "lm_rt_perform: no current fiber"
+    );
 
     // Pinned fibers cannot be suspended (e.g., FFI/native code on stack).
     if (*performer_fiber).pinned {
@@ -342,7 +348,10 @@ pub unsafe extern "C" fn lm_rt_perform(
 
     // Switch to the handler fiber.
     let handler_fiber = stack.handler_stack[handler_idx].handler_fiber;
-    debug_assert!(!handler_fiber.is_null(), "lm_rt_perform: null handler fiber");
+    debug_assert!(
+        !handler_fiber.is_null(),
+        "lm_rt_perform: null handler fiber"
+    );
     (*handler_fiber).status = FiberStatus::Running;
     set_current_fiber(ctx, handler_fiber);
 
@@ -424,7 +433,10 @@ pub unsafe extern "C" fn lm_rt_resume(ctx: *mut VmContext, value: u64) -> u64 {
     debug_assert!(!handler_fiber.is_null(), "lm_rt_resume: no current fiber");
 
     let performer_fiber = performer.fiber;
-    debug_assert!(!performer_fiber.is_null(), "lm_rt_resume: null performer fiber");
+    debug_assert!(
+        !performer_fiber.is_null(),
+        "lm_rt_resume: null performer fiber"
+    );
 
     // Mark handler as suspended (it will be resumed if perform is called again,
     // or freed when the handle block exits via lm_rt_handle_pop).

@@ -196,8 +196,36 @@ pub mod osr_check {
         }
     }
 
-    /// OSR check function called from stencil JIT.
-    /// Returns 0 if no tier-up needed, or a non-zero function pointer to jump to.
+    /// OSR check — interpreter fast path (no catch_unwind overhead).
+    ///
+    /// Called directly from the interpreter dispatch loop; safe to call
+    /// since we are still in Rust code and panics will propagate normally.
+    /// Returns `null` if no compiled code is available, or the compiled
+    /// function pointer if tier-up has occurred.
+    #[inline]
+    pub fn osr_check_interp(vm: &mut VM, cell_idx: usize) -> *const () {
+        let osr_runtime = &mut vm.osr_runtime;
+
+        // Fast path: already compiled — return immediately without incrementing.
+        if let Some(ptr) = osr_runtime.get_compiled_fn(cell_idx) {
+            return ptr;
+        }
+
+        // Record the check and maybe trigger compilation.
+        if osr_runtime.record_and_check(cell_idx) {
+            if osr_runtime.try_compile(cell_idx) {
+                return osr_runtime
+                    .get_compiled_fn(cell_idx)
+                    .unwrap_or(std::ptr::null());
+            }
+        }
+
+        std::ptr::null()
+    }
+
+    /// OSR check function called from stencil JIT (extern "C").
+    /// Wraps `osr_check_interp` in catch_unwind to prevent panics crossing
+    /// the FFI boundary. The interpreter should prefer `osr_check_interp`.
     #[no_mangle]
     pub unsafe extern "C" fn lm_rt_osr_check(
         vm_ctx: &mut VM,
@@ -205,25 +233,8 @@ pub mod osr_check {
         _current_ip: usize,
     ) -> *const () {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let osr_runtime = &mut vm_ctx.osr_runtime;
-
-            // Record the check and see if we should tier up
-            if osr_runtime.record_and_check(cell_idx) {
-                // Need to compile - try to compile the cell
-                if osr_runtime.try_compile(cell_idx) {
-                    // Return the compiled function pointer
-                    return osr_runtime
-                        .get_compiled_fn(cell_idx)
-                        .unwrap_or(std::ptr::null());
-                }
-            }
-
-            // Check if we already have compiled code to jump to
-            osr_runtime
-                .get_compiled_fn(cell_idx)
-                .unwrap_or(std::ptr::null())
+            osr_check_interp(vm_ctx, cell_idx)
         }));
-
         result.unwrap_or(std::ptr::null())
     }
 }

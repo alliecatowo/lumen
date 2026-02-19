@@ -3603,9 +3603,11 @@ impl VM {
 
                 OpCode::OsrCheck => {
                     let osr_ip = ip.wrapping_sub(1);
-                    let compiled_ptr = unsafe {
-                        crate::vm::osr::osr_check::lm_rt_osr_check(self, cell_idx, osr_ip)
-                    };
+                    // Use the no-catch_unwind fast path — we're in Rust so panics
+                    // propagate normally. `lm_rt_osr_check` (extern "C" + catch_unwind)
+                    // would add ~10-100ns per loop iteration just for the unwind frame.
+                    let compiled_ptr =
+                        crate::vm::osr::osr_check::osr_check_interp(self, cell_idx);
                     if !compiled_ptr.is_null() {
                         if let Ok(result) =
                             crate::vm::osr::perform_osr_transition(self, cell, osr_ip)

@@ -15,7 +15,7 @@
 
 use lumen_compiler::compile as compile_lumen;
 use lumen_core::lir::LirModule;
-use lumen_rt::stencil_tier::StencilTierConfig;
+use lumen_rt::jit_tier::JitTierConfig;
 use lumen_rt::values::Value;
 use lumen_rt::vm::VM;
 use std::time::Instant;
@@ -45,7 +45,7 @@ fn run_tier0(module: LirModule, cell_name: &str) -> Result<Value, String> {
 #[cfg(feature = "jit")]
 fn run_tier1(module: LirModule, cell_name: &str) -> Option<Result<Value, String>> {
     let mut vm = VM::new();
-    vm.enable_stencil_with_config(StencilTierConfig::from_threshold(1));
+    vm.enable_jit_with_config(JitTierConfig::from_threshold(1));
     vm.load(module);
     // First call: crosses threshold=1, triggers Tier-1 compilation. Ignore result.
     let _ = vm.execute(cell_name, vec![]);
@@ -54,7 +54,7 @@ fn run_tier1(module: LirModule, cell_name: &str) -> Option<Result<Value, String>
         .execute(cell_name, vec![])
         .map_err(|e| format!("tier1 error: {e}"));
 
-    if vm.stencil_stats().stencil_executions == 0 {
+    if vm.jit_stats().jit_executions == 0 {
         return None; // stencil not active for this cell — skip comparison
     }
 
@@ -703,15 +703,15 @@ end
     // NOTE: do NOT call vm.load() between executions — that resets JIT stats.
     {
         let mut vm = VM::new();
-        vm.enable_stencil_with_config(StencilTierConfig::from_threshold(1));
+        vm.enable_jit_with_config(JitTierConfig::from_threshold(1));
         vm.load(module.clone());
         vm.execute("main", vec![]).ok(); // first call: crosses threshold, triggers compile
         vm.execute("main", vec![]).ok(); // second call: should run JIT code
-        let stats = vm.stencil_stats();
+        let stats = vm.jit_stats();
         // Note: JIT may skip cells it can't compile; we don't hard-fail here.
         println!(
-            "[tier_state_transitions] stencil_executions={}",
-            stats.stencil_executions
+            "[tier_state_transitions] jit_executions={}",
+            stats.jit_executions
         );
     }
 

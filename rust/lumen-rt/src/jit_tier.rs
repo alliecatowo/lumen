@@ -158,9 +158,16 @@ impl JitTier {
     }
 
     /// Check and cache JIT eligibility for a cell.
-    /// All cells are eligible — if compilation fails for unsupported opcodes,
-    /// the cell gracefully falls back to the interpreter.
-    pub fn check_eligibility(&mut self, cell_idx: usize, _module: &LirModule) -> bool {
+    ///
+    /// Cells that use opcodes whose JIT runtime helpers are unsafe (Box vs Arc
+    /// mismatch in the heap allocation scheme) are excluded from JIT and always
+    /// run in the interpreter.  Specifically, `GetIndex` and `SetIndex` call
+    /// `jit_rt_get_index`/`jit_rt_set_index` which return `Box::into_raw`
+    /// pointers while the interpreter's NbValue layer expects `Arc` pointers —
+    /// dereferencing such a pointer causes UB / segfaults.
+    /// `NewList`, `NewListStack`, `Append`, and `NewMap` have the same issue
+    /// through `jit_rt_append` / `jit_rt_new_list`.
+    pub fn check_eligibility(&mut self, cell_idx: usize, module: &LirModule) -> bool {
         if cell_idx >= self.eligibility.len() {
             return false;
         }
@@ -168,10 +175,38 @@ impl JitTier {
             CellEligibility::Eligible => true,
             CellEligibility::NotEligible => false,
             CellEligibility::Unknown => {
-                // All cells are eligible for JIT compilation attempt.
-                // If compilation fails (unsupported opcodes), the cell falls back to interpreter.
-                self.eligibility[cell_idx] = CellEligibility::Eligible;
-                true
+                use lumen_core::lir::OpCode;
+                // Since compile_hot lowers the ENTIRE module, we must check
+                // every cell in the module — not just the requested one.
+                // If any cell uses opcodes with unsafe JIT helpers (Box vs Arc
+                // pointer mismatch), the entire module JIT is unsafe.
+                let any_ineligible = module.cells.iter().any(|cell| {
+                    cell.instructions.iter().any(|inst| {
+                        matches!(
+                            inst.op,
+                            OpCode::GetIndex
+                                | OpCode::SetIndex
+                                | OpCode::NewList
+                                | OpCode::NewListStack
+                                | OpCode::Append
+                                | OpCode::NewMap
+                        )
+                    })
+                });
+
+                if any_ineligible {
+                    // Mark all cells as not eligible to avoid repeated checks.
+                    for i in 0..self.eligibility.len() {
+                        if self.eligibility[i] == CellEligibility::Unknown {
+                            self.eligibility[i] = CellEligibility::NotEligible;
+                        }
+                    }
+                    self.eligibility[cell_idx] = CellEligibility::NotEligible;
+                    false
+                } else {
+                    self.eligibility[cell_idx] = CellEligibility::Eligible;
+                    true
+                }
             }
         }
     }

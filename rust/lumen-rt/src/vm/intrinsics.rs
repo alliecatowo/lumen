@@ -857,6 +857,40 @@ impl VM {
                 }
                 Ok(Value::Null)
             }
+            "hex_decode" => {
+                let s = self.registers[base + a + 1]
+                    .peek_legacy()
+                    .as_string_resolved(&self.strings);
+                if !s.is_ascii() || s.len() % 2 != 0 {
+                    return Ok(Value::Null);
+                }
+                let mut bytes = Vec::with_capacity(s.len() / 2);
+                for chunk in s.as_bytes().chunks_exact(2) {
+                    let pair = match std::str::from_utf8(chunk) {
+                        Ok(pair) => pair,
+                        Err(_) => return Ok(Value::Null),
+                    };
+                    match u8::from_str_radix(pair, 16) {
+                        Ok(byte) => bytes.push(byte),
+                        Err(_) => return Ok(Value::Null),
+                    }
+                }
+                Ok(Value::String(StringRef::Owned(
+                    String::from_utf8_lossy(&bytes).to_string(),
+                )))
+            }
+            "trim_start" => {
+                let s = self.registers[base + a + 1]
+                    .peek_legacy()
+                    .as_string_resolved(&self.strings);
+                Ok(Value::String(StringRef::Owned(s.trim_start().to_string())))
+            }
+            "trim_end" => {
+                let s = self.registers[base + a + 1]
+                    .peek_legacy()
+                    .as_string_resolved(&self.strings);
+                Ok(Value::String(StringRef::Owned(s.trim_end().to_string())))
+            }
             _ => Err(VmError::Runtime(format!("unknown builtin: {}", name))),
         }
     }
@@ -940,13 +974,154 @@ impl VM {
                 // TRACEREF
                 Ok(Value::TraceRef(self.next_trace_ref()))
             }
+            35 => {
+                // ZIP
+                let b_list = self.registers[base + arg_reg + 1].peek_legacy();
+                if let (Value::List(la), Value::List(lb)) = (&arg, &b_list) {
+                    let result: Vec<Value> = la
+                        .iter()
+                        .zip(lb.iter())
+                        .map(|(x, y)| Value::new_tuple(vec![x.clone(), y.clone()]))
+                        .collect();
+                    Ok(Value::new_list(result))
+                } else {
+                    Ok(Value::new_list(vec![]))
+                }
+            }
+            36 => {
+                // ENUMERATE
+                if let Value::List(l) = &arg {
+                    let result: Vec<Value> = l
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| Value::new_tuple(vec![Value::Int(i as i64), v.clone()]))
+                        .collect();
+                    Ok(Value::new_list(result))
+                } else {
+                    Ok(Value::new_list(vec![]))
+                }
+            }
+            42 => {
+                // CHUNK
+                let size = self.registers[base + arg_reg + 1]
+                    .peek_legacy()
+                    .as_int()
+                    .unwrap_or(1) as usize;
+                if let Value::List(l) = &arg {
+                    let result: Vec<Value> = l
+                        .chunks(size.max(1))
+                        .map(|chunk| Value::new_list(chunk.to_vec()))
+                        .collect();
+                    Ok(Value::new_list(result))
+                } else {
+                    Ok(Value::new_list(vec![]))
+                }
+            }
+            43 => {
+                // WINDOW
+                let n = self.registers[base + arg_reg + 1]
+                    .peek_legacy()
+                    .as_int()
+                    .unwrap_or(1) as usize;
+                if let Value::List(l) = &arg {
+                    if n == 0 || n > l.len() {
+                        Ok(Value::new_list(vec![]))
+                    } else {
+                        let result: Vec<Value> = l
+                            .windows(n)
+                            .map(|w| Value::new_list(w.to_vec()))
+                            .collect();
+                        Ok(Value::new_list(result))
+                    }
+                } else {
+                    Ok(Value::new_list(vec![]))
+                }
+            }
+            46 => {
+                // TAKE
+                let n = self.registers[base + arg_reg + 1]
+                    .peek_legacy()
+                    .as_int()
+                    .unwrap_or(0) as usize;
+                if let Value::List(l) = &arg {
+                    Ok(Value::new_list(l.iter().take(n).cloned().collect()))
+                } else {
+                    Ok(arg)
+                }
+            }
+            47 => {
+                // DROP
+                let n = self.registers[base + arg_reg + 1]
+                    .peek_legacy()
+                    .as_int()
+                    .unwrap_or(0) as usize;
+                if let Value::List(l) = &arg {
+                    Ok(Value::new_list(l.iter().skip(n).cloned().collect()))
+                } else {
+                    Ok(arg)
+                }
+            }
+            51 => {
+                // CHARS
+                let s = arg.as_string_resolved(&self.strings);
+                Ok(Value::new_list(
+                    s.chars()
+                        .map(|c| Value::String(StringRef::Owned(c.to_string())))
+                        .collect(),
+                ))
+            }
             52 => {
+                // STARTS_WITH
+                let s = arg.as_string_resolved(&self.strings);
+                let prefix = self.registers[base + arg_reg + 1]
+                    .peek_legacy()
+                    .as_string_resolved(&self.strings);
+                Ok(Value::Bool(s.starts_with(&prefix)))
+            }
+            53 => {
                 // ENDS_WITH
                 let s = arg.as_string_resolved(&self.strings);
                 let suffix = self.registers[base + arg_reg + 1]
                     .peek_legacy()
                     .as_string_resolved(&self.strings);
                 Ok(Value::Bool(s.ends_with(&suffix)))
+            }
+            54 => {
+                // INDEX_OF
+                let s = arg.as_string_resolved(&self.strings);
+                let needle = self.registers[base + arg_reg + 1]
+                    .peek_legacy()
+                    .as_string_resolved(&self.strings);
+                Ok(match s.find(&needle) {
+                    Some(i) => {
+                        let char_idx = s[..i].chars().count();
+                        Value::Int(char_idx as i64)
+                    }
+                    None => Value::Int(-1),
+                })
+            }
+            66 => {
+                // CLONE
+                Ok(arg.clone())
+            }
+            69 => {
+                // TO_SET
+                if let Value::List(l) = arg {
+                    Ok(Value::new_set_from_vec(l.to_vec()))
+                } else {
+                    Ok(Value::new_set_from_vec(vec![]))
+                }
+            }
+            70 => {
+                // HAS_KEY
+                let key = self.registers[base + arg_reg + 1]
+                    .peek_legacy()
+                    .as_string_resolved(&self.strings);
+                Ok(Value::Bool(match arg {
+                    Value::Map(m) => m.contains_key(&key),
+                    Value::Record(r) => r.fields.contains_key(&key),
+                    _ => false,
+                }))
             }
             55 => {
                 // PAD_LEFT
@@ -1080,6 +1255,328 @@ impl VM {
                     Value::Int(n) => Value::Int(n),
                     _ => Value::Null,
                 })
+            }
+
+            // ── Stdlib intrinsics (IDs 9–50+) ─────────────────────────────
+            // These map to IntrinsicId enum values in lumen-core/src/lir.rs.
+            9 => {
+                // PRINT
+                let output = arg.display_pretty();
+                println!("{}", output);
+                self.output.push(output);
+                Ok(Value::Null)
+            }
+            10 => {
+                // TO_STRING
+                Ok(Value::String(StringRef::Owned(arg.display_pretty())))
+            }
+            11 => {
+                // TO_INT
+                Ok(match arg {
+                    Value::Int(n) => Value::Int(n),
+                    Value::Float(f) => Value::Int(f as i64),
+                    Value::String(sr) => {
+                        let s = match sr {
+                            StringRef::Owned(s) => s,
+                            StringRef::Interned(id) => self.strings.resolve(id).unwrap_or("").to_string(),
+                        };
+                        s.parse::<i64>().map(Value::Int).unwrap_or(Value::Null)
+                    }
+                    Value::Bool(b) => Value::Int(if b { 1 } else { 0 }),
+                    _ => Value::Null,
+                })
+            }
+            12 => {
+                // TO_FLOAT
+                Ok(match arg {
+                    Value::Float(f) => Value::Float(f),
+                    Value::Int(n) => Value::Float(n as f64),
+                    Value::String(sr) => {
+                        let s = match sr {
+                            StringRef::Owned(s) => s,
+                            StringRef::Interned(id) => self.strings.resolve(id).unwrap_or("").to_string(),
+                        };
+                        s.parse::<f64>().map(Value::Float).unwrap_or(Value::Null)
+                    }
+                    _ => Value::Null,
+                })
+            }
+            13 => {
+                // TYPE_OF
+                Ok(Value::String(StringRef::Owned(arg.type_name().to_string())))
+            }
+            14 => {
+                // KEYS
+                Ok(match arg {
+                    Value::Map(m) => Value::new_list(m.keys().map(|k| Value::String(StringRef::Owned(k.clone()))).collect()),
+                    Value::Record(r) => Value::new_list(r.fields.keys().map(|k| Value::String(StringRef::Owned(k.clone()))).collect()),
+                    _ => Value::new_list(vec![]),
+                })
+            }
+            15 => {
+                // VALUES
+                Ok(match arg {
+                    Value::Map(m) => Value::new_list(m.values().cloned().collect()),
+                    Value::Record(r) => Value::new_list(r.fields.values().cloned().collect()),
+                    _ => Value::new_list(vec![]),
+                })
+            }
+            16 => {
+                // CONTAINS
+                let needle = self.registers[base + arg_reg + 1].peek_legacy();
+                let result = match arg {
+                    Value::List(l) => l.iter().any(|v| v == &needle),
+                    Value::Set(s) => s.iter().any(|v| v == &needle),
+                    Value::Map(m) => {
+                        let needle_str = needle.as_string_resolved(&self.strings);
+                        m.contains_key(&needle_str)
+                    }
+                    Value::String(sr) => {
+                        let s = match sr {
+                            StringRef::Owned(s) => s,
+                            StringRef::Interned(id) => self.strings.resolve(id).unwrap_or("").to_string(),
+                        };
+                        let needle_str = needle.as_string_resolved(&self.strings);
+                        s.contains(&needle_str)
+                    }
+                    _ => false,
+                };
+                Ok(Value::Bool(result))
+            }
+            17 => {
+                // JOIN
+                let sep = self.registers[base + arg_reg + 1].peek_legacy().as_string_resolved(&self.strings);
+                Ok(match arg {
+                    Value::List(l) => {
+                        let joined = l.iter().map(|v| v.display_pretty()).collect::<Vec<_>>().join(&sep);
+                        Value::String(StringRef::Owned(joined))
+                    }
+                    _ => Value::String(StringRef::Owned(String::new())),
+                })
+            }
+            18 => {
+                // SPLIT
+                let sep = self.registers[base + arg_reg + 1].peek_legacy().as_string_resolved(&self.strings);
+                let s = arg.as_string_resolved(&self.strings);
+                let parts: Vec<Value> = s.split(&sep).map(|p| Value::String(StringRef::Owned(p.to_string()))).collect();
+                Ok(Value::new_list(parts))
+            }
+            19 => {
+                // TRIM
+                let s = arg.as_string_resolved(&self.strings);
+                Ok(Value::String(StringRef::Owned(s.trim().to_string())))
+            }
+            20 => {
+                // UPPER
+                let s = arg.as_string_resolved(&self.strings);
+                Ok(Value::String(StringRef::Owned(s.to_uppercase())))
+            }
+            21 => {
+                // LOWER
+                let s = arg.as_string_resolved(&self.strings);
+                Ok(Value::String(StringRef::Owned(s.to_lowercase())))
+            }
+            22 => {
+                // REPLACE
+                let from = self.registers[base + arg_reg + 1].peek_legacy().as_string_resolved(&self.strings);
+                let to = self.registers[base + arg_reg + 2].peek_legacy().as_string_resolved(&self.strings);
+                let s = arg.as_string_resolved(&self.strings);
+                Ok(Value::String(StringRef::Owned(s.replace(&from, &to))))
+            }
+            23 => {
+                // SLICE
+                let start = self.registers[base + arg_reg + 1].peek_legacy().as_int().unwrap_or(0) as usize;
+                let end = self.registers[base + arg_reg + 2].peek_legacy().as_int().unwrap_or(0) as usize;
+                Ok(match arg {
+                    Value::List(l) => {
+                        let end = end.min(l.len());
+                        let start = start.min(end);
+                        Value::new_list(l[start..end].to_vec())
+                    }
+                    Value::String(sr) => {
+                        let s = match sr {
+                            StringRef::Owned(s) => s,
+                            StringRef::Interned(id) => self.strings.resolve(id).unwrap_or("").to_string(),
+                        };
+                        let chars: Vec<char> = s.chars().collect();
+                        let end = end.min(chars.len());
+                        let start = start.min(end);
+                        Value::String(StringRef::Owned(chars[start..end].iter().collect()))
+                    }
+                    _ => Value::Null,
+                })
+            }
+            24 => {
+                // APPEND
+                let list = self.reg_take(base + arg_reg);
+                let elem = self.reg_take(base + arg_reg + 1);
+                if let Value::List(mut l) = list {
+                    Arc::make_mut(&mut l).push(elem);
+                    Ok(Value::List(l))
+                } else {
+                    Ok(Value::new_list(vec![elem]))
+                }
+            }
+            25 => {
+                // RANGE
+                let start = arg.as_int().unwrap_or(0);
+                let end = self.registers[base + arg_reg + 1].peek_legacy().as_int().unwrap_or(0);
+                let list: Vec<Value> = (start..end).map(Value::Int).collect();
+                Ok(Value::new_list(list))
+            }
+            26 => {
+                // ABS
+                Ok(match arg {
+                    Value::Int(n) => Value::Int(n.abs()),
+                    Value::Float(f) => Value::Float(f.abs()),
+                    Value::BigInt(ref n) => Value::BigInt(n.abs()),
+                    _ => Value::Null,
+                })
+            }
+            27 => {
+                // MIN
+                let other = self.registers[base + arg_reg + 1].peek_legacy();
+                Ok(match (&arg, &other) {
+                    (Value::Int(a), Value::Int(b)) => Value::Int(*a.min(b)),
+                    (Value::Float(a), Value::Float(b)) => Value::Float(a.min(*b)),
+                    (Value::Int(a), Value::Float(b)) => Value::Float((*a as f64).min(*b)),
+                    (Value::Float(a), Value::Int(b)) => Value::Float(a.min(*b as f64)),
+                    _ => arg.clone(),
+                })
+            }
+            28 => {
+                // MAX
+                let other = self.registers[base + arg_reg + 1].peek_legacy();
+                Ok(match (&arg, &other) {
+                    (Value::Int(a), Value::Int(b)) => Value::Int(*a.max(b)),
+                    (Value::Float(a), Value::Float(b)) => Value::Float(a.max(*b)),
+                    (Value::Int(a), Value::Float(b)) => Value::Float((*a as f64).max(*b)),
+                    (Value::Float(a), Value::Int(b)) => Value::Float(a.max(*b as f64)),
+                    _ => arg.clone(),
+                })
+            }
+            29 => {
+                // SORT
+                let arg = self.reg_take(base + arg_reg);
+                if let Value::List(mut l) = arg {
+                    sort_list_homogeneous(Arc::make_mut(&mut l));
+                    Ok(Value::List(l))
+                } else {
+                    Ok(arg)
+                }
+            }
+            30 => {
+                // REVERSE
+                let arg = self.reg_take(base + arg_reg);
+                if let Value::List(mut l) = arg {
+                    Arc::make_mut(&mut l).reverse();
+                    Ok(Value::List(l))
+                } else {
+                    Ok(arg)
+                }
+            }
+            44 => {
+                // FLATTEN
+                let arg = self.reg_take(base + arg_reg);
+                if let Value::List(l) = arg {
+                    let mut flat = Vec::new();
+                    for item in l.iter() {
+                        if let Value::List(inner) = item {
+                            flat.extend(inner.iter().cloned());
+                        } else {
+                            flat.push(item.clone());
+                        }
+                    }
+                    Ok(Value::new_list(flat))
+                } else {
+                    Ok(arg)
+                }
+            }
+            45 => {
+                // UNIQUE
+                let arg = self.reg_take(base + arg_reg);
+                if let Value::List(l) = arg {
+                    let mut seen = Vec::new();
+                    for item in l.iter() {
+                        if !seen.contains(item) {
+                            seen.push(item.clone());
+                        }
+                    }
+                    Ok(Value::new_list(seen))
+                } else {
+                    Ok(arg)
+                }
+            }
+            48 => {
+                // FIRST
+                Ok(match arg {
+                    Value::List(l) => l.first().cloned().unwrap_or(Value::Null),
+                    _ => Value::Null,
+                })
+            }
+            49 => {
+                // LAST
+                Ok(match arg {
+                    Value::List(l) => l.last().cloned().unwrap_or(Value::Null),
+                    _ => Value::Null,
+                })
+            }
+            50 => {
+                // IS_EMPTY
+                Ok(Value::Bool(match arg {
+                    Value::List(l) => l.is_empty(),
+                    Value::Map(m) => m.is_empty(),
+                    Value::String(StringRef::Owned(s)) => s.is_empty(),
+                    Value::String(StringRef::Interned(id)) => self.strings.resolve(id).unwrap_or("").is_empty(),
+                    Value::Set(s) => s.is_empty(),
+                    Value::Null => true,
+                    _ => false,
+                }))
+            }
+            71 => {
+                // MERGE: merge(map1, map2) → map
+                let other = self.registers[base + arg_reg + 1].peek_legacy();
+                Ok(match (arg, other) {
+                    (Value::Map(mut m1), Value::Map(m2)) => {
+                        let merged = Arc::make_mut(&mut m1);
+                        for (k, v) in m2.iter() {
+                            merged.insert(k.clone(), v.clone());
+                        }
+                        Value::Map(m1)
+                    }
+                    (Value::Record(r1), Value::Record(r2)) => {
+                        let mut fields = r1.fields.clone();
+                        for (k, v) in &r2.fields {
+                            fields.insert(k.clone(), v.clone());
+                        }
+                        Value::Record(std::sync::Arc::new(lumen_core::values::RecordValue {
+                            type_name: r1.type_name.clone(),
+                            fields,
+                        }))
+                    }
+                    (first, _) => first,
+                })
+            }
+            106 => {
+                // PARSE_JSON
+                match arg {
+                    Value::String(sr) => {
+                        let s = match sr {
+                            StringRef::Owned(s) => s,
+                            StringRef::Interned(id) => self.strings.resolve(id).unwrap_or("").to_string(),
+                        };
+                        match parse_json_optimized(&s) {
+                            Ok(v) => Ok(v),
+                            Err(e) => Ok(Value::String(StringRef::Owned(format!("parse error: {e}")))),
+                        }
+                    }
+                    _ => Ok(Value::Null),
+                }
+            }
+            107 => {
+                // TO_JSON
+                let json = serde_json::to_string(&arg).unwrap_or_else(|_| "null".to_string());
+                Ok(Value::String(StringRef::Owned(json)))
             }
             _ => Err(VmError::Runtime(format!(
                 "unknown intrinsic ID: {}",

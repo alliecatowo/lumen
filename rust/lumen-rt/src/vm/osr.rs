@@ -14,6 +14,7 @@
 use crate::vm::VM;
 use lumen_core::lir::LirModule;
 use lumen_core::nb_value::NbValue;
+use lumen_core::values::Value;
 use thiserror::Error;
 
 #[cfg(feature = "jit")]
@@ -31,6 +32,7 @@ pub mod osr_check {
         pub cell_idx: usize,
         pub loop_count: u64,
         pub compiled: bool,
+        pub compile_attempted: bool,
         pub compiled_fn: Option<*const ()>,
     }
 
@@ -40,13 +42,14 @@ pub mod osr_check {
                 cell_idx,
                 loop_count: 0,
                 compiled: false,
+                compile_attempted: false,
                 compiled_fn: None,
             }
         }
 
         /// Check if we should trigger tier-up
         pub fn should_tier_up(&self) -> bool {
-            self.loop_count >= OSR_HOT_THRESHOLD && !self.compiled
+            self.loop_count >= OSR_HOT_THRESHOLD && !self.compiled && !self.compile_attempted
         }
 
         /// Record an OSR check and return whether we should tier up
@@ -59,6 +62,7 @@ pub mod osr_check {
     /// Runtime state for OSR - indexed by cell_idx
     pub struct OsrRuntime {
         states: Vec<OsrState>,
+        transition_count: u64,
         #[cfg(feature = "jit")]
         jit_engine: Option<JitEngine>,
         /// Reference to the module for compilation
@@ -74,6 +78,7 @@ pub mod osr_check {
             }
             Self {
                 states,
+                transition_count: 0,
                 #[cfg(feature = "jit")]
                 jit_engine: None,
                 #[cfg(feature = "jit")]
@@ -102,6 +107,21 @@ pub mod osr_check {
             &mut self.states[cell_idx]
         }
 
+        pub fn is_compiled(&self, cell_idx: usize) -> bool {
+            self.states
+                .get(cell_idx)
+                .map(|state| state.compiled)
+                .unwrap_or(false)
+        }
+
+        pub fn record_transition(&mut self) {
+            self.transition_count += 1;
+        }
+
+        pub fn transition_count(&self) -> u64 {
+            self.transition_count
+        }
+
         /// Record an OSR check for a cell, returns true if tier-up needed
         pub fn record_and_check(&mut self, cell_idx: usize) -> bool {
             let state = self.get_state(cell_idx);
@@ -111,6 +131,11 @@ pub mod osr_check {
         /// Attempt to compile a cell for OSR
         #[cfg(feature = "jit")]
         pub fn try_compile(&mut self, cell_idx: usize) -> bool {
+            // Mark attempted before anything else to prevent infinite retry
+            // if compilation panics and catch_unwind swallows it.
+            let state = self.get_state(cell_idx);
+            state.compile_attempted = true;
+
             let module = match &self.module {
                 Some(m) => m,
                 None => return false,
@@ -156,6 +181,19 @@ pub mod osr_check {
                 None
             }
         }
+
+        #[cfg(feature = "jit")]
+        pub fn return_type(&self, cell_name: &str) -> Option<lumen_codegen::jit::JitVarType> {
+            self.jit_engine
+                .as_ref()
+                .and_then(|engine| engine.return_type(cell_name))
+        }
+
+        /// Get a mutable reference to the JIT engine (for executing compiled code).
+        #[cfg(feature = "jit")]
+        pub fn jit_engine_mut(&mut self) -> Option<&mut JitEngine> {
+            self.jit_engine.as_mut()
+        }
     }
 
     /// OSR check function called from stencil JIT.
@@ -166,24 +204,27 @@ pub mod osr_check {
         cell_idx: usize,
         _current_ip: usize,
     ) -> *const () {
-        // Get or create the OSR runtime state
-        let osr_runtime = &mut vm_ctx.osr_runtime;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let osr_runtime = &mut vm_ctx.osr_runtime;
 
-        // Record the check and see if we should tier up
-        if osr_runtime.record_and_check(cell_idx) {
-            // Need to compile - try to compile the cell
-            if osr_runtime.try_compile(cell_idx) {
-                // Return the compiled function pointer
-                return osr_runtime
-                    .get_compiled_fn(cell_idx)
-                    .unwrap_or(std::ptr::null());
+            // Record the check and see if we should tier up
+            if osr_runtime.record_and_check(cell_idx) {
+                // Need to compile - try to compile the cell
+                if osr_runtime.try_compile(cell_idx) {
+                    // Return the compiled function pointer
+                    return osr_runtime
+                        .get_compiled_fn(cell_idx)
+                        .unwrap_or(std::ptr::null());
+                }
             }
-        }
 
-        // Check if we already have compiled code to jump to
-        osr_runtime
-            .get_compiled_fn(cell_idx)
-            .unwrap_or(std::ptr::null())
+            // Check if we already have compiled code to jump to
+            osr_runtime
+                .get_compiled_fn(cell_idx)
+                .unwrap_or(std::ptr::null())
+        }));
+
+        result.unwrap_or(std::ptr::null())
     }
 }
 
@@ -250,21 +291,68 @@ pub fn transplant_registers(regs: &[NbValue], frame_pointer: *mut u8) {
 
 /// Attempt to perform an OSR transition to compiled code.
 ///
-/// Currently a stub that reports missing OSR points.
-pub unsafe fn perform_osr_transition(
-    _vm: &mut VM,
+/// True mid-execution OSR (resuming at an arbitrary IP) is not yet wired.
+/// Instead, when a cell has been JIT-compiled via OSR, we re-execute the
+/// entire cell from scratch through the JitEngine. This is semantically
+/// correct for pure computational loops and avoids the need for OSR entry
+/// point infrastructure in the JitEngine.
+pub fn perform_osr_transition(
+    vm: &mut VM,
     cell: &lumen_core::lir::LirCell,
-    ip: usize,
-) -> Result<(), OsrError> {
-    if cell.osr_points.iter().any(|p| p.ip == ip) {
-        return Err(OsrError::Unavailable(
-            "OSR transition not yet implemented".to_string(),
-        ));
+    _ip: usize,
+) -> Result<Value, OsrError> {
+    #[cfg(feature = "jit")]
+    {
+        use lumen_codegen::jit::JitVarType;
+        use lumen_core::values::StringRef;
+
+        let cell_name = &cell.name;
+
+        // Use the OsrRuntime's JitEngine to execute the compiled cell.
+        // execute_jit handles NaN-boxing encode/decode properly.
+        let engine = vm
+            .osr_runtime
+            .jit_engine_mut()
+            .ok_or_else(|| OsrError::Unavailable("no JIT engine in OSR runtime".into()))?;
+
+        let raw = engine
+            .execute_jit(&vm.vm_ctx.inner, cell_name, &[])
+            .map_err(|e| OsrError::Unavailable(format!("JIT execution failed: {e}")))?;
+
+        // execute_jit already unboxes NaN-boxed values via nan_unbox_typed,
+        // so `raw` is a plain i64 for Int, raw f64 bits for Float, etc.
+        let ret_ty = engine
+            .return_type(cell_name)
+            .unwrap_or(JitVarType::Int);
+
+        let result = match ret_ty {
+            JitVarType::Str => {
+                let s = unsafe { lumen_codegen::jit::jit_take_string(raw) };
+                Value::String(StringRef::Owned(s))
+            }
+            JitVarType::Float => Value::Float(f64::from_bits(raw as u64)),
+            JitVarType::Bool => Value::Bool(raw != 0),
+            JitVarType::Int => Value::Int(raw),
+            JitVarType::Ptr => {
+                if raw == 0 || raw == 0x7FF8_0000_0000_0000_u64 as i64 {
+                    Value::Null
+                } else {
+                    let boxed = unsafe { Box::from_raw(raw as *mut Value) };
+                    *boxed
+                }
+            }
+        };
+        vm.osr_runtime.record_transition();
+        Ok(result)
     }
-    Err(OsrError::OsrPointNotFound {
-        cell: cell.name.clone(),
-        ip,
-    })
+
+    #[cfg(not(feature = "jit"))]
+    {
+        let _ = (cell, _ip);
+        Err(OsrError::Unavailable(
+            "OSR transition requires jit feature".to_string(),
+        ))
+    }
 }
 
 /// Reconstruct interpreter state from an OSR snapshot.

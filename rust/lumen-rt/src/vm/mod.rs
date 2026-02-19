@@ -378,7 +378,7 @@ impl std::fmt::Debug for SuspendedContinuation {
 /// `Drop` on `VM` itself preserves Rust's ability to partially move fields
 /// out of `VM` (e.g. `vm.output` in tests).
 pub(crate) struct OwnedVmCtx {
-    inner: Box<VmContext>,
+    pub(crate) inner: Box<VmContext>,
 }
 
 impl OwnedVmCtx {
@@ -602,6 +602,21 @@ impl VM {
     /// Get tiered JIT statistics.
     pub fn jit_stats(&self) -> crate::jit_tier::JitTierStats {
         self.jit_tier.tier_stats()
+    }
+
+    /// Enable OSR (On-Stack Replacement) JIT for the currently loaded module.
+    ///
+    /// Must be called AFTER `vm.load(module)` since OSR needs the module.
+    #[cfg(feature = "jit")]
+    pub fn enable_osr_jit(&mut self) {
+        if let Some(module) = self.module.clone() {
+            self.osr_runtime.init_jit(module);
+        }
+    }
+
+    /// Get the number of OSR transitions that have occurred.
+    pub fn osr_transition_count(&self) -> u64 {
+        self.osr_runtime.transition_count()
     }
 
     /// Grow register file for a new call frame. Returns the new base index.
@@ -1587,6 +1602,7 @@ impl VM {
             .position(|c| c.name == cell_name)
             .ok_or_else(|| VmError::UndefinedCell(cell_name.into()))?;
 
+        let module = self.module.as_ref().ok_or(VmError::NoModule)?;
         let cell = &module.cells[cell_idx];
         let num_regs = cell.registers as usize;
         let params = cell.params.clone();
@@ -2265,7 +2281,7 @@ impl VM {
                 }
                 OpCode::LoadInt => {
                     let sb = instr.sbx();
-                    self.set_reg(base + a, Value::Int(sb as i64));
+                    self.set_reg_nb(base + a, NbValue::new_int(sb as i64));
                 }
                 OpCode::Move => {
                     // Clone the source register. With Rc-wrapped collections this
@@ -2732,102 +2748,153 @@ impl VM {
 
                 // Comparison / logic
                 OpCode::Eq => {
-                    let lhs = self.reg(base + b);
-                    let rhs = self.reg(base + c);
-                    let eq = values_equal(&lhs, &rhs, &self.strings);
-                    self.set_reg(base + a, Value::Bool(eq));
+                    // NbValue fast-path: identical bits means identical value.
+                    let lhs_nb = self.reg_nb(base + b);
+                    let rhs_nb = self.reg_nb(base + c);
+                    if lhs_nb.0 == rhs_nb.0 {
+                        self.set_reg_nb(base + a, NbValue::new_bool(true));
+                    } else if lhs_nb.is_int() && rhs_nb.is_int() {
+                        self.set_reg_nb(base + a, NbValue::new_bool(
+                            lhs_nb.as_int().unwrap_or(0) == rhs_nb.as_int().unwrap_or(0)
+                        ));
+                    } else if lhs_nb.is_float() && rhs_nb.is_float() {
+                        self.set_reg_nb(base + a, NbValue::new_bool(
+                            f64::from_bits(lhs_nb.0) == f64::from_bits(rhs_nb.0)
+                        ));
+                    } else {
+                        let lhs = lhs_nb.peek_legacy();
+                        let rhs = rhs_nb.peek_legacy();
+                        let eq = values_equal(&lhs, &rhs, &self.strings);
+                        self.set_reg_nb(base + a, NbValue::new_bool(eq));
+                    }
                 }
                 OpCode::Lt => {
-                    let b_val = self.reg(base + b);
-                    let c_val = self.reg(base + c);
-                    let result = match (&b_val, &c_val) {
-                        (Value::Int(x), Value::Int(y)) => x < y,
-                        (Value::Float(x), Value::Float(y)) => x < y,
-                        (Value::Int(x), Value::Float(y)) => (*x as f64) < *y,
-                        (Value::Float(x), Value::Int(y)) => *x < (*y as f64),
-                        (Value::String(x), Value::String(y)) => {
-                            let s1 = match x {
-                                StringRef::Owned(s) => s.as_str(),
-                                StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
-                            };
-                            let s2 = match y {
-                                StringRef::Owned(s) => s.as_str(),
-                                StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
-                            };
-                            s1 < s2
-                        }
-                        (Value::Int(x), Value::BigInt(y)) => BigInt::from(*x) < *y,
-                        (Value::BigInt(x), Value::Int(y)) => *x < BigInt::from(*y),
-                        (Value::BigInt(x), Value::BigInt(y)) => x < y,
-                        (Value::BigInt(x), Value::Float(y)) => {
-                            let af = x.to_f64().unwrap_or_else(|| {
-                                if x.sign() == num_bigint::Sign::Minus {
-                                    f64::NEG_INFINITY
-                                } else {
-                                    f64::INFINITY
-                                }
-                            });
-                            af < *y
-                        }
-                        (Value::Float(x), Value::BigInt(y)) => {
-                            let bf = y.to_f64().unwrap_or_else(|| {
-                                if y.sign() == num_bigint::Sign::Minus {
-                                    f64::NEG_INFINITY
-                                } else {
-                                    f64::INFINITY
-                                }
-                            });
-                            *x < bf
-                        }
-                        _ => false,
-                    };
-                    self.set_reg(base + a, Value::Bool(result));
+                    // NbValue fast-path for int < int (the 99% case in numeric code).
+                    let lhs_nb = self.reg_nb(base + b);
+                    let rhs_nb = self.reg_nb(base + c);
+                    if lhs_nb.is_int() && rhs_nb.is_int() {
+                        self.set_reg_nb(base + a, NbValue::new_bool(
+                            lhs_nb.as_int().unwrap_or(0) < rhs_nb.as_int().unwrap_or(0)
+                        ));
+                    } else if lhs_nb.is_float() && rhs_nb.is_float() {
+                        self.set_reg_nb(base + a, NbValue::new_bool(
+                            f64::from_bits(lhs_nb.0) < f64::from_bits(rhs_nb.0)
+                        ));
+                    } else if lhs_nb.is_int() && rhs_nb.is_float() {
+                        self.set_reg_nb(base + a, NbValue::new_bool(
+                            (lhs_nb.as_int().unwrap_or(0) as f64) < f64::from_bits(rhs_nb.0)
+                        ));
+                    } else if lhs_nb.is_float() && rhs_nb.is_int() {
+                        self.set_reg_nb(base + a, NbValue::new_bool(
+                            f64::from_bits(lhs_nb.0) < (rhs_nb.as_int().unwrap_or(0) as f64)
+                        ));
+                    } else {
+                        // COLD PATH: strings, BigInt, etc.
+                        let b_val = lhs_nb.peek_legacy();
+                        let c_val = rhs_nb.peek_legacy();
+                        let result = match (&b_val, &c_val) {
+                            (Value::String(x), Value::String(y)) => {
+                                let s1 = match x {
+                                    StringRef::Owned(s) => s.as_str(),
+                                    StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                                };
+                                let s2 = match y {
+                                    StringRef::Owned(s) => s.as_str(),
+                                    StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                                };
+                                s1 < s2
+                            }
+                            (Value::Int(x), Value::BigInt(y)) => BigInt::from(*x) < *y,
+                            (Value::BigInt(x), Value::Int(y)) => *x < BigInt::from(*y),
+                            (Value::BigInt(x), Value::BigInt(y)) => x < y,
+                            (Value::BigInt(x), Value::Float(y)) => {
+                                let af = x.to_f64().unwrap_or_else(|| {
+                                    if x.sign() == num_bigint::Sign::Minus {
+                                        f64::NEG_INFINITY
+                                    } else {
+                                        f64::INFINITY
+                                    }
+                                });
+                                af < *y
+                            }
+                            (Value::Float(x), Value::BigInt(y)) => {
+                                let bf = y.to_f64().unwrap_or_else(|| {
+                                    if y.sign() == num_bigint::Sign::Minus {
+                                        f64::NEG_INFINITY
+                                    } else {
+                                        f64::INFINITY
+                                    }
+                                });
+                                *x < bf
+                            }
+                            _ => false,
+                        };
+                        self.set_reg_nb(base + a, NbValue::new_bool(result));
+                    }
                 }
                 OpCode::Le => {
-                    let b_val = self.reg(base + b);
-                    let c_val = self.reg(base + c);
-                    let result = match (&b_val, &c_val) {
-                        (Value::Int(x), Value::Int(y)) => x <= y,
-                        (Value::Float(x), Value::Float(y)) => x <= y,
-                        (Value::Int(x), Value::Float(y)) => (*x as f64) <= *y,
-                        (Value::Float(x), Value::Int(y)) => *x <= (*y as f64),
-                        (Value::String(x), Value::String(y)) => {
-                            let s1 = match x {
-                                StringRef::Owned(s) => s.as_str(),
-                                StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
-                            };
-                            let s2 = match y {
-                                StringRef::Owned(s) => s.as_str(),
-                                StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
-                            };
-                            s1 <= s2
-                        }
-                        (Value::Int(x), Value::BigInt(y)) => BigInt::from(*x) <= *y,
-                        (Value::BigInt(x), Value::Int(y)) => *x <= BigInt::from(*y),
-                        (Value::BigInt(x), Value::BigInt(y)) => x <= y,
-                        (Value::BigInt(x), Value::Float(y)) => {
-                            let af = x.to_f64().unwrap_or_else(|| {
-                                if x.sign() == num_bigint::Sign::Minus {
-                                    f64::NEG_INFINITY
-                                } else {
-                                    f64::INFINITY
-                                }
-                            });
-                            af <= *y
-                        }
-                        (Value::Float(x), Value::BigInt(y)) => {
-                            let bf = y.to_f64().unwrap_or_else(|| {
-                                if y.sign() == num_bigint::Sign::Minus {
-                                    f64::NEG_INFINITY
-                                } else {
-                                    f64::INFINITY
-                                }
-                            });
-                            *x <= bf
-                        }
-                        _ => false,
-                    };
-                    self.set_reg(base + a, Value::Bool(result));
+                    // NbValue fast-path for int <= int.
+                    let lhs_nb = self.reg_nb(base + b);
+                    let rhs_nb = self.reg_nb(base + c);
+                    if lhs_nb.is_int() && rhs_nb.is_int() {
+                        self.set_reg_nb(base + a, NbValue::new_bool(
+                            lhs_nb.as_int().unwrap_or(0) <= rhs_nb.as_int().unwrap_or(0)
+                        ));
+                    } else if lhs_nb.is_float() && rhs_nb.is_float() {
+                        self.set_reg_nb(base + a, NbValue::new_bool(
+                            f64::from_bits(lhs_nb.0) <= f64::from_bits(rhs_nb.0)
+                        ));
+                    } else if lhs_nb.is_int() && rhs_nb.is_float() {
+                        self.set_reg_nb(base + a, NbValue::new_bool(
+                            (lhs_nb.as_int().unwrap_or(0) as f64) <= f64::from_bits(rhs_nb.0)
+                        ));
+                    } else if lhs_nb.is_float() && rhs_nb.is_int() {
+                        self.set_reg_nb(base + a, NbValue::new_bool(
+                            f64::from_bits(lhs_nb.0) <= (rhs_nb.as_int().unwrap_or(0) as f64)
+                        ));
+                    } else {
+                        // COLD PATH: strings, BigInt, etc.
+                        let b_val = lhs_nb.peek_legacy();
+                        let c_val = rhs_nb.peek_legacy();
+                        let result = match (&b_val, &c_val) {
+                            (Value::String(x), Value::String(y)) => {
+                                let s1 = match x {
+                                    StringRef::Owned(s) => s.as_str(),
+                                    StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                                };
+                                let s2 = match y {
+                                    StringRef::Owned(s) => s.as_str(),
+                                    StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                                };
+                                s1 <= s2
+                            }
+                            (Value::Int(x), Value::BigInt(y)) => BigInt::from(*x) <= *y,
+                            (Value::BigInt(x), Value::Int(y)) => *x <= BigInt::from(*y),
+                            (Value::BigInt(x), Value::BigInt(y)) => x <= y,
+                            (Value::BigInt(x), Value::Float(y)) => {
+                                let af = x.to_f64().unwrap_or_else(|| {
+                                    if x.sign() == num_bigint::Sign::Minus {
+                                        f64::NEG_INFINITY
+                                    } else {
+                                        f64::INFINITY
+                                    }
+                                });
+                                af <= *y
+                            }
+                            (Value::Float(x), Value::BigInt(y)) => {
+                                let bf = y.to_f64().unwrap_or_else(|| {
+                                    if y.sign() == num_bigint::Sign::Minus {
+                                        f64::NEG_INFINITY
+                                    } else {
+                                        f64::INFINITY
+                                    }
+                                });
+                                *x <= bf
+                            }
+                            _ => false,
+                        };
+                        self.set_reg_nb(base + a, NbValue::new_bool(result));
+                    }
                 }
                 OpCode::Not => {
                     let val = self.reg(base + b);
@@ -2883,8 +2950,18 @@ impl VM {
                     }
                 }
                 OpCode::Test => {
-                    let val = self.reg(base + a);
-                    let truthy = self.value_is_truthy(&val);
+                    // NbValue fast-path: check bool tag directly.
+                    let nb = self.reg_nb(base + a);
+                    let truthy = if nb.is_bool() {
+                        nb.as_bool().unwrap_or(false)
+                    } else if nb.is_null() {
+                        false
+                    } else if nb.is_int() {
+                        nb.as_int().unwrap_or(0) != 0
+                    } else {
+                        let val = nb.peek_legacy();
+                        self.value_is_truthy(&val)
+                    };
                     if truthy != (c != 0) {
                         ip += 1;
                     }
@@ -3524,8 +3601,32 @@ impl VM {
                     }
                 }
 
-                // OsrCheck is a JIT-only hint — no-op in the interpreter
-                OpCode::OsrCheck => { /* no-op in interpreter */ } // Stack-allocated collections are handled alongside NewList/NewTuple.
+                OpCode::OsrCheck => {
+                    let osr_ip = ip.wrapping_sub(1);
+                    let compiled_ptr = unsafe {
+                        crate::vm::osr::osr_check::lm_rt_osr_check(self, cell_idx, osr_ip)
+                    };
+                    if !compiled_ptr.is_null() {
+                        if let Ok(result) =
+                            crate::vm::osr::perform_osr_transition(self, cell, osr_ip)
+                        {
+                            let frame = self
+                                .frames
+                                .pop()
+                                .ok_or_else(|| VmError::Runtime("call stack underflow".into()))?;
+                            self.shrink_registers(frame.base_register);
+                            if self.frames.len() <= limit {
+                                return Ok(result);
+                            }
+                            self.set_reg(frame.return_register, result);
+                            let f = self.frames.last().unwrap();
+                            cell_idx = f.cell_idx;
+                            base = f.base_register;
+                            ip = f.ip;
+                            cell = &module.cells[cell_idx];
+                        }
+                    }
+                } // Stack-allocated collections are handled alongside NewList/NewTuple.
             }
         }
     }

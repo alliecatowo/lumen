@@ -744,11 +744,19 @@ fn pack_handler_key(effect_id: u32, op_id: u32) -> u64 {
 /// `parent` must be either null (root) or a valid, non-null `*mut Fiber`.
 pub fn lm_rt_handle_push(
     fiber_pool: &mut FiberPool,
-    parent: *mut Fiber,
+    performer: *mut Fiber,
     effect_id: u32,
     op_id: u32,
 ) -> *mut Fiber {
     let (stack_bottom, stack_size) = fiber_pool.acquire();
+
+    // The handler inherits the performer's old parent, so when lm_rt_perform
+    // walks the parent chain it can find handlers further up the chain too.
+    let old_parent = if performer.is_null() {
+        ptr::null_mut()
+    } else {
+        unsafe { (*performer).parent }
+    };
 
     let fiber = Box::new(Fiber {
         saved_rsp: stack_bottom as u64 + stack_size as u64, // points to stack top
@@ -764,25 +772,52 @@ pub fn lm_rt_handle_push(
         stack_capacity: stack_size,
         stack_growth_count: 0,
         max_stack_size: DEFAULT_MAX_STACK_SIZE,
-        parent,
+        parent: old_parent,
         status: FiberStatus::Suspended,
         pinned: false,
         user_data: pack_handler_key(effect_id, op_id),
     });
 
-    Box::into_raw(fiber)
+    let handler_ptr = Box::into_raw(fiber);
+
+    // Wire the performer's parent to point to the new handler, inserting the
+    // handler into the chain: performer → handler → old_parent → ...
+    // This is how lm_rt_perform finds handlers by walking performer.parent.
+    if !performer.is_null() {
+        unsafe {
+            (*performer).parent = handler_ptr;
+        }
+    }
+
+    handler_ptr
 }
 
 /// Mark a handler fiber as dead and return its stack to the pool.
+///
+/// Also unwires the handler from the parent chain: if `performer` is non-null
+/// and its parent points to `handler`, the performer's parent is restored to
+/// the handler's parent (reversing what `lm_rt_handle_push` did).
 ///
 /// # Safety
 /// - `handler` must be a valid, non-null pointer produced by [`lm_rt_handle_push`].
 /// - The fiber must not be currently executing (status must not be `Running`).
 /// - After this call `handler` is dangling — do not dereference it.
-pub fn lm_rt_handle_pop(fiber_pool: &mut FiberPool, handler: *mut Fiber) {
+pub fn lm_rt_handle_pop(fiber_pool: &mut FiberPool, handler: *mut Fiber, performer: *mut Fiber) {
     if handler.is_null() {
         return;
     }
+
+    // Unwire the handler from the parent chain before freeing it.
+    // Restore: performer.parent = handler.parent (the handler's old parent).
+    if !performer.is_null() {
+        unsafe {
+            let handler_parent = (*handler).parent;
+            if (*performer).parent == handler {
+                (*performer).parent = handler_parent;
+            }
+        }
+    }
+
     // Safety: handler was created by Box::into_raw in lm_rt_handle_push.
     let mut fiber = unsafe { Box::from_raw(handler) };
     fiber.status = FiberStatus::Dead;
@@ -1121,18 +1156,19 @@ mod tests {
     #[test]
     fn handle_push_sets_fields() {
         let mut pool = FiberPool::new(DEFAULT_FIBER_STACK_SIZE, 0);
-        let parent_ptr = std::ptr::null_mut(); // root fiber has no parent
+        let performer_ptr = std::ptr::null_mut(); // root has no performer
 
-        let handler = lm_rt_handle_push(&mut pool, parent_ptr, 1, 2);
+        let handler = lm_rt_handle_push(&mut pool, performer_ptr, 1, 2);
         assert!(!handler.is_null());
 
         unsafe {
             assert_eq!((*handler).status, FiberStatus::Suspended);
             assert_eq!((*handler).user_data, pack_handler_key(1, 2));
-            assert_eq!((*handler).parent, parent_ptr);
+            // Handler inherits performer's old parent (null since performer is null).
+            assert_eq!((*handler).parent, std::ptr::null_mut());
         }
 
-        lm_rt_handle_pop(&mut pool, handler);
+        lm_rt_handle_pop(&mut pool, handler, performer_ptr);
         // Stack should be returned to the pool after pop.
         assert_eq!(pool.cached_count(pool.default_size), 1);
     }
@@ -1144,7 +1180,7 @@ mod tests {
         let h1 = lm_rt_handle_push(&mut pool, std::ptr::null_mut(), 0, 0);
         let (stack_ptr, _) = unsafe { ((*h1).stack_bottom, (*h1).stack_size) };
 
-        lm_rt_handle_pop(&mut pool, h1);
+        lm_rt_handle_pop(&mut pool, h1, std::ptr::null_mut());
         assert_eq!(pool.cached_count(pool.default_size), 1);
 
         // The next push should reuse the same stack.
@@ -1152,7 +1188,7 @@ mod tests {
         let stack2 = unsafe { (*h2).stack_bottom };
         assert_eq!(stack_ptr, stack2, "stack should be recycled from pool");
 
-        lm_rt_handle_pop(&mut pool, h2);
+        lm_rt_handle_pop(&mut pool, h2, std::ptr::null_mut());
     }
 
     #[test]
@@ -1201,12 +1237,10 @@ mod tests {
 
     /// Full perform/resume fiber_switch roundtrip through the helper API.
     ///
-    /// NOTE: This test is disabled because it incorrectly uses the fiber-based API
-    /// which expects handlers to be in the parent chain, but lm_rt_handle_push
-    /// creates sibling fibers. The VmContext-based API in fiber_effects.rs works correctly.
+    /// lm_rt_handle_push wires the handler into the performer's parent chain,
+    /// so lm_rt_perform can find it by walking performer.parent.
     #[test]
     #[cfg(target_arch = "x86_64")]
-    #[ignore]
     fn perform_resume_roundtrip_helpers() {
         use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1229,10 +1263,12 @@ mod tests {
         let mut performer = Fiber::new(DEFAULT_FIBER_STACK_SIZE);
         performer.status = FiberStatus::Running;
 
-        // Create handler as a child of performer.
+        let performer_ptr = &mut *performer as *mut Fiber;
+
+        // Create handler — this wires performer.parent → handler.
         let handler = lm_rt_handle_push(
             &mut pool,
-            &mut *performer as *mut Fiber,
+            performer_ptr,
             /*effect_id=*/ 7,
             /*op_id=*/ 3,
         );
@@ -1240,12 +1276,12 @@ mod tests {
         // Initialize the handler fiber's entry point.
         unsafe { (*handler).init_with_fn(handler_body, 0) };
 
-        PERFORMER_PTR.store(&mut *performer as *mut Fiber as u64, Ordering::SeqCst);
+        PERFORMER_PTR.store(performer_ptr as u64, Ordering::SeqCst);
         HANDLER_PTR.store(handler as u64, Ordering::SeqCst);
 
         // perform: switches to handler with arg=55, expects to get back 55+100=155.
         let result = lm_rt_perform(
-            &mut *performer as *mut Fiber,
+            performer_ptr,
             /*effect_id=*/ 7,
             /*op_id=*/ 3,
             /*arg=*/ 55,
@@ -1258,8 +1294,8 @@ mod tests {
         );
         assert_eq!(result, 155, "perform returned wrong resume value");
 
-        // Clean up — handler is suspended; pop it.
-        lm_rt_handle_pop(&mut pool, handler);
+        // Clean up — handler is suspended; pop it and unwire from parent chain.
+        lm_rt_handle_pop(&mut pool, handler, performer_ptr);
     }
 
     // ── Growable Stack Tests ───────────────────────────────────────────────────

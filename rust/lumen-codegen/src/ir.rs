@@ -2598,7 +2598,7 @@ pub(crate) fn lower_cell<M: Module>(
 
             // NewList: Create a list from register values
             // r[a] = List([r[a+1], ..., r[a+b]])
-            OpCode::NewList => {
+            OpCode::NewList | OpCode::NewListStack => {
                 let count = inst.b as usize;
 
                 // Allocate stack space for the array of value pointers
@@ -2670,7 +2670,7 @@ pub(crate) fn lower_cell<M: Module>(
 
             // NewTuple: Create a tuple from register values
             // r[a] = Tuple([r[a+1], ..., r[a+b]])
-            OpCode::NewTuple => {
+            OpCode::NewTuple | OpCode::NewTupleStack => {
                 let count = inst.b as usize;
 
                 // Allocate stack space for the array of value pointers

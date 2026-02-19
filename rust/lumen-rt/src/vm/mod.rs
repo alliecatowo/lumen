@@ -1267,11 +1267,7 @@ impl VM {
             OpCode::Resume => self.check_register(a, cell_registers),
 
             OpCode::OsrCheck => Ok(()),
-
-            // Stack-allocated collections (not yet implemented in interpreter)
-            OpCode::NewListStack | OpCode::NewTupleStack => Err(VmError::Runtime(
-                "stack-allocated collections not implemented".to_string(),
-            )),
+            // Stack-allocated collections use normal register spans.
         }
     }
 
@@ -2289,28 +2285,12 @@ impl VM {
                     let val = self.reg_take(base + b);
                     self.set_reg(base + a, val);
                 }
-                OpCode::NewList => {
+                OpCode::NewList | OpCode::NewListStack => {
                     let mut list = Vec::with_capacity(b);
                     for i in 1..=b {
                         list.push(self.reg(base + a + i));
                     }
                     self.set_reg(base + a, Value::new_list(list));
-                }
-                OpCode::NewListStack => {
-                    // Basic support for stack-based list construction (stubbed)
-                    let mut list = Vec::with_capacity(b);
-                    for i in 1..=b {
-                        list.push(self.reg(base + a + i));
-                    }
-                    self.set_reg(base + a, Value::new_list(list));
-                }
-                OpCode::NewTupleStack => {
-                    // Basic support for stack-based tuple construction (stubbed)
-                    let mut elems = Vec::with_capacity(b);
-                    for i in 1..=b {
-                        elems.push(self.reg(base + a + i));
-                    }
-                    self.set_reg(base + a, Value::new_tuple(elems));
                 }
                 OpCode::NewMap => {
                     let mut map = BTreeMap::new();
@@ -2341,7 +2321,7 @@ impl VM {
                     let payload = Arc::new(self.reg(base + c));
                     self.set_reg(base + a, Value::Union(UnionValue { tag, payload }));
                 }
-                OpCode::NewTuple => {
+                OpCode::NewTuple | OpCode::NewTupleStack => {
                     let mut elems = Vec::with_capacity(b);
                     for i in 1..=b {
                         elems.push(self.reg(base + a + i));
@@ -3542,13 +3522,7 @@ impl VM {
                 }
 
                 // OsrCheck is a JIT-only hint — no-op in the interpreter
-                OpCode::OsrCheck => { /* no-op in interpreter */ }
-
-                // Stack-allocated collections (JIT-only, fall back to heap in interpreter)
-                OpCode::NewListStack | OpCode::NewTupleStack => {
-                    // Fall back to heap allocation in interpreter
-                    unimplemented!("stack-allocated collections only available in JIT tiers")
-                }
+                OpCode::OsrCheck => { /* no-op in interpreter */ } // Stack-allocated collections are handled alongside NewList/NewTuple.
             }
         }
     }

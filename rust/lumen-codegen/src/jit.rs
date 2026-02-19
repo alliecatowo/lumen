@@ -1053,19 +1053,22 @@ extern "C" fn jit_rt_emit(_ctx: *mut VmContext, value: i64) -> i64 {
 /// Invoke a tool by index with a pre-built args map.
 ///
 /// # Parameters
-/// - `vm_ctx`: Opaque VM context pointer. Uses `string_table` to resolve tool IDs.
+/// - `vm_ctx`: Opaque VM context pointer. Uses `registry` to dispatch tool calls.
 /// - `tool_id`: Index into the module tool table (matches compiler ordering).
 /// - `args_map_ptr`: NaN-boxed pointer to a `Value::Map` containing args.
 ///
 /// # Returns
 /// NaN-boxed result value, or `NAN_BOX_NULL` on failure.
 ///
-/// # Safety
-/// `vm_ctx` must be a valid `*mut VmContext`. `args_map_ptr` must be a valid
-/// pointer to a `Value` allocated by the JIT runtime helpers.
+/// # Implementation Note
+/// Full implementation requires accessing the tool registry via VmContext.registry.
 extern "C" fn jit_rt_tool_call(_vm_ctx: *mut VmContext, _tool_id: i32, _args_map_ptr: i64) -> i64 {
-    // TODO: Implement once VmContext exposes tool registry and module metadata.
-    // The interpreter's ToolCall builds args JSON and dispatches via ToolDispatcher.
+    // TODO: Full implementation requires:
+    // 1. Access registry via vm_ctx.registry
+    // 2. Decode args_map_ptr to Value::Map
+    // 3. Build ToolRequest from tool_id and args
+    // 4. Call registry.dispatch(request)
+    // 5. Return NaN-boxed ToolResponse as Value
     NAN_BOX_NULL
 }
 
@@ -1609,130 +1612,87 @@ fn register_intrinsic_helpers(builder: &mut JITBuilder) {
 /// continuation, and transfers control to the handler.
 ///
 /// # Parameters
-/// - `vm_ctx`: Opaque pointer to VM context (TODO: replace with proper VmContext once defined)
-/// - `effect_id`: String table ID for the effect name (e.g., "Console")
-/// - `operation_id`: String table ID for the operation name (e.g., "log")
-/// - `args_ptr`: Pointer to array of NaN-boxed argument values
-/// - `arg_count`: Number of arguments
+/// - `vm_ctx`: Opaque pointer to VM context
+/// - `effect_id`: LIR effect index
+/// - `operation_id`: LIR operation index within the effect
+/// - `arg`: NbValue-encoded argument value (u64 bits)
 ///
 /// # Returns
-/// NaN-boxed result value (or error sentinel on failure)
+/// NbValue result from the handler's resume call
 ///
 /// # Safety
-/// `vm_ctx` must be a valid `*mut VM` pointer. `args_ptr` must point to a valid
-/// array of `arg_count` i64 values.
+/// `vm_ctx` must be a valid pointer to an initialized VmContext with effect stack.
 ///
-/// # Implementation Status
-/// **STUB**: Returns error sentinel. Full implementation requires:
-/// - VmContext struct definition with pointers to VM.effect_handlers and VM.suspended_continuation
-/// - Access to VM.frames, VM.registers, and VM.module for continuation capture
-/// - Effect budget checking (VM.effect_budgets)
-/// - Handler search and IP manipulation
+/// # Implementation Note
+/// Full implementation requires the fiber_effects module from lumen-rt.
+/// This stub returns null as a placeholder.
 extern "C" fn jit_rt_perform(
     _vm_ctx: *mut VmContext,
     _effect_id: u32,
     _operation_id: u32,
-    _args_ptr: *const i64,
-    _arg_count: usize,
+    _arg: u64,
 ) -> i64 {
-    // TODO: Implement once VmContext is defined
-    // 1. Look up effect name and operation name from string table via effect_id/operation_id
-    // 2. Check effect budget (VM.effect_budgets)
-    // 3. Search VM.effect_handlers (top to bottom) for matching (effect_name, operation)
-    // 4. If found:
-    //    - Sync current IP in frame
-    //    - Create SuspendedContinuation: clone frames/registers, save resume_ip, result_reg
-    //    - Set VM.suspended_continuation = Some(cont)
-    //    - Jump to handler_ip by updating frame.ip
-    //    - Return NAN_BOX_NULL (control transfers to handler)
-    // 5. If not found: return error sentinel (unhandled effect)
-    NAN_BOX_NULL // Placeholder: error sentinel
+    NAN_BOX_NULL
 }
 
 /// Push an effect handler scope onto the stack.
 ///
-/// Reads handler metadata from the cell's effect_handler_metas table and pushes
-/// an EffectScope entry onto VM.effect_handlers.
+/// Installs a new handler fiber for the specified effect operation.
 ///
 /// # Parameters
-/// - `vm_ctx`: Opaque pointer to VM context (TODO: replace with proper VmContext once defined)
-/// - `meta_idx`: Index into cell.effect_handler_metas
-/// - `offset`: Offset from current IP to handler code (signed)
+/// - `vm_ctx`: Opaque pointer to VM context
+/// - `effect_id`: LIR effect index of the effect being handled
+/// - `op_id`: LIR operation index within the effect
+/// - `handler_fn`: Function pointer to the handler entry point
 ///
 /// # Safety
-/// `vm_ctx` must be a valid `*mut VM` pointer. `meta_idx` must be valid.
+/// `vm_ctx` must be a valid pointer to an initialized VmContext with effect stack.
 ///
-/// # Implementation Status
-/// **STUB**: Does nothing. Full implementation requires:
-/// - VmContext with pointers to VM.effect_handlers, VM.frames, current cell
-/// - Access to cell.effect_handler_metas[meta_idx] for effect_name/operation
-/// - Calculate handler_ip = current_ip + offset
-/// - Push EffectScope { handler_ip, frame_idx, base_register, cell_idx, effect_name, operation }
-extern "C" fn jit_rt_handle_push(_vm_ctx: *mut VmContext, _meta_idx: usize, _offset: i32) {
-    // TODO: Implement once VmContext is defined
-    // 1. Get current frame index, base register, cell index, IP from VmContext
-    // 2. Calculate handler_ip = current_ip + offset
-    // 3. Look up handler metadata: cell.effect_handler_metas[meta_idx]
-    // 4. Push EffectScope onto VM.effect_handlers:
-    //    EffectScope {
-    //        handler_ip,
-    //        frame_idx: vm.frames.len() - 1,
-    //        base_register,
-    //        cell_idx,
-    //        effect_name: meta.effect_name.clone(),
-    //        operation: meta.operation.clone(),
-    //    }
+/// # Implementation Note
+/// Full implementation requires the fiber_effects module from lumen-rt.
+/// This is a placeholder that does nothing.
+extern "C" fn jit_rt_handle_push(
+    _vm_ctx: *mut VmContext,
+    _effect_id: u32,
+    _op_id: u32,
+    _handler_fn: extern "C" fn(u64),
+) {
 }
 
 /// Pop an effect handler scope from the stack.
 ///
-/// Simply removes the top entry from VM.effect_handlers.
+/// Removes the innermost handler from the effect stack and frees its fiber.
 ///
 /// # Parameters
-/// - `vm_ctx`: Opaque pointer to VM context (TODO: replace with proper VmContext once defined)
+/// - `vm_ctx`: Opaque pointer to VM context
 ///
 /// # Safety
-/// `vm_ctx` must be a valid `*mut VM` pointer. effect_handlers must not be empty.
+/// `vm_ctx` must be a valid pointer to an initialized VmContext with effect stack.
 ///
-/// # Implementation Status
-/// **STUB**: Does nothing. Full implementation requires:
-/// - VmContext with pointer to VM.effect_handlers
-/// - Pop the top EffectScope from the stack
-extern "C" fn jit_rt_handle_pop(_vm_ctx: *mut VmContext) {
-    // TODO: Implement once VmContext is defined
-    // vm.effect_handlers.pop();
-}
+/// # Implementation Note
+/// Full implementation requires the fiber_effects module from lumen-rt.
+/// This is a placeholder that does nothing.
+extern "C" fn jit_rt_handle_pop(_vm_ctx: *mut VmContext) {}
 
 /// Resume a suspended continuation with a value.
 ///
-/// Restores the saved continuation state (frames, registers) and puts the resume
-/// value into the result register.
+/// Restores the saved continuation state and transfers control back to the performer.
 ///
 /// # Parameters
-/// - `vm_ctx`: Opaque pointer to VM context (TODO: replace with proper VmContext once defined)
-/// - `value`: NaN-boxed value to pass to the resumed computation
+/// - `vm_ctx`: Opaque pointer to VM context
+/// - `value`: NbValue-encoded result to pass to the resumed computation
 ///
 /// # Returns
-/// NaN-boxed result (or error sentinel if no continuation exists)
+/// NbValue result (typically null for one-shot continuations)
 ///
 /// # Safety
-/// `vm_ctx` must be a valid `*mut VM` pointer. VM.suspended_continuation must be Some.
+/// `vm_ctx` must be a valid pointer to an initialized VmContext with a suspended performer.
 ///
-/// # Implementation Status
-/// **STUB**: Returns error sentinel. Full implementation requires:
-/// - VmContext with pointer to VM.suspended_continuation, VM.frames, VM.registers
-/// - Take VM.suspended_continuation (one-shot consumption)
-/// - Restore frames and registers from continuation
-/// - Put `value` into registers[cont.result_reg]
-/// - Return NAN_BOX_NULL (execution continues in restored frame)
-extern "C" fn jit_rt_resume(_vm_ctx: *mut VmContext, _value: i64) -> i64 {
-    // TODO: Implement once VmContext is defined
-    // 1. Take VM.suspended_continuation (must be Some, else error)
-    // 2. Restore VM.frames = cont.frames
-    // 3. Restore VM.registers = cont.registers
-    // 4. Set VM.registers[cont.result_reg] = unbox(value)
-    // 5. Return NAN_BOX_NULL (control continues at resume_ip)
-    NAN_BOX_NULL // Placeholder: error sentinel
+/// # Implementation Note
+/// Full implementation requires the fiber_effects module from lumen-rt.
+/// This stub returns null as a placeholder.
+extern "C" fn jit_rt_resume(_vm_ctx: *mut VmContext, _value: u64) -> i64 {
+    NAN_BOX_NULL
 }
 
 /// Register all JIT effect system runtime helper symbols with a JITBuilder.
@@ -1747,10 +1707,10 @@ fn register_effect_helpers(builder: &mut JITBuilder) {
 // Async / concurrency runtime helpers (Phase 0.3)
 // ---------------------------------------------------------------------------
 
-/// Spawn an async task from a cell proto index.
+/// Spawn an async task from a cell index.
 ///
 /// # Parameters
-/// - `vm_ctx`: Opaque pointer to VM context (TODO: replace with proper VmContext once defined)
+/// - `vm_ctx`: Opaque pointer to VM context (contains scheduler pointer)
 /// - `cell_idx`: Index of the target cell in the module
 /// - `args_ptr`: Pointer to NaN-boxed arguments
 /// - `arg_count`: Number of arguments
@@ -1758,42 +1718,42 @@ fn register_effect_helpers(builder: &mut JITBuilder) {
 /// # Returns
 /// NaN-boxed result value (future handle)
 ///
-/// # Safety
-/// `vm_ctx` must be a valid `*mut VM` pointer. `args_ptr` must point to a valid
-/// array of `arg_count` i64 values.
-///
-/// # Implementation Status
-/// **STUB**: Returns NAN_BOX_NULL. Full implementation requires:
-/// - VmContext struct definition with access to VM.spawn_future
-/// - NaN-boxed arg decoding to Value
+/// # Implementation Note
+/// Full implementation requires accessing the scheduler via VmContext.scheduler
+/// and calling the spawn logic. Currently returns null since the scheduler
+/// pointer needs initialization.
 extern "C" fn jit_rt_spawn(
     _vm_ctx: *mut VmContext,
     _cell_idx: i32,
     _args_ptr: *const i64,
     _arg_count: i32,
 ) -> i64 {
-    // TODO: Implement once VmContext is defined
+    // TODO: Full implementation requires:
+    // 1. Access scheduler via vm_ctx.scheduler
+    // 2. Decode args from NaN-boxed pointers to Values
+    // 3. Call scheduler.spawn_future(FutureTarget::Cell(cell_idx), args)
+    // 4. Return NaN-boxed FutureValue
     NAN_BOX_NULL
 }
 
 /// Await a future handle.
 ///
 /// # Parameters
-/// - `vm_ctx`: Opaque pointer to VM context (TODO: replace with proper VmContext once defined)
+/// - `vm_ctx`: Opaque pointer to VM context
 /// - `future_handle`: NaN-boxed future value
 ///
 /// # Returns
 /// NaN-boxed resolved value (or error sentinel on failure)
 ///
-/// # Safety
-/// `vm_ctx` must be a valid `*mut VM` pointer. `future_handle` must be a valid
-/// NaN-boxed future value.
-///
-/// # Implementation Status
-/// **STUB**: Returns NAN_BOX_NULL. Full implementation requires:
-/// - VmContext struct definition with access to VM.await_value_recursive
+/// # Implementation Note
+/// Full implementation requires accessing the VM's future state and scheduler.
+/// Currently returns null since we don't have direct access to the VM.
 extern "C" fn jit_rt_await(_vm_ctx: *mut VmContext, _future_handle: i64) -> i64 {
-    // TODO: Implement once VmContext is defined
+    // TODO: Full implementation requires:
+    // 1. Decode future_handle to FutureValue
+    // 2. Access VM's future_states and scheduler
+    // 3. Call VM.await_value_recursive(future)
+    // 4. Return NaN-boxed resolved Value
     NAN_BOX_NULL
 }
 
@@ -2594,6 +2554,11 @@ impl JitEngine {
             .unwrap_or(false)
     }
 
+    /// Get the raw function pointer for a compiled cell.
+    pub fn get_compiled_fn(&self, cell_name: &str) -> Option<*const ()> {
+        self.cache.get(cell_name).map(|c| c.fn_ptr as *const ())
+    }
+
     /// Get the NaN-boxing return type for a compiled cell.
     /// Returns `None` if the cell is not compiled.
     pub fn return_type(&self, cell_name: &str) -> Option<crate::ir::JitVarType> {
@@ -2794,6 +2759,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: Vec::new(),
+                osr_points: Vec::new(),
             }],
             tools: Vec::new(),
             policies: Vec::new(),
@@ -2806,6 +2772,12 @@ mod tests {
     }
 
     fn make_module_with_cells(cells: Vec<LirCell>) -> LirModule {
+        let mut cells = cells;
+        for cell in &mut cells {
+            if cell.osr_points.is_empty() {
+                cell.osr_points = Vec::new();
+            }
+        }
         LirModule {
             version: "1.0.0".to_string(),
             doc_hash: "test".to_string(),
@@ -2929,6 +2901,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -2959,6 +2932,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -3009,6 +2983,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -3081,6 +3056,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0), // 9: return r1
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -3174,6 +3150,7 @@ mod tests {
                 Instruction::abc(OpCode::TailCall, 5, 3, 1), // 10: tail-call
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -3235,6 +3212,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         };
 
         let main_cell = LirCell {
@@ -3250,6 +3228,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         };
 
         let lir = make_module_with_cells(vec![double_cell, main_cell]);
@@ -3370,6 +3349,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 3, 1, 0), // 7: return r3
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -3417,6 +3397,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         };
 
         let answer_cell = LirCell {
@@ -3430,6 +3411,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         };
 
         let lir = make_module_with_cells(vec![add_cell, answer_cell]);
@@ -3468,6 +3450,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         };
 
         let set_field_cell = LirCell {
@@ -3483,6 +3466,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         };
 
         assert_eq!(
@@ -3515,6 +3499,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 1, 1, 0),  // return r1
                 ],
                 effect_handler_metas: Vec::new(),
+                osr_points: Vec::new(),
             },
             LirCell {
                 name: "set_field".to_string(),
@@ -3529,6 +3514,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 1, 1, 0),  // return r1
                 ],
                 effect_handler_metas: Vec::new(),
+                osr_points: Vec::new(),
             },
         ]);
 
@@ -3596,6 +3582,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -3643,6 +3630,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -3678,6 +3666,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -3710,6 +3699,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -3741,6 +3731,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -3772,6 +3763,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -3803,6 +3795,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -3834,6 +3827,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -3868,6 +3862,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -3910,6 +3905,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -3979,6 +3975,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0), // 11: return r0
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4030,6 +4027,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 3, 1, 0), // 7: return r3
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4071,6 +4069,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4112,6 +4111,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 4, 1, 0), // return "abc"
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4163,6 +4163,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 3, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4191,6 +4192,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: Vec::new(),
+                osr_points: Vec::new(),
             },
             LirCell {
                 name: "int_cell".to_string(),
@@ -4203,6 +4205,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: Vec::new(),
+                osr_points: Vec::new(),
             },
         ]);
 
@@ -4232,6 +4235,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4274,6 +4278,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0), // return r0
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4318,6 +4323,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0), // return r0
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4350,6 +4356,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),             // return r1
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4383,6 +4390,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),    // return r2
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4416,6 +4424,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),    // return r1
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4448,6 +4457,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4484,6 +4494,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4516,6 +4527,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4548,6 +4560,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4584,6 +4597,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4618,6 +4632,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4652,6 +4667,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4686,6 +4702,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4720,6 +4737,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4756,6 +4774,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4790,6 +4809,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4824,6 +4844,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4860,6 +4881,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4892,6 +4914,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4930,6 +4953,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 3, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4958,6 +4982,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -4990,6 +5015,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5024,6 +5050,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5054,6 +5081,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5084,6 +5112,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5114,6 +5143,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5144,6 +5174,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5174,6 +5205,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5208,6 +5240,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5242,6 +5275,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5276,6 +5310,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5306,6 +5341,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5336,6 +5372,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5368,6 +5405,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5400,6 +5438,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5436,6 +5475,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5468,6 +5508,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5506,6 +5547,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5539,6 +5581,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5575,6 +5618,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5614,6 +5658,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5661,6 +5706,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         };
 
         let main_cell = LirCell {
@@ -5675,6 +5721,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0), // return r0
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         };
 
         let lir = make_module_with_cells(vec![greet_cell, main_cell]);
@@ -5728,6 +5775,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 3, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         };
 
         let main_cell = LirCell {
@@ -5743,6 +5791,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0), // return r0
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         };
 
         let lir = make_module_with_cells(vec![half_cell, main_cell]);
@@ -5783,6 +5832,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5811,6 +5861,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5839,6 +5890,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5874,6 +5926,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5905,6 +5958,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5936,6 +5990,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5967,6 +6022,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -5998,6 +6054,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -6029,6 +6086,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -6064,6 +6122,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 3, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -6097,6 +6156,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 3, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -6130,6 +6190,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -6161,6 +6222,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -6189,6 +6251,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -6219,6 +6282,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -6279,6 +6343,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0), // 12: return r1
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -6331,6 +6396,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0), // 11: return r0
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -6368,6 +6434,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -6402,6 +6469,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -6436,6 +6504,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -6470,6 +6539,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -6659,6 +6729,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: Vec::new(),
+                osr_points: Vec::new(),
             },
             LirCell {
                 name: "cold_cell".to_string(),
@@ -6671,6 +6742,7 @@ mod tests {
                     Instruction::abc(OpCode::Return, 0, 1, 0),
                 ],
                 effect_handler_metas: Vec::new(),
+                osr_points: Vec::new(),
             },
         ]);
 
@@ -6721,6 +6793,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0), // return r0
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
 
         let settings = CodegenSettings::default();
@@ -6777,6 +6850,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
         let settings = CodegenSettings::default();
         let mut engine = JitEngine::new(settings, 0);
@@ -6809,6 +6883,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
         let settings = CodegenSettings::default();
         let mut engine = JitEngine::new(settings, 0);
@@ -6837,6 +6912,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
         let settings = CodegenSettings::default();
         let mut engine = JitEngine::new(settings, 0);
@@ -6865,6 +6941,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
         let settings = CodegenSettings::default();
         let mut engine = JitEngine::new(settings, 0);
@@ -6895,6 +6972,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
         let settings = CodegenSettings::default();
         let mut engine = JitEngine::new(settings, 0);
@@ -6921,6 +6999,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
         let settings = CodegenSettings::default();
         let mut engine = JitEngine::new(settings, 0);
@@ -6947,6 +7026,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
         let settings = CodegenSettings::default();
         let mut engine = JitEngine::new(settings, 0);
@@ -6973,6 +7053,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
         }]);
         let settings = CodegenSettings::default();
         let mut engine = JitEngine::new(settings, 0);

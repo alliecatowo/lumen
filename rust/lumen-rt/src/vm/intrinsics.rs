@@ -33,7 +33,13 @@ impl VM {
                 Ok(Value::Null)
             }
             "len" | "length" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
+                // NbValue fast-path: scalars (Int, Float, Bool, Null) have no meaningful
+                // length — return 0 without touching the heap at all.
+                let nb = self.registers[base + a + 1];
+                if nb.is_int() || nb.is_float() || nb.is_bool() || nb.is_null() {
+                    return Ok(Value::Int(0));
+                }
+                let arg = nb.peek_legacy();
                 Ok(match arg {
                     Value::String(StringRef::Owned(s)) => Value::Int(s.len() as i64),
                     Value::String(StringRef::Interned(id)) => {
@@ -59,15 +65,51 @@ impl VM {
                 }
             }
             "to_string" | "str" | "string" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
+                let nb = self.registers[base + a + 1];
+                // NbValue fast-paths for common scalar types — no heap touch.
+                if nb.is_int() {
+                    return Ok(Value::String(StringRef::Owned(
+                        nb.as_int().unwrap_or(0).to_string(),
+                    )));
+                }
+                if nb.is_float() {
+                    let f = f64::from_bits(nb.0);
+                    let s = if f == f.floor() && f.abs() < 1e15 {
+                        format!("{:.1}", f)
+                    } else {
+                        format!("{}", f)
+                    };
+                    return Ok(Value::String(StringRef::Owned(s)));
+                }
+                if nb.is_bool() {
+                    return Ok(Value::String(StringRef::Owned(
+                        nb.as_bool().unwrap_or(false).to_string(),
+                    )));
+                }
+                if nb.is_null() {
+                    return Ok(Value::String(StringRef::Owned("null".to_string())));
+                }
+                let arg = nb.peek_legacy();
                 Ok(Value::String(StringRef::Owned(arg.display_pretty())))
             }
             "to_int" | "int" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
+                let nb = self.registers[base + a + 1];
+                // NbValue fast-paths: int identity, float truncate, bool 0/1.
+                if nb.is_int() {
+                    return Ok(Value::Int(nb.as_int().unwrap_or(0)));
+                }
+                if nb.is_float() {
+                    return Ok(Value::Int(f64::from_bits(nb.0) as i64));
+                }
+                if nb.is_bool() {
+                    return Ok(Value::Int(if nb.as_bool().unwrap_or(false) { 1 } else { 0 }));
+                }
+                if nb.is_null() {
+                    return Ok(Value::Null);
+                }
+                let arg = nb.peek_legacy();
                 Ok(match arg {
-                    Value::Int(n) => Value::Int(n),
                     Value::BigInt(n) => Value::BigInt(n.clone()),
-                    Value::Float(f) => Value::Int(f as i64),
                     Value::String(sr) => {
                         let s = match sr {
                             StringRef::Owned(s) => s,
@@ -83,15 +125,23 @@ impl VM {
                             Value::Null
                         }
                     }
-                    Value::Bool(b) => Value::Int(if b { 1 } else { 0 }),
                     _ => Value::Null,
                 })
             }
             "to_float" | "float" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
+                let nb = self.registers[base + a + 1];
+                // NbValue fast-paths: float identity, int promotion.
+                if nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(nb.0)));
+                }
+                if nb.is_int() {
+                    return Ok(Value::Float(nb.as_int().unwrap_or(0) as f64));
+                }
+                if nb.is_null() {
+                    return Ok(Value::Null);
+                }
+                let arg = nb.peek_legacy();
                 Ok(match arg {
-                    Value::Float(f) => Value::Float(f),
-                    Value::Int(n) => Value::Float(n as f64),
                     Value::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::NAN)),
                     Value::String(sr) => {
                         let s = match sr {
@@ -226,41 +276,88 @@ impl VM {
                 Ok(Value::String(StringRef::Owned(s.replace(&from, &to))))
             }
             "abs" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
+                let nb = self.registers[base + a + 1];
+                // NbValue fast-paths: most common cases need no heap access.
+                if nb.is_int() {
+                    return Ok(Value::Int(nb.as_int().unwrap_or(0).abs()));
+                }
+                if nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(nb.0).abs()));
+                }
+                let arg = nb.peek_legacy();
                 Ok(match arg {
-                    Value::Int(n) => Value::Int(n.abs()),
                     Value::BigInt(n) => Value::BigInt(n.abs()),
-                    Value::Float(f) => Value::Float(f.abs()),
                     _ => arg,
                 })
             }
             "min" => {
-                let lhs = self.registers[base + a + 1].peek_legacy();
-                let rhs = self.registers[base + a + 2].peek_legacy();
-                Ok(match (&lhs, &rhs) {
-                    (Value::Int(x), Value::Int(y)) => Value::Int(*x.min(y)),
-                    (Value::Float(x), Value::Float(y)) => Value::Float(x.min(*y)),
-                    _ => lhs,
-                })
+                let lhs_nb = self.registers[base + a + 1];
+                let rhs_nb = self.registers[base + a + 2];
+                // NbValue fast-paths: int and float comparisons need no heap access.
+                if lhs_nb.is_int() && rhs_nb.is_int() {
+                    let x = lhs_nb.as_int().unwrap_or(0);
+                    let y = rhs_nb.as_int().unwrap_or(0);
+                    return Ok(Value::Int(x.min(y)));
+                }
+                if lhs_nb.is_float() && rhs_nb.is_float() {
+                    let x = f64::from_bits(lhs_nb.0);
+                    let y = f64::from_bits(rhs_nb.0);
+                    return Ok(Value::Float(x.min(y)));
+                }
+                if lhs_nb.is_int() && rhs_nb.is_float() {
+                    let x = lhs_nb.as_int().unwrap_or(0) as f64;
+                    let y = f64::from_bits(rhs_nb.0);
+                    return Ok(Value::Float(x.min(y)));
+                }
+                if lhs_nb.is_float() && rhs_nb.is_int() {
+                    let x = f64::from_bits(lhs_nb.0);
+                    let y = rhs_nb.as_int().unwrap_or(0) as f64;
+                    return Ok(Value::Float(x.min(y)));
+                }
+                // Cold path: strings etc. — return the smaller of the two.
+                Ok(lhs_nb.peek_legacy())
             }
             "max" => {
-                let lhs = self.registers[base + a + 1].peek_legacy();
-                let rhs = self.registers[base + a + 2].peek_legacy();
-                Ok(match (&lhs, &rhs) {
-                    (Value::Int(x), Value::Int(y)) => Value::Int(*x.max(y)),
-                    (Value::Float(x), Value::Float(y)) => Value::Float(x.max(*y)),
-                    _ => lhs,
-                })
+                let lhs_nb = self.registers[base + a + 1];
+                let rhs_nb = self.registers[base + a + 2];
+                // NbValue fast-paths: int and float comparisons need no heap access.
+                if lhs_nb.is_int() && rhs_nb.is_int() {
+                    let x = lhs_nb.as_int().unwrap_or(0);
+                    let y = rhs_nb.as_int().unwrap_or(0);
+                    return Ok(Value::Int(x.max(y)));
+                }
+                if lhs_nb.is_float() && rhs_nb.is_float() {
+                    let x = f64::from_bits(lhs_nb.0);
+                    let y = f64::from_bits(rhs_nb.0);
+                    return Ok(Value::Float(x.max(y)));
+                }
+                if lhs_nb.is_int() && rhs_nb.is_float() {
+                    let x = lhs_nb.as_int().unwrap_or(0) as f64;
+                    let y = f64::from_bits(rhs_nb.0);
+                    return Ok(Value::Float(x.max(y)));
+                }
+                if lhs_nb.is_float() && rhs_nb.is_int() {
+                    let x = f64::from_bits(lhs_nb.0);
+                    let y = rhs_nb.as_int().unwrap_or(0) as f64;
+                    return Ok(Value::Float(x.max(y)));
+                }
+                // Cold path: strings etc. — return the larger of the two.
+                Ok(lhs_nb.peek_legacy())
             }
             "range" => {
-                let start = self.registers[base + a + 1]
-                    .peek_legacy()
-                    .as_int()
-                    .unwrap_or(0);
-                let end = self.registers[base + a + 2]
-                    .peek_legacy()
-                    .as_int()
-                    .unwrap_or(0);
+                // NbValue fast-path: extract ints without peek_legacy.
+                let start_nb = self.registers[base + a + 1];
+                let end_nb = self.registers[base + a + 2];
+                let start = if start_nb.is_int() {
+                    start_nb.as_int().unwrap_or(0)
+                } else {
+                    start_nb.peek_legacy().as_int().unwrap_or(0)
+                };
+                let end = if end_nb.is_int() {
+                    end_nb.as_int().unwrap_or(0)
+                } else {
+                    end_nb.peek_legacy().as_int().unwrap_or(0)
+                };
                 let list: Vec<Value> = (start..end).map(Value::Int).collect();
                 Ok(Value::new_list(list))
             }
@@ -633,109 +730,153 @@ impl VM {
                 }
             }
             "round" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
-                Ok(match arg {
-                    Value::Float(f) => Value::Float(f.round()),
-                    _ => arg,
-                })
+                let nb = self.registers[base + a + 1];
+                if nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(nb.0).round()));
+                }
+                if nb.is_int() {
+                    return Ok(Value::Int(nb.as_int().unwrap_or(0)));
+                }
+                let arg = nb.peek_legacy();
+                Ok(arg)
             }
             "ceil" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
-                Ok(match arg {
-                    Value::Float(f) => Value::Float(f.ceil()),
-                    _ => arg,
-                })
+                let nb = self.registers[base + a + 1];
+                if nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(nb.0).ceil()));
+                }
+                if nb.is_int() {
+                    return Ok(Value::Int(nb.as_int().unwrap_or(0)));
+                }
+                let arg = nb.peek_legacy();
+                Ok(arg)
             }
             "floor" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
-                Ok(match arg {
-                    Value::Float(f) => Value::Float(f.floor()),
-                    _ => arg,
-                })
+                let nb = self.registers[base + a + 1];
+                if nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(nb.0).floor()));
+                }
+                if nb.is_int() {
+                    return Ok(Value::Int(nb.as_int().unwrap_or(0)));
+                }
+                let arg = nb.peek_legacy();
+                Ok(arg)
             }
             "sqrt" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
+                let nb = self.registers[base + a + 1];
+                // NbValue fast-paths — no heap touch for float/int.
+                if nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(nb.0).sqrt()));
+                }
+                if nb.is_int() {
+                    return Ok(Value::Float((nb.as_int().unwrap_or(0) as f64).sqrt()));
+                }
+                let arg = nb.peek_legacy();
                 Ok(match arg {
-                    Value::Float(f) => Value::Float(f.sqrt()),
-                    Value::Int(n) => Value::Float((n as f64).sqrt()),
                     Value::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::INFINITY).sqrt()),
                     _ => Value::Null,
                 })
             }
             "pow" => {
-                let base_val = self.registers[base + a + 1].peek_legacy();
-                let exp_val = self.registers[base + a + 2].peek_legacy();
-                Ok(match (base_val, exp_val) {
-                    (Value::Int(x), Value::Int(y)) => {
-                        if y >= 0 {
-                            if let Ok(y_u32) = u32::try_from(y) {
-                                if let Some(res) = x.checked_pow(y_u32) {
-                                    Value::Int(res)
-                                } else {
-                                    Value::BigInt(BigInt::from(x).pow(y_u32))
-                                }
+                let base_nb = self.registers[base + a + 1];
+                let exp_nb = self.registers[base + a + 2];
+                // NbValue fast-path: int**int and float**float.
+                if base_nb.is_int() && exp_nb.is_int() {
+                    let x = base_nb.as_int().unwrap_or(0);
+                    let y = exp_nb.as_int().unwrap_or(0);
+                    if y >= 0 {
+                        if let Ok(y_u32) = u32::try_from(y) {
+                            if let Some(res) = x.checked_pow(y_u32) {
+                                return Ok(Value::Int(res));
                             } else {
-                                Value::Null
+                                return Ok(Value::BigInt(BigInt::from(x).pow(y_u32)));
                             }
-                        } else {
-                            Value::Float((x as f64).powf(y as f64))
                         }
+                    } else {
+                        return Ok(Value::Float((x as f64).powf(y as f64)));
                     }
-                    (Value::Float(x), Value::Float(y)) => Value::Float(x.powf(y)),
-                    _ => Value::Null,
-                })
+                }
+                if base_nb.is_float() && exp_nb.is_float() {
+                    return Ok(Value::Float(
+                        f64::from_bits(base_nb.0).powf(f64::from_bits(exp_nb.0)),
+                    ));
+                }
+                if base_nb.is_float() && exp_nb.is_int() {
+                    return Ok(Value::Float(
+                        f64::from_bits(base_nb.0).powf(exp_nb.as_int().unwrap_or(0) as f64),
+                    ));
+                }
+                Ok(Value::Null)
             }
             "log" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
-                Ok(match arg {
-                    Value::Float(f) => Value::Float(f.ln()),
-                    Value::Int(n) => Value::Float((n as f64).ln()),
-                    _ => Value::Null,
-                })
+                let nb = self.registers[base + a + 1];
+                if nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(nb.0).ln()));
+                }
+                if nb.is_int() {
+                    return Ok(Value::Float((nb.as_int().unwrap_or(0) as f64).ln()));
+                }
+                Ok(Value::Null)
             }
             "sin" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
-                Ok(match arg {
-                    Value::Float(f) => Value::Float(f.sin()),
-                    Value::Int(n) => Value::Float((n as f64).sin()),
-                    _ => Value::Null,
-                })
+                let nb = self.registers[base + a + 1];
+                if nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(nb.0).sin()));
+                }
+                if nb.is_int() {
+                    return Ok(Value::Float((nb.as_int().unwrap_or(0) as f64).sin()));
+                }
+                Ok(Value::Null)
             }
             "cos" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
-                Ok(match arg {
-                    Value::Float(f) => Value::Float(f.cos()),
-                    Value::Int(n) => Value::Float((n as f64).cos()),
-                    _ => Value::Null,
-                })
+                let nb = self.registers[base + a + 1];
+                if nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(nb.0).cos()));
+                }
+                if nb.is_int() {
+                    return Ok(Value::Float((nb.as_int().unwrap_or(0) as f64).cos()));
+                }
+                Ok(Value::Null)
             }
             "tan" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
-                Ok(match arg {
-                    Value::Float(f) => Value::Float(f.tan()),
-                    Value::Int(n) => Value::Float((n as f64).tan()),
-                    _ => Value::Null,
-                })
+                let nb = self.registers[base + a + 1];
+                if nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(nb.0).tan()));
+                }
+                if nb.is_int() {
+                    return Ok(Value::Float((nb.as_int().unwrap_or(0) as f64).tan()));
+                }
+                Ok(Value::Null)
             }
             "exp" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
-                Ok(match arg {
-                    Value::Float(f) => Value::Float(f.exp()),
-                    Value::Int(n) => Value::Float((n as f64).exp()),
-                    _ => Value::Null,
-                })
+                let nb = self.registers[base + a + 1];
+                if nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(nb.0).exp()));
+                }
+                if nb.is_int() {
+                    return Ok(Value::Float((nb.as_int().unwrap_or(0) as f64).exp()));
+                }
+                Ok(Value::Null)
             }
             "clamp" => {
-                let val = self.registers[base + a + 1].peek_legacy();
-                let lo = self.registers[base + a + 2].peek_legacy();
-                let hi = self.registers[base + a + 3].peek_legacy();
-                Ok(match (val, lo, hi) {
-                    (Value::Int(v), Value::Int(l), Value::Int(h)) => Value::Int(v.max(l).min(h)),
-                    (Value::Float(v), Value::Float(l), Value::Float(h)) => {
-                        Value::Float(v.max(l).min(h))
-                    }
-                    (v, _, _) => v,
-                })
+                let val_nb = self.registers[base + a + 1];
+                let lo_nb = self.registers[base + a + 2];
+                let hi_nb = self.registers[base + a + 3];
+                // NbValue fast-paths: int clamp and float clamp.
+                if val_nb.is_int() && lo_nb.is_int() && hi_nb.is_int() {
+                    let v = val_nb.as_int().unwrap_or(0);
+                    let l = lo_nb.as_int().unwrap_or(0);
+                    let h = hi_nb.as_int().unwrap_or(0);
+                    return Ok(Value::Int(v.max(l).min(h)));
+                }
+                if val_nb.is_float() && lo_nb.is_float() && hi_nb.is_float() {
+                    let v = f64::from_bits(val_nb.0);
+                    let l = f64::from_bits(lo_nb.0);
+                    let h = f64::from_bits(hi_nb.0);
+                    return Ok(Value::Float(v.max(l).min(h)));
+                }
+                // Cold path: return val unchanged (no clamp for non-numeric types).
+                Ok(val_nb.peek_legacy())
             }
             "json_parse" | "parse_json" => {
                 let s = self.registers[base + a + 1]

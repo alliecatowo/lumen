@@ -15,7 +15,7 @@
 
 use lumen_compiler::compile as compile_lumen;
 use lumen_core::lir::LirModule;
-use lumen_rt::jit_tier::JitTierConfig;
+use lumen_rt::stencil_tier::StencilTierConfig;
 use lumen_rt::values::Value;
 use lumen_rt::vm::VM;
 use std::time::Instant;
@@ -36,7 +36,7 @@ fn run_tier0(module: LirModule, cell_name: &str) -> Result<Value, String> {
         .map_err(|e| format!("tier0 error: {e}"))
 }
 
-/// Run `cell_name` on Tier 1 (stitcher, threshold=1).
+/// Run `cell_name` on Tier 1 (stencils, threshold=1).
 ///
 /// Two executions are performed WITHOUT reloading the module between them,
 /// so JIT stats and compiled code are preserved across calls.
@@ -45,7 +45,7 @@ fn run_tier0(module: LirModule, cell_name: &str) -> Result<Value, String> {
 #[cfg(feature = "jit")]
 fn run_tier1(module: LirModule, cell_name: &str) -> Option<Result<Value, String>> {
     let mut vm = VM::new();
-    vm.enable_jit_with_config(JitTierConfig::from_threshold(1));
+    vm.enable_stencil_with_config(StencilTierConfig::from_threshold(1));
     vm.load(module);
     // First call: crosses threshold=1, triggers Tier-1 compilation. Ignore result.
     let _ = vm.execute(cell_name, vec![]);
@@ -54,10 +54,8 @@ fn run_tier1(module: LirModule, cell_name: &str) -> Option<Result<Value, String>
         .execute(cell_name, vec![])
         .map_err(|e| format!("tier1 error: {e}"));
 
-    // If no JIT executions were recorded, JIT compilation failed or is unavailable
-    // for this cell (e.g., unsupported opcodes). Skip in that case.
-    if vm.jit_stats().jit_executions == 0 {
-        return None; // stitcher not active for this cell — skip comparison
+    if vm.stencil_stats().stencil_executions == 0 {
+        return None; // stencil not active for this cell — skip comparison
     }
 
     Some(result)
@@ -149,6 +147,29 @@ fn parity_int_div() {
         r#"
 cell main() -> Int
   return 20 // 4
+end
+"#,
+    );
+}
+
+#[test]
+fn parity_int_mod() {
+    assert_parity(
+        r#"
+cell main() -> Int
+  return 17 % 5
+end
+"#,
+    );
+}
+
+#[test]
+fn parity_int_neg() {
+    assert_parity(
+        r#"
+cell main() -> Int
+  let x = 42
+  return 0 - x
 end
 "#,
     );
@@ -294,6 +315,108 @@ end
     );
 }
 
+// ── bool / comparison parity ──────────────────────────────────────────────────
+
+#[test]
+fn parity_bool_and_true() {
+    assert_parity(
+        r#"
+cell main() -> Bool
+  return true and true
+end
+"#,
+    );
+}
+
+#[test]
+fn parity_bool_and_false() {
+    assert_parity(
+        r#"
+cell main() -> Bool
+  return true and false
+end
+"#,
+    );
+}
+
+#[test]
+fn parity_bool_or() {
+    assert_parity(
+        r#"
+cell main() -> Bool
+  return false or true
+end
+"#,
+    );
+}
+
+#[test]
+fn parity_bool_not() {
+    assert_parity(
+        r#"
+cell main() -> Bool
+  return not false
+end
+"#,
+    );
+}
+
+#[test]
+fn parity_comparison_lt() {
+    assert_parity(
+        r#"
+cell main() -> Bool
+  return 3 < 5
+end
+"#,
+    );
+}
+
+#[test]
+fn parity_comparison_gt() {
+    assert_parity(
+        r#"
+cell main() -> Bool
+  return 10 > 7
+end
+"#,
+    );
+}
+
+#[test]
+fn parity_comparison_eq() {
+    assert_parity(
+        r#"
+cell main() -> Bool
+  return 4 == 4
+end
+"#,
+    );
+}
+
+#[test]
+fn parity_comparison_ne() {
+    assert_parity(
+        r#"
+cell main() -> Bool
+  return 3 != 5
+end
+"#,
+    );
+}
+
+#[test]
+fn parity_null_check() {
+    assert_parity(
+        r#"
+cell main() -> Bool
+  let x: Int? = null
+  return x == null
+end
+"#,
+    );
+}
+
 // ── collection parity ─────────────────────────────────────────────────────────
 
 #[test]
@@ -326,7 +449,43 @@ fn parity_list_append() {
         r#"
 cell main() -> Int
   let xs = [1, 2, 3, 4]
-  return len(xs)
+  return length(xs)
+end
+"#,
+    );
+}
+
+#[test]
+fn parity_tuple_index() {
+    assert_parity(
+        r#"
+cell main() -> Int
+  let tup = (10, 20, 30)
+  return tup[2]
+end
+"#,
+    );
+}
+
+#[test]
+fn parity_map_lookup() {
+    assert_parity(
+        r#"
+cell main() -> String
+  let m = {"a": "one", "b": "two"}
+  return m["b"]
+end
+"#,
+    );
+}
+
+#[test]
+fn parity_set_index() {
+    assert_parity(
+        r#"
+cell main() -> Int
+  let s = {1, 2, 3}
+  return s[1]
 end
 "#,
     );
@@ -425,16 +584,15 @@ end
 // JIT support for effects is in progress; these tests verify Tier 0 correctness
 // and check Tier 1/2 consistency when those tiers support effects.
 //
-// NOTE: Effect tests are currently disabled due to runtime issues with
-// effect handling in the VM (memory corruption and type errors).
-
+// NOTE: This test is ignored due to heap corruption in lm_rt_handle_pop (task #32).
+// The fiber-worker is responsible for fixing this bug. Re-enable when #32 is resolved.
 #[test]
-#[ignore]
+#[ignore = "fiber heap corruption in lm_rt_handle_pop (task #32) — fix before re-enabling"]
 fn parity_effect_perform_resume() {
     assert_parity(
         r#"
 effect Counter
-  operation tick() -> Int
+  cell tick() -> Int
 end
 
 cell count(n: Int) -> Int / {Counter}
@@ -520,7 +678,7 @@ end
 
 // ── tier enumeration test ─────────────────────────────────────────────────────
 
-/// Verify the JIT tier infrastructure is wired correctly by checking that
+/// Verify the tier infrastructure is wired correctly by checking that
 /// compile state transitions work as expected on a simple program.
 #[test]
 #[cfg(feature = "jit")]
@@ -541,19 +699,19 @@ end
         assert_eq!(stats.jit_executions, 0, "tier0: no JIT executions expected");
     }
 
-    // Tier 1 enabled (threshold=1): after warm-up, second call should use JIT.
+    // Tier 1 enabled (threshold=1): after warm-up, second call should use stencil.
     // NOTE: do NOT call vm.load() between executions — that resets JIT stats.
     {
         let mut vm = VM::new();
-        vm.enable_jit_with_config(JitTierConfig::from_threshold(1));
+        vm.enable_stencil_with_config(StencilTierConfig::from_threshold(1));
         vm.load(module.clone());
         vm.execute("main", vec![]).ok(); // first call: crosses threshold, triggers compile
         vm.execute("main", vec![]).ok(); // second call: should run JIT code
-        let stats = vm.jit_stats();
+        let stats = vm.stencil_stats();
         // Note: JIT may skip cells it can't compile; we don't hard-fail here.
         println!(
-            "[tier_state_transitions] jit_executions={}",
-            stats.jit_executions
+            "[tier_state_transitions] stencil_executions={}",
+            stats.stencil_executions
         );
     }
 

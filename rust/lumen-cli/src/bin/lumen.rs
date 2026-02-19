@@ -1176,6 +1176,11 @@ fn cmd_run(
                     schema,
                     valid,
                 } => ts.schema_validate(cell_name, schema, *valid),
+                lumen_rt::vm::DebugEvent::FiberSwitch {
+                    reason,
+                    from_fiber,
+                    to_fiber,
+                } => ts.fiber_switch(reason, *from_fiber, *to_fiber),
             }
         }));
     }
@@ -1345,6 +1350,7 @@ fn replay_line(event: &lumen_rt::services::trace::events::TraceEvent) -> String 
         lumen_rt::services::trace::events::TraceEventKind::SchemaValidate => "schema_validate",
         lumen_rt::services::trace::events::TraceEventKind::Error => "error",
         lumen_rt::services::trace::events::TraceEventKind::RunEnd => "run_end",
+        lumen_rt::services::trace::events::TraceEventKind::FiberSwitch => "fiber_switch",
     };
 
     let mut parts = vec![format!("{:06}", event.seq), kind.to_string()];

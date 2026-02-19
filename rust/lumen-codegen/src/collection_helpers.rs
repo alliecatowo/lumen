@@ -2,47 +2,69 @@
 // Collection runtime helpers for JIT (List and Map construction)
 // ---------------------------------------------------------------------------
 
+use crate::vm_context::VmContext;
 use lumen_core::values::Value;
 use std::collections::BTreeMap;
 
-const NAN_BOX_NULL: i64 = 0x7ff8_0000_0000_0001;
-const NAN_BOX_TRUE: i64 = 0x7ff8_0000_0000_0002;
-const NAN_BOX_FALSE: i64 = 0x7ff8_0000_0000_0003;
+// NbValue encoding constants (match lumen-core/src/values.rs NbValue exactly):
+//   NAN_MASK  = 0x7FF8_0000_0000_0000
+//   TAG_PTR=0, TAG_INT=1, TAG_ATOM=2, TAG_BOOL=3, TAG_NULL=4, TAG_FIBER=5
+const NAN_MASK_U: u64 = 0x7FF8_0000_0000_0000;
+const PAYLOAD_MASK_U: u64 = 0x0000_FFFF_FFFF_FFFF;
 
-/// Convert a NaN-boxed or pointer i64 to a heap-allocated Value.
+/// Decode a NbValue-encoded i64 to a heap-allocated Value.
 /// Returns a `*mut Value` that must be freed by the caller.
 ///
+/// Encoding scheme matches NbValue in lumen-core:
+///   - Non-NaN bits: raw f64 float
+///   - TAG_PTR=0: heap pointer to a `Value` (or special: 0=Null, 1=NaN float)
+///   - TAG_INT=1: 48-bit signed integer
+///   - TAG_BOOL=3: boolean (payload 0=false, 1=true)
+///   - TAG_NULL=4: null value
+///
 /// # Safety
-/// If `val` is a pointer, it must be a valid `*const Value` pointer.
+/// If `val` is a TAG_PTR with payload > 1, it must be a valid `*const Value` pointer.
 unsafe fn nanbox_to_value(val: i64) -> *mut Value {
-    // Check for special NaN-boxed values
-    if val == NAN_BOX_NULL {
-        return Box::into_raw(Box::new(Value::Null));
+    let u = val as u64;
+    if (u & NAN_MASK_U) != NAN_MASK_U {
+        // Not NaN-boxed: raw f64 float bits.
+        return Box::into_raw(Box::new(Value::Float(f64::from_bits(u))));
     }
-    if val == NAN_BOX_TRUE {
-        return Box::into_raw(Box::new(Value::Bool(true)));
+    let tag = (u >> 48) & 0xF;
+    let payload = u & PAYLOAD_MASK_U;
+    match tag {
+        0 => {
+            // TAG_PTR: heap pointer or special sentinel.
+            if payload == 0 {
+                Box::into_raw(Box::new(Value::Null))
+            } else if payload == 1 {
+                Box::into_raw(Box::new(Value::Float(f64::NAN)))
+            } else {
+                Box::into_raw(Box::new((*(payload as *const Value)).clone()))
+            }
+        }
+        1 => {
+            // TAG_INT: 48-bit two's-complement integer.
+            let signed = if payload & (1 << 47) != 0 {
+                (payload | !PAYLOAD_MASK_U) as i64
+            } else {
+                payload as i64
+            };
+            Box::into_raw(Box::new(Value::Int(signed)))
+        }
+        3 => {
+            // TAG_BOOL: payload 0=false, 1=true.
+            Box::into_raw(Box::new(Value::Bool(payload != 0)))
+        }
+        4 => {
+            // TAG_NULL
+            Box::into_raw(Box::new(Value::Null))
+        }
+        _ => {
+            // Unknown tag — treat as null.
+            Box::into_raw(Box::new(Value::Null))
+        }
     }
-    if val == NAN_BOX_FALSE {
-        return Box::into_raw(Box::new(Value::Bool(false)));
-    }
-
-    // Check if it's a NaN-boxed integer or float
-    let bits = val as u64;
-    if (bits & 0x7ff8_0000_0000_0000) == 0x7ff8_0000_0000_0000 {
-        // It's a NaN-boxed integer
-        let int_val = (val as i32) as i64; // Sign-extend 32-bit int
-        return Box::into_raw(Box::new(Value::Int(int_val)));
-    }
-
-    // Otherwise, it's either a real float or a pointer
-    // If the top 13 bits are NOT all 1s, it's a normal IEEE float
-    if (bits >> 51) != 0x1FFF {
-        let float_val = f64::from_bits(bits);
-        return Box::into_raw(Box::new(Value::Float(float_val)));
-    }
-
-    // It's a pointer - clone the Value it points to
-    Box::into_raw(Box::new((*(val as *const Value)).clone()))
 }
 
 /// Create a new List value from an array of boxed Values.
@@ -53,7 +75,7 @@ unsafe fn nanbox_to_value(val: i64) -> *mut Value {
 /// # Safety
 /// `values_ptr` must point to a valid array of `count` i64 values.
 #[no_mangle]
-pub extern "C" fn jit_rt_new_list(values_ptr: *const i64, count: i64) -> i64 {
+pub extern "C" fn jit_rt_new_list(_ctx: *mut VmContext, values_ptr: *const i64, count: i64) -> i64 {
     let count = count as usize;
     let mut list = Vec::with_capacity(count);
 
@@ -79,7 +101,7 @@ pub extern "C" fn jit_rt_new_list(values_ptr: *const i64, count: i64) -> i64 {
 /// # Safety
 /// `kvpairs_ptr` must point to a valid array of `count * 2` i64 values.
 #[no_mangle]
-pub extern "C" fn jit_rt_new_map(kvpairs_ptr: *const i64, count: i64) -> i64 {
+pub extern "C" fn jit_rt_new_map(_ctx: *mut VmContext, kvpairs_ptr: *const i64, count: i64) -> i64 {
     let count = count as usize;
     let mut map = BTreeMap::new();
 
@@ -105,18 +127,48 @@ pub extern "C" fn jit_rt_new_map(kvpairs_ptr: *const i64, count: i64) -> i64 {
     Box::into_raw(Box::new(map_value)) as i64
 }
 
+/// Create a new Tuple value from an array of boxed Values.
+/// `values_ptr` points to an array of `i64` representing NaN-boxed values or pointers.
+/// `count` is the number of elements in the tuple.
+/// Returns a new `*mut Value` containing the Tuple.
+///
+/// # Safety
+/// `values_ptr` must point to a valid array of `count` i64 values.
+#[no_mangle]
+pub extern "C" fn jit_rt_new_tuple(
+    _ctx: *mut VmContext,
+    values_ptr: *const i64,
+    count: i64,
+) -> i64 {
+    let count = count as usize;
+    let mut elements = Vec::with_capacity(count);
+
+    for i in 0..count {
+        let val_i64 = unsafe { *values_ptr.add(i) };
+        let value_ptr = unsafe { nanbox_to_value(val_i64) };
+        let value = unsafe { (*value_ptr).clone() };
+        unsafe { drop(Box::from_raw(value_ptr)) }; // Free the temporary Value
+        elements.push(value);
+    }
+
+    let tuple_value = Value::new_tuple(elements);
+    Box::into_raw(Box::new(tuple_value)) as i64
+}
+
 /// Get the length of a collection (List, Map, Set, Tuple, or String).
 /// Returns the count as i64, or 0 if the value is not a collection.
 ///
 /// # Safety
 /// `value_ptr` must be a valid `*const Value` pointer.
 #[no_mangle]
-pub extern "C" fn jit_rt_collection_len(value_ptr: i64) -> i64 {
-    if value_ptr == 0 || value_ptr == NAN_BOX_NULL {
+pub extern "C" fn jit_rt_collection_len(_ctx: *mut VmContext, value_ptr: i64) -> i64 {
+    let u = value_ptr as u64;
+    // Must be a TAG_PTR (NAN_MASK set, tag bits == 0) with non-special payload.
+    if (u & NAN_MASK_U) != NAN_MASK_U || ((u >> 48) & 0xF) != 0 || (u & PAYLOAD_MASK_U) <= 1 {
         return 0;
     }
-
-    let value = unsafe { &*(value_ptr as *const Value) };
+    let ptr = (u & PAYLOAD_MASK_U) as *const Value;
+    let value = unsafe { &*ptr };
     match value {
         Value::List(l) => l.len() as i64,
         Value::Map(m) => m.len() as i64,

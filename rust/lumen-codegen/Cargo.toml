@@ -21,6 +21,8 @@ lumen-compiler = { path = "../lumen-compiler" }
 strum = { version = "0.26", features = ["derive"] }
 thiserror = { workspace = true }
 wasm-encoder = "0.218"
+libc = "0.2"
+num-bigint = "0.4"
 
 [[bench]]
 name = "codegen_bench"

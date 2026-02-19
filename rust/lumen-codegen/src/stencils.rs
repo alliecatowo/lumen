@@ -1025,6 +1025,11 @@ pub fn stencil_new_list() -> StencilDef {
     effect_stencil(OpCode::NewList as u8, "NewList")
 }
 
+/// **NewListStack** — create a list from B values at registers A+1..A+B.
+pub fn stencil_new_list_stack() -> StencilDef {
+    effect_stencil(OpCode::NewListStack as u8, "NewListStack")
+}
+
 /// **NewRecord** — create a record of type Bx.
 pub fn stencil_new_record() -> StencilDef {
     effect_stencil(OpCode::NewRecord as u8, "NewRecord")
@@ -1038,6 +1043,11 @@ pub fn stencil_new_map() -> StencilDef {
 /// **NewTuple** — create a tuple from B values.
 pub fn stencil_new_tuple() -> StencilDef {
     effect_stencil(OpCode::NewTuple as u8, "NewTuple")
+}
+
+/// **NewTupleStack** — create a tuple from B values at registers A+1..A+B.
+pub fn stencil_new_tuple_stack() -> StencilDef {
+    effect_stencil(OpCode::NewTupleStack as u8, "NewTupleStack")
 }
 
 /// **NewSet** — create a set from B values.
@@ -1087,7 +1097,9 @@ pub fn stencil_set_index() -> StencilDef {
 /// Returns:
 /// - rax: 0 if no tier-up needed, else function pointer to jump to
 ///
-/// The stencil JIT will conditionally jump to the returned pointer if non-zero.
+/// After the call:
+/// - If rax != 0 (compiled code ready), jump to rax
+/// - If rax == 0 (no tier-up), continue to next instruction
 pub fn stencil_osrcheck() -> StencilDef {
     StencilDef::new(
         OpCode::OsrCheck as u8,
@@ -1100,7 +1112,10 @@ pub fn stencil_osrcheck() -> StencilDef {
             [0x00u8; 8],    // movabs rax, <lm_rt_osr_check>
             [0xFFu8, 0xD0], // call rax
             // After call, rax contains fn pointer (0 = no tier-up, non-zero = jump to)
-            [0x90], // nop (padding, could be replaced with jmp rax)
+            [0x48u8, 0x85, 0xC0], // test rax, rax  (sets ZF if rax==0)
+            [0x0Fu8, 0x84, 0x05, 0x00, 0x00, 0x00], // jz .skip (rel32=5 to skip jmp rax)
+            [0xFFu8, 0xE0],       // jmp rax (jump to compiled code)
+                                  // .skip: (continue to next instruction)
         ),
         vec![
             HoleDef::new(4, HoleType::RegAIndex, 1),  // cell_idx in esi
@@ -1169,9 +1184,11 @@ pub fn build_stencil_library() -> StencilLibrary {
 
     // Collections
     lib.insert(stencil_new_list());
+    lib.insert(stencil_new_list_stack());
     lib.insert(stencil_new_record());
     lib.insert(stencil_new_map());
     lib.insert(stencil_new_tuple());
+    lib.insert(stencil_new_tuple_stack());
     lib.insert(stencil_new_set());
 
     // Field / index access

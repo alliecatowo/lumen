@@ -1482,6 +1482,7 @@ fn version_metadata_path(name: &str, version: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
 
     #[test]
     fn test_parse_package_name() {

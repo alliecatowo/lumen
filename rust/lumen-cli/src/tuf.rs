@@ -239,7 +239,7 @@ impl<T: Serialize> TufMetadata<T> {
 ///
 /// Uses Ed25519 when the `ed25519` feature is enabled; otherwise falls back
 /// to HMAC-SHA256 comparison (suitable for testing only).
-fn verify_signature(key: &TufKey, data: &[u8], signature: &TufSignature) -> bool {
+pub(crate) fn verify_signature(key: &TufKey, data: &[u8], signature: &TufSignature) -> bool {
     #[cfg(feature = "ed25519")]
     {
         use base64::Engine;

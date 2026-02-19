@@ -119,6 +119,16 @@ impl TraceStore {
         self.write_event(&mut event);
     }
 
+    pub fn fiber_switch(&mut self, reason: &str, from: u64, to: u64) {
+        let mut event = self.make_event(TraceEventKind::FiberSwitch);
+        event.details = Some(json!({
+            "reason": reason,
+            "from_fiber": from,
+            "to_fiber": to,
+        }));
+        self.write_event(&mut event);
+    }
+
     pub fn run_id(&self) -> &str {
         &self.current_run_id
     }
@@ -176,6 +186,7 @@ fn kind_str(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::SchemaValidate => "schema_validate",
         TraceEventKind::Error => "error",
         TraceEventKind::RunEnd => "run_end",
+        TraceEventKind::FiberSwitch => "fiber_switch",
     }
 }
 

@@ -46,4 +46,5 @@ pub enum TraceEventKind {
     SchemaValidate,
     Error,
     RunEnd,
+    FiberSwitch,
 }

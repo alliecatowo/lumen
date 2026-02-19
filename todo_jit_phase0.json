@@ -1,0 +1,468 @@
+[
+  {
+    "id": "P0-001",
+    "title": "Audit current JIT architecture and calling conventions",
+    "description": "Review how existing runtime helpers (jit_rt_string_concat, jit_rt_record_get_field, etc.) are called from ir.rs. Document current parameter passing: which are pointer-based, which need type information, and identify where VM context access is needed. Create a reference document of all 35+ existing extern \"C\" helpers.",
+    "files": [
+      "rust/lumen-codegen/src/jit.rs",
+      "rust/lumen-codegen/src/ir.rs"
+    ],
+    "status": "pending",
+    "priority": "high",
+    "blocking": ["P0-002", "P0-003", "P0-004"],
+    "subtasks": [
+      "List all extern \"C\" functions in jit.rs",
+      "Document parameter and return types for each",
+      "Identify which helpers access VM state (scheduler, effects, tools)",
+      "Create calling convention reference"
+    ]
+  },
+  {
+    "id": "P0-002",
+    "title": "Design VM context passing mechanism",
+    "description": "Design how to pass a VM context pointer through the JIT calling convention. Options: (1) thread-local storage, (2) pass as first parameter to all helpers, (3) store in a register, (4) use TLS + parameter hybrid. Evaluate performance implications. This is required for opcodes that need scheduler, effect handler stack, tool provider registry, etc.",
+    "files": [
+      "rust/lumen-codegen/src/jit.rs",
+      "rust/lumen-codegen/src/ir.rs"
+    ],
+    "status": "pending",
+    "priority": "high",
+    "blocking": ["P0-003", "P0-004", "P0-005"],
+    "subtasks": [
+      "Research Cranelift calling convention options",
+      "Prototype TLS mechanism",
+      "Prototype parameter-based mechanism",
+      "Benchmark both approaches",
+      "Document design decision and rationale"
+    ]
+  },
+  {
+    "id": "P0-003",
+    "title": "Migrate existing runtime helpers to accept VM context",
+    "description": "Update all existing extern \"C\" runtime helpers (malloc, string ops, record ops, etc.) to accept and use a VM context pointer. This may require creating a wrapper struct or using TLS. Update all call-sites in ir.rs where these helpers are invoked. Create a helper macro to simplify the pattern if needed (e.g., `call_runtime_helper!(helper_name, ctx, args...)`). All 35+ existing helpers must be updated before moving to new opcodes.",
+    "files": [
+      "rust/lumen-codegen/src/jit.rs",
+      "rust/lumen-codegen/src/ir.rs"
+    ],
+    "status": "pending",
+    "priority": "high",
+    "blocking": ["P0-004", "P0-005", "P0-006"],
+    "subtasks": [
+      "Update jit_rt_malloc, jit_rt_alloc_bytes signatures",
+      "Update string helpers (concat, eq, cmp, clone, drop)",
+      "Update record helpers (get_field, set_field)",
+      "Update collection helpers (get_index, set_index)",
+      "Update type/value helpers (clone, drop, type_of)",
+      "Create call-site macro/helper in ir.rs",
+      "Update all call sites in ir.rs",
+      "Test all existing functionality works with new context"
+    ]
+  },
+  {
+    "id": "P0-004",
+    "title": "Implement ToolCall runtime helper",
+    "description": "Create jit_rt_tool_call(vm_ctx, tool_id, args_ptr, args_count) → result. This helper interfaces with the ProviderRegistry. Uses VM context to look up tool provider and call it. Returns result or error. Add lowering logic in ir.rs to emit this helper call. Change ToolCall from Unsupported → RuntimeCall in jit_capability().",
+    "files": [
+      "rust/lumen-codegen/src/jit.rs",
+      "rust/lumen-codegen/src/ir.rs"
+    ],
+    "status": "pending",
+    "priority": "high",
+    "blocking": ["P0-013"],
+    "subtasks": [
+      "Create jit_rt_tool_call extern \"C\" function signature",
+      "Implement tool lookup in ProviderRegistry via VM context",
+      "Implement provider call dispatch",
+      "Handle tool call errors and result packing",
+      "Add lowering logic for ToolCall opcode in ir.rs",
+      "Update jit_capability(OpCode::ToolCall) → RuntimeCall",
+      "Test with a simple mock tool provider"
+    ]
+  },
+  {
+    "id": "P0-005",
+    "title": "Implement Schema validation runtime helper",
+    "description": "Create jit_rt_schema_validate(vm_ctx, value_ptr, schema_id) → bool. This helper uses VM context to look up schema metadata and validate the value against it. Returns true if valid, false if invalid. Add lowering logic in ir.rs. Change Schema from Unsupported → RuntimeCall in jit_capability().",
+    "files": [
+      "rust/lumen-codegen/src/jit.rs",
+      "rust/lumen-codegen/src/ir.rs"
+    ],
+    "status": "pending",
+    "priority": "high",
+    "blocking": ["P0-013"],
+    "subtasks": [
+      "Create jit_rt_schema_validate extern \"C\" function",
+      "Access schema registry via VM context",
+      "Implement validation logic (delegate to core validator)",
+      "Add lowering logic for Schema opcode in ir.rs",
+      "Update jit_capability(OpCode::Schema) → RuntimeCall",
+      "Test with sample schema and values"
+    ]
+  },
+  {
+    "id": "P0-006",
+    "title": "Implement Emit event runtime helper",
+    "description": "Create jit_rt_emit(vm_ctx, value_ptr) → null. This helper uses VM context to access the trace/event system and emit an event. Add lowering logic in ir.rs. Change Emit from Unsupported → RuntimeCall in jit_capability().",
+    "files": [
+      "rust/lumen-codegen/src/jit.rs",
+      "rust/lumen-codegen/src/ir.rs"
+    ],
+    "status": "pending",
+    "priority": "high",
+    "blocking": ["P0-013"],
+    "subtasks": [
+      "Create jit_rt_emit extern \"C\" function",
+      "Access trace system via VM context",
+      "Implement event emission",
+      "Add lowering logic for Emit opcode in ir.rs",
+      "Update jit_capability(OpCode::Emit) → RuntimeCall",
+      "Test event recording"
+    ]
+  },
+  {
+    "id": "P0-007",
+    "title": "Implement TraceRef generation helper",
+    "description": "Create jit_rt_trace_ref(vm_ctx) → trace_ref. This helper uses VM context to generate a new trace reference (span ID, causality link, etc.). Returns the reference as a Value. Add lowering logic in ir.rs. Change TraceRef from Unsupported → RuntimeCall in jit_capability().",
+    "files": [
+      "rust/lumen-codegen/src/jit.rs",
+      "rust/lumen-codegen/src/ir.rs"
+    ],
+    "status": "pending",
+    "priority": "high",
+    "blocking": ["P0-013"],
+    "subtasks": [
+      "Create jit_rt_trace_ref extern \"C\" function",
+      "Access trace system via VM context",
+      "Generate trace reference (span ID, parent link)",
+      "Pack TraceRef value",
+      "Add lowering logic for TraceRef opcode in ir.rs",
+      "Update jit_capability(OpCode::TraceRef) → RuntimeCall"
+    ]
+  },
+  {
+    "id": "P0-008",
+    "title": "Implement Spawn helper for async task creation",
+    "description": "Create jit_rt_spawn(vm_ctx, closure_ptr) → future. This helper uses VM context to access the scheduler, create a new task for the closure, and return a Future value. The scheduler puts the task in the work queue. Add lowering logic in ir.rs. Change Spawn from Unsupported → RuntimeCall in jit_capability().",
+    "files": [
+      "rust/lumen-codegen/src/jit.rs",
+      "rust/lumen-codegen/src/ir.rs"
+    ],
+    "status": "pending",
+    "priority": "high",
+    "blocking": ["P0-013"],
+    "subtasks": [
+      "Create jit_rt_spawn extern \"C\" function",
+      "Access scheduler via VM context",
+      "Create new task/process for closure",
+      "Enqueue task",
+      "Create and return Future value",
+      "Add lowering logic for Spawn opcode in ir.rs",
+      "Update jit_capability(OpCode::Spawn) → RuntimeCall",
+      "Test with simple async cell"
+    ]
+  },
+  {
+    "id": "P0-009",
+    "title": "Implement Await helper for future resolution",
+    "description": "Create jit_rt_await(vm_ctx, future_ptr) → result. This helper uses VM context to access the scheduler and block/poll until the future is complete. Returns the future's result or error. This is a blocking call. Add lowering logic in ir.rs. Change Await from Unsupported → RuntimeCall in jit_capability().",
+    "files": [
+      "rust/lumen-codegen/src/jit.rs",
+      "rust/lumen-codegen/src/ir.rs"
+    ],
+    "status": "pending",
+    "priority": "high",
+    "blocking": ["P0-013"],
+    "subtasks": [
+      "Create jit_rt_await extern \"C\" function",
+      "Access scheduler via VM context",
+      "Poll/block on future state",
+      "Return result or propagate error",
+      "Add lowering logic for Await opcode in ir.rs",
+      "Update jit_capability(OpCode::Await) → RuntimeCall",
+      "Test async/await round-trip"
+    ]
+  },
+  {
+    "id": "P0-010",
+    "title": "Implement Perform helper for effect operations",
+    "description": "Create jit_rt_perform(vm_ctx, effect_id, operation_id, args_ptr, args_count) → result. This helper uses VM context to access the effect handler stack, search for a matching handler, capture the continuation, invoke the handler, and manage the one-shot semantics. Returns the result from the handler's resume() call. Add lowering logic in ir.rs. Change Perform from Unsupported → RuntimeCall in jit_capability().",
+    "files": [
+      "rust/lumen-codegen/src/jit.rs",
+      "rust/lumen-codegen/src/ir.rs"
+    ],
+    "status": "pending",
+    "priority": "high",
+    "blocking": ["P0-013"],
+    "subtasks": [
+      "Create jit_rt_perform extern \"C\" function signature",
+      "Access effect handler stack via VM context",
+      "Search for matching handler",
+      "Capture continuation (current execution state)",
+      "Invoke handler code",
+      "Manage one-shot continuation semantics",
+      "Add lowering logic for Perform opcode in ir.rs",
+      "Update jit_capability(OpCode::Perform) → RuntimeCall",
+      "Test effect dispatch and handler invocation"
+    ]
+  },
+  {
+    "id": "P0-011",
+    "title": "Implement HandlePush/HandlePop/Resume helpers for effect handlers",
+    "description": "Create three helpers: (1) jit_rt_handle_push(vm_ctx, effect_id, handler_ptr) → null - pushes handler onto effect stack; (2) jit_rt_handle_pop(vm_ctx) → null - pops top handler; (3) jit_rt_resume(vm_ctx, continuation_ptr, value_ptr) → result - resumes captured continuation with value and manages one-shot semantics. Add lowering logic in ir.rs. Change HandlePush, HandlePop, Resume from Unsupported → RuntimeCall in jit_capability().",
+    "files": [
+      "rust/lumen-codegen/src/jit.rs",
+      "rust/lumen-codegen/src/ir.rs"
+    ],
+    "status": "pending",
+    "priority": "high",
+    "blocking": ["P0-013"],
+    "subtasks": [
+      "Create jit_rt_handle_push function",
+      "Create jit_rt_handle_pop function",
+      "Create jit_rt_resume function with one-shot check",
+      "Access effect handler stack via VM context",
+      "Implement handler stack push/pop",
+      "Implement continuation resumption",
+      "Add lowering logic for HandlePush, HandlePop, Resume in ir.rs",
+      "Update jit_capability() for all three opcodes → RuntimeCall",
+      "Test effect handler lifecycle"
+    ]
+  },
+  {
+    "id": "P0-012",
+    "title": "Implement Loop/ForPrep/ForLoop/ForIn as runtime helpers (for now)",
+    "description": "For Phase 0, implement these as RuntimeCall helpers (deoptimize to interpreter fallback, but mark as supported). Create jit_rt_loop, jit_rt_for_prep, jit_rt_for_loop, jit_rt_for_in that delegate to interpreter. Later phases can optimize these to Native Cranelift IR. This unblocks all cells from JIT compilation even if they use loops. Change Loop, ForPrep, ForLoop, ForIn from Unsupported → RuntimeCall in jit_capability().",
+    "files": [
+      "rust/lumen-codegen/src/jit.rs",
+      "rust/lumen-codegen/src/ir.rs"
+    ],
+    "status": "pending",
+    "priority": "medium",
+    "blocking": ["P0-013"],
+    "subtasks": [
+      "Create jit_rt_loop stub helper",
+      "Create jit_rt_for_prep stub helper",
+      "Create jit_rt_for_loop stub helper",
+      "Create jit_rt_for_in stub helper",
+      "Implement delegation to interpreter (for now)",
+      "Add lowering logic for all four opcodes in ir.rs",
+      "Update jit_capability() for all four opcodes → RuntimeCall",
+      "Document that these are temporary stubs for Phase 0"
+    ]
+  },
+  {
+    "id": "P0-013",
+    "title": "Implement In (membership test) and Is (type test) as runtime helpers",
+    "description": "Create jit_rt_in(value_ptr, collection_ptr) → bool and jit_rt_is(value_ptr, type_id) → bool. These helpers check membership in collections and type tests respectively. Dynamic dispatch based on collection/type at runtime. Add lowering logic in ir.rs. Change In and Is from Unsupported → RuntimeCall in jit_capability().",
+    "files": [
+      "rust/lumen-codegen/src/jit.rs",
+      "rust/lumen-codegen/src/ir.rs"
+    ],
+    "status": "pending",
+    "priority": "high",
+    "blocking": ["P0-014"],
+    "subtasks": [
+      "Create jit_rt_in extern \"C\" function",
+      "Implement membership test for List, Set, Map",
+      "Create jit_rt_is extern \"C\" function",
+      "Implement type checking (Int, Float, String, etc.)",
+      "Add lowering logic for In opcode in ir.rs",
+      "Add lowering logic for Is opcode in ir.rs",
+      "Update jit_capability() for both opcodes → RuntimeCall",
+      "Test both helpers with various types"
+    ]
+  },
+  {
+    "id": "P0-014",
+    "title": "Remove is_cell_jit_compilable check and enable all cells for JIT",
+    "description": "Delete or deprecate is_cell_jit_compilable() function. Update all call-sites to always attempt JIT compilation. Since all opcodes now have RuntimeCall implementations (no Unsupported), every cell is compilable. Deopt stubs are no longer needed. Verify test coverage that compilation succeeds for complex cells with loops, effects, tools, etc.",
+    "files": [
+      "rust/lumen-codegen/src/jit.rs",
+      "rust/lumen-codegen/src/lib.rs"
+    ],
+    "status": "pending",
+    "priority": "high",
+    "blocking": ["P0-015"],
+    "subtasks": [
+      "Find all call-sites of is_cell_jit_compilable()",
+      "Replace with unconditional JIT attempt",
+      "Remove or mark deprecated the is_cell_jit_compilable function",
+      "Update documentation",
+      "Run full test suite to verify",
+      "Update any diagnostics that mention 'unsupported opcodes'"
+    ]
+  },
+  {
+    "id": "P0-015",
+    "title": "Delete deopt stub logic and clarify JIT fallback paths",
+    "description": "Remove code that inserts deopt stubs (jump to interpreter) for Unsupported opcodes. All opcodes are now RuntimeCall or Native, so no deopt is needed. Clarify that if JIT compilation fails for other reasons (e.g., memory), the interpreter is always the fallback (not a deopt stub). Update comments and documentation.",
+    "files": [
+      "rust/lumen-codegen/src/jit.rs",
+      "rust/lumen-codegen/src/ir.rs"
+    ],
+    "status": "pending",
+    "priority": "high",
+    "blocking": ["P0-016"],
+    "subtasks": [
+      "Find all deopt stub insertion code",
+      "Remove or comment out deopt logic",
+      "Update error handling for JIT compilation failures",
+      "Clarify fallback to interpreter",
+      "Update diagnostics and logging"
+    ]
+  },
+  {
+    "id": "P0-016",
+    "title": "Integration test: compile and run complex cell with all Phase 0 opcodes",
+    "description": "Write an integration test that compiles and executes a cell using tool calls, effects (perform/handle), async (spawn/await), loops, type tests, membership tests, and emit. Verify that JIT compilation succeeds and execution produces correct results. This validates that Phase 0 is complete and all opcodes are truly working end-to-end.",
+    "files": [
+      "rust/lumen-codegen/tests/integration_test.rs"
+    ],
+    "status": "pending",
+    "priority": "high",
+    "blocking": [],
+    "subtasks": [
+      "Create test cell using ToolCall",
+      "Add Perform/Handle/Resume effect operations",
+      "Add Spawn/Await async operations",
+      "Add Loop iteration",
+      "Add In membership test",
+      "Add Is type test",
+      "Add Emit for tracing",
+      "Verify JIT compilation succeeds",
+      "Verify execution produces correct output",
+      "Document test for future reference"
+    ]
+  },
+  {
+    "id": "P0-017",
+    "title": "Benchmark: verify JIT performance vs interpreter for all opcode types",
+    "description": "Create micro-benchmarks comparing JIT-compiled cells against interpreter for: (1) RuntimeCall-heavy cells (tools, effects, etc.), (2) loops, (3) mixed Native+RuntimeCall. Document performance characteristics. Identify if RuntimeCall overhead is acceptable or if future optimization is needed. This informs Phase 1 prioritization.",
+    "files": [
+      "rust/lumen-codegen/benches/jit_benchmarks.rs"
+    ],
+    "status": "pending",
+    "priority": "medium",
+    "blocking": [],
+    "subtasks": [
+      "Create benchmark for tool call overhead",
+      "Create benchmark for effect handler overhead",
+      "Create benchmark for async task overhead",
+      "Create benchmark for loop iteration overhead",
+      "Create benchmark for membership test overhead",
+      "Run on representative hardware",
+      "Document results and identify hot paths",
+      "Create analysis for Phase 1 optimization priority"
+    ]
+  },
+  {
+    "id": "P0-018",
+    "title": "Documentation: Phase 0 completion summary and Phase 1 roadmap",
+    "description": "Write comprehensive documentation describing what Phase 0 accomplished: all opcodes now JIT-compilable via RuntimeCall mechanism. Explain the VM context passing design, the pattern for adding new helpers, and performance characteristics. Define Phase 1 goals: optimize RuntimeCall hotspots to Native (likely Loop, In, Is, Await). Include diagrams of calling convention and effect handler stack integration.",
+    "files": [
+      "docs/JIT_PHASE0.md",
+      "docs/JIT_ROADMAP.md"
+    ],
+    "status": "pending",
+    "priority": "medium",
+    "blocking": [],
+    "subtasks": [
+      "Document VM context passing mechanism",
+      "Document runtime helper pattern",
+      "Document all 16 new helpers added in Phase 0",
+      "Create calling convention diagram",
+      "Create effect handler stack integration diagram",
+      "List performance benchmarks and findings",
+      "Define Phase 1 optimization targets",
+      "Add code examples for new opcodes in JIT"
+    ]
+  },
+  {
+    "id": "P0-019",
+    "title": "Code review and cleanup: ensure consistency and style",
+    "description": "Review all new code added in Phase 0 for consistency with existing codebase style. Ensure all runtime helpers follow naming conventions (jit_rt_*), proper error handling, docstring coverage, and safety. Run clippy and fix all warnings. Verify no `unwrap()` calls in library code.",
+    "files": [
+      "rust/lumen-codegen/src/jit.rs",
+      "rust/lumen-codegen/src/ir.rs"
+    ],
+    "status": "pending",
+    "priority": "medium",
+    "blocking": [],
+    "subtasks": [
+      "Run clippy on lumen-codegen",
+      "Fix all warnings",
+      "Review all extern \"C\" functions for safety",
+      "Ensure consistent error handling",
+      "Add docstrings to all new helpers",
+      "Review for memory safety (pointer handling)",
+      "Verify calling convention consistency",
+      "Test with sanitizers (if available)"
+    ]
+  },
+  {
+    "id": "P0-020",
+    "title": "Update LIR documentation and opcode definitions to reflect JIT support",
+    "description": "Update opcode_def.rs, SPEC.md, and other documentation to reflect that all opcodes are now JIT-capable (via RuntimeCall). Remove any outdated notes about opcodes being 'interpreter-only'. Update architecture docs to explain the RuntimeCall mechanism and VM context passing.",
+    "files": [
+      "SPEC.md",
+      "docs/ARCHITECTURE.md",
+      "rust/lumen-core/src/lir.rs",
+      "rust/lumen-codegen/src/opcode_def.rs"
+    ],
+    "status": "pending",
+    "priority": "low",
+    "blocking": [],
+    "subtasks": [
+      "Update SPEC.md section on JIT support",
+      "Update ARCHITECTURE.md section on JIT system",
+      "Update opcode_def.rs documentation",
+      "Remove outdated 'interpreter-only' references",
+      "Add new section on RuntimeCall mechanism",
+      "Add section on VM context passing",
+      "Create architecture diagram for JIT system"
+    ]
+  },
+  {
+    "id": "P0-021",
+    "title": "Test suite: unit tests for each new runtime helper",
+    "description": "Create unit tests in jit.rs for each of the 16+ new runtime helpers. Test normal cases, edge cases (null, empty collections, type mismatches), and error paths. Ensure all helpers are thoroughly tested before integration testing.",
+    "files": [
+      "rust/lumen-codegen/src/jit.rs"
+    ],
+    "status": "pending",
+    "priority": "high",
+    "blocking": ["P0-016"],
+    "subtasks": [
+      "Create tests for jit_rt_tool_call",
+      "Create tests for jit_rt_schema_validate",
+      "Create tests for jit_rt_emit",
+      "Create tests for jit_rt_trace_ref",
+      "Create tests for jit_rt_spawn and jit_rt_await",
+      "Create tests for jit_rt_perform, jit_rt_handle_push/pop, jit_rt_resume",
+      "Create tests for jit_rt_in and jit_rt_is",
+      "Test edge cases and error conditions",
+      "Test continuation semantics (one-shot)"
+    ]
+  },
+  {
+    "id": "P0-022",
+    "title": "Design VM context struct and access patterns",
+    "description": "Before implementing any helpers in P0-004 onwards, design the VmContext struct that will be passed to helpers. Define what fields it needs (scheduler, effect handler stack, provider registry, trace system, etc.). Decide on access patterns (methods? direct fields?). Document thread-safety guarantees. This design is critical to success of all subsequent helpers.",
+    "files": [
+      "rust/lumen-codegen/src/jit.rs",
+      "rust/lumen-rt/src/vm/mod.rs"
+    ],
+    "status": "pending",
+    "priority": "high",
+    "blocking": ["P0-004", "P0-005", "P0-006", "P0-007", "P0-008", "P0-009", "P0-010", "P0-011"],
+    "subtasks": [
+      "Define VmContext struct fields",
+      "Document pointer lifetime and ownership",
+      "Decide on access method (methods vs fields)",
+      "Plan for thread-safety (Mutex? Arc?)",
+      "Document parameter passing strategy",
+      "Create safety invariants document",
+      "Get design review from team"
+    ]
+  }
+]

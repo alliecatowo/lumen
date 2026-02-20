@@ -272,8 +272,14 @@ pub struct OsrEntry {
 }
 
 /// Capture a snapshot of the interpreter's register state as NbValue slice.
+/// Properly increments Arc refcounts for heap-allocated NbValues so the
+/// returned Vec owns its references independently of the live register file.
 pub fn capture_register_state(vm: &VM, base: usize, register_count: usize) -> Vec<NbValue> {
-    vm.registers[base..base + register_count].to_vec()
+    let snapshot = vm.registers[base..base + register_count].to_vec();
+    for nb in &snapshot {
+        nb.inc_ref();
+    }
+    snapshot
 }
 
 /// Copy interpreter register state to compiled code's stack frame.

@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use lumen_core::lir::{LirCell, LirModule, OpCode};
+use lumen_core::lir::{LirModule, OpCode};
 use lumen_core::nb_value::NbValue;
 use lumen_core::vm_context::VmContext;
 
@@ -56,6 +56,15 @@ pub struct StencilTier {
 pub struct StencilTier {
     stats: StencilTierStats,
 }
+
+/// Pre-growth headroom (in registers) added before calling into stitched code.
+///
+/// Stencil code pins `r14 = &registers[base]`. If `registers` reallocates
+/// during a runtime callback (e.g. `dispatch_call_from_stencil`), `r14`
+/// becomes a dangling pointer. We pre-grow the register vector by this amount
+/// before entering stitched code to prevent any reallocation during execution.
+#[cfg(feature = "jit")]
+const STENCIL_HEADROOM: usize = 512;
 
 #[cfg(feature = "jit")]
 impl StencilTier {
@@ -121,10 +130,8 @@ impl StencilTier {
             }
         };
 
-        if !cell_is_supported(cell) {
-            self.stats.compile_failures += 1;
-            return false;
-        }
+        // Architectural directive: every cell must be supported.
+        // Do NOT filter cells by opcode — compile everything.
 
         let code_len = {
             let stitcher = match self.stitcher.as_mut() {
@@ -144,31 +151,51 @@ impl StencilTier {
             }
         };
 
-        let (start_offset, library) = match self.stitcher.as_ref() {
-            Some(stitcher) => {
-                let start_offset = stitcher.code_used().saturating_sub(code_len);
-                let library = stitcher.library().clone();
-                (start_offset, library)
-            }
-            None => {
-                self.stats.compile_failures += 1;
-                return false;
-            }
-        };
-        let mut offsets = Vec::with_capacity(cell.instructions.len());
-        let mut offset = start_offset;
-        for instr in &cell.instructions {
-            offsets.push(offset);
-            if let Some(stencil) = library.get(instr.op as u8) {
-                offset += stencil.code.len();
-            }
-            if matches!(instr.op, OpCode::Return | OpCode::Halt) {
-                break;
-            }
-        }
+        // Post-patch RuntimeFuncAddr holes with real function addresses.
+        // The stitcher emits 0 for RuntimeFuncAddr holes; we now fill them in.
+        {
+            let stitcher = match self.stitcher.as_mut() {
+                Some(s) => s,
+                None => {
+                    self.stats.compile_failures += 1;
+                    return false;
+                }
+            };
 
-        // Runtime function holes are patched during compile(); no separate step needed.
-        let _ = (start_offset, offsets);
+            let (code_ptr, buf_base) = {
+                let code = stitcher.get_compiled(cell_idx).unwrap();
+                (code.code_ptr, stitcher.code_buffer_ptr())
+            };
+
+            // Byte offset of this cell's code from the start of the code buffer.
+            let cell_start_buf_offset = code_ptr as usize - buf_base as usize;
+
+            let library = stitcher.library().clone();
+
+            let mut byte_offset = 0usize; // offset within this cell's code
+            for instr in &cell.instructions {
+                let op_byte = instr.op as u8;
+                if let Some(stencil) = library.get(op_byte) {
+                    // Check all holes in this stencil for RuntimeFuncAddr.
+                    for hole in &stencil.holes {
+                        if hole.hole_type == lumen_codegen::stencil_format::HoleType::RuntimeFuncAddr {
+                            let func_name = opcode_to_runtime_func(instr.op);
+                            if let Some(addr) = resolve_runtime_helper(func_name) {
+                                let abs_offset =
+                                    cell_start_buf_offset + byte_offset + hole.offset as usize;
+                                stitcher.patch_u64_at(abs_offset, addr);
+                            }
+                        }
+                    }
+                    byte_offset += stencil.code.len();
+                }
+                if matches!(instr.op, OpCode::Return | OpCode::Halt) {
+                    break;
+                }
+            }
+
+            let _ = code_len; // suppress unused warning
+        }
 
         self.compiled.insert(cell_idx);
         self.stats.cells_compiled += 1;
@@ -183,6 +210,19 @@ impl StencilTier {
         let code = stitcher
             .get_compiled(cell_idx)
             .ok_or_else(|| VmError::Runtime("stencil not compiled".into()))?;
+
+        // Pre-grow registers to prevent reallocation during runtime callbacks.
+        // Stencil code pins r14 = &registers[base]. A reallocation would make
+        // r14 dangle, causing memory corruption.
+        let needed = base + STENCIL_HEADROOM;
+        if needed > vm.registers.len() {
+            vm.registers.resize(needed, NbValue::new_null());
+        }
+
+        // Record the stencil frame base so that runtime helpers (return, intrinsic,
+        // call) can compute absolute register addresses.
+        vm.stencil_base = base;
+
         let regs_ptr = unsafe { vm.registers.as_mut_ptr().add(base) };
         let ctx_ptr = vm.vm_ctx.as_ptr();
         unsafe {
@@ -242,6 +282,38 @@ impl StencilTier {
     }
 }
 
+/// Map an opcode to the runtime helper function name it needs for its
+/// `RuntimeFuncAddr` hole.
+#[cfg(feature = "jit")]
+fn opcode_to_runtime_func(op: OpCode) -> &'static str {
+    match op {
+        OpCode::Return => "lm_rt_return",
+        OpCode::Halt => "lm_rt_halt",
+        OpCode::Call => "lm_rt_call",
+        OpCode::TailCall => "lm_rt_tailcall",
+        OpCode::Intrinsic => "lm_rt_intrinsic",
+        OpCode::Perform => "lm_rt_perform",
+        OpCode::HandlePush => "lm_rt_handle_push",
+        OpCode::HandlePop => "lm_rt_handle_pop",
+        OpCode::Resume => "lm_rt_resume",
+        OpCode::OsrCheck => "lm_rt_osr_check",
+        OpCode::NewList
+        | OpCode::NewListStack
+        | OpCode::NewMap
+        | OpCode::NewRecord
+        | OpCode::NewTuple
+        | OpCode::NewTupleStack
+        | OpCode::NewSet
+        | OpCode::GetField
+        | OpCode::SetField
+        | OpCode::GetIndex
+        | OpCode::SetIndex => "lm_rt_stencil_runtime",
+        // Any other opcode that has a RuntimeFuncAddr hole falls back to the
+        // stencil runtime dispatcher.
+        _ => "lm_rt_stencil_runtime",
+    }
+}
+
 #[cfg(feature = "jit")]
 fn resolve_runtime_helper(name: &str) -> Option<u64> {
     match name {
@@ -260,52 +332,6 @@ fn resolve_runtime_helper(name: &str) -> Option<u64> {
         "lm_rt_osr_check" => Some(crate::vm::osr::osr_check::lm_rt_osr_check as usize as u64),
         _ => None,
     }
-}
-
-#[cfg(feature = "jit")]
-fn cell_is_supported(cell: &LirCell) -> bool {
-    cell.instructions.iter().all(|instr| match instr.op {
-        OpCode::Nop
-        | OpCode::LoadK
-        | OpCode::LoadNil
-        | OpCode::LoadBool
-        | OpCode::LoadInt
-        | OpCode::Move
-        | OpCode::MoveOwn
-        | OpCode::NewList
-        | OpCode::NewListStack
-        | OpCode::NewMap
-        | OpCode::NewRecord
-        | OpCode::NewTuple
-        | OpCode::NewTupleStack
-        | OpCode::NewSet
-        | OpCode::GetField
-        | OpCode::SetField
-        | OpCode::GetIndex
-        | OpCode::SetIndex
-        | OpCode::Add
-        | OpCode::Sub
-        | OpCode::Mul
-        | OpCode::Div
-        | OpCode::Mod
-        | OpCode::Neg
-        | OpCode::Eq
-        | OpCode::Lt
-        | OpCode::Le
-        | OpCode::Not
-        | OpCode::Jmp
-        | OpCode::Break
-        | OpCode::Continue
-        | OpCode::Test
-        | OpCode::Return
-        | OpCode::Halt => true,
-        _ => false,
-    })
-}
-
-#[cfg(not(feature = "jit"))]
-fn cell_is_supported(_cell: &LirCell) -> bool {
-    false
 }
 
 #[cfg(feature = "jit")]

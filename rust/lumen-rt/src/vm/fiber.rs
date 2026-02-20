@@ -108,6 +108,7 @@ impl FiberStackConfig {
 }
 
 /// Status of a fiber in its lifecycle.
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FiberStatus {
     /// Currently executing on a CPU.

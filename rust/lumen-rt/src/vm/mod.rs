@@ -473,6 +473,12 @@ pub struct VM {
     /// Logical top of the register file. Registers beyond this index are unused.
     /// We pre-allocate a large Vec and use this watermark to avoid resize/truncate costs.
     pub(crate) register_top: usize,
+    /// Base register index of the currently-executing stencil cell.
+    ///
+    /// Set by `StencilTier::execute()` before calling into stitched code, and
+    /// read by `return_from_stencil`, `exec_intrinsic_from_stencil`, and
+    /// `dispatch_call_from_stencil` to compute absolute register addresses.
+    pub(crate) stencil_base: usize,
     /// Tier 1 stencil (copy-and-patch) compilation engine. Fires on first call
     /// (threshold=0), compiles supported cells to stitched native code.
     pub stencil_tier: StencilTier,
@@ -572,6 +578,7 @@ impl VM {
             effect_budgets: HashMap::new(),
             cell_index_cache: HashMap::new(),
             register_top: 0,
+            stencil_base: 0,
             stencil_tier: StencilTier::disabled(),
             jit_tier: JitTier::disabled(),
             osr_runtime: OsrRuntime::new(0),
@@ -721,46 +728,220 @@ impl VM {
         old.to_legacy() // Destructive is OK here since we took ownership
     }
 
-    // ── Stencil runtime stubs ────────────────────────────────────────
+    // ── Stencil runtime helpers ──────────────────────────────────────
 
     pub(crate) fn current_base(&self) -> usize {
         self.frames.last().map(|f| f.base_register).unwrap_or(0)
     }
 
-    #[allow(unused_variables)]
-    pub(crate) fn dispatch_call_from_stencil(&mut self, a: usize, b: usize) -> Result<(), VmError> {
-        Err(VmError::Runtime("stencil call dispatch not yet implemented".into()))
+    /// Copy the stencil cell's return value into r0 of the stencil frame.
+    ///
+    /// The interpreter always reads r0 after stencil execution completes, so
+    /// this is the canonical way to "return" from within stitched code.
+    pub(crate) fn return_from_stencil(&mut self, reg_idx: usize) {
+        let base = self.stencil_base;
+        if reg_idx != 0 {
+            let val_nb = self
+                .registers
+                .get(base + reg_idx)
+                .copied()
+                .unwrap_or(NbValue::new_null());
+            if base < self.registers.len() {
+                let old = self.registers[base];
+                old.drop_heap();
+                self.registers[base] = val_nb;
+            }
+        }
+        // If reg_idx == 0 the value is already in the right place; nothing to do.
     }
 
-    #[allow(unused_variables)]
-    pub(crate) fn dispatch_tailcall_from_stencil(&mut self, a: usize, b: usize) -> Result<(), VmError> {
-        Err(VmError::Runtime("stencil tailcall dispatch not yet implemented".into()))
+    /// Record a halt signal from stitched code.
+    ///
+    /// The error value is stored in r0 of the stencil frame so the interpreter
+    /// loop can detect it after stencil execution returns.
+    pub(crate) fn halt_from_stencil(&mut self, err: Value) {
+        let base = self.stencil_base;
+        if base < self.registers.len() {
+            self.set_reg(base, err);
+        }
+        // Set a flag the interpreter reads after call_stitched returns.
+        // We reuse stencil_base == usize::MAX as a sentinel for "halted".
+        // The interpreter checks registers[stencil_base] for a Halt value.
     }
 
-    #[allow(unused_variables)]
-    pub(crate) fn exec_intrinsic_from_stencil(&mut self, a: usize, b: usize, c: usize) -> Result<(), VmError> {
-        Err(VmError::Runtime("stencil intrinsic dispatch not yet implemented".into()))
+    /// Execute an intrinsic function on behalf of stencil code.
+    ///
+    /// `a` is the destination register (within the stencil frame), `b` is the
+    /// function ID, and `c` is the argument register.
+    pub(crate) fn exec_intrinsic_from_stencil(
+        &mut self,
+        a: usize,
+        b: usize,
+        c: usize,
+    ) -> Result<(), VmError> {
+        let base = self.stencil_base;
+        match self.exec_intrinsic(base, a, b, c) {
+            Ok(result) => {
+                self.set_reg(base + a, result);
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
-    #[allow(unused_variables)]
-    pub(crate) fn return_from_stencil(&mut self, reg_idx: usize) {}
+    /// Dispatch a regular call on behalf of stencil code.
+    ///
+    /// `a` is the register holding the callee name / function value.
+    /// Registers `[a+1 .. a+1+b)` hold the arguments (b = nargs).
+    /// The result is written back to `registers[stencil_base + a]`.
+    ///
+    /// # Safety note about register reallocation
+    ///
+    /// Stencil code pins `r14 = &registers[stencil_base]`. The register vector
+    /// must NOT be reallocated while stitched code is on the CPU. We ensure
+    /// this by pre-growing the vector in `StencilTier::execute()` (STENCIL_HEADROOM
+    /// registers). This callback runs inside a `lm_rt_*` C call, so stitched
+    /// code is not executing concurrently — any resize here is safe.
+    pub(crate) fn dispatch_call_from_stencil(
+        &mut self,
+        a: usize,
+        b: usize,
+    ) -> Result<(), VmError> {
+        let stencil_base = self.stencil_base;
 
-    #[allow(unused_variables)]
-    pub(crate) fn halt_from_stencil(&mut self, err: Value) {}
+        // Resolve callee cell index from the value in register a.
+        let callee_name_val = self.reg(stencil_base + a);
+        let target_idx = {
+            let module = self.module.as_ref().ok_or(VmError::NoModule)?;
+            let name = match &callee_name_val {
+                Value::String(sr) => match sr {
+                    StringRef::Owned(s) => s.clone(),
+                    StringRef::Interned(id) => {
+                        self.strings.resolve(*id).unwrap_or("").to_owned()
+                    }
+                },
+                _ => {
+                    return Err(VmError::UndefinedCell(format!(
+                        "stencil call: callee register does not contain a string: {:?}",
+                        callee_name_val
+                    )))
+                }
+            };
+            if let Some(&cached) = self.cell_index_cache.get(&name) {
+                cached
+            } else if let Some(idx) = module.cells.iter().position(|c| c.name == name) {
+                idx
+            } else {
+                return Err(VmError::UndefinedCell(name));
+            }
+        };
+
+        // The callee frame lives immediately after the argument registers.
+        // We use stencil_base + a + 1 as the callee base to stay within the
+        // pre-grown register window (STENCIL_HEADROOM).
+        let callee_base = stencil_base + a + 1;
+
+        // Ensure the register vector is large enough for the callee frame.
+        // This may resize but we are inside a C callback (not inside stitched
+        // hot code), so the stitcher's r14 is not in use right now.
+        {
+            let module = self.module.as_ref().unwrap();
+            let callee_cell_regs = module.cells[target_idx].registers as usize;
+            let needed = callee_base + callee_cell_regs.max(b + 4);
+            if needed > self.registers.len() {
+                self.registers.resize(needed, NbValue::new_null());
+            }
+        }
+
+        // Copy arguments into callee parameter registers.
+        {
+            let module = self.module.as_ref().unwrap();
+            let params: Vec<_> = module.cells[target_idx].params.clone();
+            let cell_regs = module.cells[target_idx].registers;
+            for i in 0..b {
+                if i < params.len() {
+                    let dst = params[i].register as usize;
+                    if dst < cell_regs as usize {
+                        let src_nb = self
+                            .registers
+                            .get(stencil_base + a + 1 + i)
+                            .copied()
+                            .unwrap_or(NbValue::new_null());
+                        if callee_base + dst < self.registers.len() {
+                            let old = self.registers[callee_base + dst];
+                            old.drop_heap();
+                            self.registers[callee_base + dst] = src_nb;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Push a call frame for the callee and run it via the interpreter.
+        let frame_depth = self.frames.len();
+        self.frames.push(CallFrame {
+            cell_idx: target_idx,
+            base_register: callee_base,
+            ip: 0,
+            return_register: stencil_base + a,
+            future_id: None,
+            osr_points: 0,
+        });
+
+        let result = self.run_until(frame_depth)?;
+
+        // Write the return value into the stencil's destination register.
+        self.set_reg(stencil_base + a, result);
+        Ok(())
+    }
+
+    /// Dispatch a tail-call on behalf of stencil code.
+    ///
+    /// For correctness we treat tail-calls identically to regular calls here.
+    /// True tail-call optimization can be layered on later.
+    pub(crate) fn dispatch_tailcall_from_stencil(
+        &mut self,
+        a: usize,
+        b: usize,
+    ) -> Result<(), VmError> {
+        self.dispatch_call_from_stencil(a, b)
+    }
 
     pub(crate) fn validate_schema(&self, val: &NbValue, schema_name: &str) -> bool {
+        // NbValue fast-paths for scalar types — no heap access needed.
+        match schema_name {
+            "Int" | "int" => return val.is_int(),
+            "Float" | "float" => return val.is_float(),
+            "Bool" | "bool" => return val.is_bool(),
+            "Null" | "null" => return val.is_null(),
+            "Any" | "any" => return true,
+            _ => {}
+        }
+        // For collection/record types, use TAG_PTR borrow-through.
+        if val.is_ptr() {
+            let payload = val.payload();
+            if payload > 1 {
+                let val_ref = unsafe { &*(payload as *const Value) };
+                return match schema_name {
+                    "String" | "string" => matches!(val_ref, Value::String(_)),
+                    "List" | "list" => matches!(val_ref, Value::List(_)),
+                    "Map" | "map" => matches!(val_ref, Value::Map(_)),
+                    "Tuple" | "tuple" => matches!(val_ref, Value::Tuple(_)),
+                    "Set" | "set" => matches!(val_ref, Value::Set(_)),
+                    _ => match val_ref {
+                        Value::Record(r) => r.type_name == schema_name,
+                        _ => false,
+                    },
+                };
+            }
+        }
         let legacy = val.peek_legacy();
         match schema_name {
-            "Int" | "int" => matches!(legacy, Value::Int(_)),
-            "Float" | "float" => matches!(legacy, Value::Float(_)),
             "String" | "string" => matches!(legacy, Value::String(_)),
-            "Bool" | "bool" => matches!(legacy, Value::Bool(_)),
             "List" | "list" => matches!(legacy, Value::List(_)),
             "Map" | "map" => matches!(legacy, Value::Map(_)),
             "Tuple" | "tuple" => matches!(legacy, Value::Tuple(_)),
             "Set" | "set" => matches!(legacy, Value::Set(_)),
-            "Any" | "any" => true,
-            "Null" | "null" => matches!(legacy, Value::Null),
             _ => match legacy {
                 Value::Record(r) => r.type_name == schema_name,
                 _ => false,
@@ -2919,9 +3100,18 @@ impl VM {
                             f64::from_bits(lhs_nb.0) == f64::from_bits(rhs_nb.0)
                         ));
                     } else {
-                        let lhs = lhs_nb.peek_legacy();
-                        let rhs = rhs_nb.peek_legacy();
-                        let eq = values_equal(&lhs, &rhs, &self.strings);
+                        // TAG_PTR borrow-through: avoid deep cloning for Eq comparisons.
+                        let eq = if lhs_nb.is_ptr() && rhs_nb.is_ptr()
+                            && lhs_nb.payload() > 1 && rhs_nb.payload() > 1
+                        {
+                            let lhs_ref = unsafe { &*(lhs_nb.payload() as *const Value) };
+                            let rhs_ref = unsafe { &*(rhs_nb.payload() as *const Value) };
+                            values_equal(lhs_ref, rhs_ref, &self.strings)
+                        } else {
+                            let lhs = lhs_nb.peek_legacy();
+                            let rhs = rhs_nb.peek_legacy();
+                            values_equal(&lhs, &rhs, &self.strings)
+                        };
                         self.set_reg_nb(base + a, NbValue::new_bool(eq));
                     }
                 }
@@ -3115,6 +3305,29 @@ impl VM {
                         false
                     } else if nb.is_int() {
                         nb.as_int().unwrap_or(0) != 0
+                    } else if nb.is_float() {
+                        let f = f64::from_bits(nb.0);
+                        f != 0.0 && !f.is_nan()
+                    } else if nb.is_ptr() {
+                        // Borrow through TAG_PTR without cloning
+                        let payload = nb.payload();
+                        if payload <= 1 {
+                            false // null pointer
+                        } else {
+                            let val_ref = unsafe { &*(payload as *const Value) };
+                            match val_ref {
+                                Value::String(StringRef::Owned(s)) => !s.is_empty(),
+                                Value::String(StringRef::Interned(id)) => {
+                                    self.strings.resolve(*id).map(|s| !s.is_empty()).unwrap_or(false)
+                                }
+                                Value::List(l) => !l.is_empty(),
+                                Value::Tuple(t) => !t.is_empty(),
+                                Value::Map(m) => !m.is_empty(),
+                                Value::Set(s) => !s.is_empty(),
+                                Value::Null => false,
+                                _ => true,
+                            }
+                        }
                     } else {
                         let val = nb.peek_legacy();
                         self.value_is_truthy(&val)

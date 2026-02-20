@@ -2940,8 +2940,16 @@ impl VM {
                     {
                         result?;
                     } else {
-                        let lhs = self.reg(base + b);
+                        // Read rhs first (usually small, e.g. "x").
                         let rhs = self.reg(base + c);
+                        // When a == b (dest == lhs) and b != c, take ownership via reg_take
+                        // instead of cloning. reg_take uses Arc::try_unwrap which succeeds at
+                        // refcount==1, avoiding the deep clone entirely.
+                        let lhs = if a == b && b != c {
+                            self.reg_take(base + b)
+                        } else {
+                            self.reg(base + b)
+                        };
                         // Check for strings first for concatenation
                         if matches!(lhs, Value::String(_)) || matches!(rhs, Value::String(_)) {
                             // In-place string concat optimization: when the destination
@@ -2953,8 +2961,9 @@ impl VM {
                                 // Read RHS as string
                                 let rhs_cow = value_to_str_cow(&rhs, &self.strings);
                                 let rhs_str: String = rhs_cow.into_owned();
-                                // Safe in-place: destination overwrites source
-                                let left_val = self.reg_take(base + b);
+                                // When b != c, lhs was already taken (no clone needed).
+                                // When b == c (e.g. s = s + s), lhs was cloned; take register for in-place mutation.
+                                let left_val = if b != c { lhs } else { self.reg_take(base + b) };
                                 let result = match left_val {
                                     Value::String(StringRef::Owned(mut s)) => {
                                         s.push_str(&rhs_str);
@@ -2993,7 +3002,11 @@ impl VM {
                                 self.set_reg(base + a, Value::new_list(combined));
                             }
                         } else {
-                            // Numeric addition with promotion
+                            // If we took lhs from register b, restore it before arith_op
+                            // which re-reads from registers.
+                            if a == b && b != c {
+                                self.set_reg(base + b, lhs);
+                            }
                             self.arith_op(base, a, b, c, BinaryOp::Add)?;
                         }
                     }
@@ -3091,49 +3104,59 @@ impl VM {
                     }
                 }
                 OpCode::Concat => {
-                    let lhs = self.reg(base + b);
+                    // Read rhs first (usually small).
                     let rhs = self.reg(base + c);
-                    let result = match (&lhs, &rhs) {
-                        (Value::List(la), Value::List(lb)) => {
+                    // When a == b (dest == lhs) and b != c, take ownership via reg_take
+                    // instead of cloning to avoid the deep clone.
+                    let lhs = if a == b && b != c {
+                        self.reg_take(base + b)
+                    } else {
+                        self.reg(base + b)
+                    };
+                    let result = if matches!((&lhs, &rhs), (Value::List(_), Value::List(_))) {
+                        if let (Value::List(la), Value::List(lb)) = (&lhs, &rhs) {
                             let mut combined = Vec::with_capacity(la.len() + lb.len());
                             combined.extend(la.iter().cloned());
                             combined.extend(lb.iter().cloned());
                             Value::new_list(combined)
+                        } else {
+                            unreachable!()
                         }
-                        _ => {
-                            // In-place string concat optimization (same as Add path):
-                            // only take from source when destination IS the source (a == b).
-                            if a == b {
-                                let rhs_cow = value_to_str_cow(&rhs, &self.strings);
-                                let rhs_str: String = rhs_cow.into_owned();
-                                let left_val = self.reg_take(base + b);
-                                match left_val {
-                                    Value::String(StringRef::Owned(mut s)) => {
-                                        s.push_str(&rhs_str);
-                                        Value::String(StringRef::Owned(s))
-                                    }
-                                    other => {
-                                        let left_str = match &other {
-                                            Value::String(StringRef::Interned(id)) => {
-                                                self.strings.resolve(*id).unwrap_or("").to_string()
-                                            }
-                                            _ => other.as_string(),
-                                        };
-                                        let mut s =
-                                            String::with_capacity(left_str.len() + rhs_str.len());
-                                        s.push_str(&left_str);
-                                        s.push_str(&rhs_str);
-                                        Value::String(StringRef::Owned(s))
-                                    }
+                    } else {
+                        // In-place string concat optimization (same as Add path):
+                        // only take from source when destination IS the source (a == b).
+                        if a == b {
+                            let rhs_cow = value_to_str_cow(&rhs, &self.strings);
+                            let rhs_str: String = rhs_cow.into_owned();
+                            // When b != c, lhs was already taken (no clone needed).
+                            // When b == c (e.g. s = s ++ s), lhs was cloned; take for in-place mutation.
+                            let left_val = if b != c { lhs } else { self.reg_take(base + b) };
+                            match left_val {
+                                Value::String(StringRef::Owned(mut s)) => {
+                                    s.push_str(&rhs_str);
+                                    Value::String(StringRef::Owned(s))
                                 }
-                            } else {
-                                let lhs_cow = value_to_str_cow(&lhs, &self.strings);
-                                let rhs_cow = value_to_str_cow(&rhs, &self.strings);
-                                let mut s = String::with_capacity(lhs_cow.len() + rhs_cow.len());
-                                s.push_str(&lhs_cow);
-                                s.push_str(&rhs_cow);
-                                Value::String(StringRef::Owned(s))
+                                other => {
+                                    let left_str = match &other {
+                                        Value::String(StringRef::Interned(id)) => {
+                                            self.strings.resolve(*id).unwrap_or("").to_string()
+                                        }
+                                        _ => other.as_string(),
+                                    };
+                                    let mut s =
+                                        String::with_capacity(left_str.len() + rhs_str.len());
+                                    s.push_str(&left_str);
+                                    s.push_str(&rhs_str);
+                                    Value::String(StringRef::Owned(s))
+                                }
                             }
+                        } else {
+                            let lhs_cow = value_to_str_cow(&lhs, &self.strings);
+                            let rhs_cow = value_to_str_cow(&rhs, &self.strings);
+                            let mut s = String::with_capacity(lhs_cow.len() + rhs_cow.len());
+                            s.push_str(&lhs_cow);
+                            s.push_str(&rhs_cow);
+                            Value::String(StringRef::Owned(s))
                         }
                     };
                     self.set_reg(base + a, result);

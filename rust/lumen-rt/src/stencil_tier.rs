@@ -162,21 +162,8 @@ impl StencilTier {
             }
         }
 
-        let stitcher = match self.stitcher.as_mut() {
-            Some(stitcher) => stitcher,
-            None => {
-                self.stats.compile_failures += 1;
-                return false;
-            }
-        };
-
-        if stitcher
-            .patch_runtime_funcs(cell, start_offset, &offsets, resolve_runtime_helper)
-            .is_err()
-        {
-            self.stats.compile_failures += 1;
-            return false;
-        }
+        // Runtime function holes are patched during compile(); no separate step needed.
+        let _ = (start_offset, offsets);
 
         self.compiled.insert(cell_idx);
         self.stats.cells_compiled += 1;

@@ -150,6 +150,34 @@ pub fn nan_unbox_int(v: i64) -> i64 {
     }
 }
 
+/// Emit IR to ensure a value is a raw (unboxed) integer.
+/// If `ty` is already `RawInt`, returns the value unchanged.
+/// If `ty` is `Int` (NaN-boxed), emits `emit_unbox_int`.
+fn ensure_raw_int(
+    builder: &mut FunctionBuilder,
+    val: cranelift_codegen::ir::Value,
+    ty: JitVarType,
+) -> cranelift_codegen::ir::Value {
+    match ty {
+        JitVarType::RawInt => val,
+        _ => emit_unbox_int(builder, val),
+    }
+}
+
+/// Emit IR to ensure a value is a NaN-boxed integer.
+/// If `ty` is already `Int` (boxed), returns the value unchanged.
+/// If `ty` is `RawInt`, emits `emit_box_int`.
+fn ensure_boxed_int(
+    builder: &mut FunctionBuilder,
+    val: cranelift_codegen::ir::Value,
+    ty: JitVarType,
+) -> cranelift_codegen::ir::Value {
+    match ty {
+        JitVarType::RawInt => emit_box_int(builder, val),
+        _ => val,
+    }
+}
+
 /// Pure Rust: NaN-box a float value (for test assertions).
 pub fn nan_box_float(v: f64) -> i64 {
     v.to_bits() as i64
@@ -440,8 +468,12 @@ fn classify_multi_block_regs(
 /// implementation (iadd vs string concatenation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JitVarType {
-    /// 64-bit signed integer.
+    /// 64-bit signed integer (NaN-boxed).
     Int,
+    /// Raw (unboxed) 64-bit signed integer. Used internally within JIT-compiled
+    /// functions to avoid repeated NaN-box/unbox cycles on arithmetic-heavy code.
+    /// Must be reboxed via `emit_box_int` before returning or passing to external calls.
+    RawInt,
     /// 64-bit IEEE 754 floating point.
     Float,
     /// Heap-allocated refcounted string, represented as a `*mut JitString` cast to i64.
@@ -476,6 +508,11 @@ impl JitVarType {
             "Null" => JitVarType::Int, // NaN-boxed sentinel
             _ => JitVarType::Ptr,      // Union, Tuple, Record, List, etc. → heap pointer
         }
+    }
+
+    /// Returns true if this type is an integer (boxed or raw).
+    fn is_int(self) -> bool {
+        matches!(self, JitVarType::Int | JitVarType::RawInt)
     }
 }
 
@@ -1199,6 +1236,10 @@ pub(crate) fn lower_cell<M: Module>(
                 JitVarType::Ptr => {
                     // Null heap pointer sentinel
                     builder.ins().iconst(types::I64, NAN_BOX_NULL)
+                }
+                JitVarType::RawInt => {
+                    // Raw i64 zero
+                    builder.ins().iconst(types::I64, 0)
                 }
             };
             builder.def_var(var, zero);
@@ -2206,6 +2247,7 @@ pub(crate) fn lower_cell<M: Module>(
                     JitVarType::Bool => builder.ins().iconst(types::I64, NAN_BOX_FALSE),
                     JitVarType::Str => builder.ins().iconst(types::I64, 0i64), // null ptr
                     JitVarType::Ptr => builder.ins().iconst(types::I64, NAN_BOX_NULL),
+                    JitVarType::RawInt => builder.ins().iconst(types::I64, 0i64),
                 };
                 let is_falsy = builder.ins().icmp(IntCC::Equal, operand, falsy_val);
                 let t = builder.ins().iconst(types::I64, NAN_BOX_TRUE);
@@ -2234,6 +2276,7 @@ pub(crate) fn lower_cell<M: Module>(
                     JitVarType::Bool => builder.ins().iconst(types::I64, NAN_BOX_FALSE),
                     JitVarType::Str => builder.ins().iconst(types::I64, 0i64),
                     JitVarType::Ptr => builder.ins().iconst(types::I64, NAN_BOX_NULL),
+                    JitVarType::RawInt => builder.ins().iconst(types::I64, 0i64),
                 };
                 let rhs_falsy_val = match c_ty {
                     JitVarType::Int => builder.ins().iconst(types::I64, nan_box_int(0)),
@@ -2241,6 +2284,7 @@ pub(crate) fn lower_cell<M: Module>(
                     JitVarType::Bool => builder.ins().iconst(types::I64, NAN_BOX_FALSE),
                     JitVarType::Str => builder.ins().iconst(types::I64, 0i64),
                     JitVarType::Ptr => builder.ins().iconst(types::I64, NAN_BOX_NULL),
+                    JitVarType::RawInt => builder.ins().iconst(types::I64, 0i64),
                 };
                 let lhs_is_falsy = builder.ins().icmp(IntCC::Equal, lhs, lhs_falsy_val);
                 let rhs_is_falsy = builder.ins().icmp(IntCC::Equal, rhs, rhs_falsy_val);
@@ -2271,6 +2315,7 @@ pub(crate) fn lower_cell<M: Module>(
                     JitVarType::Bool => builder.ins().iconst(types::I64, NAN_BOX_FALSE),
                     JitVarType::Str => builder.ins().iconst(types::I64, 0i64),
                     JitVarType::Ptr => builder.ins().iconst(types::I64, NAN_BOX_NULL),
+                    JitVarType::RawInt => builder.ins().iconst(types::I64, 0i64),
                 };
                 let rhs_falsy_val = match c_ty {
                     JitVarType::Int => builder.ins().iconst(types::I64, nan_box_int(0)),
@@ -2278,6 +2323,7 @@ pub(crate) fn lower_cell<M: Module>(
                     JitVarType::Bool => builder.ins().iconst(types::I64, NAN_BOX_FALSE),
                     JitVarType::Str => builder.ins().iconst(types::I64, 0i64),
                     JitVarType::Ptr => builder.ins().iconst(types::I64, NAN_BOX_NULL),
+                    JitVarType::RawInt => builder.ins().iconst(types::I64, 0i64),
                 };
                 let lhs_is_falsy = builder.ins().icmp(IntCC::Equal, lhs, lhs_falsy_val);
                 let rhs_is_falsy = builder.ins().icmp(IntCC::Equal, rhs, rhs_falsy_val);
@@ -2334,6 +2380,7 @@ pub(crate) fn lower_cell<M: Module>(
                         JitVarType::Bool => builder.ins().iconst(types::I64, NAN_BOX_FALSE),
                         JitVarType::Str => builder.ins().iconst(types::I64, 0i64),
                         JitVarType::Ptr => builder.ins().iconst(types::I64, NAN_BOX_NULL),
+                        JitVarType::RawInt => builder.ins().iconst(types::I64, 0i64),
                     };
                     let is_truthy = builder.ins().icmp(IntCC::NotEqual, cond, falsy_val);
                     builder
@@ -2963,6 +3010,7 @@ pub(crate) fn lower_cell<M: Module>(
                             Some(JitVarType::Bool) => b"Bool",
                             Some(JitVarType::Str) => b"String",
                             Some(JitVarType::Ptr) => b"Object",
+                            Some(JitVarType::RawInt) => b"Int",
                             None => b"Unknown",
                         };
                         // Inline JitString allocation for the type name.
@@ -4526,6 +4574,10 @@ fn use_var(
         JitVarType::Ptr => {
             // Null heap pointer sentinel
             builder.ins().iconst(types::I64, NAN_BOX_NULL)
+        }
+        JitVarType::RawInt => {
+            // Raw i64 zero
+            builder.ins().iconst(types::I64, 0)
         }
     }
 }

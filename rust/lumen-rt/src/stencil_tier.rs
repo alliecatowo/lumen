@@ -71,11 +71,16 @@ impl StencilTier {
         }
     }
 
+    /// Zero-cost disabled shell — does NOT build the stencil library.
+    /// Used as a temporary placeholder during borrow-split execution.
     pub fn disabled() -> Self {
-        Self::new(StencilTierConfig {
-            enabled: false,
-            ..Default::default()
-        })
+        Self {
+            call_counts: Vec::new(),
+            compiled: HashSet::new(),
+            config: StencilTierConfig { enabled: false, hot_threshold: 0 },
+            stitcher: None,
+            stats: StencilTierStats::default(),
+        }
     }
 
     pub fn init_for_module(&mut self, num_cells: usize) {
@@ -292,11 +297,8 @@ fn cell_is_supported(cell: &LirCell) -> bool {
         | OpCode::Break
         | OpCode::Continue
         | OpCode::Test
-        | OpCode::Call
-        | OpCode::TailCall
         | OpCode::Return
-        | OpCode::Halt
-        | OpCode::Intrinsic => true,
+        | OpCode::Halt => true,
         _ => false,
     })
 }

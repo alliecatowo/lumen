@@ -1115,6 +1115,7 @@ fn cmd_run(
     register_providers(&mut registry, &config);
 
     // Optionally set up tracing
+    let trace_hint_dir = trace_dir.as_ref().map(|dir| dir.join("trace"));
     let trace_store = trace_dir.map(|dir| {
         Arc::new(Mutex::new(
             lumen_rt::services::trace::store::TraceStore::new(&dir),
@@ -1186,9 +1187,12 @@ fn cmd_run(
             }
         }));
     }
-    vm.load(module);
-    match vm.execute(cell, vec![]) {
-        Ok(result) => {
+    let exec_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        vm.load(module);
+        vm.execute(cell, vec![])
+    }));
+    match exec_outcome {
+        Ok(Ok(result)) => {
             let elapsed = start.elapsed();
             if let Some(trace_store) = trace_store.as_ref() {
                 if let Ok(mut ts) = trace_store.lock() {
@@ -1213,7 +1217,7 @@ fn cmd_run(
                 println!("{} Finished in {:.2}s", green("✓"), elapsed.as_secs_f64());
             }
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             if let Some(trace_store) = trace_store.as_ref() {
                 if let Ok(mut ts) = trace_store.lock() {
                     ts.error(Some(cell), &format!("{}", e));
@@ -1222,8 +1226,54 @@ fn cmd_run(
             }
             let chain = error_chain::chain_from_error(&e);
             eprintln!("{}", chain.format_with_prefix(&red("✗ Error:")));
+            print_run_failure_diagnostics(&vm, trace_run_id.as_deref(), trace_hint_dir.as_deref());
             std::process::exit(1);
         }
+        Err(panic_payload) => {
+            let panic_message = panic_payload
+                .downcast_ref::<String>()
+                .map(|s| s.as_str())
+                .or_else(|| panic_payload.downcast_ref::<&'static str>().copied())
+                .unwrap_or("non-string panic payload");
+            if let Some(trace_store) = trace_store.as_ref() {
+                if let Ok(mut ts) = trace_store.lock() {
+                    ts.error(Some(cell), &format!("panic: {}", panic_message));
+                    ts.end_run();
+                }
+            }
+            eprintln!("{} {}", red("✗ Crash:"), panic_message);
+            print_run_failure_diagnostics(&vm, trace_run_id.as_deref(), trace_hint_dir.as_deref());
+            std::process::exit(1);
+        }
+    }
+}
+
+fn print_run_failure_diagnostics(
+    vm: &lumen_rt::vm::VM,
+    trace_run_id: Option<&str>,
+    trace_hint_dir: Option<&Path>,
+) {
+    let jit = vm.jit_stats();
+    let stencil = vm.stencil_stats();
+    eprintln!(
+        "{} tier telemetry: jit(cells={}, exec={}, fail={}, tracked={}) stencil(cells={}, exec={}, fail={}, tracked={})",
+        gray("info:"),
+        jit.cells_compiled,
+        jit.jit_executions,
+        jit.compile_failures,
+        jit.total_calls_tracked,
+        stencil.cells_compiled,
+        stencil.stencil_executions,
+        stencil.compile_failures,
+        stencil.total_calls_tracked,
+    );
+    if let (Some(run_id), Some(trace_dir)) = (trace_run_id, trace_hint_dir) {
+        eprintln!(
+            "{} lumen trace show {} --trace-dir {}",
+            gray("hint:"),
+            run_id,
+            trace_dir.display()
+        );
     }
 }
 

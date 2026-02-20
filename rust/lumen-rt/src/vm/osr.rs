@@ -346,9 +346,7 @@ pub fn perform_osr_transition(
 
         // execute_jit already unboxes NaN-boxed values via nan_unbox_typed,
         // so `raw` is a plain i64 for Int, raw f64 bits for Float, etc.
-        let ret_ty = engine
-            .return_type(cell_name)
-            .unwrap_or(JitVarType::Int);
+        let ret_ty = engine.return_type(cell_name).unwrap_or(JitVarType::Int);
 
         let result = match ret_ty {
             JitVarType::Str => {

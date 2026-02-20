@@ -92,6 +92,8 @@ pub struct FiberEffectStack {
     suspended: Option<SuspendedPerformer>,
     /// Stack allocator for handler fibers.
     pool: FiberPool,
+    /// Handler fibers pending free after we switch off their stacks.
+    pending_handler_frees: Vec<*mut Fiber>,
 }
 
 impl FiberEffectStack {
@@ -101,6 +103,7 @@ impl FiberEffectStack {
             handler_stack: Vec::new(),
             suspended: None,
             pool: FiberPool::new(DEFAULT_FIBER_STACK_SIZE, 0),
+            pending_handler_frees: Vec::new(),
         }
     }
 
@@ -110,6 +113,7 @@ impl FiberEffectStack {
             handler_stack: Vec::new(),
             suspended: None,
             pool: FiberPool::new(DEFAULT_FIBER_STACK_SIZE, pre_allocate),
+            pending_handler_frees: Vec::new(),
         }
     }
 
@@ -135,6 +139,13 @@ impl Drop for FiberEffectStack {
                 // Safety: handler_fiber was allocated by Box::into_raw.
                 unsafe {
                     let _ = Box::from_raw(entry.handler_fiber);
+                }
+            }
+        }
+        for handler in self.pending_handler_frees.drain(..) {
+            if !handler.is_null() {
+                unsafe {
+                    let _ = Box::from_raw(handler);
                 }
             }
         }
@@ -170,6 +181,41 @@ unsafe fn current_fiber_of(ctx: *mut VmContext) -> *mut Fiber {
 unsafe fn set_current_fiber(ctx: *mut VmContext, fiber: *mut Fiber) {
     (*ctx).current_fiber = fiber as *mut ();
     platform::set_current_fiber(fiber);
+}
+
+#[inline(always)]
+unsafe fn queue_handler_free(stack: &mut FiberEffectStack, handler: *mut Fiber) {
+    if handler.is_null() {
+        return;
+    }
+    if stack
+        .pending_handler_frees
+        .iter()
+        .any(|&queued| queued == handler)
+    {
+        return;
+    }
+    stack.pending_handler_frees.push(handler);
+}
+
+#[inline(always)]
+unsafe fn drain_pending_handler_frees(ctx: *mut VmContext, stack: &mut FiberEffectStack) {
+    if stack.pending_handler_frees.is_empty() {
+        return;
+    }
+
+    let current = current_fiber_of(ctx);
+    let mut idx = 0;
+    while idx < stack.pending_handler_frees.len() {
+        let handler = stack.pending_handler_frees[idx];
+        if handler.is_null() || handler == current {
+            idx += 1;
+            continue;
+        }
+
+        stack.pending_handler_frees.swap_remove(idx);
+        let _ = Box::from_raw(handler);
+    }
 }
 
 // ── Public C-ABI runtime helpers ─────────────────────────────────────────────
@@ -235,6 +281,7 @@ pub unsafe extern "C" fn lm_rt_handle_push(
     handler_entry: extern "C" fn(u64),
 ) {
     let stack = effect_stack_of(ctx);
+    drain_pending_handler_frees(ctx, stack);
     let parent_fiber = current_fiber_of(ctx);
 
     // Allocate a new handler fiber and initialize it with the entry function.
@@ -253,42 +300,48 @@ pub unsafe extern "C" fn lm_rt_handle_push(
 
 // ── lm_rt_handle_pop ─────────────────────────────────────────────────────────
 
-/// Remove the innermost handler from the effect stack and free its fiber.
+/// Remove the innermost handler from the effect stack.
 ///
 /// This is called after a `handle` block exits normally (no perform was
 /// dispatched to this handler, or the handler ran to completion).
 ///
-/// Does NOT perform a fiber switch — the handler ran on the current fiber.
-/// If the handler fiber was switched to (via `perform`), the handler would
-/// call `lm_rt_handle_pop` from within the handler fiber, in which case we
-/// switch back to the parent fiber before returning.
+/// If called from the handler fiber itself, the free is deferred until we are
+/// running on a different fiber, because freeing the currently-executing stack
+/// is unsafe.
 ///
 /// # Safety
 /// `ctx` must be valid and `ctx.effect_stack` must be initialized.
 #[no_mangle]
 pub unsafe extern "C" fn lm_rt_handle_pop(ctx: *mut VmContext) {
     let stack = effect_stack_of(ctx);
+    drain_pending_handler_frees(ctx, stack);
 
     let entry = match stack.handler_stack.pop() {
         Some(e) => e,
         None => return, // no handler to pop (should not happen in well-formed code)
     };
 
-    // Check if the current fiber IS the handler fiber BEFORE freeing it.
-    // Writing to entry.handler_fiber after Box::from_raw would be use-after-free.
-    let cur = current_fiber_of(ctx);
-    if cur == entry.handler_fiber && !entry.parent_fiber.is_null() {
+    if !entry.handler_fiber.is_null() {
         (*entry.handler_fiber).status = FiberStatus::Dead;
-        set_current_fiber(ctx, entry.parent_fiber);
-        // The parent fiber's saved state will be restored by the caller's ret.
-        // (The fiber is already dead; we don't switch here — the caller's
-        //  return path handles control flow for the interpreter case.)
+    }
+    let cur = current_fiber_of(ctx);
+    queue_handler_free(stack, entry.handler_fiber);
+    if cur == entry.handler_fiber {
+        // We are currently executing ON the handler fiber, so we must defer free
+        // and switch off this stack first. Any deferred free is drained next time
+        // runtime helpers run on a different current fiber.
+        if !entry.parent_fiber.is_null() {
+            set_current_fiber(ctx, entry.parent_fiber);
+            super::fiber::fiber_switch(entry.handler_fiber, entry.parent_fiber, 0);
+            // If this frame is ever resumed, re-drain now that we're off the popped stack.
+            let stack = effect_stack_of(ctx);
+            drain_pending_handler_frees(ctx, stack);
+        }
+        return;
     }
 
-    // Free the handler fiber AFTER any status writes above.
-    if !entry.handler_fiber.is_null() {
-        let _ = Box::from_raw(entry.handler_fiber);
-    }
+    // Safe to free immediately when we're not running on that stack.
+    drain_pending_handler_frees(ctx, stack);
 }
 
 // ── lm_rt_perform ────────────────────────────────────────────────────────────
@@ -320,6 +373,7 @@ pub unsafe extern "C" fn lm_rt_perform(
     arg: u64, // NbValue bits
 ) -> u64 {
     let stack = effect_stack_of(ctx);
+    drain_pending_handler_frees(ctx, stack);
 
     let handler_idx = match stack.find_handler(effect_id, op_id) {
         Some(idx) => idx,
@@ -424,6 +478,7 @@ pub unsafe extern "C" fn lm_rt_fiber_set_pinned(ctx: *mut VmContext, pinned: boo
 #[no_mangle]
 pub unsafe extern "C" fn lm_rt_resume(ctx: *mut VmContext, value: u64) -> u64 {
     let stack = effect_stack_of(ctx);
+    drain_pending_handler_frees(ctx, stack);
 
     let performer = match stack.suspended.take() {
         Some(p) => p,
@@ -558,6 +613,41 @@ mod tests {
             let stack = effect_stack_of(ptr);
             assert_eq!(stack.handler_stack.len(), 0);
 
+            lm_rt_effect_stack_free(ptr);
+        }
+    }
+
+    #[test]
+    fn handle_pop_defers_free_for_current_handler() {
+        let (ptr, _ctx) = make_ctx_with_stack();
+
+        extern "C" fn dummy_handler(_arg: u64) {}
+
+        unsafe {
+            lm_rt_handle_push(ptr, 1, 0, dummy_handler);
+            let handler = {
+                let stack = effect_stack_of(ptr);
+                stack.handler_stack[0].handler_fiber
+            };
+
+            // Simulate "currently executing on handler fiber".
+            (*ptr).current_fiber = handler as *mut ();
+            lm_rt_handle_pop(ptr);
+
+            let stack = effect_stack_of(ptr);
+            assert!(stack.handler_stack.is_empty());
+            assert_eq!(stack.pending_handler_frees.len(), 1);
+            assert_eq!(stack.pending_handler_frees[0], handler);
+
+            // Move back to another fiber and trigger a drain.
+            let mut main_fiber = Fiber::new(DEFAULT_FIBER_STACK_SIZE);
+            (*ptr).current_fiber = &mut *main_fiber as *mut Fiber as *mut ();
+            lm_rt_handle_push(ptr, 2, 0, dummy_handler);
+
+            let stack = effect_stack_of(ptr);
+            assert!(stack.pending_handler_frees.is_empty());
+
+            lm_rt_handle_pop(ptr);
             lm_rt_effect_stack_free(ptr);
         }
     }

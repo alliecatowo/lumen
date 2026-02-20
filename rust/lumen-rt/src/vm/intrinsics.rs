@@ -9,6 +9,137 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 impl VM {
+    /// Borrow-through helper for TAG_PTR values (payload > 1).
+    #[inline]
+    fn nb_borrow_value(&self, nb: NbValue) -> Option<&Value> {
+        if !nb.is_ptr() {
+            return None;
+        }
+        let payload = nb.payload();
+        if payload <= 1 {
+            return None;
+        }
+        Some(unsafe { &*(payload as *const Value) })
+    }
+
+    /// Display formatting that matches Value::display_pretty without forcing
+    /// a full NbValue -> Value bridge on common scalar paths.
+    #[inline]
+    fn nb_display_pretty(&self, nb: NbValue) -> String {
+        if nb.is_int() {
+            return nb.as_int().unwrap_or(0).to_string();
+        }
+        if nb.is_float() {
+            let f = f64::from_bits(nb.0);
+            if f == f.floor() && f.abs() < 1e15 {
+                return format!("{:.1}", f);
+            }
+            return format!("{}", f);
+        }
+        if nb.is_bool() {
+            return nb.as_bool().unwrap_or(false).to_string();
+        }
+        if nb.is_null() {
+            return "null".to_string();
+        }
+        if let Some(val_ref) = self.nb_borrow_value(nb) {
+            return val_ref.display_pretty();
+        }
+        nb.peek_legacy().display_pretty()
+    }
+
+    /// String conversion that mirrors Value::as_string_resolved semantics:
+    /// interned strings resolve through the table, and floats keep one
+    /// decimal when they are integral.
+    #[inline]
+    fn nb_to_string_as_resolved_value(&self, nb: NbValue) -> String {
+        if let Some(val_ref) = self.nb_borrow_value(nb) {
+            return match val_ref {
+                Value::String(StringRef::Owned(s)) => s.clone(),
+                Value::String(StringRef::Interned(id)) => {
+                    self.strings.resolve(*id).unwrap_or("").to_string()
+                }
+                Value::Int(i) => i.to_string(),
+                Value::Float(f) => {
+                    if *f == f.floor() && f.abs() < 1e15 {
+                        format!("{:.1}", f)
+                    } else {
+                        format!("{}", f)
+                    }
+                }
+                Value::Bool(b) => b.to_string(),
+                Value::Null => "null".to_string(),
+                other => other.as_string_resolved(&self.strings),
+            };
+        }
+        if nb.is_int() {
+            return nb.as_int().unwrap_or(0).to_string();
+        }
+        if nb.is_float() {
+            let f = f64::from_bits(nb.0);
+            if f == f.floor() && f.abs() < 1e15 {
+                return format!("{:.1}", f);
+            }
+            return format!("{}", f);
+        }
+        if nb.is_bool() {
+            return nb.as_bool().unwrap_or(false).to_string();
+        }
+        if nb.is_null() {
+            return "null".to_string();
+        }
+        nb.peek_legacy().as_string_resolved(&self.strings)
+    }
+
+    /// Extract a string from an NbValue using TAG_PTR borrow-through when possible.
+    /// Avoids deep-cloning the Value just to get at the string inside.
+    #[inline]
+    fn nb_to_string_resolved(&self, nb: NbValue) -> String {
+        if let Some(val_ref) = self.nb_borrow_value(nb) {
+            return match val_ref {
+                Value::String(StringRef::Owned(s)) => s.clone(),
+                Value::String(StringRef::Interned(id)) => {
+                    self.strings.resolve(*id).unwrap_or("").to_string()
+                }
+                Value::Int(i) => i.to_string(),
+                Value::Float(f) => format!("{}", f),
+                Value::Bool(b) => b.to_string(),
+                Value::Null => "null".to_string(),
+                other => other.display_pretty(),
+            };
+        }
+        if nb.is_int() {
+            return nb.as_int().unwrap_or(0).to_string();
+        }
+        if nb.is_float() {
+            return format!("{}", f64::from_bits(nb.0));
+        }
+        if nb.is_bool() {
+            return nb.as_bool().unwrap_or(false).to_string();
+        }
+        if nb.is_null() {
+            return "null".to_string();
+        }
+        nb.peek_legacy().as_string_resolved(&self.strings)
+    }
+
+    /// Extract an int from an NbValue, using TAG_PTR borrow-through as fallback.
+    #[inline]
+    fn nb_to_int(&self, nb: NbValue) -> Option<i64> {
+        if nb.is_int() {
+            return nb.as_int();
+        }
+        if nb.is_float() || nb.is_bool() || nb.is_null() {
+            return None;
+        }
+        if let Some(val_ref) = self.nb_borrow_value(nb) {
+            if let Value::Int(i) = val_ref {
+                return Some(*i);
+            }
+        }
+        nb.peek_legacy().as_int()
+    }
+
     /// Execute a built-in function by name.
     pub(crate) fn call_builtin(
         &mut self,
@@ -24,8 +155,9 @@ impl VM {
             "print" => {
                 let mut parts = Vec::new();
                 for i in 0..nargs {
-                    let val = self.registers[base + a + 1 + i].peek_legacy();
-                    parts.push(val.display_pretty());
+                    let nb = self.registers[base + a + 1 + i];
+                    let s = self.nb_display_pretty(nb);
+                    parts.push(s);
                 }
                 let output = parts.join(" ");
                 println!("{}", output);
@@ -38,6 +170,26 @@ impl VM {
                 let nb = self.registers[base + a + 1];
                 if nb.is_int() || nb.is_float() || nb.is_bool() || nb.is_null() {
                     return Ok(Value::Int(0));
+                }
+                // TAG_PTR borrow-through: read len without cloning the collection
+                if nb.is_ptr() {
+                    let payload = nb.payload();
+                    if payload > 1 {
+                        let val_ref = unsafe { &*(payload as *const Value) };
+                        let len = match val_ref {
+                            Value::String(StringRef::Owned(s)) => s.len() as i64,
+                            Value::String(StringRef::Interned(id)) => {
+                                self.strings.resolve(*id).map(|s| s.len()).unwrap_or(0) as i64
+                            }
+                            Value::List(l) => l.len() as i64,
+                            Value::Map(m) => m.len() as i64,
+                            Value::Tuple(t) => t.len() as i64,
+                            Value::Set(s) => s.len() as i64,
+                            Value::Bytes(b) => b.len() as i64,
+                            _ => 0,
+                        };
+                        return Ok(Value::Int(len));
+                    }
                 }
                 let arg = nb.peek_legacy();
                 Ok(match arg {
@@ -66,31 +218,7 @@ impl VM {
             }
             "to_string" | "str" | "string" => {
                 let nb = self.registers[base + a + 1];
-                // NbValue fast-paths for common scalar types — no heap touch.
-                if nb.is_int() {
-                    return Ok(Value::String(StringRef::Owned(
-                        nb.as_int().unwrap_or(0).to_string(),
-                    )));
-                }
-                if nb.is_float() {
-                    let f = f64::from_bits(nb.0);
-                    let s = if f == f.floor() && f.abs() < 1e15 {
-                        format!("{:.1}", f)
-                    } else {
-                        format!("{}", f)
-                    };
-                    return Ok(Value::String(StringRef::Owned(s)));
-                }
-                if nb.is_bool() {
-                    return Ok(Value::String(StringRef::Owned(
-                        nb.as_bool().unwrap_or(false).to_string(),
-                    )));
-                }
-                if nb.is_null() {
-                    return Ok(Value::String(StringRef::Owned("null".to_string())));
-                }
-                let arg = nb.peek_legacy();
-                Ok(Value::String(StringRef::Owned(arg.display_pretty())))
+                Ok(Value::String(StringRef::Owned(self.nb_display_pretty(nb))))
             }
             "to_int" | "int" => {
                 let nb = self.registers[base + a + 1];
@@ -102,7 +230,11 @@ impl VM {
                     return Ok(Value::Int(f64::from_bits(nb.0) as i64));
                 }
                 if nb.is_bool() {
-                    return Ok(Value::Int(if nb.as_bool().unwrap_or(false) { 1 } else { 0 }));
+                    return Ok(Value::Int(if nb.as_bool().unwrap_or(false) {
+                        1
+                    } else {
+                        0
+                    }));
                 }
                 if nb.is_null() {
                     return Ok(Value::Null);
@@ -156,11 +288,52 @@ impl VM {
                 })
             }
             "type_of" | "type" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
-                Ok(Value::String(StringRef::Owned(arg.type_name().to_string())))
+                let nb = self.registers[base + a + 1];
+                let name = if nb.is_int() {
+                    "Int"
+                } else if nb.is_float() {
+                    "Float"
+                } else if nb.is_bool() {
+                    "Bool"
+                } else if nb.is_null() {
+                    "Null"
+                } else if nb.is_ptr() {
+                    let payload = nb.payload();
+                    if payload > 1 {
+                        let val_ref = unsafe { &*(payload as *const Value) };
+                        val_ref.type_name()
+                    } else {
+                        "Null"
+                    }
+                } else {
+                    let arg = nb.peek_legacy();
+                    return Ok(Value::String(StringRef::Owned(arg.type_name().to_string())));
+                };
+                Ok(Value::String(StringRef::Owned(name.to_string())))
             }
             "keys" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
+                let nb = self.registers[base + a + 1];
+                if nb.is_ptr() {
+                    let payload = nb.payload();
+                    if payload > 1 {
+                        let val_ref = unsafe { &*(payload as *const Value) };
+                        return Ok(match val_ref {
+                            Value::Map(m) => Value::new_list(
+                                m.keys()
+                                    .map(|k| Value::String(StringRef::Owned(k.clone())))
+                                    .collect(),
+                            ),
+                            Value::Record(r) => Value::new_list(
+                                r.fields
+                                    .keys()
+                                    .map(|k| Value::String(StringRef::Owned(k.clone())))
+                                    .collect(),
+                            ),
+                            _ => Value::new_list(vec![]),
+                        });
+                    }
+                }
+                let arg = nb.peek_legacy();
                 Ok(match arg {
                     Value::Map(m) => Value::new_list(
                         m.keys()
@@ -177,7 +350,21 @@ impl VM {
                 })
             }
             "values" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
+                let nb = self.registers[base + a + 1];
+                if nb.is_ptr() {
+                    let payload = nb.payload();
+                    if payload > 1 {
+                        let val_ref = unsafe { &*(payload as *const Value) };
+                        return Ok(match val_ref {
+                            Value::Map(m) => Value::new_list(m.values().cloned().collect()),
+                            Value::Record(r) => {
+                                Value::new_list(r.fields.values().cloned().collect())
+                            }
+                            _ => Value::new_list(vec![]),
+                        });
+                    }
+                }
+                let arg = nb.peek_legacy();
                 Ok(match arg {
                     Value::Map(m) => Value::new_list(m.values().cloned().collect()),
                     Value::Record(r) => Value::new_list(r.fields.values().cloned().collect()),
@@ -185,8 +372,24 @@ impl VM {
                 })
             }
             "contains" | "has" => {
-                let collection = self.registers[base + a + 1].peek_legacy();
-                let needle = self.registers[base + a + 2].peek_legacy();
+                // TAG_PTR borrow-through fast-path: avoid cloning the collection
+                let coll_nb = self.registers[base + a + 1];
+                let needle_nb = self.registers[base + a + 2];
+                if coll_nb.is_ptr() && coll_nb.payload() > 1 {
+                    let coll_ref = unsafe { &*(coll_nb.payload() as *const Value) };
+                    // Fast-path: int needle in list (primes sieve pattern)
+                    if needle_nb.is_int() {
+                        let needle_val = Value::Int(needle_nb.as_int().unwrap_or(0));
+                        let result = match coll_ref {
+                            Value::List(l) => l.iter().any(|v| v == &needle_val),
+                            Value::Set(s) => s.iter().any(|v| v == &needle_val),
+                            _ => false,
+                        };
+                        return Ok(Value::Bool(result));
+                    }
+                }
+                let collection = coll_nb.peek_legacy();
+                let needle = needle_nb.peek_legacy();
                 let result = match collection {
                     Value::List(l) => l.iter().any(|v| v == &needle),
                     Value::Set(s) => s.iter().any(|v| v == &needle),
@@ -209,14 +412,25 @@ impl VM {
                 Ok(Value::Bool(result))
             }
             "join" => {
-                let list = self.registers[base + a + 1].peek_legacy();
+                let list_nb = self.registers[base + a + 1];
                 let sep = if nargs > 1 {
-                    self.registers[base + a + 2]
-                        .peek_legacy()
-                        .as_string_resolved(&self.strings)
+                    self.nb_to_string_resolved(self.registers[base + a + 2])
                 } else {
                     ", ".to_string()
                 };
+                // TAG_PTR borrow-through for the list
+                if list_nb.is_ptr() && list_nb.payload() > 1 {
+                    let val_ref = unsafe { &*(list_nb.payload() as *const Value) };
+                    if let Value::List(l) = val_ref {
+                        let joined = l
+                            .iter()
+                            .map(|v| v.display_pretty())
+                            .collect::<Vec<_>>()
+                            .join(&sep);
+                        return Ok(Value::String(StringRef::Owned(joined)));
+                    }
+                }
+                let list = list_nb.peek_legacy();
                 if let Value::List(l) = list {
                     let joined = l
                         .iter()
@@ -229,13 +443,9 @@ impl VM {
                 }
             }
             "split" => {
-                let s = self.registers[base + a + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
+                let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
                 let sep = if nargs > 1 {
-                    self.registers[base + a + 2]
-                        .peek_legacy()
-                        .as_string_resolved(&self.strings)
+                    self.nb_to_string_resolved(self.registers[base + a + 2])
                 } else {
                     " ".to_string()
                 };
@@ -246,33 +456,21 @@ impl VM {
                 Ok(Value::new_list(parts))
             }
             "trim" => {
-                let s = self.registers[base + a + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
+                let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
                 Ok(Value::String(StringRef::Owned(s.trim().to_string())))
             }
             "upper" => {
-                let s = self.registers[base + a + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
+                let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
                 Ok(Value::String(StringRef::Owned(s.to_uppercase())))
             }
             "lower" => {
-                let s = self.registers[base + a + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
+                let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
                 Ok(Value::String(StringRef::Owned(s.to_lowercase())))
             }
             "replace" => {
-                let s = self.registers[base + a + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
-                let from = self.registers[base + a + 2]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
-                let to = self.registers[base + a + 3]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
+                let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
+                let from = self.nb_to_string_resolved(self.registers[base + a + 2]);
+                let to = self.nb_to_string_resolved(self.registers[base + a + 3]);
                 Ok(Value::String(StringRef::Owned(s.replace(&from, &to))))
             }
             "abs" => {
@@ -348,16 +546,8 @@ impl VM {
                 // NbValue fast-path: extract ints without peek_legacy.
                 let start_nb = self.registers[base + a + 1];
                 let end_nb = self.registers[base + a + 2];
-                let start = if start_nb.is_int() {
-                    start_nb.as_int().unwrap_or(0)
-                } else {
-                    start_nb.peek_legacy().as_int().unwrap_or(0)
-                };
-                let end = if end_nb.is_int() {
-                    end_nb.as_int().unwrap_or(0)
-                } else {
-                    end_nb.peek_legacy().as_int().unwrap_or(0)
-                };
+                let start = self.nb_to_int(start_nb).unwrap_or(0);
+                let end = self.nb_to_int(end_nb).unwrap_or(0);
                 let list: Vec<Value> = (start..end).map(Value::Int).collect();
                 Ok(Value::new_list(list))
             }
@@ -537,21 +727,8 @@ impl VM {
             }
             "hash" | "sha256" => {
                 use sha2::{Digest, Sha256};
-                let val = self.registers[base + a + 1].peek_legacy();
-                let owned = match &val {
-                    Value::String(StringRef::Owned(_)) | Value::String(StringRef::Interned(_)) => {
-                        None
-                    }
-                    _ => Some(val.as_string_resolved(&self.strings)),
-                };
-                let bytes = match &val {
-                    Value::String(StringRef::Owned(s)) => s.as_bytes(),
-                    Value::String(StringRef::Interned(id)) => {
-                        self.strings.resolve(*id).unwrap_or("").as_bytes()
-                    }
-                    _ => owned.as_ref().unwrap().as_bytes(),
-                };
-                let h = format!("sha256:{:x}", Sha256::digest(bytes));
+                let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
+                let h = format!("sha256:{:x}", Sha256::digest(s.as_bytes()));
                 Ok(Value::String(StringRef::Owned(h)))
             }
             "sort" => {
@@ -573,7 +750,22 @@ impl VM {
                 }
             }
             "flatten" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
+                let nb = self.registers[base + a + 1];
+                if nb.is_ptr() && nb.payload() > 1 {
+                    let val_ref = unsafe { &*(nb.payload() as *const Value) };
+                    if let Value::List(l) = val_ref {
+                        let mut result = Vec::new();
+                        for item in l.iter() {
+                            if let Value::List(inner) = item {
+                                result.extend(inner.iter().cloned());
+                            } else {
+                                result.push(item.clone());
+                            }
+                        }
+                        return Ok(Value::new_list(result));
+                    }
+                }
+                let arg = nb.peek_legacy();
                 if let Value::List(l) = arg {
                     let mut result = Vec::new();
                     for item in l.iter() {
@@ -589,7 +781,20 @@ impl VM {
                 }
             }
             "unique" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
+                let nb = self.registers[base + a + 1];
+                if nb.is_ptr() && nb.payload() > 1 {
+                    let val_ref = unsafe { &*(nb.payload() as *const Value) };
+                    if let Value::List(l) = val_ref {
+                        let mut result = Vec::new();
+                        for item in l.iter() {
+                            if !result.contains(item) {
+                                result.push(item.clone());
+                            }
+                        }
+                        return Ok(Value::new_list(result));
+                    }
+                }
+                let arg = nb.peek_legacy();
                 if let Value::List(l) = arg {
                     let mut result = Vec::new();
                     for item in l.iter() {
@@ -603,11 +808,15 @@ impl VM {
                 }
             }
             "take" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
-                let n = self.registers[base + a + 2]
-                    .peek_legacy()
-                    .as_int()
-                    .unwrap_or(0) as usize;
+                let nb = self.registers[base + a + 1];
+                let n = self.nb_to_int(self.registers[base + a + 2]).unwrap_or(0) as usize;
+                if nb.is_ptr() && nb.payload() > 1 {
+                    let val_ref = unsafe { &*(nb.payload() as *const Value) };
+                    if let Value::List(l) = val_ref {
+                        return Ok(Value::new_list(l.iter().take(n).cloned().collect()));
+                    }
+                }
+                let arg = nb.peek_legacy();
                 if let Value::List(l) = arg {
                     Ok(Value::new_list(l.iter().take(n).cloned().collect()))
                 } else {
@@ -615,11 +824,15 @@ impl VM {
                 }
             }
             "drop" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
-                let n = self.registers[base + a + 2]
-                    .peek_legacy()
-                    .as_int()
-                    .unwrap_or(0) as usize;
+                let nb = self.registers[base + a + 1];
+                let n = self.nb_to_int(self.registers[base + a + 2]).unwrap_or(0) as usize;
+                if nb.is_ptr() && nb.payload() > 1 {
+                    let val_ref = unsafe { &*(nb.payload() as *const Value) };
+                    if let Value::List(l) = val_ref {
+                        return Ok(Value::new_list(l.iter().skip(n).cloned().collect()));
+                    }
+                }
+                let arg = nb.peek_legacy();
                 if let Value::List(l) = arg {
                     Ok(Value::new_list(l.iter().skip(n).cloned().collect()))
                 } else {
@@ -627,7 +840,19 @@ impl VM {
                 }
             }
             "first" | "head" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
+                let nb = self.registers[base + a + 1];
+                if nb.is_ptr() {
+                    let payload = nb.payload();
+                    if payload > 1 {
+                        let val_ref = unsafe { &*(payload as *const Value) };
+                        return Ok(match val_ref {
+                            Value::List(l) => l.first().cloned().unwrap_or(Value::Null),
+                            Value::Tuple(t) => t.first().cloned().unwrap_or(Value::Null),
+                            _ => Value::Null,
+                        });
+                    }
+                }
+                let arg = nb.peek_legacy();
                 Ok(match arg {
                     Value::List(l) => l.first().cloned().unwrap_or(Value::Null),
                     Value::Tuple(t) => t.first().cloned().unwrap_or(Value::Null),
@@ -635,7 +860,19 @@ impl VM {
                 })
             }
             "last" | "tail" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
+                let nb = self.registers[base + a + 1];
+                if nb.is_ptr() {
+                    let payload = nb.payload();
+                    if payload > 1 {
+                        let val_ref = unsafe { &*(payload as *const Value) };
+                        return Ok(match val_ref {
+                            Value::List(l) => l.last().cloned().unwrap_or(Value::Null),
+                            Value::Tuple(t) => t.last().cloned().unwrap_or(Value::Null),
+                            _ => Value::Null,
+                        });
+                    }
+                }
+                let arg = nb.peek_legacy();
                 Ok(match arg {
                     Value::List(l) => l.last().cloned().unwrap_or(Value::Null),
                     Value::Tuple(t) => t.last().cloned().unwrap_or(Value::Null),
@@ -643,7 +880,35 @@ impl VM {
                 })
             }
             "is_empty" | "empty" => {
-                let arg = self.registers[base + a + 1].peek_legacy();
+                let nb = self.registers[base + a + 1];
+                if nb.is_null() {
+                    return Ok(Value::Bool(true));
+                }
+                if nb.is_int() || nb.is_float() || nb.is_bool() {
+                    return Ok(Value::Bool(false));
+                }
+                if nb.is_ptr() {
+                    let payload = nb.payload();
+                    if payload > 1 {
+                        let val_ref = unsafe { &*(payload as *const Value) };
+                        let empty = match val_ref {
+                            Value::List(l) => l.is_empty(),
+                            Value::Map(m) => m.is_empty(),
+                            Value::Set(s) => s.is_empty(),
+                            Value::Tuple(t) => t.is_empty(),
+                            Value::String(StringRef::Owned(s)) => s.is_empty(),
+                            Value::String(StringRef::Interned(id)) => self
+                                .strings
+                                .resolve(*id)
+                                .map(|s| s.is_empty())
+                                .unwrap_or(true),
+                            Value::Null => true,
+                            _ => false,
+                        };
+                        return Ok(Value::Bool(empty));
+                    }
+                }
+                let arg = nb.peek_legacy();
                 let empty = match arg {
                     Value::List(l) => l.is_empty(),
                     Value::Map(m) => m.is_empty(),
@@ -655,9 +920,7 @@ impl VM {
                 Ok(Value::Bool(empty))
             }
             "chars" => {
-                let s = self.registers[base + a + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
+                let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
                 Ok(Value::new_list(
                     s.chars()
                         .map(|c| Value::String(StringRef::Owned(c.to_string())))
@@ -665,30 +928,18 @@ impl VM {
                 ))
             }
             "starts_with" => {
-                let s = self.registers[base + a + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
-                let prefix = self.registers[base + a + 2]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
+                let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
+                let prefix = self.nb_to_string_resolved(self.registers[base + a + 2]);
                 Ok(Value::Bool(s.starts_with(&prefix)))
             }
             "ends_with" => {
-                let s = self.registers[base + a + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
-                let suffix = self.registers[base + a + 2]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
+                let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
+                let suffix = self.nb_to_string_resolved(self.registers[base + a + 2]);
                 Ok(Value::Bool(s.ends_with(&suffix)))
             }
             "index_of" => {
-                let s = self.registers[base + a + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
-                let needle = self.registers[base + a + 2]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
+                let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
+                let needle = self.nb_to_string_resolved(self.registers[base + a + 2]);
                 Ok(match s.find(&needle) {
                     Some(i) => {
                         let char_idx = s[..i].chars().count();
@@ -698,13 +949,8 @@ impl VM {
                 })
             }
             "pad_left" => {
-                let s = self.registers[base + a + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
-                let width = self.registers[base + a + 2]
-                    .peek_legacy()
-                    .as_int()
-                    .unwrap_or(0) as usize;
+                let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
+                let width = self.nb_to_int(self.registers[base + a + 2]).unwrap_or(0) as usize;
                 let char_count = s.chars().count();
                 if char_count < width {
                     let padding = " ".repeat(width - char_count);
@@ -714,13 +960,8 @@ impl VM {
                 }
             }
             "pad_right" => {
-                let s = self.registers[base + a + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
-                let width = self.registers[base + a + 2]
-                    .peek_legacy()
-                    .as_int()
-                    .unwrap_or(0) as usize;
+                let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
+                let width = self.nb_to_int(self.registers[base + a + 2]).unwrap_or(0) as usize;
                 let char_count = s.chars().count();
                 if char_count < width {
                     let padding = " ".repeat(width - char_count);
@@ -879,62 +1120,55 @@ impl VM {
                 Ok(val_nb.peek_legacy())
             }
             "json_parse" | "parse_json" => {
-                let s = self.registers[base + a + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
+                let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
                 match parse_json_optimized(&s) {
                     Ok(v) => Ok(v),
                     Err(_) => Ok(Value::Null),
                 }
             }
             "json_encode" | "to_json" => {
-                let val = self.registers[base + a + 1].peek_legacy();
+                let nb = self.registers[base + a + 1];
+                if nb.is_ptr() && nb.payload() > 1 {
+                    let val_ref = unsafe { &*(nb.payload() as *const Value) };
+                    let j = helpers::value_to_json(val_ref, &self.strings);
+                    return Ok(Value::String(StringRef::Owned(j.to_string())));
+                }
+                let val = nb.peek_legacy();
                 let j = helpers::value_to_json(&val, &self.strings);
                 Ok(Value::String(StringRef::Owned(j.to_string())))
             }
             "json_pretty" => {
-                let val = self.registers[base + a + 1].peek_legacy();
+                let nb = self.registers[base + a + 1];
+                if nb.is_ptr() && nb.payload() > 1 {
+                    let val_ref = unsafe { &*(nb.payload() as *const Value) };
+                    let j = helpers::value_to_json(val_ref, &self.strings);
+                    let pretty = serde_json::to_string_pretty(&j)
+                        .map_err(|e| VmError::Runtime(format!("json_pretty failed: {}", e)))?;
+                    return Ok(Value::String(StringRef::Owned(pretty)));
+                }
+                let val = nb.peek_legacy();
                 let j = helpers::value_to_json(&val, &self.strings);
                 let pretty = serde_json::to_string_pretty(&j)
                     .map_err(|e| VmError::Runtime(format!("json_pretty failed: {}", e)))?;
                 Ok(Value::String(StringRef::Owned(pretty)))
             }
             "read_file" => {
-                let path = self.registers[base + a + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
+                let path = self.nb_to_string_resolved(self.registers[base + a + 1]);
                 match std::fs::read_to_string(path) {
                     Ok(contents) => Ok(Value::String(StringRef::Owned(contents))),
                     Err(e) => Err(VmError::Runtime(format!("read_file failed: {}", e))),
                 }
             }
             "write_file" => {
-                let path = self.registers[base + a + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
-                let content = self.registers[base + a + 2].peek_legacy();
-                let owned = match &content {
-                    Value::String(StringRef::Owned(_)) | Value::String(StringRef::Interned(_)) => {
-                        None
-                    }
-                    _ => Some(content.as_string_resolved(&self.strings)),
-                };
-                let bytes = match &content {
-                    Value::String(StringRef::Owned(s)) => s.as_bytes(),
-                    Value::String(StringRef::Interned(id)) => {
-                        self.strings.resolve(*id).unwrap_or("").as_bytes()
-                    }
-                    _ => owned.as_ref().unwrap().as_bytes(),
-                };
-                match std::fs::write(path, bytes) {
+                let path = self.nb_to_string_resolved(self.registers[base + a + 1]);
+                let content_str = self.nb_to_string_resolved(self.registers[base + a + 2]);
+                match std::fs::write(path, content_str.as_bytes()) {
                     Ok(()) => Ok(Value::Null),
                     Err(e) => Err(VmError::Runtime(format!("write_file failed: {}", e))),
                 }
             }
             "get_env" => {
-                let name = self.registers[base + a + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
+                let name = self.nb_to_string_resolved(self.registers[base + a + 1]);
                 match std::env::var(name) {
                     Ok(val) => Ok(Value::String(StringRef::Owned(val))),
                     Err(_) => Ok(Value::Null),
@@ -958,14 +1192,10 @@ impl VM {
                 Ok(Value::String(StringRef::Owned(id)))
             }
             "random_int" => {
-                let min = match self.registers[base + a + 1].peek_legacy() {
-                    Value::Int(n) => n,
-                    _ => 0,
-                };
-                let max = match self.registers[base + a + 2].peek_legacy() {
-                    Value::Int(n) => n,
-                    _ => i64::MAX,
-                };
+                let min = self.nb_to_int(self.registers[base + a + 1]).unwrap_or(0);
+                let max = self
+                    .nb_to_int(self.registers[base + a + 2])
+                    .unwrap_or(i64::MAX);
                 if min > max {
                     return Err(VmError::Runtime(format!(
                         "random_int: min ({}) must be less than or equal to max ({})",
@@ -985,7 +1215,7 @@ impl VM {
             }
             "panic" => {
                 let msg = if nargs > 0 {
-                    self.registers[base + a + 1].peek_legacy().display_pretty()
+                    self.nb_to_string_resolved(self.registers[base + a + 1])
                 } else {
                     "panic called".to_string()
                 };
@@ -999,9 +1229,7 @@ impl VM {
                 Ok(Value::Null)
             }
             "hex_decode" => {
-                let s = self.registers[base + a + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
+                let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
                 if !s.is_ascii() || s.len() % 2 != 0 {
                     return Ok(Value::Null);
                 }
@@ -1021,15 +1249,11 @@ impl VM {
                 )))
             }
             "trim_start" => {
-                let s = self.registers[base + a + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
+                let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
                 Ok(Value::String(StringRef::Owned(s.trim_start().to_string())))
             }
             "trim_end" => {
-                let s = self.registers[base + a + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
+                let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
                 Ok(Value::String(StringRef::Owned(s.trim_end().to_string())))
             }
             _ => Err(VmError::Runtime(format!("unknown builtin: {}", name))),
@@ -1044,7 +1268,1046 @@ impl VM {
         func_id: usize,
         arg_reg: usize,
     ) -> Result<Value, VmError> {
-        let arg = self.registers[base + arg_reg].peek_legacy();
+        let arg_nb = self.registers[base + arg_reg];
+        match func_id {
+            0 => {
+                // LENGTH
+                if arg_nb.is_int() || arg_nb.is_float() || arg_nb.is_bool() || arg_nb.is_null() {
+                    return Ok(Value::Int(0));
+                }
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    let len = match val_ref {
+                        Value::String(StringRef::Owned(s)) => s.chars().count() as i64,
+                        Value::String(StringRef::Interned(id)) => {
+                            self.strings
+                                .resolve(*id)
+                                .map(|s| s.chars().count())
+                                .unwrap_or(0) as i64
+                        }
+                        Value::List(l) => l.len() as i64,
+                        Value::Map(m) => m.len() as i64,
+                        Value::Tuple(t) => t.len() as i64,
+                        Value::Set(s) => s.len() as i64,
+                        Value::Bytes(b) => b.len() as i64,
+                        _ => 0,
+                    };
+                    return Ok(Value::Int(len));
+                }
+                let arg = arg_nb.peek_legacy();
+                return Ok(match arg {
+                    Value::String(StringRef::Owned(s)) => Value::Int(s.chars().count() as i64),
+                    Value::String(StringRef::Interned(id)) => {
+                        let s = self.strings.resolve(id).unwrap_or("");
+                        Value::Int(s.chars().count() as i64)
+                    }
+                    Value::List(l) => Value::Int(l.len() as i64),
+                    Value::Map(m) => Value::Int(m.len() as i64),
+                    Value::Tuple(t) => Value::Int(t.len() as i64),
+                    Value::Set(s) => Value::Int(s.len() as i64),
+                    Value::Bytes(b) => Value::Int(b.len() as i64),
+                    _ => Value::Int(0),
+                });
+            }
+            1 => {
+                // COUNT
+                if arg_nb.is_int() || arg_nb.is_float() || arg_nb.is_bool() || arg_nb.is_null() {
+                    return Ok(Value::Int(0));
+                }
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    let count = match val_ref {
+                        Value::List(l) => l.len() as i64,
+                        Value::Map(m) => m.len() as i64,
+                        Value::String(StringRef::Owned(s)) => s.chars().count() as i64,
+                        _ => 0,
+                    };
+                    return Ok(Value::Int(count));
+                }
+                return Ok(Value::Int(0));
+            }
+            2 => {
+                // MATCHES
+                if arg_nb.is_bool() {
+                    return Ok(Value::Bool(arg_nb.as_bool().unwrap_or(false)));
+                }
+                if arg_nb.is_int() {
+                    return Ok(Value::Bool(arg_nb.as_int().unwrap_or(0) != 0));
+                }
+                if arg_nb.is_null() {
+                    return Ok(Value::Bool(false));
+                }
+                if arg_nb.is_float() {
+                    return Ok(Value::Bool(f64::from_bits(arg_nb.0) != 0.0));
+                }
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    return Ok(Value::Bool(val_ref.is_truthy()));
+                }
+                return Ok(Value::Bool(arg_nb.peek_legacy().is_truthy()));
+            }
+            3 => {
+                // HASH
+                use sha2::{Digest, Sha256};
+                let s = self.nb_display_pretty(arg_nb);
+                let hash = format!("{:x}", Sha256::digest(s.as_bytes()));
+                return Ok(Value::String(StringRef::Owned(format!("sha256:{}", hash))));
+            }
+            9 => {
+                // PRINT
+                let output = self.nb_display_pretty(arg_nb);
+                println!("{}", output);
+                self.output.push(output);
+                return Ok(Value::Null);
+            }
+            10 => {
+                // TO_STRING
+                return Ok(Value::String(StringRef::Owned(
+                    self.nb_display_pretty(arg_nb),
+                )));
+            }
+            11 => {
+                // TO_INT
+                if arg_nb.is_int() {
+                    return Ok(Value::Int(arg_nb.as_int().unwrap_or(0)));
+                }
+                if arg_nb.is_float() {
+                    return Ok(Value::Int(f64::from_bits(arg_nb.0) as i64));
+                }
+                if arg_nb.is_bool() {
+                    return Ok(Value::Int(if arg_nb.as_bool().unwrap_or(false) {
+                        1
+                    } else {
+                        0
+                    }));
+                }
+                if arg_nb.is_null() {
+                    return Ok(Value::Null);
+                }
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    let out = match val_ref {
+                        Value::Int(n) => Value::Int(*n),
+                        Value::Float(f) => Value::Int(*f as i64),
+                        Value::String(sr) => {
+                            let s = match sr {
+                                StringRef::Owned(s) => s.as_str(),
+                                StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                            };
+                            s.parse::<i64>().map(Value::Int).unwrap_or(Value::Null)
+                        }
+                        Value::Bool(b) => Value::Int(if *b { 1 } else { 0 }),
+                        _ => Value::Null,
+                    };
+                    return Ok(out);
+                }
+                let arg = arg_nb.peek_legacy();
+                return Ok(match arg {
+                    Value::Int(n) => Value::Int(n),
+                    Value::Float(f) => Value::Int(f as i64),
+                    Value::String(sr) => {
+                        let s = match sr {
+                            StringRef::Owned(s) => s,
+                            StringRef::Interned(id) => {
+                                self.strings.resolve(id).unwrap_or("").to_string()
+                            }
+                        };
+                        s.parse::<i64>().map(Value::Int).unwrap_or(Value::Null)
+                    }
+                    Value::Bool(b) => Value::Int(if b { 1 } else { 0 }),
+                    _ => Value::Null,
+                });
+            }
+            12 => {
+                // TO_FLOAT
+                if arg_nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(arg_nb.0)));
+                }
+                if arg_nb.is_int() {
+                    return Ok(Value::Float(arg_nb.as_int().unwrap_or(0) as f64));
+                }
+                if arg_nb.is_null() || arg_nb.is_bool() {
+                    return Ok(Value::Null);
+                }
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    let out = match val_ref {
+                        Value::Float(f) => Value::Float(*f),
+                        Value::Int(n) => Value::Float(*n as f64),
+                        Value::String(sr) => {
+                            let s = match sr {
+                                StringRef::Owned(s) => s.as_str(),
+                                StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                            };
+                            s.parse::<f64>().map(Value::Float).unwrap_or(Value::Null)
+                        }
+                        _ => Value::Null,
+                    };
+                    return Ok(out);
+                }
+                let arg = arg_nb.peek_legacy();
+                return Ok(match arg {
+                    Value::Float(f) => Value::Float(f),
+                    Value::Int(n) => Value::Float(n as f64),
+                    Value::String(sr) => {
+                        let s = match sr {
+                            StringRef::Owned(s) => s,
+                            StringRef::Interned(id) => {
+                                self.strings.resolve(id).unwrap_or("").to_string()
+                            }
+                        };
+                        s.parse::<f64>().map(Value::Float).unwrap_or(Value::Null)
+                    }
+                    _ => Value::Null,
+                });
+            }
+            13 => {
+                // TYPE_OF
+                if arg_nb.is_int() {
+                    return Ok(Value::String(StringRef::Owned("Int".to_string())));
+                }
+                if arg_nb.is_float() {
+                    return Ok(Value::String(StringRef::Owned("Float".to_string())));
+                }
+                if arg_nb.is_bool() {
+                    return Ok(Value::String(StringRef::Owned("Bool".to_string())));
+                }
+                if arg_nb.is_null() {
+                    return Ok(Value::String(StringRef::Owned("Null".to_string())));
+                }
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    return Ok(Value::String(StringRef::Owned(
+                        val_ref.type_name().to_string(),
+                    )));
+                }
+                return Ok(Value::String(StringRef::Owned(
+                    arg_nb.peek_legacy().type_name().to_string(),
+                )));
+            }
+            16 => {
+                // CONTAINS
+                let needle_nb = self.registers[base + arg_reg + 1];
+                let needle = if needle_nb.is_int() {
+                    Value::Int(needle_nb.as_int().unwrap_or(0))
+                } else if needle_nb.is_float() {
+                    Value::Float(f64::from_bits(needle_nb.0))
+                } else if needle_nb.is_bool() {
+                    Value::Bool(needle_nb.as_bool().unwrap_or(false))
+                } else if needle_nb.is_null() {
+                    Value::Null
+                } else {
+                    needle_nb.peek_legacy()
+                };
+                if let Some(collection) = self.nb_borrow_value(arg_nb) {
+                    let result = match collection {
+                        Value::List(l) => l.iter().any(|v| v == &needle),
+                        Value::Set(s) => s.iter().any(|v| v == &needle),
+                        Value::Map(m) => {
+                            let needle_str = needle.as_string_resolved(&self.strings);
+                            m.contains_key(&needle_str)
+                        }
+                        Value::String(sr) => {
+                            let s = match sr {
+                                StringRef::Owned(s) => s.as_str(),
+                                StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                            };
+                            let needle_str = needle.as_string_resolved(&self.strings);
+                            s.contains(&needle_str)
+                        }
+                        _ => false,
+                    };
+                    return Ok(Value::Bool(result));
+                }
+                if arg_nb.is_int() || arg_nb.is_float() || arg_nb.is_bool() || arg_nb.is_null() {
+                    return Ok(Value::Bool(false));
+                }
+                let collection = arg_nb.peek_legacy();
+                let result = match collection {
+                    Value::List(l) => l.iter().any(|v| v == &needle),
+                    Value::Set(s) => s.iter().any(|v| v == &needle),
+                    Value::Map(m) => {
+                        let needle_str = needle.as_string_resolved(&self.strings);
+                        m.contains_key(&needle_str)
+                    }
+                    Value::String(sr) => {
+                        let s = match sr {
+                            StringRef::Owned(s) => s,
+                            StringRef::Interned(id) => {
+                                self.strings.resolve(id).unwrap_or("").to_string()
+                            }
+                        };
+                        let needle_str = needle.as_string_resolved(&self.strings);
+                        s.contains(&needle_str)
+                    }
+                    _ => false,
+                };
+                return Ok(Value::Bool(result));
+            }
+            17 => {
+                // JOIN
+                let sep = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
+                if let Some(Value::List(l)) = self.nb_borrow_value(arg_nb) {
+                    let joined = l
+                        .iter()
+                        .map(|v| v.display_pretty())
+                        .collect::<Vec<_>>()
+                        .join(&sep);
+                    return Ok(Value::String(StringRef::Owned(joined)));
+                }
+                return Ok(Value::String(StringRef::Owned(String::new())));
+            }
+            18 => {
+                // SPLIT
+                let sep = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
+                let s = self.nb_to_string_as_resolved_value(arg_nb);
+                let parts: Vec<Value> = s
+                    .split(&sep)
+                    .map(|p| Value::String(StringRef::Owned(p.to_string())))
+                    .collect();
+                return Ok(Value::new_list(parts));
+            }
+            19 => {
+                // TRIM
+                let s = self.nb_to_string_as_resolved_value(arg_nb);
+                return Ok(Value::String(StringRef::Owned(s.trim().to_string())));
+            }
+            20 => {
+                // UPPER
+                let s = self.nb_to_string_as_resolved_value(arg_nb);
+                return Ok(Value::String(StringRef::Owned(s.to_uppercase())));
+            }
+            21 => {
+                // LOWER
+                let s = self.nb_to_string_as_resolved_value(arg_nb);
+                return Ok(Value::String(StringRef::Owned(s.to_lowercase())));
+            }
+            22 => {
+                // REPLACE
+                let from = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
+                let to = self.nb_to_string_resolved(self.registers[base + arg_reg + 2]);
+                let s = self.nb_to_string_as_resolved_value(arg_nb);
+                return Ok(Value::String(StringRef::Owned(s.replace(&from, &to))));
+            }
+            23 => {
+                // SLICE
+                let start = self
+                    .nb_to_int(self.registers[base + arg_reg + 1])
+                    .unwrap_or(0) as usize;
+                let end = self
+                    .nb_to_int(self.registers[base + arg_reg + 2])
+                    .unwrap_or(0) as usize;
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    let out = match val_ref {
+                        Value::List(l) => {
+                            let end = end.min(l.len());
+                            let start = start.min(end);
+                            Value::new_list(l[start..end].to_vec())
+                        }
+                        Value::String(sr) => {
+                            let s = match sr {
+                                StringRef::Owned(s) => s.clone(),
+                                StringRef::Interned(id) => {
+                                    self.strings.resolve(*id).unwrap_or("").to_string()
+                                }
+                            };
+                            let chars: Vec<char> = s.chars().collect();
+                            let end = end.min(chars.len());
+                            let start = start.min(end);
+                            Value::String(StringRef::Owned(chars[start..end].iter().collect()))
+                        }
+                        _ => Value::Null,
+                    };
+                    return Ok(out);
+                }
+                if arg_nb.is_int() || arg_nb.is_float() || arg_nb.is_bool() || arg_nb.is_null() {
+                    return Ok(Value::Null);
+                }
+                let arg = arg_nb.peek_legacy();
+                return Ok(match arg {
+                    Value::List(l) => {
+                        let end = end.min(l.len());
+                        let start = start.min(end);
+                        Value::new_list(l[start..end].to_vec())
+                    }
+                    Value::String(sr) => {
+                        let s = match sr {
+                            StringRef::Owned(s) => s,
+                            StringRef::Interned(id) => {
+                                self.strings.resolve(id).unwrap_or("").to_string()
+                            }
+                        };
+                        let chars: Vec<char> = s.chars().collect();
+                        let end = end.min(chars.len());
+                        let start = start.min(end);
+                        Value::String(StringRef::Owned(chars[start..end].iter().collect()))
+                    }
+                    _ => Value::Null,
+                });
+            }
+            25 => {
+                // RANGE
+                let start = self.nb_to_int(arg_nb).unwrap_or(0);
+                let end = self
+                    .nb_to_int(self.registers[base + arg_reg + 1])
+                    .unwrap_or(0);
+                let list: Vec<Value> = (start..end).map(Value::Int).collect();
+                return Ok(Value::new_list(list));
+            }
+            26 => {
+                // ABS
+                if arg_nb.is_int() {
+                    return Ok(Value::Int(arg_nb.as_int().unwrap_or(0).abs()));
+                }
+                if arg_nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(arg_nb.0).abs()));
+                }
+                if arg_nb.is_bool() || arg_nb.is_null() {
+                    return Ok(Value::Null);
+                }
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    return Ok(match val_ref {
+                        Value::Int(n) => Value::Int(n.abs()),
+                        Value::Float(f) => Value::Float(f.abs()),
+                        Value::BigInt(n) => Value::BigInt(n.abs()),
+                        _ => Value::Null,
+                    });
+                }
+                let arg = arg_nb.peek_legacy();
+                return Ok(match arg {
+                    Value::Int(n) => Value::Int(n.abs()),
+                    Value::Float(f) => Value::Float(f.abs()),
+                    Value::BigInt(ref n) => Value::BigInt(n.abs()),
+                    _ => Value::Null,
+                });
+            }
+            27 => {
+                // MIN
+                let other_nb = self.registers[base + arg_reg + 1];
+                if arg_nb.is_int() {
+                    let a = arg_nb.as_int().unwrap_or(0);
+                    if other_nb.is_int() {
+                        return Ok(Value::Int(a.min(other_nb.as_int().unwrap_or(0))));
+                    }
+                    if other_nb.is_float() {
+                        return Ok(Value::Float((a as f64).min(f64::from_bits(other_nb.0))));
+                    }
+                    return Ok(Value::Int(a));
+                }
+                if arg_nb.is_float() {
+                    let a = f64::from_bits(arg_nb.0);
+                    if other_nb.is_float() {
+                        return Ok(Value::Float(a.min(f64::from_bits(other_nb.0))));
+                    }
+                    if other_nb.is_int() {
+                        return Ok(Value::Float(a.min(other_nb.as_int().unwrap_or(0) as f64)));
+                    }
+                    return Ok(Value::Float(a));
+                }
+                if arg_nb.is_bool() {
+                    return Ok(Value::Bool(arg_nb.as_bool().unwrap_or(false)));
+                }
+                if arg_nb.is_null() {
+                    return Ok(Value::Null);
+                }
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    return match val_ref {
+                        Value::Int(a) => {
+                            if other_nb.is_int() {
+                                Ok(Value::Int((*a).min(other_nb.as_int().unwrap_or(0))))
+                            } else if other_nb.is_float() {
+                                Ok(Value::Float((*a as f64).min(f64::from_bits(other_nb.0))))
+                            } else {
+                                Ok(Value::Int(*a))
+                            }
+                        }
+                        Value::Float(a) => {
+                            if other_nb.is_float() {
+                                Ok(Value::Float(a.min(f64::from_bits(other_nb.0))))
+                            } else if other_nb.is_int() {
+                                Ok(Value::Float(a.min(other_nb.as_int().unwrap_or(0) as f64)))
+                            } else {
+                                Ok(Value::Float(*a))
+                            }
+                        }
+                        _ => Ok(val_ref.clone()),
+                    };
+                }
+                let arg = arg_nb.peek_legacy();
+                if let Value::Int(a) = &arg {
+                    if other_nb.is_int() {
+                        return Ok(Value::Int((*a).min(other_nb.as_int().unwrap_or(0))));
+                    }
+                    if other_nb.is_float() {
+                        return Ok(Value::Float((*a as f64).min(f64::from_bits(other_nb.0))));
+                    }
+                }
+                if let Value::Float(a) = &arg {
+                    if other_nb.is_float() {
+                        return Ok(Value::Float(a.min(f64::from_bits(other_nb.0))));
+                    }
+                    if other_nb.is_int() {
+                        return Ok(Value::Float(a.min(other_nb.as_int().unwrap_or(0) as f64)));
+                    }
+                }
+                return Ok(arg);
+            }
+            28 => {
+                // MAX
+                let other_nb = self.registers[base + arg_reg + 1];
+                if arg_nb.is_int() {
+                    let a = arg_nb.as_int().unwrap_or(0);
+                    if other_nb.is_int() {
+                        return Ok(Value::Int(a.max(other_nb.as_int().unwrap_or(0))));
+                    }
+                    if other_nb.is_float() {
+                        return Ok(Value::Float((a as f64).max(f64::from_bits(other_nb.0))));
+                    }
+                    return Ok(Value::Int(a));
+                }
+                if arg_nb.is_float() {
+                    let a = f64::from_bits(arg_nb.0);
+                    if other_nb.is_float() {
+                        return Ok(Value::Float(a.max(f64::from_bits(other_nb.0))));
+                    }
+                    if other_nb.is_int() {
+                        return Ok(Value::Float(a.max(other_nb.as_int().unwrap_or(0) as f64)));
+                    }
+                    return Ok(Value::Float(a));
+                }
+                if arg_nb.is_bool() {
+                    return Ok(Value::Bool(arg_nb.as_bool().unwrap_or(false)));
+                }
+                if arg_nb.is_null() {
+                    return Ok(Value::Null);
+                }
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    return match val_ref {
+                        Value::Int(a) => {
+                            if other_nb.is_int() {
+                                Ok(Value::Int((*a).max(other_nb.as_int().unwrap_or(0))))
+                            } else if other_nb.is_float() {
+                                Ok(Value::Float((*a as f64).max(f64::from_bits(other_nb.0))))
+                            } else {
+                                Ok(Value::Int(*a))
+                            }
+                        }
+                        Value::Float(a) => {
+                            if other_nb.is_float() {
+                                Ok(Value::Float(a.max(f64::from_bits(other_nb.0))))
+                            } else if other_nb.is_int() {
+                                Ok(Value::Float(a.max(other_nb.as_int().unwrap_or(0) as f64)))
+                            } else {
+                                Ok(Value::Float(*a))
+                            }
+                        }
+                        _ => Ok(val_ref.clone()),
+                    };
+                }
+                let arg = arg_nb.peek_legacy();
+                if let Value::Int(a) = &arg {
+                    if other_nb.is_int() {
+                        return Ok(Value::Int((*a).max(other_nb.as_int().unwrap_or(0))));
+                    }
+                    if other_nb.is_float() {
+                        return Ok(Value::Float((*a as f64).max(f64::from_bits(other_nb.0))));
+                    }
+                }
+                if let Value::Float(a) = &arg {
+                    if other_nb.is_float() {
+                        return Ok(Value::Float(a.max(f64::from_bits(other_nb.0))));
+                    }
+                    if other_nb.is_int() {
+                        return Ok(Value::Float(a.max(other_nb.as_int().unwrap_or(0) as f64)));
+                    }
+                }
+                return Ok(arg);
+            }
+            50 => {
+                // IS_EMPTY
+                if arg_nb.is_null() {
+                    return Ok(Value::Bool(true));
+                }
+                if arg_nb.is_int() || arg_nb.is_float() || arg_nb.is_bool() {
+                    return Ok(Value::Bool(false));
+                }
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    let empty = match val_ref {
+                        Value::List(l) => l.is_empty(),
+                        Value::Map(m) => m.is_empty(),
+                        Value::String(StringRef::Owned(s)) => s.is_empty(),
+                        Value::String(StringRef::Interned(id)) => {
+                            self.strings.resolve(*id).unwrap_or("").is_empty()
+                        }
+                        Value::Set(s) => s.is_empty(),
+                        Value::Null => true,
+                        _ => false,
+                    };
+                    return Ok(Value::Bool(empty));
+                }
+                return Ok(Value::Bool(false));
+            }
+            51 => {
+                // CHARS
+                let s = self.nb_to_string_as_resolved_value(arg_nb);
+                return Ok(Value::new_list(
+                    s.chars()
+                        .map(|c| Value::String(StringRef::Owned(c.to_string())))
+                        .collect(),
+                ));
+            }
+            52 => {
+                // STARTS_WITH
+                let s = self.nb_to_string_as_resolved_value(arg_nb);
+                let prefix = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
+                return Ok(Value::Bool(s.starts_with(&prefix)));
+            }
+            53 => {
+                // ENDS_WITH
+                let s = self.nb_to_string_as_resolved_value(arg_nb);
+                let suffix = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
+                return Ok(Value::Bool(s.ends_with(&suffix)));
+            }
+            54 => {
+                // INDEX_OF
+                let s = self.nb_to_string_as_resolved_value(arg_nb);
+                let needle = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
+                return Ok(match s.find(&needle) {
+                    Some(i) => {
+                        let char_idx = s[..i].chars().count();
+                        Value::Int(char_idx as i64)
+                    }
+                    None => Value::Int(-1),
+                });
+            }
+            55 => {
+                // PAD_LEFT
+                let s = self.nb_to_string_as_resolved_value(arg_nb);
+                let len = match self.nb_to_int(self.registers[base + arg_reg + 1]) {
+                    Some(n) => n as usize,
+                    None => return Ok(Value::Null),
+                };
+                if s.len() >= len {
+                    return Ok(Value::String(StringRef::Owned(s)));
+                }
+                let pad = " ".repeat(len - s.len());
+                return Ok(Value::String(StringRef::Owned(pad + &s)));
+            }
+            56 => {
+                // PAD_RIGHT
+                let s = self.nb_to_string_as_resolved_value(arg_nb);
+                let len = match self.nb_to_int(self.registers[base + arg_reg + 1]) {
+                    Some(n) => n as usize,
+                    None => return Ok(Value::Null),
+                };
+                if s.len() >= len {
+                    return Ok(Value::String(StringRef::Owned(s)));
+                }
+                let pad = " ".repeat(len - s.len());
+                return Ok(Value::String(StringRef::Owned(s + &pad)));
+            }
+            57 => {
+                // ROUND
+                if arg_nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(arg_nb.0).round()));
+                }
+                if arg_nb.is_int() {
+                    return Ok(Value::Int(arg_nb.as_int().unwrap_or(0)));
+                }
+                if arg_nb.is_bool() || arg_nb.is_null() {
+                    return Ok(Value::Null);
+                }
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    return Ok(match val_ref {
+                        Value::Float(f) => Value::Float(f.round()),
+                        Value::Int(n) => Value::Int(*n),
+                        _ => Value::Null,
+                    });
+                }
+                let arg = arg_nb.peek_legacy();
+                return Ok(match arg {
+                    Value::Float(f) => Value::Float(f.round()),
+                    Value::Int(n) => Value::Int(n),
+                    _ => Value::Null,
+                });
+            }
+            58 => {
+                // CEIL
+                if arg_nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(arg_nb.0).ceil()));
+                }
+                if arg_nb.is_int() {
+                    return Ok(Value::Int(arg_nb.as_int().unwrap_or(0)));
+                }
+                if arg_nb.is_bool() || arg_nb.is_null() {
+                    return Ok(Value::Null);
+                }
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    return Ok(match val_ref {
+                        Value::Float(f) => Value::Float(f.ceil()),
+                        Value::Int(n) => Value::Int(*n),
+                        _ => Value::Null,
+                    });
+                }
+                let arg = arg_nb.peek_legacy();
+                return Ok(match arg {
+                    Value::Float(f) => Value::Float(f.ceil()),
+                    Value::Int(n) => Value::Int(n),
+                    _ => Value::Null,
+                });
+            }
+            59 => {
+                // FLOOR
+                if arg_nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(arg_nb.0).floor()));
+                }
+                if arg_nb.is_int() {
+                    return Ok(Value::Int(arg_nb.as_int().unwrap_or(0)));
+                }
+                if arg_nb.is_bool() || arg_nb.is_null() {
+                    return Ok(Value::Null);
+                }
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    return Ok(match val_ref {
+                        Value::Float(f) => Value::Float(f.floor()),
+                        Value::Int(n) => Value::Int(*n),
+                        _ => Value::Null,
+                    });
+                }
+                let arg = arg_nb.peek_legacy();
+                return Ok(match arg {
+                    Value::Float(f) => Value::Float(f.floor()),
+                    Value::Int(n) => Value::Int(n),
+                    _ => Value::Null,
+                });
+            }
+            60 => {
+                // SQRT
+                if arg_nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(arg_nb.0).sqrt()));
+                }
+                if arg_nb.is_int() {
+                    return Ok(Value::Float((arg_nb.as_int().unwrap_or(0) as f64).sqrt()));
+                }
+                if arg_nb.is_bool() || arg_nb.is_null() {
+                    return Ok(Value::Null);
+                }
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    return Ok(match val_ref {
+                        Value::Float(f) => Value::Float(f.sqrt()),
+                        Value::Int(n) => Value::Float((*n as f64).sqrt()),
+                        _ => Value::Null,
+                    });
+                }
+                let arg = arg_nb.peek_legacy();
+                return Ok(match arg {
+                    Value::Float(f) => Value::Float(f.sqrt()),
+                    Value::Int(n) => Value::Float((n as f64).sqrt()),
+                    _ => Value::Null,
+                });
+            }
+            61 => {
+                // POW
+                let exp_nb = self.registers[base + arg_reg + 1];
+                let int_pow = |x: i64, y: i64| {
+                    if y >= 0 {
+                        if let Ok(y_u32) = u32::try_from(y) {
+                            if let Some(res) = x.checked_pow(y_u32) {
+                                Value::Int(res)
+                            } else {
+                                Value::BigInt(BigInt::from(x).pow(y_u32))
+                            }
+                        } else {
+                            Value::Null
+                        }
+                    } else {
+                        Value::Float((x as f64).powf(y as f64))
+                    }
+                };
+                if arg_nb.is_int() {
+                    if exp_nb.is_int() {
+                        return Ok(int_pow(
+                            arg_nb.as_int().unwrap_or(0),
+                            exp_nb.as_int().unwrap_or(0),
+                        ));
+                    }
+                    return Ok(Value::Null);
+                }
+                if arg_nb.is_float() {
+                    if exp_nb.is_float() {
+                        return Ok(Value::Float(
+                            f64::from_bits(arg_nb.0).powf(f64::from_bits(exp_nb.0)),
+                        ));
+                    }
+                    return Ok(Value::Null);
+                }
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    return Ok(match val_ref {
+                        Value::Int(x) => {
+                            if exp_nb.is_int() {
+                                int_pow(*x, exp_nb.as_int().unwrap_or(0))
+                            } else {
+                                Value::Null
+                            }
+                        }
+                        Value::Float(x) => {
+                            if exp_nb.is_float() {
+                                Value::Float(x.powf(f64::from_bits(exp_nb.0)))
+                            } else {
+                                Value::Null
+                            }
+                        }
+                        _ => Value::Null,
+                    });
+                }
+                let arg = arg_nb.peek_legacy();
+                let exp = if exp_nb.is_int() {
+                    Value::Int(exp_nb.as_int().unwrap_or(0))
+                } else if exp_nb.is_float() {
+                    Value::Float(f64::from_bits(exp_nb.0))
+                } else {
+                    exp_nb.peek_legacy()
+                };
+                return Ok(match (arg, exp) {
+                    (Value::Int(x), Value::Int(y)) => int_pow(x, y),
+                    (Value::Float(x), Value::Float(y)) => Value::Float(x.powf(y)),
+                    _ => Value::Null,
+                });
+            }
+            62 => {
+                // LOG
+                if arg_nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(arg_nb.0).ln()));
+                }
+                if arg_nb.is_int() {
+                    return Ok(Value::Float((arg_nb.as_int().unwrap_or(0) as f64).ln()));
+                }
+                if arg_nb.is_bool() || arg_nb.is_null() {
+                    return Ok(Value::Null);
+                }
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    return Ok(match val_ref {
+                        Value::Float(f) => Value::Float(f.ln()),
+                        Value::Int(n) => Value::Float((*n as f64).ln()),
+                        _ => Value::Null,
+                    });
+                }
+                let arg = arg_nb.peek_legacy();
+                return Ok(match arg {
+                    Value::Float(f) => Value::Float(f.ln()),
+                    Value::Int(n) => Value::Float((n as f64).ln()),
+                    _ => Value::Null,
+                });
+            }
+            63 => {
+                // SIN
+                if arg_nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(arg_nb.0).sin()));
+                }
+                if arg_nb.is_int() {
+                    return Ok(Value::Float((arg_nb.as_int().unwrap_or(0) as f64).sin()));
+                }
+                if arg_nb.is_bool() || arg_nb.is_null() {
+                    return Ok(Value::Null);
+                }
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    return Ok(match val_ref {
+                        Value::Float(f) => Value::Float(f.sin()),
+                        Value::Int(n) => Value::Float((*n as f64).sin()),
+                        _ => Value::Null,
+                    });
+                }
+                let arg = arg_nb.peek_legacy();
+                return Ok(match arg {
+                    Value::Float(f) => Value::Float(f.sin()),
+                    Value::Int(n) => Value::Float((n as f64).sin()),
+                    _ => Value::Null,
+                });
+            }
+            64 => {
+                // COS
+                if arg_nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(arg_nb.0).cos()));
+                }
+                if arg_nb.is_int() {
+                    return Ok(Value::Float((arg_nb.as_int().unwrap_or(0) as f64).cos()));
+                }
+                if arg_nb.is_bool() || arg_nb.is_null() {
+                    return Ok(Value::Null);
+                }
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    return Ok(match val_ref {
+                        Value::Float(f) => Value::Float(f.cos()),
+                        Value::Int(n) => Value::Float((*n as f64).cos()),
+                        _ => Value::Null,
+                    });
+                }
+                let arg = arg_nb.peek_legacy();
+                return Ok(match arg {
+                    Value::Float(f) => Value::Float(f.cos()),
+                    Value::Int(n) => Value::Float((n as f64).cos()),
+                    _ => Value::Null,
+                });
+            }
+            65 => {
+                // CLAMP
+                let lo_nb = self.registers[base + arg_reg + 1];
+                let hi_nb = self.registers[base + arg_reg + 2];
+                if arg_nb.is_int() {
+                    let v = arg_nb.as_int().unwrap_or(0);
+                    if lo_nb.is_int() && hi_nb.is_int() {
+                        let l = lo_nb.as_int().unwrap_or(0);
+                        let h = hi_nb.as_int().unwrap_or(0);
+                        return Ok(Value::Int(v.max(l).min(h)));
+                    }
+                    let lo = if lo_nb.is_int() {
+                        Value::Int(lo_nb.as_int().unwrap_or(0))
+                    } else if lo_nb.is_float() {
+                        Value::Float(f64::from_bits(lo_nb.0))
+                    } else if lo_nb.is_bool() {
+                        Value::Bool(lo_nb.as_bool().unwrap_or(false))
+                    } else if lo_nb.is_null() {
+                        Value::Null
+                    } else {
+                        lo_nb.peek_legacy()
+                    };
+                    let hi = if hi_nb.is_int() {
+                        Value::Int(hi_nb.as_int().unwrap_or(0))
+                    } else if hi_nb.is_float() {
+                        Value::Float(f64::from_bits(hi_nb.0))
+                    } else if hi_nb.is_bool() {
+                        Value::Bool(hi_nb.as_bool().unwrap_or(false))
+                    } else if hi_nb.is_null() {
+                        Value::Null
+                    } else {
+                        hi_nb.peek_legacy()
+                    };
+                    return Ok(match (lo, hi) {
+                        (Value::Int(l), Value::Int(h)) => Value::Int(v.max(l).min(h)),
+                        _ => Value::Int(v),
+                    });
+                }
+                if arg_nb.is_float() {
+                    let v = f64::from_bits(arg_nb.0);
+                    if lo_nb.is_float() && hi_nb.is_float() {
+                        let l = f64::from_bits(lo_nb.0);
+                        let h = f64::from_bits(hi_nb.0);
+                        return Ok(Value::Float(v.max(l).min(h)));
+                    }
+                    let lo = if lo_nb.is_float() {
+                        Value::Float(f64::from_bits(lo_nb.0))
+                    } else if lo_nb.is_int() {
+                        Value::Int(lo_nb.as_int().unwrap_or(0))
+                    } else if lo_nb.is_bool() {
+                        Value::Bool(lo_nb.as_bool().unwrap_or(false))
+                    } else if lo_nb.is_null() {
+                        Value::Null
+                    } else {
+                        lo_nb.peek_legacy()
+                    };
+                    let hi = if hi_nb.is_float() {
+                        Value::Float(f64::from_bits(hi_nb.0))
+                    } else if hi_nb.is_int() {
+                        Value::Int(hi_nb.as_int().unwrap_or(0))
+                    } else if hi_nb.is_bool() {
+                        Value::Bool(hi_nb.as_bool().unwrap_or(false))
+                    } else if hi_nb.is_null() {
+                        Value::Null
+                    } else {
+                        hi_nb.peek_legacy()
+                    };
+                    return Ok(match (lo, hi) {
+                        (Value::Float(l), Value::Float(h)) => Value::Float(v.max(l).min(h)),
+                        _ => Value::Float(v),
+                    });
+                }
+                if arg_nb.is_bool() {
+                    return Ok(Value::Bool(arg_nb.as_bool().unwrap_or(false)));
+                }
+                if arg_nb.is_null() {
+                    return Ok(Value::Null);
+                }
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    return Ok(match val_ref {
+                        Value::Int(v) => {
+                            let lo = lo_nb.peek_legacy();
+                            let hi = hi_nb.peek_legacy();
+                            match (lo, hi) {
+                                (Value::Int(l), Value::Int(h)) => Value::Int((*v).max(l).min(h)),
+                                _ => Value::Int(*v),
+                            }
+                        }
+                        Value::Float(v) => {
+                            let lo = lo_nb.peek_legacy();
+                            let hi = hi_nb.peek_legacy();
+                            match (lo, hi) {
+                                (Value::Float(l), Value::Float(h)) => {
+                                    Value::Float((*v).max(l).min(h))
+                                }
+                                _ => Value::Float(*v),
+                            }
+                        }
+                        _ => val_ref.clone(),
+                    });
+                }
+                let arg = arg_nb.peek_legacy();
+                let lo = lo_nb.peek_legacy();
+                let hi = hi_nb.peek_legacy();
+                return Ok(match (arg, lo, hi) {
+                    (Value::Int(v), Value::Int(l), Value::Int(h)) => Value::Int(v.max(l).min(h)),
+                    (Value::Float(v), Value::Float(l), Value::Float(h)) => {
+                        Value::Float(v.max(l).min(h))
+                    }
+                    (v, _, _) => v,
+                });
+            }
+            138 => {
+                // TAN
+                if arg_nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(arg_nb.0).tan()));
+                }
+                if arg_nb.is_int() {
+                    return Ok(Value::Float((arg_nb.as_int().unwrap_or(0) as f64).tan()));
+                }
+                if arg_nb.is_bool() || arg_nb.is_null() {
+                    return Ok(Value::Null);
+                }
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    return Ok(match val_ref {
+                        Value::Float(f) => Value::Float(f.tan()),
+                        Value::Int(n) => Value::Float((*n as f64).tan()),
+                        _ => Value::Null,
+                    });
+                }
+                let arg = arg_nb.peek_legacy();
+                return Ok(match arg {
+                    Value::Float(f) => Value::Float(f.tan()),
+                    Value::Int(n) => Value::Float((n as f64).tan()),
+                    _ => Value::Null,
+                });
+            }
+            139 => {
+                // TRUNC
+                if arg_nb.is_float() {
+                    return Ok(Value::Float(f64::from_bits(arg_nb.0).trunc()));
+                }
+                if arg_nb.is_int() {
+                    return Ok(Value::Int(arg_nb.as_int().unwrap_or(0)));
+                }
+                if arg_nb.is_bool() || arg_nb.is_null() {
+                    return Ok(Value::Null);
+                }
+                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
+                    return Ok(match val_ref {
+                        Value::Float(f) => Value::Float(f.trunc()),
+                        Value::Int(n) => Value::Int(*n),
+                        _ => Value::Null,
+                    });
+                }
+                let arg = arg_nb.peek_legacy();
+                return Ok(match arg {
+                    Value::Float(f) => Value::Float(f.trunc()),
+                    Value::Int(n) => Value::Int(n),
+                    _ => Value::Null,
+                });
+            }
+            _ => {}
+        }
+        let arg = arg_nb.peek_legacy();
         match func_id {
             0 => {
                 // LENGTH
@@ -1144,9 +2407,8 @@ impl VM {
             }
             42 => {
                 // CHUNK
-                let size = self.registers[base + arg_reg + 1]
-                    .peek_legacy()
-                    .as_int()
+                let size = self
+                    .nb_to_int(self.registers[base + arg_reg + 1])
                     .unwrap_or(1) as usize;
                 if let Value::List(l) = &arg {
                     let result: Vec<Value> = l
@@ -1160,18 +2422,15 @@ impl VM {
             }
             43 => {
                 // WINDOW
-                let n = self.registers[base + arg_reg + 1]
-                    .peek_legacy()
-                    .as_int()
+                let n = self
+                    .nb_to_int(self.registers[base + arg_reg + 1])
                     .unwrap_or(1) as usize;
                 if let Value::List(l) = &arg {
                     if n == 0 || n > l.len() {
                         Ok(Value::new_list(vec![]))
                     } else {
-                        let result: Vec<Value> = l
-                            .windows(n)
-                            .map(|w| Value::new_list(w.to_vec()))
-                            .collect();
+                        let result: Vec<Value> =
+                            l.windows(n).map(|w| Value::new_list(w.to_vec())).collect();
                         Ok(Value::new_list(result))
                     }
                 } else {
@@ -1180,9 +2439,8 @@ impl VM {
             }
             46 => {
                 // TAKE
-                let n = self.registers[base + arg_reg + 1]
-                    .peek_legacy()
-                    .as_int()
+                let n = self
+                    .nb_to_int(self.registers[base + arg_reg + 1])
                     .unwrap_or(0) as usize;
                 if let Value::List(l) = &arg {
                     Ok(Value::new_list(l.iter().take(n).cloned().collect()))
@@ -1192,9 +2450,8 @@ impl VM {
             }
             47 => {
                 // DROP
-                let n = self.registers[base + arg_reg + 1]
-                    .peek_legacy()
-                    .as_int()
+                let n = self
+                    .nb_to_int(self.registers[base + arg_reg + 1])
                     .unwrap_or(0) as usize;
                 if let Value::List(l) = &arg {
                     Ok(Value::new_list(l.iter().skip(n).cloned().collect()))
@@ -1214,25 +2471,19 @@ impl VM {
             52 => {
                 // STARTS_WITH
                 let s = arg.as_string_resolved(&self.strings);
-                let prefix = self.registers[base + arg_reg + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
+                let prefix = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
                 Ok(Value::Bool(s.starts_with(&prefix)))
             }
             53 => {
                 // ENDS_WITH
                 let s = arg.as_string_resolved(&self.strings);
-                let suffix = self.registers[base + arg_reg + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
+                let suffix = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
                 Ok(Value::Bool(s.ends_with(&suffix)))
             }
             54 => {
                 // INDEX_OF
                 let s = arg.as_string_resolved(&self.strings);
-                let needle = self.registers[base + arg_reg + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
+                let needle = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
                 Ok(match s.find(&needle) {
                     Some(i) => {
                         let char_idx = s[..i].chars().count();
@@ -1255,9 +2506,7 @@ impl VM {
             }
             70 => {
                 // HAS_KEY
-                let key = self.registers[base + arg_reg + 1]
-                    .peek_legacy()
-                    .as_string_resolved(&self.strings);
+                let key = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
                 Ok(Value::Bool(match arg {
                     Value::Map(m) => m.contains_key(&key),
                     Value::Record(r) => r.fields.contains_key(&key),
@@ -1267,9 +2516,9 @@ impl VM {
             55 => {
                 // PAD_LEFT
                 let s = arg.as_string_resolved(&self.strings);
-                let len = match self.registers[base + arg_reg + 1].peek_legacy() {
-                    Value::Int(n) => n as usize,
-                    _ => return Ok(Value::Null),
+                let len = match self.nb_to_int(self.registers[base + arg_reg + 1]) {
+                    Some(n) => n as usize,
+                    None => return Ok(Value::Null),
                 };
                 if s.len() >= len {
                     return Ok(Value::String(StringRef::Owned(s)));
@@ -1280,9 +2529,9 @@ impl VM {
             56 => {
                 // PAD_RIGHT
                 let s = arg.as_string_resolved(&self.strings);
-                let len = match self.registers[base + arg_reg + 1].peek_legacy() {
-                    Value::Int(n) => n as usize,
-                    _ => return Ok(Value::Null),
+                let len = match self.nb_to_int(self.registers[base + arg_reg + 1]) {
+                    Some(n) => n as usize,
+                    None => return Ok(Value::Null),
                 };
                 if s.len() >= len {
                     return Ok(Value::String(StringRef::Owned(s)));
@@ -1324,7 +2573,14 @@ impl VM {
             }
             61 => {
                 // POW
-                let exp = self.registers[base + arg_reg + 1].peek_legacy();
+                let exp_nb = self.registers[base + arg_reg + 1];
+                let exp = if exp_nb.is_int() {
+                    Value::Int(exp_nb.as_int().unwrap_or(0))
+                } else if exp_nb.is_float() {
+                    Value::Float(f64::from_bits(exp_nb.0))
+                } else {
+                    exp_nb.peek_legacy()
+                };
                 Ok(match (arg, exp) {
                     (Value::Int(x), Value::Int(y)) => {
                         if y >= 0 {
@@ -1371,8 +2627,16 @@ impl VM {
             }
             65 => {
                 // CLAMP
-                let lo = self.registers[base + arg_reg + 1].peek_legacy();
-                let hi = self.registers[base + arg_reg + 2].peek_legacy();
+                let lo_nb = self.registers[base + arg_reg + 1];
+                let hi_nb = self.registers[base + arg_reg + 2];
+                // NbValue fast-path for int clamp
+                if let (Value::Int(v), true, true) = (&arg, lo_nb.is_int(), hi_nb.is_int()) {
+                    let l = lo_nb.as_int().unwrap_or(0);
+                    let h = hi_nb.as_int().unwrap_or(0);
+                    return Ok(Value::Int((*v).max(l).min(h)));
+                }
+                let lo = lo_nb.peek_legacy();
+                let hi = hi_nb.peek_legacy();
                 Ok(match (arg, lo, hi) {
                     (Value::Int(v), Value::Int(l), Value::Int(h)) => Value::Int(v.max(l).min(h)),
                     (Value::Float(v), Value::Float(l), Value::Float(h)) => {
@@ -1419,7 +2683,9 @@ impl VM {
                     Value::String(sr) => {
                         let s = match sr {
                             StringRef::Owned(s) => s,
-                            StringRef::Interned(id) => self.strings.resolve(id).unwrap_or("").to_string(),
+                            StringRef::Interned(id) => {
+                                self.strings.resolve(id).unwrap_or("").to_string()
+                            }
                         };
                         s.parse::<i64>().map(Value::Int).unwrap_or(Value::Null)
                     }
@@ -1435,7 +2701,9 @@ impl VM {
                     Value::String(sr) => {
                         let s = match sr {
                             StringRef::Owned(s) => s,
-                            StringRef::Interned(id) => self.strings.resolve(id).unwrap_or("").to_string(),
+                            StringRef::Interned(id) => {
+                                self.strings.resolve(id).unwrap_or("").to_string()
+                            }
                         };
                         s.parse::<f64>().map(Value::Float).unwrap_or(Value::Null)
                     }
@@ -1449,8 +2717,17 @@ impl VM {
             14 => {
                 // KEYS
                 Ok(match arg {
-                    Value::Map(m) => Value::new_list(m.keys().map(|k| Value::String(StringRef::Owned(k.clone()))).collect()),
-                    Value::Record(r) => Value::new_list(r.fields.keys().map(|k| Value::String(StringRef::Owned(k.clone()))).collect()),
+                    Value::Map(m) => Value::new_list(
+                        m.keys()
+                            .map(|k| Value::String(StringRef::Owned(k.clone())))
+                            .collect(),
+                    ),
+                    Value::Record(r) => Value::new_list(
+                        r.fields
+                            .keys()
+                            .map(|k| Value::String(StringRef::Owned(k.clone())))
+                            .collect(),
+                    ),
                     _ => Value::new_list(vec![]),
                 })
             }
@@ -1464,7 +2741,18 @@ impl VM {
             }
             16 => {
                 // CONTAINS
-                let needle = self.registers[base + arg_reg + 1].peek_legacy();
+                let needle_nb = self.registers[base + arg_reg + 1];
+                // Fast-path: int needle (common in numeric code)
+                if needle_nb.is_int() {
+                    let needle_val = Value::Int(needle_nb.as_int().unwrap_or(0));
+                    let result = match &arg {
+                        Value::List(l) => l.iter().any(|v| v == &needle_val),
+                        Value::Set(s) => s.iter().any(|v| v == &needle_val),
+                        _ => false,
+                    };
+                    return Ok(Value::Bool(result));
+                }
+                let needle = needle_nb.peek_legacy();
                 let result = match arg {
                     Value::List(l) => l.iter().any(|v| v == &needle),
                     Value::Set(s) => s.iter().any(|v| v == &needle),
@@ -1475,7 +2763,9 @@ impl VM {
                     Value::String(sr) => {
                         let s = match sr {
                             StringRef::Owned(s) => s,
-                            StringRef::Interned(id) => self.strings.resolve(id).unwrap_or("").to_string(),
+                            StringRef::Interned(id) => {
+                                self.strings.resolve(id).unwrap_or("").to_string()
+                            }
                         };
                         let needle_str = needle.as_string_resolved(&self.strings);
                         s.contains(&needle_str)
@@ -1486,10 +2776,14 @@ impl VM {
             }
             17 => {
                 // JOIN
-                let sep = self.registers[base + arg_reg + 1].peek_legacy().as_string_resolved(&self.strings);
+                let sep = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
                 Ok(match arg {
                     Value::List(l) => {
-                        let joined = l.iter().map(|v| v.display_pretty()).collect::<Vec<_>>().join(&sep);
+                        let joined = l
+                            .iter()
+                            .map(|v| v.display_pretty())
+                            .collect::<Vec<_>>()
+                            .join(&sep);
                         Value::String(StringRef::Owned(joined))
                     }
                     _ => Value::String(StringRef::Owned(String::new())),
@@ -1497,9 +2791,12 @@ impl VM {
             }
             18 => {
                 // SPLIT
-                let sep = self.registers[base + arg_reg + 1].peek_legacy().as_string_resolved(&self.strings);
+                let sep = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
                 let s = arg.as_string_resolved(&self.strings);
-                let parts: Vec<Value> = s.split(&sep).map(|p| Value::String(StringRef::Owned(p.to_string()))).collect();
+                let parts: Vec<Value> = s
+                    .split(&sep)
+                    .map(|p| Value::String(StringRef::Owned(p.to_string())))
+                    .collect();
                 Ok(Value::new_list(parts))
             }
             19 => {
@@ -1519,15 +2816,19 @@ impl VM {
             }
             22 => {
                 // REPLACE
-                let from = self.registers[base + arg_reg + 1].peek_legacy().as_string_resolved(&self.strings);
-                let to = self.registers[base + arg_reg + 2].peek_legacy().as_string_resolved(&self.strings);
+                let from = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
+                let to = self.nb_to_string_resolved(self.registers[base + arg_reg + 2]);
                 let s = arg.as_string_resolved(&self.strings);
                 Ok(Value::String(StringRef::Owned(s.replace(&from, &to))))
             }
             23 => {
                 // SLICE
-                let start = self.registers[base + arg_reg + 1].peek_legacy().as_int().unwrap_or(0) as usize;
-                let end = self.registers[base + arg_reg + 2].peek_legacy().as_int().unwrap_or(0) as usize;
+                let start = self
+                    .nb_to_int(self.registers[base + arg_reg + 1])
+                    .unwrap_or(0) as usize;
+                let end = self
+                    .nb_to_int(self.registers[base + arg_reg + 2])
+                    .unwrap_or(0) as usize;
                 Ok(match arg {
                     Value::List(l) => {
                         let end = end.min(l.len());
@@ -1537,7 +2838,9 @@ impl VM {
                     Value::String(sr) => {
                         let s = match sr {
                             StringRef::Owned(s) => s,
-                            StringRef::Interned(id) => self.strings.resolve(id).unwrap_or("").to_string(),
+                            StringRef::Interned(id) => {
+                                self.strings.resolve(id).unwrap_or("").to_string()
+                            }
                         };
                         let chars: Vec<char> = s.chars().collect();
                         let end = end.min(chars.len());
@@ -1561,7 +2864,9 @@ impl VM {
             25 => {
                 // RANGE
                 let start = arg.as_int().unwrap_or(0);
-                let end = self.registers[base + arg_reg + 1].peek_legacy().as_int().unwrap_or(0);
+                let end = self
+                    .nb_to_int(self.registers[base + arg_reg + 1])
+                    .unwrap_or(0);
                 let list: Vec<Value> = (start..end).map(Value::Int).collect();
                 Ok(Value::new_list(list))
             }
@@ -1575,26 +2880,46 @@ impl VM {
                 })
             }
             27 => {
-                // MIN
-                let other = self.registers[base + arg_reg + 1].peek_legacy();
-                Ok(match (&arg, &other) {
-                    (Value::Int(a), Value::Int(b)) => Value::Int(*a.min(b)),
-                    (Value::Float(a), Value::Float(b)) => Value::Float(a.min(*b)),
-                    (Value::Int(a), Value::Float(b)) => Value::Float((*a as f64).min(*b)),
-                    (Value::Float(a), Value::Int(b)) => Value::Float(a.min(*b as f64)),
-                    _ => arg.clone(),
-                })
+                // MIN — NbValue fast-path for int/float secondary arg
+                let other_nb = self.registers[base + arg_reg + 1];
+                if let Value::Int(a) = &arg {
+                    if other_nb.is_int() {
+                        return Ok(Value::Int((*a).min(other_nb.as_int().unwrap_or(0))));
+                    }
+                    if other_nb.is_float() {
+                        return Ok(Value::Float((*a as f64).min(f64::from_bits(other_nb.0))));
+                    }
+                }
+                if let Value::Float(a) = &arg {
+                    if other_nb.is_float() {
+                        return Ok(Value::Float(a.min(f64::from_bits(other_nb.0))));
+                    }
+                    if other_nb.is_int() {
+                        return Ok(Value::Float(a.min(other_nb.as_int().unwrap_or(0) as f64)));
+                    }
+                }
+                Ok(arg)
             }
             28 => {
-                // MAX
-                let other = self.registers[base + arg_reg + 1].peek_legacy();
-                Ok(match (&arg, &other) {
-                    (Value::Int(a), Value::Int(b)) => Value::Int(*a.max(b)),
-                    (Value::Float(a), Value::Float(b)) => Value::Float(a.max(*b)),
-                    (Value::Int(a), Value::Float(b)) => Value::Float((*a as f64).max(*b)),
-                    (Value::Float(a), Value::Int(b)) => Value::Float(a.max(*b as f64)),
-                    _ => arg.clone(),
-                })
+                // MAX — NbValue fast-path for int/float secondary arg
+                let other_nb = self.registers[base + arg_reg + 1];
+                if let Value::Int(a) = &arg {
+                    if other_nb.is_int() {
+                        return Ok(Value::Int((*a).max(other_nb.as_int().unwrap_or(0))));
+                    }
+                    if other_nb.is_float() {
+                        return Ok(Value::Float((*a as f64).max(f64::from_bits(other_nb.0))));
+                    }
+                }
+                if let Value::Float(a) = &arg {
+                    if other_nb.is_float() {
+                        return Ok(Value::Float(a.max(f64::from_bits(other_nb.0))));
+                    }
+                    if other_nb.is_int() {
+                        return Ok(Value::Float(a.max(other_nb.as_int().unwrap_or(0) as f64)));
+                    }
+                }
+                Ok(arg)
             }
             29 => {
                 // SORT
@@ -1668,7 +2993,9 @@ impl VM {
                     Value::List(l) => l.is_empty(),
                     Value::Map(m) => m.is_empty(),
                     Value::String(StringRef::Owned(s)) => s.is_empty(),
-                    Value::String(StringRef::Interned(id)) => self.strings.resolve(id).unwrap_or("").is_empty(),
+                    Value::String(StringRef::Interned(id)) => {
+                        self.strings.resolve(id).unwrap_or("").is_empty()
+                    }
                     Value::Set(s) => s.is_empty(),
                     Value::Null => true,
                     _ => false,
@@ -1704,11 +3031,15 @@ impl VM {
                     Value::String(sr) => {
                         let s = match sr {
                             StringRef::Owned(s) => s,
-                            StringRef::Interned(id) => self.strings.resolve(id).unwrap_or("").to_string(),
+                            StringRef::Interned(id) => {
+                                self.strings.resolve(id).unwrap_or("").to_string()
+                            }
                         };
                         match parse_json_optimized(&s) {
                             Ok(v) => Ok(v),
-                            Err(e) => Ok(Value::String(StringRef::Owned(format!("parse error: {e}")))),
+                            Err(e) => {
+                                Ok(Value::String(StringRef::Owned(format!("parse error: {e}"))))
+                            }
                         }
                     }
                     _ => Ok(Value::Null),

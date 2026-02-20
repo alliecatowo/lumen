@@ -54,7 +54,8 @@ impl CacheStore {
         args: &serde_json::Value,
     ) -> Option<&CacheEntry> {
         let args_hash = canonical_hash(args);
-        let key = crate::services::trace::hasher::cache_key(tool_id, version, policy_hash, &args_hash);
+        let key =
+            crate::services::trace::hasher::cache_key(tool_id, version, policy_hash, &args_hash);
         self.get(&key)
     }
 }

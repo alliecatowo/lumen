@@ -156,8 +156,8 @@ impl StencilLibrary {
             for _ in 0..num_holes {
                 let offset = read_u32(data, &mut pos)?;
                 let ht_byte = read_u8(data, &mut pos)?;
-                let hole_type =
-                    HoleType::from_u8(ht_byte).ok_or(StencilFormatError::UnknownHoleType(ht_byte))?;
+                let hole_type = HoleType::from_u8(ht_byte)
+                    .ok_or(StencilFormatError::UnknownHoleType(ht_byte))?;
                 let size = read_u8(data, &mut pos)?;
                 holes.push(HoleDef {
                     offset,
@@ -409,7 +409,9 @@ fn read_bytes<'a>(
     pos: &mut usize,
     len: usize,
 ) -> Result<&'a [u8], StencilFormatError> {
-    let end = pos.checked_add(len).ok_or(StencilFormatError::UnexpectedEof)?;
+    let end = pos
+        .checked_add(len)
+        .ok_or(StencilFormatError::UnexpectedEof)?;
     if end > data.len() {
         return Err(StencilFormatError::UnexpectedEof);
     }

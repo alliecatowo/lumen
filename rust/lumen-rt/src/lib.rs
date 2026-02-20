@@ -11,14 +11,14 @@ pub mod interpreter;
 pub mod intrinsics;
 pub mod jit_tier;
 pub mod json_parser;
-pub mod stencil_tier;
-pub mod stencil_runtime;
 pub mod parity_concurrency;
 pub mod platform;
+pub mod services;
+pub mod stencil_runtime;
+pub mod stencil_tier;
 pub mod tagged;
 pub mod tlab;
 pub mod vm;
-pub mod services;
 
 // Re-export core types from lumen-core for backward compatibility
 pub use lumen_core::{strings, types, values};

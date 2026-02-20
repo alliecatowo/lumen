@@ -235,12 +235,8 @@ pub extern "C" fn jit_rt_new_record(
     let type_name = if type_name_ptr.is_null() || type_name_len == 0 {
         "Unknown".to_string()
     } else {
-        let bytes = unsafe {
-            std::slice::from_raw_parts(type_name_ptr, type_name_len as usize)
-        };
-        std::str::from_utf8(bytes)
-            .unwrap_or("Unknown")
-            .to_string()
+        let bytes = unsafe { std::slice::from_raw_parts(type_name_ptr, type_name_len as usize) };
+        std::str::from_utf8(bytes).unwrap_or("Unknown").to_string()
     };
 
     let record_value = Value::new_record(RecordValue {
@@ -261,11 +257,7 @@ pub extern "C" fn jit_rt_new_record(
 /// `list_ptr` must be a valid `*mut Value` produced by a JIT collection helper,
 /// or 0 / NAN_BOX_NULL for empty list fallback.
 #[no_mangle]
-pub extern "C" fn jit_rt_list_append(
-    _ctx: *mut VmContext,
-    list_ptr: i64,
-    element: i64,
-) -> i64 {
+pub extern "C" fn jit_rt_list_append(_ctx: *mut VmContext, list_ptr: i64, element: i64) -> i64 {
     // Decode the element to append from NaN-boxed encoding.
     let element_value = unsafe {
         let eptr = nanbox_to_value(element);

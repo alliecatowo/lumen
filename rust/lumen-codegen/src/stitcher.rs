@@ -210,9 +210,10 @@ impl Stitcher {
         // `self.code_buffer` through `emit_bytes` / `patch_*`.
         for (pc, instr) in cell.instructions.iter().enumerate() {
             let op_byte = instr.op as u8;
-            let stencil = self.library.get(op_byte).ok_or_else(|| {
-                StitchError::MissingStencil(op_byte, format!("{:?}", instr.op))
-            })?;
+            let stencil = self
+                .library
+                .get(op_byte)
+                .ok_or_else(|| StitchError::MissingStencil(op_byte, format!("{:?}", instr.op)))?;
 
             // Copy stencil code and holes out of the library to release the
             // immutable borrow on `self` before we call `emit_bytes`.
@@ -259,17 +260,38 @@ impl Stitcher {
                         self.patch_u64(patch_addr, nb.0);
                     }
                     HoleType::JumpOffset32 => {
-                        // Compute the PC-relative jump offset.
-                        // The jump target is instruction (pc + sax_val).
-                        // The rel32 is relative to the byte AFTER the hole (patch_addr + 4).
-                        let target_pc = (pc as i64 + instr.sax_val()) as usize;
-                        if target_pc < instruction_offsets.len() {
-                            let target_addr = instruction_offsets[target_pc];
-                            let rel = target_addr as i64 - (patch_addr as i64 + 4);
-                            self.patch_i32(patch_addr, rel as i32);
-                        }
-                        // If target_pc is out of bounds (e.g. jump past end), leave as 0
-                        // (will jump to the next byte after the hole, which is a no-op).
+                        // Compute the stitched jump target in instruction units.
+                        //
+                        // VM dispatch increments `ip` before executing the opcode.
+                        // For Jmp/Break/Continue this means target = (pc + 1) + sAx.
+                        //
+                        // Test/IsVariant are "skip next instruction" branches, so
+                        // they always target pc + 2 when the branch is taken.
+                        let target_pc = match instr.op {
+                            OpCode::IsVariant | OpCode::Test => Some(pc + 2),
+                            OpCode::Jmp | OpCode::Break | OpCode::Continue => {
+                                Some((pc as i64 + 1 + instr.sax_val()) as usize)
+                            }
+                            // Other stencils may use JumpOffset32 for internal local
+                            // branches; leave their rel32 as emitted by the stencil.
+                            _ => None,
+                        };
+
+                        let Some(target_pc) = target_pc else {
+                            continue;
+                        };
+
+                        let target_addr = if target_pc < instruction_offsets.len() {
+                            instruction_offsets[target_pc]
+                        } else if matches!(instr.op, OpCode::IsVariant | OpCode::Test) {
+                            // Skip-next at end of stream should jump to the final `ret`.
+                            start_offset + total_size
+                        } else {
+                            // Leave the default zero rel32 for out-of-bounds jumps.
+                            continue;
+                        };
+                        let rel = target_addr as i64 - (patch_addr as i64 + 4);
+                        self.patch_i32(patch_addr, rel as i32);
                     }
                     HoleType::RuntimeFuncAddr => {
                         // Runtime function addresses are resolved at integration time.
@@ -286,13 +308,11 @@ impl Stitcher {
                         self.patch_i16(patch_addr, instr.sbx() as i16);
                     }
                     HoleType::InstructionWord => {
-                        // Encode the full instruction as a 32-bit word.
-                        // Pack: op(8) | a(8) | b(8) | c(8)
-                        let word: u32 = (instr.op as u32)
-                            | ((instr.a as u32) << 8)
-                            | ((instr.b as u32) << 16)
-                            | ((instr.c as u32) << 24);
-                        self.patch_u32(patch_addr, word);
+                        // Embed the full 8-byte Instruction struct as a u64 in the
+                        // movabs immediate. The runtime helper transmutes the u64 back
+                        // to an Instruction to decode op/a/b/c fields.
+                        let word: u64 = unsafe { std::mem::transmute(*instr) };
+                        self.patch_u64(patch_addr, word);
                     }
                 }
             }
@@ -451,9 +471,9 @@ fn constant_to_nb(
                 NbValue::new_int(*n)
             } else {
                 // Large int: box on the heap. For the stitcher this is a cold path.
-                NbValue::from_legacy(lumen_core::values::Value::BigInt(
-                    num_bigint::BigInt::from(*n),
-                ))
+                NbValue::from_legacy(lumen_core::values::Value::BigInt(num_bigint::BigInt::from(
+                    *n,
+                )))
             }
         }
         Constant::BigInt(n) => {
@@ -763,16 +783,11 @@ mod tests {
         // RegA = 5: displacement = 5 * 8 = 40 = 0x28
         assert_eq!(code.code_len, 15); // 14 bytes stencil + 1 byte trailing ret
 
-        let code_bytes =
-            unsafe { std::slice::from_raw_parts(code.code_ptr, code.code_len) };
+        let code_bytes = unsafe { std::slice::from_raw_parts(code.code_ptr, code.code_len) };
 
         // Check RegB displacement at offset 3 (4 bytes LE)
-        let reg_b_disp = i32::from_le_bytes([
-            code_bytes[3],
-            code_bytes[4],
-            code_bytes[5],
-            code_bytes[6],
-        ]);
+        let reg_b_disp =
+            i32::from_le_bytes([code_bytes[3], code_bytes[4], code_bytes[5], code_bytes[6]]);
         assert_eq!(reg_b_disp, 24, "RegB displacement should be 3*8=24");
 
         // Check RegA displacement at offset 10 (4 bytes LE)
@@ -783,5 +798,61 @@ mod tests {
             code_bytes[13],
         ]);
         assert_eq!(reg_a_disp, 40, "RegA displacement should be 5*8=40");
+    }
+
+    #[test]
+    fn test_is_variant_jump_patches_to_skip_next_stencil() {
+        let lib = build_stencil_library();
+        let mut stitcher = Stitcher::new(lib).unwrap();
+
+        let is_variant = stitcher
+            .library()
+            .get(OpCode::IsVariant as u8)
+            .expect("IsVariant stencil missing")
+            .clone();
+        let nop = stitcher
+            .library()
+            .get(OpCode::Nop as u8)
+            .expect("Nop stencil missing")
+            .clone();
+        let jump_hole = is_variant
+            .holes
+            .iter()
+            .find(|h| h.hole_type == HoleType::JumpOffset32)
+            .expect("IsVariant missing JumpOffset32 hole");
+
+        // IsVariant should skip exactly one instruction (the Nop) and land on Return.
+        let cell = LirCell {
+            name: "is_variant_skip".into(),
+            params: vec![],
+            returns: None,
+            registers: 1,
+            constants: vec![],
+            instructions: vec![
+                Instruction::abx(OpCode::IsVariant, 0, 0),
+                Instruction::abc(OpCode::Nop, 0, 0, 0),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            effect_handler_metas: vec![],
+            osr_points: vec![],
+        };
+
+        let module = empty_module();
+        let code = stitcher.compile(&cell, &module, 0).unwrap();
+        let code_bytes = unsafe { std::slice::from_raw_parts(code.code_ptr, code.code_len) };
+
+        let rel = i32::from_le_bytes([
+            code_bytes[jump_hole.offset as usize],
+            code_bytes[jump_hole.offset as usize + 1],
+            code_bytes[jump_hole.offset as usize + 2],
+            code_bytes[jump_hole.offset as usize + 3],
+        ]);
+
+        let target_addr = is_variant.code.len() + nop.code.len();
+        let expected_rel = target_addr as i32 - (jump_hole.offset as i32 + 4);
+        assert_eq!(
+            rel, expected_rel,
+            "IsVariant jump should land on the instruction after next"
+        );
     }
 }

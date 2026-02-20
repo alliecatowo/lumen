@@ -1,0 +1,15 @@
+[package]
+name = "lumen-provider-regex"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+lumen-rt = { path = "../lumen-rt", version = "0.5.0" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }

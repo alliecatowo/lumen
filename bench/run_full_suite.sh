@@ -25,7 +25,7 @@
 #     - string_concat: string concatenation
 #
 # Usage:
-#   bash bench/run_full_suite.sh [--csv output.csv] [--runs N] [--lang LANG] [--no-cross]
+#   bash bench/run_full_suite.sh [--csv output.csv] [--runs N] [--lang LANG] [--no-cross] [--strict-oracle]
 #
 # Options:
 #   --csv FILE       Write results to CSV file
@@ -33,6 +33,8 @@
 #   --lang LANG      Run only a specific language (c, go, rust, zig, python, typescript, lumen)
 #   --no-cross       Skip cross-language benchmarks (run only Lumen-specific)
 #   --only-lumen     Run only Lumen (useful for quick testing)
+#   --strict-oracle  Validate benchmark output oracles for key benches (fibonacci, nbody, matrix_mult)
+#                    Can also be enabled with LUMEN_BENCH_STRICT_ORACLE=1
 #   -h, --help       Show this help message
 
 set -euo pipefail
@@ -48,6 +50,18 @@ CSV_FILE=""
 FILTER_LANG=""
 NO_CROSS=false
 ONLY_LUMEN=false
+STRICT_ORACLE=false
+
+is_truthy() {
+  case "${1,,}" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if is_truthy "${LUMEN_BENCH_STRICT_ORACLE:-0}"; then
+  STRICT_ORACLE=true
+fi
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -57,6 +71,7 @@ while [[ $# -gt 0 ]]; do
     --lang)       FILTER_LANG="$2"; shift 2 ;;
     --no-cross)   NO_CROSS=true; shift ;;
     --only-lumen) ONLY_LUMEN=true; shift ;;
+    --strict-oracle|--strict-output) STRICT_ORACLE=true; shift ;;
     -h|--help)
       grep "^#" "$0" | head -40
       exit 0
@@ -95,6 +110,7 @@ echo "  CSV output: ${CSV_FILE:-none}"
 echo "  Filter by language: ${FILTER_LANG:-all}"
 echo "  Skip cross-language: $NO_CROSS"
 echo "  Only Lumen: $ONLY_LUMEN"
+echo "  Strict output oracles: $STRICT_ORACLE"
 echo ""
 echo "Available compilers/interpreters:"
 printf "  %-12s %s\n" "gcc:" "$([[ $HAS_GCC = true ]] && echo '✓' || echo '✗')"
@@ -212,6 +228,13 @@ LUMEN_BENCHMARKS=(
 # Results array: "benchmark,language,run,time_ms,n"
 RESULTS=()
 
+# Key output oracles (cross-language deterministic outputs).
+ORACLE_FIB_RESULT=9227465
+ORACLE_NBODY_E0=-0.169075164
+ORACLE_NBODY_E1=-0.169086185
+ORACLE_MATRIX_CHECKSUM=2022668.000001
+ORACLE_FLOAT_TOL=0.000001
+
 # Time a command, return elapsed milliseconds
 time_ms() {
   local start end elapsed
@@ -235,6 +258,70 @@ time_ms() {
   return $exit_code
 }
 
+supports_oracle_check() {
+  case "$1" in
+    fibonacci|nbody|matrix_mult) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+float_within_tolerance() {
+  local actual="$1"
+  local expected="$2"
+  local tolerance="$3"
+  awk -v a="$actual" -v e="$expected" -v t="$tolerance" 'BEGIN { d = a - e; if (d < 0) d = -d; exit (d <= t ? 0 : 1) }'
+}
+
+validate_output_oracle() {
+  local bench="$1"
+  local lang="$2"
+  local cmd="$3"
+  local output
+
+  if ! output=$(bash -c "$cmd" 2>&1); then
+    printf "    [oracle] %-18s %-12s FAIL (execution error)\n" "$bench" "$lang"
+    return 1
+  fi
+
+  case "$bench" in
+    fibonacci)
+      local actual
+      actual=$(printf '%s\n' "$output" | grep -Eo '[-]?[0-9]+' | tail -1 || true)
+      if [ -z "$actual" ] || [ "$actual" != "$ORACLE_FIB_RESULT" ]; then
+        printf "    [oracle] %-18s %-12s FAIL (expected fib=%s, got=%s)\n" "$bench" "$lang" "$ORACLE_FIB_RESULT" "${actual:-<none>}"
+        return 1
+      fi
+      ;;
+    nbody)
+      local numbers
+      mapfile -t numbers < <(printf '%s\n' "$output" | grep -Eo '[-]?[0-9]+([.][0-9]+)?' || true)
+      if [ "${#numbers[@]}" -lt 2 ]; then
+        printf "    [oracle] %-18s %-12s FAIL (expected 2 energies)\n" "$bench" "$lang"
+        return 1
+      fi
+      if ! float_within_tolerance "${numbers[0]}" "$ORACLE_NBODY_E0" "$ORACLE_FLOAT_TOL"; then
+        printf "    [oracle] %-18s %-12s FAIL (initial energy expected=%s got=%s)\n" "$bench" "$lang" "$ORACLE_NBODY_E0" "${numbers[0]}"
+        return 1
+      fi
+      if ! float_within_tolerance "${numbers[1]}" "$ORACLE_NBODY_E1" "$ORACLE_FLOAT_TOL"; then
+        printf "    [oracle] %-18s %-12s FAIL (final energy expected=%s got=%s)\n" "$bench" "$lang" "$ORACLE_NBODY_E1" "${numbers[1]}"
+        return 1
+      fi
+      ;;
+    matrix_mult)
+      local actual
+      actual=$(printf '%s\n' "$output" | grep -Eo '[-]?[0-9]+([.][0-9]+)?' | tail -1 || true)
+      if [ -z "$actual" ] || ! float_within_tolerance "$actual" "$ORACLE_MATRIX_CHECKSUM" "$ORACLE_FLOAT_TOL"; then
+        printf "    [oracle] %-18s %-12s FAIL (checksum expected=%s got=%s)\n" "$bench" "$lang" "$ORACLE_MATRIX_CHECKSUM" "${actual:-<none>}"
+        return 1
+      fi
+      ;;
+  esac
+
+  printf "    [oracle] %-18s %-12s OK\n" "$bench" "$lang"
+  return 0
+}
+
 run_benchmark() {
   local bench="$1"
   local lang="$2"
@@ -244,6 +331,10 @@ run_benchmark() {
   # Skip if language filter is set and doesn't match
   if [ -n "$FILTER_LANG" ] && [ "$lang" != "$FILTER_LANG" ]; then
     return
+  fi
+
+  if [ "$STRICT_ORACLE" = true ] && supports_oracle_check "$bench"; then
+    validate_output_oracle "$bench" "$lang" "$cmd"
   fi
   
   for run in $(seq 1 "$RUNS"); do

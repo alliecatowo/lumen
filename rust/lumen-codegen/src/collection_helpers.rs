@@ -91,7 +91,8 @@ pub extern "C" fn jit_rt_new_list(_ctx: *mut VmContext, values_ptr: *const i64, 
     }
 
     let list_value = Value::new_list(list);
-    Box::into_raw(Box::new(list_value)) as i64
+    let ptr = Arc::into_raw(Arc::new(list_value)) as u64;
+    (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
 }
 
 /// Create a new Map value from an array of key-value pairs.
@@ -127,7 +128,8 @@ pub extern "C" fn jit_rt_new_map(_ctx: *mut VmContext, kvpairs_ptr: *const i64, 
     }
 
     let map_value = Value::new_map(map);
-    Box::into_raw(Box::new(map_value)) as i64
+    let ptr = Arc::into_raw(Arc::new(map_value)) as u64;
+    (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
 }
 
 /// Create a new Tuple value from an array of boxed Values.
@@ -155,7 +157,8 @@ pub extern "C" fn jit_rt_new_tuple(
     }
 
     let tuple_value = Value::new_tuple(elements);
-    Box::into_raw(Box::new(tuple_value)) as i64
+    let ptr = Arc::into_raw(Arc::new(tuple_value)) as u64;
+    (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
 }
 
 /// Get the length of a collection (List, Map, Set, Tuple, or String).
@@ -167,7 +170,7 @@ pub extern "C" fn jit_rt_new_tuple(
 pub extern "C" fn jit_rt_collection_len(_ctx: *mut VmContext, value_ptr: i64) -> i64 {
     let u = value_ptr as u64;
     // Must be a TAG_PTR (NAN_MASK set, tag bits == 0) with non-special payload.
-    if (u & NAN_MASK_U) != NAN_MASK_U || ((u >> 48) & 0xF) != 0 || (u & PAYLOAD_MASK_U) <= 1 {
+    if (u & NAN_MASK_U) != NAN_MASK_U || ((u >> 48) & 0x7) != 0 || (u & PAYLOAD_MASK_U) <= 1 {
         return 0;
     }
     let ptr = (u & PAYLOAD_MASK_U) as *const Value;
@@ -208,7 +211,8 @@ pub extern "C" fn jit_rt_new_set(_ctx: *mut VmContext, values_ptr: *const i64, c
     }
 
     let set_value = Value::Set(Arc::new(set));
-    Box::into_raw(Box::new(set_value)) as i64
+    let ptr = Arc::into_raw(Arc::new(set_value)) as u64;
+    (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
 }
 
 /// Create a new Record value with the given type name and an empty field map.
@@ -243,7 +247,8 @@ pub extern "C" fn jit_rt_new_record(
         type_name,
         fields: BTreeMap::new(),
     });
-    Box::into_raw(Box::new(record_value)) as i64
+    let ptr = Arc::into_raw(Arc::new(record_value)) as u64;
+    (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
 }
 
 /// Append a value to a List.
@@ -266,18 +271,32 @@ pub extern "C" fn jit_rt_list_append(_ctx: *mut VmContext, list_ptr: i64, elemen
         v
     };
 
-    if list_ptr == 0 {
-        // Null/empty list — create a fresh single-element list.
-        let result = Value::new_list(vec![element_value]);
-        return Box::into_raw(Box::new(result)) as i64;
-    }
+    // Extract raw pointer from NaN-boxed or raw form.
+    let raw_ptr = {
+        let u = list_ptr as u64;
+        if u == 0 || u == 0x7FFC_0000_0000_0000 {
+            // Null — create a fresh single-element list.
+            let result = Value::new_list(vec![element_value]);
+            let ptr = Arc::into_raw(Arc::new(result)) as u64;
+            return (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64;
+        }
+        if (u & NAN_MASK_U) == NAN_MASK_U && ((u >> 48) & 0x7) == 0 {
+            (u & PAYLOAD_MASK_U) as *const Value
+        } else if u > 1 && u < (1u64 << 48) {
+            u as *const Value
+        } else {
+            let result = Value::new_list(vec![element_value]);
+            let ptr = Arc::into_raw(Arc::new(result)) as u64;
+            return (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64;
+        }
+    };
 
-    // Take ownership of the list box — JIT register is consumed after this call.
-    let mut boxed_list = unsafe { Box::from_raw(list_ptr as *mut Value) };
-    if let Value::List(arc) = &mut *boxed_list {
-        // Arc::make_mut gives exclusive in-place access when strong_count == 1,
-        // avoiding a full list clone in the common single-owner case.
-        Arc::make_mut(arc).push(element_value);
+    // Take ownership via Arc — JIT register is consumed after this call.
+    // NbValue uses Arc for heap allocations, so we must use Arc::from_raw here.
+    let mut arc_list = unsafe { Arc::from_raw(raw_ptr) };
+    if let Value::List(inner_arc) = Arc::make_mut(&mut arc_list) {
+        Arc::make_mut(inner_arc).push(element_value);
     }
-    Box::into_raw(boxed_list) as i64
+    let ptr = Arc::into_raw(arc_list) as u64;
+    (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
 }

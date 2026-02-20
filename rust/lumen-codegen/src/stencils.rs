@@ -1876,8 +1876,8 @@ mod tests {
     #[test]
     fn test_return_stencil() {
         let s = stencil_return();
-        // mov rdi, r15 (3) + mov esi, imm32 (5) + movabs rax (10) + call rax (2) = 20 bytes
-        assert_eq!(s.code.len(), 20);
+        // mov rdi, r15 (3) + mov esi, imm32 (5) + movabs rax (10) + sub rsp (4) + call rax (2) + add rsp (4) = 28 bytes
+        assert_eq!(s.code.len(), 28);
         assert_eq!(s.holes.len(), 2);
         assert_eq!(s.holes[0].hole_type, HoleType::RegAIndex);
         assert_eq!(s.holes[1].hole_type, HoleType::RuntimeFuncAddr);

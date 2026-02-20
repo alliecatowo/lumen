@@ -205,7 +205,7 @@ pub fn nan_unbox_jit_result(raw: i64) -> i64 {
         v => {
             let u = v as u64;
             if (u & NAN_MASK_U) == NAN_MASK_U {
-                let tag = (u >> 48) & 0xF;
+                let tag = (u >> 48) & 0x7;
                 if tag == 1 {
                     // TAG_INT: extract 48-bit payload and sign-extend
                     nan_unbox_int(v)
@@ -1193,14 +1193,7 @@ pub(crate) fn lower_cell<M: Module>(
     // Single-block registers use pure SSA Values tracked in regs.ssa_vals.
     for i in 0..num_regs {
         let var_ty = if i < cell.params.len() {
-            let param_ty_str = &cell.params[i].ty;
-            if param_ty_str == "Float" {
-                JitVarType::Float
-            } else if param_ty_str == "String" {
-                JitVarType::Str
-            } else {
-                JitVarType::Int
-            }
+            JitVarType::from_lir_return_type(&cell.params[i].ty)
         } else if float_regs.contains(&(i as u16)) {
             JitVarType::Float
         } else if string_regs.contains(&(i as u16)) {
@@ -1302,6 +1295,9 @@ pub(crate) fn lower_cell<M: Module>(
 
     let mut terminated = false;
     let mut pending_test: Option<u16> = None;
+    // Direct SSA value for conditions that should NOT be stored in registers.
+    // Used by IsVariant which must NOT overwrite r[a] (the union register).
+    let mut pending_test_value: Option<cranelift_codegen::ir::Value> = None;
 
     for (pc, inst) in cell.instructions.iter().enumerate() {
         if let Some(&target_block) = block_map.get(&pc) {
@@ -1329,8 +1325,8 @@ pub(crate) fn lower_cell<M: Module>(
                 if let Some(constant) = cell.constants.get(bx) {
                     match constant {
                         Constant::String(s) => {
-                            if call_name_regs.contains(&a) {
-                                // This register is only used as a Call/TailCall
+                            if call_name_regs.contains(&pc) {
+                                // This LoadK PC is only used as a Call/TailCall
                                 // base (callee name). Skip heap string allocation.
                                 let dummy = builder.ins().iconst(types::I64, 0);
                                 var_types.insert(a as u32, JitVarType::Int);
@@ -1452,7 +1448,7 @@ pub(crate) fn lower_cell<M: Module>(
                     .get(&(inst.b as u32))
                     .copied()
                     .unwrap_or(JitVarType::Int);
-                let val = if src_ty == JitVarType::Str && !call_name_regs.contains(&inst.b) {
+                let val = if src_ty == JitVarType::Str {
                     // Drop old destination string if it held one and differs from source.
                     if var_types.get(&(inst.a as u32)) == Some(&JitVarType::Str) && inst.a != inst.b
                     {
@@ -1473,11 +1469,7 @@ pub(crate) fn lower_cell<M: Module>(
                 } else {
                     use_var(&mut builder, &regs, &var_types, inst.b)
                 };
-                let actual_ty = if call_name_regs.contains(&inst.b) {
-                    JitVarType::Int
-                } else {
-                    src_ty
-                };
+                let actual_ty = src_ty;
                 var_types.insert(inst.a as u32, actual_ty);
                 def_var(&mut builder, &mut regs, inst.a, val);
             }
@@ -2406,7 +2398,14 @@ pub(crate) fn lower_cell<M: Module>(
                 let fallthrough_block =
                     get_or_create_block(&mut builder, &mut block_map, fallthrough_pc);
 
-                if let Some(test_reg) = pending_test.take() {
+                if let Some(direct_cond) = pending_test_value.take() {
+                    // Direct SSA condition from IsVariant — already a NaN-boxed Bool.
+                    let falsy_val = builder.ins().iconst(types::I64, NAN_BOX_FALSE);
+                    let is_truthy = builder.ins().icmp(IntCC::NotEqual, direct_cond, falsy_val);
+                    builder
+                        .ins()
+                        .brif(is_truthy, fallthrough_block, &[], target_block, &[]);
+                } else if let Some(test_reg) = pending_test.take() {
                     let cond = use_var(&mut builder, &regs, &var_types, test_reg);
                     // NaN-boxing truthiness: check against type-specific falsy value
                     let test_ty = var_types
@@ -2434,11 +2433,16 @@ pub(crate) fn lower_cell<M: Module>(
             // Return / Halt
             OpCode::Return => {
                 // Drop all live string registers except the return value.
+                // IMPORTANT: Only drop registers that are multi-block Variables
+                // (which use Cranelift phi nodes and are valid in any block).
+                // SSA-only registers may be defined in a non-dominating block
+                // and referencing them here would cause a Cranelift verifier error.
                 let ret_reg = inst.a;
                 for (&reg_id, &ty) in &var_types {
                     if ty == JitVarType::Str
                         && reg_id != ret_reg as u32
                         && (reg_id as usize) < regs.num_regs
+                        && regs.vars.contains_key(&(reg_id as u16))
                     {
                         let v = use_var(&mut builder, &regs, &var_types, reg_id as u16);
                         builder.ins().call(str_drop_ref, &[vm_ctx_param, v]);
@@ -2900,14 +2904,13 @@ pub(crate) fn lower_cell<M: Module>(
             // NewUnion: Create a union (enum) value
             // r[a] = Union(tag=strings[b], payload=r[c])
             OpCode::NewUnion => {
-                let tag_str = if (inst.b as usize) < string_table.len() {
-                    &string_table[inst.b as usize]
-                } else {
-                    ""
-                };
-                let tag_bytes = tag_str.as_bytes();
-                let tag_ptr = builder.ins().iconst(types::I64, tag_bytes.as_ptr() as i64);
-                let tag_len = builder.ins().iconst(types::I64, tag_bytes.len() as i64);
+                // r[b] is a REGISTER containing a JitString pointer (loaded via LoadK).
+                // Extract the string data pointer and length from the JitString struct.
+                // JitString layout: offset 8 = len (i64), offset 32 = ptr (*mut u8).
+                let jit_str_ptr = use_var(&mut builder, &regs, &var_types, inst.b);
+                let flags = MemFlags::new();
+                let tag_len = builder.ins().load(types::I64, flags, jit_str_ptr, 8);   // len
+                let tag_ptr = builder.ins().load(types::I64, flags, jit_str_ptr, 32);  // ptr
                 let payload_ptr = use_var(&mut builder, &regs, &var_types, inst.c);
                 let call = builder.ins().call(
                     union_new_ref,
@@ -2921,8 +2924,11 @@ pub(crate) fn lower_cell<M: Module>(
             // IsVariant: Check if union has a specific variant tag
             // VM semantics: skip next instruction if r[a] is Union with tag=strings[bx].
             // The skipped instruction is typically a Jmp to the "not-matched" branch.
-            // JIT approach: store the result as a NaN-boxed Bool in r[a] and set
-            // `pending_test` so the immediately following Jmp emits a conditional branch.
+            // IMPORTANT: IsVariant must NOT write to r[a] — it preserves the union
+            // value so that subsequent Unbox instructions can read it. The interpreter
+            // uses instruction-skip semantics (ip += 1 if matched), while the JIT
+            // stores the boolean condition directly in pending_test_value for the
+            // immediately following Jmp to consume.
             OpCode::IsVariant => {
                 let union_ptr = use_var(&mut builder, &regs, &var_types, inst.a);
                 let tag_idx = inst.bx() as usize;
@@ -2939,14 +2945,13 @@ pub(crate) fn lower_cell<M: Module>(
                     &[vm_ctx_param, union_ptr, tag_ptr, tag_len],
                 );
                 let raw_bool = builder.inst_results(call)[0]; // 0 or 1
-                                                              // Convert to NaN-boxed Bool: 1 → NAN_BOX_TRUE, 0 → NAN_BOX_FALSE
+                // Convert to NaN-boxed Bool for the branch condition.
                 let nan_true = builder.ins().iconst(types::I64, NAN_BOX_TRUE);
                 let nan_false = builder.ins().iconst(types::I64, NAN_BOX_FALSE);
                 let is_one = builder.ins().icmp_imm(IntCC::NotEqual, raw_bool, 0);
                 let result = builder.ins().select(is_one, nan_true, nan_false);
-                var_types.insert(inst.a as u32, JitVarType::Bool);
-                def_var(&mut builder, &mut regs, inst.a, result);
-                pending_test = Some(inst.a);
+                // Store the condition directly — do NOT write to r[a].
+                pending_test_value = Some(result);
             }
 
             // Unbox: Extract payload from union
@@ -4867,10 +4872,13 @@ fn is_float_op(var_types: &HashMap<u32, JitVarType>, lhs_reg: u16, rhs_reg: u16)
 
 /// Identify registers that hold string constants used ONLY as Call/TailCall
 /// callee names in straight-line code. For these we skip heap string allocation.
-fn identify_call_name_registers(cell: &LirCell) -> std::collections::HashSet<u16> {
+/// Returns a set of **LoadK PCs** (not register numbers) whose string constants
+/// are used exclusively as Call/TailCall callee names. The JIT can skip heap
+/// allocation for these strings since they're only used for function dispatch.
+fn identify_call_name_registers(cell: &LirCell) -> std::collections::HashSet<usize> {
     use std::collections::HashSet;
 
-    let mut result: HashSet<u16> = HashSet::new();
+    let mut result: HashSet<usize> = HashSet::new();
     let instructions = &cell.instructions;
 
     for (loadk_pc, loadk_inst) in instructions.iter().enumerate() {
@@ -4959,31 +4967,9 @@ fn identify_call_name_registers(cell: &LirCell) -> std::collections::HashSet<u16
         }
 
         if found_call_use && !invalidated {
-            result.insert(origin_reg);
-            let mut propagated: HashSet<u16> = HashSet::new();
-            propagated.insert(origin_reg);
-            for inst in &instructions[(loadk_pc + 1)..] {
-                if (inst.op == OpCode::Move || inst.op == OpCode::MoveOwn)
-                    && propagated.contains(&inst.b)
-                {
-                    propagated.insert(inst.a);
-                }
-                if matches!(
-                    inst.op,
-                    OpCode::LoadK | OpCode::LoadBool | OpCode::LoadInt | OpCode::LoadNil
-                ) {
-                    propagated.remove(&inst.a);
-                }
-                if matches!(inst.op, OpCode::Call | OpCode::TailCall)
-                    && propagated.contains(&inst.a)
-                {
-                    propagated.remove(&inst.a);
-                }
-                if matches!(inst.op, OpCode::Jmp | OpCode::Break | OpCode::Continue) {
-                    break;
-                }
-            }
-            result.extend(propagated);
+            // Track by LoadK PC, not register number, so reused registers
+            // don't incorrectly skip allocation for non-call string loads.
+            result.insert(loadk_pc);
         }
     }
 

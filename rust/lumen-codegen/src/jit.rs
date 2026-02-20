@@ -206,6 +206,7 @@ pub fn is_cell_fully_jit_compilable(_cell: &LirCell) -> bool {
 /// - **Float**: pass-through — raw f64 bits already in i64 form
 /// - **Bool**: sentinel check — `NAN_BOX_TRUE` → 1, `NAN_BOX_FALSE` → 0
 /// - **Str**: pass-through — raw `*mut JitString` pointer as i64
+#[allow(dead_code)]
 fn nan_unbox_typed(raw: i64, ret_type: JitVarType) -> i64 {
     match ret_type {
         JitVarType::Int => nan_unbox_int(raw),
@@ -737,12 +738,59 @@ fn decode_nbvalue_index(val: i64) -> Value {
     }
 }
 
+// ---------------------------------------------------------------------------
+// NaN-boxing pointer helpers
+// ---------------------------------------------------------------------------
+
+/// NaN mask constant — must match NbValue::NAN_MASK in lumen-core.
+const NANBOX_MASK: u64 = 0x7FF8_0000_0000_0000;
+/// 48-bit payload mask.
+const NANBOX_PAYLOAD: u64 = 0x0000_FFFF_FFFF_FFFF;
+
+/// Extract a `*const Value` from either a NaN-boxed TAG_PTR i64 or a raw
+/// pointer i64.  Returns `None` for null / NaN-sentinel / zero.
+///
+/// A NaN-boxed TAG_PTR has the form `NAN_MASK | ptr48` with tag bits (50:48)
+/// == 0.  We also accept plain raw pointers (payload > 1, no NAN_MASK) for
+/// values produced inside a JIT function that haven't been re-boxed yet.
+#[inline]
+fn unwrap_value_ptr(v: i64) -> Option<*const Value> {
+    let u = v as u64;
+    if u == 0 || u == NAN_BOX_NULL as u64 {
+        return None;
+    }
+    // NaN-boxed TAG_PTR?
+    if (u & NANBOX_MASK) == NANBOX_MASK && ((u >> 48) & 0x7) == 0 {
+        let payload = u & NANBOX_PAYLOAD;
+        if payload > 1 {
+            return Some(payload as *const Value);
+        }
+        return None;
+    }
+    // Raw pointer (not NaN-boxed) — accept as-is if reasonable address.
+    if u > 1 && u < (1u64 << 48) {
+        return Some(u as *const Value);
+    }
+    None
+}
+
+/// Wrap a raw `*const Value` (or Box pointer) into a NaN-boxed TAG_PTR i64,
+/// compatible with NbValue.  Returns NAN_BOX_NULL for null pointers.
+#[inline]
+fn wrap_nanbox_ptr(ptr: *const Value) -> i64 {
+    let addr = ptr as u64;
+    if addr == 0 {
+        return NAN_BOX_NULL;
+    }
+    (NANBOX_MASK | (addr & NANBOX_PAYLOAD)) as i64
+}
+
 /// Get a field from a Record by field name.
-/// Returns a `*mut Value` as i64 (boxed Value).
-/// If the record is null or the field doesn't exist, returns a boxed Value::Null.
+/// Returns a NaN-boxed TAG_PTR i64 (heap-allocated Value).
+/// If the record is null or the field doesn't exist, returns NAN_BOX_NULL.
 ///
 /// # Safety
-/// `record_ptr` must be a valid `*mut Value` pointer pointing to a `Value::Record`.
+/// `record_ptr` must be a valid NaN-boxed TAG_PTR or raw `*mut Value` pointer.
 /// `field_name_ptr` must be a valid `*const u8` pointer to UTF-8 bytes.
 extern "C" fn jit_rt_record_get_field(
     _ctx: *mut VmContext,
@@ -750,12 +798,11 @@ extern "C" fn jit_rt_record_get_field(
     field_name_ptr: *const u8,
     field_name_len: usize,
 ) -> i64 {
-    if record_ptr == 0 || record_ptr == NAN_BOX_NULL {
-        // Null record, return boxed null
-        return Box::into_raw(Box::new(Value::Null)) as i64;
-    }
+    let Some(ptr) = unwrap_value_ptr(record_ptr) else {
+        return NAN_BOX_NULL;
+    };
 
-    let value = unsafe { &*(record_ptr as *const Value) };
+    let value = unsafe { &*ptr };
     let field_name = unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(field_name_ptr, field_name_len))
     };
@@ -765,7 +812,7 @@ extern "C" fn jit_rt_record_get_field(
         _ => Value::Null,
     };
 
-    Box::into_raw(Box::new(result)) as i64
+    wrap_nanbox_ptr(Arc::into_raw(Arc::new(result)))
 }
 
 /// Set a field in a Record by field name.
@@ -783,19 +830,17 @@ extern "C" fn jit_rt_record_set_field(
     field_name_len: usize,
     value_ptr: i64,
 ) -> i64 {
-    if record_ptr == 0 || record_ptr == NAN_BOX_NULL {
-        // Can't set field on null, return null
-        return Box::into_raw(Box::new(Value::Null)) as i64;
-    }
+    let Some(rec_ptr) = unwrap_value_ptr(record_ptr) else {
+        return NAN_BOX_NULL;
+    };
 
-    let value = unsafe { &*(record_ptr as *const Value) };
+    let value = unsafe { &*rec_ptr };
     let field_name = unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(field_name_ptr, field_name_len))
     };
-    let new_value = if value_ptr == 0 || value_ptr == NAN_BOX_NULL {
-        Value::Null
-    } else {
-        unsafe { (*(value_ptr as *const Value)).clone() }
+    let new_value = match unwrap_value_ptr(value_ptr) {
+        Some(vp) => unsafe { (*vp).clone() },
+        None => Value::Null,
     };
 
     let result = match value {
@@ -811,7 +856,7 @@ extern "C" fn jit_rt_record_set_field(
         _ => Value::Null,
     };
 
-    Box::into_raw(Box::new(result)) as i64
+    wrap_nanbox_ptr(Arc::into_raw(Arc::new(result)))
 }
 
 /// Get an element from a List, Tuple, or Map by index/key.
@@ -829,14 +874,14 @@ extern "C" fn jit_rt_record_set_field(
 /// `collection_ptr` must be a valid raw `*const Value` pointer to a `Value::List`,
 /// `Value::Tuple`, or `Value::Map`.
 extern "C" fn jit_rt_get_index(_ctx: *mut VmContext, collection_ptr: i64, index_ptr: i64) -> i64 {
-    if collection_ptr == 0 || collection_ptr == NAN_BOX_NULL {
+    let Some(coll_raw) = unwrap_value_ptr(collection_ptr) else {
         return NAN_BOX_NULL;
-    }
+    };
     if index_ptr == 0 || index_ptr == NAN_BOX_NULL {
         return NAN_BOX_NULL;
     }
 
-    let collection = unsafe { &*(collection_ptr as *const Value) };
+    let collection = unsafe { &*coll_raw };
     let index_val = decode_nbvalue_index(index_ptr);
 
     let element = match (collection, &index_val) {
@@ -881,8 +926,8 @@ fn value_to_nbval(v: Value) -> i64 {
         Value::Null => NAN_BOX_NULL,
         other => {
             // NbValue TAG_PTR encoding: NAN_MASK | (0<<48) | ptr_low48bits.
-            // This lets nbval_to_value decode it correctly via the TAG_PTR=0 branch.
-            let ptr = Box::into_raw(Box::new(other)) as u64;
+            // Must use Arc to match NbValue's heap convention.
+            let ptr = Arc::into_raw(Arc::new(other)) as u64;
             (NBVAL_NAN_MASK | (ptr & NBVAL_PAYLOAD_MASK)) as i64
         }
     }
@@ -943,40 +988,38 @@ extern "C" fn jit_rt_set_index(
     index_ptr: i64,
     value_ptr: i64,
 ) -> i64 {
-    if collection_ptr == 0 || collection_ptr == NAN_BOX_NULL {
-        // Can't set on null, return null
-        return Box::into_raw(Box::new(Value::Null)) as i64;
-    }
+    let Some(raw_ptr) = unwrap_value_ptr(collection_ptr) else {
+        return NAN_BOX_NULL;
+    };
 
-    // Take ownership of the collection box — the JIT register no longer
-    // holds a reference to the old pointer after this call.
-    let mut boxed_collection = unsafe { Box::from_raw(collection_ptr as *mut Value) };
+    // Take ownership via Arc — the JIT register no longer holds a
+    // reference to the old pointer after this call.
+    let mut arc_collection = unsafe { Arc::from_raw(raw_ptr) };
     let index_decoded = decode_nbvalue_index(index_ptr);
     let index = &index_decoded;
     // Decode the new value from NbValue encoding — same format returned by
     // jit_rt_get_index and float/int arithmetic (raw f64 bits or NAN-tagged).
     let new_value = nbval_to_value(value_ptr);
 
-    match (&mut *boxed_collection, index) {
-        (Value::List(arc), Value::Int(i)) => {
-            let ii = *i;
-            let len = arc.len() as i64;
-            let effective = if ii < 0 { ii + len } else { ii };
-            if effective >= 0 && effective < len {
-                // Arc::make_mut gives exclusive access without cloning if
-                // this is the only reference (strong_count == 1).
-                Arc::make_mut(arc)[effective as usize] = new_value;
+    match Arc::make_mut(&mut arc_collection) {
+        Value::List(arc) => {
+            if let Value::Int(i) = index {
+                let ii = *i;
+                let len = arc.len() as i64;
+                let effective = if ii < 0 { ii + len } else { ii };
+                if effective >= 0 && effective < len {
+                    Arc::make_mut(arc)[effective as usize] = new_value;
+                }
             }
-            // Out-of-bounds: leave collection unchanged.
         }
-        (Value::Map(arc), _) => {
+        Value::Map(arc) => {
             let key = index.as_string();
             Arc::make_mut(arc).insert(key, new_value);
         }
         _ => {}
     }
 
-    Box::into_raw(boxed_collection) as i64
+    wrap_nanbox_ptr(Arc::into_raw(arc_collection))
 }
 
 /// Clone a Value (for record field access results).
@@ -985,22 +1028,23 @@ extern "C" fn jit_rt_set_index(
 /// # Safety
 /// `value_ptr` must be a valid `*mut Value` pointer.
 extern "C" fn jit_rt_value_clone(_ctx: *mut VmContext, value_ptr: i64) -> i64 {
-    if value_ptr == 0 {
-        return 0;
-    }
-    let value = unsafe { &*(value_ptr as *const Value) };
-    Box::into_raw(Box::new(value.clone())) as i64
+    let Some(ptr) = unwrap_value_ptr(value_ptr) else {
+        return NAN_BOX_NULL;
+    };
+    let value = unsafe { &*ptr };
+    wrap_nanbox_ptr(Arc::into_raw(Arc::new(value.clone())))
 }
 
-/// Free a boxed Value.
+/// Free an Arc-allocated Value.
 ///
 /// # Safety
-/// `value_ptr` must be a valid `*mut Value` pointer that was created by one of the
-/// JIT runtime functions. Must not be called twice on the same pointer.
+/// `value_ptr` must be a valid NaN-boxed TAG_PTR pointing to an Arc-allocated
+/// Value created by one of the JIT runtime functions. Must not be called twice
+/// on the same pointer.
 extern "C" fn jit_rt_value_drop(_ctx: *mut VmContext, value_ptr: i64) {
-    if value_ptr != 0 {
+    if let Some(ptr) = unwrap_value_ptr(value_ptr) {
         unsafe {
-            let _ = Box::from_raw(value_ptr as *mut Value);
+            let _ = Arc::from_raw(ptr);
         }
     }
 }
@@ -2420,13 +2464,7 @@ impl JitEngine {
     }
 
     /// Execute a JIT-compiled function with no arguments.
-    ///
-    /// The returned i64 is type-aware unboxed according to the function's
-    /// declared return type:
-    /// - Int:   NaN-boxed integer → plain i64
-    /// - Float: raw f64 bits passed through as i64
-    /// - Bool:  NAN_BOX_TRUE → 1, NAN_BOX_FALSE → 0
-    /// - Str:   raw `*mut JitString` pointer passed through as i64
+    /// Arguments are already NaN-boxed by the VM; result is returned as-is.
     ///
     /// # Safety
     /// The caller must ensure this engine has a compiled function with the
@@ -2442,7 +2480,6 @@ impl JitEngine {
             .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
 
         let fn_ptr = compiled.fn_ptr;
-        let ret_type = compiled.return_type;
         self.stats.executions += 1;
 
         // SAFETY: The function pointer was produced by Cranelift JIT and is
@@ -2455,11 +2492,11 @@ impl JitEngine {
         if JIT_DIVZERO_TRAP.with(|f| f.replace(false)) {
             return Err(JitError::RuntimeTrap("division by zero".to_string()));
         }
-        Ok(nan_unbox_typed(raw, ret_type))
+        Ok(raw)
     }
 
     /// Execute a JIT-compiled function with one i64 argument.
-    /// Arguments are NaN-boxed at the boundary; result is type-aware unboxed.
+    /// Arguments are already NaN-boxed by the VM; result is returned as-is.
     pub fn execute_jit_unary(
         &mut self,
         ctx: &VmContext,
@@ -2472,21 +2509,20 @@ impl JitEngine {
             .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
 
         let fn_ptr = compiled.fn_ptr;
-        let ret_type = compiled.return_type;
         self.stats.executions += 1;
 
         let raw = unsafe {
             let code_fn: fn(*mut VmContext, i64) -> i64 = std::mem::transmute(fn_ptr);
-            code_fn(ctx as *const VmContext as *mut VmContext, nan_box_int(arg))
+            code_fn(ctx as *const VmContext as *mut VmContext, arg)
         };
         if JIT_DIVZERO_TRAP.with(|f| f.replace(false)) {
             return Err(JitError::RuntimeTrap("division by zero".to_string()));
         }
-        Ok(nan_unbox_typed(raw, ret_type))
+        Ok(raw)
     }
 
     /// Execute a JIT-compiled function with two i64 arguments.
-    /// Arguments are NaN-boxed at the boundary; result is type-aware unboxed.
+    /// Arguments are already NaN-boxed by the VM; result is returned as-is.
     pub fn execute_jit_binary(
         &mut self,
         ctx: &VmContext,
@@ -2500,25 +2536,24 @@ impl JitEngine {
             .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
 
         let fn_ptr = compiled.fn_ptr;
-        let ret_type = compiled.return_type;
         self.stats.executions += 1;
 
         let raw = unsafe {
             let code_fn: fn(*mut VmContext, i64, i64) -> i64 = std::mem::transmute(fn_ptr);
             code_fn(
                 ctx as *const VmContext as *mut VmContext,
-                nan_box_int(arg1),
-                nan_box_int(arg2),
+                arg1,
+                arg2,
             )
         };
         if JIT_DIVZERO_TRAP.with(|f| f.replace(false)) {
             return Err(JitError::RuntimeTrap("division by zero".to_string()));
         }
-        Ok(nan_unbox_typed(raw, ret_type))
+        Ok(raw)
     }
 
     /// Execute a JIT-compiled function with three i64 arguments.
-    /// Arguments are NaN-boxed at the boundary; result is type-aware unboxed.
+    /// Arguments are already NaN-boxed by the VM; result is returned as-is.
     pub fn execute_jit_ternary(
         &mut self,
         ctx: &VmContext,
@@ -2533,22 +2568,21 @@ impl JitEngine {
             .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
 
         let fn_ptr = compiled.fn_ptr;
-        let ret_type = compiled.return_type;
         self.stats.executions += 1;
 
         let raw = unsafe {
             let code_fn: fn(*mut VmContext, i64, i64, i64) -> i64 = std::mem::transmute(fn_ptr);
             code_fn(
                 ctx as *const VmContext as *mut VmContext,
-                nan_box_int(arg1),
-                nan_box_int(arg2),
-                nan_box_int(arg3),
+                arg1,
+                arg2,
+                arg3,
             )
         };
         if JIT_DIVZERO_TRAP.with(|f| f.replace(false)) {
             return Err(JitError::RuntimeTrap("division by zero".to_string()));
         }
-        Ok(nan_unbox_typed(raw, ret_type))
+        Ok(raw)
     }
 
     /// Generic JIT execution dispatching on arity. Supports 0..=3 i64
@@ -2799,6 +2833,7 @@ fn lower_cell_jit(
 #[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
     use super::*;
+    use crate::ir::{nan_box_int, NAN_BOX_TRUE, NAN_BOX_FALSE};
     use lumen_core::lir::{Constant, Instruction, LirCell, LirModule, LirParam, OpCode};
 
     fn test_ctx() -> VmContext {
@@ -2945,7 +2980,7 @@ mod tests {
         let result = engine
             .compile_and_execute(&test_ctx(), "answer", &lir, &[])
             .expect("JIT compile and execute should succeed");
-        assert_eq!(result, 42, "JIT-compiled answer() should return 42");
+        assert_eq!(result, nan_box_int(42), "JIT-compiled answer() should return 42");
     }
 
     #[test]
@@ -2973,7 +3008,7 @@ mod tests {
         let result = engine
             .compile_and_execute(&test_ctx(), "add_two", &lir, &[])
             .expect("JIT add should succeed");
-        assert_eq!(result, 42, "10 + 32 = 42");
+        assert_eq!(result, nan_box_int(42), "10 + 32 = 42");
     }
 
     #[test]
@@ -3006,16 +3041,16 @@ mod tests {
             .expect("JIT compile should succeed");
 
         assert_eq!(
-            engine.execute_jit_unary(&test_ctx(), "double", 21).unwrap(),
-            42
+            engine.execute_jit_unary(&test_ctx(), "double", nan_box_int(21)).unwrap(),
+            nan_box_int(42)
         );
         assert_eq!(
-            engine.execute_jit_unary(&test_ctx(), "double", 0).unwrap(),
-            0
+            engine.execute_jit_unary(&test_ctx(), "double", nan_box_int(0)).unwrap(),
+            nan_box_int(0)
         );
         assert_eq!(
-            engine.execute_jit_unary(&test_ctx(), "double", -5).unwrap(),
-            -10
+            engine.execute_jit_unary(&test_ctx(), "double", nan_box_int(-5)).unwrap(),
+            nan_box_int(-10)
         );
     }
 
@@ -3058,21 +3093,21 @@ mod tests {
 
         assert_eq!(
             engine
-                .execute_jit_binary(&test_ctx(), "add", 10, 32)
+                .execute_jit_binary(&test_ctx(), "add", nan_box_int(10), nan_box_int(32))
                 .unwrap(),
-            42
+            nan_box_int(42)
         );
         assert_eq!(
             engine
-                .execute_jit_binary(&test_ctx(), "add", -3, 3)
+                .execute_jit_binary(&test_ctx(), "add", nan_box_int(-3), nan_box_int(3))
                 .unwrap(),
-            0
+            nan_box_int(0)
         );
         assert_eq!(
             engine
-                .execute_jit_binary(&test_ctx(), "add", 100, 200)
+                .execute_jit_binary(&test_ctx(), "add", nan_box_int(100), nan_box_int(200))
                 .unwrap(),
-            300
+            nan_box_int(300)
         );
     }
 
@@ -3131,27 +3166,27 @@ mod tests {
 
         assert_eq!(
             engine
-                .execute_jit_unary(&test_ctx(), "factorial", 0)
+                .execute_jit_unary(&test_ctx(), "factorial", nan_box_int(0))
                 .unwrap(),
-            1
+            nan_box_int(1)
         );
         assert_eq!(
             engine
-                .execute_jit_unary(&test_ctx(), "factorial", 1)
+                .execute_jit_unary(&test_ctx(), "factorial", nan_box_int(1))
                 .unwrap(),
-            1
+            nan_box_int(1)
         );
         assert_eq!(
             engine
-                .execute_jit_unary(&test_ctx(), "factorial", 5)
+                .execute_jit_unary(&test_ctx(), "factorial", nan_box_int(5))
                 .unwrap(),
-            120
+            nan_box_int(120)
         );
         assert_eq!(
             engine
-                .execute_jit_unary(&test_ctx(), "factorial", 10)
+                .execute_jit_unary(&test_ctx(), "factorial", nan_box_int(10))
                 .unwrap(),
-            3628800
+            nan_box_int(3628800)
         );
     }
 
@@ -3226,33 +3261,33 @@ mod tests {
         // fib_acc(n, 0, 1) computes fib(n)
         assert_eq!(
             engine
-                .execute_jit_ternary(&test_ctx(), "fib_acc", 0, 0, 1)
+                .execute_jit_ternary(&test_ctx(), "fib_acc", nan_box_int(0), nan_box_int(0), nan_box_int(1))
                 .unwrap(),
-            0
+            nan_box_int(0)
         );
         assert_eq!(
             engine
-                .execute_jit_ternary(&test_ctx(), "fib_acc", 1, 0, 1)
+                .execute_jit_ternary(&test_ctx(), "fib_acc", nan_box_int(1), nan_box_int(0), nan_box_int(1))
                 .unwrap(),
-            1
+            nan_box_int(1)
         );
         assert_eq!(
             engine
-                .execute_jit_ternary(&test_ctx(), "fib_acc", 5, 0, 1)
+                .execute_jit_ternary(&test_ctx(), "fib_acc", nan_box_int(5), nan_box_int(0), nan_box_int(1))
                 .unwrap(),
-            5
+            nan_box_int(5)
         );
         assert_eq!(
             engine
-                .execute_jit_ternary(&test_ctx(), "fib_acc", 10, 0, 1)
+                .execute_jit_ternary(&test_ctx(), "fib_acc", nan_box_int(10), nan_box_int(0), nan_box_int(1))
                 .unwrap(),
-            55
+            nan_box_int(55)
         );
         assert_eq!(
             engine
-                .execute_jit_ternary(&test_ctx(), "fib_acc", 20, 0, 1)
+                .execute_jit_ternary(&test_ctx(), "fib_acc", nan_box_int(20), nan_box_int(0), nan_box_int(1))
                 .unwrap(),
-            6765
+            nan_box_int(6765)
         );
     }
 
@@ -3302,7 +3337,7 @@ mod tests {
         let result = engine
             .compile_and_execute(&test_ctx(), "main", &lir, &[])
             .expect("cross-cell JIT should succeed");
-        assert_eq!(result, 42, "main() -> double(21) = 42");
+        assert_eq!(result, nan_box_int(42), "main() -> double(21) = 42");
     }
 
     #[test]
@@ -3329,7 +3364,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "answer")
             .expect("execute should succeed");
-        assert_eq!(result, 42);
+        assert_eq!(result, nan_box_int(42));
     }
 
     #[test]
@@ -3420,16 +3455,16 @@ mod tests {
         engine.compile_module(&lir).expect("compile");
 
         assert_eq!(
-            engine.execute_jit_unary(&test_ctx(), "choose", 5).unwrap(),
-            100
+            engine.execute_jit_unary(&test_ctx(), "choose", nan_box_int(5)).unwrap(),
+            nan_box_int(100)
         );
         assert_eq!(
-            engine.execute_jit_unary(&test_ctx(), "choose", -1).unwrap(),
-            50
+            engine.execute_jit_unary(&test_ctx(), "choose", nan_box_int(-1)).unwrap(),
+            nan_box_int(50)
         );
         assert_eq!(
-            engine.execute_jit_unary(&test_ctx(), "choose", 0).unwrap(),
-            50
+            engine.execute_jit_unary(&test_ctx(), "choose", nan_box_int(0)).unwrap(),
+            nan_box_int(50)
         );
     }
 
@@ -3484,12 +3519,12 @@ mod tests {
         engine.compile_module(&lir).expect("compile");
 
         // Nullary dispatch.
-        assert_eq!(engine.execute_jit(&test_ctx(), "answer", &[]).unwrap(), 42);
+        assert_eq!(engine.execute_jit(&test_ctx(), "answer", &[]).unwrap(), nan_box_int(42));
 
         // Binary dispatch.
         assert_eq!(
-            engine.execute_jit(&test_ctx(), "add", &[10, 32]).unwrap(),
-            42
+            engine.execute_jit(&test_ctx(), "add", &[nan_box_int(10), nan_box_int(32)]).unwrap(),
+            nan_box_int(42)
         );
 
         // Unsupported arity.
@@ -3612,8 +3647,8 @@ mod tests {
         let result2 = engine
             .execute_jit_nullary(&test_ctx(), "set_field")
             .expect("SetField should execute");
-        // Boundary unboxes NaN-boxed 42 → 42
-        assert_eq!(result2, 42, "SetField returns 42");
+        // Result is NaN-boxed 42
+        assert_eq!(result2, nan_box_int(42), "SetField returns NaN-boxed 42");
     }
 
     #[test]
@@ -3772,7 +3807,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "eq_test")
             .expect("execute");
-        assert_eq!(result, 1, "equal strings should return 1");
+        assert_eq!(result, NAN_BOX_TRUE, "equal strings should return true");
     }
 
     #[test]
@@ -3804,7 +3839,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "neq_test")
             .expect("execute");
-        assert_eq!(result, 0, "different strings should return 0");
+        assert_eq!(result, NAN_BOX_FALSE, "different strings should return false");
     }
 
     #[test]
@@ -3836,7 +3871,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "lt_test")
             .expect("execute");
-        assert_eq!(result, 1, "\"apple\" < \"banana\" should be 1");
+        assert_eq!(result, NAN_BOX_TRUE, "\"apple\" < \"banana\" should be true");
     }
 
     #[test]
@@ -3868,7 +3903,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "lt_rev")
             .expect("execute");
-        assert_eq!(result, 0, "\"banana\" < \"apple\" should be 0");
+        assert_eq!(result, NAN_BOX_FALSE, "\"banana\" < \"apple\" should be false");
     }
 
     #[test]
@@ -3900,7 +3935,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "le_eq")
             .expect("execute");
-        assert_eq!(result, 1, "\"abc\" <= \"abc\" should be 1");
+        assert_eq!(result, NAN_BOX_TRUE, "\"abc\" <= \"abc\" should be true");
     }
 
     #[test]
@@ -4100,19 +4135,19 @@ mod tests {
         assert!(engine.returns_string("pick"));
 
         let raw_pos = engine
-            .execute_jit_unary(&test_ctx(), "pick", 5)
+            .execute_jit_unary(&test_ctx(), "pick", nan_box_int(5))
             .expect("positive");
         let s_pos = unsafe { jit_take_string(raw_pos) };
         assert_eq!(s_pos, "positive");
 
         let raw_neg = engine
-            .execute_jit_unary(&test_ctx(), "pick", -1)
+            .execute_jit_unary(&test_ctx(), "pick", nan_box_int(-1))
             .expect("negative");
         let s_neg = unsafe { jit_take_string(raw_neg) };
         assert_eq!(s_neg, "non-positive");
 
         let raw_zero = engine
-            .execute_jit_unary(&test_ctx(), "pick", 0)
+            .execute_jit_unary(&test_ctx(), "pick", nan_box_int(0))
             .expect("zero");
         let s_zero = unsafe { jit_take_string(raw_zero) };
         assert_eq!(s_zero, "non-positive");
@@ -4236,7 +4271,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "is_hello")
             .expect("execute");
-        assert_eq!(result, 100, "equal strings should take the then-branch");
+        assert_eq!(result, nan_box_int(100), "equal strings should take the then-branch");
     }
 
     #[test]
@@ -4429,7 +4464,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "test_abs")
             .expect("execute");
-        assert_eq!(result, 10); // abs(-10) = 10
+        assert_eq!(result, nan_box_int(10)); // abs(-10) = 10
     }
 
     #[test]
@@ -4465,7 +4500,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "test_print")
             .expect("execute");
-        assert_eq!(result, 0);
+        assert_eq!(result, nan_box_int(0));
     }
 
     #[test]
@@ -4497,7 +4532,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "test_len")
             .expect("execute");
-        assert_eq!(result, 5); // len("hello") = 5
+        assert_eq!(result, nan_box_int(5)); // len("hello") = 5
     }
 
     // --- New intrinsic tests (math, conversion, type) ----------------------
@@ -4567,7 +4602,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "test_min")
             .expect("execute");
-        assert_eq!(result, 3, "min(10, 3) = 3");
+        assert_eq!(result, nan_box_int(3), "min(10, 3) = 3");
     }
 
     #[test]
@@ -4600,7 +4635,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "test_max")
             .expect("execute");
-        assert_eq!(result, 10, "max(10, 3) = 10");
+        assert_eq!(result, nan_box_int(10), "max(10, 3) = 10");
     }
 
     #[test]
@@ -4954,7 +4989,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "test_pow")
             .expect("execute");
-        assert_eq!(result, 1024, "pow(2, 10) = 1024");
+        assert_eq!(result, nan_box_int(1024), "pow(2, 10) = 1024");
     }
 
     #[test]
@@ -5026,7 +5061,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "test_clamp")
             .expect("execute");
-        assert_eq!(result, 10, "clamp(15, 0, 10) = 10");
+        assert_eq!(result, nan_box_int(10), "clamp(15, 0, 10) = 10");
     }
 
     #[test]
@@ -5123,7 +5158,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "test_is_nan")
             .expect("execute");
-        assert_eq!(result, 1, "is_nan(NaN) should be 1 (true)");
+        assert_eq!(result, NAN_BOX_TRUE, "is_nan(NaN) should be true");
     }
 
     #[test]
@@ -5154,7 +5189,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "test_not_nan")
             .expect("execute");
-        assert_eq!(result, 0, "is_nan(42.0) should be 0 (false)");
+        assert_eq!(result, NAN_BOX_FALSE, "is_nan(42.0) should be false");
     }
 
     #[test]
@@ -5185,7 +5220,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "test_is_inf")
             .expect("execute");
-        assert_eq!(result, 1, "is_infinite(+inf) should be 1 (true)");
+        assert_eq!(result, NAN_BOX_TRUE, "is_infinite(+inf) should be true");
     }
 
     #[test]
@@ -5216,7 +5251,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "test_is_neg_inf")
             .expect("execute");
-        assert_eq!(result, 1, "is_infinite(-inf) should be 1 (true)");
+        assert_eq!(result, NAN_BOX_TRUE, "is_infinite(-inf) should be true");
     }
 
     #[test]
@@ -5247,7 +5282,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "test_to_int")
             .expect("execute");
-        assert_eq!(result, 3, "to_int(3.7) should be 3");
+        assert_eq!(result, nan_box_int(3), "to_int(3.7) should be 3");
     }
 
     #[test]
@@ -5383,7 +5418,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "test_is_empty")
             .expect("execute");
-        assert_eq!(result, 1, "is_empty(\"\") should be 1 (true)");
+        assert_eq!(result, NAN_BOX_TRUE, "is_empty(\"\") should be true");
     }
 
     #[test]
@@ -5414,7 +5449,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "test_not_empty")
             .expect("execute");
-        assert_eq!(result, 0, "is_empty(\"hi\") should be 0 (false)");
+        assert_eq!(result, NAN_BOX_FALSE, "is_empty(\"hi\") should be false");
     }
 
     #[test]
@@ -5548,7 +5583,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "test_pow_op")
             .expect("execute");
-        assert_eq!(result, 1024, "2 ** 10 = 1024");
+        assert_eq!(result, nan_box_int(1024), "2 ** 10 = 1024");
     }
 
     #[test]
@@ -5999,7 +6034,7 @@ mod tests {
         let raw = engine
             .execute_jit_nullary(&test_ctx(), "test_contains")
             .expect("execute");
-        assert_eq!(raw, 1, "contains(\"hello world\", \"world\") should be 1");
+        assert_eq!(raw, NAN_BOX_TRUE, "contains(\"hello world\", \"world\") should be true");
     }
 
     #[test]
@@ -6031,7 +6066,7 @@ mod tests {
         let raw = engine
             .execute_jit_nullary(&test_ctx(), "test_contains_f")
             .expect("execute");
-        assert_eq!(raw, 0, "contains(\"hello\", \"xyz\") should be 0");
+        assert_eq!(raw, NAN_BOX_FALSE, "contains(\"hello\", \"xyz\") should be false");
     }
 
     #[test]
@@ -6063,7 +6098,7 @@ mod tests {
         let raw = engine
             .execute_jit_nullary(&test_ctx(), "test_sw")
             .expect("execute");
-        assert_eq!(raw, 1);
+        assert_eq!(raw, NAN_BOX_TRUE);
     }
 
     #[test]
@@ -6095,7 +6130,7 @@ mod tests {
         let raw = engine
             .execute_jit_nullary(&test_ctx(), "test_sw_f")
             .expect("execute");
-        assert_eq!(raw, 0);
+        assert_eq!(raw, NAN_BOX_FALSE);
     }
 
     #[test]
@@ -6127,7 +6162,7 @@ mod tests {
         let raw = engine
             .execute_jit_nullary(&test_ctx(), "test_ew")
             .expect("execute");
-        assert_eq!(raw, 1);
+        assert_eq!(raw, NAN_BOX_TRUE);
     }
 
     #[test]
@@ -6159,7 +6194,7 @@ mod tests {
         let raw = engine
             .execute_jit_nullary(&test_ctx(), "test_ew_f")
             .expect("execute");
-        assert_eq!(raw, 0);
+        assert_eq!(raw, NAN_BOX_FALSE);
     }
 
     #[test]
@@ -6263,7 +6298,7 @@ mod tests {
         let raw = engine
             .execute_jit_nullary(&test_ctx(), "test_indexof")
             .expect("execute");
-        assert_eq!(raw, 6, "index_of(\"hello world\", \"world\") should be 6");
+        assert_eq!(raw, nan_box_int(6), "index_of(\"hello world\", \"world\") should be 6");
     }
 
     #[test]
@@ -6295,7 +6330,7 @@ mod tests {
         let raw = engine
             .execute_jit_nullary(&test_ctx(), "test_indexof_nf")
             .expect("execute");
-        assert_eq!(raw, -1i64 as i64, "index_of not found should be -1");
+        assert_eq!(raw, nan_box_int(-1), "index_of not found should be -1");
     }
 
     #[test]
@@ -6824,7 +6859,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "hot_cell")
             .expect("execute");
-        assert_eq!(result, 99, "hot_cell should return 99");
+        assert_eq!(result, nan_box_int(99), "hot_cell should return 99");
     }
 
     #[test]
@@ -6872,8 +6907,8 @@ mod tests {
             .execute_jit_nullary(&test_ctx(), "with_emit")
             .expect("execute");
         assert_eq!(
-            result, 42,
-            "Cell should return 42; Emit runtime helper should not affect result"
+            result, nan_box_int(42),
+            "Cell should return NaN-boxed 42; Emit runtime helper should not affect result"
         );
     }
 
@@ -7012,7 +7047,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "div_ok")
             .expect("10 / 2 should not trap");
-        assert_eq!(result, 5, "10 / 2 = 5");
+        assert_eq!(result, nan_box_int(5), "10 / 2 = 5");
     }
 
     // -----------------------------------------------------------------------
@@ -7043,7 +7078,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "and_tt")
             .expect("execute");
-        assert_eq!(result, 1, "true and true -> 1");
+        assert_eq!(result, NAN_BOX_TRUE, "true and true -> true");
     }
 
     #[test]
@@ -7070,7 +7105,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "and_ft")
             .expect("execute");
-        assert_eq!(result, 0, "false and true -> 0");
+        assert_eq!(result, NAN_BOX_FALSE, "false and true -> false");
     }
 
     #[test]
@@ -7097,7 +7132,7 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "or_ff")
             .expect("execute");
-        assert_eq!(result, 0, "false or false -> 0");
+        assert_eq!(result, NAN_BOX_FALSE, "false or false -> false");
     }
 
     #[test]
@@ -7124,6 +7159,6 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "or_ft")
             .expect("execute");
-        assert_eq!(result, 1, "false or true -> 1");
+        assert_eq!(result, NAN_BOX_TRUE, "false or true -> true");
     }
 }

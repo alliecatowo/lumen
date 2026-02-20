@@ -15,6 +15,7 @@ use crate::vm::VM;
 use lumen_core::lir::LirModule;
 use lumen_core::nb_value::NbValue;
 use lumen_core::values::Value;
+use lumen_core::vm_context::VmContext;
 use thiserror::Error;
 
 #[cfg(feature = "jit")]
@@ -224,16 +225,29 @@ pub mod osr_check {
     }
 
     /// OSR check function called from stencil JIT (extern "C").
+    ///
+    /// The stencil calling convention passes `r15 = *mut VmContext` as the
+    /// first argument to ALL runtime callbacks (matching `lm_rt_call`,
+    /// `lm_rt_return`, etc.). We extract the VM pointer from
+    /// `(*ctx).stack_pool` exactly as `stencil_runtime.rs` does via
+    /// `vm_from_ctx`.
+    ///
     /// Wraps `osr_check_interp` in catch_unwind to prevent panics crossing
     /// the FFI boundary. The interpreter should prefer `osr_check_interp`.
     #[no_mangle]
     pub unsafe extern "C" fn lm_rt_osr_check(
-        vm_ctx: &mut VM,
+        ctx: *mut VmContext,
         cell_idx: usize,
         _current_ip: usize,
     ) -> *const () {
+        debug_assert!(!ctx.is_null(), "lm_rt_osr_check: null VmContext");
+        let vm: &mut VM = {
+            let ptr = (*ctx).stack_pool as *mut VM;
+            debug_assert!(!ptr.is_null(), "lm_rt_osr_check: null VM pointer");
+            &mut *ptr
+        };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            osr_check_interp(vm_ctx, cell_idx)
+            osr_check_interp(vm, cell_idx)
         }));
         result.unwrap_or(std::ptr::null())
     }

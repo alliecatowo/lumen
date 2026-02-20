@@ -1092,6 +1092,368 @@ pub fn stencil_set_index() -> StencilDef {
 }
 
 // ---------------------------------------------------------------------------
+// Bitwise stencils (inline fast paths — Pattern A)
+// ---------------------------------------------------------------------------
+//
+// Bitwise ops work directly on the 48-bit integer payload stored in NbValue.
+// The tag for TAG_INT is 0x7FF9 in the top 16 bits.  We reuse arith_stencil_abc
+// which handles tag checks + payload extraction + re-boxing.
+//
+// For bitwise ops, after sign-extension we apply the bitwise operation
+// directly on the signed i64 value. The result is re-boxed as TAG_INT.
+
+/// **BitOr** — `R[A] = R[B] | R[C]` (bitwise OR of integers).
+///
+/// ```text
+/// or rax, rcx   48 0B C1
+/// ```
+pub fn stencil_bitor() -> StencilDef {
+    arith_stencil_abc(OpCode::BitOr as u8, "BitOr", &[0x48, 0x0B, 0xC1])
+}
+
+/// **BitAnd** — `R[A] = R[B] & R[C]` (bitwise AND of integers).
+///
+/// ```text
+/// and rax, rcx   48 23 C1
+/// ```
+pub fn stencil_bitand() -> StencilDef {
+    arith_stencil_abc(OpCode::BitAnd as u8, "BitAnd", &[0x48, 0x23, 0xC1])
+}
+
+/// **BitXor** — `R[A] = R[B] ^ R[C]` (bitwise XOR of integers).
+///
+/// ```text
+/// xor rax, rcx   48 33 C1
+/// ```
+pub fn stencil_bitxor() -> StencilDef {
+    arith_stencil_abc(OpCode::BitXor as u8, "BitXor", &[0x48, 0x33, 0xC1])
+}
+
+/// **BitNot** — `R[A] = ~R[B]` (bitwise NOT of integer).
+///
+/// Uses same single-operand structure as Neg.
+///
+/// ```text
+/// not rax   48 F7 D0
+/// ```
+pub fn stencil_bitnot() -> StencilDef {
+    // Same layout as stencil_neg() but with `not rax` instead of `neg rax`
+    let mut code = code!(
+        [0x49u8, 0x8B, 0x86],
+        [0x00u8; 4], // mov rax, [r14+B*8]
+    );
+    code.extend_from_slice(&tag_check_rax());
+    code.extend_from_slice(&sign_extend_rax());
+    code.extend_from_slice(&[0x48, 0xF7, 0xD0]); // not rax
+    code.extend_from_slice(&rebox_int_rax());
+    code.extend_from_slice(&[0x49, 0x89, 0x86]);
+    code.extend_from_slice(&[0x00; 4]);
+
+    StencilDef::new(
+        OpCode::BitNot as u8,
+        "BitNot",
+        code,
+        vec![
+            HoleDef::new(3, HoleType::RegB, 4),
+            HoleDef::new(23, HoleType::JumpOffset32, 4),
+            HoleDef::new(66, HoleType::RegA, 4),
+        ],
+    )
+}
+
+/// **Shl** — `R[A] = R[B] << R[C]` (left shift).
+///
+/// x86-64 `shl rax, cl` performs `rax << (cl & 63)`.
+/// We extract the shift amount from the rcx payload into cl before the shift.
+///
+/// ```text
+/// mov rcx, rcx (already have rcx as shift count)
+/// ; rcx holds sign-extended i64 shift amount; need count in cl
+/// ; shl rax, cl  → 48 D3 E0
+/// ```
+pub fn stencil_shl() -> StencilDef {
+    // After arith_stencil_abc's sign-extend+compute phase:
+    // rax = lhs (sign-extended), rcx = rhs (sign-extended)
+    // shl rax, cl  = 48 D3 E0
+    arith_stencil_abc(OpCode::Shl as u8, "Shl", &[0x48, 0xD3, 0xE0])
+}
+
+/// **Shr** — `R[A] = R[B] >> R[C]` (arithmetic right shift).
+///
+/// ```text
+/// sar rax, cl   48 D3 F8
+/// ```
+pub fn stencil_shr() -> StencilDef {
+    arith_stencil_abc(OpCode::Shr as u8, "Shr", &[0x48, 0xD3, 0xF8])
+}
+
+/// **FloorDiv** — `R[A] = R[B] // R[C]` (floor division).
+///
+/// Floor division differs from truncating division for negative operands.
+/// We use idiv (truncating), then correct: if remainder != 0 and signs differ,
+/// subtract 1 from quotient.
+///
+/// ```text
+/// cqo               48 99
+/// idiv rcx          48 F7 F9
+/// ; rax = quotient, rdx = remainder
+/// ; floor correction: if rdx != 0 and sign(rax) != sign(rdx), rax -= 1
+/// test rdx, rdx     48 85 D2
+/// je .done          74 08   (short jump 8 bytes forward — skip correction)
+/// xor rdx, rax      48 31 C2   (rdx ^= rax)
+/// js .sub_one       78 02   (if sign bit of (remainder^quotient) is set, correct)
+/// jmp .done         EB 02
+/// .sub_one:
+/// sub rax, 1        48 FF C8  (dec rax)
+/// .done: (re-box happens after)
+/// ```
+///
+/// Total compute bytes: 2+3+2+3+2+2+3 = 17 bytes
+pub fn stencil_floordiv() -> StencilDef {
+    let compute: &[u8] = &[
+        0x48, 0x99, // cqo
+        0x48, 0xF7, 0xF9, // idiv rcx
+        // floor correction:
+        0x48, 0x85, 0xD2, // test rdx, rdx
+        0x74, 0x08, // je .done (short jump, 8 bytes)
+        0x48, 0x31, 0xC2, // xor rdx, rax
+        0x78, 0x02, // js .sub_one (2 bytes)
+        0xEB, 0x03, // jmp .done
+        // .sub_one:
+        0x48, 0xFF, 0xC8, // dec rax  (sub rax, 1)
+        // .done:
+    ];
+    arith_stencil_abc(OpCode::FloorDiv as u8, "FloorDiv", compute)
+}
+
+// ---------------------------------------------------------------------------
+// Logical stencils (Pattern A — inline bool operations)
+// ---------------------------------------------------------------------------
+//
+// NbValue bool layout:
+//   FALSE_VALUE = 0x7FFB_0000_0000_0000  (low bit = 0)
+//   TRUE_VALUE  = 0x7FFB_0000_0000_0001  (low bit = 1)
+//
+// For And/Or we just operate on the low bits.
+
+/// **And** — `R[A] = R[B] and R[C]` (logical AND of booleans).
+///
+/// Both booleans have the same high bits; AND-ing the full words keeps tag,
+/// and the result low bit is correct: (low_B & low_C).
+///
+/// ```text
+/// mov rax, [r14+B*8]   load B (full NbValue bool)
+/// mov rcx, [r14+C*8]   load C
+/// and rax, rcx          AND — if both true (low bits both 1), result = TRUE_VALUE
+/// mov [r14+A*8], rax   store
+/// ```
+///
+/// Precondition: both operands are NbValue bools (tag 0x7FFB).
+/// The high tag bits are identical for TRUE/FALSE so AND is correct.
+pub fn stencil_and() -> StencilDef {
+    StencilDef::new(
+        OpCode::And as u8,
+        "And",
+        code!(
+            [0x49u8, 0x8B, 0x86],
+            [0x00u8; 4], // mov rax, [r14+B*8]  hole RegB at 3
+            [0x49u8, 0x8B, 0x8E],
+            [0x00u8; 4],          // mov rcx, [r14+C*8]  hole RegC at 10
+            [0x48u8, 0x23, 0xC1], // and rax, rcx
+            [0x49u8, 0x89, 0x86],
+            [0x00u8; 4], // mov [r14+A*8], rax  hole RegA at 17
+        ),
+        vec![
+            HoleDef::new(3, HoleType::RegB, 4),
+            HoleDef::new(10, HoleType::RegC, 4),
+            HoleDef::new(17, HoleType::RegA, 4),
+        ],
+    )
+}
+
+/// **Or** — `R[A] = R[B] or R[C]` (logical OR of booleans).
+///
+/// ```text
+/// mov rax, [r14+B*8]
+/// mov rcx, [r14+C*8]
+/// or  rax, rcx          OR — if either true (low bit 1), result = TRUE_VALUE
+/// mov [r14+A*8], rax
+/// ```
+pub fn stencil_or() -> StencilDef {
+    StencilDef::new(
+        OpCode::Or as u8,
+        "Or",
+        code!(
+            [0x49u8, 0x8B, 0x86],
+            [0x00u8; 4], // mov rax, [r14+B*8]  hole RegB at 3
+            [0x49u8, 0x8B, 0x8E],
+            [0x00u8; 4],          // mov rcx, [r14+C*8]  hole RegC at 10
+            [0x48u8, 0x0B, 0xC1], // or rax, rcx
+            [0x49u8, 0x89, 0x86],
+            [0x00u8; 4], // mov [r14+A*8], rax  hole RegA at 17
+        ),
+        vec![
+            HoleDef::new(3, HoleType::RegB, 4),
+            HoleDef::new(10, HoleType::RegC, 4),
+            HoleDef::new(17, HoleType::RegA, 4),
+        ],
+    )
+}
+
+/// **NullCo** — `R[A] = R[B] ?? R[C]` (null coalescing).
+///
+/// If R[B] is not null, A = B; otherwise A = C.
+/// NULL_VALUE = 0x7FFC_0000_0000_0000.
+///
+/// ```text
+/// mov rax, [r14+B*8]              ; load B
+/// mov rcx, [r14+C*8]              ; load C
+/// movabs rdx, 0x7FFC_0000_0000_0000  ; NULL_VALUE
+/// cmp rax, rdx                    ; is B null?
+/// cmove rax, rcx                  ; if B==null, rax = rcx  (48 0F 44 C1)
+/// mov [r14+A*8], rax              ; store result
+/// ```
+pub fn stencil_nullco() -> StencilDef {
+    StencilDef::new(
+        OpCode::NullCo as u8,
+        "NullCo",
+        code!(
+            [0x49u8, 0x8B, 0x86],
+            [0x00u8; 4], // mov rax, [r14+B*8]   hole RegB at 3
+            [0x49u8, 0x8B, 0x8E],
+            [0x00u8; 4],          // mov rcx, [r14+C*8]   hole RegC at 10
+            [0x48u8, 0xBA],       // movabs rdx, NULL_VALUE
+            NULL_VALUE_LE,        // 8 bytes: 0x7FFC_0000_0000_0000
+            [0x48u8, 0x3B, 0xC2], // cmp rax, rdx
+            [0x48u8, 0x0F, 0x44, 0xC1], // cmove rax, rcx  (conditional move if equal/zero)
+            [0x49u8, 0x89, 0x86],
+            [0x00u8; 4], // mov [r14+A*8], rax   hole RegA at 36
+        ),
+        vec![
+            HoleDef::new(3, HoleType::RegB, 4),
+            HoleDef::new(10, HoleType::RegC, 4),
+            HoleDef::new(36, HoleType::RegA, 4),
+        ],
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Effect/runtime-dispatch stencils (Pattern B — calls lm_rt_stencil_runtime)
+// ---------------------------------------------------------------------------
+
+/// **Pow** — `R[A] = R[B] ** R[C]` (power / exponentiation).
+///
+/// Requires runtime dispatch (floating point or bigint for large values).
+pub fn stencil_pow() -> StencilDef {
+    effect_stencil(OpCode::Pow as u8, "Pow")
+}
+
+/// **Concat** — `R[A] = R[B] ++ R[C]` (string/list concatenation).
+pub fn stencil_concat() -> StencilDef {
+    effect_stencil(OpCode::Concat as u8, "Concat")
+}
+
+/// **In** — `R[A] = R[B] in R[C]` (membership test).
+pub fn stencil_in() -> StencilDef {
+    effect_stencil(OpCode::In as u8, "In")
+}
+
+/// **Is** — `R[A] = typeof(R[B]) == type(C)` (type check).
+pub fn stencil_is() -> StencilDef {
+    effect_stencil(OpCode::Is as u8, "Is")
+}
+
+/// **GetTuple** — `R[A] = R[B].elements[C]` (tuple element access by constant index).
+pub fn stencil_get_tuple() -> StencilDef {
+    effect_stencil(OpCode::GetTuple as u8, "GetTuple")
+}
+
+/// **Loop** — decrement counter, jump back if counter > 0.
+pub fn stencil_loop() -> StencilDef {
+    effect_stencil(OpCode::Loop as u8, "Loop")
+}
+
+/// **ForPrep** — prepare for-loop iterator.
+pub fn stencil_forprep() -> StencilDef {
+    effect_stencil(OpCode::ForPrep as u8, "ForPrep")
+}
+
+/// **ForLoop** — iterate for-loop (numeric).
+pub fn stencil_forloop() -> StencilDef {
+    effect_stencil(OpCode::ForLoop as u8, "ForLoop")
+}
+
+/// **ForIn** — for-in iterator step.
+pub fn stencil_forin() -> StencilDef {
+    effect_stencil(OpCode::ForIn as u8, "ForIn")
+}
+
+/// **Closure** — create a closure from proto Bx capturing upvalues from registers.
+pub fn stencil_closure() -> StencilDef {
+    effect_stencil(OpCode::Closure as u8, "Closure")
+}
+
+/// **GetUpval** — `R[A] = upvalue[B]`.
+pub fn stencil_get_upval() -> StencilDef {
+    effect_stencil(OpCode::GetUpval as u8, "GetUpval")
+}
+
+/// **SetUpval** — `upvalue[B] = R[A]`.
+pub fn stencil_set_upval() -> StencilDef {
+    effect_stencil(OpCode::SetUpval as u8, "SetUpval")
+}
+
+/// **ToolCall** — call an external tool.
+pub fn stencil_tool_call() -> StencilDef {
+    effect_stencil(OpCode::ToolCall as u8, "ToolCall")
+}
+
+/// **Schema** — validate R[A] against schema type B.
+pub fn stencil_schema() -> StencilDef {
+    effect_stencil(OpCode::Schema as u8, "Schema")
+}
+
+/// **Emit** — emit output R[A].
+pub fn stencil_emit() -> StencilDef {
+    effect_stencil(OpCode::Emit as u8, "Emit")
+}
+
+/// **TraceRef** — R[A] = current trace reference.
+pub fn stencil_trace_ref() -> StencilDef {
+    effect_stencil(OpCode::TraceRef as u8, "TraceRef")
+}
+
+/// **Await** — `R[A] = await future R[B]`.
+pub fn stencil_await() -> StencilDef {
+    effect_stencil(OpCode::Await as u8, "Await")
+}
+
+/// **Spawn** — `R[A] = spawn async(proto=Bx)`.
+pub fn stencil_spawn() -> StencilDef {
+    effect_stencil(OpCode::Spawn as u8, "Spawn")
+}
+
+/// **Append** — append R[B] to list R[A].
+pub fn stencil_append() -> StencilDef {
+    effect_stencil(OpCode::Append as u8, "Append")
+}
+
+/// **IsVariant** — if R[A] is variant with tag Bx, skip next instruction.
+pub fn stencil_is_variant() -> StencilDef {
+    effect_stencil(OpCode::IsVariant as u8, "IsVariant")
+}
+
+/// **Unbox** — `R[A] = R[B].payload` (extract union payload).
+pub fn stencil_unbox() -> StencilDef {
+    effect_stencil(OpCode::Unbox as u8, "Unbox")
+}
+
+/// **NewUnion** — `R[A] = union(tag=B, payload=R[C])`.
+pub fn stencil_new_union() -> StencilDef {
+    effect_stencil(OpCode::NewUnion as u8, "NewUnion")
+}
+
+// ---------------------------------------------------------------------------
 // OsrCheck stencil
 // ---------------------------------------------------------------------------
 
@@ -1209,6 +1571,56 @@ pub fn build_stencil_library() -> StencilLibrary {
     lib.insert(stencil_set_field());
     lib.insert(stencil_get_index());
     lib.insert(stencil_set_index());
+    lib.insert(stencil_get_tuple());
+
+    // Bitwise (inline fast paths)
+    lib.insert(stencil_bitor());
+    lib.insert(stencil_bitand());
+    lib.insert(stencil_bitxor());
+    lib.insert(stencil_bitnot());
+    lib.insert(stencil_shl());
+    lib.insert(stencil_shr());
+    lib.insert(stencil_floordiv());
+
+    // Logical (inline bool ops)
+    lib.insert(stencil_and());
+    lib.insert(stencil_or());
+    lib.insert(stencil_nullco());
+
+    // Arithmetic (runtime dispatch)
+    lib.insert(stencil_pow());
+    lib.insert(stencil_concat());
+
+    // Comparison / membership (runtime dispatch)
+    lib.insert(stencil_in());
+    lib.insert(stencil_is());
+
+    // Control flow (runtime dispatch)
+    lib.insert(stencil_loop());
+    lib.insert(stencil_forprep());
+    lib.insert(stencil_forloop());
+    lib.insert(stencil_forin());
+
+    // Closures / upvalues (runtime dispatch)
+    lib.insert(stencil_closure());
+    lib.insert(stencil_get_upval());
+    lib.insert(stencil_set_upval());
+
+    // Tool / async effects (runtime dispatch)
+    lib.insert(stencil_tool_call());
+    lib.insert(stencil_schema());
+    lib.insert(stencil_emit());
+    lib.insert(stencil_trace_ref());
+    lib.insert(stencil_await());
+    lib.insert(stencil_spawn());
+
+    // Union / variant ops (runtime dispatch)
+    lib.insert(stencil_new_union());
+    lib.insert(stencil_is_variant());
+    lib.insert(stencil_unbox());
+
+    // List mutation (runtime dispatch)
+    lib.insert(stencil_append());
 
     lib
 }

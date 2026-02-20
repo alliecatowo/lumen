@@ -584,6 +584,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0),
             ],
             effect_handler_metas: vec![],
+            osr_points: vec![],
         };
 
         let module = empty_module();
@@ -614,6 +615,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 2, 1, 0),
             ],
             effect_handler_metas: vec![],
+            osr_points: vec![],
         };
 
         let module = empty_module();
@@ -641,6 +643,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0),
             ],
             effect_handler_metas: vec![],
+            osr_points: vec![],
         };
 
         let module = empty_module();
@@ -670,6 +673,7 @@ mod tests {
                 Instruction::abc(OpCode::Return, 0, 1, 0),
             ],
             effect_handler_metas: vec![],
+            osr_points: vec![],
         };
 
         let module = empty_module();
@@ -691,6 +695,7 @@ mod tests {
             constants: vec![],
             instructions: vec![Instruction::abc(OpCode::Nop, 0, 0, 0)],
             effect_handler_metas: vec![],
+            osr_points: vec![],
         };
 
         let module = empty_module();
@@ -714,6 +719,7 @@ mod tests {
             constants: vec![],
             instructions: vec![Instruction::abc(OpCode::Nop, 0, 0, 0)],
             effect_handler_metas: vec![],
+            osr_points: vec![],
         };
 
         let module = empty_module();
@@ -742,18 +748,20 @@ mod tests {
                 Instruction::abc(OpCode::Move, 5, 3, 0),
             ],
             effect_handler_metas: vec![],
+            osr_points: vec![],
         };
 
         let module = empty_module();
         let code = stitcher.compile(&cell, &module, 0).unwrap();
 
-        // The Move stencil is 14 bytes:
+        // The Move stencil is 14 bytes, plus the stitcher appends a trailing `ret` (1 byte):
         //   bytes 0-6:  mov rax, [r14 + RegB*8]  → hole RegB at 3 (4 bytes)
         //   bytes 7-13: mov [r14 + RegA*8], rax  → hole RegA at 10 (4 bytes)
+        //   byte 14:    ret (0xC3) — added by Stitcher::compile
         //
         // RegB = 3: displacement = 3 * 8 = 24 = 0x18
         // RegA = 5: displacement = 5 * 8 = 40 = 0x28
-        assert_eq!(code.code_len, 14);
+        assert_eq!(code.code_len, 15); // 14 bytes stencil + 1 byte trailing ret
 
         let code_bytes =
             unsafe { std::slice::from_raw_parts(code.code_ptr, code.code_len) };

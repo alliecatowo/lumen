@@ -3,8 +3,9 @@
 // ---------------------------------------------------------------------------
 
 use crate::vm_context::VmContext;
-use lumen_core::values::Value;
-use std::collections::BTreeMap;
+use lumen_core::values::{RecordValue, Value};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 // NbValue encoding constants (match lumen-core/src/values.rs NbValue exactly):
 //   NAN_MASK  = 0x7FF8_0000_0000_0000
@@ -30,7 +31,9 @@ unsafe fn nanbox_to_value(val: i64) -> *mut Value {
         // Not NaN-boxed: raw f64 float bits.
         return Box::into_raw(Box::new(Value::Float(f64::from_bits(u))));
     }
-    let tag = (u >> 48) & 0xF;
+    // NbValue uses 3-bit tags at bits 48-50 (bit 51 is the quiet-NaN bit, not part of tag).
+    // Must use 0x7 mask (not 0xF) to extract the correct 3-bit tag value.
+    let tag = (u >> 48) & 0x7;
     let payload = u & PAYLOAD_MASK_U;
     match tag {
         0 => {
@@ -182,4 +185,107 @@ pub extern "C" fn jit_rt_collection_len(_ctx: *mut VmContext, value_ptr: i64) ->
         }
         _ => 0,
     }
+}
+
+/// Create a new Set value from an array of boxed Values.
+/// `values_ptr` points to an array of `i64` representing NaN-boxed values or pointers.
+/// `count` is the number of elements in the set.
+/// Returns a new `*mut Value` containing the Set (with duplicates removed).
+///
+/// # Safety
+/// `values_ptr` must point to a valid array of `count` i64 values.
+#[no_mangle]
+pub extern "C" fn jit_rt_new_set(_ctx: *mut VmContext, values_ptr: *const i64, count: i64) -> i64 {
+    let count = count as usize;
+    let mut set = BTreeSet::new();
+
+    for i in 0..count {
+        let val_i64 = unsafe { *values_ptr.add(i) };
+        let value_ptr = unsafe { nanbox_to_value(val_i64) };
+        let value = unsafe { (*value_ptr).clone() };
+        unsafe { drop(Box::from_raw(value_ptr)) };
+        set.insert(value);
+    }
+
+    let set_value = Value::Set(Arc::new(set));
+    Box::into_raw(Box::new(set_value)) as i64
+}
+
+/// Create a new Record value with the given type name and an empty field map.
+///
+/// The JIT lowers `NewRecord` by calling this helper to create the record shell.
+/// Fields are then populated by `SetField` / `jit_rt_record_set_field` calls.
+///
+/// # Parameters
+/// - `_ctx`: VM context (unused, reserved for future use)
+/// - `type_name_ptr`: Pointer to the type name byte string
+/// - `type_name_len`: Length of the type name in bytes
+///
+/// # Returns
+/// Raw `*mut Value` (heap-boxed `Value::Record`) cast to i64.
+///
+/// # Safety
+/// `type_name_ptr` must point to a valid UTF-8 byte sequence of length `type_name_len`.
+#[no_mangle]
+pub extern "C" fn jit_rt_new_record(
+    _ctx: *mut VmContext,
+    type_name_ptr: *const u8,
+    type_name_len: i64,
+) -> i64 {
+    let type_name = if type_name_ptr.is_null() || type_name_len == 0 {
+        "Unknown".to_string()
+    } else {
+        let bytes = unsafe {
+            std::slice::from_raw_parts(type_name_ptr, type_name_len as usize)
+        };
+        std::str::from_utf8(bytes)
+            .unwrap_or("Unknown")
+            .to_string()
+    };
+
+    let record_value = Value::new_record(RecordValue {
+        type_name,
+        fields: BTreeMap::new(),
+    });
+    Box::into_raw(Box::new(record_value)) as i64
+}
+
+/// Append a value to a List.
+/// `list_ptr` is a raw `*mut Value` pointer to a Value::List (JIT Ptr encoding,
+/// same convention as jit_rt_set_index / jit_rt_new_list).
+/// `element` is a NaN-boxed i64 representing the element to append.
+/// Takes ownership of `list_ptr` (the JIT register is overwritten after this call).
+/// Returns a raw `*mut Value` as i64 with the element appended.
+///
+/// # Safety
+/// `list_ptr` must be a valid `*mut Value` produced by a JIT collection helper,
+/// or 0 / NAN_BOX_NULL for empty list fallback.
+#[no_mangle]
+pub extern "C" fn jit_rt_list_append(
+    _ctx: *mut VmContext,
+    list_ptr: i64,
+    element: i64,
+) -> i64 {
+    // Decode the element to append from NaN-boxed encoding.
+    let element_value = unsafe {
+        let eptr = nanbox_to_value(element);
+        let v = (*eptr).clone();
+        drop(Box::from_raw(eptr));
+        v
+    };
+
+    if list_ptr == 0 {
+        // Null/empty list — create a fresh single-element list.
+        let result = Value::new_list(vec![element_value]);
+        return Box::into_raw(Box::new(result)) as i64;
+    }
+
+    // Take ownership of the list box — JIT register is consumed after this call.
+    let mut boxed_list = unsafe { Box::from_raw(list_ptr as *mut Value) };
+    if let Value::List(arc) = &mut *boxed_list {
+        // Arc::make_mut gives exclusive in-place access when strong_count == 1,
+        // avoiding a full list clone in the common single-owner case.
+        Arc::make_mut(arc).push(element_value);
+    }
+    Box::into_raw(boxed_list) as i64
 }

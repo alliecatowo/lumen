@@ -84,25 +84,6 @@ pub struct StackFrame {
     pub ip: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct VmRecentEvent {
-    cell_idx: usize,
-    ip: usize,
-    base: usize,
-    opcode: OpCode,
-}
-
-impl VmRecentEvent {
-    const fn empty() -> Self {
-        Self {
-            cell_idx: usize::MAX,
-            ip: 0,
-            base: 0,
-            opcode: OpCode::Nop,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Error)]
 pub enum VmError {
     #[error("runtime error: {0}")]
@@ -479,11 +460,6 @@ pub struct VM {
     pub(crate) main_fiber: Box<Fiber>,
     pub(crate) max_instructions: u64,
     pub(crate) instruction_count: u64,
-    /// Most recent interpreter events for crash reporting.
-    /// Fixed-size ring to avoid allocations in the hot path.
-    recent_vm_events: [VmRecentEvent; RECENT_VM_EVENTS_CAPACITY],
-    recent_vm_events_head: usize,
-    recent_vm_events_len: usize,
     /// Optional fuel counter. Each instruction decrements fuel by 1.
     /// When fuel hits 0, execution stops with a "fuel exhausted" error.
     pub(crate) fuel: Option<u64>,
@@ -518,7 +494,6 @@ pub struct VM {
 
 const MAX_AWAIT_RETRIES: u32 = 10_000;
 const DEFAULT_MAX_INSTRUCTIONS: u64 = 10_000_000_000;
-const RECENT_VM_EVENTS_CAPACITY: usize = 64;
 
 impl VM {
     pub fn new() -> Self {
@@ -597,9 +572,6 @@ impl VM {
             main_fiber,
             max_instructions: DEFAULT_MAX_INSTRUCTIONS,
             instruction_count: 0,
-            recent_vm_events: [VmRecentEvent::empty(); RECENT_VM_EVENTS_CAPACITY],
-            recent_vm_events_head: 0,
-            recent_vm_events_len: 0,
             fuel: None,
             trace_id: None,
             trace_seq: 0,
@@ -1035,55 +1007,44 @@ impl VM {
         }
     }
 
-    #[inline(always)]
-    fn clear_recent_vm_events(&mut self) {
-        self.recent_vm_events_head = 0;
-        self.recent_vm_events_len = 0;
-    }
-
-    #[inline(always)]
-    fn record_recent_vm_event(&mut self, cell_idx: usize, ip: usize, base: usize, opcode: OpCode) {
-        self.recent_vm_events[self.recent_vm_events_head] = VmRecentEvent {
-            cell_idx,
-            ip,
-            base,
-            opcode,
+    /// Reconstruct recent VM event context from the call frame stack.
+    /// This is only called on the error path, so it has zero cost during
+    /// normal execution. Replaces the per-instruction ring buffer that
+    /// was causing a ~50% performance regression.
+    fn format_recent_vm_events_from_frames(&self) -> String {
+        let module = match self.module.as_ref() {
+            Some(m) => m,
+            None => return String::new(),
         };
-        self.recent_vm_events_head += 1;
-        if self.recent_vm_events_head == RECENT_VM_EVENTS_CAPACITY {
-            self.recent_vm_events_head = 0;
-        }
-        if self.recent_vm_events_len < RECENT_VM_EVENTS_CAPACITY {
-            self.recent_vm_events_len += 1;
-        }
-    }
-
-    fn format_recent_vm_events(&self) -> String {
-        if self.recent_vm_events_len == 0 {
+        if self.frames.is_empty() {
             return String::new();
         }
-        let module = self.module.as_ref();
         let mut out = String::from("\nRecent VM events (oldest to newest):");
-        for i in 0..self.recent_vm_events_len {
-            let idx = (self.recent_vm_events_head + RECENT_VM_EVENTS_CAPACITY
-                - self.recent_vm_events_len
-                + i)
-                % RECENT_VM_EVENTS_CAPACITY;
-            let event = self.recent_vm_events[idx];
+        for (i, frame) in self.frames.iter().enumerate() {
             let cell_name = module
-                .and_then(|m| m.cells.get(event.cell_idx))
+                .cells
+                .get(frame.cell_idx)
                 .map(|c| c.name.as_str())
                 .unwrap_or("<unknown>");
+            // The frame.ip points to the NEXT instruction to execute, so the
+            // failing instruction is at ip-1 (or 0 if ip is 0).
+            let failing_ip = frame.ip.saturating_sub(1);
+            let opcode = module
+                .cells
+                .get(frame.cell_idx)
+                .and_then(|c| c.instructions.get(failing_ip))
+                .map(|instr| format!("{:?}", instr.op))
+                .unwrap_or_else(|| "?".to_string());
             out.push_str(&format!(
-                "\n  [{}] op={:?} cell={} ip={} base={}",
-                i, event.opcode, cell_name, event.ip, event.base
+                "\n  [{}] op={} cell={} ip={} base={}",
+                i, opcode, cell_name, failing_ip, frame.base_register
             ));
         }
         out
     }
 
     fn attach_recent_vm_events(&self, err: VmError) -> VmError {
-        let recent = self.format_recent_vm_events();
+        let recent = self.format_recent_vm_events_from_frames();
         if recent.is_empty() {
             return err;
         }
@@ -1130,7 +1091,6 @@ impl VM {
         // previous module, then install a fresh empty stack for the new one.
         self.vm_ctx.reset_effect_stack();
         self.instruction_count = 0;
-        self.clear_recent_vm_events();
         self.cell_index_cache.clear();
         let mut machine_initials: BTreeMap<String, String> = BTreeMap::new();
         for addon in &module.addons {
@@ -1287,6 +1247,12 @@ impl VM {
         self.jit_tier.init_for_module(num_cells);
         // Initialize OSR runtime with the correct number of cells
         self.osr_runtime = OsrRuntime::new(num_cells);
+        // Wire the VmContext's string_table pointer to the VM's StringTable
+        // so JIT runtime helpers (e.g. jit_rt_union_new) can intern strings.
+        unsafe {
+            (*self.vm_ctx.as_ptr()).string_table =
+                &mut self.strings as *mut StringTable;
+        }
     }
 
     pub fn set_future_schedule(&mut self, schedule: FutureSchedule) {
@@ -2054,7 +2020,6 @@ impl VM {
         // Push initial frame
         self.instruction_count = 0;
         self.trace_seq = 0;
-        self.clear_recent_vm_events();
         self.frames.push(CallFrame {
             cell_idx,
             base_register: base,
@@ -2142,19 +2107,18 @@ impl VM {
 
             let instr = cell.instructions[ip];
             ip += 1;
-            let event_ip = ip.wrapping_sub(1);
-            self.record_recent_vm_event(cell_idx, event_ip, base, instr.op);
 
-            // Lightweight instruction counting — use local counter, sync periodically
+            // Lightweight instruction counting — use local counter, sync periodically.
+            // Also sync the frame IP at each batch boundary so error diagnostics
+            // can find the approximate failing instruction without per-instruction cost.
             local_count += 1;
             if local_count >= BATCH_SIZE {
                 self.instruction_count += local_count;
                 local_count = 0;
+                if let Some(f) = self.frames.last_mut() {
+                    f.ip = ip;
+                }
                 if self.instruction_count > self.max_instructions {
-                    // Sync IP back before returning error
-                    if let Some(f) = self.frames.last_mut() {
-                        f.ip = ip;
-                    }
                     return Err(VmError::InstructionLimitExceeded(self.max_instructions));
                 }
             }
@@ -2177,7 +2141,7 @@ impl VM {
                 let cell_name = cell.name.clone();
                 self.emit_debug_event(DebugEvent::Step {
                     cell_name,
-                    ip: event_ip,
+                    ip: ip.wrapping_sub(1),
                     opcode: format!("{:?}", instr.op),
                 });
             }
@@ -2286,103 +2250,40 @@ impl VM {
                                 };
 
                                 if run_jit {
-                                    // Extract i64 args from registers.
-                                    // Int → raw i64, Float → f64 bits as i64,
-                                    // String → heap-clone as *mut String cast to i64
-                                    // (the JIT owns this pointer and will free it).
+                                    // Pass NaN-boxed register values directly to JIT.
+                                    // Heap-allocated values get an Arc refcount bump
+                                    // so the JIT can safely read them.
                                     let callee_cell = &module.cells[target_idx];
                                     let mut i64_args: Vec<i64> = Vec::with_capacity(nargs);
-                                    let mut string_arg_ptrs: Vec<i64> = Vec::new();
-                                    let mut args_ok = true;
                                     for i in 0..nargs {
-                                        match self.reg(base + a + 1 + i) {
-                                            Value::Int(v) => i64_args.push(v),
-                                            Value::Float(v) => i64_args.push(v.to_bits() as i64),
-                                            Value::String(s) => {
-                                                // Allocate a heap String for the JIT.
-                                                // The JIT takes ownership via *mut String.
-                                                let owned = match &s {
-                                                    StringRef::Owned(o) => o.clone(),
-                                                    StringRef::Interned(id) => module
-                                                        .strings
-                                                        .get(*id as usize)
-                                                        .cloned()
-                                                        .unwrap_or_default(),
-                                                };
-                                                let boxed = Box::new(owned);
-                                                let ptr = Box::into_raw(boxed) as i64;
-                                                string_arg_ptrs.push(ptr);
-                                                i64_args.push(ptr);
-                                            }
-                                            Value::Bool(b) => i64_args.push(if b { 1 } else { 0 }),
-                                            _ => {
-                                                args_ok = false;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    if !args_ok {
-                                        // Clean up any string args we already allocated.
-                                        for ptr in string_arg_ptrs {
+                                        let nb = self.reg_nb(base + a + 1 + i);
+                                        if nb.is_heap_allocated() {
                                             unsafe {
-                                                let _ = Box::from_raw(ptr as *mut String);
+                                                let ptr = nb.payload() as *const Value;
+                                                std::sync::Arc::increment_strong_count(ptr);
                                             }
                                         }
+                                        i64_args.push(nb.0 as i64);
                                     }
-                                    if args_ok {
-                                        // Pass the VM's string table so JIT helpers
-                                        // intern variant tags with the same IDs.
-                                        if let Some(result) = self.jit_tier.execute(
-                                            &callee_cell.name,
-                                            &i64_args,
-                                            &self.vm_ctx.inner,
-                                        ) {
-                                            // Convert i64 result back to Value using
-                                            // the compile-time return type.
-                                            #[cfg(feature = "jit")]
-                                            {
-                                                use lumen_codegen::jit::JitVarType;
-                                                let ret_ty = self
-                                                    .jit_tier
-                                                    .return_type(&callee_cell.name)
-                                                    .unwrap_or(JitVarType::Int);
-                                                let converted_val = match ret_ty {
-                                                    JitVarType::Str => {
-                                                        let s = unsafe {
-                                                            lumen_codegen::jit::jit_take_string(
-                                                                result,
-                                                            )
-                                                        };
-                                                        Value::String(StringRef::Owned(s))
-                                                    }
-                                                    JitVarType::Float => {
-                                                        Value::Float(f64::from_bits(result as u64))
-                                                    }
-                                                    JitVarType::Bool => Value::Bool(result != 0),
-                                                    JitVarType::Int => Value::Int(result),
-                                                    JitVarType::Ptr => {
-                                                        // Heap-allocated *mut Value — take ownership
-                                                        if result == 0
-                                                            || result
-                                                                == 0x7FF8_0000_0000_0000_u64 as i64
-                                                        {
-                                                            Value::Null
-                                                        } else {
-                                                            let boxed = unsafe {
-                                                                Box::from_raw(result as *mut Value)
-                                                            };
-                                                            *boxed
-                                                        }
-                                                    }
-                                                    JitVarType::RawInt => Value::Int(result),
-                                                };
-                                                self.set_reg(callee_reg, converted_val);
+                                    if let Some(result) = self.jit_tier.execute(
+                                        &callee_cell.name,
+                                        &i64_args,
+                                        &self.vm_ctx.inner,
+                                    ) {
+                                        // Result is already a NaN-boxed u64 — store directly.
+                                        let nb = NbValue(result as u64);
+                                        self.set_reg_nb(callee_reg, nb);
+                                        continue;
+                                    } else {
+                                        // JIT failed — drop the refs we added
+                                        for i in 0..nargs {
+                                            let nb = self.reg_nb(base + a + 1 + i);
+                                            if nb.is_heap_allocated() {
+                                                unsafe {
+                                                    let ptr = nb.payload() as *const Value;
+                                                    std::sync::Arc::decrement_strong_count(ptr);
+                                                }
                                             }
-                                            #[cfg(not(feature = "jit"))]
-                                            {
-                                                self.set_reg(callee_reg, Value::Int(result));
-                                            }
-                                            continue;
                                         }
                                     }
                                     // JIT execution failed — fall through to interpreter
@@ -2623,133 +2524,79 @@ impl VM {
                                 if run_jit {
                                     let callee_cell = &module.cells[target_idx];
                                     let mut i64_args: Vec<i64> = Vec::with_capacity(nargs);
-                                    let mut string_arg_ptrs: Vec<i64> = Vec::new();
-                                    let mut args_ok = true;
                                     for i in 0..nargs {
-                                        match self.reg(base + a + 1 + i) {
-                                            Value::Int(v) => i64_args.push(v),
-                                            Value::Float(v) => i64_args.push(v.to_bits() as i64),
-                                            Value::String(s) => {
-                                                let owned = match s {
-                                                    StringRef::Owned(o) => o.clone(),
-                                                    StringRef::Interned(id) => module
-                                                        .strings
-                                                        .get(id as usize)
-                                                        .cloned()
-                                                        .unwrap_or_default(),
-                                                };
-                                                let boxed = Box::new(owned);
-                                                let ptr = Box::into_raw(boxed) as i64;
-                                                string_arg_ptrs.push(ptr);
-                                                i64_args.push(ptr);
-                                            }
-                                            Value::Bool(b) => i64_args.push(if b { 1 } else { 0 }),
-                                            _ => {
-                                                args_ok = false;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    if !args_ok {
-                                        for ptr in string_arg_ptrs {
+                                        let nb = self.reg_nb(base + a + 1 + i);
+                                        if nb.is_heap_allocated() {
                                             unsafe {
-                                                let _ = Box::from_raw(ptr as *mut String);
+                                                let ptr = nb.payload() as *const Value;
+                                                std::sync::Arc::increment_strong_count(ptr);
                                             }
                                         }
+                                        i64_args.push(nb.0 as i64);
                                     }
-                                    if args_ok {
-                                        if let Some(result) = self.jit_tier.execute(
-                                            &callee_cell.name,
-                                            &i64_args,
-                                            &self.vm_ctx.inner,
-                                        ) {
-                                            // Convert i64 result back to Value using
-                                            // the compile-time return type.
-                                            #[cfg(feature = "jit")]
-                                            let result_value = {
-                                                use lumen_codegen::jit::JitVarType;
-                                                let ret_ty = self
-                                                    .jit_tier
-                                                    .return_type(&callee_cell.name)
-                                                    .unwrap_or(JitVarType::Int);
-                                                match ret_ty {
-                                                    JitVarType::Str => {
-                                                        let s = unsafe {
-                                                            lumen_codegen::jit::jit_take_string(
-                                                                result,
-                                                            )
-                                                        };
-                                                        Value::String(StringRef::Owned(s))
-                                                    }
-                                                    JitVarType::Float => {
-                                                        Value::Float(f64::from_bits(result as u64))
-                                                    }
-                                                    JitVarType::Bool => Value::Bool(result != 0),
-                                                    JitVarType::Int => Value::Int(result),
-                                                    JitVarType::Ptr => {
-                                                        // Heap-allocated *mut Value — take ownership
-                                                        if result == 0
-                                                            || result
-                                                                == 0x7FF8_0000_0000_0000_u64 as i64
-                                                        {
-                                                            Value::Null
-                                                        } else {
-                                                            let boxed = unsafe {
-                                                                Box::from_raw(result as *mut Value)
-                                                            };
-                                                            *boxed
-                                                        }
-                                                    }
-                                                    JitVarType::RawInt => Value::Int(result),
-                                                }
-                                            };
-                                            #[cfg(not(feature = "jit"))]
-                                            let result_value = Value::Int(result);
+                                    if let Some(result) = self.jit_tier.execute(
+                                        &callee_cell.name,
+                                        &i64_args,
+                                        &self.vm_ctx.inner,
+                                    ) {
+                                        // Result is already a NaN-boxed u64.
+                                        let result_nb = NbValue(result as u64);
+                                        let result_value = result_nb.peek_legacy();
 
-                                            // TailCall JIT success: simulate Return.
-                                            // Pop current frame and write result to caller.
-                                            let frame = self.frames.pop().ok_or_else(|| {
-                                                VmError::Runtime(
-                                                    "call stack underflow on tailcall JIT".into(),
-                                                )
-                                            })?;
+                                        // TailCall JIT success: simulate Return.
+                                        // Pop current frame and write result to caller.
+                                        let frame = self.frames.pop().ok_or_else(|| {
+                                            VmError::Runtime(
+                                                "call stack underflow on tailcall JIT".into(),
+                                            )
+                                        })?;
 
-                                            if has_debug {
-                                                let cname =
-                                                    module.cells[frame.cell_idx].name.clone();
-                                                self.emit_debug_event(DebugEvent::CallExit {
-                                                    cell_name: cname,
-                                                    result: result_value.clone(),
-                                                });
-                                            }
+                                        if has_debug {
+                                            let cname =
+                                                module.cells[frame.cell_idx].name.clone();
+                                            self.emit_debug_event(DebugEvent::CallExit {
+                                                cell_name: cname,
+                                                result: result_value.clone(),
+                                            });
+                                        }
 
-                                            self.shrink_registers(frame.base_register);
+                                        self.shrink_registers(frame.base_register);
 
-                                            if let Some(fid) = frame.future_id {
-                                                self.future_states.insert(
-                                                    fid,
-                                                    FutureState::Completed(result_value),
-                                                );
-                                                if self.frames.len() <= limit {
-                                                    return Ok(Value::Null);
-                                                }
-                                                let f = self.frames.last().unwrap();
-                                                cell_idx = f.cell_idx;
-                                                base = f.base_register;
-                                                ip = f.ip;
-                                                cell = &module.cells[cell_idx];
-                                                continue;
-                                            }
+                                        if let Some(fid) = frame.future_id {
+                                            self.future_states.insert(
+                                                fid,
+                                                FutureState::Completed(result_value),
+                                            );
                                             if self.frames.len() <= limit {
-                                                return Ok(result_value);
+                                                return Ok(Value::Null);
                                             }
-                                            self.set_reg(frame.return_register, result_value);
                                             let f = self.frames.last().unwrap();
                                             cell_idx = f.cell_idx;
                                             base = f.base_register;
                                             ip = f.ip;
                                             cell = &module.cells[cell_idx];
                                             jit_handled = true;
+                                        } else if self.frames.len() <= limit {
+                                            return Ok(result_value);
+                                        } else {
+                                            self.set_reg_nb(frame.return_register, result_nb);
+                                            let f = self.frames.last().unwrap();
+                                            cell_idx = f.cell_idx;
+                                            base = f.base_register;
+                                            ip = f.ip;
+                                            cell = &module.cells[cell_idx];
+                                            jit_handled = true;
+                                        }
+                                    } else {
+                                        // JIT failed — drop the refs we added
+                                        for i in 0..nargs {
+                                            let nb = self.reg_nb(base + a + 1 + i);
+                                            if nb.is_heap_allocated() {
+                                                unsafe {
+                                                    let ptr = nb.payload() as *const Value;
+                                                    std::sync::Arc::decrement_strong_count(ptr);
+                                                }
+                                            }
                                         }
                                     }
                                     // JIT execution failed — fall through to interpreter

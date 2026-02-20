@@ -31,7 +31,7 @@ unsafe fn nanbox_to_value(val: i64) -> Value {
         // Not NaN-boxed: raw f64 float bits.
         return Value::Float(f64::from_bits(u));
     }
-    let tag = (u >> 48) & 0xF;
+    let tag = (u >> 48) & 0x7;
     let payload = u & PAYLOAD_MASK_U;
     match tag {
         0 => {
@@ -65,7 +65,7 @@ unsafe fn nanbox_to_value(val: i64) -> Value {
 /// Create a new union value (enum variant).
 /// `tag_ptr` and `tag_len` describe a UTF-8 string for the variant tag.
 /// `payload` is a NaN-boxed value (integer, bool, null, or heap pointer).
-/// Returns a raw `*mut Value` cast to i64.
+/// Returns a NaN-boxed TAG_PTR (NAN_MASK | pointer) i64.
 ///
 /// # Safety
 /// `tag_ptr` must point to valid UTF-8 bytes of length `tag_len`.
@@ -97,7 +97,12 @@ pub extern "C" fn jit_rt_union_new(
         tag,
         payload: Arc::new(payload_value),
     });
-    Box::into_raw(Box::new(union_val)) as i64
+    // Use Arc::into_raw to match the NbValue heap convention (peek_legacy /
+    // drop_heap use Arc reference counting, not Box).
+    let ptr = Arc::into_raw(Arc::new(union_val)) as u64;
+    // Return as NaN-boxed TAG_PTR so downstream helpers (is_variant, unbox)
+    // and the VM can recognize it uniformly.
+    (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
 }
 
 /// Check if a union value has a specific variant tag.
@@ -114,7 +119,7 @@ pub extern "C" fn jit_rt_union_is_variant(
     tag_len: usize,
 ) -> i64 {
     let u = union_ptr as u64;
-    if (u & NAN_MASK_U) != NAN_MASK_U || ((u >> 48) & 0xF) != 0 || (u & PAYLOAD_MASK_U) <= 1 {
+    if (u & NAN_MASK_U) != NAN_MASK_U || ((u >> 48) & 0x7) != 0 || (u & PAYLOAD_MASK_U) <= 1 {
         return 0;
     }
     let value = unsafe { &*((u & PAYLOAD_MASK_U) as *const Value) };
@@ -151,7 +156,7 @@ pub extern "C" fn jit_rt_union_is_variant(
 /// - `Bool(false)` → `NAN_BOX_FALSE`
 /// - `Null` → `NAN_BOX_NULL`
 /// - `Float(f)` → raw f64 bits (NOT NaN-boxed)
-/// - Everything else → heap-allocate a `Box<Value>` and return as TAG_PTR.
+/// - Everything else → heap-allocate via `Arc<Value>` and return as TAG_PTR.
 fn value_to_nanbox(v: &Value) -> i64 {
     match v {
         Value::Int(n) => {
@@ -163,7 +168,9 @@ fn value_to_nanbox(v: &Value) -> i64 {
         Value::Null => NAN_BOX_NULL,
         Value::Float(f) => f.to_bits() as i64,
         other => {
-            let ptr = Box::into_raw(Box::new(other.clone())) as u64;
+            // Must use Arc to match NbValue's heap convention (peek_legacy /
+            // drop_heap use Arc reference counting).
+            let ptr = Arc::into_raw(Arc::new(other.clone())) as u64;
             (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
         }
     }
@@ -180,12 +187,12 @@ fn value_to_nanbox(v: &Value) -> i64 {
 #[no_mangle]
 pub extern "C" fn jit_rt_union_unbox(_ctx: *mut VmContext, union_ptr: i64) -> i64 {
     let u = union_ptr as u64;
-    if (u & NAN_MASK_U) != NAN_MASK_U || ((u >> 48) & 0xF) != 0 || (u & PAYLOAD_MASK_U) <= 1 {
+    if (u & NAN_MASK_U) != NAN_MASK_U || ((u >> 48) & 0x7) != 0 || (u & PAYLOAD_MASK_U) <= 1 {
         return NAN_BOX_NULL;
     }
     let value = unsafe { &*((u & PAYLOAD_MASK_U) as *const Value) };
     match value {
-        Value::Union(u) => value_to_nanbox(&u.payload),
+        Value::Union(uv) => value_to_nanbox(&uv.payload),
         _ => NAN_BOX_NULL,
     }
 }

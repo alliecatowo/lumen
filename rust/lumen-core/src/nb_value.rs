@@ -541,6 +541,43 @@ impl NbValue {
         }
     }
 
+    /// Increment the Arc reference count for heap-allocated values.
+    /// No-op for inline types (int, bool, null, float).
+    /// This is used when copying an NbValue to a new location (e.g., register copy).
+    #[inline(always)]
+    pub fn inc_ref(self) {
+        if self.is_heap_allocated() {
+            unsafe {
+                let ptr = self.payload() as *const Value;
+                Arc::increment_strong_count(ptr);
+            }
+        }
+    }
+
+    /// Get a reference to the heap-allocated Value without cloning or touching refcounts.
+    /// Returns None for inline types (int, bool, null, float) and special pointer values.
+    ///
+    /// # Safety
+    /// The returned reference is valid as long as this NbValue (or its register) is alive.
+    /// Do not call drop_heap() or overwrite the register while holding this reference.
+    #[inline(always)]
+    pub fn as_heap_ref(&self) -> Option<&Value> {
+        if !self.is_nan_boxed() {
+            return None; // Raw float
+        }
+        if self.tag() != Self::TAG_PTR {
+            return None; // Int, Bool, Null, Atom, Fiber
+        }
+        let payload = self.payload();
+        if payload <= 1 {
+            return None; // Null pointer or NaN sentinel
+        }
+        unsafe {
+            let ptr = payload as *const Value;
+            Some(&*ptr)
+        }
+    }
+
     /// Returns `true` if this value is truthy.
     ///
     /// Truthiness rules:

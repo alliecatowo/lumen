@@ -1112,6 +1112,10 @@ fn register_union_helpers(builder: &mut JITBuilder) {
         "jit_rt_union_unbox",
         crate::union_helpers::jit_rt_union_unbox as *const u8,
     );
+    builder.symbol(
+        "jit_rt_union_match",
+        crate::union_helpers::jit_rt_union_match as *const u8,
+    );
 }
 
 /// Register all JIT collection runtime helper symbols with a JITBuilder.

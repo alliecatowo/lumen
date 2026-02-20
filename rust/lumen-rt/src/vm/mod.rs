@@ -2064,11 +2064,7 @@ impl VM {
                                     true
                                 } else if self.jit_tier.record_call(target_idx) {
                                     // Just crossed hot threshold — try to compile
-                                    if self.jit_tier.check_eligibility(target_idx, module) {
-                                        self.jit_tier.try_compile(target_idx, module)
-                                    } else {
-                                        false
-                                    }
+                                    self.jit_tier.try_compile(target_idx, module)
                                 } else {
                                     false
                                 };
@@ -2382,11 +2378,7 @@ impl VM {
                                 let run_jit = if self.jit_tier.is_compiled(target_idx) {
                                     true
                                 } else if self.jit_tier.record_call(target_idx) {
-                                    if self.jit_tier.check_eligibility(target_idx, module) {
-                                        self.jit_tier.try_compile(target_idx, module)
-                                    } else {
-                                        false
-                                    }
+                                    self.jit_tier.try_compile(target_idx, module)
                                 } else {
                                     false
                                 };

@@ -70,17 +70,6 @@ impl JitTierConfig {
     }
 }
 
-/// Eligibility status for a cell.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CellEligibility {
-    /// Not yet checked.
-    Unknown,
-    /// Eligible for JIT compilation.
-    Eligible,
-    /// Not eligible — will remain interpreted.
-    NotEligible,
-}
-
 /// The tiered JIT state held by the VM.
 ///
 /// When the `jit` feature is disabled this is a zero-size struct with no-op
@@ -88,8 +77,6 @@ enum CellEligibility {
 pub struct JitTier {
     /// Per-cell call counts (indexed by cell_idx for O(1) lookup).
     call_counts: Vec<u64>,
-    /// Per-cell eligibility cache.
-    eligibility: Vec<CellEligibility>,
     /// Set of cell indices that have been compiled.
     compiled: HashSet<usize>,
     /// Configuration.
@@ -119,7 +106,6 @@ impl JitTier {
     pub fn new(config: JitTierConfig) -> Self {
         Self {
             call_counts: Vec::new(),
-            eligibility: Vec::new(),
             compiled: HashSet::new(),
             config,
             #[cfg(feature = "jit")]
@@ -140,7 +126,6 @@ impl JitTier {
     /// Must be called after `VM::load()`.
     pub fn init_for_module(&mut self, num_cells: usize) {
         self.call_counts.resize(num_cells, 0);
-        self.eligibility.resize(num_cells, CellEligibility::Unknown);
         self.compiled.clear();
         self.stats = JitTierStats::default();
     }
@@ -155,60 +140,6 @@ impl JitTier {
     #[inline(always)]
     pub fn is_compiled(&self, cell_idx: usize) -> bool {
         self.compiled.contains(&cell_idx)
-    }
-
-    /// Check and cache JIT eligibility for a cell.
-    ///
-    /// Cells that use opcodes whose JIT runtime helpers are unsafe (Box vs Arc
-    /// mismatch in the heap allocation scheme) are excluded from JIT and always
-    /// run in the interpreter.  Specifically, `GetIndex` and `SetIndex` call
-    /// `jit_rt_get_index`/`jit_rt_set_index` which return `Box::into_raw`
-    /// pointers while the interpreter's NbValue layer expects `Arc` pointers —
-    /// dereferencing such a pointer causes UB / segfaults.
-    /// `NewList`, `NewListStack`, `Append`, and `NewMap` have the same issue
-    /// through `jit_rt_append` / `jit_rt_new_list`.
-    pub fn check_eligibility(&mut self, cell_idx: usize, module: &LirModule) -> bool {
-        if cell_idx >= self.eligibility.len() {
-            return false;
-        }
-        match self.eligibility[cell_idx] {
-            CellEligibility::Eligible => true,
-            CellEligibility::NotEligible => false,
-            CellEligibility::Unknown => {
-                use lumen_core::lir::OpCode;
-                // Since compile_hot lowers the ENTIRE module, we must check
-                // every cell in the module — not just the requested one.
-                // If any cell uses opcodes with unsafe JIT helpers (Box vs Arc
-                // pointer mismatch), the entire module JIT is unsafe.
-                let any_ineligible = module.cells.iter().any(|cell| {
-                    cell.instructions.iter().any(|inst| {
-                        matches!(
-                            inst.op,
-                            OpCode::GetIndex
-                                | OpCode::SetIndex
-                                | OpCode::NewList
-                                | OpCode::NewListStack
-                                | OpCode::Append
-                                | OpCode::NewMap
-                        )
-                    })
-                });
-
-                if any_ineligible {
-                    // Mark all cells as not eligible to avoid repeated checks.
-                    for i in 0..self.eligibility.len() {
-                        if self.eligibility[i] == CellEligibility::Unknown {
-                            self.eligibility[i] = CellEligibility::NotEligible;
-                        }
-                    }
-                    self.eligibility[cell_idx] = CellEligibility::NotEligible;
-                    false
-                } else {
-                    self.eligibility[cell_idx] = CellEligibility::Eligible;
-                    true
-                }
-            }
-        }
     }
 
     /// Record a call to `cell_idx`. Returns `true` if the cell *just* crossed
@@ -272,11 +203,6 @@ impl JitTier {
                     true
                 }
                 Err(_e) => {
-                    // Compilation failed — mark the target cell as not eligible
-                    // so we don't retry it.
-                    if cell_idx < self.eligibility.len() {
-                        self.eligibility[cell_idx] = CellEligibility::NotEligible;
-                    }
                     self.stats.compile_failures += 1;
                     false
                 }

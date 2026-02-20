@@ -1,5 +1,6 @@
 //! Runtime helpers for stencil (Tier 1) execution.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -8,7 +9,39 @@ use lumen_core::nb_value::NbValue;
 use lumen_core::values::{ClosureValue, RecordValue, StringRef, UnionValue, Value};
 use lumen_core::vm_context::VmContext;
 
+use crate::services::tools::ToolRequest;
+use crate::vm::helpers::{json_to_value, merged_policy_for_tool, validate_tool_policy, value_to_json};
 use crate::vm::VM;
+
+// ---------------------------------------------------------------------------
+// Thread-local flag for IsVariant skip semantics
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// Set to `true` by the IsVariant stencil runtime handler when the union
+    /// tag matches, so the stitcher (or interpreter re-dispatch) can skip the
+    /// next instruction.
+    ///
+    /// Reset to `false` at the start of each `lm_rt_stencil_runtime` call to
+    /// avoid stale values from previous instructions.
+    static IS_VARIANT_SKIP: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Returns whether the most recent `IsVariant` stencil matched, consuming the flag.
+///
+/// Called by the stitcher after dispatching an `IsVariant` stencil to
+/// determine whether to skip the immediately following stencil.
+///
+/// # Safety
+///
+/// This function is safe to call from any context, but must only be called
+/// immediately after `lm_rt_stencil_runtime` processes an `IsVariant`
+/// instruction. The flag is automatically reset on the next call to
+/// `lm_rt_stencil_runtime`.
+#[no_mangle]
+pub extern "C" fn lm_rt_is_variant_skip_flag() -> bool {
+    IS_VARIANT_SKIP.with(|f| f.replace(false))
+}
 
 fn vm_from_ctx(ctx: *mut VmContext) -> &'static mut VM {
     debug_assert!(!ctx.is_null(), "stencil runtime: null VmContext");
@@ -63,6 +96,11 @@ pub unsafe extern "C" fn lm_rt_halt(ctx: *mut VmContext, reg_idx: u32) {
 
 #[no_mangle]
 pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: u64) {
+    // Reset the IsVariant skip flag before processing this instruction so that
+    // stale values from a previous IsVariant call cannot leak into non-IsVariant
+    // stencil handlers.
+    IS_VARIANT_SKIP.with(|f| f.set(false));
+
     let vm = vm_from_ctx(ctx);
     let instr: Instruction = unsafe { std::mem::transmute(instr_word) };
     // Use stencil_base (set before call_stitched) not current_base() (caller frame).
@@ -254,10 +292,13 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
 
         // Type variant check (skip next if matched).
         lumen_core::lir::OpCode::IsVariant => {
-            // IsVariant is a conditional skip — in the stencil tier this is a
-            // no-op for control flow (IP manipulation not available here).
-            // The stencil exists for library completeness; the interpreter handles
-            // the skip semantics when it re-dispatches.
+            // Perform the actual tag comparison and record the match result in a
+            // thread-local flag.  The stitcher (or interpreter re-dispatch) reads
+            // `lm_rt_is_variant_skip_flag()` after this call to decide whether to
+            // skip the next instruction.
+            //
+            // TODO: wire stitcher to call lm_rt_is_variant_skip_flag after each
+            // IsVariant stencil and advance the stencil program counter when true.
             let tag_idx = instr.bx() as usize;
             // Clone the tag string to avoid borrow conflict between module and vm.strings.
             let tag_str = {
@@ -268,8 +309,13 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
                     None
                 }
             };
-            let _tag_id = tag_str.map(|s| vm.strings.intern(&s)).unwrap_or(u32::MAX);
-            // Control-flow side-effect (skip) not implemented in stencil tier.
+            let tag_id = tag_str.map(|s| vm.strings.intern(&s)).unwrap_or(u32::MAX);
+            let val = vm.reg(base + a);
+            let matched = match &val {
+                Value::Union(u) => u.tag == tag_id,
+                _ => false,
+            };
+            IS_VARIANT_SKIP.with(|f| f.set(matched));
         }
 
         // Union payload extraction.
@@ -551,13 +597,75 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
             );
         }
 
-        // ToolCall — requires runtime dispatcher, which is not accessible from
-        // this extern "C" context without unsafe indirection. Log a no-op.
+        // ToolCall — dispatch via the VM's synchronous tool dispatcher.
         lumen_core::lir::OpCode::ToolCall => {
-            // ToolCall from the stencil tier: store Null in the result register.
-            // The cell should not have been compiled to stencil if it has tool calls,
-            // but we provide a safe fallback.
-            vm.set_reg(base + a, Value::Null);
+            // `bx` is the index into module.tools for the tool descriptor.
+            let bx = instr.bx() as usize;
+            let (tool_id, tool_version, tool_alias) = {
+                let module = vm.module().expect("stencil runtime: no module");
+                if let Some(tool) = module.tools.get(bx) {
+                    (tool.tool_id.clone(), tool.version.clone(), tool.alias.clone())
+                } else {
+                    // Tool index out of bounds — store Null and return.
+                    vm.set_reg(base + a, Value::Null);
+                    return;
+                }
+            };
+
+            // Build the args JSON map from the register immediately following R[A]
+            // (the same convention as the interpreter).
+            let mut args_map = serde_json::Map::new();
+            let arg_reg = base + a + 1;
+            if arg_reg < vm.registers.len() {
+                let map_val = vm.reg(arg_reg);
+                if let Value::Map(m) = &map_val {
+                    for (k, v) in m.iter() {
+                        args_map.insert(k.clone(), value_to_json(v, &vm.strings));
+                    }
+                }
+            }
+            let args_json = serde_json::Value::Object(args_map);
+
+            // Validate the tool policy (if any).
+            let policy = {
+                let module = vm.module().expect("stencil runtime: no module");
+                merged_policy_for_tool(module, &tool_alias)
+            };
+            if let Err(msg) = validate_tool_policy(&policy, &args_json) {
+                let err_msg = format!("policy violation for '{}': {}", tool_alias, msg);
+                vm.set_reg(
+                    base + a,
+                    Value::String(StringRef::Owned(err_msg)),
+                );
+                return;
+            }
+
+            // Dispatch synchronously via the tool_dispatcher if one is configured.
+            let request = ToolRequest {
+                tool_id: tool_id.clone(),
+                version: tool_version.clone(),
+                args: args_json,
+                policy,
+            };
+            if let Some(dispatcher) = vm.tool_dispatcher.as_ref() {
+                match dispatcher.dispatch(&request) {
+                    Ok(response) => {
+                        vm.set_reg(base + a, json_to_value(&response.outputs));
+                    }
+                    Err(e) => {
+                        vm.set_reg(
+                            base + a,
+                            Value::String(StringRef::Owned(e.to_string())),
+                        );
+                    }
+                }
+            } else {
+                // No dispatcher configured — store a pending placeholder string.
+                vm.set_reg(
+                    base + a,
+                    Value::String(StringRef::Owned("<<tool call pending>>".to_string())),
+                );
+            }
         }
 
         // TraceRef already handled above.

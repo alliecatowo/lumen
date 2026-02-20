@@ -63,8 +63,8 @@ fn bench_sort_ints(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
             b.iter(|| {
                 let mut vm = VM::new();
-                vm.load_module(module.clone());
-                let _ = vm.run_cell_by_name(black_box("main"), &[]);
+                vm.load(module.clone());
+                let _ = vm.execute(black_box("main"), vec![]);
             });
         });
     }
@@ -84,8 +84,8 @@ fn bench_sort_floats(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
             b.iter(|| {
                 let mut vm = VM::new();
-                vm.load_module(module.clone());
-                let _ = vm.run_cell_by_name(black_box("main"), &[]);
+                vm.load(module.clone());
+                let _ = vm.execute(black_box("main"), vec![]);
             });
         });
     }
@@ -105,8 +105,8 @@ fn bench_sort_strings(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
             b.iter(|| {
                 let mut vm = VM::new();
-                vm.load_module(module.clone());
-                let _ = vm.run_cell_by_name(black_box("main"), &[]);
+                vm.load(module.clone());
+                let _ = vm.execute(black_box("main"), vec![]);
             });
         });
     }

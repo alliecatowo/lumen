@@ -705,6 +705,7 @@ fn register_string_helpers(builder: &mut JITBuilder) {
 // ---------------------------------------------------------------------------
 
 use lumen_core::values::{RecordValue, Value};
+use std::sync::Arc;
 
 // NbValue decoding constants (must match NbValue in lumen-core and ir.rs).
 const NBVAL_NAN_MASK: u64 = 0x7FF8_0000_0000_0000;
@@ -719,7 +720,9 @@ const NBVAL_PAYLOAD_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 /// If `val` is not a NbValue integer, it must be a valid `*const Value` pointer.
 fn decode_nbvalue_index(val: i64) -> Value {
     let u = val as u64;
-    if (u & NBVAL_NAN_MASK) == NBVAL_NAN_MASK && ((u >> 48) & 0xF) == 1 {
+    // NbValue uses 3-bit tags at bits 48-50 (bit 51 is the quiet-NaN bit, not part of tag).
+    // Must mask with 0x7 (not 0xF) to extract the 3-bit tag correctly.
+    if (u & NBVAL_NAN_MASK) == NBVAL_NAN_MASK && ((u >> 48) & 0x7) == 1 {
         // NbValue integer: TAG_INT=1. Extract 48-bit two's-complement payload.
         let payload = u & NBVAL_PAYLOAD_MASK;
         let signed = if payload & (1 << 47) != 0 {
@@ -811,78 +814,131 @@ extern "C" fn jit_rt_record_set_field(
     Box::into_raw(Box::new(result)) as i64
 }
 
-/// Get an element from a List or Map by index/key.
-/// Returns a `*mut Value` as i64 (boxed Value).
-/// If the collection is null, the index is out of bounds, or the key doesn't exist, returns a boxed Value::Null.
+/// Get an element from a List, Tuple, or Map by index/key.
 ///
-/// The `index_ptr` may be either:
-/// - A NbValue-boxed integer (NAN_MASK | TAG_INT=1 << 48 | payload): decoded via 48-bit sign extension
-/// - A NaN-boxed null sentinel (`NAN_BOX_NULL`): returns null
-/// - A heap pointer to a `Value` (raw *const Value): dereferenced
+/// Returns an NbValue-encoded i64:
+///   Float  → raw f64 bits (no NaN mask; directly usable in float arithmetic)
+///   Int    → NAN_MASK | TAG_INT<<48 | payload
+///   Bool   → NAN_MASK | TAG_BOOL<<48 | (0 or 1)
+///   Null   → NAN_BOX_NULL
+///   Heap   → raw *mut Value pointer (List, Map, Record, etc.)
+///
+/// The `index_ptr` is NbValue-encoded (TAG_INT for integers).
 ///
 /// # Safety
-/// `collection_ptr` must be a valid `*mut Value` pointer pointing to a `Value::List` or `Value::Map`.
-/// If `index_ptr` is not a NbValue integer or sentinel, it must be a valid `*const Value` pointer.
+/// `collection_ptr` must be a valid raw `*const Value` pointer to a `Value::List`,
+/// `Value::Tuple`, or `Value::Map`.
 extern "C" fn jit_rt_get_index(_ctx: *mut VmContext, collection_ptr: i64, index_ptr: i64) -> i64 {
     if collection_ptr == 0 || collection_ptr == NAN_BOX_NULL {
-        // Null collection, return boxed null
-        return Box::into_raw(Box::new(Value::Null)) as i64;
+        return NAN_BOX_NULL;
     }
     if index_ptr == 0 || index_ptr == NAN_BOX_NULL {
-        // Null index, return boxed null
-        return Box::into_raw(Box::new(Value::Null)) as i64;
+        return NAN_BOX_NULL;
     }
 
     let collection = unsafe { &*(collection_ptr as *const Value) };
-
-    // Decode index using NbValue encoding (matches NbValue in lumen-core):
-    //   NAN_MASK = 0x7FF8_0000_0000_0000
-    //   TAG_INT  = 1  →  integer marker at bits [51:48]
-    //   Payload  = lower 48 bits (two's complement)
     let index_val = decode_nbvalue_index(index_ptr);
 
-    let result = match (collection, &index_val) {
+    let element = match (collection, &index_val) {
         (Value::List(l), Value::Int(i)) => {
             let ii = *i;
             let len = l.len() as i64;
             let effective = if ii < 0 { ii + len } else { ii };
             if effective < 0 || effective >= len {
-                // Out of bounds, return null
-                Value::Null
-            } else {
-                l[effective as usize].clone()
+                return NAN_BOX_NULL;
             }
+            l[effective as usize].clone()
         }
         (Value::Tuple(t), Value::Int(i)) => {
             let ii = *i;
             let len = t.len() as i64;
             let effective = if ii < 0 { ii + len } else { ii };
             if effective < 0 || effective >= len {
-                // Out of bounds, return null
-                Value::Null
-            } else {
-                t[effective as usize].clone()
+                return NAN_BOX_NULL;
             }
+            t[effective as usize].clone()
         }
         (Value::Map(m), _) => {
-            // Map keys are strings - convert index to string
             let key = index_val.as_string();
             m.get(&key).cloned().unwrap_or(Value::Null)
         }
-        _ => Value::Null,
+        _ => return NAN_BOX_NULL,
     };
 
-    Box::into_raw(Box::new(result)) as i64
+    // Return scalars as NbValue i64 — avoids heap allocation and lets the
+    // JIT use float/int arithmetic directly on the result.
+    value_to_nbval(element)
+}
+
+/// Encode a `Value` as an NbValue i64 suitable for JIT register use.
+/// Scalars are inlined (no heap allocation).
+/// Heap values are boxed and encoded as NbValue TAG_PTR (NAN_MASK | ptr).
+fn value_to_nbval(v: Value) -> i64 {
+    match v {
+        Value::Float(f) => f.to_bits() as i64,
+        Value::Int(i) => {
+            (NBVAL_NAN_MASK | (1u64 << 48) | ((i as u64) & NBVAL_PAYLOAD_MASK)) as i64
+        }
+        Value::Bool(b) => (NBVAL_NAN_MASK | (3u64 << 48) | (b as u64)) as i64,
+        Value::Null => NAN_BOX_NULL,
+        other => {
+            // NbValue TAG_PTR encoding: NAN_MASK | (0<<48) | ptr_low48bits.
+            // This lets nbval_to_value decode it correctly via the TAG_PTR=0 branch.
+            let ptr = Box::into_raw(Box::new(other)) as u64;
+            (NBVAL_NAN_MASK | (ptr & NBVAL_PAYLOAD_MASK)) as i64
+        }
+    }
+}
+
+/// Decode an NbValue-encoded i64 to a `Value`.
+/// This is the inverse of `value_to_nbval`.
+/// Float bit patterns (no NaN mask): decoded as f64.
+/// NbValue-tagged integers, bools, nulls: decoded directly.
+/// Heap pointer (TAG_PTR=0 with non-null non-sentinel payload): cloned from *const Value.
+fn nbval_to_value(v: i64) -> Value {
+    let u = v as u64;
+    if (u & NBVAL_NAN_MASK) != NBVAL_NAN_MASK {
+        // Raw float bits (non-NaN double).
+        return Value::Float(f64::from_bits(u));
+    }
+    // NbValue uses 3-bit tags at bits 48-50 (bit 51 is the quiet-NaN bit).
+    // Mask with 0x7 to extract only the 3 tag bits, matching NbValue::tag().
+    let tag = (u >> 48) & 0x7;
+    let payload = u & NBVAL_PAYLOAD_MASK;
+    match tag {
+        0 => {
+            // TAG_PTR: heap *const Value, or null/NaN sentinels.
+            if payload == 0 {
+                Value::Null
+            } else if payload == 1 {
+                Value::Float(f64::NAN)
+            } else {
+                unsafe { (*(payload as *const Value)).clone() }
+            }
+        }
+        1 => {
+            // TAG_INT: 48-bit two's-complement.
+            let signed = if payload & (1 << 47) != 0 {
+                (payload | !NBVAL_PAYLOAD_MASK) as i64
+            } else {
+                payload as i64
+            };
+            Value::Int(signed)
+        }
+        3 => Value::Bool(payload != 0),
+        4 => Value::Null,
+        _ => Value::Null,
+    }
 }
 
 /// Set an element in a List or Map by index/key.
-/// Creates a new List/Map with the updated element (copy-on-write).
-/// Returns a `*mut Value` as i64 (boxed Value::List or Value::Map).
+/// Takes ownership of `collection_ptr` and returns the (possibly same) pointer.
+/// Both `index_ptr` and `value_ptr` are NbValue-encoded i64.
 ///
 /// # Safety
-/// `collection_ptr` must be a valid `*mut Value` pointer pointing to a `Value::List` or `Value::Map`.
-/// `index_ptr` is a NbValue-encoded i64 (integer or heap pointer to Value).
-/// `value_ptr` must be a valid `*mut Value` pointer.
+/// `collection_ptr` must be a valid `*mut Value` produced by a JIT collection helper.
+/// `index_ptr` is NbValue-encoded (TAG_INT for integers).
+/// `value_ptr` is NbValue-encoded (float bits, tagged int, or heap *const Value).
 extern "C" fn jit_rt_set_index(
     _ctx: *mut VmContext,
     collection_ptr: i64,
@@ -894,42 +950,35 @@ extern "C" fn jit_rt_set_index(
         return Box::into_raw(Box::new(Value::Null)) as i64;
     }
 
-    let collection = unsafe { &*(collection_ptr as *const Value) };
+    // Take ownership of the collection box — the JIT register no longer
+    // holds a reference to the old pointer after this call.
+    let mut boxed_collection = unsafe { Box::from_raw(collection_ptr as *mut Value) };
     let index_decoded = decode_nbvalue_index(index_ptr);
     let index = &index_decoded;
-    let new_value = if value_ptr == 0 || value_ptr == NAN_BOX_NULL {
-        Value::Null
-    } else {
-        unsafe { (*(value_ptr as *const Value)).clone() }
-    };
+    // Decode the new value from NbValue encoding — same format returned by
+    // jit_rt_get_index and float/int arithmetic (raw f64 bits or NAN-tagged).
+    let new_value = nbval_to_value(value_ptr);
 
-    let result = match (collection, index) {
-        (Value::List(l), Value::Int(i)) => {
+    match (&mut *boxed_collection, index) {
+        (Value::List(arc), Value::Int(i)) => {
             let ii = *i;
-            let len = l.len() as i64;
+            let len = arc.len() as i64;
             let effective = if ii < 0 { ii + len } else { ii };
-            if effective < 0 || effective >= len {
-                // Out of bounds, return the original list unchanged
-                collection.clone()
-            } else {
-                // Clone the list and update the element
-                let mut new_list = (**l).clone();
-                new_list[effective as usize] = new_value;
-                Value::new_list(new_list)
+            if effective >= 0 && effective < len {
+                // Arc::make_mut gives exclusive access without cloning if
+                // this is the only reference (strong_count == 1).
+                Arc::make_mut(arc)[effective as usize] = new_value;
             }
+            // Out-of-bounds: leave collection unchanged.
         }
-        (Value::Map(m), _) => {
-            // Map keys are strings - convert index to string
+        (Value::Map(arc), _) => {
             let key = index.as_string();
-            // Clone the map and insert the new value
-            let mut new_map = (**m).clone();
-            new_map.insert(key, new_value);
-            Value::new_map(new_map)
+            Arc::make_mut(arc).insert(key, new_value);
         }
-        _ => collection.clone(),
-    };
+        _ => {}
+    }
 
-    Box::into_raw(Box::new(result)) as i64
+    Box::into_raw(boxed_collection) as i64
 }
 
 /// Clone a Value (for record field access results).
@@ -1005,8 +1054,20 @@ fn register_collection_helpers(builder: &mut JITBuilder) {
         crate::collection_helpers::jit_rt_new_tuple as *const u8,
     );
     builder.symbol(
+        "jit_rt_new_set",
+        crate::collection_helpers::jit_rt_new_set as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_new_record",
+        crate::collection_helpers::jit_rt_new_record as *const u8,
+    );
+    builder.symbol(
         "jit_rt_collection_len",
         crate::collection_helpers::jit_rt_collection_len as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_list_append",
+        crate::collection_helpers::jit_rt_list_append as *const u8,
     );
 }
 
@@ -1617,9 +1678,10 @@ fn register_intrinsic_helpers(builder: &mut JITBuilder) {
 ///
 /// # Parameters
 /// - `vm_ctx`: Opaque pointer to VM context
-/// - `effect_id`: LIR effect index
-/// - `operation_id`: LIR operation index within the effect
-/// - `arg`: NbValue-encoded argument value (u64 bits)
+/// - `effect_id`: LIR effect index (i32, matching ir.rs Cranelift I32 ABI param)
+/// - `operation_id`: LIR operation index within the effect (i32)
+/// - `args_ptr`: Pointer to NaN-boxed argument array (may be null for single-arg shortcut)
+/// - `arg_count`: Number of arguments at args_ptr (isize)
 ///
 /// # Returns
 /// NbValue result from the handler's resume call
@@ -1627,15 +1689,18 @@ fn register_intrinsic_helpers(builder: &mut JITBuilder) {
 /// # Safety
 /// `vm_ctx` must be a valid pointer to an initialized VmContext with effect stack.
 ///
-/// # Implementation Note
-/// Full implementation requires the fiber_effects module from lumen-rt.
-/// This stub returns null as a placeholder.
+/// # Signature matches ir.rs declaration:
+///   params: [pointer_type, I32, I32, pointer_type, pointer_type]
+///   returns: [I64]
 extern "C" fn jit_rt_perform(
     _vm_ctx: *mut VmContext,
-    _effect_id: u32,
-    _operation_id: u32,
-    _arg: u64,
+    _effect_id: i32,
+    _operation_id: i32,
+    _args_ptr: *const i64,
+    _arg_count: isize,
 ) -> i64 {
+    // TODO: full implementation via lm_rt_perform from lumen-rt fiber_effects.
+    // For now return null — effects in JIT-compiled code fall back to the stub.
     NAN_BOX_NULL
 }
 
@@ -1645,22 +1710,22 @@ extern "C" fn jit_rt_perform(
 ///
 /// # Parameters
 /// - `vm_ctx`: Opaque pointer to VM context
-/// - `effect_id`: LIR effect index of the effect being handled
-/// - `op_id`: LIR operation index within the effect
-/// - `handler_fn`: Function pointer to the handler entry point
+/// - `meta_idx`: Handler metadata index (usize, pointer_type in Cranelift ABI)
+/// - `offset`: PC offset to handler code (i32)
 ///
 /// # Safety
 /// `vm_ctx` must be a valid pointer to an initialized VmContext with effect stack.
 ///
-/// # Implementation Note
-/// Full implementation requires the fiber_effects module from lumen-rt.
-/// This is a placeholder that does nothing.
+/// # Signature matches ir.rs declaration:
+///   params: [pointer_type, pointer_type, I32]
+///   no return value
 extern "C" fn jit_rt_handle_push(
     _vm_ctx: *mut VmContext,
-    _effect_id: u32,
-    _op_id: u32,
-    _handler_fn: extern "C" fn(u64),
+    _meta_idx: usize,
+    _offset: i32,
 ) {
+    // TODO: full implementation via lm_rt_handle_push from lumen-rt fiber_effects.
+    // For now this is a no-op stub — effects in JIT-compiled code are not yet dispatched.
 }
 
 /// Pop an effect handler scope from the stack.

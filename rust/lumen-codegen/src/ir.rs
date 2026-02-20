@@ -329,6 +329,7 @@ fn classify_multi_block_regs(
             | OpCode::SetField
             | OpCode::GetIndex
             | OpCode::SetIndex
+            | OpCode::Append
             | OpCode::NewUnion
             | OpCode::IsVariant
             | OpCode::Unbox
@@ -428,6 +429,11 @@ fn classify_multi_block_regs(
                 read_blocks.entry(inst.a).or_default().insert(blk);
                 read_blocks.entry(inst.b).or_default().insert(blk);
                 read_blocks.entry(inst.c).or_default().insert(blk);
+            }
+            // Append reads the list from r[a] and element from r[b], writes result to r[a]
+            OpCode::Append => {
+                read_blocks.entry(inst.a).or_default().insert(blk);
+                read_blocks.entry(inst.b).or_default().insert(blk);
             }
             // NewUnion reads payload from r[c]
             OpCode::NewUnion => {
@@ -652,6 +658,13 @@ pub(crate) fn lower_cell<M: Module>(
     )?;
 
     // Declare record runtime helper functions (for JIT record support).
+    let new_record_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_new_record",
+        &[pointer_type, types::I64, types::I64], // ctx, type_name_ptr, type_name_len
+        &[types::I64],
+    )?;
     let record_get_field_ref = declare_helper_func(
         module,
         &mut func,
@@ -703,11 +716,25 @@ pub(crate) fn lower_cell<M: Module>(
         &[pointer_type, types::I64, types::I64], // ctx, values_ptr, count
         &[types::I64],
     )?;
+    let new_set_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_new_set",
+        &[pointer_type, types::I64, types::I64], // ctx, values_ptr, count
+        &[types::I64],
+    )?;
     let collection_len_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_collection_len",
         &[pointer_type, types::I64], // ctx, value_ptr
+        &[types::I64],
+    )?;
+    let list_append_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_list_append",
+        &[pointer_type, types::I64, types::I64], // ctx, list_ptr, element
         &[types::I64],
     )?;
     // Declare union runtime helper functions (for JIT enum support).
@@ -1037,8 +1064,11 @@ pub(crate) fn lower_cell<M: Module>(
     // (e.g., abs(float_reg) -> float_reg, sqrt(int_reg) -> float_reg).
     let mut float_regs: std::collections::HashSet<u16> = std::collections::HashSet::new();
     let mut string_regs: std::collections::HashSet<u16> = std::collections::HashSet::new();
+    // Map from register → declared param type string (for collection element inference).
+    let mut param_type_map: HashMap<u16, &str> = HashMap::new();
     // Seed float_regs from parameters
     for (i, p) in cell.params.iter().enumerate() {
+        param_type_map.insert(i as u16, p.ty.as_str());
         if p.ty == "Float" {
             float_regs.insert(i as u16);
         }
@@ -1112,6 +1142,15 @@ pub(crate) fn lower_cell<M: Module>(
             OpCode::Move | OpCode::MoveOwn => {
                 if float_regs.contains(&inst.b) {
                     float_regs.insert(inst.a);
+                }
+            }
+            // GetIndex: if collection param is list[Float], result is Float
+            OpCode::GetIndex => {
+                let collection_reg = inst.b;
+                if let Some(param_ty) = param_type_map.get(&collection_reg) {
+                    if param_ty.contains("Float") || *param_ty == "list[Float]" {
+                        float_regs.insert(inst.a);
+                    }
                 }
             }
             // NullCo propagates float/string from either operand
@@ -2619,12 +2658,30 @@ pub(crate) fn lower_cell<M: Module>(
             // r[a] = r[b][r[c]]
             OpCode::GetIndex => {
                 let collection_ptr = use_var(&mut builder, &regs, &var_types, inst.b);
-                let index_ptr = use_var(&mut builder, &regs, &var_types, inst.c);
+                let idx_raw = use_var(&mut builder, &regs, &var_types, inst.c);
+                // RawInt loop counters must be NaN-boxed before passing to the runtime
+                // helper, which uses decode_nbvalue_index expecting TAG_INT encoding.
+                let idx_ty = var_types
+                    .get(&(inst.c as u32))
+                    .copied()
+                    .unwrap_or(JitVarType::Int);
+                let index_ptr = ensure_boxed_int(&mut builder, idx_raw, idx_ty);
                 let call = builder
                     .ins()
                     .call(get_index_ref, &[vm_ctx_param, collection_ptr, index_ptr]);
                 let result = builder.inst_results(call)[0];
-                var_types.insert(inst.a as u32, JitVarType::Ptr);
+                // jit_rt_get_index returns NbValue-encoded i64:
+                //   Float elements → raw f64 bits (same as JitVarType::Float)
+                //   Int elements   → NAN-tagged
+                //   Heap values    → NAN-tagged pointer
+                // Use the pre-pass float_regs result to set the correct JIT type
+                // so that downstream arithmetic can correctly identify float operands.
+                let elem_ty = if float_regs.contains(&inst.a) {
+                    JitVarType::Float
+                } else {
+                    JitVarType::Int
+                };
+                var_types.insert(inst.a as u32, elem_ty);
                 def_var(&mut builder, &mut regs, inst.a, result);
             }
 
@@ -2632,12 +2689,47 @@ pub(crate) fn lower_cell<M: Module>(
             // r[a][r[b]] = r[c]
             OpCode::SetIndex => {
                 let collection_ptr = use_var(&mut builder, &regs, &var_types, inst.a);
-                let index_ptr = use_var(&mut builder, &regs, &var_types, inst.b);
-                let value_ptr = use_var(&mut builder, &regs, &var_types, inst.c);
+                let idx_raw = use_var(&mut builder, &regs, &var_types, inst.b);
+                // Box RawInt index — same reason as GetIndex.
+                let idx_ty = var_types
+                    .get(&(inst.b as u32))
+                    .copied()
+                    .unwrap_or(JitVarType::Int);
+                let index_ptr = ensure_boxed_int(&mut builder, idx_raw, idx_ty);
+                let val_raw = use_var(&mut builder, &regs, &var_types, inst.c);
+                let val_ty = var_types
+                    .get(&(inst.c as u32))
+                    .copied()
+                    .unwrap_or(JitVarType::Int);
+                // jit_rt_set_index decodes the value via nbval_to_value:
+                //   Float bits (JitVarType::Float) → Value::Float  ✓ (no NaN mask)
+                //   NbValue int (JitVarType::Int) → Value::Int     ✓ (NAN | TAG_INT)
+                //   RawInt → must box to NbValue first
+                let value_nbval = ensure_boxed_int(&mut builder, val_raw, val_ty);
                 let call = builder.ins().call(
                     set_index_ref,
-                    &[vm_ctx_param, collection_ptr, index_ptr, value_ptr],
+                    &[vm_ctx_param, collection_ptr, index_ptr, value_nbval],
                 );
+                let result = builder.inst_results(call)[0];
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
+                def_var(&mut builder, &mut regs, inst.a, result);
+            }
+
+            // Append: Append element to list
+            // r[a] = append(r[a], r[b])
+            OpCode::Append => {
+                let list_ptr = use_var(&mut builder, &regs, &var_types, inst.a);
+                let elem_raw = use_var(&mut builder, &regs, &var_types, inst.b);
+                // Box RawInt elements — jit_rt_list_append uses nanbox_to_value which
+                // interprets non-NaN-masked values as raw float bits.
+                let elem_ty = var_types
+                    .get(&(inst.b as u32))
+                    .copied()
+                    .unwrap_or(JitVarType::Int);
+                let element = ensure_boxed_int(&mut builder, elem_raw, elem_ty);
+                let call = builder
+                    .ins()
+                    .call(list_append_ref, &[vm_ctx_param, list_ptr, element]);
                 let result = builder.inst_results(call)[0];
                 var_types.insert(inst.a as u32, JitVarType::Ptr);
                 def_var(&mut builder, &mut regs, inst.a, result);
@@ -2742,6 +2834,64 @@ pub(crate) fn lower_cell<M: Module>(
                 let call = builder
                     .ins()
                     .call(new_tuple_ref, &[vm_ctx_param, array_ptr, count_val]);
+                let result = builder.inst_results(call)[0];
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
+                def_var(&mut builder, &mut regs, inst.a, result);
+            }
+
+            // NewSet: Create a set from register values
+            // r[a] = Set({r[a+1], ..., r[a+b]})
+            OpCode::NewSet => {
+                let count = inst.b as usize;
+
+                // Allocate stack space for the array of values
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    (count * 8) as u32,
+                    8,
+                ));
+                let array_ptr = builder.ins().stack_addr(types::I64, slot, 0);
+
+                // Fill the array with values from registers r[a+1] through r[a+b]
+                for i in 0..count {
+                    let value = use_var(&mut builder, &regs, &var_types, inst.a + 1 + i as u16);
+                    let offset = (i * 8) as i32;
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), value, array_ptr, offset);
+                }
+
+                // Call jit_rt_new_set(ctx, values_ptr, count)
+                let count_val = builder.ins().iconst(types::I64, count as i64);
+                let call = builder
+                    .ins()
+                    .call(new_set_ref, &[vm_ctx_param, array_ptr, count_val]);
+                let result = builder.inst_results(call)[0];
+                var_types.insert(inst.a as u32, JitVarType::Ptr);
+                def_var(&mut builder, &mut regs, inst.a, result);
+            }
+
+            // NewRecord: Create a record (struct) with an empty field map
+            // Instruction format: ABx (a=dest_reg, bx=type_name_string_index)
+            // r[a] = Record { type_name: strings[bx], fields: {} }
+            OpCode::NewRecord => {
+                let bx = inst.bx() as usize;
+                let type_name_str = if bx < string_table.len() {
+                    &string_table[bx]
+                } else {
+                    "Unknown"
+                };
+                let type_name_bytes = type_name_str.as_bytes();
+                let type_name_ptr = builder
+                    .ins()
+                    .iconst(types::I64, type_name_bytes.as_ptr() as i64);
+                let type_name_len = builder
+                    .ins()
+                    .iconst(types::I64, type_name_bytes.len() as i64);
+                let call = builder.ins().call(
+                    new_record_ref,
+                    &[vm_ctx_param, type_name_ptr, type_name_len],
+                );
                 let result = builder.inst_results(call)[0];
                 var_types.insert(inst.a as u32, JitVarType::Ptr);
                 def_var(&mut builder, &mut regs, inst.a, result);

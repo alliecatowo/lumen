@@ -510,6 +510,38 @@ end
     );
 }
 
+#[test]
+fn parity_record_construction() {
+    // Exercises NewRecord opcode lowering: record created with fields via SetField,
+    // then a field read via GetField.
+    assert_parity(
+        r#"
+record Rect
+  width: Int
+  height: Int
+end
+
+cell main() -> Int
+  let r = Rect(width: 4, height: 6)
+  return r.width * r.height
+end
+"#,
+    );
+}
+
+#[test]
+fn parity_set_construction() {
+    // Exercises NewSet opcode lowering: set literal with multiple elements.
+    assert_parity(
+        r#"
+cell main() -> Int
+  let s = {10, 20, 30}
+  return s[0]
+end
+"#,
+    );
+}
+
 // ── closure parity ────────────────────────────────────────────────────────────
 
 #[test]

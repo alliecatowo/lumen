@@ -62,6 +62,49 @@ unsafe fn nanbox_to_value(val: i64) -> Value {
     }
 }
 
+/// Decode a NaN-boxed payload directly into an `Arc<Value>` for use as a
+/// union payload.  For heap pointers (TAG_PTR), takes ownership of the
+/// existing Arc via `Arc::from_raw` — **no deep clone**.  For inline types
+/// (Int, Bool, Null, Float), wraps in a fresh Arc.
+///
+/// # Safety
+/// For TAG_PTR payloads with payload > 1, the raw pointer must have been
+/// produced by `Arc::into_raw` and must not be used again after this call.
+#[inline]
+unsafe fn nanbox_to_payload_arc(val: i64) -> Arc<Value> {
+    let u = val as u64;
+    if (u & NAN_MASK_U) != NAN_MASK_U {
+        return Arc::new(Value::Float(f64::from_bits(u)));
+    }
+    let tag = (u >> 48) & 0x7;
+    let payload = u & PAYLOAD_MASK_U;
+    match tag {
+        0 => {
+            if payload == 0 {
+                Arc::new(Value::Null)
+            } else if payload == 1 {
+                Arc::new(Value::Float(f64::NAN))
+            } else {
+                // Take ownership of the existing Arc — no clone needed.
+                // The JIT register holding this pointer is consumed (dead after
+                // NewUnion writes its result to a different register).
+                Arc::from_raw(payload as *const Value)
+            }
+        }
+        1 => {
+            let signed = if payload & (1 << 47) != 0 {
+                (payload | !PAYLOAD_MASK_U) as i64
+            } else {
+                payload as i64
+            };
+            Arc::new(Value::Int(signed))
+        }
+        3 => Arc::new(Value::Bool(payload != 0)),
+        4 => Arc::new(Value::Null),
+        _ => Arc::new(Value::Null),
+    }
+}
+
 /// Create a new union value (enum variant).
 /// `tag_ptr` and `tag_len` describe a UTF-8 string for the variant tag.
 /// `payload` is a NaN-boxed value (integer, bool, null, or heap pointer).
@@ -69,7 +112,8 @@ unsafe fn nanbox_to_value(val: i64) -> Value {
 ///
 /// # Safety
 /// `tag_ptr` must point to valid UTF-8 bytes of length `tag_len`.
-/// If `payload` is a heap pointer, it must be a valid `*const Value`.
+/// If `payload` is a heap pointer (TAG_PTR), this function takes ownership
+/// of the Arc — the caller must not use the payload pointer again.
 #[no_mangle]
 pub extern "C" fn jit_rt_union_new(
     ctx: *mut VmContext,
@@ -80,25 +124,20 @@ pub extern "C" fn jit_rt_union_new(
     let tag_str =
         unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(tag_ptr, tag_len)) };
 
-    // Intern the tag to get the same u32 ID as the interpreter's NewUnion handler.
-    // intern() is needed here (not just resolve) because union_new creates new values
-    // that must have valid interned tag IDs for later IsVariant matching.
     let tag = unsafe {
         let st = &mut *(*ctx).string_table;
         st.intern(tag_str)
     };
 
-    let payload_value = unsafe { nanbox_to_value(payload) };
+    // Take ownership of the payload Arc directly — avoids deep clone + extra
+    // Arc allocation that was the #1 bottleneck in build_tree (262K nodes).
+    let payload_arc = unsafe { nanbox_to_payload_arc(payload) };
 
     let union_val = Value::Union(UnionValue {
         tag,
-        payload: Arc::new(payload_value),
+        payload: payload_arc,
     });
-    // Use Arc::into_raw to match the NbValue heap convention (peek_legacy /
-    // drop_heap use Arc reference counting, not Box).
     let ptr = Arc::into_raw(Arc::new(union_val)) as u64;
-    // Return as NaN-boxed TAG_PTR so downstream helpers (is_variant, unbox)
-    // and the VM can recognize it uniformly.
     (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
 }
 
@@ -207,5 +246,65 @@ pub extern "C" fn jit_rt_union_unbox(_ctx: *mut VmContext, union_ptr: i64) -> i6
             }
         }
         _ => NAN_BOX_NULL,
+    }
+}
+
+/// Sentinel value returned by `jit_rt_union_match` when the tag does not match.
+/// Uses NbValue tag 7 (unused) so it's distinguishable from any valid NaN-boxed value.
+pub const UNION_NO_MATCH: i64 = -1_i64; // 0xFFFF_FFFF_FFFF_FFFF
+
+/// Combined IsVariant + Unbox: check if a union has the given tag and, if so,
+/// return the payload NaN-boxed.  Returns `UNION_NO_MATCH` if the tag does not
+/// match (or the value is not a union).
+///
+/// This eliminates a separate Unbox extern "C" call after every IsVariant check,
+/// saving ~524K function calls for the tree benchmark.
+///
+/// # Safety
+/// `union_ptr` must be a valid NaN-boxed TAG_PTR to an `Arc<Value>`.
+/// `tag_ptr` must point to valid UTF-8 bytes of length `tag_len`.
+#[no_mangle]
+pub extern "C" fn jit_rt_union_match(
+    ctx: *mut VmContext,
+    union_ptr: i64,
+    tag_ptr: *const u8,
+    tag_len: usize,
+) -> i64 {
+    let u = union_ptr as u64;
+    if (u & NAN_MASK_U) != NAN_MASK_U || ((u >> 48) & 0x7) != 0 || (u & PAYLOAD_MASK_U) <= 1 {
+        return UNION_NO_MATCH;
+    }
+    let value = unsafe { &*((u & PAYLOAD_MASK_U) as *const Value) };
+    let tag_str =
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(tag_ptr, tag_len)) };
+
+    match value {
+        Value::Union(uv) => {
+            let st = unsafe { &*(*ctx).string_table };
+            if let Some(resolved) = st.resolve(uv.tag) {
+                if resolved == tag_str {
+                    // Tag matches — return the payload NaN-boxed (same logic as unbox).
+                    match &*uv.payload {
+                        Value::Int(n) => {
+                            let payload = (*n as u64) & PAYLOAD_MASK_U;
+                            (NAN_MASK_U | (1u64 << 48) | payload) as i64
+                        }
+                        Value::Bool(true) => NAN_BOX_TRUE,
+                        Value::Bool(false) => NAN_BOX_FALSE,
+                        Value::Null => NAN_BOX_NULL,
+                        Value::Float(f) => f.to_bits() as i64,
+                        _ => {
+                            let ptr = Arc::into_raw(Arc::clone(&uv.payload)) as u64;
+                            (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
+                        }
+                    }
+                } else {
+                    UNION_NO_MATCH
+                }
+            } else {
+                UNION_NO_MATCH
+            }
+        }
+        _ => UNION_NO_MATCH,
     }
 }

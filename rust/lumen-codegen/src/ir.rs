@@ -759,6 +759,13 @@ pub(crate) fn lower_cell<M: Module>(
         &[pointer_type, types::I64],
         &[types::I64],
     )?;
+    let union_match_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_union_match",
+        &[pointer_type, types::I64, types::I64, types::I64], // ctx, union_ptr, tag_ptr, tag_len
+        &[types::I64],
+    )?;
     // Declare intrinsic runtime helper functions (for JIT builtin support).
     let intrinsic_print_int_ref = declare_helper_func(
         module,
@@ -1298,6 +1305,11 @@ pub(crate) fn lower_cell<M: Module>(
     // Direct SSA value for conditions that should NOT be stored in registers.
     // Used by IsVariant which must NOT overwrite r[a] (the union register).
     let mut pending_test_value: Option<cranelift_codegen::ir::Value> = None;
+
+    // Cache for combined IsVariant+Unbox: (union_register, payload_value).
+    // IsVariant stores the payload here; Unbox reads it instead of making
+    // a second extern "C" call.  Cleared when the union register is written.
+    let mut last_union_match: Option<(u16, cranelift_codegen::ir::Value)> = None;
 
     for (pc, inst) in cell.instructions.iter().enumerate() {
         if let Some(&target_block) = block_map.get(&pc) {

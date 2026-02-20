@@ -298,6 +298,10 @@ impl Stitcher {
             }
         }
 
+        // Terminate stitched function with `ret` (0xC3) so that after
+        // lm_rt_return returns, control flows back to call_stitched.
+        self.emit_bytes(&[0xC3u8]);
+
         let code_len = self.code_offset - start_offset;
         let code = StitchedCode {
             code_ptr: unsafe { self.code_buffer.add(start_offset) },
@@ -376,6 +380,25 @@ impl Stitcher {
         unsafe {
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), self.code_buffer.add(offset), 8);
         }
+    }
+
+    /// Public version of `patch_u64` used by the stencil tier to post-patch
+    /// `RuntimeFuncAddr` holes after compilation.
+    ///
+    /// `byte_offset` is an absolute byte offset from the start of the code buffer.
+    pub fn patch_u64_at(&self, byte_offset: usize, value: u64) {
+        debug_assert!(
+            byte_offset + 8 <= self.code_capacity,
+            "patch_u64_at: byte_offset {byte_offset} out of bounds"
+        );
+        self.patch_u64(byte_offset, value);
+    }
+
+    /// Return the raw base pointer of the code buffer.
+    ///
+    /// Used by `stencil_tier` to compute absolute byte offsets for patching.
+    pub fn code_buffer_ptr(&self) -> *const u8 {
+        self.code_buffer as *const u8
     }
 }
 

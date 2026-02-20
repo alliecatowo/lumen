@@ -53,7 +53,10 @@ pub unsafe extern "C" fn lm_rt_return(ctx: *mut VmContext, reg_idx: u32) {
 #[no_mangle]
 pub unsafe extern "C" fn lm_rt_halt(ctx: *mut VmContext, reg_idx: u32) {
     let vm = vm_from_ctx(ctx);
-    let err = vm.reg(vm.current_base() + reg_idx as usize);
+    // Use stencil_base (set by StencilTier::execute) rather than current_base()
+    // (which is the interpreter's caller frame, not the stencil frame).
+    let base = vm.stencil_base;
+    let err = vm.reg(base + reg_idx as usize);
     vm.halt_from_stencil(err);
 }
 
@@ -61,7 +64,8 @@ pub unsafe extern "C" fn lm_rt_halt(ctx: *mut VmContext, reg_idx: u32) {
 pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: u64) {
     let vm = vm_from_ctx(ctx);
     let instr: Instruction = unsafe { std::mem::transmute(instr_word) };
-    let base = vm.current_base();
+    // Use stencil_base (set before call_stitched) not current_base() (caller frame).
+    let base = vm.stencil_base;
     let a = instr.a as usize;
     let b = instr.b as usize;
     let c = instr.c as usize;

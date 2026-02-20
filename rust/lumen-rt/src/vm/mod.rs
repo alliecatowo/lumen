@@ -19,7 +19,7 @@ use crate::jit_tier::{JitTier, JitTierConfig};
 use crate::stencil_tier::{StencilTier, StencilTierConfig};
 use crate::vm::ops::BinaryOp;
 use lumen_core::lir::*;
-use lumen_core::nb_value::NbValue;
+use lumen_core::nb_value::{NbValue, RegisterFile};
 use lumen_core::strings::StringTable;
 use lumen_core::types::{RuntimeField, RuntimeType, RuntimeTypeKind, RuntimeVariant, TypeTable};
 use lumen_core::values::{
@@ -320,7 +320,7 @@ pub(crate) struct EffectScope {
 /// cloning of heap-pointed values to avoid aliased raw pointers.
 pub(crate) struct SuspendedContinuation {
     pub frames: Vec<CallFrame>,
-    pub registers: Vec<NbValue>,
+    pub registers: RegisterFile,
     #[allow(dead_code)]
     pub resume_ip: usize,
     #[allow(dead_code)]
@@ -328,39 +328,8 @@ pub(crate) struct SuspendedContinuation {
     pub result_reg: usize,
 }
 
-impl Drop for SuspendedContinuation {
-    fn drop(&mut self) {
-        for reg in &self.registers {
-            reg.drop_heap();
-        }
-    }
-}
-
-impl Clone for SuspendedContinuation {
-    fn clone(&self) -> Self {
-        // Deep-clone NbValues: for heap pointers, clone the underlying LegacyValue
-        let registers = self
-            .registers
-            .iter()
-            .map(|v| {
-                if v.is_nan_boxed() && v.tag() == NbValue::TAG_PTR && v.payload() != 0 {
-                    // Clone the heap value to avoid aliased raw pointers
-                    let legacy = v.peek_legacy();
-                    NbValue::from_legacy(legacy)
-                } else {
-                    *v // Scalar copy
-                }
-            })
-            .collect();
-        SuspendedContinuation {
-            frames: self.frames.clone(),
-            registers,
-            resume_ip: self.resume_ip,
-            resume_frame_count: self.resume_frame_count,
-            result_reg: self.result_reg,
-        }
-    }
-}
+// RegisterFile handles Clone (inc_ref on heap NbValues) and Drop (drop_heap)
+// correctly, so SuspendedContinuation no longer needs manual impls.
 
 impl std::fmt::Debug for SuspendedContinuation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -422,7 +391,7 @@ impl Drop for OwnedVmCtx {
 pub struct VM {
     pub strings: StringTable,
     pub types: TypeTable,
-    pub(crate) registers: Vec<NbValue>,
+    pub(crate) registers: RegisterFile,
     pub(crate) frames: Vec<CallFrame>,
     pub(crate) module: Option<LirModule>,
     /// Captured stdout output (for testing and tracing)
@@ -547,7 +516,7 @@ impl VM {
         Self {
             strings,
             types: TypeTable::new(),
-            registers: Vec::with_capacity(4096),
+            registers: RegisterFile::with_capacity(4096),
             frames: Vec::new(),
             module: None,
             output: Vec::new(),
@@ -1657,8 +1626,26 @@ impl VM {
         if (NbValue::MIN_INT48..=NbValue::MAX_INT48).contains(&value) {
             self.set_reg_nb(idx, NbValue::new_int(value));
         } else {
-            // Preserve semantics for large i64 values that do not fit inline.
-            self.set_reg_nb(idx, NbValue::from_legacy(Value::Int(value)));
+            // Large i64 that doesn't fit inline.
+            // Fast path: if the register already holds a heap-boxed Int, mutate
+            // it in place to avoid an alloc+dealloc cycle per arithmetic op.
+            // Safety: the register is the sole owner of the outer Arc (refcount 1).
+            let reused = unsafe {
+                let nb = &mut self.registers[idx];
+                if let Some(heap_val) = nb.as_heap_mut() {
+                    if let Value::Int(ref mut n) = heap_val {
+                        *n = value;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            };
+            if !reused {
+                self.set_reg_nb(idx, NbValue::from_legacy(Value::Int(value)));
+            }
         }
     }
 
@@ -3964,12 +3951,31 @@ impl VM {
 
                 // List ops
                 OpCode::Append => {
-                    let val = self.reg(base + b);
-                    let mut target = self.reg_take(base + a);
-                    if let Value::List(ref mut l) = target {
-                        Arc::make_mut(l).push(val);
+                    // Fast path: mutate the list in-place through the NbValue pointer.
+                    // This avoids the outer Arc<Value> alloc/dealloc cycle that
+                    // reg_take + set_reg would perform on every iteration.
+                    // Safety: the register is the sole owner of the outer Arc
+                    // (refcount == 1) because NbValue copies only happen via
+                    // explicit inc_ref() calls, never by raw u64 duplication.
+                    let is_heap_list = self.registers[base + a].as_heap_ref()
+                        .map_or(false, |v| matches!(v, Value::List(_)));
+                    if is_heap_list {
+                        let val = self.reg(base + b);
+                        unsafe {
+                            let nb = &mut self.registers[base + a];
+                            if let Some(Value::List(ref mut l)) = nb.as_heap_mut() {
+                                Arc::make_mut(l).push(val);
+                            }
+                        }
+                    } else {
+                        // Slow fallback for non-heap or non-list values
+                        let val = self.reg(base + b);
+                        let mut target = self.reg_take(base + a);
+                        if let Value::List(ref mut l) = target {
+                            Arc::make_mut(l).push(val);
+                        }
+                        self.set_reg(base + a, target);
                     }
-                    self.set_reg(base + a, target);
                 }
 
                 // Type checks
@@ -4090,17 +4096,10 @@ impl VM {
                             f.ip = ip;
                         }
                         // Save continuation: snapshot current execution state.
-                        // We must inc_ref all heap-allocated NbValues in the snapshot
-                        // because Vec::clone() only copies raw u64 bits without
-                        // touching Arc refcounts. The snapshot's Drop impl calls
-                        // drop_heap() on each register, so we need balanced refcounts.
-                        let snapshot_regs = self.registers.clone();
-                        for nb in &snapshot_regs {
-                            nb.inc_ref();
-                        }
+                        // RegisterFile::clone() correctly inc_refs all heap NbValues.
                         let cont = SuspendedContinuation {
                             frames: self.frames.clone(),
-                            registers: snapshot_regs,
+                            registers: self.registers.clone(),
                             resume_ip: ip,
                             resume_frame_count: self.frames.len(),
                             result_reg: base + a,
@@ -4131,20 +4130,12 @@ impl VM {
                         // The resume value is in register B (val_reg), not A (dest).
                         let resume_value = self.reg(base + b);
                         let result_reg = cont.result_reg;
-                        // Restore the suspended state — use mem::replace to move
-                        // fields out of `cont` without triggering its Drop impl.
-                        let saved_frames = std::mem::replace(&mut cont.frames, Vec::new());
-                        let saved_registers = std::mem::replace(&mut cont.registers, Vec::new());
-                        // Drop cont now with empty vecs so its Drop is a no-op
+                        // Swap registers: old live registers go into cont (dropped
+                        // with proper refcount cleanup by RegisterFile::Drop),
+                        // saved snapshot becomes the new live registers.
+                        std::mem::swap(&mut self.registers, &mut cont.registers);
+                        self.frames = std::mem::take(&mut cont.frames);
                         drop(cont);
-                        // Drop heap allocations in old live registers before replacing.
-                        // Without this, Arc refcounts for the old registers' heap values
-                        // would leak (never decremented).
-                        for r in &self.registers {
-                            r.drop_heap();
-                        }
-                        self.frames = saved_frames;
-                        self.registers = saved_registers;
                         // Put the resume value into the result register
                         self.set_reg(result_reg, resume_value);
                         // Reload frame state after restoration

@@ -578,6 +578,33 @@ impl NbValue {
         }
     }
 
+    /// Get a mutable reference to the heap-allocated Value.
+    /// Returns None for inline types (int, bool, null, float) and special pointer values.
+    ///
+    /// # Safety
+    /// The caller MUST guarantee that this NbValue is the sole owner of the
+    /// underlying `Arc<Value>` (i.e., Arc strong count == 1). This is true when
+    /// the NbValue is held in a single register with no other copies.
+    /// Calling this when the Arc is shared causes undefined behavior.
+    ///
+    /// The returned reference is valid as long as this NbValue (or its register) is alive.
+    /// Do not call drop_heap() or overwrite the register while holding this reference.
+    #[inline(always)]
+    pub unsafe fn as_heap_mut(&mut self) -> Option<&mut Value> {
+        if !self.is_nan_boxed() {
+            return None; // Raw float
+        }
+        if self.tag() != Self::TAG_PTR {
+            return None; // Int, Bool, Null, Atom, Fiber
+        }
+        let payload = self.payload();
+        if payload <= 1 {
+            return None; // Null pointer or NaN sentinel
+        }
+        let ptr = payload as *mut Value;
+        Some(&mut *ptr)
+    }
+
     /// Returns `true` if this value is truthy.
     ///
     /// Truthiness rules:
@@ -705,6 +732,202 @@ impl std::fmt::Display for NbValue {
             },
             _ => write!(f, "<unknown:{:016x}>", self.0),
         }
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// REGISTER FILE — refcount-safe Vec<NbValue> wrapper
+// ═════════════════════════════════════════════════════════════════════════════
+
+/// A refcount-safe wrapper around `Vec<NbValue>`.
+///
+/// Raw `Vec<NbValue>` is unsound for heap-allocated NbValues because:
+/// - `Vec::clone()` copies raw u64 bits without incrementing Arc refcounts
+/// - `Vec::drop()` deallocates the buffer without decrementing Arc refcounts
+/// - Assignment (`vec = other_vec`) drops the old Vec without cleanup
+///
+/// `RegisterFile` fixes all three by implementing custom `Clone` and `Drop`
+/// that properly manage Arc refcounts for heap-allocated NbValues (TAG_PTR
+/// with payload > 1).
+///
+/// It implements `Deref<Target=[NbValue]>` and `DerefMut` so all existing
+/// `self.registers[idx]`, `.len()`, `.iter()`, slice operations, etc. work
+/// transparently without changing call sites.
+pub struct RegisterFile {
+    inner: Vec<NbValue>,
+}
+
+impl RegisterFile {
+    /// Create an empty register file.
+    #[inline]
+    pub fn new() -> Self {
+        RegisterFile { inner: Vec::new() }
+    }
+
+    /// Create an empty register file with pre-allocated capacity.
+    #[inline]
+    pub fn with_capacity(cap: usize) -> Self {
+        RegisterFile {
+            inner: Vec::with_capacity(cap),
+        }
+    }
+
+    /// Resize the register file, initializing new slots with the given value.
+    /// Properly drops heap allocations in truncated slots.
+    #[inline]
+    pub fn resize(&mut self, new_len: usize, value: NbValue) {
+        if new_len < self.inner.len() {
+            // Shrinking: drop heap allocations in removed slots
+            for r in &self.inner[new_len..] {
+                r.drop_heap();
+            }
+        }
+        self.inner.resize(new_len, value);
+    }
+
+    /// Reserve additional capacity without changing length.
+    #[inline]
+    pub fn reserve(&mut self, additional: usize) {
+        self.inner.reserve(additional);
+    }
+
+    /// Return the capacity of the underlying Vec.
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.inner.capacity()
+    }
+
+    /// Return a raw mutable pointer to the underlying buffer.
+    /// # Safety
+    /// Caller must not violate refcount invariants.
+    #[inline]
+    pub unsafe fn as_mut_ptr(&mut self) -> *mut NbValue {
+        self.inner.as_mut_ptr()
+    }
+
+    /// Replace the register file contents, properly dropping old heap allocations
+    /// and incrementing refcounts for the new values.
+    ///
+    /// This is the safe equivalent of `self.registers = other_vec` that was
+    /// previously causing refcount leaks.
+    pub fn replace_from_vec(&mut self, new_regs: Vec<NbValue>) {
+        // Drop old heap allocations
+        for r in &self.inner {
+            r.drop_heap();
+        }
+        // Inc ref on new values
+        for r in &new_regs {
+            r.inc_ref();
+        }
+        self.inner = new_regs;
+    }
+
+    /// Take the register file contents, leaving an empty file.
+    /// The returned Vec owns the heap allocations (no refcount changes).
+    /// The caller is responsible for eventually calling drop_heap on each element
+    /// or passing it to `replace_from_raw_vec`.
+    pub fn take_raw(&mut self) -> Vec<NbValue> {
+        std::mem::take(&mut self.inner)
+    }
+
+    /// Replace registers from a raw Vec without touching refcounts.
+    /// The caller guarantees that the Vec's NbValues already have correct refcounts.
+    /// This is used for paired take_raw/replace_from_raw_vec save/restore patterns.
+    pub fn replace_from_raw_vec(&mut self, raw: Vec<NbValue>) {
+        // Drop old heap allocations
+        for r in &self.inner {
+            r.drop_heap();
+        }
+        self.inner = raw;
+    }
+}
+
+impl Default for RegisterFile {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clone for RegisterFile {
+    fn clone(&self) -> Self {
+        // Clone: inc_ref on every heap-allocated NbValue so the clone
+        // has its own ownership stake in each Arc.
+        for nb in &self.inner {
+            nb.inc_ref();
+        }
+        RegisterFile {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl Drop for RegisterFile {
+    fn drop(&mut self) {
+        for nb in &self.inner {
+            nb.drop_heap();
+        }
+    }
+}
+
+impl std::ops::Deref for RegisterFile {
+    type Target = [NbValue];
+    #[inline(always)]
+    fn deref(&self) -> &[NbValue] {
+        &self.inner
+    }
+}
+
+impl std::ops::DerefMut for RegisterFile {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut [NbValue] {
+        &mut self.inner
+    }
+}
+
+impl std::ops::Index<usize> for RegisterFile {
+    type Output = NbValue;
+    #[inline(always)]
+    fn index(&self, idx: usize) -> &NbValue {
+        &self.inner[idx]
+    }
+}
+
+impl std::ops::IndexMut<usize> for RegisterFile {
+    #[inline(always)]
+    fn index_mut(&mut self, idx: usize) -> &mut NbValue {
+        &mut self.inner[idx]
+    }
+}
+
+impl std::ops::Index<std::ops::Range<usize>> for RegisterFile {
+    type Output = [NbValue];
+    #[inline(always)]
+    fn index(&self, range: std::ops::Range<usize>) -> &[NbValue] {
+        &self.inner[range]
+    }
+}
+
+impl std::ops::IndexMut<std::ops::Range<usize>> for RegisterFile {
+    #[inline(always)]
+    fn index_mut(&mut self, range: std::ops::Range<usize>) -> &mut [NbValue] {
+        &mut self.inner[range]
+    }
+}
+
+impl std::ops::Index<std::ops::RangeFrom<usize>> for RegisterFile {
+    type Output = [NbValue];
+    #[inline(always)]
+    fn index(&self, range: std::ops::RangeFrom<usize>) -> &[NbValue] {
+        &self.inner[range]
+    }
+}
+
+impl std::fmt::Debug for RegisterFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegisterFile")
+            .field("len", &self.inner.len())
+            .field("capacity", &self.inner.capacity())
+            .finish()
     }
 }
 

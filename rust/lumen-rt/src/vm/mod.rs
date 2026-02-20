@@ -2282,6 +2282,16 @@ impl VM {
                                         &i64_args,
                                         &self.vm_ctx.inner,
                                     ) {
+                                        // Drop the extra refs we added before JIT call
+                                        for i in 0..nargs {
+                                            let nb = self.reg_nb(base + a + 1 + i);
+                                            if nb.is_heap_allocated() {
+                                                unsafe {
+                                                    let ptr = nb.payload() as *const Value;
+                                                    std::sync::Arc::decrement_strong_count(ptr);
+                                                }
+                                            }
+                                        }
                                         // Result is already a NaN-boxed u64 — store directly.
                                         let nb = NbValue(result as u64);
                                         self.set_reg_nb(callee_reg, nb);
@@ -2551,6 +2561,16 @@ impl VM {
                                         &i64_args,
                                         &self.vm_ctx.inner,
                                     ) {
+                                        // Drop the extra refs we added before JIT call
+                                        for i in 0..nargs {
+                                            let nb = self.reg_nb(base + a + 1 + i);
+                                            if nb.is_heap_allocated() {
+                                                unsafe {
+                                                    let ptr = nb.payload() as *const Value;
+                                                    std::sync::Arc::decrement_strong_count(ptr);
+                                                }
+                                            }
+                                        }
                                         // Result is already a NaN-boxed u64.
                                         let result_nb = NbValue(result as u64);
                                         let result_value = result_nb.peek_legacy();

@@ -728,6 +728,27 @@ impl VM {
         old.to_legacy() // Destructive is OK here since we took ownership
     }
 
+    /// Copy a register from src to dst without deep-cloning.
+    /// For heap-allocated values, this bumps the Arc reference count instead of
+    /// cloning the inner Value. For inline types, this is a simple u64 copy.
+    /// Drops any heap allocation in the previous dst value.
+    #[inline(always)]
+    pub(crate) fn reg_copy(&mut self, dst: usize, src: usize) {
+        let nb = self.registers[src];
+        nb.inc_ref();
+        let old = self.registers[dst];
+        old.drop_heap();
+        self.registers[dst] = nb;
+    }
+
+    /// Get a reference to a heap-allocated register value without cloning.
+    /// Returns None for inline types (int, bool, null, float).
+    /// Use this for type-checking and read-only access to avoid peek_legacy overhead.
+    #[inline(always)]
+    pub(crate) fn reg_heap_ref(&self, idx: usize) -> Option<&Value> {
+        self.registers[idx].as_heap_ref()
+    }
+
     // ── Stencil runtime helpers ──────────────────────────────────────
 
     pub(crate) fn current_base(&self) -> usize {
@@ -806,18 +827,18 @@ impl VM {
         let caller_stencil_base = self.stencil_base;
 
         // Resolve callee cell index from the value in register a.
-        let callee_name_val = self.reg(caller_stencil_base + a);
+        // Zero-copy: access register directly to avoid deep-cloning the string.
         let target_idx = {
             let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-            let name = match &callee_name_val {
-                Value::String(sr) => match sr {
+            let name = match self.registers[caller_stencil_base + a].as_heap_ref() {
+                Some(Value::String(sr)) => match sr {
                     StringRef::Owned(s) => s.clone(),
                     StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or("").to_owned(),
                 },
-                _ => {
+                other => {
                     return Err(VmError::UndefinedCell(format!(
                         "stencil call: callee register does not contain a string: {:?}",
-                        callee_name_val
+                        other
                     )))
                 }
             };
@@ -1424,9 +1445,10 @@ impl VM {
             for i in 0..fixed_count.min(nargs) {
                 let dst = params[param_offset + i].register as usize;
                 self.check_register(dst, cell_registers)?;
-                self.set_reg(new_base + dst, self.reg(arg_base + i));
+                self.reg_copy(new_base + dst, arg_base + i);
             }
             // Pack remaining args into a list for the variadic param
+            // (need owned Values for the list, so self.reg() is correct here)
             let variadic_args: Vec<Value> = (fixed_count..nargs)
                 .map(|i| self.reg(arg_base + i))
                 .collect();
@@ -1434,12 +1456,12 @@ impl VM {
             self.check_register(dst, cell_registers)?;
             self.set_reg(new_base + dst, Value::new_list(variadic_args));
         } else {
-            // No variadic param — copy args 1:1 as before
+            // No variadic param — zero-clone copy args 1:1
             for i in 0..nargs {
                 if param_offset + i < params.len() {
                     let dst = params[param_offset + i].register as usize;
                     self.check_register(dst, cell_registers)?;
-                    self.set_reg(new_base + dst, self.reg(arg_base + i));
+                    self.reg_copy(new_base + dst, arg_base + i);
                 }
             }
         }
@@ -2172,9 +2194,12 @@ impl VM {
                         // This avoids heap-allocating a String clone on every call.
                         let callee_reg = base + a;
                         let nargs = b;
-                        let fast_cell_idx = match self.reg(callee_reg) {
-                            Value::String(sr) => {
-                                let name_str = match &sr {
+                        // Zero-copy callee name resolution: access the register's
+                        // heap value directly (borrows only self.registers) so
+                        // self.strings and self.cell_index_cache remain accessible.
+                        let fast_cell_idx = match self.registers[callee_reg].as_heap_ref() {
+                            Some(Value::String(sr)) => {
+                                let name_str = match sr {
                                     StringRef::Owned(s) => s.as_str(),
                                     StringRef::Interned(id) => {
                                         self.strings.resolve(*id).unwrap_or("")
@@ -2485,10 +2510,10 @@ impl VM {
 
                         // ─── CRANELIFT TIER (TailCall) ───────────────────
                         if !jit_handled && self.jit_tier.is_enabled() {
-                            // Resolve cell index from callee register
-                            let fast_cell_idx = match self.reg(callee_reg) {
-                                Value::String(sr) => {
-                                    let name_str = match &sr {
+                            // Zero-copy callee name resolution via direct register access.
+                            let fast_cell_idx = match self.registers[callee_reg].as_heap_ref() {
+                                Some(Value::String(sr)) => {
+                                    let name_str = match sr {
                                         StringRef::Owned(s) => s.as_str(),
                                         StringRef::Interned(id) => {
                                             self.strings.resolve(*id).unwrap_or("")
@@ -2698,14 +2723,9 @@ impl VM {
                     self.set_reg_nb(base + a, NbValue::new_int(sb as i64));
                 }
                 OpCode::Move => {
-                    // Clone the source register. With Rc-wrapped collections this
-                    // is just a refcount increment (negligible cost). For scalars
-                    // (Int, Float, Bool) it is a tiny copy. The previous
-                    // `std::mem::replace` approach destructively nulled the source
-                    // register, causing use-after-move bugs whenever the compiler
-                    // emitted code that referenced the source register again.
-                    let val = self.reg(base + b);
-                    self.set_reg(base + a, val);
+                    // Zero-clone register copy: for heap types bumps Arc refcount,
+                    // for inline types (int/float/bool) copies the u64 NbValue.
+                    self.reg_copy(base + a, base + b);
                 }
                 OpCode::MoveOwn => {
                     // Destructive move: source register becomes Null.
@@ -3954,7 +3974,6 @@ impl VM {
 
                 // Type checks
                 OpCode::IsVariant => {
-                    let val = self.reg(base + a);
                     let tag_idx = instr.bx() as usize;
                     // The bx field is an index into module.strings. We need to
                     // resolve it to an interned string ID to compare against the
@@ -3964,8 +3983,9 @@ impl VM {
                     } else {
                         u32::MAX // will never match
                     };
-                    let matched = match &val {
-                        Value::Union(u) => u.tag == tag_id,
+                    // Zero-copy: read union tag via reference, no deep clone.
+                    let matched = match self.reg_heap_ref(base + a) {
+                        Some(Value::Union(u)) => u.tag == tag_id,
                         _ => false,
                     };
                     if matched {
@@ -3973,15 +3993,16 @@ impl VM {
                     }
                 }
                 OpCode::Unbox => {
-                    // Clone the union payload instead of destructively taking
-                    // from the source register, which could null out a variable
-                    // that is still needed later (e.g. in multi-branch match).
-                    let val = self.reg(base + b);
-                    if let Value::Union(u) = &val {
-                        self.set_reg(base + a, (*u.payload).clone());
+                    // Extract union payload via zero-copy reference.
+                    // Clone only the payload, not the entire union.
+                    // IMPORTANT: Must clone into a local before calling set_reg,
+                    // since reg_heap_ref borrows self immutably.
+                    let payload = if let Some(Value::Union(u)) = self.reg_heap_ref(base + b) {
+                        (*u.payload).clone()
                     } else {
-                        self.set_reg(base + a, Value::Null);
-                    }
+                        Value::Null
+                    };
+                    self.set_reg(base + a, payload);
                 }
 
                 // Algebraic effects
@@ -4068,10 +4089,18 @@ impl VM {
                         if let Some(f) = self.frames.last_mut() {
                             f.ip = ip;
                         }
-                        // Save continuation: snapshot current execution state
+                        // Save continuation: snapshot current execution state.
+                        // We must inc_ref all heap-allocated NbValues in the snapshot
+                        // because Vec::clone() only copies raw u64 bits without
+                        // touching Arc refcounts. The snapshot's Drop impl calls
+                        // drop_heap() on each register, so we need balanced refcounts.
+                        let snapshot_regs = self.registers.clone();
+                        for nb in &snapshot_regs {
+                            nb.inc_ref();
+                        }
                         let cont = SuspendedContinuation {
                             frames: self.frames.clone(),
-                            registers: self.registers.clone(),
+                            registers: snapshot_regs,
                             resume_ip: ip,
                             resume_frame_count: self.frames.len(),
                             result_reg: base + a,
@@ -4108,6 +4137,12 @@ impl VM {
                         let saved_registers = std::mem::replace(&mut cont.registers, Vec::new());
                         // Drop cont now with empty vecs so its Drop is a no-op
                         drop(cont);
+                        // Drop heap allocations in old live registers before replacing.
+                        // Without this, Arc refcounts for the old registers' heap values
+                        // would leak (never decremented).
+                        for r in &self.registers {
+                            r.drop_heap();
+                        }
                         self.frames = saved_frames;
                         self.registers = saved_registers;
                         // Put the resume value into the result register
@@ -4158,22 +4193,27 @@ impl VM {
 
     /// Dispatch a CALL instruction, handling cells, closures, and built-in functions.
     fn dispatch_call(&mut self, base: usize, a: usize, nargs: usize) -> Result<(), VmError> {
-        let callee = self.reg(base + a);
-        match callee {
-            Value::String(ref sr) => {
-                let name = match sr {
-                    StringRef::Owned(s) => s.clone(),
-                    StringRef::Interned(id) => self
-                        .strings
-                        .resolve(*id)
-                        .ok_or_else(|| {
-                            VmError::Runtime(format!(
-                                "unknown interned string id {} for call target",
-                                id
-                            ))
-                        })?
-                        .to_string(),
-                };
+        // Zero-copy fast path: resolve string callee name without deep-cloning
+        // the entire Value. Only falls through to self.reg() for Closure/other.
+        let string_name: Option<Result<String, VmError>> = match self.registers[base + a].as_heap_ref() {
+            Some(Value::String(sr)) => Some(match sr {
+                StringRef::Owned(s) => Ok(s.clone()),
+                StringRef::Interned(id) => self
+                    .strings
+                    .resolve(*id)
+                    .ok_or_else(|| {
+                        VmError::Runtime(format!(
+                            "unknown interned string id {} for call target",
+                            id
+                        ))
+                    })
+                    .map(|s| s.to_string()),
+            }),
+            _ => None,
+        };
+        if let Some(name_result) = string_name {
+            let name = name_result?;
+            {
                 let module = self.module.as_ref().ok_or(VmError::NoModule)?;
                 let idx_opt = if let Some(&cached) = self.cell_index_cache.get(&name) {
                     Some(cached)
@@ -4213,6 +4253,11 @@ impl VM {
                     self.set_reg(base + a, result);
                 }
             }
+            return Ok(());
+        }
+        // Slow path: deep-clone for Closure and other callee types.
+        let callee = self.reg(base + a);
+        match callee {
             Value::Closure(ref cv) => {
                 if self.frames.len() >= MAX_CALL_DEPTH {
                     return Err(VmError::StackOverflow(MAX_CALL_DEPTH));
@@ -4282,47 +4327,54 @@ impl VM {
 
     /// Dispatch a TAILCALL instruction: reuse current frame.
     fn dispatch_tailcall(&mut self, base: usize, a: usize, nargs: usize) -> Result<(), VmError> {
+        // Zero-copy fast path for string callee names.
+        let string_name: Option<Result<String, VmError>> = match self.registers[base + a].as_heap_ref() {
+            Some(Value::String(sr)) => Some(match sr {
+                StringRef::Owned(s) => Ok(s.clone()),
+                StringRef::Interned(id) => self
+                    .strings
+                    .resolve(*id)
+                    .ok_or_else(|| {
+                        VmError::Runtime(format!(
+                            "unknown interned string id {} for tailcall target",
+                            id
+                        ))
+                    })
+                    .map(|s| s.to_string()),
+            }),
+            _ => None,
+        };
+        if let Some(name_result) = string_name {
+            let name = name_result?;
+            let module = self.module.as_ref().ok_or(VmError::NoModule)?;
+            let idx_opt = if let Some(&cached) = self.cell_index_cache.get(&name) {
+                Some(cached)
+            } else if let Some(idx) = module.cells.iter().position(|c| c.name == name) {
+                self.cell_index_cache.insert(name.clone(), idx);
+                Some(idx)
+            } else {
+                None
+            };
+            if let Some(idx) = idx_opt {
+                let callee_cell = &module.cells[idx];
+                let params: Vec<LirParam> = callee_cell.params.clone();
+                let cell_regs = callee_cell.registers;
+                let _ = module;
+                self.copy_args_to_params(&params, base, base + a + 1, nargs, 0, cell_regs)?;
+                if let Some(f) = self.frames.last_mut() {
+                    f.cell_idx = idx;
+                    f.ip = 0;
+                }
+            } else {
+                let _ = module;
+                let result = self.call_builtin(&name, base, a, nargs)?;
+                self.set_reg(base + a, result);
+            }
+            return Ok(());
+        }
+        // Slow path: deep-clone for Closure and other callee types.
         let callee = self.reg(base + a);
         match callee {
-            Value::String(ref sr) => {
-                let name = match sr {
-                    StringRef::Owned(s) => s.clone(),
-                    StringRef::Interned(id) => self
-                        .strings
-                        .resolve(*id)
-                        .ok_or_else(|| {
-                            VmError::Runtime(format!(
-                                "unknown interned string id {} for tailcall target",
-                                id
-                            ))
-                        })?
-                        .to_string(),
-                };
-                let module = self.module.as_ref().ok_or(VmError::NoModule)?;
-                let idx_opt = if let Some(&cached) = self.cell_index_cache.get(&name) {
-                    Some(cached)
-                } else if let Some(idx) = module.cells.iter().position(|c| c.name == name) {
-                    self.cell_index_cache.insert(name.clone(), idx);
-                    Some(idx)
-                } else {
-                    None
-                };
-                if let Some(idx) = idx_opt {
-                    let callee_cell = &module.cells[idx];
-                    let params: Vec<LirParam> = callee_cell.params.clone();
-                    let cell_regs = callee_cell.registers;
-                    let _ = module;
-                    self.copy_args_to_params(&params, base, base + a + 1, nargs, 0, cell_regs)?;
-                    if let Some(f) = self.frames.last_mut() {
-                        f.cell_idx = idx;
-                        f.ip = 0;
-                    }
-                } else {
-                    let _ = module;
-                    let result = self.call_builtin(&name, base, a, nargs)?;
-                    self.set_reg(base + a, result);
-                }
-            }
             Value::Closure(ref cv) => {
                 let cv = cv.clone();
                 let module = self.module.as_ref().ok_or(VmError::NoModule)?;

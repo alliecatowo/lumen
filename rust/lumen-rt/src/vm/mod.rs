@@ -6,7 +6,7 @@ pub mod fiber_effects;
 mod helpers;
 mod intrinsics;
 mod ops;
-mod osr;
+pub(crate) mod osr;
 pub(crate) mod processes;
 
 use helpers::*;
@@ -16,6 +16,7 @@ pub(crate) use processes::{
 };
 
 use crate::jit_tier::{JitTier, JitTierConfig};
+use crate::stencil_tier::{StencilTier, StencilTierConfig};
 use crate::vm::ops::BinaryOp;
 use lumen_core::lir::*;
 use lumen_core::nb_value::NbValue;
@@ -472,8 +473,11 @@ pub struct VM {
     /// Logical top of the register file. Registers beyond this index are unused.
     /// We pre-allocate a large Vec and use this watermark to avoid resize/truncate costs.
     pub(crate) register_top: usize,
-    /// Tiered JIT compilation engine. Tracks call counts and compiles hot cells
-    /// to native code via Cranelift.
+    /// Tier 1 stencil (copy-and-patch) compilation engine. Fires on first call
+    /// (threshold=0), compiles supported cells to stitched native code.
+    pub stencil_tier: StencilTier,
+    /// Tier 2 Cranelift JIT compilation engine. Tracks call counts and compiles hot cells
+    /// to optimised native code via Cranelift.
     pub jit_tier: JitTier,
     /// OSR runtime state for mid-execution tier transitions.
     pub(crate) osr_runtime: OsrRuntime,
@@ -568,6 +572,7 @@ impl VM {
             effect_budgets: HashMap::new(),
             cell_index_cache: HashMap::new(),
             register_top: 0,
+            stencil_tier: StencilTier::disabled(),
             jit_tier: JitTier::disabled(),
             osr_runtime: OsrRuntime::new(0),
             tag_ok,
@@ -600,6 +605,21 @@ impl VM {
     }
 
     /// Get tiered JIT statistics.
+    /// Enable the Tier 1 stencil (copy-and-patch) execution engine.
+    pub fn enable_stencil_tier(&mut self) {
+        self.stencil_tier = StencilTier::new(StencilTierConfig::default());
+    }
+
+    /// Enable Tier 1 stencil execution with custom configuration.
+    pub fn enable_stencil_with_config(&mut self, config: StencilTierConfig) {
+        self.stencil_tier = StencilTier::new(config);
+    }
+
+    /// Get Tier 1 stencil execution statistics.
+    pub fn stencil_stats(&self) -> crate::stencil_tier::StencilTierStats {
+        self.stencil_tier.stats()
+    }
+
     pub fn jit_stats(&self) -> crate::jit_tier::JitTierStats {
         self.jit_tier.tier_stats()
     }
@@ -700,6 +720,33 @@ impl VM {
         self.registers[idx] = NbValue::new_null();
         old.to_legacy() // Destructive is OK here since we took ownership
     }
+
+    // ── Stencil runtime stubs ────────────────────────────────────────
+
+    pub(crate) fn current_base(&self) -> usize {
+        self.frames.last().map(|f| f.base_register).unwrap_or(0)
+    }
+
+    #[allow(unused_variables)]
+    pub(crate) fn dispatch_call_from_stencil(&mut self, a: usize, b: usize) -> Result<(), VmError> {
+        Err(VmError::Runtime("stencil call dispatch not yet implemented".into()))
+    }
+
+    #[allow(unused_variables)]
+    pub(crate) fn dispatch_tailcall_from_stencil(&mut self, a: usize, b: usize) -> Result<(), VmError> {
+        Err(VmError::Runtime("stencil tailcall dispatch not yet implemented".into()))
+    }
+
+    #[allow(unused_variables)]
+    pub(crate) fn exec_intrinsic_from_stencil(&mut self, a: usize, b: usize, c: usize) -> Result<(), VmError> {
+        Err(VmError::Runtime("stencil intrinsic dispatch not yet implemented".into()))
+    }
+
+    #[allow(unused_variables)]
+    pub(crate) fn return_from_stencil(&mut self, reg_idx: usize) {}
+
+    #[allow(unused_variables)]
+    pub(crate) fn halt_from_stencil(&mut self, err: Value) {}
 
     pub(crate) fn validate_schema(&self, val: &NbValue, schema_name: &str) -> bool {
         let legacy = val.peek_legacy();
@@ -967,6 +1014,7 @@ impl VM {
         // Initialise the JIT tier to track the correct number of cells.
         let num_cells = module.cells.len();
         self.module = Some(module);
+        self.stencil_tier.init_for_module(num_cells);
         self.jit_tier.init_for_module(num_cells);
         // Initialize OSR runtime with the correct number of cells
         self.osr_runtime = OsrRuntime::new(num_cells);
@@ -1800,9 +1848,35 @@ impl VM {
                         };
 
                         if let Some(target_idx) = fast_cell_idx {
-                            // ─── JIT TIER: check if cell is compiled ─────────
-                            // If the cell is already JIT-compiled, execute it as
-                            // a native function pointer and skip the interpreter.
+                            // ─── STENCIL TIER (Call): try stencil first ──────
+                            #[cfg(feature = "jit")]
+                            {
+                                let stencil_compiled = self.stencil_tier.is_compiled(target_idx);
+                                let stencil_try = stencil_compiled || self.stencil_tier.record_call(target_idx);
+                                if stencil_try {
+                                    if !stencil_compiled {
+                                        self.stencil_tier.try_compile(target_idx, module);
+                                    }
+                                    if self.stencil_tier.is_compiled(target_idx) {
+                                        let callee_base = base + a + 1;
+                                        let target_cell = &module.cells[target_idx];
+                                        let needed = callee_base + (target_cell.registers as usize).max(nargs + 4);
+                                        if needed > self.registers.len() {
+                                            self.registers.resize(needed, NbValue::new_null());
+                                        }
+                                        let mut stencil = std::mem::replace(&mut self.stencil_tier, StencilTier::disabled());
+                                        let stencil_result = stencil.execute(self, target_idx, callee_base);
+                                        self.stencil_tier = stencil;
+                                        if let Ok(()) = stencil_result {
+                                            let ret_nb = self.registers.get(callee_base).copied().unwrap_or(NbValue::new_null());
+                                            self.registers[base + a] = ret_nb;
+                                            ip += 1;
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
+                            // ─── CRANELIFT JIT TIER (Call) ───────────────────
                             if self.jit_tier.is_enabled() {
                                 // Check if already compiled
                                 let run_jit = if self.jit_tier.is_compiled(target_idx) {
@@ -1907,6 +1981,7 @@ impl VM {
                                                             *boxed
                                                         }
                                                     }
+                                                    JitVarType::RawInt => Value::Int(result),
                                                 };
                                                 self.set_reg(callee_reg, converted_val);
                                             }
@@ -2005,15 +2080,96 @@ impl VM {
                         continue;
                     }
                     OpCode::TailCall => {
-                        // ─── JIT TIER: TailCall fast path ────────────────
-                        // Same JIT dispatch as Call, but on success we
-                        // simulate Return (pop frame, write to caller)
-                        // instead of continuing in the current frame.
+                        // ─── TIERED JIT: TailCall fast path ──────────────
                         let callee_reg = base + a;
                         let nargs = b;
                         let mut jit_handled = false;
 
-                        if self.jit_tier.is_enabled() {
+                        // ─── STENCIL TIER (TailCall) ─────────────────────
+                        #[cfg(feature = "jit")]
+                        if !jit_handled {
+                            let tc_target = match self.reg(callee_reg) {
+                                Value::String(sr) => {
+                                    let name_str = match &sr {
+                                        StringRef::Owned(s) => s.as_str(),
+                                        StringRef::Interned(id) => {
+                                            self.strings.resolve(*id).unwrap_or("")
+                                        }
+                                    };
+                                    if name_str == cell.name {
+                                        Some(cell_idx)
+                                    } else if let Some(&cached) = self.cell_index_cache.get(name_str) {
+                                        Some(cached)
+                                    } else if let Some(idx) = module.cells.iter().position(|c| c.name == name_str) {
+                                        self.cell_index_cache.insert(name_str.to_string(), idx);
+                                        Some(idx)
+                                    } else {
+                                        None
+                                    }
+                                }
+                                _ => None,
+                            };
+                            if let Some(target_idx) = tc_target {
+                                let stencil_compiled = self.stencil_tier.is_compiled(target_idx);
+                                let stencil_try = stencil_compiled || self.stencil_tier.record_call(target_idx);
+                                if stencil_try {
+                                    if !stencil_compiled {
+                                        self.stencil_tier.try_compile(target_idx, module);
+                                    }
+                                    if self.stencil_tier.is_compiled(target_idx) {
+                                        let callee_base = base + a + 1;
+                                        let target_cell = &module.cells[target_idx];
+                                        let needed = callee_base + (target_cell.registers as usize).max(nargs + 4);
+                                        if needed > self.registers.len() {
+                                            self.registers.resize(needed, NbValue::new_null());
+                                        }
+                                        let mut stencil = std::mem::replace(&mut self.stencil_tier, StencilTier::disabled());
+                                        let stencil_result = stencil.execute(self, target_idx, callee_base);
+                                        self.stencil_tier = stencil;
+                                        if let Ok(()) = stencil_result {
+                                            let ret_nb = self.registers.get(callee_base).copied().unwrap_or(NbValue::new_null());
+                                            let result_value = ret_nb.to_legacy();
+                                            let frame = self.frames.pop().ok_or_else(|| {
+                                                VmError::Runtime("call stack underflow on tailcall stencil".into())
+                                            })?;
+                                            if has_debug {
+                                                let cname = module.cells[frame.cell_idx].name.clone();
+                                                self.emit_debug_event(DebugEvent::CallExit {
+                                                    cell_name: cname,
+                                                    result: result_value.clone(),
+                                                });
+                                            }
+                                            self.shrink_registers(frame.base_register);
+                                            if let Some(fid) = frame.future_id {
+                                                self.future_states.insert(fid, FutureState::Completed(result_value));
+                                                if self.frames.len() <= limit {
+                                                    return Ok(Value::Null);
+                                                }
+                                                let f = self.frames.last().unwrap();
+                                                cell_idx = f.cell_idx;
+                                                base = f.base_register;
+                                                ip = f.ip;
+                                                cell = &module.cells[cell_idx];
+                                                jit_handled = true;
+                                            } else if self.frames.len() <= limit {
+                                                return Ok(result_value);
+                                            } else {
+                                                self.set_reg(frame.return_register, result_value);
+                                                let f = self.frames.last().unwrap();
+                                                cell_idx = f.cell_idx;
+                                                base = f.base_register;
+                                                ip = f.ip;
+                                                cell = &module.cells[cell_idx];
+                                                jit_handled = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // ─── CRANELIFT TIER (TailCall) ───────────────────
+                        if !jit_handled && self.jit_tier.is_enabled() {
                             // Resolve cell index from callee register
                             let fast_cell_idx = match self.reg(callee_reg) {
                                 Value::String(sr) => {
@@ -2134,6 +2290,7 @@ impl VM {
                                                             *boxed
                                                         }
                                                     }
+                                                    JitVarType::RawInt => Value::Int(result),
                                                 }
                                             };
                                             #[cfg(not(feature = "jit"))]

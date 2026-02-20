@@ -217,8 +217,9 @@ fn nan_unbox_typed(raw: i64, ret_type: JitVarType) -> i64 {
                 0
             }
         }
-        JitVarType::Str => raw, // raw pointer
-        JitVarType::Ptr => raw, // raw *mut Value heap pointer
+        JitVarType::Str => raw,    // raw pointer
+        JitVarType::Ptr => raw,    // raw *mut Value heap pointer
+        JitVarType::RawInt => raw, // already a raw i64
     }
 }
 

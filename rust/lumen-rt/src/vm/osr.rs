@@ -352,6 +352,7 @@ pub fn perform_osr_transition(
                     *boxed
                 }
             }
+            JitVarType::RawInt => Value::Int(raw),
         };
         vm.osr_runtime.record_transition();
         Ok(result)

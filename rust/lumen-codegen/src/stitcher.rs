@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 
 use lumen_core::lir::{Constant, Instruction, LirCell, LirModule, OpCode};
-use lumen_core::values::NbValue;
+use lumen_core::nb_value::NbValue;
 
 use crate::stencil_format::{HoleType, StencilLibrary};
 

@@ -1135,6 +1135,8 @@ fn cmd_run(
     // compiled to native code on their very first call. Use a higher value to
     // defer compilation to only hot cells.
     vm.enable_jit(jit_threshold as u64);
+    #[cfg(feature = "jit")]
+    vm.enable_stencil_tier();
     if let Some(run_id) = trace_run_id.as_ref() {
         vm.set_trace_id(run_id.clone());
     }

@@ -1814,7 +1814,7 @@ impl VM {
             .unwrap_or_else(|| "trace:unbound".to_string())
     }
 
-    fn next_trace_ref(&mut self) -> TraceRefValue {
+    pub(crate) fn next_trace_ref(&mut self) -> TraceRefValue {
         self.trace_seq = self.trace_seq.saturating_add(1);
         TraceRefValue {
             trace_id: self.resolve_trace_id(),

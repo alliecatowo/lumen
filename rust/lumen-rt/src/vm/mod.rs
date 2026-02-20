@@ -3,7 +3,7 @@
 pub mod continuations;
 pub mod fiber;
 pub mod fiber_effects;
-mod helpers;
+pub(crate) mod helpers;
 mod intrinsics;
 mod ops;
 pub(crate) mod osr;

@@ -280,8 +280,8 @@ pub fn stencil_moveown() -> StencilDef {
 // ---------------------------------------------------------------------------
 //
 // For arithmetic, each stencil implements an **SMI (small integer) fast path**
-// inline, followed by a **runtime fallback** (a tail-call into `lm_rt_add` /
-// `lm_rt_sub` / etc.) for non-integer operands.
+// inline, followed by a **runtime fallback** that calls `lm_rt_stencil_runtime`
+// for non-integer operands (Float, String, etc.).
 //
 // ## Fast-path machine code structure (Add as example)
 //
@@ -294,13 +294,13 @@ pub fn stencil_moveown() -> StencilDef {
 // mov rdx, rax              ; 48 89 C2                  — 3 bytes
 // shr rdx, 48               ; 48 C1 EA 30               — 4 bytes
 // cmp edx, 0x7FF9           ; 81 FA F9 7F 00 00         — 6 bytes
-// jne .slow                 ; 0F 85 <JumpOffset32:4>    — 6 bytes, hole at 33
+// jne .slow                 ; 0F 85 <baked-rel32>       — 6 bytes (offset 28)
 //
 // ;;; Int tag check for rcx
 // mov rdx, rcx              ; 48 89 D2                  — 3 bytes
 // shr rdx, 48               ; 48 C1 EA 30               — 4 bytes
 // cmp edx, 0x7FF9           ; 81 FA F9 7F 00 00         — 6 bytes
-// jne .slow                 ; 0F 85 <JumpOffset32:4>    — 6 bytes, hole at 52
+// jne .slow                 ; 0F 85 <baked-rel32>       — 6 bytes (offset 47)
 //
 // ;;; Sign-extend 48-bit payloads
 // shl rax, 16               ; 48 C1 E0 10               — 4 bytes
@@ -318,18 +318,24 @@ pub fn stencil_moveown() -> StencilDef {
 // or  rax, rdx              ; 48 0B C2                  — 3 bytes
 //
 // ;;; Store result
-// mov [r14+A*8], rax        ; 49 89 86 <RegA:4>        — 7 bytes, hole at 97
+// mov [r14+A*8], rax        ; 49 89 86 <RegA:4>        — 7 bytes, hole
 //
 // ;; fall through to next stencil
 //
-// .slow:
-// ;; Runtime fallback (patched with absolute address of lm_rt_add):
-// ;; TODO: implement runtime fallback trampoline
+// .slow:  (offset = 101 + compute_len)
+// ;; Runtime fallback: lm_rt_stencil_runtime(ctx, instr_word)
+// mov rdi, r15              ; 4C 89 FF — arg1 = VmContext*
+// movabs rax, <instr_word>  ; 48 B8 <InstructionWord:8>
+// mov rsi, rax              ; 48 89 C6 — arg2 = instr_word
+// movabs rax, <func>        ; 48 B8 <RuntimeFuncAddr:8>
+// sub rsp, 8                ; 48 83 EC 08 (align RSP)
+// call rax                  ; FF D0
+// add rsp, 8                ; 48 83 C4 08 (restore RSP)
 // ```
 //
-// For the prototype, the slow path is a stub: the stitcher MUST NOT reach
-// it for non-integer operands.  A later iteration will wire the slow path to
-// `lm_rt_add`.
+// The `jne .slow` rel32 offsets are baked into the stencil at build time
+// (they point to a fixed offset within the same stencil); they are NOT
+// `HoleType::JumpOffset32` holes.
 
 /// Build the int-tag-check sequence for `rax` (check top 16 bits == 0x7FF9).
 ///
@@ -417,26 +423,90 @@ fn rebox_int_rax() -> Vec<u8> {
 
 /// Binary arithmetic stencil template.
 ///
-/// Emits the load / tag-check / sign-extend / op / re-box / store sequence.
+/// Emits the load / tag-check / sign-extend / op / re-box / store sequence,
+/// followed by a slow-path tail that calls `lm_rt_stencil_runtime(ctx, instr)`
+/// when either operand is not a TAG_INT.
+///
 /// `compute_bytes` is the machine code for the actual operation on `rax` (lhs)
 /// and `rcx` (rhs), leaving the result in `rax`.
 ///
-/// Returns (code_bytes, holes).
+/// ## Layout
+///
+/// ```text
+/// ;; Fast path
+/// 0:  mov rax, [r14+B*8]   7 bytes  → hole RegB at 3
+/// 7:  mov rcx, [r14+C*8]   7 bytes  → hole RegC at 10
+/// 14: tag_check_rax        19 bytes (jne baked-in rel32 at 30 → slow path)
+/// 33: tag_check_rcx        19 bytes (jne baked-in rel32 at 49 → slow path)
+/// 52: sign_extend_rax       8 bytes
+/// 60: sign_extend_rcx       8 bytes
+/// 68: compute               varies
+/// 68+N: rebox_int_rax      26 bytes
+/// 94+N: mov [r14+A*8], rax  7 bytes → hole RegA at (94+N-4) = (94+N-4)
+///
+/// ;; Slow path (offset = 101 + compute_len)
+/// +0:  mov rdi, r15         3 bytes   (VmContext* arg1)
+/// +3:  movabs rax, instr   10 bytes   hole InstructionWord at (+5)
+/// +13: mov rsi, rax         3 bytes   (instr_word arg2)
+/// +16: movabs rax, func    10 bytes   hole RuntimeFuncAddr at (+18)
+/// +26: sub rsp, 8           4 bytes   (16-byte stack align)
+/// +28: call rax             2 bytes
+/// +30: add rsp, 8           4 bytes
+/// ;; total slow path: 34 bytes
+/// ```
 fn arith_stencil_abc(opcode: u8, name: &str, compute_bytes: &[u8]) -> StencilDef {
-    // Offset tracking:
-    // 0:  mov rax, [r14+B*8]   7 bytes  → hole RegB at 3
-    // 7:  mov rcx, [r14+C*8]   7 bytes  → hole RegC at 10
-    // 14: tag_check_rax        19 bytes → hole JumpOffset32 at 14+16 = 30
-    // 33: tag_check_rcx        19 bytes → hole JumpOffset32 at 33+16 = 49
-    // 52: sign_extend_rax      8 bytes
-    // 60: sign_extend_rcx      8 bytes
-    // 68: compute              varies
     let compute_len = compute_bytes.len();
-    // after compute:
-    // rebox_int_rax            26 bytes
-    // mov [r14+A*8], rax       7 bytes → hole RegA at (68+compute_len+26+3)
+
+    // Fast-path ends at byte: 7+7+19+19+8+8+compute_len+26+7 = 101 + compute_len
+    let fast_path_end = 101 + compute_len;
+
+    // Bake the rel32 offsets for the two `jne` instructions (offsets 28 and 47).
+    // The `jne rel32` instruction occupies bytes [28..34) for the first tag check
+    // and [47..53) for the second.  The rel32 field starts at byte 30 and 49
+    // respectively (opcode 0F 85 takes 2 bytes, then 4-byte rel32).
+    //
+    // jne at offset 30 (rel32 field at [30..34), instruction end = 34):
+    //   rel = slow_path_start - 34 = (101 + compute_len) - 34 = 67 + compute_len
+    //
+    // jne at offset 49 (rel32 field at [49..53), instruction end = 53):
+    //   rel = slow_path_start - 53 = (101 + compute_len) - 53 = 48 + compute_len
+    let jne1_rel = (67 + compute_len) as i32;
+    let jne2_rel = (48 + compute_len) as i32;
+    let jne1_rel_le = jne1_rel.to_le_bytes();
+    let jne2_rel_le = jne2_rel.to_le_bytes();
+
+    // Build tag_check_rax with baked-in slow-path jne rel32.
+    let tag_check_rax_baked: Vec<u8> = vec![
+        0x48, 0x89, 0xC2,                              // mov rdx, rax
+        0x48, 0xC1, 0xEA, 0x30,                        // shr rdx, 48
+        0x81, 0xFA, 0xF9, 0x7F, 0x00, 0x00,            // cmp edx, 0x7FF9
+        0x0F, 0x85,                                    // jne rel32
+        jne1_rel_le[0], jne1_rel_le[1], jne1_rel_le[2], jne1_rel_le[3],
+    ];
+
+    // Build tag_check_rcx with baked-in slow-path jne rel32.
+    let tag_check_rcx_baked: Vec<u8> = vec![
+        0x48, 0x89, 0xD2,                              // mov rdx, rcx
+        0x48, 0xC1, 0xEA, 0x30,                        // shr rdx, 48
+        0x81, 0xFA, 0xF9, 0x7F, 0x00, 0x00,            // cmp edx, 0x7FF9
+        0x0F, 0x85,                                    // jne rel32
+        jne2_rel_le[0], jne2_rel_le[1], jne2_rel_le[2], jne2_rel_le[3],
+    ];
 
     let store_offset = 68 + compute_len + 26 + 3;
+
+    // Slow-path layout (relative to slow_path_start = fast_path_end = 101+compute_len):
+    //  +0:  4C 89 FF            mov rdi, r15          3 bytes
+    //  +3:  48 B8 <8>           movabs rax, instr    10 bytes, InstructionWord hole at +5
+    // +13:  48 89 C6            mov rsi, rax          3 bytes
+    // +16:  48 B8 <8>           movabs rax, func     10 bytes, RuntimeFuncAddr hole at +18
+    // +26:  48 83 EC 08         sub rsp, 8            4 bytes
+    // +28: (would be +26 before sub rsp was 4 bytes)
+    // Actually: +26 FF D0       call rax              2 bytes
+    // +28:  48 83 C4 08         add rsp, 8            4 bytes
+    // total slow path = 3+10+3+10+4+2+4 = 36 bytes
+    let instr_word_hole_offset = (fast_path_end + 5) as u32;
+    let runtime_func_hole_offset = (fast_path_end + 18) as u32;
 
     let mut code = code!(
         [0x49u8, 0x8B, 0x86],
@@ -444,8 +514,8 @@ fn arith_stencil_abc(opcode: u8, name: &str, compute_bytes: &[u8]) -> StencilDef
         [0x49u8, 0x8B, 0x8E],
         [0x00u8; 4], // mov rcx, [r14+C*8]
     );
-    code.extend_from_slice(&tag_check_rax());
-    code.extend_from_slice(&tag_check_rcx());
+    code.extend_from_slice(&tag_check_rax_baked);
+    code.extend_from_slice(&tag_check_rcx_baked);
     code.extend_from_slice(&sign_extend_rax());
     code.extend_from_slice(&sign_extend_rcx());
     code.extend_from_slice(compute_bytes);
@@ -454,12 +524,27 @@ fn arith_stencil_abc(opcode: u8, name: &str, compute_bytes: &[u8]) -> StencilDef
     code.extend_from_slice(&[0x49, 0x89, 0x86]);
     code.extend_from_slice(&[0x00; 4]); // hole: RegA
 
+    // Slow path: call lm_rt_stencil_runtime(ctx, instr_word)
+    code.extend_from_slice(&[
+        0x4C, 0x89, 0xFF,                   // mov rdi, r15
+        0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, // movabs rax, <instr_word>  (low 8 of imm64)
+        0x00, 0x00, 0x00, 0x00,             //   (high 4 bytes of imm64)
+        0x48, 0x89, 0xC6,                   // mov rsi, rax
+        0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, // movabs rax, <lm_rt_stencil_runtime>
+        0x00, 0x00, 0x00, 0x00,             //   (high 4 bytes)
+        0x48, 0x83, 0xEC, 0x08,             // sub rsp, 8
+        0xFF, 0xD0,                         // call rax
+        0x48, 0x83, 0xC4, 0x08,             // add rsp, 8
+    ]);
+
     let holes = vec![
         HoleDef::new(3, HoleType::RegB, 4),
         HoleDef::new(10, HoleType::RegC, 4),
-        HoleDef::new(30, HoleType::JumpOffset32, 4), // jne in first tag check
-        HoleDef::new(49, HoleType::JumpOffset32, 4), // jne in second tag check
+        // Note: jne rel32 at offsets 30 and 49 are now baked-in constants pointing
+        // to the slow-path tail; they are no longer HoleType::JumpOffset32.
         HoleDef::new(store_offset as u32, HoleType::RegA, 4),
+        HoleDef::new(instr_word_hole_offset, HoleType::InstructionWord, 8),
+        HoleDef::new(runtime_func_hole_offset, HoleType::RuntimeFuncAddr, 8),
     ];
 
     StencilDef::new(opcode, name, code, holes)
@@ -868,8 +953,10 @@ pub fn stencil_return() -> StencilDef {
             [0x4Cu8, 0x89, 0xFF],             // mov rdi, r15
             [0xBEu8, 0x00, 0x00, 0x00, 0x00], // mov esi, <A> (imm32, low byte = A)
             [0x48u8, 0xB8],
-            [0x00u8; 8],    // movabs rax, <lm_rt_return>
-            [0xFFu8, 0xD0], // call rax
+            [0x00u8; 8],                      // movabs rax, <lm_rt_return>
+            [0x48u8, 0x83, 0xEC, 0x08],       // sub rsp, 8  (align RSP for call)
+            [0xFFu8, 0xD0],                   // call rax
+            [0x48u8, 0x83, 0xC4, 0x08],       // add rsp, 8  (restore RSP)
         ),
         vec![
             HoleDef::new(4, HoleType::RegAIndex, 1),
@@ -889,8 +976,10 @@ pub fn stencil_halt() -> StencilDef {
             [0x4Cu8, 0x89, 0xFF],             // mov rdi, r15
             [0xBEu8, 0x00, 0x00, 0x00, 0x00], // mov esi, <A>
             [0x48u8, 0xB8],
-            [0x00u8; 8],    // movabs rax, <lm_rt_halt>
-            [0xFFu8, 0xD0], // call rax
+            [0x00u8; 8],                      // movabs rax, <lm_rt_halt>
+            [0x48u8, 0x83, 0xEC, 0x08],       // sub rsp, 8  (align RSP)
+            [0xFFu8, 0xD0],                   // call rax
+            [0x48u8, 0x83, 0xC4, 0x08],       // add rsp, 8  (restore RSP)
         ),
         vec![
             HoleDef::new(4, HoleType::RegAIndex, 1),
@@ -917,26 +1006,29 @@ pub fn stencil_halt() -> StencilDef {
 /// ```
 pub fn stencil_call() -> StencilDef {
     // Offsets:
-    // 0:  4C 89 FF              mov rdi, r15     (3 bytes)
-    // 3:  48 B8 <8>             movabs rax, instr (10 bytes, hole InstructionWord at 5)
-    //     (NOTE: InstructionWord is 4 bytes, but we embed it in a movabs imm64 at bits 0-31)
-    // 13: 48 89 C6              mov rsi, rax     (3 bytes)
-    // 16: 48 B8 <8>             movabs rax, func (10 bytes, hole RuntimeFuncAddr at 18)
-    // 26: FF D0                 call rax         (2 bytes)
+    // 0:  4C 89 FF              mov rdi, r15       (3 bytes)
+    // 3:  48 B8 <8>             movabs rax, instr  (10 bytes, hole InstructionWord at 5)
+    // 13: 48 89 C6              mov rsi, rax       (3 bytes)
+    // 16: 48 B8 <8>             movabs rax, func   (10 bytes, hole RuntimeFuncAddr at 18)
+    // 26: 48 83 EC 08           sub rsp, 8         (4 bytes, align RSP)
+    // 30: FF D0                 call rax           (2 bytes)
+    // 32: 48 83 C4 08           add rsp, 8         (4 bytes, restore RSP)
     StencilDef::new(
         OpCode::Call as u8,
         "Call",
         code!(
-            [0x4Cu8, 0x89, 0xFF], // mov rdi, r15
+            [0x4Cu8, 0x89, 0xFF],          // mov rdi, r15
             [0x48u8, 0xB8],
-            [0x00u8; 8],          // movabs rax, <instr_word>  hole at 5
-            [0x48u8, 0x89, 0xC6], // mov rsi, rax
+            [0x00u8; 8],                   // movabs rax, <instr_word>  hole at 5
+            [0x48u8, 0x89, 0xC6],          // mov rsi, rax
             [0x48u8, 0xB8],
-            [0x00u8; 8],    // movabs rax, <lm_rt_call>  hole at 18
-            [0xFFu8, 0xD0], // call rax
+            [0x00u8; 8],                   // movabs rax, <lm_rt_call>  hole at 18
+            [0x48u8, 0x83, 0xEC, 0x08],   // sub rsp, 8
+            [0xFFu8, 0xD0],                // call rax
+            [0x48u8, 0x83, 0xC4, 0x08],   // add rsp, 8
         ),
         vec![
-            HoleDef::new(5, HoleType::InstructionWord, 4),
+            HoleDef::new(5, HoleType::InstructionWord, 8),
             HoleDef::new(18, HoleType::RuntimeFuncAddr, 8),
         ],
     )
@@ -963,16 +1055,18 @@ pub fn stencil_intrinsic() -> StencilDef {
         OpCode::Intrinsic as u8,
         "Intrinsic",
         code!(
-            [0x4Cu8, 0x89, 0xFF],
+            [0x4Cu8, 0x89, 0xFF],          // mov rdi, r15
             [0x48u8, 0xB8],
-            [0x00u8; 8], // movabs rax, <instr_word>
-            [0x48u8, 0x89, 0xC6],
+            [0x00u8; 8],                   // movabs rax, <instr_word>  hole@5
+            [0x48u8, 0x89, 0xC6],          // mov rsi, rax
             [0x48u8, 0xB8],
-            [0x00u8; 8], // movabs rax, <lm_rt_intrinsic>
-            [0xFFu8, 0xD0],
+            [0x00u8; 8],                   // movabs rax, <lm_rt_intrinsic> hole@18
+            [0x48u8, 0x83, 0xEC, 0x08],   // sub rsp, 8  (align RSP)
+            [0xFFu8, 0xD0],                // call rax
+            [0x48u8, 0x83, 0xC4, 0x08],   // add rsp, 8  (restore RSP)
         ),
         vec![
-            HoleDef::new(5, HoleType::InstructionWord, 4),
+            HoleDef::new(5, HoleType::InstructionWord, 8),
             HoleDef::new(18, HoleType::RuntimeFuncAddr, 8),
         ],
     )
@@ -987,20 +1081,35 @@ pub fn stencil_intrinsic() -> StencilDef {
 /// All effect opcodes (Perform, HandlePush, HandlePop, Resume) call a
 /// corresponding `lm_rt_*` function with `(ctx, instr_word)`.
 fn effect_stencil(opcode: u8, name: &str) -> StencilDef {
+    // Layout (x86-64, System V ABI):
+    //  0:  4C 89 FF              mov rdi, r15         (ctx → arg1)
+    //  3:  48 B8 [8]             movabs rax, instr    (hole InstructionWord at 5)
+    // 13:  48 89 C6              mov rsi, rax         (instr_word → arg2)
+    // 16:  48 B8 [8]             movabs rax, func     (hole RuntimeFuncAddr at 18)
+    // 26:  48 83 EC 08           sub rsp, 8           (align RSP to 16 for call)
+    // 30:  FF D0                 call rax
+    // 32:  48 83 C4 08           add rsp, 8           (restore RSP after call)
+    //
+    // The stencil is entered with RSP ≡ 8 (mod 16) (post-call ABI convention).
+    // We subtract 8 before `call rax` so the runtime helper is entered with
+    // RSP ≡ 8-8 = 0 before call → callee entry RSP ≡ 8 (ABI-correct) and
+    // Rust's codegen can generate movaps without misalignment issues.
     StencilDef::new(
         opcode,
         name,
         code!(
-            [0x4Cu8, 0x89, 0xFF],
+            [0x4Cu8, 0x89, 0xFF],          // mov rdi, r15
             [0x48u8, 0xB8],
-            [0x00u8; 8], // movabs rax, <instr_word>
-            [0x48u8, 0x89, 0xC6],
+            [0x00u8; 8],                   // movabs rax, <instr_word>  hole@5
+            [0x48u8, 0x89, 0xC6],          // mov rsi, rax
             [0x48u8, 0xB8],
-            [0x00u8; 8], // movabs rax, <runtime_func>
-            [0xFFu8, 0xD0],
+            [0x00u8; 8],                   // movabs rax, <runtime_func> hole@18
+            [0x48u8, 0x83, 0xEC, 0x08],   // sub rsp, 8  (align)
+            [0xFFu8, 0xD0],                // call rax
+            [0x48u8, 0x83, 0xC4, 0x08],   // add rsp, 8  (restore)
         ),
         vec![
-            HoleDef::new(5, HoleType::InstructionWord, 4),
+            HoleDef::new(5, HoleType::InstructionWord, 8),
             HoleDef::new(18, HoleType::RuntimeFuncAddr, 8),
         ],
     )

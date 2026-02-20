@@ -2262,10 +2262,10 @@ impl VM {
                                 };
 
                                 if run_jit {
+                                    let callee_cell = &module.cells[target_idx];
                                     // Pass NaN-boxed register values directly to JIT.
                                     // Heap-allocated values get an Arc refcount bump
                                     // so the JIT can safely read them.
-                                    let callee_cell = &module.cells[target_idx];
                                     let mut i64_args: Vec<i64> = Vec::with_capacity(nargs);
                                     for i in 0..nargs {
                                         let nb = self.reg_nb(base + a + 1 + i);

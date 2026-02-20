@@ -80,15 +80,12 @@ pub extern "C" fn jit_rt_union_new(
     let tag_str =
         unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(tag_ptr, tag_len)) };
 
-    // Use the shared StringTable to intern the tag, producing the same u32 ID
-    // as the interpreter's `NewUnion` opcode handler.
+    // Intern the tag to get the same u32 ID as the interpreter's NewUnion handler.
+    // intern() is needed here (not just resolve) because union_new creates new values
+    // that must have valid interned tag IDs for later IsVariant matching.
     let tag = unsafe {
-        let st = (*ctx).string_table;
-        assert!(
-            !st.is_null(),
-            "jit_rt_union_new: VmContext.string_table is null"
-        );
-        (*st).intern(tag_str)
+        let st = &mut *(*ctx).string_table;
+        st.intern(tag_str)
     };
 
     let payload_value = unsafe { nanbox_to_value(payload) };
@@ -126,20 +123,18 @@ pub extern "C" fn jit_rt_union_is_variant(
     let tag_str =
         unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(tag_ptr, tag_len)) };
 
-    // Use the shared StringTable to intern the tag — same IDs as the interpreter.
-    let tag = unsafe {
-        let st = (*ctx).string_table;
-        assert!(
-            !st.is_null(),
-            "jit_rt_union_is_variant: VmContext.string_table is null"
-        );
-        (*st).intern(tag_str)
-    };
-
     match value {
-        Value::Union(u) => {
-            if u.tag == tag {
-                1
+        Value::Union(uv) => {
+            // Resolve the union's tag ID to a string via Vec lookup (O(1)),
+            // then compare strings directly. This avoids the expensive
+            // HashMap intern() call that was the previous bottleneck.
+            let st = unsafe { &*(*ctx).string_table };
+            if let Some(resolved) = st.resolve(uv.tag) {
+                if resolved == tag_str {
+                    1
+                } else {
+                    0
+                }
             } else {
                 0
             }
@@ -192,7 +187,25 @@ pub extern "C" fn jit_rt_union_unbox(_ctx: *mut VmContext, union_ptr: i64) -> i6
     }
     let value = unsafe { &*((u & PAYLOAD_MASK_U) as *const Value) };
     match value {
-        Value::Union(uv) => value_to_nanbox(&uv.payload),
+        Value::Union(uv) => {
+            // Fast path for inline types — return NaN-boxed directly.
+            match &*uv.payload {
+                Value::Int(n) => {
+                    let payload = (*n as u64) & PAYLOAD_MASK_U;
+                    (NAN_MASK_U | (1u64 << 48) | payload) as i64
+                }
+                Value::Bool(true) => NAN_BOX_TRUE,
+                Value::Bool(false) => NAN_BOX_FALSE,
+                Value::Null => NAN_BOX_NULL,
+                Value::Float(f) => f.to_bits() as i64,
+                _ => {
+                    // Reuse existing payload Arc — just bump refcount instead
+                    // of cloning the Value and wrapping in a redundant new Arc.
+                    let ptr = Arc::into_raw(Arc::clone(&uv.payload)) as u64;
+                    (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
+                }
+            }
+        }
         _ => NAN_BOX_NULL,
     }
 }

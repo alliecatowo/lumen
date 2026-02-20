@@ -11,6 +11,8 @@ pub mod interpreter;
 pub mod intrinsics;
 pub mod jit_tier;
 pub mod json_parser;
+pub mod stencil_tier;
+pub mod stencil_runtime;
 pub mod parity_concurrency;
 pub mod platform;
 pub mod tagged;

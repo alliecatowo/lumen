@@ -98,13 +98,17 @@ impl NbValue {
     /// Integers are stored as two's complement in the payload.
     pub const TAG_INT: u64 = 1;
 
+    /// Tag for atoms (interned symbols).
+    /// Payload is the atom ID.
+    pub const TAG_ATOM: u64 = 2;
+
     /// Tag for booleans.
     /// Payload 0 = false, payload 1 = true.
-    pub const TAG_BOOL: u64 = 2;
+    pub const TAG_BOOL: u64 = 3;
 
     /// Tag for null value.
     /// Payload is ignored (typically 0).
-    pub const TAG_NULL: u64 = 3;
+    pub const TAG_NULL: u64 = 4;
 
     // ═════════════════════════════════════════════════════════════════════════
     // INTEGER RANGE LIMITS
@@ -972,6 +976,7 @@ mod tests {
         let tags = [
             NbValue::TAG_PTR,
             NbValue::TAG_INT,
+            NbValue::TAG_ATOM,
             NbValue::TAG_BOOL,
             NbValue::TAG_NULL,
         ];

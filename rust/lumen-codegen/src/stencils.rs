@@ -690,16 +690,26 @@ pub fn stencil_le() -> StencilDef {
 }
 
 /// **Gt** — `R[A] = (R[B] > R[C])` as NbValue bool.
+///
+/// Note: the LIR has no dedicated Gt opcode; the compiler lowers `>` to
+/// `OpCode::Lt` with operands B and C swapped.  This stencil is therefore
+/// not registered in the library and exists only for reference / future use.
+/// Raw opcode 0x3A is reserved for a potential future Gt instruction.
+#[allow(dead_code)]
 pub fn stencil_gt() -> StencilDef {
-    // Swap B/C for Gt: load rcx=R[B], rax=R[C], then check rax < rcx
-    // Actually, easier: reuse Lt with B and C swapped in code.
     // We load rax=R[B], rcx=R[C], then cmp uses setg.
-    cmp_stencil_abc(OpCode::Lt as u8, "Gt", 0x9F) // setg
+    cmp_stencil_abc(0x3A, "Gt", 0x9F) // setg — raw byte; no OpCode::Gt variant exists
 }
 
 /// **Ge** — `R[A] = (R[B] >= R[C])` as NbValue bool.
+///
+/// Note: the LIR has no dedicated Ge opcode; the compiler lowers `>=` to
+/// `OpCode::Le` with operands B and C swapped.  This stencil is therefore
+/// not registered in the library and exists only for reference / future use.
+/// Raw opcode 0x3B is reserved for a potential future Ge instruction.
+#[allow(dead_code)]
 pub fn stencil_ge() -> StencilDef {
-    cmp_stencil_abc(OpCode::Le as u8, "Ge", 0x9D) // setge
+    cmp_stencil_abc(0x3B, "Ge", 0x9D) // setge — raw byte; no OpCode::Ge variant exists
 }
 
 /// **Not** — `R[A] = !R[B]` (logical not of bool NbValue).
@@ -1159,6 +1169,9 @@ pub fn build_stencil_library() -> StencilLibrary {
     lib.insert(stencil_eq());
     lib.insert(stencil_lt());
     lib.insert(stencil_le());
+    // Note: stencil_gt() and stencil_ge() are NOT registered here because the
+    // LIR has no Gt/Ge opcodes — the compiler lowers > and >= to Lt/Le with
+    // swapped operands.  The stencil functions exist as dead code for reference.
     lib.insert(stencil_not());
 
     // Control flow

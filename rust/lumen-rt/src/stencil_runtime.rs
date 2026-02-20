@@ -10,7 +10,9 @@ use lumen_core::values::{ClosureValue, RecordValue, StringRef, UnionValue, Value
 use lumen_core::vm_context::VmContext;
 
 use crate::services::tools::ToolRequest;
-use crate::vm::helpers::{json_to_value, merged_policy_for_tool, validate_tool_policy, value_to_json};
+use crate::vm::helpers::{
+    json_to_value, merged_policy_for_tool, validate_tool_policy, value_to_json,
+};
 use crate::vm::VM;
 
 // ---------------------------------------------------------------------------
@@ -27,17 +29,20 @@ thread_local! {
     static IS_VARIANT_SKIP: Cell<bool> = const { Cell::new(false) };
 }
 
+/// ABI-stable sentinel returned by `lm_rt_stencil_runtime` to request
+/// "skip next instruction" in stitched code.
+const STENCIL_SKIP_NEXT_SENTINEL: u64 = 1;
+
 /// Returns whether the most recent `IsVariant` stencil matched, consuming the flag.
 ///
-/// Called by the stitcher after dispatching an `IsVariant` stencil to
-/// determine whether to skip the immediately following stencil.
+/// Called by the stencil runtime dispatch path to consume the most recent
+/// `IsVariant` match decision.
 ///
 /// # Safety
 ///
-/// This function is safe to call from any context, but must only be called
+/// This function is safe to call from any context, but is only meaningful
 /// immediately after `lm_rt_stencil_runtime` processes an `IsVariant`
-/// instruction. The flag is automatically reset on the next call to
-/// `lm_rt_stencil_runtime`.
+/// instruction.
 #[no_mangle]
 pub extern "C" fn lm_rt_is_variant_skip_flag() -> bool {
     IS_VARIANT_SKIP.with(|f| f.replace(false))
@@ -57,18 +62,130 @@ fn decode_nb_value(_vm: &mut VM, raw: u64) -> Value {
     nb.to_legacy()
 }
 
+#[derive(Clone, Copy)]
+enum StencilArithOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    FloorDiv,
+}
+
+fn stencil_arith_numeric(
+    vm: &mut VM,
+    base: usize,
+    a: usize,
+    b: usize,
+    c: usize,
+    op: StencilArithOp,
+) {
+    let lhs = vm.reg(base + b);
+    let rhs = vm.reg(base + c);
+
+    if let (Value::Int(x), Value::Int(y)) = (&lhs, &rhs) {
+        let out = match op {
+            StencilArithOp::Add => x.checked_add(*y),
+            StencilArithOp::Sub => x.checked_sub(*y),
+            StencilArithOp::Mul => x.checked_mul(*y),
+            StencilArithOp::Div => {
+                if *y == 0 {
+                    None
+                } else {
+                    x.checked_div(*y)
+                }
+            }
+            StencilArithOp::Mod => {
+                if *y == 0 {
+                    None
+                } else {
+                    Some(x.rem_euclid(*y))
+                }
+            }
+            StencilArithOp::FloorDiv => {
+                if *y == 0 {
+                    None
+                } else {
+                    Some(x.div_euclid(*y))
+                }
+            }
+        };
+
+        if let Some(n) = out {
+            vm.set_reg(base + a, Value::Int(n));
+        } else {
+            vm.set_reg(base + a, Value::Null);
+        }
+        return;
+    }
+
+    if let (Some(x), Some(y)) = (lhs.as_float(), rhs.as_float()) {
+        let out = match op {
+            StencilArithOp::Add => x + y,
+            StencilArithOp::Sub => x - y,
+            StencilArithOp::Mul => x * y,
+            StencilArithOp::Div => x / y,
+            StencilArithOp::Mod => x.rem_euclid(y),
+            StencilArithOp::FloorDiv => (x / y).floor(),
+        };
+        vm.set_reg_nb(base + a, NbValue::new_float(out));
+        return;
+    }
+
+    // The stencil runtime ABI cannot propagate VM errors; keep register state valid.
+    vm.set_reg(base + a, Value::Null);
+}
+
+fn stencil_add(vm: &mut VM, base: usize, a: usize, b: usize, c: usize) {
+    let lhs = vm.reg(base + b);
+    let rhs = vm.reg(base + c);
+
+    if matches!(lhs, Value::String(_)) || matches!(rhs, Value::String(_)) {
+        let lhs_str = lhs.as_string_resolved(&vm.strings);
+        let rhs_str = rhs.as_string_resolved(&vm.strings);
+        let mut s = String::with_capacity(lhs_str.len() + rhs_str.len());
+        s.push_str(&lhs_str);
+        s.push_str(&rhs_str);
+        vm.set_reg(base + a, Value::String(StringRef::Owned(s)));
+        return;
+    }
+
+    if let (Value::List(la), Value::List(lb)) = (&lhs, &rhs) {
+        let mut combined = Vec::with_capacity(la.len() + lb.len());
+        combined.extend(la.iter().cloned());
+        combined.extend(lb.iter().cloned());
+        vm.set_reg(base + a, Value::new_list(combined));
+        return;
+    }
+
+    stencil_arith_numeric(vm, base, a, b, c, StencilArithOp::Add);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn lm_rt_call(ctx: *mut VmContext, instr_word: u64) {
     let vm = vm_from_ctx(ctx);
     let instr: Instruction = unsafe { std::mem::transmute(instr_word) };
+    // Nested Tier-1 execution from within a Tier-1 runtime callback is currently
+    // fragile (it can corrupt the outer stitched frame state). Temporarily force
+    // nested calls through the interpreter / other tiers.
+    let saved = std::mem::replace(
+        &mut vm.stencil_tier,
+        crate::stencil_tier::StencilTier::disabled(),
+    );
     let _ = vm.dispatch_call_from_stencil(instr.a as usize, instr.b as usize);
+    vm.stencil_tier = saved;
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn lm_rt_tailcall(ctx: *mut VmContext, instr_word: u64) {
     let vm = vm_from_ctx(ctx);
     let instr: Instruction = unsafe { std::mem::transmute(instr_word) };
+    let saved = std::mem::replace(
+        &mut vm.stencil_tier,
+        crate::stencil_tier::StencilTier::disabled(),
+    );
     let _ = vm.dispatch_tailcall_from_stencil(instr.a as usize, instr.b as usize);
+    vm.stencil_tier = saved;
 }
 
 #[no_mangle]
@@ -95,7 +212,7 @@ pub unsafe extern "C" fn lm_rt_halt(ctx: *mut VmContext, reg_idx: u32) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: u64) {
+pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: u64) -> u64 {
     // Reset the IsVariant skip flag before processing this instruction so that
     // stale values from a previous IsVariant call cannot leak into non-IsVariant
     // stencil handlers.
@@ -110,6 +227,24 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
     let c = instr.c as usize;
 
     match instr.op {
+        lumen_core::lir::OpCode::Add => {
+            stencil_add(vm, base, a, b, c);
+        }
+        lumen_core::lir::OpCode::Sub => {
+            stencil_arith_numeric(vm, base, a, b, c, StencilArithOp::Sub);
+        }
+        lumen_core::lir::OpCode::Mul => {
+            stencil_arith_numeric(vm, base, a, b, c, StencilArithOp::Mul);
+        }
+        lumen_core::lir::OpCode::Div => {
+            stencil_arith_numeric(vm, base, a, b, c, StencilArithOp::Div);
+        }
+        lumen_core::lir::OpCode::Mod => {
+            stencil_arith_numeric(vm, base, a, b, c, StencilArithOp::Mod);
+        }
+        lumen_core::lir::OpCode::FloorDiv => {
+            stencil_arith_numeric(vm, base, a, b, c, StencilArithOp::FloorDiv);
+        }
         lumen_core::lir::OpCode::NewList | lumen_core::lir::OpCode::NewListStack => {
             let mut list = Vec::with_capacity(b);
             for i in 1..=b {
@@ -194,7 +329,7 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
                     let len = l.len() as i64;
                     let effective = if ii < 0 { ii + len } else { ii };
                     if effective < 0 || effective >= len {
-                        return;
+                        return 0;
                     }
                     l[effective as usize].clone()
                 }
@@ -203,7 +338,7 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
                     let len = t.len() as i64;
                     let effective = if ii < 0 { ii + len } else { ii };
                     if effective < 0 || effective >= len {
-                        return;
+                        return 0;
                     }
                     t[effective as usize].clone()
                 }
@@ -221,7 +356,7 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
                     let len = s.len() as i64;
                     let effective = if ii < 0 { ii + len } else { ii };
                     if effective < 0 || effective >= len {
-                        return;
+                        return 0;
                     }
                     s.iter()
                         .nth(effective as usize)
@@ -242,7 +377,7 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
                         let len = l.len() as i64;
                         let effective = if i < 0 { i + len } else { i };
                         if effective < 0 || effective >= len {
-                            return;
+                            return 0;
                         }
                         Arc::make_mut(l)[effective as usize] = val;
                     }
@@ -252,7 +387,7 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
                         let len = t.len() as i64;
                         let effective = if i < 0 { i + len } else { i };
                         if effective < 0 || effective >= len {
-                            return;
+                            return 0;
                         }
                         Arc::make_mut(t)[effective as usize] = val;
                     }
@@ -293,12 +428,8 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
         // Type variant check (skip next if matched).
         lumen_core::lir::OpCode::IsVariant => {
             // Perform the actual tag comparison and record the match result in a
-            // thread-local flag.  The stitcher (or interpreter re-dispatch) reads
-            // `lm_rt_is_variant_skip_flag()` after this call to decide whether to
-            // skip the next instruction.
-            //
-            // TODO: wire stitcher to call lm_rt_is_variant_skip_flag after each
-            // IsVariant stencil and advance the stencil program counter when true.
+            // thread-local flag. This is consumed at function end and converted
+            // into an ABI-stable integer sentinel for stitched branching.
             let tag_idx = instr.bx() as usize;
             // Clone the tag string to avoid borrow conflict between module and vm.strings.
             let tag_str = {
@@ -454,15 +585,11 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
                         Value::Float((*base_v as f64).powi(*exp as i32))
                     }
                 }
-                (Value::Float(base_v), Value::Int(exp)) => {
-                    Value::Float(base_v.powi(*exp as i32))
-                }
+                (Value::Float(base_v), Value::Int(exp)) => Value::Float(base_v.powi(*exp as i32)),
                 (Value::Int(base_v), Value::Float(exp)) => {
                     Value::Float((*base_v as f64).powf(*exp))
                 }
-                (Value::Float(base_v), Value::Float(exp)) => {
-                    Value::Float(base_v.powf(*exp))
-                }
+                (Value::Float(base_v), Value::Float(exp)) => Value::Float(base_v.powf(*exp)),
                 _ => Value::Null,
             };
             vm.set_reg(base + a, result);
@@ -517,7 +644,11 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
             let (elem, has_more) = match &iter {
                 Value::List(l) => {
                     let i = idx as usize;
-                    if i < l.len() { (l[i].clone(), true) } else { (Value::Null, false) }
+                    if i < l.len() {
+                        (l[i].clone(), true)
+                    } else {
+                        (Value::Null, false)
+                    }
                 }
                 Value::Map(m) => {
                     let keys: Vec<_> = m.keys().cloned().collect();
@@ -525,7 +656,10 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
                     if i < keys.len() {
                         let key = keys[i].clone();
                         let val = m.get(&key).cloned().unwrap_or(Value::Null);
-                        (Value::new_tuple(vec![Value::String(StringRef::Owned(key)), val]), true)
+                        (
+                            Value::new_tuple(vec![Value::String(StringRef::Owned(key)), val]),
+                            true,
+                        )
                     } else {
                         (Value::Null, false)
                     }
@@ -533,7 +667,11 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
                 Value::Set(s) => {
                     let items: Vec<_> = s.iter().cloned().collect();
                     let i = idx as usize;
-                    if i < items.len() { (items[i].clone(), true) } else { (Value::Null, false) }
+                    if i < items.len() {
+                        (items[i].clone(), true)
+                    } else {
+                        (Value::Null, false)
+                    }
                 }
                 _ => (Value::Null, false),
             };
@@ -551,7 +689,11 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
             } else {
                 String::new()
             };
-            let nb = vm.registers.get(base + a).copied().unwrap_or(NbValue::new_null());
+            let nb = vm
+                .registers
+                .get(base + a)
+                .copied()
+                .unwrap_or(NbValue::new_null());
             let _valid = vm.validate_schema(&nb, &type_name);
             // Schema validation errors cannot be propagated from this extern "C" context.
             // The interpreter will re-validate if necessary.
@@ -566,9 +708,7 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
             let result = match &awaited_val {
                 Value::Future(f) => {
                     let fid = f.id;
-                    if let Some(crate::vm::FutureState::Completed(v)) =
-                        vm.future_states.get(&fid)
-                    {
+                    if let Some(crate::vm::FutureState::Completed(v)) = vm.future_states.get(&fid) {
                         v.clone()
                     } else {
                         // Future not yet resolved — leave Null; interpreter will handle.
@@ -586,7 +726,8 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
             let future_id = vm.next_future_id;
             vm.next_future_id += 1;
             // Register as Pending in future_states so the interpreter can pick it up.
-            vm.future_states.insert(future_id, crate::vm::FutureState::Pending);
+            vm.future_states
+                .insert(future_id, crate::vm::FutureState::Pending);
             let _ = bx; // cell_idx tracked via FutureTask, not needed here directly
             vm.set_reg(
                 base + a,
@@ -604,23 +745,39 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
             let (tool_id, tool_version, tool_alias) = {
                 let module = vm.module().expect("stencil runtime: no module");
                 if let Some(tool) = module.tools.get(bx) {
-                    (tool.tool_id.clone(), tool.version.clone(), tool.alias.clone())
+                    (
+                        tool.tool_id.clone(),
+                        tool.version.clone(),
+                        tool.alias.clone(),
+                    )
                 } else {
                     // Tool index out of bounds — store Null and return.
                     vm.set_reg(base + a, Value::Null);
-                    return;
+                    return 0;
                 }
             };
 
-            // Build the args JSON map from the register immediately following R[A]
-            // (the same convention as the interpreter).
+            // Match interpreter convention: if R[A] is a map, treat it as args;
+            // otherwise look at R[A+1].
             let mut args_map = serde_json::Map::new();
-            let arg_reg = base + a + 1;
-            if arg_reg < vm.registers.len() {
-                let map_val = vm.reg(arg_reg);
-                if let Value::Map(m) = &map_val {
-                    for (k, v) in m.iter() {
-                        args_map.insert(k.clone(), value_to_json(v, &vm.strings));
+            let primary = base + a;
+            let primary_val = if primary < vm.registers.len() {
+                Some(vm.reg(primary))
+            } else {
+                None
+            };
+            let arg_map_reg = match &primary_val {
+                Some(Value::Map(_)) => Some(primary),
+                Some(_) => primary.checked_add(1),
+                None => None,
+            };
+            if let Some(arg_map_reg) = arg_map_reg {
+                if arg_map_reg < vm.registers.len() {
+                    let map_val = vm.reg(arg_map_reg);
+                    if let Value::Map(m) = &map_val {
+                        for (k, v) in m.iter() {
+                            args_map.insert(k.clone(), value_to_json(v, &vm.strings));
+                        }
                     }
                 }
             }
@@ -633,11 +790,24 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
             };
             if let Err(msg) = validate_tool_policy(&policy, &args_json) {
                 let err_msg = format!("policy violation for '{}': {}", tool_alias, msg);
-                vm.set_reg(
-                    base + a,
-                    Value::String(StringRef::Owned(err_msg)),
-                );
-                return;
+                vm.set_reg(base + a, Value::String(StringRef::Owned(err_msg)));
+                return 0;
+            }
+
+            // Mirror interpreter effect-budget enforcement for tool alias and
+            // tool_id prefix (e.g. "http" from "http.get").
+            for budget_key in [tool_alias.as_str(), tool_id.split('.').next().unwrap_or("")] {
+                if let Some((remaining, limit)) = vm.effect_budgets.get_mut(budget_key) {
+                    if *remaining == 0 {
+                        let err_msg = format!(
+                            "effect budget exceeded for '{}': limit {} reached",
+                            budget_key, limit
+                        );
+                        vm.set_reg(base + a, Value::String(StringRef::Owned(err_msg)));
+                        return 0;
+                    }
+                    *remaining -= 1;
+                }
             }
 
             // Dispatch synchronously via the tool_dispatcher if one is configured.
@@ -653,10 +823,7 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
                         vm.set_reg(base + a, json_to_value(&response.outputs));
                     }
                     Err(e) => {
-                        vm.set_reg(
-                            base + a,
-                            Value::String(StringRef::Owned(e.to_string())),
-                        );
+                        vm.set_reg(base + a, Value::String(StringRef::Owned(e.to_string())));
                     }
                 }
             } else {
@@ -669,7 +836,121 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
         }
 
         // TraceRef already handled above.
-
         _ => {}
+    }
+
+    // Use an ABI-stable integer sentinel (not bool) so stitched code can
+    // safely branch with `test rax, rax` / `jnz` regardless of Rust bool ABI.
+    if matches!(instr.op, lumen_core::lir::OpCode::IsVariant) && lm_rt_is_variant_skip_flag() {
+        STENCIL_SKIP_NEXT_SENTINEL
+    } else {
+        0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    use lumen_core::lir::{Instruction, LirCell, LirModule, LirTool, OpCode};
+
+    use crate::services::tools::{ToolDispatcher, ToolError, ToolResponse};
+
+    struct EchoArgsDispatcher;
+
+    impl ToolDispatcher for EchoArgsDispatcher {
+        fn dispatch(&self, request: &ToolRequest) -> Result<ToolResponse, ToolError> {
+            Ok(ToolResponse {
+                outputs: request.args.clone(),
+                latency_ms: 0,
+            })
+        }
+    }
+
+    fn module_with_tool(alias: &str, tool_id: &str) -> LirModule {
+        LirModule {
+            version: "1.0".into(),
+            doc_hash: String::new(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: None,
+                registers: 4,
+                constants: vec![],
+                instructions: vec![],
+                effect_handler_metas: vec![],
+                osr_points: vec![],
+            }],
+            tools: vec![LirTool {
+                alias: alias.to_string(),
+                tool_id: tool_id.to_string(),
+                version: "1".into(),
+                mcp_url: None,
+            }],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            handlers: vec![],
+            effect_binds: vec![],
+        }
+    }
+
+    fn run_toolcall(vm: &mut VM, a: u16) -> u64 {
+        vm.stencil_base = 0;
+        vm.registers.resize(8, NbValue::new_null());
+        let ctx = vm.vm_ctx.as_ptr();
+        unsafe {
+            (*ctx).stack_pool = vm as *mut VM as *mut ();
+        }
+        let instr = Instruction::abx(OpCode::ToolCall, a, 0);
+        let word: u64 = unsafe { std::mem::transmute(instr) };
+        unsafe { lm_rt_stencil_runtime(ctx, word) }
+    }
+
+    #[test]
+    fn toolcall_uses_primary_arg_map_when_present() {
+        let mut vm = VM::new();
+        vm.tool_dispatcher = Some(Box::new(EchoArgsDispatcher));
+        vm.load(module_with_tool("Echo", "echo.call"));
+        vm.registers.resize(8, NbValue::new_null());
+
+        let mut args = BTreeMap::new();
+        args.insert("x".to_string(), Value::Int(7));
+        vm.set_reg(0, Value::new_map(args));
+
+        let sentinel = run_toolcall(&mut vm, 0);
+        assert_eq!(sentinel, 0);
+
+        match vm.reg(0) {
+            Value::Map(m) => {
+                assert_eq!(m.get("x"), Some(&Value::Int(7)));
+            }
+            other => panic!("expected map output from dispatcher, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn toolcall_enforces_effect_budget_in_stencil_runtime() {
+        let mut vm = VM::new();
+        vm.tool_dispatcher = Some(Box::new(EchoArgsDispatcher));
+        vm.set_effect_budget("Echo", 0);
+        vm.load(module_with_tool("Echo", "echo.call"));
+        vm.registers.resize(8, NbValue::new_null());
+
+        vm.set_reg(0, Value::new_map(BTreeMap::new()));
+        let sentinel = run_toolcall(&mut vm, 0);
+        assert_eq!(sentinel, 0);
+
+        match vm.reg(0) {
+            Value::String(StringRef::Owned(msg)) => {
+                assert!(msg.contains("effect budget exceeded"));
+                assert!(msg.contains("Echo"));
+            }
+            other => panic!("expected budget error string, got {other:?}"),
+        }
     }
 }

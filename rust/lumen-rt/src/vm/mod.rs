@@ -84,6 +84,25 @@ pub struct StackFrame {
     pub ip: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct VmRecentEvent {
+    cell_idx: usize,
+    ip: usize,
+    base: usize,
+    opcode: OpCode,
+}
+
+impl VmRecentEvent {
+    const fn empty() -> Self {
+        Self {
+            cell_idx: usize::MAX,
+            ip: 0,
+            base: 0,
+            opcode: OpCode::Nop,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Error)]
 pub enum VmError {
     #[error("runtime error: {0}")]
@@ -460,6 +479,11 @@ pub struct VM {
     pub(crate) main_fiber: Box<Fiber>,
     pub(crate) max_instructions: u64,
     pub(crate) instruction_count: u64,
+    /// Most recent interpreter events for crash reporting.
+    /// Fixed-size ring to avoid allocations in the hot path.
+    recent_vm_events: [VmRecentEvent; RECENT_VM_EVENTS_CAPACITY],
+    recent_vm_events_head: usize,
+    recent_vm_events_len: usize,
     /// Optional fuel counter. Each instruction decrements fuel by 1.
     /// When fuel hits 0, execution stops with a "fuel exhausted" error.
     pub(crate) fuel: Option<u64>,
@@ -479,8 +503,8 @@ pub struct VM {
     /// read by `return_from_stencil`, `exec_intrinsic_from_stencil`, and
     /// `dispatch_call_from_stencil` to compute absolute register addresses.
     pub(crate) stencil_base: usize,
-    /// Tier 1 stencil (copy-and-patch) compilation engine. Fires on first call
-    /// (threshold=0), compiles supported cells to stitched native code.
+    /// Tier 1 stencil (copy-and-patch) compilation engine. Tries compile on
+    /// first call, with optional threshold-based retry, and executes stitched code.
     pub stencil_tier: StencilTier,
     /// Tier 2 Cranelift JIT compilation engine. Tracks call counts and compiles hot cells
     /// to optimised native code via Cranelift.
@@ -494,6 +518,7 @@ pub struct VM {
 
 const MAX_AWAIT_RETRIES: u32 = 10_000;
 const DEFAULT_MAX_INSTRUCTIONS: u64 = 10_000_000_000;
+const RECENT_VM_EVENTS_CAPACITY: usize = 64;
 
 impl VM {
     pub fn new() -> Self {
@@ -572,6 +597,9 @@ impl VM {
             main_fiber,
             max_instructions: DEFAULT_MAX_INSTRUCTIONS,
             instruction_count: 0,
+            recent_vm_events: [VmRecentEvent::empty(); RECENT_VM_EVENTS_CAPACITY],
+            recent_vm_events_head: 0,
+            recent_vm_events_len: 0,
             fuel: None,
             trace_id: None,
             trace_seq: 0,
@@ -802,23 +830,17 @@ impl VM {
     /// this by pre-growing the vector in `StencilTier::execute()` (STENCIL_HEADROOM
     /// registers). This callback runs inside a `lm_rt_*` C call, so stitched
     /// code is not executing concurrently — any resize here is safe.
-    pub(crate) fn dispatch_call_from_stencil(
-        &mut self,
-        a: usize,
-        b: usize,
-    ) -> Result<(), VmError> {
-        let stencil_base = self.stencil_base;
+    pub(crate) fn dispatch_call_from_stencil(&mut self, a: usize, b: usize) -> Result<(), VmError> {
+        let caller_stencil_base = self.stencil_base;
 
         // Resolve callee cell index from the value in register a.
-        let callee_name_val = self.reg(stencil_base + a);
+        let callee_name_val = self.reg(caller_stencil_base + a);
         let target_idx = {
             let module = self.module.as_ref().ok_or(VmError::NoModule)?;
             let name = match &callee_name_val {
                 Value::String(sr) => match sr {
                     StringRef::Owned(s) => s.clone(),
-                    StringRef::Interned(id) => {
-                        self.strings.resolve(*id).unwrap_or("").to_owned()
-                    }
+                    StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or("").to_owned(),
                 },
                 _ => {
                     return Err(VmError::UndefinedCell(format!(
@@ -836,43 +858,33 @@ impl VM {
             }
         };
 
-        // The callee frame lives immediately after the argument registers.
-        // We use stencil_base + a + 1 as the callee base to stay within the
-        // pre-grown register window (STENCIL_HEADROOM).
-        let callee_base = stencil_base + a + 1;
-
-        // Ensure the register vector is large enough for the callee frame.
-        // This may resize but we are inside a C callback (not inside stitched
-        // hot code), so the stitcher's r14 is not in use right now.
-        {
+        // Allocate a fresh interpreter frame at the high-water mark (like the native
+        // call path) so shrinking the callee frame never clobbers the caller's
+        // registers, then copy arguments from the stencil frame into it.
+        let (params, cell_regs, num_regs) = {
             let module = self.module.as_ref().unwrap();
-            let callee_cell_regs = module.cells[target_idx].registers as usize;
-            let needed = callee_base + callee_cell_regs.max(b + 4);
-            if needed > self.registers.len() {
-                self.registers.resize(needed, NbValue::new_null());
-            }
-        }
+            let callee_cell = &module.cells[target_idx];
+            (
+                callee_cell.params.clone(),
+                callee_cell.registers,
+                callee_cell.registers as usize,
+            )
+        };
+        let callee_base = self.grow_registers(num_regs.max(16));
 
         // Copy arguments into callee parameter registers.
-        {
-            let module = self.module.as_ref().unwrap();
-            let params: Vec<_> = module.cells[target_idx].params.clone();
-            let cell_regs = module.cells[target_idx].registers;
-            for i in 0..b {
-                if i < params.len() {
-                    let dst = params[i].register as usize;
-                    if dst < cell_regs as usize {
-                        let src_nb = self
-                            .registers
-                            .get(stencil_base + a + 1 + i)
-                            .copied()
-                            .unwrap_or(NbValue::new_null());
-                        if callee_base + dst < self.registers.len() {
-                            let old = self.registers[callee_base + dst];
-                            old.drop_heap();
-                            self.registers[callee_base + dst] = src_nb;
-                        }
-                    }
+        for i in 0..b {
+            if i < params.len() {
+                let dst = params[i].register as usize;
+                if dst < cell_regs as usize {
+                    let src_nb = self
+                        .registers
+                        .get(caller_stencil_base + a + 1 + i)
+                        .copied()
+                        .unwrap_or(NbValue::new_null());
+                    let old = self.registers[callee_base + dst];
+                    old.drop_heap();
+                    self.registers[callee_base + dst] = src_nb;
                 }
             }
         }
@@ -883,15 +895,21 @@ impl VM {
             cell_idx: target_idx,
             base_register: callee_base,
             ip: 0,
-            return_register: stencil_base + a,
+            return_register: caller_stencil_base + a,
             future_id: None,
             osr_points: 0,
         });
 
-        let result = self.run_until(frame_depth)?;
+        // Treat stencil_base as stack-like state: always restore the caller
+        // base on unwind (success or error) so nested helper activity cannot
+        // leak/clobber the active caller stencil frame.
+        let prev_stencil_base = self.stencil_base;
+        let run_result = self.run_until(frame_depth);
+        self.stencil_base = prev_stencil_base;
+        let result = run_result?;
 
         // Write the return value into the stencil's destination register.
-        self.set_reg(stencil_base + a, result);
+        self.set_reg(caller_stencil_base + a, result);
         Ok(())
     }
 
@@ -1017,6 +1035,75 @@ impl VM {
         }
     }
 
+    #[inline(always)]
+    fn clear_recent_vm_events(&mut self) {
+        self.recent_vm_events_head = 0;
+        self.recent_vm_events_len = 0;
+    }
+
+    #[inline(always)]
+    fn record_recent_vm_event(&mut self, cell_idx: usize, ip: usize, base: usize, opcode: OpCode) {
+        self.recent_vm_events[self.recent_vm_events_head] = VmRecentEvent {
+            cell_idx,
+            ip,
+            base,
+            opcode,
+        };
+        self.recent_vm_events_head += 1;
+        if self.recent_vm_events_head == RECENT_VM_EVENTS_CAPACITY {
+            self.recent_vm_events_head = 0;
+        }
+        if self.recent_vm_events_len < RECENT_VM_EVENTS_CAPACITY {
+            self.recent_vm_events_len += 1;
+        }
+    }
+
+    fn format_recent_vm_events(&self) -> String {
+        if self.recent_vm_events_len == 0 {
+            return String::new();
+        }
+        let module = self.module.as_ref();
+        let mut out = String::from("\nRecent VM events (oldest to newest):");
+        for i in 0..self.recent_vm_events_len {
+            let idx = (self.recent_vm_events_head + RECENT_VM_EVENTS_CAPACITY
+                - self.recent_vm_events_len
+                + i)
+                % RECENT_VM_EVENTS_CAPACITY;
+            let event = self.recent_vm_events[idx];
+            let cell_name = module
+                .and_then(|m| m.cells.get(event.cell_idx))
+                .map(|c| c.name.as_str())
+                .unwrap_or("<unknown>");
+            out.push_str(&format!(
+                "\n  [{}] op={:?} cell={} ip={} base={}",
+                i, event.opcode, cell_name, event.ip, event.base
+            ));
+        }
+        out
+    }
+
+    fn attach_recent_vm_events(&self, err: VmError) -> VmError {
+        let recent = self.format_recent_vm_events();
+        if recent.is_empty() {
+            return err;
+        }
+        match err {
+            VmError::WithStackTrace {
+                message,
+                mut stack_trace,
+                frames,
+            } => {
+                stack_trace.push_str(&recent);
+                VmError::WithStackTrace {
+                    message,
+                    stack_trace,
+                    frames,
+                }
+            }
+            other => other,
+        }
+    }
+
     /// Load a LIR module into the VM.
     pub fn load(&mut self, module: LirModule) {
         // Intern all strings
@@ -1043,6 +1130,7 @@ impl VM {
         // previous module, then install a fresh empty stack for the new one.
         self.vm_ctx.reset_effect_stack();
         self.instruction_count = 0;
+        self.clear_recent_vm_events();
         self.cell_index_cache.clear();
         let mut machine_initials: BTreeMap<String, String> = BTreeMap::new();
         for addon in &module.addons {
@@ -1575,6 +1663,120 @@ impl VM {
         }
     }
 
+    /// Write an integer result to a register using the NbValue fast path when possible.
+    #[inline(always)]
+    fn set_reg_int_fast(&mut self, idx: usize, value: i64) {
+        if (NbValue::MIN_INT48..=NbValue::MAX_INT48).contains(&value) {
+            self.set_reg_nb(idx, NbValue::new_int(value));
+        } else {
+            // Preserve semantics for large i64 values that do not fit inline.
+            self.set_reg_nb(idx, NbValue::from_legacy(Value::Int(value)));
+        }
+    }
+
+    /// Fast numeric arithmetic path over NbValue without legacy conversion.
+    ///
+    /// Returns:
+    /// - `Some(result)` if the operation was handled here (or produced an error).
+    /// - `None` to fall back to legacy arithmetic handling.
+    #[inline(always)]
+    fn try_arith_nb_fast(
+        &mut self,
+        dst_idx: usize,
+        lhs_nb: NbValue,
+        rhs_nb: NbValue,
+        op: BinaryOp,
+    ) -> Option<Result<(), VmError>> {
+        if let (Some(x), Some(y)) = (lhs_nb.as_int(), rhs_nb.as_int()) {
+            let int_result = match op {
+                BinaryOp::Add => x
+                    .checked_add(y)
+                    .ok_or_else(|| VmError::ArithmeticOverflow("addition".to_string())),
+                BinaryOp::Sub => x
+                    .checked_sub(y)
+                    .ok_or_else(|| VmError::ArithmeticOverflow("subtraction".to_string())),
+                BinaryOp::Mul => x
+                    .checked_mul(y)
+                    .ok_or_else(|| VmError::ArithmeticOverflow("multiplication".to_string())),
+                BinaryOp::Div => {
+                    if y == 0 {
+                        Err(VmError::DivisionByZero)
+                    } else {
+                        x.checked_div(y)
+                            .ok_or_else(|| VmError::ArithmeticOverflow("division".to_string()))
+                    }
+                }
+                BinaryOp::FloorDiv => {
+                    if y == 0 {
+                        Err(VmError::ArithmeticOverflow("floor division".to_string()))
+                    } else {
+                        Ok(x.div_euclid(y))
+                    }
+                }
+                BinaryOp::Mod => {
+                    if y == 0 {
+                        Err(VmError::DivisionByZero)
+                    } else {
+                        Ok(x.rem_euclid(y))
+                    }
+                }
+                _ => return None,
+            };
+            return Some(match int_result {
+                Ok(value) => {
+                    self.set_reg_int_fast(dst_idx, value);
+                    Ok(())
+                }
+                Err(err) => Err(err),
+            });
+        }
+
+        if let (Some(x), Some(y)) = (lhs_nb.as_float(), rhs_nb.as_float()) {
+            let out = match op {
+                BinaryOp::Add => x + y,
+                BinaryOp::Sub => x - y,
+                BinaryOp::Mul => x * y,
+                BinaryOp::Div => x / y,
+                BinaryOp::FloorDiv => (x / y).floor(),
+                BinaryOp::Mod => x.rem_euclid(y),
+                _ => return None,
+            };
+            self.set_reg_nb(dst_idx, NbValue::new_float(out));
+            return Some(Ok(()));
+        }
+
+        if let (Some(x), Some(y)) = (lhs_nb.as_int(), rhs_nb.as_float()) {
+            let out = match op {
+                BinaryOp::Add => (x as f64) + y,
+                BinaryOp::Sub => (x as f64) - y,
+                BinaryOp::Mul => (x as f64) * y,
+                BinaryOp::Div => (x as f64) / y,
+                BinaryOp::FloorDiv => ((x as f64) / y).floor(),
+                BinaryOp::Mod => (x as f64).rem_euclid(y),
+                _ => return None,
+            };
+            self.set_reg_nb(dst_idx, NbValue::new_float(out));
+            return Some(Ok(()));
+        }
+
+        if let (Some(x), Some(y)) = (lhs_nb.as_float(), rhs_nb.as_int()) {
+            let yf = y as f64;
+            let out = match op {
+                BinaryOp::Add => x + yf,
+                BinaryOp::Sub => x - yf,
+                BinaryOp::Mul => x * yf,
+                BinaryOp::Div => x / yf,
+                BinaryOp::FloorDiv => (x / yf).floor(),
+                BinaryOp::Mod => x.rem_euclid(yf),
+                _ => return None,
+            };
+            self.set_reg_nb(dst_idx, NbValue::new_float(out));
+            return Some(Ok(()));
+        }
+
+        None
+    }
+
     fn start_future_task(&mut self, task: FutureTask) -> Result<(), VmError> {
         if self.frames.len() >= MAX_CALL_DEPTH {
             return Err(VmError::StackOverflow(MAX_CALL_DEPTH));
@@ -1852,6 +2054,7 @@ impl VM {
         // Push initial frame
         self.instruction_count = 0;
         self.trace_seq = 0;
+        self.clear_recent_vm_events();
         self.frames.push(CallFrame {
             cell_idx,
             base_register: base,
@@ -1864,7 +2067,8 @@ impl VM {
         // Execute
         self.run_until(0).map_err(|err| {
             let frames = self.capture_stack_trace();
-            err.with_stack_trace(frames)
+            let err = err.with_stack_trace(frames);
+            self.attach_recent_vm_events(err)
         })
     }
 
@@ -1938,6 +2142,8 @@ impl VM {
 
             let instr = cell.instructions[ip];
             ip += 1;
+            let event_ip = ip.wrapping_sub(1);
+            self.record_recent_vm_event(cell_idx, event_ip, base, instr.op);
 
             // Lightweight instruction counting — use local counter, sync periodically
             local_count += 1;
@@ -1971,7 +2177,7 @@ impl VM {
                 let cell_name = cell.name.clone();
                 self.emit_debug_event(DebugEvent::Step {
                     cell_name,
-                    ip: ip.wrapping_sub(1),
+                    ip: event_ip,
                     opcode: format!("{:?}", instr.op),
                 });
             }
@@ -2033,7 +2239,8 @@ impl VM {
                             #[cfg(feature = "jit")]
                             {
                                 let stencil_compiled = self.stencil_tier.is_compiled(target_idx);
-                                let stencil_try = stencil_compiled || self.stencil_tier.record_call(target_idx);
+                                let stencil_try =
+                                    stencil_compiled || self.stencil_tier.record_call(target_idx);
                                 if stencil_try {
                                     if !stencil_compiled {
                                         self.stencil_tier.try_compile(target_idx, module);
@@ -2041,15 +2248,24 @@ impl VM {
                                     if self.stencil_tier.is_compiled(target_idx) {
                                         let callee_base = base + a + 1;
                                         let target_cell = &module.cells[target_idx];
-                                        let needed = callee_base + (target_cell.registers as usize).max(nargs + 4);
+                                        let needed = callee_base
+                                            + (target_cell.registers as usize).max(nargs + 4);
                                         if needed > self.registers.len() {
                                             self.registers.resize(needed, NbValue::new_null());
                                         }
-                                        let mut stencil = std::mem::replace(&mut self.stencil_tier, StencilTier::disabled());
-                                        let stencil_result = stencil.execute(self, target_idx, callee_base);
+                                        let mut stencil = std::mem::replace(
+                                            &mut self.stencil_tier,
+                                            StencilTier::disabled(),
+                                        );
+                                        let stencil_result =
+                                            stencil.execute(self, target_idx, callee_base);
                                         self.stencil_tier = stencil;
                                         if let Ok(()) = stencil_result {
-                                            let ret_nb = self.registers.get(callee_base).copied().unwrap_or(NbValue::new_null());
+                                            let ret_nb = self
+                                                .registers
+                                                .get(callee_base)
+                                                .copied()
+                                                .unwrap_or(NbValue::new_null());
                                             self.registers[base + a] = ret_nb;
                                             ip += 1;
                                             continue;
@@ -2275,9 +2491,13 @@ impl VM {
                                     };
                                     if name_str == cell.name {
                                         Some(cell_idx)
-                                    } else if let Some(&cached) = self.cell_index_cache.get(name_str) {
+                                    } else if let Some(&cached) =
+                                        self.cell_index_cache.get(name_str)
+                                    {
                                         Some(cached)
-                                    } else if let Some(idx) = module.cells.iter().position(|c| c.name == name_str) {
+                                    } else if let Some(idx) =
+                                        module.cells.iter().position(|c| c.name == name_str)
+                                    {
                                         self.cell_index_cache.insert(name_str.to_string(), idx);
                                         Some(idx)
                                     } else {
@@ -2288,7 +2508,8 @@ impl VM {
                             };
                             if let Some(target_idx) = tc_target {
                                 let stencil_compiled = self.stencil_tier.is_compiled(target_idx);
-                                let stencil_try = stencil_compiled || self.stencil_tier.record_call(target_idx);
+                                let stencil_try =
+                                    stencil_compiled || self.stencil_tier.record_call(target_idx);
                                 if stencil_try {
                                     if !stencil_compiled {
                                         self.stencil_tier.try_compile(target_idx, module);
@@ -2296,21 +2517,34 @@ impl VM {
                                     if self.stencil_tier.is_compiled(target_idx) {
                                         let callee_base = base + a + 1;
                                         let target_cell = &module.cells[target_idx];
-                                        let needed = callee_base + (target_cell.registers as usize).max(nargs + 4);
+                                        let needed = callee_base
+                                            + (target_cell.registers as usize).max(nargs + 4);
                                         if needed > self.registers.len() {
                                             self.registers.resize(needed, NbValue::new_null());
                                         }
-                                        let mut stencil = std::mem::replace(&mut self.stencil_tier, StencilTier::disabled());
-                                        let stencil_result = stencil.execute(self, target_idx, callee_base);
+                                        let mut stencil = std::mem::replace(
+                                            &mut self.stencil_tier,
+                                            StencilTier::disabled(),
+                                        );
+                                        let stencil_result =
+                                            stencil.execute(self, target_idx, callee_base);
                                         self.stencil_tier = stencil;
                                         if let Ok(()) = stencil_result {
-                                            let ret_nb = self.registers.get(callee_base).copied().unwrap_or(NbValue::new_null());
+                                            let ret_nb = self
+                                                .registers
+                                                .get(callee_base)
+                                                .copied()
+                                                .unwrap_or(NbValue::new_null());
                                             let result_value = ret_nb.to_legacy();
                                             let frame = self.frames.pop().ok_or_else(|| {
-                                                VmError::Runtime("call stack underflow on tailcall stencil".into())
+                                                VmError::Runtime(
+                                                    "call stack underflow on tailcall stencil"
+                                                        .into(),
+                                                )
                                             })?;
                                             if has_debug {
-                                                let cname = module.cells[frame.cell_idx].name.clone();
+                                                let cname =
+                                                    module.cells[frame.cell_idx].name.clone();
                                                 self.emit_debug_event(DebugEvent::CallExit {
                                                     cell_name: cname,
                                                     result: result_value.clone(),
@@ -2318,7 +2552,10 @@ impl VM {
                                             }
                                             self.shrink_registers(frame.base_register);
                                             if let Some(fid) = frame.future_id {
-                                                self.future_states.insert(fid, FutureState::Completed(result_value));
+                                                self.future_states.insert(
+                                                    fid,
+                                                    FutureState::Completed(result_value),
+                                                );
                                                 if self.frames.len() <= limit {
                                                     return Ok(Value::Null);
                                                 }
@@ -2849,108 +3086,162 @@ impl VM {
 
                 // Arithmetic
                 OpCode::Add => {
-                    let lhs = self.reg(base + b);
-                    let rhs = self.reg(base + c);
-                    // Check for strings first for concatenation
-                    if matches!(lhs, Value::String(_)) || matches!(rhs, Value::String(_)) {
-                        // In-place string concat optimization: when the destination
-                        // IS the source (a == b, i.e. `s = s + "x"`), we can safely
-                        // take the left value out and push_str in-place to avoid
-                        // allocating a new String. Otherwise we must clone to avoid
-                        // nulling a register that may be read again later.
-                        if a == b {
-                            // Read RHS as string
-                            let rhs_cow = value_to_str_cow(&rhs, &self.strings);
-                            let rhs_str: String = rhs_cow.into_owned();
-                            // Safe in-place: destination overwrites source
-                            let left_val = self.reg_take(base + b);
-                            let result = match left_val {
-                                Value::String(StringRef::Owned(mut s)) => {
-                                    s.push_str(&rhs_str);
-                                    Value::String(StringRef::Owned(s))
-                                }
-                                other => {
-                                    let left_str = match &other {
-                                        Value::String(StringRef::Interned(id)) => {
-                                            self.strings.resolve(*id).unwrap_or("").to_string()
-                                        }
-                                        _ => other.as_string(),
-                                    };
-                                    let mut s =
-                                        String::with_capacity(left_str.len() + rhs_str.len());
-                                    s.push_str(&left_str);
-                                    s.push_str(&rhs_str);
-                                    Value::String(StringRef::Owned(s))
-                                }
-                            };
-                            self.set_reg(base + a, result);
-                        } else {
-                            // Not safe to take: use already-read values
-                            let lhs_cow = value_to_str_cow(&lhs, &self.strings);
-                            let rhs_cow = value_to_str_cow(&rhs, &self.strings);
-                            let mut s = String::with_capacity(lhs_cow.len() + rhs_cow.len());
-                            s.push_str(&lhs_cow);
-                            s.push_str(&rhs_cow);
-                            self.set_reg(base + a, Value::String(StringRef::Owned(s)));
-                        }
-                    } else if matches!(lhs, Value::List(_)) && matches!(rhs, Value::List(_)) {
-                        // List concatenation with pre-allocated capacity
-                        if let (Value::List(l), Value::List(r)) = (&lhs, &rhs) {
-                            let mut combined = Vec::with_capacity(l.len() + r.len());
-                            combined.extend(l.iter().cloned());
-                            combined.extend(r.iter().cloned());
-                            self.set_reg(base + a, Value::new_list(combined));
-                        }
+                    let lhs_nb = self.reg_nb(base + b);
+                    let rhs_nb = self.reg_nb(base + c);
+                    if let Some(result) =
+                        self.try_arith_nb_fast(base + a, lhs_nb, rhs_nb, BinaryOp::Add)
+                    {
+                        result?;
                     } else {
-                        // Numeric addition with promotion
-                        self.arith_op(base, a, b, c, BinaryOp::Add)?;
+                        let lhs = self.reg(base + b);
+                        let rhs = self.reg(base + c);
+                        // Check for strings first for concatenation
+                        if matches!(lhs, Value::String(_)) || matches!(rhs, Value::String(_)) {
+                            // In-place string concat optimization: when the destination
+                            // IS the source (a == b, i.e. `s = s + "x"`), we can safely
+                            // take the left value out and push_str in-place to avoid
+                            // allocating a new String. Otherwise we must clone to avoid
+                            // nulling a register that may be read again later.
+                            if a == b {
+                                // Read RHS as string
+                                let rhs_cow = value_to_str_cow(&rhs, &self.strings);
+                                let rhs_str: String = rhs_cow.into_owned();
+                                // Safe in-place: destination overwrites source
+                                let left_val = self.reg_take(base + b);
+                                let result = match left_val {
+                                    Value::String(StringRef::Owned(mut s)) => {
+                                        s.push_str(&rhs_str);
+                                        Value::String(StringRef::Owned(s))
+                                    }
+                                    other => {
+                                        let left_str = match &other {
+                                            Value::String(StringRef::Interned(id)) => {
+                                                self.strings.resolve(*id).unwrap_or("").to_string()
+                                            }
+                                            _ => other.as_string(),
+                                        };
+                                        let mut s =
+                                            String::with_capacity(left_str.len() + rhs_str.len());
+                                        s.push_str(&left_str);
+                                        s.push_str(&rhs_str);
+                                        Value::String(StringRef::Owned(s))
+                                    }
+                                };
+                                self.set_reg(base + a, result);
+                            } else {
+                                // Not safe to take: use already-read values
+                                let lhs_cow = value_to_str_cow(&lhs, &self.strings);
+                                let rhs_cow = value_to_str_cow(&rhs, &self.strings);
+                                let mut s = String::with_capacity(lhs_cow.len() + rhs_cow.len());
+                                s.push_str(&lhs_cow);
+                                s.push_str(&rhs_cow);
+                                self.set_reg(base + a, Value::String(StringRef::Owned(s)));
+                            }
+                        } else if matches!(lhs, Value::List(_)) && matches!(rhs, Value::List(_)) {
+                            // List concatenation with pre-allocated capacity
+                            if let (Value::List(l), Value::List(r)) = (&lhs, &rhs) {
+                                let mut combined = Vec::with_capacity(l.len() + r.len());
+                                combined.extend(l.iter().cloned());
+                                combined.extend(r.iter().cloned());
+                                self.set_reg(base + a, Value::new_list(combined));
+                            }
+                        } else {
+                            // Numeric addition with promotion
+                            self.arith_op(base, a, b, c, BinaryOp::Add)?;
+                        }
                     }
                 }
                 OpCode::Sub => {
-                    self.arith_op(base, a, b, c, BinaryOp::Sub)?;
+                    let lhs_nb = self.reg_nb(base + b);
+                    let rhs_nb = self.reg_nb(base + c);
+                    if let Some(result) =
+                        self.try_arith_nb_fast(base + a, lhs_nb, rhs_nb, BinaryOp::Sub)
+                    {
+                        result?;
+                    } else {
+                        self.arith_op(base, a, b, c, BinaryOp::Sub)?;
+                    }
                 }
                 OpCode::Mul => {
-                    self.arith_op(base, a, b, c, BinaryOp::Mul)?;
+                    let lhs_nb = self.reg_nb(base + b);
+                    let rhs_nb = self.reg_nb(base + c);
+                    if let Some(result) =
+                        self.try_arith_nb_fast(base + a, lhs_nb, rhs_nb, BinaryOp::Mul)
+                    {
+                        result?;
+                    } else {
+                        self.arith_op(base, a, b, c, BinaryOp::Mul)?;
+                    }
                 }
                 OpCode::Div => {
-                    // Pre-check for integer division by zero
+                    let lhs_nb = self.reg_nb(base + b);
+                    let rhs_nb = self.reg_nb(base + c);
+                    if let Some(result) =
+                        self.try_arith_nb_fast(base + a, lhs_nb, rhs_nb, BinaryOp::Div)
                     {
+                        result?;
+                    } else {
+                        // Preserve Div-by-zero error shape for non-inline Int representations.
                         let lhs = self.reg(base + b);
                         let rhs = self.reg(base + c);
                         if matches!((&lhs, &rhs), (Value::Int(_), Value::Int(0))) {
                             return Err(VmError::DivisionByZero);
                         }
+                        self.arith_op(base, a, b, c, BinaryOp::Div)?;
                     }
-                    self.arith_op(base, a, b, c, BinaryOp::Div)?;
                 }
                 OpCode::FloorDiv => {
-                    self.arith_op(base, a, b, c, BinaryOp::FloorDiv)?;
+                    let lhs_nb = self.reg_nb(base + b);
+                    let rhs_nb = self.reg_nb(base + c);
+                    if let Some(result) =
+                        self.try_arith_nb_fast(base + a, lhs_nb, rhs_nb, BinaryOp::FloorDiv)
+                    {
+                        result?;
+                    } else {
+                        self.arith_op(base, a, b, c, BinaryOp::FloorDiv)?;
+                    }
                 }
                 OpCode::Mod => {
-                    // Pre-check for integer modulo by zero
+                    let lhs_nb = self.reg_nb(base + b);
+                    let rhs_nb = self.reg_nb(base + c);
+                    if let Some(result) =
+                        self.try_arith_nb_fast(base + a, lhs_nb, rhs_nb, BinaryOp::Mod)
                     {
+                        result?;
+                    } else {
+                        // Preserve Div-by-zero error shape for non-inline Int representations.
                         let lhs = self.reg(base + b);
                         let rhs = self.reg(base + c);
                         if matches!((&lhs, &rhs), (Value::Int(_), Value::Int(0))) {
                             return Err(VmError::DivisionByZero);
                         }
+                        self.arith_op(base, a, b, c, BinaryOp::Mod)?;
                     }
-                    self.arith_op(base, a, b, c, BinaryOp::Mod)?;
                 }
                 OpCode::Pow => {
                     self.arith_op(base, a, b, c, BinaryOp::Pow)?;
                 }
                 OpCode::Neg => {
-                    let val = self.reg(base + b);
-                    let result = match &val {
-                        Value::Int(n) => n
+                    let val_nb = self.reg_nb(base + b);
+                    if let Some(n) = val_nb.as_int() {
+                        let out = n
                             .checked_neg()
-                            .map(Value::Int)
-                            .ok_or(VmError::ArithmeticOverflow("negation".to_string()))?,
-                        Value::Float(f) => Value::Float(-f),
-                        _ => return Err(VmError::TypeError(format!("cannot negate {}", val))),
-                    };
-                    self.set_reg(base + a, result);
+                            .ok_or_else(|| VmError::ArithmeticOverflow("negation".to_string()))?;
+                        self.set_reg_int_fast(base + a, out);
+                    } else if let Some(f) = val_nb.as_float() {
+                        self.set_reg_nb(base + a, NbValue::new_float(-f));
+                    } else {
+                        let val = self.reg(base + b);
+                        let result = match &val {
+                            Value::Int(n) => n
+                                .checked_neg()
+                                .map(Value::Int)
+                                .ok_or(VmError::ArithmeticOverflow("negation".to_string()))?,
+                            Value::Float(f) => Value::Float(-f),
+                            _ => return Err(VmError::TypeError(format!("cannot negate {}", val))),
+                        };
+                        self.set_reg(base + a, result);
+                    }
                 }
                 OpCode::Concat => {
                     let lhs = self.reg(base + b);
@@ -3083,18 +3374,18 @@ impl VM {
                     let rhs_nb = self.reg_nb(base + c);
                     if lhs_nb.0 == rhs_nb.0 {
                         self.set_reg_nb(base + a, NbValue::new_bool(true));
-                    } else if lhs_nb.is_int() && rhs_nb.is_int() {
-                        self.set_reg_nb(base + a, NbValue::new_bool(
-                            lhs_nb.as_int().unwrap_or(0) == rhs_nb.as_int().unwrap_or(0)
-                        ));
-                    } else if lhs_nb.is_float() && rhs_nb.is_float() {
-                        self.set_reg_nb(base + a, NbValue::new_bool(
-                            f64::from_bits(lhs_nb.0) == f64::from_bits(rhs_nb.0)
-                        ));
+                    } else if let (Some(lhs_i), Some(rhs_i)) = (lhs_nb.as_int(), rhs_nb.as_int()) {
+                        self.set_reg_nb(base + a, NbValue::new_bool(lhs_i == rhs_i));
+                    } else if let (Some(lhs_f), Some(rhs_f)) =
+                        (lhs_nb.as_float(), rhs_nb.as_float())
+                    {
+                        self.set_reg_nb(base + a, NbValue::new_bool(lhs_f == rhs_f));
                     } else {
                         // TAG_PTR borrow-through: avoid deep cloning for Eq comparisons.
-                        let eq = if lhs_nb.is_ptr() && rhs_nb.is_ptr()
-                            && lhs_nb.payload() > 1 && rhs_nb.payload() > 1
+                        let eq = if lhs_nb.is_ptr()
+                            && rhs_nb.is_ptr()
+                            && lhs_nb.payload() > 1
+                            && rhs_nb.payload() > 1
                         {
                             let lhs_ref = unsafe { &*(lhs_nb.payload() as *const Value) };
                             let rhs_ref = unsafe { &*(rhs_nb.payload() as *const Value) };
@@ -3111,22 +3402,18 @@ impl VM {
                     // NbValue fast-path for int < int (the 99% case in numeric code).
                     let lhs_nb = self.reg_nb(base + b);
                     let rhs_nb = self.reg_nb(base + c);
-                    if lhs_nb.is_int() && rhs_nb.is_int() {
-                        self.set_reg_nb(base + a, NbValue::new_bool(
-                            lhs_nb.as_int().unwrap_or(0) < rhs_nb.as_int().unwrap_or(0)
-                        ));
-                    } else if lhs_nb.is_float() && rhs_nb.is_float() {
-                        self.set_reg_nb(base + a, NbValue::new_bool(
-                            f64::from_bits(lhs_nb.0) < f64::from_bits(rhs_nb.0)
-                        ));
-                    } else if lhs_nb.is_int() && rhs_nb.is_float() {
-                        self.set_reg_nb(base + a, NbValue::new_bool(
-                            (lhs_nb.as_int().unwrap_or(0) as f64) < f64::from_bits(rhs_nb.0)
-                        ));
-                    } else if lhs_nb.is_float() && rhs_nb.is_int() {
-                        self.set_reg_nb(base + a, NbValue::new_bool(
-                            f64::from_bits(lhs_nb.0) < (rhs_nb.as_int().unwrap_or(0) as f64)
-                        ));
+                    if let (Some(lhs_i), Some(rhs_i)) = (lhs_nb.as_int(), rhs_nb.as_int()) {
+                        self.set_reg_nb(base + a, NbValue::new_bool(lhs_i < rhs_i));
+                    } else if let (Some(lhs_f), Some(rhs_f)) =
+                        (lhs_nb.as_float(), rhs_nb.as_float())
+                    {
+                        self.set_reg_nb(base + a, NbValue::new_bool(lhs_f < rhs_f));
+                    } else if let (Some(lhs_i), Some(rhs_f)) = (lhs_nb.as_int(), rhs_nb.as_float())
+                    {
+                        self.set_reg_nb(base + a, NbValue::new_bool((lhs_i as f64) < rhs_f));
+                    } else if let (Some(lhs_f), Some(rhs_i)) = (lhs_nb.as_float(), rhs_nb.as_int())
+                    {
+                        self.set_reg_nb(base + a, NbValue::new_bool(lhs_f < (rhs_i as f64)));
                     } else {
                         // COLD PATH: strings, BigInt, etc.
                         let b_val = lhs_nb.peek_legacy();
@@ -3135,11 +3422,15 @@ impl VM {
                             (Value::String(x), Value::String(y)) => {
                                 let s1 = match x {
                                     StringRef::Owned(s) => s.as_str(),
-                                    StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                                    StringRef::Interned(id) => {
+                                        self.strings.resolve(*id).unwrap_or("")
+                                    }
                                 };
                                 let s2 = match y {
                                     StringRef::Owned(s) => s.as_str(),
-                                    StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                                    StringRef::Interned(id) => {
+                                        self.strings.resolve(*id).unwrap_or("")
+                                    }
                                 };
                                 s1 < s2
                             }
@@ -3175,22 +3466,18 @@ impl VM {
                     // NbValue fast-path for int <= int.
                     let lhs_nb = self.reg_nb(base + b);
                     let rhs_nb = self.reg_nb(base + c);
-                    if lhs_nb.is_int() && rhs_nb.is_int() {
-                        self.set_reg_nb(base + a, NbValue::new_bool(
-                            lhs_nb.as_int().unwrap_or(0) <= rhs_nb.as_int().unwrap_or(0)
-                        ));
-                    } else if lhs_nb.is_float() && rhs_nb.is_float() {
-                        self.set_reg_nb(base + a, NbValue::new_bool(
-                            f64::from_bits(lhs_nb.0) <= f64::from_bits(rhs_nb.0)
-                        ));
-                    } else if lhs_nb.is_int() && rhs_nb.is_float() {
-                        self.set_reg_nb(base + a, NbValue::new_bool(
-                            (lhs_nb.as_int().unwrap_or(0) as f64) <= f64::from_bits(rhs_nb.0)
-                        ));
-                    } else if lhs_nb.is_float() && rhs_nb.is_int() {
-                        self.set_reg_nb(base + a, NbValue::new_bool(
-                            f64::from_bits(lhs_nb.0) <= (rhs_nb.as_int().unwrap_or(0) as f64)
-                        ));
+                    if let (Some(lhs_i), Some(rhs_i)) = (lhs_nb.as_int(), rhs_nb.as_int()) {
+                        self.set_reg_nb(base + a, NbValue::new_bool(lhs_i <= rhs_i));
+                    } else if let (Some(lhs_f), Some(rhs_f)) =
+                        (lhs_nb.as_float(), rhs_nb.as_float())
+                    {
+                        self.set_reg_nb(base + a, NbValue::new_bool(lhs_f <= rhs_f));
+                    } else if let (Some(lhs_i), Some(rhs_f)) = (lhs_nb.as_int(), rhs_nb.as_float())
+                    {
+                        self.set_reg_nb(base + a, NbValue::new_bool((lhs_i as f64) <= rhs_f));
+                    } else if let (Some(lhs_f), Some(rhs_i)) = (lhs_nb.as_float(), rhs_nb.as_int())
+                    {
+                        self.set_reg_nb(base + a, NbValue::new_bool(lhs_f <= (rhs_i as f64)));
                     } else {
                         // COLD PATH: strings, BigInt, etc.
                         let b_val = lhs_nb.peek_legacy();
@@ -3199,11 +3486,15 @@ impl VM {
                             (Value::String(x), Value::String(y)) => {
                                 let s1 = match x {
                                     StringRef::Owned(s) => s.as_str(),
-                                    StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                                    StringRef::Interned(id) => {
+                                        self.strings.resolve(*id).unwrap_or("")
+                                    }
                                 };
                                 let s2 = match y {
                                     StringRef::Owned(s) => s.as_str(),
-                                    StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
+                                    StringRef::Interned(id) => {
+                                        self.strings.resolve(*id).unwrap_or("")
+                                    }
                                 };
                                 s1 <= s2
                             }
@@ -3291,14 +3582,13 @@ impl VM {
                 OpCode::Test => {
                     // NbValue fast-path: check bool tag directly.
                     let nb = self.reg_nb(base + a);
-                    let truthy = if nb.is_bool() {
-                        nb.as_bool().unwrap_or(false)
+                    let truthy = if let Some(flag) = nb.as_bool() {
+                        flag
                     } else if nb.is_null() {
                         false
-                    } else if nb.is_int() {
-                        nb.as_int().unwrap_or(0) != 0
-                    } else if nb.is_float() {
-                        let f = f64::from_bits(nb.0);
+                    } else if let Some(i) = nb.as_int() {
+                        i != 0
+                    } else if let Some(f) = nb.as_float() {
                         f != 0.0 && !f.is_nan()
                     } else if nb.is_ptr() {
                         // Borrow through TAG_PTR without cloning
@@ -3309,9 +3599,11 @@ impl VM {
                             let val_ref = unsafe { &*(payload as *const Value) };
                             match val_ref {
                                 Value::String(StringRef::Owned(s)) => !s.is_empty(),
-                                Value::String(StringRef::Interned(id)) => {
-                                    self.strings.resolve(*id).map(|s| !s.is_empty()).unwrap_or(false)
-                                }
+                                Value::String(StringRef::Interned(id)) => self
+                                    .strings
+                                    .resolve(*id)
+                                    .map(|s| !s.is_empty())
+                                    .unwrap_or(false),
                                 Value::List(l) => !l.is_empty(),
                                 Value::Tuple(t) => !t.is_empty(),
                                 Value::Map(m) => !m.is_empty(),
@@ -3968,8 +4260,7 @@ impl VM {
                     // Use the no-catch_unwind fast path — we're in Rust so panics
                     // propagate normally. `lm_rt_osr_check` (extern "C" + catch_unwind)
                     // would add ~10-100ns per loop iteration just for the unwind frame.
-                    let compiled_ptr =
-                        crate::vm::osr::osr_check::osr_check_interp(self, cell_idx);
+                    let compiled_ptr = crate::vm::osr::osr_check::osr_check_interp(self, cell_idx);
                     if !compiled_ptr.is_null() {
                         if let Ok(result) =
                             crate::vm::osr::perform_osr_transition(self, cell, osr_ip)
@@ -4341,6 +4632,190 @@ mod tests {
             .execute("add", vec![Value::Int(10), Value::Int(32)])
             .unwrap();
         assert_eq!(result, Value::Int(42));
+    }
+
+    #[test]
+    fn test_dispatch_call_from_stencil_restores_base_on_error() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "bad".into(),
+                params: vec![],
+                returns: Some("Int".into()),
+                registers: 1,
+                constants: vec![],
+                // c=1 is out of bounds for registers=1 and triggers a runtime error in debug checks.
+                instructions: vec![
+                    Instruction::abc(OpCode::Add, 0, 0, 1),
+                    Instruction::abc(OpCode::Return, 0, 1, 0),
+                ],
+                effect_handler_metas: vec![],
+                osr_points: vec![],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        vm.load(module);
+
+        let caller_base = 32usize;
+        vm.registers.resize(caller_base + 8, NbValue::new_null());
+        vm.stencil_base = caller_base;
+        vm.set_reg(
+            caller_base,
+            Value::String(StringRef::Owned("bad".to_string())),
+        );
+
+        let err = vm
+            .dispatch_call_from_stencil(0, 0)
+            .expect_err("stencil helper call should fail");
+        assert!(
+            err.is_register_oob() || err.message_contains("register out of bounds"),
+            "expected register bounds error, got: {err}"
+        );
+        assert_eq!(
+            vm.stencil_base, caller_base,
+            "stencil_base must be restored on helper error"
+        );
+    }
+
+    #[test]
+    fn call_helper_writes_result_at_stencil_base() {
+        let mut module = LirModule::new("call-helper".into());
+        module.cells.push(LirCell {
+            name: "identity".into(),
+            params: vec![LirParam {
+                name: "x".into(),
+                ty: "Any".into(),
+                register: 0,
+                variadic: false,
+            }],
+            returns: Some("Any".into()),
+            registers: 1,
+            constants: vec![],
+            instructions: vec![Instruction::abc(OpCode::Return, 0, 1, 0)],
+            effect_handler_metas: vec![],
+            osr_points: vec![],
+        });
+        module.strings.push("identity".into());
+
+        let mut vm = VM::new();
+        vm.load(module);
+
+        let base = 32;
+        vm.registers.resize(base + 2, NbValue::new_null());
+        vm.register_top = vm.registers.len();
+        vm.stencil_base = base;
+
+        vm.set_reg(
+            base,
+            Value::String(StringRef::Owned("identity".to_string())),
+        );
+        vm.set_reg_nb(base + 1, NbValue::new_int(42));
+
+        let ctx_ptr = vm.vm_ctx.as_ptr();
+        unsafe {
+            (*ctx_ptr).stack_pool = &mut vm as *mut VM as *mut ();
+        }
+
+        let instr = Instruction::abc(OpCode::Call, 0, 1, 1);
+        let instr_word: u64 = unsafe { std::mem::transmute(instr) };
+        unsafe {
+            crate::stencil_runtime::lm_rt_call(vm.vm_ctx.as_ptr(), instr_word);
+        }
+
+        assert_eq!(vm.reg(base), Value::Int(42));
+        assert_eq!(vm.stencil_base, base);
+    }
+
+    #[test]
+    fn stencil_call_falls_back_for_multi_step_callee_with_high_regs() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec![],
+            types: vec![],
+            cells: vec![
+                LirCell {
+                    name: "sum3".into(),
+                    params: vec![
+                        LirParam {
+                            name: "a".into(),
+                            ty: "Float".into(),
+                            register: 0,
+                            variadic: false,
+                        },
+                        LirParam {
+                            name: "b".into(),
+                            ty: "Float".into(),
+                            register: 1,
+                            variadic: false,
+                        },
+                        LirParam {
+                            name: "c".into(),
+                            ty: "Float".into(),
+                            register: 2,
+                            variadic: false,
+                        },
+                    ],
+                    returns: Some("Float".into()),
+                    registers: 5,
+                    constants: vec![],
+                    instructions: vec![
+                        Instruction::abc(OpCode::Add, 3, 0, 1),
+                        Instruction::abc(OpCode::Add, 4, 3, 2),
+                        Instruction::abc(OpCode::Return, 4, 1, 0),
+                    ],
+                    effect_handler_metas: vec![],
+                    osr_points: vec![],
+                },
+                LirCell {
+                    name: "main".into(),
+                    params: vec![],
+                    returns: Some("Float".into()),
+                    registers: 320,
+                    constants: vec![
+                        Constant::String("sum3".into()),
+                        Constant::Float(1.0),
+                        Constant::Float(2.0),
+                        Constant::Float(3.0),
+                    ],
+                    instructions: vec![
+                        Instruction::abx(OpCode::LoadK, 290, 0),
+                        Instruction::abx(OpCode::LoadK, 291, 1),
+                        Instruction::abx(OpCode::LoadK, 292, 2),
+                        Instruction::abx(OpCode::LoadK, 293, 3),
+                        Instruction::abc(OpCode::Call, 290, 3, 1),
+                        Instruction::abc(OpCode::Return, 290, 1, 0),
+                    ],
+                    effect_handler_metas: vec![],
+                    osr_points: vec![],
+                },
+            ],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        vm.enable_stencil_tier();
+        vm.load(module);
+        let result = vm.execute("main", vec![]).expect("main should execute");
+        assert_eq!(result, Value::Float(6.0));
+        assert_eq!(vm.stencil_stats().cells_compiled, 0);
     }
 
     #[test]
@@ -7514,6 +7989,52 @@ end
                 msg
             );
         }
+    }
+
+    #[test]
+    fn test_stack_trace_includes_recent_vm_events() {
+        let md = r#"
+# test
+
+```lumen
+cell main() -> Int
+  return helper()
+end
+
+cell helper() -> Int
+  return divide(10, 0)
+end
+
+cell divide(a: Int, b: Int) -> Int
+  return a / b
+end
+```
+"#;
+        let module = compile_lumen(md).expect("source should compile");
+        let mut vm = VM::new();
+        vm.load(module);
+        let err = vm.execute("main", vec![]).expect_err("execution should fail");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("Recent VM events (oldest to newest):"),
+            "error should include recent VM events: {}",
+            msg
+        );
+        assert!(
+            msg.contains("op=Div"),
+            "recent VM events should include the failing opcode: {}",
+            msg
+        );
+        assert!(
+            msg.contains("cell=divide"),
+            "recent VM events should include cell name: {}",
+            msg
+        );
+        assert!(
+            msg.contains("base="),
+            "recent VM events should include base register: {}",
+            msg
+        );
     }
 
     #[test]

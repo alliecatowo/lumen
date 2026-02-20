@@ -64,7 +64,14 @@ pub struct StencilTier {
 /// becomes a dangling pointer. We pre-grow the register vector by this amount
 /// before entering stitched code to prevent any reallocation during execution.
 #[cfg(feature = "jit")]
-const STENCIL_HEADROOM: usize = 512;
+// Keep this large enough that nested stencil->stencil call chains do not need
+// to resize `vm.registers` inside runtime helpers. Resizing during a helper can
+// move the backing allocation while stitched code still holds r14 pinned to the
+// old base address.
+const STENCIL_HEADROOM: usize = 64 * 1024;
+/// Extra capacity slack to avoid backing-buffer moves while nested stencil
+/// callbacks temporarily grow `registers` length.
+const STENCIL_CAPACITY_SLACK: usize = 1 << 20;
 
 #[cfg(feature = "jit")]
 impl StencilTier {
@@ -86,7 +93,10 @@ impl StencilTier {
         Self {
             call_counts: Vec::new(),
             compiled: HashSet::new(),
-            config: StencilTierConfig { enabled: false, hot_threshold: 0 },
+            config: StencilTierConfig {
+                enabled: false,
+                hot_threshold: 0,
+            },
             stitcher: None,
             stats: StencilTierStats::default(),
         }
@@ -118,7 +128,10 @@ impl StencilTier {
         }
         self.call_counts[cell_idx] += 1;
         self.stats.total_calls_tracked += 1;
-        self.call_counts[cell_idx] == self.config.hot_threshold + 1
+        let call_count = self.call_counts[cell_idx];
+        // Always try stencil compile on first call. Keep the configured
+        // threshold trigger as a retry point for later calls.
+        call_count == 1 || call_count == self.config.hot_threshold.saturating_add(1)
     }
 
     pub fn try_compile(&mut self, cell_idx: usize, module: &LirModule) -> bool {
@@ -130,8 +143,37 @@ impl StencilTier {
             }
         };
 
-        // Architectural directive: every cell must be supported.
-        // Do NOT filter cells by opcode — compile everything.
+        // Crash-mitigation: skip Tier1 stencil compilation for cells that
+        // contain dynamic call opcodes. These cells fall back to interpreter
+        // or Tier2 JIT paths, which are safer for nested call behavior.
+        if cell
+            .instructions
+            .iter()
+            .any(|instr| matches!(instr.op, OpCode::Call | OpCode::TailCall))
+        {
+            return false;
+        }
+
+        // Semantic guard: multi-step cells are only stencil-safe for a narrow
+        // subset of opcode mixes. Keep Tier1 enabled for pure arithmetic chains,
+        // but block the known unsafe parameter-fed arithmetic pattern.
+        let effective_len = cell
+            .instructions
+            .iter()
+            .position(|instr| matches!(instr.op, OpCode::Return | OpCode::Halt))
+            .map(|idx| idx + 1)
+            .unwrap_or(cell.instructions.len());
+
+        let multi_step = effective_len > 2;
+        if multi_step {
+            let body = &cell.instructions[..effective_len];
+            if body.iter().any(|instr| !is_pure_arith(instr.op)) {
+                return false;
+            }
+            if has_known_unsafe_multi_step_arith_pattern(cell, body) {
+                return false;
+            }
+        }
 
         let code_len = {
             let stitcher = match self.stitcher.as_mut() {
@@ -143,7 +185,13 @@ impl StencilTier {
             };
 
             match stitcher.compile(cell, module, cell_idx) {
-                Ok(code) => code.code_len,
+                Ok(code) if code.code_len > 0 => code.code_len,
+                Ok(_) => {
+                    // Empty stencils (placeholder platform or unsupported opcodes).
+                    // Do NOT mark as compiled — code_ptr is NULL/invalid.
+                    self.stats.compile_failures += 1;
+                    return false;
+                }
                 Err(_) => {
                     self.stats.compile_failures += 1;
                     return false;
@@ -178,7 +226,9 @@ impl StencilTier {
                 if let Some(stencil) = library.get(op_byte) {
                     // Check all holes in this stencil for RuntimeFuncAddr.
                     for hole in &stencil.holes {
-                        if hole.hole_type == lumen_codegen::stencil_format::HoleType::RuntimeFuncAddr {
+                        if hole.hole_type
+                            == lumen_codegen::stencil_format::HoleType::RuntimeFuncAddr
+                        {
                             let func_name = opcode_to_runtime_func(instr.op);
                             if let Some(addr) = resolve_runtime_helper(func_name) {
                                 let abs_offset =
@@ -210,32 +260,49 @@ impl StencilTier {
         let code = stitcher
             .get_compiled(cell_idx)
             .ok_or_else(|| VmError::Runtime("stencil not compiled".into()))?;
+        if code.code_ptr.is_null() || code.code_len == 0 {
+            return Err(VmError::Runtime(
+                "stencil has empty code (placeholder platform)".into(),
+            ));
+        }
 
         // Pre-grow registers to prevent reallocation during runtime callbacks.
         // Stencil code pins r14 = &registers[base]. A reallocation would make
         // r14 dangle, causing memory corruption.
         let needed = base + STENCIL_HEADROOM;
+        let reserve_target = needed.saturating_add(STENCIL_CAPACITY_SLACK);
+        if reserve_target > vm.registers.capacity() {
+            vm.registers
+                .reserve(reserve_target - vm.registers.capacity());
+        }
         if needed > vm.registers.len() {
             vm.registers.resize(needed, NbValue::new_null());
         }
 
         // Record the stencil frame base so that runtime helpers (return, intrinsic,
-        // call) can compute absolute register addresses.
+        // call) can compute absolute register addresses. Save/restore is required
+        // for nested stencil calls.
+        let prev_stencil_base = vm.stencil_base;
         vm.stencil_base = base;
 
-        let regs_ptr = unsafe { vm.registers.as_mut_ptr().add(base) };
-        let ctx_ptr = vm.vm_ctx.as_ptr();
-        unsafe {
-            (*ctx_ptr).stack_pool = vm as *mut VM as *mut ();
-        }
-        unsafe {
-            call_stitched(code.code_ptr, regs_ptr, ctx_ptr);
-        }
+        let run_result = (|| -> Result<(), VmError> {
+            let regs_ptr = unsafe { vm.registers.as_mut_ptr().add(base) };
+            let ctx_ptr = vm.vm_ctx.as_ptr();
+            unsafe {
+                (*ctx_ptr).stack_pool = vm as *mut VM as *mut ();
+            }
+            unsafe {
+                call_stitched(code.code_ptr, regs_ptr, ctx_ptr);
+            }
+            Ok(())
+        })();
+        vm.stencil_base = prev_stencil_base;
+        run_result?;
         self.stats.stencil_executions += 1;
         Ok(())
     }
 
-    pub fn stats(&self) -> StencilTierStats {
+pub fn stats(&self) -> StencilTierStats {
         self.stats.clone()
     }
 }
@@ -280,6 +347,62 @@ impl StencilTier {
     pub fn stats(&self) -> StencilTierStats {
         self.stats.clone()
     }
+}
+
+fn is_pure_arith(op: OpCode) -> bool {
+    matches!(
+        op,
+        OpCode::LoadK
+            | OpCode::LoadInt
+            | OpCode::LoadNil
+            | OpCode::LoadBool
+            | OpCode::Add
+            | OpCode::Sub
+            | OpCode::Mul
+            | OpCode::Div
+            | OpCode::Mod
+            | OpCode::FloorDiv
+            | OpCode::Neg
+            | OpCode::Return
+            | OpCode::Halt
+    )
+}
+
+#[cfg(feature = "jit")]
+fn has_known_unsafe_multi_step_arith_pattern(
+    cell: &lumen_core::lir::LirCell,
+    body: &[lumen_core::lir::Instruction],
+) -> bool {
+    // Known bad shape: chained arithmetic that reads parameter registers
+    // directly can produce wrong results when invoked through call helpers.
+    if cell.params.is_empty() {
+        return false;
+    }
+
+    let reads_param = |reg: u16| cell.params.iter().any(|p| p.register == reg);
+    let mut arith_steps = 0usize;
+    let mut uses_param_input = false;
+
+    for instr in body {
+        match instr.op {
+            OpCode::Add
+            | OpCode::Sub
+            | OpCode::Mul
+            | OpCode::Div
+            | OpCode::Mod
+            | OpCode::FloorDiv => {
+                arith_steps += 1;
+                uses_param_input |= reads_param(instr.b) || reads_param(instr.c);
+            }
+            OpCode::Neg => {
+                arith_steps += 1;
+                uses_param_input |= reads_param(instr.b);
+            }
+            _ => {}
+        }
+    }
+
+    arith_steps >= 2 && uses_param_input
 }
 
 /// Map an opcode to the runtime helper function name it needs for its
@@ -337,17 +460,33 @@ fn resolve_runtime_helper(name: &str) -> Option<u64> {
 #[cfg(feature = "jit")]
 #[cfg(target_arch = "x86_64")]
 unsafe fn call_stitched(code_ptr: *const u8, regs: *mut NbValue, ctx: *mut VmContext) {
+    // The System V x86-64 ABI requires RSP to be 16-byte aligned immediately
+    // before a `call` instruction.  Rust's function prologue may leave RSP at
+    // an unknown alignment inside an inline-asm block.  We align explicitly.
+    //
+    // We pass inputs through caller-saved registers so they're available at the
+    // top of the asm (before we push callee-saved regs that could clobber them).
+    //   rcx = code_ptr  (caller-saved, fine to use as scratch)
+    //   rdi = regs      (caller-saved)
+    //   rsi = ctx       (caller-saved)
+    // Then we save rbx (callee-saved) as our RSP anchor, save r14/r15, align.
     std::arch::asm!(
-        "push r14",
-        "push r15",
-        "mov r14, {regs}",
-        "mov r15, {ctx}",
-        "call {code}",
-        "pop r15",
-        "pop r14",
-        regs = in(reg) regs,
-        ctx = in(reg) ctx,
-        code = in(reg) code_ptr,
+        "push rbx",           // save rbx; callee-saved — used as rsp anchor
+        "push r14",           // save old r14 on stack (at original_rsp - 16)
+        "push r15",           // save old r15 on stack (at original_rsp - 24)
+        "mov rbx, rsp",       // rbx = current rsp (original_rsp - 24)
+        "and rsp, -16",       // align rsp to 16-byte boundary
+        "mov r14, rdi",       // stencil ABI: r14 = register file base (was regs in rdi)
+        "mov r15, rsi",       // stencil ABI: r15 = VmContext* (was ctx in rsi)
+        "call rcx",           // call stitched code (code_ptr in rcx); rsp 16-aligned ✓
+        // Restore callee-saved registers and rsp.
+        "mov rsp, rbx",       // rsp = original_rsp - 24
+        "pop r15",            // restore old r15; rsp = original_rsp - 16
+        "pop r14",            // restore old r14; rsp = original_rsp - 8
+        "pop rbx",            // restore old rbx; rsp = original_rsp
+        in("rcx") code_ptr,
+        in("rdi") regs,
+        in("rsi") ctx,
         clobber_abi("C"),
     );
 }

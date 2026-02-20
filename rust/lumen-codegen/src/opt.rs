@@ -768,7 +768,10 @@ mod tests {
 
     // ── MIC analysis tests ────────────────────────────────────────────────────
 
-    fn make_cell_with_constants(instructions: Vec<Instruction>, constants: Vec<Constant>) -> LirCell {
+    fn make_cell_with_constants(
+        instructions: Vec<Instruction>,
+        constants: Vec<Constant>,
+    ) -> LirCell {
         LirCell {
             name: "test".to_string(),
             params: vec![],
@@ -861,18 +864,21 @@ mod tests {
         );
         let sites = analyze_tool_call_mic(&cell);
         assert_eq!(sites.len(), 1);
-        assert!(sites[0].tool_name.is_none(), "out-of-range const → no tool_name hint");
+        assert!(
+            sites[0].tool_name.is_none(),
+            "out-of-range const → no tool_name hint"
+        );
     }
 
     #[test]
     fn test_escape_analysis_promotes_non_escaping_list() {
         // NewList whose result is only used in a local read (GetIndex) — doesn't escape.
         let mut cell = make_test_cell(vec![
-            Instruction::abc(OpCode::NewList, 5, 0, 0),   // r5 = []
-            Instruction::abc(OpCode::LoadInt, 6, 1, 0),   // r6 = 1
+            Instruction::abc(OpCode::NewList, 5, 0, 0), // r5 = []
+            Instruction::abc(OpCode::LoadInt, 6, 1, 0), // r6 = 1
             // GetIndex r7 = r5[r6] — r5 is read locally, doesn't escape
             Instruction::abc(OpCode::GetIndex, 7, 5, 6),
-            Instruction::abc(OpCode::Return, 7, 1, 0),    // return r7 (an Int)
+            Instruction::abc(OpCode::Return, 7, 1, 0), // return r7 (an Int)
         ]);
 
         escape_analysis(&mut cell);
@@ -888,8 +894,8 @@ mod tests {
     fn test_escape_analysis_keeps_escaping_list() {
         // NewList whose result is returned directly — must escape to heap.
         let mut cell = make_test_cell(vec![
-            Instruction::abc(OpCode::NewList, 0, 0, 0),  // r0 = []
-            Instruction::abc(OpCode::Return, 0, 1, 0),   // return r0 — r0 escapes
+            Instruction::abc(OpCode::NewList, 0, 0, 0), // r0 = []
+            Instruction::abc(OpCode::Return, 0, 1, 0),  // return r0 — r0 escapes
         ]);
 
         escape_analysis(&mut cell);

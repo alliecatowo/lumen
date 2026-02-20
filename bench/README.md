@@ -175,6 +175,22 @@ bash bench/run_full_suite.sh --only-lumen --runs 1
 ```
 Single run of Lumen benchmarks for quick verification (~5 seconds).
 
+### Strict Output Oracles (Optional)
+```bash
+# CLI flag
+bash bench/run_full_suite.sh --strict-oracle --runs 1
+
+# Equivalent env var (useful in CI)
+LUMEN_BENCH_STRICT_ORACLE=1 bash bench/run_full_suite.sh --runs 1
+```
+
+When strict mode is enabled, the runner validates output oracles before timing for:
+- `fibonacci` (expects `fib(35) = 9227465`)
+- `nbody` (expects energies near `-0.169075164` and `-0.169086185`)
+- `matrix_mult` (expects checksum near `2022668.000001`)
+
+Default mode is unchanged (no oracle checks). In strict mode, any oracle mismatch fails the run (non-zero exit).
+
 ## Output Format
 
 ### Console Output

@@ -876,9 +876,7 @@ extern "C" fn jit_rt_get_index(_ctx: *mut VmContext, collection_ptr: i64, index_
 fn value_to_nbval(v: Value) -> i64 {
     match v {
         Value::Float(f) => f.to_bits() as i64,
-        Value::Int(i) => {
-            (NBVAL_NAN_MASK | (1u64 << 48) | ((i as u64) & NBVAL_PAYLOAD_MASK)) as i64
-        }
+        Value::Int(i) => (NBVAL_NAN_MASK | (1u64 << 48) | ((i as u64) & NBVAL_PAYLOAD_MASK)) as i64,
         Value::Bool(b) => (NBVAL_NAN_MASK | (3u64 << 48) | (b as u64)) as i64,
         Value::Null => NAN_BOX_NULL,
         other => {
@@ -1719,11 +1717,7 @@ extern "C" fn jit_rt_perform(
 /// # Signature matches ir.rs declaration:
 ///   params: [pointer_type, pointer_type, I32]
 ///   no return value
-extern "C" fn jit_rt_handle_push(
-    _vm_ctx: *mut VmContext,
-    _meta_idx: usize,
-    _offset: i32,
-) {
+extern "C" fn jit_rt_handle_push(_vm_ctx: *mut VmContext, _meta_idx: usize, _offset: i32) {
     // TODO: full implementation via lm_rt_handle_push from lumen-rt fiber_effects.
     // For now this is a no-op stub — effects in JIT-compiled code are not yet dispatched.
 }

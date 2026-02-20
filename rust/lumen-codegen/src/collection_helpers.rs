@@ -26,10 +26,21 @@ const PAYLOAD_MASK_U: u64 = 0x0000_FFFF_FFFF_FFFF;
 /// # Safety
 /// If `val` is a TAG_PTR with payload > 1, it must be a valid `*const Value` pointer.
 unsafe fn nanbox_to_value(val: i64) -> *mut Value {
+    Box::into_raw(Box::new(nb_decode(val)))
+}
+
+/// Decode a NbValue-encoded i64 directly to a stack-allocated Value.
+/// Unlike `nanbox_to_value`, this avoids heap allocation for inline types
+/// (int, float, bool, null).
+///
+/// # Safety
+/// If `val` is a TAG_PTR with payload > 1, it must be a valid `*const Value` pointer.
+#[inline]
+unsafe fn nb_decode(val: i64) -> Value {
     let u = val as u64;
     if (u & NAN_MASK_U) != NAN_MASK_U {
         // Not NaN-boxed: raw f64 float bits.
-        return Box::into_raw(Box::new(Value::Float(f64::from_bits(u))));
+        return Value::Float(f64::from_bits(u));
     }
     // NbValue uses 3-bit tags at bits 48-50 (bit 51 is the quiet-NaN bit, not part of tag).
     // Must use 0x7 mask (not 0xF) to extract the correct 3-bit tag value.
@@ -39,11 +50,11 @@ unsafe fn nanbox_to_value(val: i64) -> *mut Value {
         0 => {
             // TAG_PTR: heap pointer or special sentinel.
             if payload == 0 {
-                Box::into_raw(Box::new(Value::Null))
+                Value::Null
             } else if payload == 1 {
-                Box::into_raw(Box::new(Value::Float(f64::NAN)))
+                Value::Float(f64::NAN)
             } else {
-                Box::into_raw(Box::new((*(payload as *const Value)).clone()))
+                (*(payload as *const Value)).clone()
             }
         }
         1 => {
@@ -53,19 +64,19 @@ unsafe fn nanbox_to_value(val: i64) -> *mut Value {
             } else {
                 payload as i64
             };
-            Box::into_raw(Box::new(Value::Int(signed)))
+            Value::Int(signed)
         }
         3 => {
             // TAG_BOOL: payload 0=false, 1=true.
-            Box::into_raw(Box::new(Value::Bool(payload != 0)))
+            Value::Bool(payload != 0)
         }
         4 => {
             // TAG_NULL
-            Box::into_raw(Box::new(Value::Null))
+            Value::Null
         }
         _ => {
             // Unknown tag — treat as null.
-            Box::into_raw(Box::new(Value::Null))
+            Value::Null
         }
     }
 }
@@ -84,9 +95,7 @@ pub extern "C" fn jit_rt_new_list(_ctx: *mut VmContext, values_ptr: *const i64, 
 
     for i in 0..count {
         let val_i64 = unsafe { *values_ptr.add(i) };
-        let value_ptr = unsafe { nanbox_to_value(val_i64) };
-        let value = unsafe { (*value_ptr).clone() };
-        unsafe { drop(Box::from_raw(value_ptr)) }; // Free the temporary Value
+        let value = unsafe { nb_decode(val_i64) };
         list.push(value);
     }
 
@@ -114,15 +123,9 @@ pub extern "C" fn jit_rt_new_map(_ctx: *mut VmContext, kvpairs_ptr: *const i64, 
         let key_i64 = unsafe { *kvpairs_ptr.add(i * 2) };
         let value_i64 = unsafe { *kvpairs_ptr.add(i * 2 + 1) };
 
-        // Convert key to Value and then to string
-        let key_ptr = unsafe { nanbox_to_value(key_i64) };
-        let key_str = unsafe { (*key_ptr).as_string() };
-        unsafe { drop(Box::from_raw(key_ptr)) }; // Free the temporary Value
-
-        // Convert value to Value
-        let value_ptr = unsafe { nanbox_to_value(value_i64) };
-        let value = unsafe { (*value_ptr).clone() };
-        unsafe { drop(Box::from_raw(value_ptr)) }; // Free the temporary Value
+        let key_value = unsafe { nb_decode(key_i64) };
+        let key_str = key_value.as_string();
+        let value = unsafe { nb_decode(value_i64) };
 
         map.insert(key_str, value);
     }
@@ -150,9 +153,7 @@ pub extern "C" fn jit_rt_new_tuple(
 
     for i in 0..count {
         let val_i64 = unsafe { *values_ptr.add(i) };
-        let value_ptr = unsafe { nanbox_to_value(val_i64) };
-        let value = unsafe { (*value_ptr).clone() };
-        unsafe { drop(Box::from_raw(value_ptr)) }; // Free the temporary Value
+        let value = unsafe { nb_decode(val_i64) };
         elements.push(value);
     }
 
@@ -204,9 +205,7 @@ pub extern "C" fn jit_rt_new_set(_ctx: *mut VmContext, values_ptr: *const i64, c
 
     for i in 0..count {
         let val_i64 = unsafe { *values_ptr.add(i) };
-        let value_ptr = unsafe { nanbox_to_value(val_i64) };
-        let value = unsafe { (*value_ptr).clone() };
-        unsafe { drop(Box::from_raw(value_ptr)) };
+        let value = unsafe { nb_decode(val_i64) };
         set.insert(value);
     }
 
@@ -263,13 +262,8 @@ pub extern "C" fn jit_rt_new_record(
 /// or 0 / NAN_BOX_NULL for empty list fallback.
 #[no_mangle]
 pub extern "C" fn jit_rt_list_append(_ctx: *mut VmContext, list_ptr: i64, element: i64) -> i64 {
-    // Decode the element to append from NaN-boxed encoding.
-    let element_value = unsafe {
-        let eptr = nanbox_to_value(element);
-        let v = (*eptr).clone();
-        drop(Box::from_raw(eptr));
-        v
-    };
+    // Decode the element to append from NaN-boxed encoding (no heap allocation).
+    let element_value = unsafe { nb_decode(element) };
 
     // Extract raw pointer from NaN-boxed or raw form.
     let raw_ptr = {

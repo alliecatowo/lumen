@@ -2922,7 +2922,67 @@ impl VM {
                 Ok(arg)
             }
             29 => {
-                // SORT
+                // SORT — NbValue fast-path: for homogeneous int/float lists,
+                // borrow the Arc immutably to extract-sort-rebuild, avoiding
+                // the expensive to_legacy clone when refcount > 1.
+                let nb = self.registers[base + arg_reg];
+                let fast_result = if nb.is_ptr() && nb.payload() > 1 {
+                    let val_ref: &Value = unsafe { &*(nb.payload() as *const Value) };
+                    match val_ref {
+                        Value::List(l) if !l.is_empty() => {
+                            // Single-pass extract: check type and collect in one iteration
+                            let first = &l[0];
+                            if matches!(first, Value::Int(_)) {
+                                let mut ints = Vec::with_capacity(l.len());
+                                let mut all_int = true;
+                                for v in l.iter() {
+                                    if let Value::Int(n) = v {
+                                        ints.push(*n);
+                                    } else {
+                                        all_int = false;
+                                        break;
+                                    }
+                                }
+                                if all_int {
+                                    ints.sort_unstable();
+                                    let items: Vec<Value> =
+                                        ints.into_iter().map(Value::Int).collect();
+                                    Some(Value::List(Arc::new(items)))
+                                } else {
+                                    None
+                                }
+                            } else if matches!(first, Value::Float(_)) {
+                                let mut floats = Vec::with_capacity(l.len());
+                                let mut all_float = true;
+                                for v in l.iter() {
+                                    if let Value::Float(f) = v {
+                                        floats.push(*f);
+                                    } else {
+                                        all_float = false;
+                                        break;
+                                    }
+                                }
+                                if all_float {
+                                    floats.sort_unstable_by(f64::total_cmp);
+                                    let items: Vec<Value> =
+                                        floats.into_iter().map(Value::Float).collect();
+                                    Some(Value::List(Arc::new(items)))
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                if let Some(result) = fast_result {
+                    return Ok(result);
+                }
+                // Fallback: non-homogeneous or non-list
                 let arg = self.reg_take(base + arg_reg);
                 if let Value::List(mut l) = arg {
                     sort_list_homogeneous(Arc::make_mut(&mut l));

@@ -874,6 +874,41 @@ extern "C" fn jit_rt_record_set_field(
 /// `collection_ptr` must be a valid raw `*const Value` pointer to a `Value::List`,
 /// `Value::Tuple`, or `Value::Map`.
 extern "C" fn jit_rt_get_index(_ctx: *mut VmContext, collection_ptr: i64, index_ptr: i64) -> i64 {
+    let cu = collection_ptr as u64;
+    let iu = index_ptr as u64;
+    // Fast path: list[int] with positive index → avoids Value intermediaries.
+    // Checks: collection is TAG_PTR (heap), index is TAG_INT.
+    if (cu & NBVAL_NAN_MASK) == NBVAL_NAN_MASK
+        && ((cu >> 48) & 0x7) == 0
+        && (cu & NBVAL_PAYLOAD_MASK) > 1
+        && (iu & NBVAL_NAN_MASK) == NBVAL_NAN_MASK
+        && ((iu >> 48) & 0x7) == 1
+    {
+        let coll_raw = (cu & NBVAL_PAYLOAD_MASK) as *const Value;
+        let collection = unsafe { &*coll_raw };
+        if let Value::List(l) = collection {
+            let payload = iu & NBVAL_PAYLOAD_MASK;
+            let idx = if payload & (1 << 47) != 0 {
+                (payload | !NBVAL_PAYLOAD_MASK) as i64
+            } else {
+                payload as i64
+            };
+            let len = l.len() as i64;
+            let effective = if idx < 0 { idx + len } else { idx };
+            if effective < 0 || effective >= len {
+                return NAN_BOX_NULL;
+            }
+            // Inline result encoding for Value::Int (most common for sorted int lists)
+            return match &l[effective as usize] {
+                Value::Int(n) => {
+                    (NBVAL_NAN_MASK | (1u64 << 48) | ((*n as u64) & NBVAL_PAYLOAD_MASK)) as i64
+                }
+                other => value_to_nbval(other.clone()),
+            };
+        }
+    }
+
+    // General path
     let Some(coll_raw) = unwrap_value_ptr(collection_ptr) else {
         return NAN_BOX_NULL;
     };
@@ -910,8 +945,6 @@ extern "C" fn jit_rt_get_index(_ctx: *mut VmContext, collection_ptr: i64, index_
         _ => return NAN_BOX_NULL,
     };
 
-    // Return scalars as NbValue i64 — avoids heap allocation and lets the
-    // JIT use float/int arithmetic directly on the result.
     value_to_nbval(element)
 }
 

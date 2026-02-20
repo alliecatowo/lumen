@@ -27,7 +27,7 @@
 
 #[cfg(feature = "jit")]
 use lumen_codegen::jit::{CodegenSettings, JitEngine, JitStats, OptLevel};
-use lumen_core::lir::LirModule;
+use lumen_core::lir::{Constant, LirCell, LirModule, OpCode};
 use std::collections::HashSet;
 
 /// Configuration for the tiered JIT.
@@ -177,7 +177,27 @@ impl JitTier {
                 return false;
             }
 
-            let cell_name = &module.cells[cell_idx].name;
+            let cell = &module.cells[cell_idx];
+            let cell_name = &cell.name;
+
+            // Skip JIT for cells that perform string arithmetic — the JIT's
+            // Add/Concat lowering only handles numeric types.  If a string
+            // constant flows into an Add or Concat operand, the JIT would
+            // miscompile it as numeric addition.  String constants used ONLY
+            // as Call callee names or NewUnion/IsVariant tags are fine.
+            if has_string_arithmetic(cell) {
+                return false;
+            }
+
+            // Skip JIT for cells with complex collection constructors that
+            // have known codegen bugs (SIGSEGV in generated code).
+            if cell
+                .instructions
+                .iter()
+                .any(|i| matches!(i.op, OpCode::NewMap | OpCode::NewRecord | OpCode::NewSet))
+            {
+                return false;
+            }
 
             let opt = match self.config.opt_level {
                 JitOptLevel::None => OptLevel::None,
@@ -289,4 +309,61 @@ impl JitTier {
     pub fn hot_threshold(&self) -> u64 {
         self.config.hot_threshold
     }
+}
+
+/// Check if a cell uses string constants as arithmetic operands (Add/Concat).
+///
+/// Flow-sensitive: tracks which registers currently hold string data, removing
+/// them when overwritten by non-string sources (e.g. Call results, arithmetic).
+/// String constants used only as Call callee names or NewUnion tags are fine.
+fn has_string_arithmetic(cell: &LirCell) -> bool {
+    let mut string_regs: HashSet<u16> = HashSet::new();
+    for inst in &cell.instructions {
+        match inst.op {
+            // LoadK of a string constant → register becomes string
+            OpCode::LoadK => {
+                let const_idx = inst.bx() as usize;
+                if const_idx < cell.constants.len()
+                    && matches!(cell.constants[const_idx], Constant::String(_))
+                {
+                    string_regs.insert(inst.a);
+                } else {
+                    // Loading a non-string constant → register is no longer string
+                    string_regs.remove(&inst.a);
+                }
+            }
+            // Move/MoveOwn propagate string status
+            OpCode::Move | OpCode::MoveOwn => {
+                if string_regs.contains(&inst.b) {
+                    string_regs.insert(inst.a);
+                } else {
+                    string_regs.remove(&inst.a);
+                }
+            }
+            // Add/Concat with a string operand → cell has string arithmetic
+            OpCode::Add | OpCode::Concat => {
+                if string_regs.contains(&inst.b) || string_regs.contains(&inst.c) {
+                    return true;
+                }
+                // Result of Add is numeric (or wrong), remove string status
+                string_regs.remove(&inst.a);
+            }
+            // Call/TailCall/Intrinsic overwrite the result register with a
+            // non-string value (the return value).  The callee name in the
+            // base register is consumed and replaced.
+            OpCode::Call | OpCode::TailCall => {
+                string_regs.remove(&inst.a);
+            }
+            OpCode::Intrinsic => {
+                string_regs.remove(&inst.a);
+            }
+            // Any other opcode that writes to register A overwrites it
+            _ => {
+                // Most opcodes write their result to register A.  If the
+                // result is not a string, clear the string flag.
+                string_regs.remove(&inst.a);
+            }
+        }
+    }
+    false
 }

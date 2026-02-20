@@ -4634,6 +4634,10 @@ pub(crate) fn lower_cell<M: Module>(
 
             OpCode::Nop => {}
 
+            // OsrCheck is a no-op in JIT-compiled code — the cell is already
+            // compiled, so there's nothing to tier-up to.
+            OpCode::OsrCheck => {}
+
             // All opcodes are expected to be handled above in Phase 0.7.
             _ => {
                 return Err(CodegenError::LoweringError(format!(

@@ -207,6 +207,13 @@ pub fn is_cell_fully_jit_compilable(_cell: &LirCell) -> bool {
 /// - **Bool**: sentinel check — `NAN_BOX_TRUE` → 1, `NAN_BOX_FALSE` → 0
 /// - **Str**: pass-through — raw `*mut JitString` pointer as i64
 #[allow(dead_code)]
+/// Public wrapper for NaN-unboxing a raw JIT result based on its return type.
+/// `execute_jit` returns NaN-boxed values; callers that convert to `Value`
+/// must unbox first.
+pub fn nan_unbox_typed_pub(raw: i64, ret_type: JitVarType) -> i64 {
+    nan_unbox_typed(raw, ret_type)
+}
+
 fn nan_unbox_typed(raw: i64, ret_type: JitVarType) -> i64 {
     match ret_type {
         JitVarType::Int => nan_unbox_int(raw),
@@ -681,6 +688,25 @@ pub unsafe fn jit_take_string(ptr: i64) -> String {
     }
 }
 
+/// Convert a JitString pointer to a NaN-boxed TAG_PTR pointing to Arc<Value::String>.
+/// This is needed when passing JIT strings to collection helpers (NewMap, etc.)
+/// which expect NaN-boxed values, not raw JitString pointers.
+///
+/// # Safety
+/// `str_ptr` must be a valid JitString pointer (or 0 for empty string).
+#[no_mangle]
+pub extern "C" fn jit_rt_str_to_nb(_ctx: *mut VmContext, str_ptr: i64) -> i64 {
+    let s = if str_ptr == 0 {
+        String::new()
+    } else {
+        let js = unsafe { &*(str_ptr as *const JitString) };
+        unsafe { js.as_str() }.to_string()
+    };
+    let val = Value::String(lumen_core::values::StringRef::Owned(s));
+    let ptr = Arc::into_raw(Arc::new(val)) as u64;
+    (NBVAL_NAN_MASK | (ptr & NBVAL_PAYLOAD_MASK)) as i64
+}
+
 /// Register all JIT string runtime helper symbols with a JITBuilder.
 fn register_string_helpers(builder: &mut JITBuilder) {
     builder.symbol("jit_rt_malloc", jit_rt_malloc as *const u8);
@@ -699,6 +725,7 @@ fn register_string_helpers(builder: &mut JITBuilder) {
     builder.symbol("jit_rt_string_cmp", jit_rt_string_cmp as *const u8);
     builder.symbol("jit_rt_string_drop", jit_rt_string_drop as *const u8);
     builder.symbol("jit_rt_memcpy", jit_rt_memcpy as *const u8);
+    builder.symbol("jit_rt_str_to_nb", jit_rt_str_to_nb as *const u8);
 }
 
 // ---------------------------------------------------------------------------
@@ -1148,6 +1175,14 @@ fn register_collection_helpers(builder: &mut JITBuilder) {
         "jit_rt_list_append",
         crate::collection_helpers::jit_rt_list_append as *const u8,
     );
+    builder.symbol(
+        "jit_rt_merge",
+        crate::collection_helpers::jit_rt_merge as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_union_is_variant_by_id",
+        crate::union_helpers::jit_rt_union_is_variant_by_id as *const u8,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1333,6 +1368,15 @@ thread_local! {
 extern "C" fn jit_rt_trap_divzero(_ctx: *mut VmContext) -> i64 {
     JIT_DIVZERO_TRAP.with(|f| f.set(true));
     0
+}
+
+/// Check and clear the division-by-zero trap flag.
+/// Returns `true` if the flag was set (i.e. a div-by-zero occurred).
+/// Public so that `lumen-rt` can check the flag when calling JIT fn pointers
+/// directly (bypassing `execute_jit_*`).
+#[inline]
+pub fn jit_check_divzero_trap() -> bool {
+    JIT_DIVZERO_TRAP.with(|f| f.replace(false))
 }
 
 // ---------------------------------------------------------------------------
@@ -2622,7 +2666,121 @@ impl JitEngine {
         Ok(raw)
     }
 
-    /// Generic JIT execution dispatching on arity. Supports 0..=3 i64
+    /// Execute a JIT-compiled function with four i64 arguments.
+    /// Arguments are already NaN-boxed by the VM; result is returned as-is.
+    pub fn execute_jit_quaternary(
+        &mut self,
+        ctx: &VmContext,
+        cell_name: &str,
+        arg1: i64,
+        arg2: i64,
+        arg3: i64,
+        arg4: i64,
+    ) -> Result<i64, JitError> {
+        let compiled = self
+            .cache
+            .get(cell_name)
+            .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
+
+        let fn_ptr = compiled.fn_ptr;
+        self.stats.executions += 1;
+
+        let raw = unsafe {
+            let code_fn: fn(*mut VmContext, i64, i64, i64, i64) -> i64 =
+                std::mem::transmute(fn_ptr);
+            code_fn(
+                ctx as *const VmContext as *mut VmContext,
+                arg1,
+                arg2,
+                arg3,
+                arg4,
+            )
+        };
+        if JIT_DIVZERO_TRAP.with(|f| f.replace(false)) {
+            return Err(JitError::RuntimeTrap("division by zero".to_string()));
+        }
+        Ok(raw)
+    }
+
+    /// Execute a JIT-compiled function with five i64 arguments.
+    /// Arguments are already NaN-boxed by the VM; result is returned as-is.
+    pub fn execute_jit_quinary(
+        &mut self,
+        ctx: &VmContext,
+        cell_name: &str,
+        arg1: i64,
+        arg2: i64,
+        arg3: i64,
+        arg4: i64,
+        arg5: i64,
+    ) -> Result<i64, JitError> {
+        let compiled = self
+            .cache
+            .get(cell_name)
+            .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
+
+        let fn_ptr = compiled.fn_ptr;
+        self.stats.executions += 1;
+
+        let raw = unsafe {
+            let code_fn: fn(*mut VmContext, i64, i64, i64, i64, i64) -> i64 =
+                std::mem::transmute(fn_ptr);
+            code_fn(
+                ctx as *const VmContext as *mut VmContext,
+                arg1,
+                arg2,
+                arg3,
+                arg4,
+                arg5,
+            )
+        };
+        if JIT_DIVZERO_TRAP.with(|f| f.replace(false)) {
+            return Err(JitError::RuntimeTrap("division by zero".to_string()));
+        }
+        Ok(raw)
+    }
+
+    /// Execute a JIT-compiled function with six i64 arguments.
+    /// Arguments are already NaN-boxed by the VM; result is returned as-is.
+    pub fn execute_jit_senary(
+        &mut self,
+        ctx: &VmContext,
+        cell_name: &str,
+        arg1: i64,
+        arg2: i64,
+        arg3: i64,
+        arg4: i64,
+        arg5: i64,
+        arg6: i64,
+    ) -> Result<i64, JitError> {
+        let compiled = self
+            .cache
+            .get(cell_name)
+            .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
+
+        let fn_ptr = compiled.fn_ptr;
+        self.stats.executions += 1;
+
+        let raw = unsafe {
+            let code_fn: fn(*mut VmContext, i64, i64, i64, i64, i64, i64) -> i64 =
+                std::mem::transmute(fn_ptr);
+            code_fn(
+                ctx as *const VmContext as *mut VmContext,
+                arg1,
+                arg2,
+                arg3,
+                arg4,
+                arg5,
+                arg6,
+            )
+        };
+        if JIT_DIVZERO_TRAP.with(|f| f.replace(false)) {
+            return Err(JitError::RuntimeTrap("division by zero".to_string()));
+        }
+        Ok(raw)
+    }
+
+    /// Generic JIT execution dispatching on arity. Supports 0..=6 i64
     /// arguments.
     pub fn execute_jit(
         &mut self,
@@ -2635,8 +2793,28 @@ impl JitEngine {
             1 => self.execute_jit_unary(ctx, cell_name, args[0]),
             2 => self.execute_jit_binary(ctx, cell_name, args[0], args[1]),
             3 => self.execute_jit_ternary(ctx, cell_name, args[0], args[1], args[2]),
+            4 => self.execute_jit_quaternary(ctx, cell_name, args[0], args[1], args[2], args[3]),
+            5 => self.execute_jit_quinary(
+                ctx,
+                cell_name,
+                args[0],
+                args[1],
+                args[2],
+                args[3],
+                args[4],
+            ),
+            6 => self.execute_jit_senary(
+                ctx,
+                cell_name,
+                args[0],
+                args[1],
+                args[2],
+                args[3],
+                args[4],
+                args[5],
+            ),
             n => Err(JitError::ModuleError(format!(
-                "unsupported arity {n} for JIT execution (max 3)"
+                "unsupported arity {n} for JIT execution (max 6)"
             ))),
         }
     }
@@ -3564,9 +3742,9 @@ mod tests {
             nan_box_int(42)
         );
 
-        // Unsupported arity.
+        // Unsupported arity (beyond max supported arity of 6).
         assert!(engine
-            .execute_jit(&test_ctx(), "add", &[1, 2, 3, 4])
+            .execute_jit(&test_ctx(), "add", &[1, 2, 3, 4, 5, 6, 7])
             .is_err());
     }
 

@@ -718,6 +718,20 @@ impl VM {
         self.registers[idx].as_heap_ref()
     }
 
+    /// Bump Arc refcount for a heap-allocated NbValue so it stays alive
+    /// while the JIT executes with its raw bits.  No-op for inline types.
+    #[inline(always)]
+    fn nb_inc_heap_temp_ref(nb: NbValue) {
+        nb.inc_ref();
+    }
+
+    /// Drop the temporary Arc reference added by `nb_inc_heap_temp_ref`.
+    /// No-op for inline types.
+    #[inline(always)]
+    fn nb_dec_heap_temp_ref(nb: NbValue) {
+        nb.drop_heap();
+    }
+
     // ── Stencil runtime helpers ──────────────────────────────────────
 
     pub(crate) fn current_base(&self) -> usize {
@@ -1242,6 +1256,27 @@ impl VM {
         unsafe {
             (*self.vm_ctx.as_ptr()).string_table =
                 &mut self.strings as *mut StringTable;
+        }
+
+        // Automatically initialize OSR JIT and pre-compile cells with loops.
+        // Cells containing OsrCheck opcodes have hot loops that benefit from
+        // immediate Cranelift compilation rather than waiting for call counts.
+        #[cfg(feature = "jit")]
+        {
+            if let Some(m) = self.module.clone() {
+                self.osr_runtime.init_jit(m);
+            }
+            if let Some(module_ref) = self.module.as_ref() {
+                for cell_idx in 0..num_cells {
+                    let has_osr = module_ref.cells[cell_idx]
+                        .instructions
+                        .iter()
+                        .any(|i| i.op == OpCode::OsrCheck);
+                    if has_osr {
+                        self.osr_runtime.try_compile(cell_idx);
+                    }
+                }
+            }
         }
     }
 
@@ -2211,7 +2246,102 @@ impl VM {
                         };
 
                         if let Some(target_idx) = fast_cell_idx {
-                            // ─── STENCIL TIER (Call): try stencil first ──────
+                            // ─── OSR PRE-COMPILED FAST PATH (Call) ───────────
+                            // If the OSR runtime pre-compiled this cell at load
+                            // time (because it contains OsrCheck/loops), execute
+                            // via Cranelift directly, bypassing interpreter.
+                            #[cfg(feature = "jit")]
+                            if let Some(fn_ptr) = self.osr_runtime.get_compiled_fn(target_idx) {
+                                // Stack-allocated arg buffer (max JIT arity is 6)
+                                let mut stack_buf = [0i64; 6];
+                                for i in 0..nargs {
+                                    let nb = self.reg_nb(base + a + 1 + i);
+                                    if nb.is_heap_allocated() {
+                                        unsafe {
+                                            let ptr = nb.payload() as *const Value;
+                                            std::sync::Arc::increment_strong_count(ptr);
+                                        }
+                                    }
+                                    stack_buf[i] = nb.0 as i64;
+                                }
+                                let i64_args = &stack_buf[..nargs];
+                                let osr_result = {
+                                    let ctx_mut = &*self.vm_ctx.inner
+                                        as *const lumen_codegen::vm_context::VmContext
+                                        as *mut lumen_codegen::vm_context::VmContext;
+                                    let raw = unsafe {
+                                        match nargs {
+                                            0 => {
+                                                let f: fn(*mut lumen_codegen::vm_context::VmContext) -> i64 =
+                                                    std::mem::transmute(fn_ptr);
+                                                f(ctx_mut)
+                                            }
+                                            1 => {
+                                                let f: fn(*mut lumen_codegen::vm_context::VmContext, i64) -> i64 =
+                                                    std::mem::transmute(fn_ptr);
+                                                f(ctx_mut, i64_args[0])
+                                            }
+                                            2 => {
+                                                let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64) -> i64 =
+                                                    std::mem::transmute(fn_ptr);
+                                                f(ctx_mut, i64_args[0], i64_args[1])
+                                            }
+                                            3 => {
+                                                let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64, i64) -> i64 =
+                                                    std::mem::transmute(fn_ptr);
+                                                f(ctx_mut, i64_args[0], i64_args[1], i64_args[2])
+                                            }
+                                            4 => {
+                                                let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64, i64, i64) -> i64 =
+                                                    std::mem::transmute(fn_ptr);
+                                                f(ctx_mut, i64_args[0], i64_args[1], i64_args[2], i64_args[3])
+                                            }
+                                            5 => {
+                                                let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64, i64, i64, i64) -> i64 =
+                                                    std::mem::transmute(fn_ptr);
+                                                f(ctx_mut, i64_args[0], i64_args[1], i64_args[2], i64_args[3], i64_args[4])
+                                            }
+                                            6 => {
+                                                let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64, i64, i64, i64, i64) -> i64 =
+                                                    std::mem::transmute(fn_ptr);
+                                                f(ctx_mut, i64_args[0], i64_args[1], i64_args[2], i64_args[3], i64_args[4], i64_args[5])
+                                            }
+                                            _ => return Err(VmError::Runtime(format!("unsupported JIT arity {nargs}"))),
+                                        }
+                                    };
+                                    if lumen_codegen::jit::jit_check_divzero_trap() {
+                                        None
+                                    } else {
+                                        Some(raw)
+                                    }
+                                };
+                                if let Some(raw) = osr_result {
+                                    for i in 0..nargs {
+                                        let nb = self.reg_nb(base + a + 1 + i);
+                                        if nb.is_heap_allocated() {
+                                            unsafe {
+                                                let ptr = nb.payload() as *const Value;
+                                                std::sync::Arc::decrement_strong_count(ptr);
+                                            }
+                                        }
+                                    }
+                                    let nb = NbValue(raw as u64);
+                                    self.set_reg_nb(callee_reg, nb);
+                                    ip += 1;
+                                    continue;
+                                } else {
+                                    for i in 0..nargs {
+                                        let nb = self.reg_nb(base + a + 1 + i);
+                                        if nb.is_heap_allocated() {
+                                            unsafe {
+                                                let ptr = nb.payload() as *const Value;
+                                                std::sync::Arc::decrement_strong_count(ptr);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // ─── STENCIL TIER (Call): warm tier, always try first ──
                             #[cfg(feature = "jit")]
                             {
                                 let stencil_compiled = self.stencil_tier.is_compiled(target_idx);
@@ -2266,7 +2396,8 @@ impl VM {
                                     // Pass NaN-boxed register values directly to JIT.
                                     // Heap-allocated values get an Arc refcount bump
                                     // so the JIT can safely read them.
-                                    let mut i64_args: Vec<i64> = Vec::with_capacity(nargs);
+                                    // Stack-allocated arg buffer (max JIT arity is 6)
+                                    let mut stack_buf = [0i64; 6];
                                     for i in 0..nargs {
                                         let nb = self.reg_nb(base + a + 1 + i);
                                         if nb.is_heap_allocated() {
@@ -2275,12 +2406,14 @@ impl VM {
                                                 std::sync::Arc::increment_strong_count(ptr);
                                             }
                                         }
-                                        i64_args.push(nb.0 as i64);
+                                        stack_buf[i] = nb.0 as i64;
                                     }
-                                    if let Some(result) = self.jit_tier.execute(
-                                        &callee_cell.name,
-                                        &i64_args,
+                                    let i64_args = &stack_buf[..nargs];
+                                    if let Some(result) = self.jit_tier.execute_by_idx(
+                                        target_idx,
+                                        i64_args,
                                         &self.vm_ctx.inner,
+                                        &callee_cell.name,
                                     ) {
                                         // Drop the extra refs we added before JIT call
                                         for i in 0..nargs {
@@ -2312,6 +2445,8 @@ impl VM {
                                 }
                             }
                             // ─── END JIT TIER ────────────────────────────────
+
+                            // OSR JIT fast-path handled above (before stencil tier)
 
                             // Fast path: direct cell call — no cloning, no dispatch_call overhead
                             if self.frames.len() >= MAX_CALL_DEPTH {
@@ -2429,7 +2564,117 @@ impl VM {
                                 }
                                 _ => None,
                             };
+                            // ─── OSR PRE-COMPILED FAST PATH (TailCall) ───
                             if let Some(target_idx) = tc_target {
+                                if let Some(fn_ptr) = self.osr_runtime.get_compiled_fn(target_idx) {
+                                    // Stack-allocated arg buffer (max JIT arity is 6)
+                                    let mut stack_buf = [0i64; 6];
+                                    for i in 0..nargs {
+                                        let nb = self.reg_nb(base + a + 1 + i);
+                                        if nb.is_heap_allocated() {
+                                            unsafe {
+                                                let ptr = nb.payload() as *const Value;
+                                                std::sync::Arc::increment_strong_count(ptr);
+                                            }
+                                        }
+                                        stack_buf[i] = nb.0 as i64;
+                                    }
+                                    let i64_args = &stack_buf[..nargs];
+                                    let osr_result = {
+                                        let ctx_mut = &*self.vm_ctx.inner
+                                            as *const lumen_codegen::vm_context::VmContext
+                                            as *mut lumen_codegen::vm_context::VmContext;
+                                        let raw = unsafe {
+                                            match nargs {
+                                                0 => {
+                                                    let f: fn(*mut lumen_codegen::vm_context::VmContext) -> i64 =
+                                                        std::mem::transmute(fn_ptr);
+                                                    f(ctx_mut)
+                                                }
+                                                1 => {
+                                                    let f: fn(*mut lumen_codegen::vm_context::VmContext, i64) -> i64 =
+                                                        std::mem::transmute(fn_ptr);
+                                                    f(ctx_mut, i64_args[0])
+                                                }
+                                                2 => {
+                                                    let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64) -> i64 =
+                                                        std::mem::transmute(fn_ptr);
+                                                    f(ctx_mut, i64_args[0], i64_args[1])
+                                                }
+                                                3 => {
+                                                    let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64, i64) -> i64 =
+                                                        std::mem::transmute(fn_ptr);
+                                                    f(ctx_mut, i64_args[0], i64_args[1], i64_args[2])
+                                                }
+                                                4 => {
+                                                    let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64, i64, i64) -> i64 =
+                                                        std::mem::transmute(fn_ptr);
+                                                    f(ctx_mut, i64_args[0], i64_args[1], i64_args[2], i64_args[3])
+                                                }
+                                                5 => {
+                                                    let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64, i64, i64, i64) -> i64 =
+                                                        std::mem::transmute(fn_ptr);
+                                                    f(ctx_mut, i64_args[0], i64_args[1], i64_args[2], i64_args[3], i64_args[4])
+                                                }
+                                                6 => {
+                                                    let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64, i64, i64, i64, i64) -> i64 =
+                                                        std::mem::transmute(fn_ptr);
+                                                    f(ctx_mut, i64_args[0], i64_args[1], i64_args[2], i64_args[3], i64_args[4], i64_args[5])
+                                                }
+                                                _ => return Err(VmError::Runtime(format!("unsupported JIT arity {nargs}"))),
+                                            }
+                                        };
+                                        if lumen_codegen::jit::jit_check_divzero_trap() {
+                                            None
+                                        } else {
+                                            Some(raw)
+                                        }
+                                    };
+                                    if let Some(raw) = osr_result {
+                                        for i in 0..nargs {
+                                            let nb = self.reg_nb(base + a + 1 + i);
+                                            if nb.is_heap_allocated() {
+                                                unsafe {
+                                                    let ptr = nb.payload() as *const Value;
+                                                    std::sync::Arc::decrement_strong_count(ptr);
+                                                }
+                                            }
+                                        }
+                                        let nb = NbValue(raw as u64);
+                                        let result_value = nb.to_legacy();
+                                        let frame = self.frames.pop().ok_or_else(|| {
+                                            VmError::Runtime(
+                                                "call stack underflow on tailcall osr".into(),
+                                            )
+                                        })?;
+                                        self.shrink_registers(frame.base_register);
+                                        if self.frames.len() <= limit {
+                                            return Ok(result_value);
+                                        }
+                                        self.set_reg(frame.return_register, result_value);
+                                        let f = self.frames.last().unwrap();
+                                        cell_idx = f.cell_idx;
+                                        base = f.base_register;
+                                        ip = f.ip;
+                                        cell = &module.cells[cell_idx];
+                                        jit_handled = true;
+                                    } else {
+                                        for i in 0..nargs {
+                                            let nb = self.reg_nb(base + a + 1 + i);
+                                            if nb.is_heap_allocated() {
+                                                unsafe {
+                                                    let ptr = nb.payload() as *const Value;
+                                                    std::sync::Arc::decrement_strong_count(ptr);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(target_idx) = tc_target {
+                                // Skip stencil tier if Cranelift JIT already compiled this cell.
+                                let skip_stencil = self.jit_tier.is_compiled(target_idx);
+                                if !skip_stencil {
                                 let stencil_compiled = self.stencil_tier.is_compiled(target_idx);
                                 let stencil_try =
                                     stencil_compiled || self.stencil_tier.record_call(target_idx);
@@ -2502,6 +2747,7 @@ impl VM {
                                         }
                                     }
                                 }
+                                } // end skip_stencil guard
                             }
                         }
 
@@ -2535,7 +2781,11 @@ impl VM {
                             };
 
                             if let Some(target_idx) = fast_cell_idx {
-                                let run_jit = if self.jit_tier.is_compiled(target_idx) {
+                                let run_jit = if Self::cell_is_interpreter_preferred(
+                                    &module.cells[target_idx],
+                                ) {
+                                    false
+                                } else if self.jit_tier.is_compiled(target_idx) {
                                     true
                                 } else if self.jit_tier.record_call(target_idx) {
                                     self.jit_tier.try_compile(target_idx, module)
@@ -2545,7 +2795,8 @@ impl VM {
 
                                 if run_jit {
                                     let callee_cell = &module.cells[target_idx];
-                                    let mut i64_args: Vec<i64> = Vec::with_capacity(nargs);
+                                    // Stack-allocated arg buffer (max JIT arity is 6)
+                                    let mut stack_buf = [0i64; 6];
                                     for i in 0..nargs {
                                         let nb = self.reg_nb(base + a + 1 + i);
                                         if nb.is_heap_allocated() {
@@ -2554,12 +2805,14 @@ impl VM {
                                                 std::sync::Arc::increment_strong_count(ptr);
                                             }
                                         }
-                                        i64_args.push(nb.0 as i64);
+                                        stack_buf[i] = nb.0 as i64;
                                     }
-                                    if let Some(result) = self.jit_tier.execute(
-                                        &callee_cell.name,
-                                        &i64_args,
+                                    let i64_args = &stack_buf[..nargs];
+                                    if let Some(result) = self.jit_tier.execute_by_idx(
+                                        target_idx,
+                                        i64_args,
                                         &self.vm_ctx.inner,
+                                        &callee_cell.name,
                                     ) {
                                         // Drop the extra refs we added before JIT call
                                         for i in 0..nargs {

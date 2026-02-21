@@ -737,6 +737,27 @@ pub(crate) fn lower_cell<M: Module>(
         &[pointer_type, types::I64, types::I64], // ctx, list_ptr, element
         &[types::I64],
     )?;
+    let merge_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_merge",
+        &[pointer_type, types::I64, types::I64], // ctx, a_ptr, b_ptr
+        &[types::I64],
+    )?;
+    let union_is_variant_by_id_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_union_is_variant_by_id",
+        &[pointer_type, types::I64, types::I32], // ctx, union_ptr, tag_id
+        &[types::I64],
+    )?;
+    let str_to_nb_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_str_to_nb",
+        &[pointer_type, types::I64], // ctx, jitstring_ptr
+        &[types::I64],
+    )?;
     // Declare union runtime helper functions (for JIT enum support).
     let union_new_ref = declare_helper_func(
         module,
@@ -1306,10 +1327,18 @@ pub(crate) fn lower_cell<M: Module>(
     // Used by IsVariant which must NOT overwrite r[a] (the union register).
     let mut pending_test_value: Option<cranelift_codegen::ir::Value> = None;
 
-    // Cache for combined IsVariant+Unbox: (union_register, payload_value).
-    // IsVariant stores the payload here; Unbox reads it instead of making
-    // a second extern "C" call.  Cleared when the union register is written.
-    let mut last_union_match: Option<(u16, cranelift_codegen::ir::Value)> = None;
+    // Cranelift Variable for the cached IsVariant+Unbox payload.
+    // IsVariant stores the combined union_match result here via def_var;
+    // Unbox reads it via use_var — works across basic block boundaries.
+    let union_match_cache_var = Variable::from_u32(num_regs as u32);
+    builder.declare_var(union_match_cache_var, types::I64);
+    let init_zero = builder.ins().iconst(types::I64, -1i64); // UNION_NO_MATCH
+    builder.def_var(union_match_cache_var, init_zero);
+
+    // Cache for combined IsVariant+Unbox: tracks which union register was matched.
+    // IsVariant stores the payload in union_match_cache_var; Unbox reads it
+    // instead of making a second extern "C" call.
+    let mut last_union_match_reg: Option<u16> = None;
 
     for (pc, inst) in cell.instructions.iter().enumerate() {
         if let Some(&target_block) = block_map.get(&pc) {
@@ -1532,7 +1561,22 @@ pub(crate) fn lower_cell<M: Module>(
                         let slot = builder.create_sized_stack_slot(slot_data);
 
                         for (i, &leaf_reg) in leaves.iter().enumerate() {
-                            let val = use_var(&mut builder, &regs, &var_types, leaf_reg);
+                            let raw_val = use_var(&mut builder, &regs, &var_types, leaf_reg);
+                            let leaf_ty = var_types.get(&(leaf_reg as u32)).copied().unwrap_or(JitVarType::Int);
+                            // Coerce non-string leaves to JitString before batch concat.
+                            let val = if leaf_ty != JitVarType::Str {
+                                if leaf_ty == JitVarType::Float {
+                                    let fv = emit_unbox_float(&mut builder, raw_val);
+                                    let call = builder.ins().call(intrinsic_to_string_float_ref, &[vm_ctx_param, fv]);
+                                    builder.inst_results(call)[0]
+                                } else {
+                                    let iv = emit_unbox_int(&mut builder, raw_val);
+                                    let call = builder.ins().call(intrinsic_to_string_int_ref, &[vm_ctx_param, iv]);
+                                    builder.inst_results(call)[0]
+                                }
+                            } else {
+                                raw_val
+                            };
                             builder.ins().stack_store(val, slot, (i * 8) as i32);
                         }
 
@@ -1551,15 +1595,43 @@ pub(crate) fn lower_cell<M: Module>(
                         def_var(&mut builder, &mut regs, inst.a, result);
                     } else {
                         // String concatenation (non-chain) — safe to read operands now.
-                        let lhs = use_var(&mut builder, &regs, &var_types, inst.b);
-                        let rhs = use_var(&mut builder, &regs, &var_types, inst.c);
+                        let raw_lhs = use_var(&mut builder, &regs, &var_types, inst.b);
+                        let raw_rhs = use_var(&mut builder, &regs, &var_types, inst.c);
                         let dest_ty = var_types
                             .get(&(inst.a as u32))
                             .copied()
                             .unwrap_or(JitVarType::Int);
 
+                        // Coerce non-string operands to JitString before concat.
+                        let lhs = if lhs_ty != JitVarType::Str {
+                            if lhs_ty == JitVarType::Float {
+                                let fv = emit_unbox_float(&mut builder, raw_lhs);
+                                let call = builder.ins().call(intrinsic_to_string_float_ref, &[vm_ctx_param, fv]);
+                                builder.inst_results(call)[0]
+                            } else {
+                                let iv = emit_unbox_int(&mut builder, raw_lhs);
+                                let call = builder.ins().call(intrinsic_to_string_int_ref, &[vm_ctx_param, iv]);
+                                builder.inst_results(call)[0]
+                            }
+                        } else {
+                            raw_lhs
+                        };
+                        let rhs = if rhs_ty != JitVarType::Str {
+                            if rhs_ty == JitVarType::Float {
+                                let fv = emit_unbox_float(&mut builder, raw_rhs);
+                                let call = builder.ins().call(intrinsic_to_string_float_ref, &[vm_ctx_param, fv]);
+                                builder.inst_results(call)[0]
+                            } else {
+                                let iv = emit_unbox_int(&mut builder, raw_rhs);
+                                let call = builder.ins().call(intrinsic_to_string_int_ref, &[vm_ctx_param, iv]);
+                                builder.inst_results(call)[0]
+                            }
+                        } else {
+                            raw_rhs
+                        };
+
                         // Optimization: if dest == lhs (a = a + c), use in-place mutation
-                        if dest_ty == JitVarType::Str && inst.a == inst.b {
+                        if dest_ty == JitVarType::Str && inst.a == inst.b && lhs_ty == JitVarType::Str {
                             // In-place: a = a + c
                             // Inline fast path: if refcount==1 && cap>=len_a+len_b,
                             // do memcpy inline and skip the runtime call entirely.
@@ -1699,7 +1771,22 @@ pub(crate) fn lower_cell<M: Module>(
                     let slot = builder.create_sized_stack_slot(slot_data);
 
                     for (i, &leaf_reg) in leaves.iter().enumerate() {
-                        let val = use_var(&mut builder, &regs, &var_types, leaf_reg);
+                        let raw_val = use_var(&mut builder, &regs, &var_types, leaf_reg);
+                        let leaf_ty = var_types.get(&(leaf_reg as u32)).copied().unwrap_or(JitVarType::Int);
+                        // Coerce non-string leaves to JitString before batch concat.
+                        let val = if leaf_ty != JitVarType::Str {
+                            if leaf_ty == JitVarType::Float {
+                                let fv = emit_unbox_float(&mut builder, raw_val);
+                                let call = builder.ins().call(intrinsic_to_string_float_ref, &[vm_ctx_param, fv]);
+                                builder.inst_results(call)[0]
+                            } else {
+                                let iv = emit_unbox_int(&mut builder, raw_val);
+                                let call = builder.ins().call(intrinsic_to_string_int_ref, &[vm_ctx_param, iv]);
+                                builder.inst_results(call)[0]
+                            }
+                        } else {
+                            raw_val
+                        };
                         builder.ins().stack_store(val, slot, (i * 8) as i32);
                     }
 
@@ -1718,15 +1805,45 @@ pub(crate) fn lower_cell<M: Module>(
                     def_var(&mut builder, &mut regs, inst.a, result);
                 } else {
                     // Non-chain: regular concat
-                    let lhs = use_var(&mut builder, &regs, &var_types, inst.b);
-                    let rhs = use_var(&mut builder, &regs, &var_types, inst.c);
+                    let raw_lhs = use_var(&mut builder, &regs, &var_types, inst.b);
+                    let raw_rhs = use_var(&mut builder, &regs, &var_types, inst.c);
+                    let lhs_ty = var_types.get(&(inst.b as u32)).copied().unwrap_or(JitVarType::Int);
+                    let rhs_ty = var_types.get(&(inst.c as u32)).copied().unwrap_or(JitVarType::Int);
                     let dest_ty = var_types
                         .get(&(inst.a as u32))
                         .copied()
                         .unwrap_or(JitVarType::Int);
 
+                    // Coerce non-string operands to JitString before concat.
+                    let lhs = if lhs_ty != JitVarType::Str {
+                        if lhs_ty == JitVarType::Float {
+                            let fv = emit_unbox_float(&mut builder, raw_lhs);
+                            let call = builder.ins().call(intrinsic_to_string_float_ref, &[vm_ctx_param, fv]);
+                            builder.inst_results(call)[0]
+                        } else {
+                            let iv = emit_unbox_int(&mut builder, raw_lhs);
+                            let call = builder.ins().call(intrinsic_to_string_int_ref, &[vm_ctx_param, iv]);
+                            builder.inst_results(call)[0]
+                        }
+                    } else {
+                        raw_lhs
+                    };
+                    let rhs = if rhs_ty != JitVarType::Str {
+                        if rhs_ty == JitVarType::Float {
+                            let fv = emit_unbox_float(&mut builder, raw_rhs);
+                            let call = builder.ins().call(intrinsic_to_string_float_ref, &[vm_ctx_param, fv]);
+                            builder.inst_results(call)[0]
+                        } else {
+                            let iv = emit_unbox_int(&mut builder, raw_rhs);
+                            let call = builder.ins().call(intrinsic_to_string_int_ref, &[vm_ctx_param, iv]);
+                            builder.inst_results(call)[0]
+                        }
+                    } else {
+                        raw_rhs
+                    };
+
                     // Optimization: if dest == lhs (a = a ++ c), use in-place mutation
-                    if dest_ty == JitVarType::Str && inst.a == inst.b {
+                    if dest_ty == JitVarType::Str && inst.a == inst.b && lhs_ty == JitVarType::Str {
                         // Inline fast path: if refcount==1 && cap>=len_a+len_b,
                         // do memcpy inline and skip the runtime call entirely.
                         let flags = MemFlags::new();
@@ -2796,11 +2913,30 @@ pub(crate) fn lower_cell<M: Module>(
                 ));
                 let array_ptr = builder.ins().stack_addr(types::I64, slot, 0);
 
-                // Fill the array with alternating key and value pointers
+                // Fill the array with alternating key and value pointers.
+                // jit_rt_new_map expects NaN-boxed values, so JitString pointers
+                // must be converted to NaN-boxed Value::String via str_to_nb.
                 for i in 0..count {
-                    let key = use_var(&mut builder, &regs, &var_types, inst.a + 1 + (i * 2) as u16);
-                    let value =
-                        use_var(&mut builder, &regs, &var_types, inst.a + 2 + (i * 2) as u16);
+                    let key_reg = inst.a + 1 + (i * 2) as u16;
+                    let val_reg = inst.a + 2 + (i * 2) as u16;
+                    let raw_key = use_var(&mut builder, &regs, &var_types, key_reg);
+                    let raw_value = use_var(&mut builder, &regs, &var_types, val_reg);
+                    let key_ty = var_types.get(&(key_reg as u32)).copied().unwrap_or(JitVarType::Int);
+                    let val_ty = var_types.get(&(val_reg as u32)).copied().unwrap_or(JitVarType::Int);
+
+                    // Convert JitString pointers to NaN-boxed values for the collection helper.
+                    let key = if key_ty == JitVarType::Str {
+                        let call = builder.ins().call(str_to_nb_ref, &[vm_ctx_param, raw_key]);
+                        builder.inst_results(call)[0]
+                    } else {
+                        raw_key
+                    };
+                    let value = if val_ty == JitVarType::Str {
+                        let call = builder.ins().call(str_to_nb_ref, &[vm_ctx_param, raw_value]);
+                        builder.inst_results(call)[0]
+                    } else {
+                        raw_value
+                    };
 
                     let key_offset = (i * 2 * 8) as i32;
                     let value_offset = ((i * 2 + 1) * 8) as i32;
@@ -2952,28 +3088,43 @@ pub(crate) fn lower_cell<M: Module>(
                 let tag_bytes = tag_str.as_bytes();
                 let tag_ptr = builder.ins().iconst(types::I64, tag_bytes.as_ptr() as i64);
                 let tag_len = builder.ins().iconst(types::I64, tag_bytes.len() as i64);
+                // Use combined IsVariant+Unbox helper: returns payload NaN-boxed
+                // on match, or UNION_NO_MATCH (-1) on mismatch. This eliminates
+                // the separate Unbox call that follows in the matched branch.
                 let call = builder.ins().call(
-                    union_is_variant_ref,
+                    union_match_ref,
                     &[vm_ctx_param, union_ptr, tag_ptr, tag_len],
                 );
-                let raw_bool = builder.inst_results(call)[0]; // 0 or 1
-                // Convert to NaN-boxed Bool for the branch condition.
+                let match_result = builder.inst_results(call)[0]; // payload or -1
+                // Check if matched: UNION_NO_MATCH = -1 (0xFFFF_FFFF_FFFF_FFFF)
+                let no_match_val = builder.ins().iconst(types::I64, -1i64);
+                let is_match = builder.ins().icmp(IntCC::NotEqual, match_result, no_match_val);
                 let nan_true = builder.ins().iconst(types::I64, NAN_BOX_TRUE);
                 let nan_false = builder.ins().iconst(types::I64, NAN_BOX_FALSE);
-                let is_one = builder.ins().icmp_imm(IntCC::NotEqual, raw_bool, 0);
-                let result = builder.ins().select(is_one, nan_true, nan_false);
+                let result = builder.ins().select(is_match, nan_true, nan_false);
                 // Store the condition directly — do NOT write to r[a].
                 pending_test_value = Some(result);
+                // Cache the payload in a Cranelift Variable (survives across
+                // basic block boundaries created by the Jmp that follows).
+                builder.def_var(union_match_cache_var, match_result);
+                last_union_match_reg = Some(inst.a);
             }
 
             // Unbox: Extract payload from union
             // r[a] = payload of Union in r[b]
             OpCode::Unbox => {
-                let union_ptr = use_var(&mut builder, &regs, &var_types, inst.b);
-                let call = builder
-                    .ins()
-                    .call(union_unbox_ref, &[vm_ctx_param, union_ptr]);
-                let result = builder.inst_results(call)[0];
+                // If the preceding IsVariant already extracted the payload via
+                // the combined union_match helper, reuse it — no second call.
+                let result = if last_union_match_reg == Some(inst.b) {
+                    last_union_match_reg = None;
+                    builder.use_var(union_match_cache_var)
+                } else {
+                    let union_ptr = use_var(&mut builder, &regs, &var_types, inst.b);
+                    let call = builder
+                        .ins()
+                        .call(union_unbox_ref, &[vm_ctx_param, union_ptr]);
+                    builder.inst_results(call)[0]
+                };
                 // Unboxed payload is NaN-boxed by value_to_nanbox: could be
                 // Int, Bool, Null, or a heap pointer (Tuple, Union, etc.).
                 // Use Ptr as a conservative type — truthiness check against
@@ -4104,6 +4255,20 @@ pub(crate) fn lower_cell<M: Module>(
                     }
 
                     // -------------------------------------------------------
+                    // 71: Merge — merge two maps/records
+                    // -------------------------------------------------------
+                    71 => {
+                        let a = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let b = use_var(&mut builder, &regs, &var_types, arg_base + 1);
+                        let call = builder
+                            .ins()
+                            .call(merge_ref, &[vm_ctx_param, a, b]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Ptr);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
                     // Unsupported intrinsic — return 0 stub
                     // -------------------------------------------------------
                     _ => {
@@ -4279,39 +4444,24 @@ pub(crate) fn lower_cell<M: Module>(
                 // Loop counter_reg, decrement_imm, jump_offset
                 // Instruction format: A = counter register, sB = signed jump offset
                 // VM semantics: decrement R[A] by 1, jump back if R[A] > 0
-                // Runtime helper signature:
-                //   jit_rt_loop(vm_ctx, counter, decrement) -> i64 (new counter)
                 //
-                // Returns the new counter value. We then test if > 0 and branch.
-                let loop_sig = module.make_signature();
-                let loop_fn = module
-                    .declare_function("jit_rt_loop", Linkage::Import, &{
-                        let mut sig = loop_sig;
-                        sig.params.push(AbiParam::new(pointer_type)); // vm_ctx
-                        sig.params.push(AbiParam::new(types::I64)); // counter (NaN-boxed Int)
-                        sig.params.push(AbiParam::new(types::I64)); // decrement (raw i64, always 1)
-                        sig.returns.push(AbiParam::new(types::I64)); // new counter (NaN-boxed Int)
-                        sig
-                    })
-                    .map_err(|e| CodegenError::LoweringError(e.to_string()))?;
-                let loop_ref = module.declare_func_in_func(loop_fn, &mut builder.func);
+                // Native Cranelift: unbox counter, subtract 1, re-box, compare > 0, branch.
+                // Eliminates jit_rt_loop runtime call per iteration.
+                let counter_boxed = use_var(&mut builder, &regs, &var_types, inst.a);
+                let raw_counter = emit_unbox_int(&mut builder, counter_boxed);
+                let one = builder.ins().iconst(types::I64, 1);
+                let new_raw = builder.ins().isub(raw_counter, one);
 
-                let vm_ctx = vm_ctx_param;
-                let counter = use_var(&mut builder, &regs, &var_types, inst.a);
-                let decrement = builder.ins().iconst(types::I64, 1); // Always decrement by 1
-                let call = builder.ins().call(loop_ref, &[vm_ctx, counter, decrement]);
-                let new_counter = builder.inst_results(call)[0];
-
-                // Store the new counter back
+                // Re-box and store the new counter
+                let new_boxed = emit_box_int(&mut builder, new_raw);
                 var_types.insert(inst.a as u32, JitVarType::Ptr);
-                def_var(&mut builder, &mut regs, inst.a, new_counter);
+                def_var(&mut builder, &mut regs, inst.a, new_boxed);
 
-                // Extract the raw i64 value from NaN-boxed Int to test if > 0
-                let raw_counter = emit_unbox_int(&mut builder, new_counter);
+                // Test if new counter > 0
                 let zero = builder.ins().iconst(types::I64, 0);
                 let is_positive = builder
                     .ins()
-                    .icmp(IntCC::SignedGreaterThan, raw_counter, zero);
+                    .icmp(IntCC::SignedGreaterThan, new_raw, zero);
 
                 // Compute jump target
                 let offset = inst.sbx() as i32;
@@ -4335,38 +4485,20 @@ pub(crate) fn lower_cell<M: Module>(
                 //   - R[A]   = init
                 //   - R[A+1] = limit
                 //   - R[A+2] = step
-                //   - Compute initial counter via helper, store in R[A]
+                //   - Store init as counter in R[A]
                 //   - If loop is already exhausted, jump forward by sB
                 //
-                // Runtime helper signature:
-                //   jit_rt_for_prep(vm_ctx, init, limit, step) -> i64 (initial counter)
-                //
-                // The helper returns the initial counter value (raw i64).
-                let for_prep_sig = module.make_signature();
-                let for_prep_fn = module
-                    .declare_function("jit_rt_for_prep", Linkage::Import, &{
-                        let mut sig = for_prep_sig;
-                        sig.params.push(AbiParam::new(pointer_type)); // vm_ctx
-                        sig.params.push(AbiParam::new(types::I64)); // init (raw i64, always 0)
-                        sig.params.push(AbiParam::new(types::I64)); // limit (raw i64, length)
-                        sig.params.push(AbiParam::new(types::I64)); // step (raw i64, always 1)
-                        sig.returns.push(AbiParam::new(types::I64)); // initial counter (raw i64)
-                        sig
-                    })
-                    .map_err(|e| CodegenError::LoweringError(e.to_string()))?;
-                let for_prep_ref = module.declare_func_in_func(for_prep_fn, &mut builder.func);
-
-                let vm_ctx = vm_ctx_param;
+                // Native Cranelift: no runtime call needed.
+                // jit_rt_for_prep just returned init unchanged.
                 let init_boxed = use_var(&mut builder, &regs, &var_types, inst.a);
                 let limit_boxed = use_var(&mut builder, &regs, &var_types, inst.a + 1);
                 let step_boxed = use_var(&mut builder, &regs, &var_types, inst.a + 2);
                 let init = emit_unbox_int(&mut builder, init_boxed);
                 let limit = emit_unbox_int(&mut builder, limit_boxed);
                 let step = emit_unbox_int(&mut builder, step_boxed);
-                let call = builder
-                    .ins()
-                    .call(for_prep_ref, &[vm_ctx, init, limit, step]);
-                let initial_counter = builder.inst_results(call)[0];
+
+                // ForPrep: initial counter = init (no runtime call needed)
+                let initial_counter = init;
 
                 // Store initial counter at A (NaN-boxed)
                 let boxed_counter = emit_box_int(&mut builder, initial_counter);
@@ -4413,26 +4545,10 @@ pub(crate) fn lower_cell<M: Module>(
                 //   - R[A]   = counter
                 //   - R[A+1] = limit
                 //   - R[A+2] = step
-                //   - Update counter via helper; if exhausted, fall through
+                //   - Increment counter by step; if past limit, exit loop
                 //
-                // Runtime helper signature:
-                //   jit_rt_for_loop(vm_ctx, counter, limit, step) -> i64
-                //   Returns new counter if continuing, or NAN_BOX_NULL if exhausted.
-                let for_loop_sig = module.make_signature();
-                let for_loop_fn = module
-                    .declare_function("jit_rt_for_loop", Linkage::Import, &{
-                        let mut sig = for_loop_sig;
-                        sig.params.push(AbiParam::new(pointer_type)); // vm_ctx
-                        sig.params.push(AbiParam::new(types::I64)); // counter (raw i64)
-                        sig.params.push(AbiParam::new(types::I64)); // limit (raw i64)
-                        sig.params.push(AbiParam::new(types::I64)); // step (raw i64, always 1)
-                        sig.returns.push(AbiParam::new(types::I64)); // new counter or NAN_BOX_NULL
-                        sig
-                    })
-                    .map_err(|e| CodegenError::LoweringError(e.to_string()))?;
-                let for_loop_ref = module.declare_func_in_func(for_loop_fn, &mut builder.func);
-
-                let vm_ctx = vm_ctx_param;
+                // Native Cranelift: counter += step, compare to limit, branch.
+                // Eliminates jit_rt_for_loop runtime call per iteration.
                 let counter_boxed = use_var(&mut builder, &regs, &var_types, inst.a);
                 let limit_boxed = use_var(&mut builder, &regs, &var_types, inst.a + 1);
                 let step_boxed = use_var(&mut builder, &regs, &var_types, inst.a + 2);
@@ -4440,18 +4556,37 @@ pub(crate) fn lower_cell<M: Module>(
                 let limit = emit_unbox_int(&mut builder, limit_boxed);
                 let step = emit_unbox_int(&mut builder, step_boxed);
 
-                let call = builder
-                    .ins()
-                    .call(for_loop_ref, &[vm_ctx, counter, limit, step]);
-                let result = builder.inst_results(call)[0];
+                // next = counter + step
+                let next = builder.ins().iadd(counter, step);
 
-                // Check if result is NAN_BOX_NULL (exhausted)
-                let nan_box_null = builder.ins().iconst(types::I64, NAN_BOX_NULL);
-                let is_exhausted = builder.ins().icmp(IntCC::Equal, result, nan_box_null);
+                // Exhaustion check:
+                // For positive step: exhausted if next >= limit
+                // For negative step: exhausted if next <= limit
+                // For zero step: always exhausted
+                // Since most for loops have positive step (step=1), we optimize:
+                // We replicate the runtime helper logic exactly:
+                //   is_exhausted = (step > 0 && next >= limit)
+                //                  || (step < 0 && next <= limit)
+                //                  || (step == 0)
+                let zero = builder.ins().iconst(types::I64, 0);
+                let step_is_pos = builder.ins().icmp(IntCC::SignedGreaterThan, step, zero);
+                let step_is_neg = builder.ins().icmp(IntCC::SignedLessThan, step, zero);
+                let step_is_zero = builder.ins().icmp(IntCC::Equal, step, zero);
+                let next_ge_limit =
+                    builder
+                        .ins()
+                        .icmp(IntCC::SignedGreaterThanOrEqual, next, limit);
+                let next_le_limit = builder
+                    .ins()
+                    .icmp(IntCC::SignedLessThanOrEqual, next, limit);
+                let exhaust_pos = builder.ins().band(step_is_pos, next_ge_limit);
+                let exhaust_neg = builder.ins().band(step_is_neg, next_le_limit);
+                let exhaust_temp = builder.ins().bor(exhaust_pos, exhaust_neg);
+                let is_exhausted = builder.ins().bor(step_is_zero, exhaust_temp);
 
                 // Store updated counter (if exhausted, keep previous counter)
-                let selected_raw = builder.ins().select(is_exhausted, counter, result);
-                let boxed_result = emit_box_int(&mut builder, selected_raw);
+                let selected = builder.ins().select(is_exhausted, counter, next);
+                let boxed_result = emit_box_int(&mut builder, selected);
                 var_types.insert(inst.a as u32, JitVarType::Ptr);
                 def_var(&mut builder, &mut regs, inst.a, boxed_result);
 

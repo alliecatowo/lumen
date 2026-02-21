@@ -294,3 +294,38 @@ pub extern "C" fn jit_rt_list_append(_ctx: *mut VmContext, list_ptr: i64, elemen
     let ptr = Arc::into_raw(arc_list) as u64;
     (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
 }
+
+/// Merge two maps (or records) into one: `merge(a, b)` → new map with b's entries overlaid on a.
+/// Both `a_ptr` and `b_ptr` are NaN-boxed TAG_PTR values pointing to `Arc<Value>`.
+/// Returns a new NaN-boxed TAG_PTR to the merged map.
+///
+/// # Safety
+/// Both pointers must be valid NaN-boxed TAG_PTR to `Arc<Value>` (Map or Record).
+#[no_mangle]
+pub extern "C" fn jit_rt_merge(_ctx: *mut VmContext, a_ptr: i64, b_ptr: i64) -> i64 {
+    let a_val = unsafe { nb_decode(a_ptr) };
+    let b_val = unsafe { nb_decode(b_ptr) };
+
+    let result = match (a_val, b_val) {
+        (Value::Map(mut m1), Value::Map(m2)) => {
+            let merged = Arc::make_mut(&mut m1);
+            for (k, v) in m2.iter() {
+                merged.insert(k.clone(), v.clone());
+            }
+            Value::Map(m1)
+        }
+        (Value::Record(r1), Value::Record(r2)) => {
+            let mut fields = r1.fields.clone();
+            for (k, v) in &r2.fields {
+                fields.insert(k.clone(), v.clone());
+            }
+            Value::Record(Arc::new(RecordValue {
+                type_name: r1.type_name.clone(),
+                fields,
+            }))
+        }
+        (first, _) => first,
+    };
+    let ptr = Arc::into_raw(Arc::new(result)) as u64;
+    (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
+}

@@ -25,7 +25,7 @@ pub mod osr_check {
     use super::*;
 
     /// Threshold for triggering OSR tier-up
-    pub const OSR_HOT_THRESHOLD: u64 = 1000;
+    pub const OSR_HOT_THRESHOLD: u64 = 50;
 
     /// Per-cell OSR state tracked during execution
     #[derive(Debug, Clone, Copy)]
@@ -89,6 +89,11 @@ pub mod osr_check {
 
         #[cfg(feature = "jit")]
         pub fn init_jit(&mut self, module: LirModule) {
+            // If the JIT engine is already initialized, skip reinitialization
+            // to preserve pre-compiled cells from load().
+            if self.jit_engine.is_some() {
+                return;
+            }
             use lumen_codegen::jit::CodegenSettings;
             let settings = CodegenSettings::default();
             self.jit_engine = Some(JitEngine::new(settings, 0));
@@ -146,6 +151,27 @@ pub mod osr_check {
                 return false;
             }
 
+            {
+                use lumen_core::lir::OpCode;
+                let cell = &module.cells[cell_idx];
+
+                // Skip cells with complex collection constructors that
+                // have known codegen bugs (SIGSEGV in generated code).
+                if cell
+                    .instructions
+                    .iter()
+                    .any(|i| matches!(i.op, OpCode::NewMap | OpCode::NewRecord | OpCode::NewSet))
+                {
+                    return false;
+                }
+
+                // Skip cells with string arithmetic — the JIT's Add/Concat
+                // lowering only handles numeric types.
+                if has_string_arithmetic_osr(cell) {
+                    return false;
+                }
+            }
+
             let cell_name = module.cells[cell_idx].name.clone();
 
             if let Some(ref mut engine) = self.jit_engine {
@@ -195,6 +221,49 @@ pub mod osr_check {
         pub fn jit_engine_mut(&mut self) -> Option<&mut JitEngine> {
             self.jit_engine.as_mut()
         }
+    }
+
+    /// Returns true if the cell contains string arithmetic that the JIT
+    /// cannot handle (string constant flowing into Add/Concat operand).
+    #[cfg(feature = "jit")]
+    fn has_string_arithmetic_osr(cell: &lumen_core::lir::LirCell) -> bool {
+        use lumen_core::lir::{Constant, OpCode};
+        use std::collections::HashSet;
+        let mut string_regs: HashSet<u16> = HashSet::new();
+        for inst in &cell.instructions {
+            match inst.op {
+                OpCode::LoadK => {
+                    let const_idx = inst.bx() as usize;
+                    if const_idx < cell.constants.len()
+                        && matches!(cell.constants[const_idx], Constant::String(_))
+                    {
+                        string_regs.insert(inst.a);
+                    } else {
+                        string_regs.remove(&inst.a);
+                    }
+                }
+                OpCode::Move | OpCode::MoveOwn => {
+                    if string_regs.contains(&inst.b) {
+                        string_regs.insert(inst.a);
+                    } else {
+                        string_regs.remove(&inst.a);
+                    }
+                }
+                OpCode::Add | OpCode::Concat => {
+                    if string_regs.contains(&inst.b) || string_regs.contains(&inst.c) {
+                        return true;
+                    }
+                    string_regs.remove(&inst.a);
+                }
+                OpCode::Call | OpCode::TailCall | OpCode::Intrinsic => {
+                    string_regs.remove(&inst.a);
+                }
+                _ => {
+                    string_regs.remove(&inst.a);
+                }
+            }
+        }
+        false
     }
 
     /// OSR check — interpreter fast path (no catch_unwind overhead).
@@ -346,13 +415,14 @@ pub fn perform_osr_transition(
             .jit_engine_mut()
             .ok_or_else(|| OsrError::Unavailable("no JIT engine in OSR runtime".into()))?;
 
-        let raw = engine
+        let raw_nb = engine
             .execute_jit(&vm.vm_ctx.inner, cell_name, &[])
             .map_err(|e| OsrError::Unavailable(format!("JIT execution failed: {e}")))?;
 
-        // execute_jit already unboxes NaN-boxed values via nan_unbox_typed,
-        // so `raw` is a plain i64 for Int, raw f64 bits for Float, etc.
+        // execute_jit returns NaN-boxed values. Unbox based on the return type
+        // before converting to Value.
         let ret_ty = engine.return_type(cell_name).unwrap_or(JitVarType::Int);
+        let raw = lumen_codegen::jit::nan_unbox_typed_pub(raw_nb, ret_ty);
 
         let result = match ret_ty {
             JitVarType::Str => {

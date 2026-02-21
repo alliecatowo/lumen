@@ -53,7 +53,7 @@ pub enum JitOptLevel {
 impl Default for JitTierConfig {
     fn default() -> Self {
         Self {
-            hot_threshold: 10,
+            hot_threshold: 3,
             opt_level: JitOptLevel::Speed,
             enabled: true,
         }
@@ -84,6 +84,10 @@ pub struct JitTier {
     /// The actual Cranelift JIT engine (only present when feature = "jit").
     #[cfg(feature = "jit")]
     engine: Option<JitEngine>,
+    /// Cached raw function pointers indexed by cell_idx for O(1) dispatch
+    /// (avoids HashMap lookup on every call).
+    #[cfg(feature = "jit")]
+    fn_ptrs: Vec<Option<*const u8>>,
     /// Statistics.
     pub stats: JitTierStats,
 }
@@ -110,6 +114,8 @@ impl JitTier {
             config,
             #[cfg(feature = "jit")]
             engine: None,
+            #[cfg(feature = "jit")]
+            fn_ptrs: Vec::new(),
             stats: JitTierStats::default(),
         }
     }
@@ -127,6 +133,8 @@ impl JitTier {
     pub fn init_for_module(&mut self, num_cells: usize) {
         self.call_counts.resize(num_cells, 0);
         self.compiled.clear();
+        #[cfg(feature = "jit")]
+        self.fn_ptrs.resize(num_cells, None);
         self.stats = JitTierStats::default();
     }
 
@@ -218,6 +226,12 @@ impl JitTier {
                     if engine.is_compiled(cell_name) {
                         self.compiled.insert(cell_idx);
                         self.stats.cells_compiled += 1;
+                        // Cache raw fn pointer for O(1) indexed dispatch.
+                        if let Some(ptr) = engine.get_compiled_fn(cell_name) {
+                            if cell_idx < self.fn_ptrs.len() {
+                                self.fn_ptrs[cell_idx] = Some(ptr as *const u8);
+                            }
+                        }
                     }
                     self.engine = Some(engine);
                     true
@@ -263,6 +277,102 @@ impl JitTier {
         #[cfg(not(feature = "jit"))]
         {
             let _ = (cell_name, args);
+            None
+        }
+    }
+
+    /// Execute a JIT-compiled cell by index, bypassing the HashMap lookup.
+    /// Falls back to `execute()` if no cached fn pointer is available.
+    #[inline]
+    pub fn execute_by_idx(
+        &mut self,
+        cell_idx: usize,
+        args: &[i64],
+        vm_ctx: &lumen_codegen::vm_context::VmContext,
+        cell_name: &str,
+    ) -> Option<i64> {
+        #[cfg(feature = "jit")]
+        {
+            // Fast path: use cached fn pointer (no HashMap lookup).
+            if let Some(Some(ptr)) = self.fn_ptrs.get(cell_idx) {
+                let fn_ptr = *ptr;
+                let ctx_mut = vm_ctx as *const lumen_codegen::vm_context::VmContext
+                    as *mut lumen_codegen::vm_context::VmContext;
+                let raw = unsafe {
+                    match args.len() {
+                        0 => {
+                            let f: fn(*mut lumen_codegen::vm_context::VmContext) -> i64 =
+                                std::mem::transmute(fn_ptr);
+                            f(ctx_mut)
+                        }
+                        1 => {
+                            let f: fn(*mut lumen_codegen::vm_context::VmContext, i64) -> i64 =
+                                std::mem::transmute(fn_ptr);
+                            f(ctx_mut, args[0])
+                        }
+                        2 => {
+                            let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64) -> i64 =
+                                std::mem::transmute(fn_ptr);
+                            f(ctx_mut, args[0], args[1])
+                        }
+                        3 => {
+                            let f: fn(
+                                *mut lumen_codegen::vm_context::VmContext,
+                                i64,
+                                i64,
+                                i64,
+                            ) -> i64 = std::mem::transmute(fn_ptr);
+                            f(ctx_mut, args[0], args[1], args[2])
+                        }
+                        4 => {
+                            let f: fn(
+                                *mut lumen_codegen::vm_context::VmContext,
+                                i64,
+                                i64,
+                                i64,
+                                i64,
+                            ) -> i64 = std::mem::transmute(fn_ptr);
+                            f(ctx_mut, args[0], args[1], args[2], args[3])
+                        }
+                        5 => {
+                            let f: fn(
+                                *mut lumen_codegen::vm_context::VmContext,
+                                i64,
+                                i64,
+                                i64,
+                                i64,
+                                i64,
+                            ) -> i64 = std::mem::transmute(fn_ptr);
+                            f(ctx_mut, args[0], args[1], args[2], args[3], args[4])
+                        }
+                        6 => {
+                            let f: fn(
+                                *mut lumen_codegen::vm_context::VmContext,
+                                i64,
+                                i64,
+                                i64,
+                                i64,
+                                i64,
+                                i64,
+                            ) -> i64 = std::mem::transmute(fn_ptr);
+                            f(ctx_mut, args[0], args[1], args[2], args[3], args[4], args[5])
+                        }
+                        _ => return None,
+                    }
+                };
+                if lumen_codegen::jit::jit_check_divzero_trap() {
+                    return None;
+                }
+                self.stats.jit_executions += 1;
+                return Some(raw);
+            }
+            // Slow path: fall back to HashMap-based lookup.
+            return self.execute(cell_name, args, vm_ctx);
+        }
+
+        #[cfg(not(feature = "jit"))]
+        {
+            let _ = (cell_idx, args, cell_name);
             None
         }
     }

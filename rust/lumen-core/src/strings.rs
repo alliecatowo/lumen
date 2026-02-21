@@ -28,6 +28,13 @@ impl StringTable {
         self.strings.get(id as usize).map(|s| s.as_str())
     }
 
+    /// Look up the interned ID for a string without creating a new entry.
+    /// Returns `None` if the string has never been interned.
+    #[inline]
+    pub fn get_id(&self, s: &str) -> Option<u32> {
+        self.lookup.get(s).copied()
+    }
+
     pub fn len(&self) -> usize {
         self.strings.len()
     }

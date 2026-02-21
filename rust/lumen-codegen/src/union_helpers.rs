@@ -165,15 +165,10 @@ pub extern "C" fn jit_rt_union_is_variant(
     match value {
         Value::Union(uv) => {
             // Resolve the union's tag ID to a string via Vec lookup (O(1)),
-            // then compare strings directly. This avoids the expensive
-            // HashMap intern() call that was the previous bottleneck.
+            // then compare strings directly.
             let st = unsafe { &*(*ctx).string_table };
             if let Some(resolved) = st.resolve(uv.tag) {
-                if resolved == tag_str {
-                    1
-                } else {
-                    0
-                }
+                if resolved == tag_str { 1 } else { 0 }
             } else {
                 0
             }
@@ -282,27 +277,93 @@ pub extern "C" fn jit_rt_union_match(
         Value::Union(uv) => {
             let st = unsafe { &*(*ctx).string_table };
             if let Some(resolved) = st.resolve(uv.tag) {
-                if resolved == tag_str {
-                    // Tag matches — return the payload NaN-boxed (same logic as unbox).
-                    match &*uv.payload {
-                        Value::Int(n) => {
-                            let payload = (*n as u64) & PAYLOAD_MASK_U;
-                            (NAN_MASK_U | (1u64 << 48) | payload) as i64
-                        }
-                        Value::Bool(true) => NAN_BOX_TRUE,
-                        Value::Bool(false) => NAN_BOX_FALSE,
-                        Value::Null => NAN_BOX_NULL,
-                        Value::Float(f) => f.to_bits() as i64,
-                        _ => {
-                            let ptr = Arc::into_raw(Arc::clone(&uv.payload)) as u64;
-                            (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
-                        }
+                if resolved != tag_str {
+                    return UNION_NO_MATCH;
+                }
+                // Tag matches — return the payload NaN-boxed.
+                match &*uv.payload {
+                    Value::Int(n) => {
+                        let payload = (*n as u64) & PAYLOAD_MASK_U;
+                        (NAN_MASK_U | (1u64 << 48) | payload) as i64
                     }
-                } else {
-                    UNION_NO_MATCH
+                    Value::Bool(true) => NAN_BOX_TRUE,
+                    Value::Bool(false) => NAN_BOX_FALSE,
+                    Value::Null => NAN_BOX_NULL,
+                    Value::Float(f) => f.to_bits() as i64,
+                    _ => {
+                        let ptr = Arc::into_raw(Arc::clone(&uv.payload)) as u64;
+                        (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
+                    }
                 }
             } else {
                 UNION_NO_MATCH
+            }
+        }
+        _ => UNION_NO_MATCH,
+    }
+}
+
+/// Check if a union value has a specific variant tag, using an interned
+/// string ID instead of raw string bytes. This is O(1) — a single integer
+/// comparison — instead of the string-table resolve + string compare path.
+///
+/// # Safety
+/// `union_ptr` must be a valid NaN-boxed TAG_PTR to an `Arc<Value>`.
+#[no_mangle]
+pub extern "C" fn jit_rt_union_is_variant_by_id(
+    _ctx: *mut VmContext,
+    union_ptr: i64,
+    tag_id: u32,
+) -> i64 {
+    let u = union_ptr as u64;
+    if (u & NAN_MASK_U) != NAN_MASK_U || ((u >> 48) & 0x7) != 0 || (u & PAYLOAD_MASK_U) <= 1 {
+        return 0;
+    }
+    let value = unsafe { &*((u & PAYLOAD_MASK_U) as *const Value) };
+    match value {
+        Value::Union(uv) => {
+            if uv.tag == tag_id { 1 } else { 0 }
+        }
+        _ => 0,
+    }
+}
+
+/// Combined IsVariant + Unbox using interned string ID. Returns the payload
+/// NaN-boxed if the tag matches, or `UNION_NO_MATCH` otherwise.
+/// O(1) integer comparison instead of string-table resolve + string compare.
+///
+/// # Safety
+/// `union_ptr` must be a valid NaN-boxed TAG_PTR to an `Arc<Value>`.
+#[no_mangle]
+pub extern "C" fn jit_rt_union_match_by_id(
+    _ctx: *mut VmContext,
+    union_ptr: i64,
+    tag_id: u32,
+) -> i64 {
+    let u = union_ptr as u64;
+    if (u & NAN_MASK_U) != NAN_MASK_U || ((u >> 48) & 0x7) != 0 || (u & PAYLOAD_MASK_U) <= 1 {
+        return UNION_NO_MATCH;
+    }
+    let value = unsafe { &*((u & PAYLOAD_MASK_U) as *const Value) };
+    match value {
+        Value::Union(uv) => {
+            if uv.tag != tag_id {
+                return UNION_NO_MATCH;
+            }
+            // Tag matches — return the payload NaN-boxed.
+            match &*uv.payload {
+                Value::Int(n) => {
+                    let payload = (*n as u64) & PAYLOAD_MASK_U;
+                    (NAN_MASK_U | (1u64 << 48) | payload) as i64
+                }
+                Value::Bool(true) => NAN_BOX_TRUE,
+                Value::Bool(false) => NAN_BOX_FALSE,
+                Value::Null => NAN_BOX_NULL,
+                Value::Float(f) => f.to_bits() as i64,
+                _ => {
+                    let ptr = Arc::into_raw(Arc::clone(&uv.payload)) as u64;
+                    (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
+                }
             }
         }
         _ => UNION_NO_MATCH,

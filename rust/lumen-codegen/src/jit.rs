@@ -235,6 +235,9 @@ fn nan_unbox_typed(raw: i64, ret_type: JitVarType) -> i64 {
 // other jit types without reaching into crate::ir directly.
 pub use crate::ir::JitVarType;
 
+/// Maximum argument arity supported by `execute_jit`.
+pub const EXECUTE_JIT_MAX_ARITY: usize = 12;
+
 // ---------------------------------------------------------------------------
 // JitString — refcounted string with C-compatible layout
 // ---------------------------------------------------------------------------
@@ -1218,6 +1221,14 @@ fn register_collection_helpers(builder: &mut JITBuilder) {
         crate::collection_helpers::jit_rt_list_append as *const u8,
     );
     builder.symbol(
+        "jit_rt_list_append_int",
+        crate::collection_helpers::jit_rt_list_append_int as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_list_append_float",
+        crate::collection_helpers::jit_rt_list_append_float as *const u8,
+    );
+    builder.symbol(
         "jit_rt_merge",
         crate::collection_helpers::jit_rt_merge as *const u8,
     );
@@ -1225,14 +1236,7 @@ fn register_collection_helpers(builder: &mut JITBuilder) {
         "jit_rt_merge_take_a",
         crate::collection_helpers::jit_rt_merge_take_a as *const u8,
     );
-    builder.symbol(
-        "jit_rt_new_map_strs",
-        jit_rt_new_map_strs as *const u8,
-    );
-    builder.symbol(
-        "jit_rt_union_is_variant_by_id",
-        crate::union_helpers::jit_rt_union_is_variant_by_id as *const u8,
-    );
+    builder.symbol("jit_rt_new_map_strs", jit_rt_new_map_strs as *const u8);
 }
 
 // ---------------------------------------------------------------------------
@@ -2230,8 +2234,9 @@ extern "C" fn jit_rt_is_type_name(
     name_ptr: i64,
     name_len: usize,
 ) -> i64 {
-    let type_name =
-        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr as *const u8, name_len)) };
+    let type_name = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr as *const u8, name_len))
+    };
 
     // Determine the runtime type of value_ptr.
     let u = value_ptr as u64;
@@ -2683,7 +2688,7 @@ impl JitEngine {
         // valid for the lifetime of the JITModule (which we own). The
         // caller guarantees the signature matches.
         let raw = unsafe {
-            let code_fn: fn(*mut VmContext) -> i64 = std::mem::transmute(fn_ptr);
+            let code_fn: extern "C" fn(*mut VmContext) -> i64 = std::mem::transmute(fn_ptr);
             code_fn(ctx as *const VmContext as *mut VmContext)
         };
         if JIT_DIVZERO_TRAP.with(|f| f.replace(false)) {
@@ -2709,7 +2714,7 @@ impl JitEngine {
         self.stats.executions += 1;
 
         let raw = unsafe {
-            let code_fn: fn(*mut VmContext, i64) -> i64 = std::mem::transmute(fn_ptr);
+            let code_fn: extern "C" fn(*mut VmContext, i64) -> i64 = std::mem::transmute(fn_ptr);
             code_fn(ctx as *const VmContext as *mut VmContext, arg)
         };
         if JIT_DIVZERO_TRAP.with(|f| f.replace(false)) {
@@ -2736,12 +2741,9 @@ impl JitEngine {
         self.stats.executions += 1;
 
         let raw = unsafe {
-            let code_fn: fn(*mut VmContext, i64, i64) -> i64 = std::mem::transmute(fn_ptr);
-            code_fn(
-                ctx as *const VmContext as *mut VmContext,
-                arg1,
-                arg2,
-            )
+            let code_fn: extern "C" fn(*mut VmContext, i64, i64) -> i64 =
+                std::mem::transmute(fn_ptr);
+            code_fn(ctx as *const VmContext as *mut VmContext, arg1, arg2)
         };
         if JIT_DIVZERO_TRAP.with(|f| f.replace(false)) {
             return Err(JitError::RuntimeTrap("division by zero".to_string()));
@@ -2768,13 +2770,9 @@ impl JitEngine {
         self.stats.executions += 1;
 
         let raw = unsafe {
-            let code_fn: fn(*mut VmContext, i64, i64, i64) -> i64 = std::mem::transmute(fn_ptr);
-            code_fn(
-                ctx as *const VmContext as *mut VmContext,
-                arg1,
-                arg2,
-                arg3,
-            )
+            let code_fn: extern "C" fn(*mut VmContext, i64, i64, i64) -> i64 =
+                std::mem::transmute(fn_ptr);
+            code_fn(ctx as *const VmContext as *mut VmContext, arg1, arg2, arg3)
         };
         if JIT_DIVZERO_TRAP.with(|f| f.replace(false)) {
             return Err(JitError::RuntimeTrap("division by zero".to_string()));
@@ -2802,7 +2800,7 @@ impl JitEngine {
         self.stats.executions += 1;
 
         let raw = unsafe {
-            let code_fn: fn(*mut VmContext, i64, i64, i64, i64) -> i64 =
+            let code_fn: extern "C" fn(*mut VmContext, i64, i64, i64, i64) -> i64 =
                 std::mem::transmute(fn_ptr);
             code_fn(
                 ctx as *const VmContext as *mut VmContext,
@@ -2839,7 +2837,7 @@ impl JitEngine {
         self.stats.executions += 1;
 
         let raw = unsafe {
-            let code_fn: fn(*mut VmContext, i64, i64, i64, i64, i64) -> i64 =
+            let code_fn: extern "C" fn(*mut VmContext, i64, i64, i64, i64, i64) -> i64 =
                 std::mem::transmute(fn_ptr);
             code_fn(
                 ctx as *const VmContext as *mut VmContext,
@@ -2878,7 +2876,7 @@ impl JitEngine {
         self.stats.executions += 1;
 
         let raw = unsafe {
-            let code_fn: fn(*mut VmContext, i64, i64, i64, i64, i64, i64) -> i64 =
+            let code_fn: extern "C" fn(*mut VmContext, i64, i64, i64, i64, i64, i64) -> i64 =
                 std::mem::transmute(fn_ptr);
             code_fn(
                 ctx as *const VmContext as *mut VmContext,
@@ -2896,7 +2894,350 @@ impl JitEngine {
         Ok(raw)
     }
 
-    /// Generic JIT execution dispatching on arity. Supports 0..=6 i64
+    /// Execute a JIT-compiled function with seven i64 arguments.
+    /// Arguments are already NaN-boxed by the VM; result is returned as-is.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_jit_septenary(
+        &mut self,
+        ctx: &VmContext,
+        cell_name: &str,
+        arg1: i64,
+        arg2: i64,
+        arg3: i64,
+        arg4: i64,
+        arg5: i64,
+        arg6: i64,
+        arg7: i64,
+    ) -> Result<i64, JitError> {
+        let compiled = self
+            .cache
+            .get(cell_name)
+            .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
+
+        let fn_ptr = compiled.fn_ptr;
+        self.stats.executions += 1;
+
+        let raw = unsafe {
+            let code_fn: extern "C" fn(*mut VmContext, i64, i64, i64, i64, i64, i64, i64) -> i64 =
+                std::mem::transmute(fn_ptr);
+            code_fn(
+                ctx as *const VmContext as *mut VmContext,
+                arg1,
+                arg2,
+                arg3,
+                arg4,
+                arg5,
+                arg6,
+                arg7,
+            )
+        };
+        if JIT_DIVZERO_TRAP.with(|f| f.replace(false)) {
+            return Err(JitError::RuntimeTrap("division by zero".to_string()));
+        }
+        Ok(raw)
+    }
+
+    /// Execute a JIT-compiled function with eight i64 arguments.
+    /// Arguments are already NaN-boxed by the VM; result is returned as-is.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_jit_octonary(
+        &mut self,
+        ctx: &VmContext,
+        cell_name: &str,
+        arg1: i64,
+        arg2: i64,
+        arg3: i64,
+        arg4: i64,
+        arg5: i64,
+        arg6: i64,
+        arg7: i64,
+        arg8: i64,
+    ) -> Result<i64, JitError> {
+        let compiled = self
+            .cache
+            .get(cell_name)
+            .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
+
+        let fn_ptr = compiled.fn_ptr;
+        self.stats.executions += 1;
+
+        let raw = unsafe {
+            let code_fn: extern "C" fn(
+                *mut VmContext,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+            ) -> i64 = std::mem::transmute(fn_ptr);
+            code_fn(
+                ctx as *const VmContext as *mut VmContext,
+                arg1,
+                arg2,
+                arg3,
+                arg4,
+                arg5,
+                arg6,
+                arg7,
+                arg8,
+            )
+        };
+        if JIT_DIVZERO_TRAP.with(|f| f.replace(false)) {
+            return Err(JitError::RuntimeTrap("division by zero".to_string()));
+        }
+        Ok(raw)
+    }
+
+    /// Execute a JIT-compiled function with nine i64 arguments.
+    /// Arguments are already NaN-boxed by the VM; result is returned as-is.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_jit_nonary(
+        &mut self,
+        ctx: &VmContext,
+        cell_name: &str,
+        arg1: i64,
+        arg2: i64,
+        arg3: i64,
+        arg4: i64,
+        arg5: i64,
+        arg6: i64,
+        arg7: i64,
+        arg8: i64,
+        arg9: i64,
+    ) -> Result<i64, JitError> {
+        let compiled = self
+            .cache
+            .get(cell_name)
+            .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
+
+        let fn_ptr = compiled.fn_ptr;
+        self.stats.executions += 1;
+
+        let raw = unsafe {
+            let code_fn: extern "C" fn(
+                *mut VmContext,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+            ) -> i64 = std::mem::transmute(fn_ptr);
+            code_fn(
+                ctx as *const VmContext as *mut VmContext,
+                arg1,
+                arg2,
+                arg3,
+                arg4,
+                arg5,
+                arg6,
+                arg7,
+                arg8,
+                arg9,
+            )
+        };
+        if JIT_DIVZERO_TRAP.with(|f| f.replace(false)) {
+            return Err(JitError::RuntimeTrap("division by zero".to_string()));
+        }
+        Ok(raw)
+    }
+
+    /// Execute a JIT-compiled function with ten i64 arguments.
+    /// Arguments are already NaN-boxed by the VM; result is returned as-is.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_jit_denary(
+        &mut self,
+        ctx: &VmContext,
+        cell_name: &str,
+        arg1: i64,
+        arg2: i64,
+        arg3: i64,
+        arg4: i64,
+        arg5: i64,
+        arg6: i64,
+        arg7: i64,
+        arg8: i64,
+        arg9: i64,
+        arg10: i64,
+    ) -> Result<i64, JitError> {
+        let compiled = self
+            .cache
+            .get(cell_name)
+            .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
+
+        let fn_ptr = compiled.fn_ptr;
+        self.stats.executions += 1;
+
+        let raw = unsafe {
+            let code_fn: extern "C" fn(
+                *mut VmContext,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+            ) -> i64 = std::mem::transmute(fn_ptr);
+            code_fn(
+                ctx as *const VmContext as *mut VmContext,
+                arg1,
+                arg2,
+                arg3,
+                arg4,
+                arg5,
+                arg6,
+                arg7,
+                arg8,
+                arg9,
+                arg10,
+            )
+        };
+        if JIT_DIVZERO_TRAP.with(|f| f.replace(false)) {
+            return Err(JitError::RuntimeTrap("division by zero".to_string()));
+        }
+        Ok(raw)
+    }
+
+    /// Execute a JIT-compiled function with eleven i64 arguments.
+    /// Arguments are already NaN-boxed by the VM; result is returned as-is.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_jit_undenary(
+        &mut self,
+        ctx: &VmContext,
+        cell_name: &str,
+        arg1: i64,
+        arg2: i64,
+        arg3: i64,
+        arg4: i64,
+        arg5: i64,
+        arg6: i64,
+        arg7: i64,
+        arg8: i64,
+        arg9: i64,
+        arg10: i64,
+        arg11: i64,
+    ) -> Result<i64, JitError> {
+        let compiled = self
+            .cache
+            .get(cell_name)
+            .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
+
+        let fn_ptr = compiled.fn_ptr;
+        self.stats.executions += 1;
+
+        let raw = unsafe {
+            let code_fn: extern "C" fn(
+                *mut VmContext,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+            ) -> i64 = std::mem::transmute(fn_ptr);
+            code_fn(
+                ctx as *const VmContext as *mut VmContext,
+                arg1,
+                arg2,
+                arg3,
+                arg4,
+                arg5,
+                arg6,
+                arg7,
+                arg8,
+                arg9,
+                arg10,
+                arg11,
+            )
+        };
+        if JIT_DIVZERO_TRAP.with(|f| f.replace(false)) {
+            return Err(JitError::RuntimeTrap("division by zero".to_string()));
+        }
+        Ok(raw)
+    }
+
+    /// Execute a JIT-compiled function with twelve i64 arguments.
+    /// Arguments are already NaN-boxed by the VM; result is returned as-is.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_jit_duodenary(
+        &mut self,
+        ctx: &VmContext,
+        cell_name: &str,
+        arg1: i64,
+        arg2: i64,
+        arg3: i64,
+        arg4: i64,
+        arg5: i64,
+        arg6: i64,
+        arg7: i64,
+        arg8: i64,
+        arg9: i64,
+        arg10: i64,
+        arg11: i64,
+        arg12: i64,
+    ) -> Result<i64, JitError> {
+        let compiled = self
+            .cache
+            .get(cell_name)
+            .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
+
+        let fn_ptr = compiled.fn_ptr;
+        self.stats.executions += 1;
+
+        let raw = unsafe {
+            let code_fn: extern "C" fn(
+                *mut VmContext,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+            ) -> i64 = std::mem::transmute(fn_ptr);
+            code_fn(
+                ctx as *const VmContext as *mut VmContext,
+                arg1,
+                arg2,
+                arg3,
+                arg4,
+                arg5,
+                arg6,
+                arg7,
+                arg8,
+                arg9,
+                arg10,
+                arg11,
+                arg12,
+            )
+        };
+        if JIT_DIVZERO_TRAP.with(|f| f.replace(false)) {
+            return Err(JitError::RuntimeTrap("division by zero".to_string()));
+        }
+        Ok(raw)
+    }
+
+    /// Generic JIT execution dispatching on arity. Supports 0..=12 i64
     /// arguments.
     pub fn execute_jit(
         &mut self,
@@ -2910,27 +3251,36 @@ impl JitEngine {
             2 => self.execute_jit_binary(ctx, cell_name, args[0], args[1]),
             3 => self.execute_jit_ternary(ctx, cell_name, args[0], args[1], args[2]),
             4 => self.execute_jit_quaternary(ctx, cell_name, args[0], args[1], args[2], args[3]),
-            5 => self.execute_jit_quinary(
-                ctx,
-                cell_name,
-                args[0],
-                args[1],
-                args[2],
-                args[3],
-                args[4],
-            ),
+            5 => self
+                .execute_jit_quinary(ctx, cell_name, args[0], args[1], args[2], args[3], args[4]),
             6 => self.execute_jit_senary(
-                ctx,
-                cell_name,
-                args[0],
-                args[1],
-                args[2],
-                args[3],
-                args[4],
-                args[5],
+                ctx, cell_name, args[0], args[1], args[2], args[3], args[4], args[5],
+            ),
+            7 => self.execute_jit_septenary(
+                ctx, cell_name, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+            ),
+            8 => self.execute_jit_octonary(
+                ctx, cell_name, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                args[7],
+            ),
+            9 => self.execute_jit_nonary(
+                ctx, cell_name, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                args[7], args[8],
+            ),
+            10 => self.execute_jit_denary(
+                ctx, cell_name, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                args[7], args[8], args[9],
+            ),
+            11 => self.execute_jit_undenary(
+                ctx, cell_name, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                args[7], args[8], args[9], args[10],
+            ),
+            12 => self.execute_jit_duodenary(
+                ctx, cell_name, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                args[7], args[8], args[9], args[10], args[11],
             ),
             n => Err(JitError::ModuleError(format!(
-                "unsupported arity {n} for JIT execution (max 6)"
+                "unsupported arity {n} for JIT execution (max {EXECUTE_JIT_MAX_ARITY})"
             ))),
         }
     }
@@ -3164,7 +3514,7 @@ fn lower_cell_jit(
 #[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
     use super::*;
-    use crate::ir::{nan_box_int, NAN_BOX_TRUE, NAN_BOX_FALSE};
+    use crate::ir::{nan_box_int, NAN_BOX_FALSE, NAN_BOX_TRUE};
     use lumen_core::lir::{Constant, Instruction, LirCell, LirModule, LirParam, OpCode};
 
     fn test_ctx() -> VmContext {
@@ -3311,7 +3661,11 @@ mod tests {
         let result = engine
             .compile_and_execute(&test_ctx(), "answer", &lir, &[])
             .expect("JIT compile and execute should succeed");
-        assert_eq!(result, nan_box_int(42), "JIT-compiled answer() should return 42");
+        assert_eq!(
+            result,
+            nan_box_int(42),
+            "JIT-compiled answer() should return 42"
+        );
     }
 
     #[test]
@@ -3372,15 +3726,21 @@ mod tests {
             .expect("JIT compile should succeed");
 
         assert_eq!(
-            engine.execute_jit_unary(&test_ctx(), "double", nan_box_int(21)).unwrap(),
+            engine
+                .execute_jit_unary(&test_ctx(), "double", nan_box_int(21))
+                .unwrap(),
             nan_box_int(42)
         );
         assert_eq!(
-            engine.execute_jit_unary(&test_ctx(), "double", nan_box_int(0)).unwrap(),
+            engine
+                .execute_jit_unary(&test_ctx(), "double", nan_box_int(0))
+                .unwrap(),
             nan_box_int(0)
         );
         assert_eq!(
-            engine.execute_jit_unary(&test_ctx(), "double", nan_box_int(-5)).unwrap(),
+            engine
+                .execute_jit_unary(&test_ctx(), "double", nan_box_int(-5))
+                .unwrap(),
             nan_box_int(-10)
         );
     }
@@ -3592,31 +3952,61 @@ mod tests {
         // fib_acc(n, 0, 1) computes fib(n)
         assert_eq!(
             engine
-                .execute_jit_ternary(&test_ctx(), "fib_acc", nan_box_int(0), nan_box_int(0), nan_box_int(1))
+                .execute_jit_ternary(
+                    &test_ctx(),
+                    "fib_acc",
+                    nan_box_int(0),
+                    nan_box_int(0),
+                    nan_box_int(1)
+                )
                 .unwrap(),
             nan_box_int(0)
         );
         assert_eq!(
             engine
-                .execute_jit_ternary(&test_ctx(), "fib_acc", nan_box_int(1), nan_box_int(0), nan_box_int(1))
+                .execute_jit_ternary(
+                    &test_ctx(),
+                    "fib_acc",
+                    nan_box_int(1),
+                    nan_box_int(0),
+                    nan_box_int(1)
+                )
                 .unwrap(),
             nan_box_int(1)
         );
         assert_eq!(
             engine
-                .execute_jit_ternary(&test_ctx(), "fib_acc", nan_box_int(5), nan_box_int(0), nan_box_int(1))
+                .execute_jit_ternary(
+                    &test_ctx(),
+                    "fib_acc",
+                    nan_box_int(5),
+                    nan_box_int(0),
+                    nan_box_int(1)
+                )
                 .unwrap(),
             nan_box_int(5)
         );
         assert_eq!(
             engine
-                .execute_jit_ternary(&test_ctx(), "fib_acc", nan_box_int(10), nan_box_int(0), nan_box_int(1))
+                .execute_jit_ternary(
+                    &test_ctx(),
+                    "fib_acc",
+                    nan_box_int(10),
+                    nan_box_int(0),
+                    nan_box_int(1)
+                )
                 .unwrap(),
             nan_box_int(55)
         );
         assert_eq!(
             engine
-                .execute_jit_ternary(&test_ctx(), "fib_acc", nan_box_int(20), nan_box_int(0), nan_box_int(1))
+                .execute_jit_ternary(
+                    &test_ctx(),
+                    "fib_acc",
+                    nan_box_int(20),
+                    nan_box_int(0),
+                    nan_box_int(1)
+                )
                 .unwrap(),
             nan_box_int(6765)
         );
@@ -3786,15 +4176,21 @@ mod tests {
         engine.compile_module(&lir).expect("compile");
 
         assert_eq!(
-            engine.execute_jit_unary(&test_ctx(), "choose", nan_box_int(5)).unwrap(),
+            engine
+                .execute_jit_unary(&test_ctx(), "choose", nan_box_int(5))
+                .unwrap(),
             nan_box_int(100)
         );
         assert_eq!(
-            engine.execute_jit_unary(&test_ctx(), "choose", nan_box_int(-1)).unwrap(),
+            engine
+                .execute_jit_unary(&test_ctx(), "choose", nan_box_int(-1))
+                .unwrap(),
             nan_box_int(50)
         );
         assert_eq!(
-            engine.execute_jit_unary(&test_ctx(), "choose", nan_box_int(0)).unwrap(),
+            engine
+                .execute_jit_unary(&test_ctx(), "choose", nan_box_int(0))
+                .unwrap(),
             nan_box_int(50)
         );
     }
@@ -3850,18 +4246,57 @@ mod tests {
         engine.compile_module(&lir).expect("compile");
 
         // Nullary dispatch.
-        assert_eq!(engine.execute_jit(&test_ctx(), "answer", &[]).unwrap(), nan_box_int(42));
-
-        // Binary dispatch.
         assert_eq!(
-            engine.execute_jit(&test_ctx(), "add", &[nan_box_int(10), nan_box_int(32)]).unwrap(),
+            engine.execute_jit(&test_ctx(), "answer", &[]).unwrap(),
             nan_box_int(42)
         );
 
-        // Unsupported arity (beyond max supported arity of 6).
+        // Binary dispatch.
+        assert_eq!(
+            engine
+                .execute_jit(&test_ctx(), "add", &[nan_box_int(10), nan_box_int(32)])
+                .unwrap(),
+            nan_box_int(42)
+        );
+
+        // Unsupported arity (beyond max supported arity of 12).
         assert!(engine
-            .execute_jit(&test_ctx(), "add", &[1, 2, 3, 4, 5, 6, 7])
+            .execute_jit(
+                &test_ctx(),
+                "add",
+                &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            )
             .is_err());
+    }
+
+    #[test]
+    fn jit_execute_ten_args_returns_first_param() {
+        let pick0_cell = LirCell {
+            name: "pick0".to_string(),
+            params: (0..10)
+                .map(|i| LirParam {
+                    name: format!("p{i}"),
+                    ty: "Int".to_string(),
+                    register: i as u16,
+                    variadic: false,
+                })
+                .collect(),
+            returns: Some("Int".to_string()),
+            registers: 11,
+            constants: vec![],
+            instructions: vec![Instruction::abc(OpCode::Return, 0, 1, 0)],
+            effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
+        };
+
+        let lir = make_module_with_cells(vec![pick0_cell]);
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let args: Vec<i64> = (0..10).map(|n| nan_box_int((n + 100) as i64)).collect();
+        let result = engine.execute_jit(&test_ctx(), "pick0", &args).unwrap();
+        assert_eq!(result, nan_box_int(100));
     }
 
     #[test]
@@ -4170,7 +4605,10 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "neq_test")
             .expect("execute");
-        assert_eq!(result, NAN_BOX_FALSE, "different strings should return false");
+        assert_eq!(
+            result, NAN_BOX_FALSE,
+            "different strings should return false"
+        );
     }
 
     #[test]
@@ -4202,7 +4640,10 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "lt_test")
             .expect("execute");
-        assert_eq!(result, NAN_BOX_TRUE, "\"apple\" < \"banana\" should be true");
+        assert_eq!(
+            result, NAN_BOX_TRUE,
+            "\"apple\" < \"banana\" should be true"
+        );
     }
 
     #[test]
@@ -4234,7 +4675,10 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "lt_rev")
             .expect("execute");
-        assert_eq!(result, NAN_BOX_FALSE, "\"banana\" < \"apple\" should be false");
+        assert_eq!(
+            result, NAN_BOX_FALSE,
+            "\"banana\" < \"apple\" should be false"
+        );
     }
 
     #[test]
@@ -4602,7 +5046,11 @@ mod tests {
         let result = engine
             .execute_jit_nullary(&test_ctx(), "is_hello")
             .expect("execute");
-        assert_eq!(result, nan_box_int(100), "equal strings should take the then-branch");
+        assert_eq!(
+            result,
+            nan_box_int(100),
+            "equal strings should take the then-branch"
+        );
     }
 
     #[test]
@@ -6365,7 +6813,10 @@ mod tests {
         let raw = engine
             .execute_jit_nullary(&test_ctx(), "test_contains")
             .expect("execute");
-        assert_eq!(raw, NAN_BOX_TRUE, "contains(\"hello world\", \"world\") should be true");
+        assert_eq!(
+            raw, NAN_BOX_TRUE,
+            "contains(\"hello world\", \"world\") should be true"
+        );
     }
 
     #[test]
@@ -6397,7 +6848,10 @@ mod tests {
         let raw = engine
             .execute_jit_nullary(&test_ctx(), "test_contains_f")
             .expect("execute");
-        assert_eq!(raw, NAN_BOX_FALSE, "contains(\"hello\", \"xyz\") should be false");
+        assert_eq!(
+            raw, NAN_BOX_FALSE,
+            "contains(\"hello\", \"xyz\") should be false"
+        );
     }
 
     #[test]
@@ -6629,7 +7083,11 @@ mod tests {
         let raw = engine
             .execute_jit_nullary(&test_ctx(), "test_indexof")
             .expect("execute");
-        assert_eq!(raw, nan_box_int(6), "index_of(\"hello world\", \"world\") should be 6");
+        assert_eq!(
+            raw,
+            nan_box_int(6),
+            "index_of(\"hello world\", \"world\") should be 6"
+        );
     }
 
     #[test]
@@ -7238,7 +7696,8 @@ mod tests {
             .execute_jit_nullary(&test_ctx(), "with_emit")
             .expect("execute");
         assert_eq!(
-            result, nan_box_int(42),
+            result,
+            nan_box_int(42),
             "Cell should return NaN-boxed 42; Emit runtime helper should not affect result"
         );
     }

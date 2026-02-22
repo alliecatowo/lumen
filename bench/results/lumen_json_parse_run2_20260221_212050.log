@@ -1,0 +1,5 @@
+error: unrecognized subcommand 'bench/cross-language/json_parse/json_parse.lm'
+
+Usage: lumen <COMMAND>
+
+For more information, try '--help'.

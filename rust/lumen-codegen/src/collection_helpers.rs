@@ -12,6 +12,7 @@ use std::sync::Arc;
 //   TAG_PTR=0, TAG_INT=1, TAG_ATOM=2, TAG_BOOL=3, TAG_NULL=4, TAG_FIBER=5
 const NAN_MASK_U: u64 = 0x7FF8_0000_0000_0000;
 const PAYLOAD_MASK_U: u64 = 0x0000_FFFF_FFFF_FFFF;
+const NAN_BOX_NULL_U: u64 = 0x7FFC_0000_0000_0000;
 
 /// Decode a NbValue-encoded i64 to a heap-allocated Value.
 /// Returns a `*mut Value` that must be freed by the caller.
@@ -79,6 +80,61 @@ unsafe fn nb_decode(val: i64) -> Value {
             Value::Null
         }
     }
+}
+
+#[inline]
+fn wrap_nanbox_ptr(ptr: *const Value) -> i64 {
+    let raw = ptr as u64;
+    (NAN_MASK_U | (raw & PAYLOAD_MASK_U)) as i64
+}
+
+#[inline]
+fn wrap_nanbox_value(value: Value) -> i64 {
+    wrap_nanbox_ptr(Arc::into_raw(Arc::new(value)))
+}
+
+#[inline]
+fn singleton_list_value(element: Value) -> i64 {
+    wrap_nanbox_value(Value::new_list(vec![element]))
+}
+
+#[inline]
+fn decode_value_ptr(list_ptr: i64) -> Option<*const Value> {
+    let u = list_ptr as u64;
+    if u == 0 || u == NAN_BOX_NULL_U {
+        return None;
+    }
+
+    // NaN-boxed TAG_PTR.
+    if (u & NAN_MASK_U) == NAN_MASK_U && ((u >> 48) & 0x7) == 0 {
+        let payload = u & PAYLOAD_MASK_U;
+        return if payload > 1 {
+            Some(payload as *const Value)
+        } else {
+            None
+        };
+    }
+
+    // Legacy/raw pointer form used by some helper paths.
+    if u > 1 && u < (1u64 << 48) {
+        return Some(u as *const Value);
+    }
+
+    None
+}
+
+#[inline]
+fn append_to_list_value(list_ptr: i64, element_value: Value) -> i64 {
+    let Some(raw_ptr) = decode_value_ptr(list_ptr) else {
+        return singleton_list_value(element_value);
+    };
+
+    // Take ownership via Arc — the caller overwrites the source register.
+    let mut arc_list = unsafe { Arc::from_raw(raw_ptr) };
+    if let Value::List(inner_arc) = Arc::make_mut(&mut arc_list) {
+        Arc::make_mut(inner_arc).push(element_value);
+    }
+    wrap_nanbox_ptr(Arc::into_raw(arc_list))
 }
 
 /// Create a new List value from an array of boxed Values.
@@ -262,37 +318,25 @@ pub extern "C" fn jit_rt_new_record(
 /// or 0 / NAN_BOX_NULL for empty list fallback.
 #[no_mangle]
 pub extern "C" fn jit_rt_list_append(_ctx: *mut VmContext, list_ptr: i64, element: i64) -> i64 {
-    // Decode the element to append from NaN-boxed encoding (no heap allocation).
-    let element_value = unsafe { nb_decode(element) };
+    append_to_list_value(list_ptr, unsafe { nb_decode(element) })
+}
 
-    // Extract raw pointer from NaN-boxed or raw form.
-    let raw_ptr = {
-        let u = list_ptr as u64;
-        if u == 0 || u == 0x7FFC_0000_0000_0000 {
-            // Null — create a fresh single-element list.
-            let result = Value::new_list(vec![element_value]);
-            let ptr = Arc::into_raw(Arc::new(result)) as u64;
-            return (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64;
-        }
-        if (u & NAN_MASK_U) == NAN_MASK_U && ((u >> 48) & 0x7) == 0 {
-            (u & PAYLOAD_MASK_U) as *const Value
-        } else if u > 1 && u < (1u64 << 48) {
-            u as *const Value
-        } else {
-            let result = Value::new_list(vec![element_value]);
-            let ptr = Arc::into_raw(Arc::new(result)) as u64;
-            return (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64;
-        }
-    };
+/// Append a raw i64 integer value to a List.
+/// `element` is an unboxed integer (not NbValue-encoded).
+#[no_mangle]
+pub extern "C" fn jit_rt_list_append_int(_ctx: *mut VmContext, list_ptr: i64, element: i64) -> i64 {
+    append_to_list_value(list_ptr, Value::Int(element))
+}
 
-    // Take ownership via Arc — JIT register is consumed after this call.
-    // NbValue uses Arc for heap allocations, so we must use Arc::from_raw here.
-    let mut arc_list = unsafe { Arc::from_raw(raw_ptr) };
-    if let Value::List(inner_arc) = Arc::make_mut(&mut arc_list) {
-        Arc::make_mut(inner_arc).push(element_value);
-    }
-    let ptr = Arc::into_raw(arc_list) as u64;
-    (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
+/// Append a raw f64-bit-pattern value to a List.
+/// `element_bits` is interpreted as IEEE-754 `f64` bits.
+#[no_mangle]
+pub extern "C" fn jit_rt_list_append_float(
+    _ctx: *mut VmContext,
+    list_ptr: i64,
+    element_bits: i64,
+) -> i64 {
+    append_to_list_value(list_ptr, Value::Float(f64::from_bits(element_bits as u64)))
 }
 
 /// Merge two maps (or records) into one: `merge(a, b)` → new map with b's entries overlaid on a.
@@ -389,4 +433,57 @@ pub extern "C" fn jit_rt_merge_take_a(_ctx: *mut VmContext, a_nb: i64, b_nb: i64
     };
     let ptr = Arc::into_raw(Arc::new(result)) as u64;
     (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decode_result_arc(nb: i64) -> Arc<Value> {
+        let ptr = decode_value_ptr(nb).expect("expected encoded Value pointer");
+        // The helper contract returns an Arc::into_raw pointer in NbValue TAG_PTR format.
+        unsafe { Arc::from_raw(ptr) }
+    }
+
+    fn extract_list(value: &Value) -> Arc<Vec<Value>> {
+        match value {
+            Value::List(list) => list.clone(),
+            other => panic!("expected Value::List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_append_int_creates_list_from_null() {
+        let out = jit_rt_list_append_int(std::ptr::null_mut(), NAN_BOX_NULL_U as i64, 42);
+        let out_arc = decode_result_arc(out);
+        let list = extract_list(&out_arc);
+        assert_eq!(&*list, &[Value::Int(42)]);
+    }
+
+    #[test]
+    fn list_append_float_creates_list_from_null() {
+        let out = jit_rt_list_append_float(
+            std::ptr::null_mut(),
+            NAN_BOX_NULL_U as i64,
+            1.25f64.to_bits() as i64,
+        );
+        let out_arc = decode_result_arc(out);
+        let list = extract_list(&out_arc);
+        assert_eq!(&*list, &[Value::Float(1.25)]);
+    }
+
+    #[test]
+    fn list_append_int_preserves_cow_on_shared_input() {
+        let shared_src = Arc::new(Value::new_list(vec![Value::Int(1)]));
+        let shared_observer = shared_src.clone();
+        let input_nb = wrap_nanbox_ptr(Arc::into_raw(shared_src));
+
+        let out = jit_rt_list_append_int(std::ptr::null_mut(), input_nb, 2);
+        let out_arc = decode_result_arc(out);
+        let out_list = extract_list(&out_arc);
+
+        assert_eq!(&*out_list, &[Value::Int(1), Value::Int(2)]);
+        let observed_list = extract_list(&shared_observer);
+        assert_eq!(&*observed_list, &[Value::Int(1)]);
+    }
 }

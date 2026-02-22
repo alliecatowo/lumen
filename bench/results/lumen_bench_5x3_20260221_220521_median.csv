@@ -1,0 +1,6 @@
+benchmark,median_ms
+fibonacci,72
+json_parse,27
+string_ops,8
+tree,236
+sort,94

@@ -1,0 +1,16 @@
+benchmark,run,time_ms,exit_code,jit_stats_printed
+fibonacci,1,4,2,no
+fibonacci,2,4,2,no
+fibonacci,3,4,2,no
+json_parse,1,4,2,no
+json_parse,2,3,2,no
+json_parse,3,4,2,no
+string_ops,1,4,2,no
+string_ops,2,4,2,no
+string_ops,3,4,2,no
+tree,1,4,2,no
+tree,2,4,2,no
+tree,3,4,2,no
+sort,1,4,2,no
+sort,2,4,2,no
+sort,3,4,2,no

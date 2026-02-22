@@ -188,14 +188,14 @@ impl JitTier {
             let cell = &module.cells[cell_idx];
             let cell_name = &cell.name;
 
-            // Skip JIT for cells with NewRecord/NewSet which have known codegen
-            // bugs (SIGSEGV in generated code). String arithmetic (Add/Concat)
-            // and NewMap are fully supported.
+            // Keep only the known-unsafe guard. Collection opcodes such as
+            // Append/NewList/NewListStack/GetIndex/SetIndex/NewMap are eligible.
             if cell
                 .instructions
                 .iter()
-                .any(|i| matches!(i.op, OpCode::NewRecord | OpCode::NewSet))
+                .any(|i| Self::is_known_unsafe_opcode(i.op))
             {
+                self.stats.compile_failures += 1;
                 return false;
             }
 
@@ -208,31 +208,48 @@ impl JitTier {
                 opt_level: opt,
                 target: None,
             };
+            let make_settings = || CodegenSettings {
+                opt_level: settings.opt_level,
+                target: settings.target.clone(),
+            };
 
             // Create a new engine each time (Cranelift JITModule doesn't support
             // incremental addition of functions after finalize_definitions).
-            let mut engine = JitEngine::new(settings, 0);
-            match engine.compile_hot(cell_name, module) {
-                Ok(()) => {
-                    // Mark only the hot cell as compiled.
-                    if engine.is_compiled(cell_name) {
-                        self.compiled.insert(cell_idx);
-                        self.stats.cells_compiled += 1;
-                        // Cache raw fn pointer for O(1) indexed dispatch.
-                        if let Some(ptr) = engine.get_compiled_fn(cell_name) {
-                            if cell_idx < self.fn_ptrs.len() {
-                                self.fn_ptrs[cell_idx] = Some(ptr as *const u8);
-                            }
-                        }
-                    }
-                    self.engine = Some(engine);
-                    true
-                }
-                Err(_e) => {
-                    self.stats.compile_failures += 1;
-                    false
+            let mut engine = JitEngine::new(make_settings(), 0);
+            let mut compiled = engine.compile_hot(cell_name, module).is_ok();
+
+            // If full-module lowering fails, retry in isolated mode for cells
+            // without direct Call/TailCall. This avoids blanket module failure
+            // for collection-heavy leaf cells while preserving call semantics.
+            if !compiled && !Self::has_direct_call(cell) {
+                let mut isolated_engine = JitEngine::new(make_settings(), 0);
+                let isolated_module = Self::single_cell_module(module, cell_idx);
+                compiled = isolated_engine
+                    .compile_hot(cell_name, &isolated_module)
+                    .is_ok();
+                if compiled {
+                    engine = isolated_engine;
                 }
             }
+
+            if !compiled {
+                self.stats.compile_failures += 1;
+                return false;
+            }
+
+            // Mark only the hot cell as compiled.
+            if engine.is_compiled(cell_name) {
+                self.compiled.insert(cell_idx);
+                self.stats.cells_compiled += 1;
+                // Cache raw fn pointer for O(1) indexed dispatch.
+                if let Some(ptr) = engine.get_compiled_fn(cell_name) {
+                    if cell_idx < self.fn_ptrs.len() {
+                        self.fn_ptrs[cell_idx] = Some(ptr as *const u8);
+                    }
+                }
+            }
+            self.engine = Some(engine);
+            true
         }
 
         #[cfg(not(feature = "jit"))]
@@ -411,5 +428,25 @@ impl JitTier {
     pub fn hot_threshold(&self) -> u64 {
         self.config.hot_threshold
     }
-}
 
+    #[cfg(feature = "jit")]
+    #[inline(always)]
+    fn is_known_unsafe_opcode(op: OpCode) -> bool {
+        matches!(op, OpCode::NewRecord | OpCode::NewSet)
+    }
+
+    #[cfg(feature = "jit")]
+    #[inline(always)]
+    fn has_direct_call(cell: &lumen_core::lir::LirCell) -> bool {
+        cell.instructions
+            .iter()
+            .any(|i| matches!(i.op, OpCode::Call | OpCode::TailCall))
+    }
+
+    #[cfg(feature = "jit")]
+    fn single_cell_module(module: &LirModule, cell_idx: usize) -> LirModule {
+        let mut isolated = module.clone();
+        isolated.cells = vec![module.cells[cell_idx].clone()];
+        isolated
+    }
+}

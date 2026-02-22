@@ -59,7 +59,37 @@ fn vm_from_ctx(ctx: *mut VmContext) -> &'static mut VM {
 
 fn decode_nb_value(_vm: &mut VM, raw: u64) -> Value {
     let nb = NbValue(raw);
-    nb.to_legacy()
+    nb_to_value(nb)
+}
+
+/// Convert NbValue to Value without the removed to_legacy/peek_legacy methods.
+#[inline]
+fn nb_to_value(nb: NbValue) -> Value {
+    if nb.is_int() {
+        return Value::Int(nb.as_int().unwrap_or(0));
+    }
+    if !nb.is_nan_boxed() {
+        return Value::Float(f64::from_bits(nb.to_bits()));
+    }
+    if nb.is_bool() {
+        return Value::Bool(nb.as_bool().unwrap_or(false));
+    }
+    if nb.is_null() {
+        return Value::Null;
+    }
+    // TAG_PTR: check payload
+    let payload = nb.payload();
+    if payload == 0 {
+        return Value::Null;
+    }
+    if payload == 1 {
+        return Value::Float(f64::NAN);
+    }
+    // Heap pointer: clone without consuming the Arc
+    if let Some(v) = nb.as_heap_ref() {
+        return v.clone();
+    }
+    Value::Null
 }
 
 #[derive(Clone, Copy)]

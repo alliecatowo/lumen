@@ -1197,8 +1197,8 @@ fn format_value_short(value: &Value) -> String {
             format!("{}(...)", rv.type_name)
         }
         Value::Union(uv) => {
-            // uv.tag is u32 (interned string ID), uv.payload is Arc<Value>
-            format!("variant#{}({})", uv.tag, format_value_short(&uv.payload))
+            let pv = uv.payload.to_value();
+            format!("variant#{}({})", uv.tag, format_value_short(&pv))
         }
         Value::Closure(_) => "<closure>".to_string(),
         Value::Future(_) => "<future>".to_string(),

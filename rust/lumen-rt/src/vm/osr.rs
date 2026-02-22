@@ -155,19 +155,14 @@ pub mod osr_check {
                 use lumen_core::lir::OpCode;
                 let cell = &module.cells[cell_idx];
 
-                // Skip cells with complex collection constructors that
-                // have known codegen bugs (SIGSEGV in generated code).
+                // Skip cells with NewRecord/NewSet which have known codegen
+                // bugs (SIGSEGV in generated code). NewMap and string
+                // arithmetic are fully supported.
                 if cell
                     .instructions
                     .iter()
-                    .any(|i| matches!(i.op, OpCode::NewMap | OpCode::NewRecord | OpCode::NewSet))
+                    .any(|i| matches!(i.op, OpCode::NewRecord | OpCode::NewSet))
                 {
-                    return false;
-                }
-
-                // Skip cells with string arithmetic — the JIT's Add/Concat
-                // lowering only handles numeric types.
-                if has_string_arithmetic_osr(cell) {
                     return false;
                 }
             }
@@ -221,49 +216,6 @@ pub mod osr_check {
         pub fn jit_engine_mut(&mut self) -> Option<&mut JitEngine> {
             self.jit_engine.as_mut()
         }
-    }
-
-    /// Returns true if the cell contains string arithmetic that the JIT
-    /// cannot handle (string constant flowing into Add/Concat operand).
-    #[cfg(feature = "jit")]
-    fn has_string_arithmetic_osr(cell: &lumen_core::lir::LirCell) -> bool {
-        use lumen_core::lir::{Constant, OpCode};
-        use std::collections::HashSet;
-        let mut string_regs: HashSet<u16> = HashSet::new();
-        for inst in &cell.instructions {
-            match inst.op {
-                OpCode::LoadK => {
-                    let const_idx = inst.bx() as usize;
-                    if const_idx < cell.constants.len()
-                        && matches!(cell.constants[const_idx], Constant::String(_))
-                    {
-                        string_regs.insert(inst.a);
-                    } else {
-                        string_regs.remove(&inst.a);
-                    }
-                }
-                OpCode::Move | OpCode::MoveOwn => {
-                    if string_regs.contains(&inst.b) {
-                        string_regs.insert(inst.a);
-                    } else {
-                        string_regs.remove(&inst.a);
-                    }
-                }
-                OpCode::Add | OpCode::Concat => {
-                    if string_regs.contains(&inst.b) || string_regs.contains(&inst.c) {
-                        return true;
-                    }
-                    string_regs.remove(&inst.a);
-                }
-                OpCode::Call | OpCode::TailCall | OpCode::Intrinsic => {
-                    string_regs.remove(&inst.a);
-                }
-                _ => {
-                    string_regs.remove(&inst.a);
-                }
-            }
-        }
-        false
     }
 
     /// OSR check — interpreter fast path (no catch_unwind overhead).
@@ -408,6 +360,21 @@ pub fn perform_osr_transition(
 
         let cell_name = &cell.name;
 
+        // Collect the cell's parameters from the current frame's register base.
+        // NbValue stores values in NaN-boxed form already — the JIT expects exactly
+        // this encoding, so we pass nb.0 as i64 directly.
+        let args: Vec<i64> = {
+            let base = vm
+                .frames
+                .last()
+                .map(|f| f.base_register)
+                .unwrap_or(0);
+            let nparams = cell.params.len();
+            (0..nparams)
+                .map(|i| vm.registers[base + i].0 as i64)
+                .collect()
+        };
+
         // Use the OsrRuntime's JitEngine to execute the compiled cell.
         // execute_jit handles NaN-boxing encode/decode properly.
         let engine = vm
@@ -416,7 +383,7 @@ pub fn perform_osr_transition(
             .ok_or_else(|| OsrError::Unavailable("no JIT engine in OSR runtime".into()))?;
 
         let raw_nb = engine
-            .execute_jit(&vm.vm_ctx.inner, cell_name, &[])
+            .execute_jit(&vm.vm_ctx.inner, cell_name, &args)
             .map_err(|e| OsrError::Unavailable(format!("JIT execution failed: {e}")))?;
 
         // execute_jit returns NaN-boxed values. Unbox based on the return type

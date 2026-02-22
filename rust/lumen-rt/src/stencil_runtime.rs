@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use lumen_core::lir::Instruction;
 use lumen_core::nb_value::NbValue;
-use lumen_core::values::{ClosureValue, RecordValue, StringRef, UnionValue, Value};
+use lumen_core::values::{ClosureValue, RecordValue, StringRef, UnionPayload, UnionValue, Value};
 use lumen_core::vm_context::VmContext;
 
 use crate::services::tools::ToolRequest;
@@ -421,7 +421,7 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
             let tag_val = vm.reg(base + b);
             let tag_str = tag_val.as_string_resolved(&vm.strings);
             let tag = vm.strings.intern(&tag_str);
-            let payload = Arc::new(vm.reg(base + c));
+            let payload = UnionPayload::from_value(vm.reg(base + c));
             vm.set_reg(base + a, Value::Union(UnionValue { tag, payload }));
         }
 
@@ -453,7 +453,7 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
         lumen_core::lir::OpCode::Unbox => {
             let val = vm.reg(base + b);
             let result = if let Value::Union(u) = &val {
-                (*u.payload).clone()
+                u.payload.to_value()
             } else {
                 Value::Null
             };

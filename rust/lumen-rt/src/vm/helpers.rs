@@ -261,7 +261,8 @@ pub(crate) fn value_to_json(
             let mut obj = serde_json::Map::new();
             let tag_str = strings.resolve(u.tag).unwrap_or("?").to_string();
             obj.insert("__tag".to_string(), serde_json::Value::String(tag_str));
-            obj.insert("__payload".to_string(), value_to_json(&u.payload, strings));
+            let payload_val = u.payload.to_value();
+            obj.insert("__payload".to_string(), value_to_json(&payload_val, strings));
             serde_json::Value::Object(obj)
         }
         _ => serde_json::Value::Null,

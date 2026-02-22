@@ -329,3 +329,64 @@ pub extern "C" fn jit_rt_merge(_ctx: *mut VmContext, a_ptr: i64, b_ptr: i64) -> 
     let ptr = Arc::into_raw(Arc::new(result)) as u64;
     (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
 }
+
+/// Merge two maps/records, taking ownership of the first argument's Arc.
+///
+/// Unlike `jit_rt_merge`, this function takes *ownership* of `a_ptr`'s Arc via
+/// `Arc::from_raw` + `Arc::try_unwrap`. Because only one Rust `Arc` handle exists
+/// (refcount == 1), `Arc::make_mut` can mutate the inner `BTreeMap` in-place
+/// (O(log n) insert) instead of deep-copying the entire map (O(n)).
+///
+/// Use this when the caller guarantees `a_ptr` will not be accessed after the call
+/// (i.e., the source register came from a `MoveOwn` instruction).
+///
+/// # Safety
+/// `a_ptr` must be a valid NaN-boxed `Arc<Value>` pointer whose Arc refcount is 1,
+/// OR an inline scalar (TAG_INT/BOOL/NULL), in which case we fall back to `nb_decode`.
+#[no_mangle]
+pub extern "C" fn jit_rt_merge_take_a(_ctx: *mut VmContext, a_nb: i64, b_nb: i64) -> i64 {
+    // Take ownership of a's Arc without incrementing refcount, so Arc::make_mut
+    // can mutate in-place (count stays 1 after from_raw + try_unwrap).
+    let u = a_nb as u64;
+    let a_val = if (u & NAN_MASK_U) == NAN_MASK_U
+        && ((u >> 48) & 0x7) == 0
+        && (u & PAYLOAD_MASK_U) > 1
+    {
+        // TAG_PTR: consume the Arc — count stays 1, no clone of BTreeMap.
+        let ptr = (u & PAYLOAD_MASK_U) as *const Value;
+        let arc = unsafe { Arc::<Value>::from_raw(ptr) };
+        match Arc::try_unwrap(arc) {
+            Ok(val) => val,
+            Err(shared) => (*shared).clone(), // fallback: someone else holds a ref
+        }
+    } else {
+        // Inline scalar — decode normally.
+        unsafe { nb_decode(a_nb) }
+    };
+
+    let b_val = unsafe { nb_decode(b_nb) };
+
+    let result = match (a_val, b_val) {
+        (Value::Map(mut m1), Value::Map(m2)) => {
+            // Arc::make_mut sees count=1 → mutates in place, no BTreeMap copy.
+            let merged = Arc::make_mut(&mut m1);
+            for (k, v) in m2.iter() {
+                merged.insert(k.clone(), v.clone());
+            }
+            Value::Map(m1)
+        }
+        (Value::Record(r1), Value::Record(r2)) => {
+            let mut fields = r1.fields.clone();
+            for (k, v) in &r2.fields {
+                fields.insert(k.clone(), v.clone());
+            }
+            Value::Record(Arc::new(RecordValue {
+                type_name: r1.type_name.clone(),
+                fields,
+            }))
+        }
+        (first, _) => first,
+    };
+    let ptr = Arc::into_raw(Arc::new(result)) as u64;
+    (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
+}

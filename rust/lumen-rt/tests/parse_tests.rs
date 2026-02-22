@@ -3,9 +3,8 @@
 //! (Union with "ok"/"err" tags) instead of null on failure.
 
 use lumen_compiler::compile;
-use lumen_rt::values::{UnionValue, Value};
+use lumen_rt::values::{UnionPayload, UnionValue, Value};
 use lumen_rt::vm::VM;
-use std::sync::Arc;
 
 /// Helper: wrap raw Lumen code in markdown, compile, run `main`, return the VM and result.
 fn run_main_with_vm(source: &str) -> (VM, Value) {
@@ -20,14 +19,14 @@ fn run_main_with_vm(source: &str) -> (VM, Value) {
 fn ok_int(tag_ok: u32, n: i64) -> Value {
     Value::Union(UnionValue {
         tag: tag_ok,
-        payload: Arc::new(Value::Int(n)),
+        payload: UnionPayload::Int(n),
     })
 }
 
 fn ok_float(tag_ok: u32, f: f64) -> Value {
     Value::Union(UnionValue {
         tag: tag_ok,
-        payload: Arc::new(Value::Float(f)),
+        payload: UnionPayload::Float(f),
     })
 }
 

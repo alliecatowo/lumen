@@ -1256,6 +1256,118 @@ impl VM {
                 let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
                 Ok(Value::String(StringRef::Owned(s.trim_end().to_string())))
             }
+            "bytes_from_ascii" => {
+                // bytes_from_ascii(s: String) -> Bytes
+                // Convert an ASCII/UTF-8 string to a Bytes value (Vec<u8>).
+                let nb = self.registers[base + a + 1];
+                let s = self.nb_to_string_resolved(nb);
+                Ok(Value::Bytes(s.into_bytes()))
+            }
+            "bytes_to_ascii" => {
+                // bytes_to_ascii(b: Bytes) -> String
+                // Convert a Bytes value back to a String. Returns Null on non-Bytes input.
+                let nb = self.registers[base + a + 1];
+                if nb.is_ptr() && nb.payload() > 1 {
+                    let val_ref = unsafe { &*(nb.payload() as *const Value) };
+                    return Ok(match val_ref {
+                        Value::Bytes(b) => {
+                            Value::String(StringRef::Owned(String::from_utf8_lossy(b).to_string()))
+                        }
+                        _ => Value::Null,
+                    });
+                }
+                let arg = nb.peek_legacy();
+                Ok(match arg {
+                    Value::Bytes(b) => {
+                        Value::String(StringRef::Owned(String::from_utf8_lossy(&b).to_string()))
+                    }
+                    _ => Value::Null,
+                })
+            }
+            "bytes_len" => {
+                // bytes_len(b: Bytes) -> Int
+                // Return the number of bytes in a Bytes value. Returns 0 for non-Bytes.
+                let nb = self.registers[base + a + 1];
+                if nb.is_ptr() && nb.payload() > 1 {
+                    let val_ref = unsafe { &*(nb.payload() as *const Value) };
+                    return Ok(match val_ref {
+                        Value::Bytes(b) => Value::Int(b.len() as i64),
+                        _ => Value::Int(0),
+                    });
+                }
+                let arg = nb.peek_legacy();
+                Ok(match arg {
+                    Value::Bytes(b) => Value::Int(b.len() as i64),
+                    _ => Value::Int(0),
+                })
+            }
+            "bytes_slice" => {
+                // bytes_slice(b: Bytes, start: Int, end: Int) -> Bytes
+                // Return a sub-slice of bytes from start (inclusive) to end (exclusive).
+                // If end <= 0, slice to the end of the bytes.
+                // Returns Null for non-Bytes input.
+                let nb = self.registers[base + a + 1];
+                let start_nb = self.registers[base + a + 2];
+                let end_nb = self.registers[base + a + 3];
+                let start = self.nb_to_int(start_nb).unwrap_or(0) as usize;
+                let end_raw = self.nb_to_int(end_nb).unwrap_or(0);
+                let get_slice = |b: &Vec<u8>| -> Value {
+                    let len = b.len();
+                    let end = if end_raw <= 0 { len } else { (end_raw as usize).min(len) };
+                    let start = start.min(len);
+                    let end = end.max(start);
+                    Value::Bytes(b[start..end].to_vec())
+                };
+                if nb.is_ptr() && nb.payload() > 1 {
+                    let val_ref = unsafe { &*(nb.payload() as *const Value) };
+                    return Ok(match val_ref {
+                        Value::Bytes(b) => get_slice(b),
+                        _ => Value::Null,
+                    });
+                }
+                let arg = nb.peek_legacy();
+                Ok(match arg {
+                    Value::Bytes(ref b) => get_slice(b),
+                    _ => Value::Null,
+                })
+            }
+            "bytes_concat" => {
+                // bytes_concat(a: Bytes, b: Bytes) -> Bytes
+                // Concatenate two Bytes values. Returns Null if either argument is not Bytes.
+                let nb_a = self.registers[base + a + 1];
+                let nb_b = self.registers[base + a + 2];
+                let bytes_a = if nb_a.is_ptr() && nb_a.payload() > 1 {
+                    let val_ref = unsafe { &*(nb_a.payload() as *const Value) };
+                    match val_ref {
+                        Value::Bytes(b) => Some(b.clone()),
+                        _ => None,
+                    }
+                } else {
+                    match nb_a.peek_legacy() {
+                        Value::Bytes(b) => Some(b.clone()),
+                        _ => None,
+                    }
+                };
+                let bytes_b = if nb_b.is_ptr() && nb_b.payload() > 1 {
+                    let val_ref = unsafe { &*(nb_b.payload() as *const Value) };
+                    match val_ref {
+                        Value::Bytes(b) => Some(b.clone()),
+                        _ => None,
+                    }
+                } else {
+                    match nb_b.peek_legacy() {
+                        Value::Bytes(b) => Some(b.clone()),
+                        _ => None,
+                    }
+                };
+                Ok(match (bytes_a, bytes_b) {
+                    (Some(mut a_vec), Some(b_vec)) => {
+                        a_vec.extend_from_slice(&b_vec);
+                        Value::Bytes(a_vec)
+                    }
+                    _ => Value::Null,
+                })
+            }
             _ => Err(VmError::Runtime(format!("unknown builtin: {}", name))),
         }
     }

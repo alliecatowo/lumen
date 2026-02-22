@@ -24,7 +24,7 @@ use lumen_core::strings::StringTable;
 use lumen_core::types::{RuntimeField, RuntimeType, RuntimeTypeKind, RuntimeVariant, TypeTable};
 use lumen_core::values::{
     values_equal, ClosureValue, FutureStatus, FutureValue, RecordValue, StringRef, TraceRefValue,
-    UnionValue, Value,
+    UnionPayload, UnionValue, Value,
 };
 
 use crate::platform;
@@ -1268,11 +1268,16 @@ impl VM {
             }
             if let Some(module_ref) = self.module.as_ref() {
                 for cell_idx in 0..num_cells {
-                    let has_osr = module_ref.cells[cell_idx]
-                        .instructions
+                    let cell_instrs = &module_ref.cells[cell_idx].instructions;
+                    let has_osr = cell_instrs.iter().any(|i| i.op == OpCode::OsrCheck);
+                    // Only pre-compile cells that have loops (OsrCheck) AND no
+                    // Call/TailCall opcodes. Cells with Call opcodes may invoke
+                    // builtins (print, to_string, etc.) which the JIT cannot
+                    // dispatch — it would silently return 0 for those calls.
+                    let has_call = cell_instrs
                         .iter()
-                        .any(|i| i.op == OpCode::OsrCheck);
-                    if has_osr {
+                        .any(|i| matches!(i.op, OpCode::Call | OpCode::TailCall));
+                    if has_osr && !has_call {
                         self.osr_runtime.try_compile(cell_idx);
                     }
                 }
@@ -2325,9 +2330,25 @@ impl VM {
                                             }
                                         }
                                     }
+                                    // Return-type-aware result handling.
+                                    // JIT string-returning cells return a raw *mut JitString
+                                    // pointer (not NaN-boxed). Must convert to Value::String.
+                                    #[cfg(feature = "jit")]
+                                    {
+                                        use lumen_codegen::jit::JitVarType;
+                                        let callee_name = &module.cells[target_idx].name;
+                                        let ret_ty = self.osr_runtime
+                                            .return_type(callee_name)
+                                            .unwrap_or(JitVarType::Int);
+                                        if ret_ty == JitVarType::Str {
+                                            let s = unsafe { lumen_codegen::jit::jit_take_string(raw) };
+                                            let val = Value::String(StringRef::Owned(s));
+                                            self.set_reg(callee_reg, val);
+                                            continue;
+                                        }
+                                    }
                                     let nb = NbValue(raw as u64);
                                     self.set_reg_nb(callee_reg, nb);
-                                    ip += 1;
                                     continue;
                                 } else {
                                     for i in 0..nargs {
@@ -2373,7 +2394,6 @@ impl VM {
                                                 .copied()
                                                 .unwrap_or(NbValue::new_null());
                                             self.registers[base + a] = ret_nb;
-                                            ip += 1;
                                             continue;
                                         }
                                     }
@@ -2409,11 +2429,12 @@ impl VM {
                                         stack_buf[i] = nb.0 as i64;
                                     }
                                     let i64_args = &stack_buf[..nargs];
+                                    let callee_name_for_ret = callee_cell.name.clone();
                                     if let Some(result) = self.jit_tier.execute_by_idx(
                                         target_idx,
                                         i64_args,
                                         &self.vm_ctx.inner,
-                                        &callee_cell.name,
+                                        &callee_name_for_ret,
                                     ) {
                                         // Drop the extra refs we added before JIT call
                                         for i in 0..nargs {
@@ -2425,7 +2446,25 @@ impl VM {
                                                 }
                                             }
                                         }
-                                        // Result is already a NaN-boxed u64 — store directly.
+                                        // Convert JIT result to NbValue based on return type.
+                                        // Str returns are raw *mut JitString pointers — convert
+                                        // to Value::String and store as a proper NbValue.
+                                        #[cfg(feature = "jit")]
+                                        {
+                                            use lumen_codegen::jit::JitVarType;
+                                            let ret_ty = self.jit_tier
+                                                .return_type(&callee_name_for_ret)
+                                                .unwrap_or(JitVarType::Int);
+                                            if ret_ty == JitVarType::Str {
+                                                let s = unsafe {
+                                                    lumen_codegen::jit::jit_take_string(result)
+                                                };
+                                                let val = Value::String(StringRef::Owned(s));
+                                                self.set_reg(callee_reg, val);
+                                                continue;
+                                            }
+                                        }
+                                        // All other types are already NaN-boxed — store directly.
                                         let nb = NbValue(result as u64);
                                         self.set_reg_nb(callee_reg, nb);
                                         continue;
@@ -2781,11 +2820,7 @@ impl VM {
                             };
 
                             if let Some(target_idx) = fast_cell_idx {
-                                let run_jit = if Self::cell_is_interpreter_preferred(
-                                    &module.cells[target_idx],
-                                ) {
-                                    false
-                                } else if self.jit_tier.is_compiled(target_idx) {
+                                let run_jit = if self.jit_tier.is_compiled(target_idx) {
                                     true
                                 } else if self.jit_tier.record_call(target_idx) {
                                     self.jit_tier.try_compile(target_idx, module)
@@ -3031,7 +3066,7 @@ impl VM {
                 OpCode::NewUnion => {
                     let tag_str = value_to_str_cow(&self.reg(base + b), &self.strings).into_owned();
                     let tag = self.strings.intern(&tag_str);
-                    let payload = Arc::new(self.reg(base + c));
+                    let payload = UnionPayload::from_value(self.reg(base + c));
                     self.set_reg(base + a, Value::Union(UnionValue { tag, payload }));
                 }
                 OpCode::NewTuple | OpCode::NewTupleStack => {
@@ -4277,7 +4312,7 @@ impl VM {
                     // IMPORTANT: Must clone into a local before calling set_reg,
                     // since reg_heap_ref borrows self immutably.
                     let payload = if let Some(Value::Union(u)) = self.reg_heap_ref(base + b) {
-                        (*u.payload).clone()
+                        u.payload.to_value()
                     } else {
                         Value::Null
                     };

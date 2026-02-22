@@ -1,0 +1,6 @@
+[1;32m   Compiling[0m [1mbench/cross-language/tree/tree.lm[0m
+[1;32m     Running[0m [36mmain[0m
+Checksum: 262144
+
+null
+[32m✓[0m Finished in 0.2347s (tiered JIT: 2 cells compiled, 2 native calls)

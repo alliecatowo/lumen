@@ -737,6 +737,20 @@ pub(crate) fn lower_cell<M: Module>(
         &[pointer_type, types::I64, types::I64], // ctx, list_ptr, element
         &[types::I64],
     )?;
+    let list_append_int_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_list_append_int",
+        &[pointer_type, types::I64, types::I64], // ctx, list_ptr, element_raw_i64
+        &[types::I64],
+    )?;
+    let list_append_float_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_list_append_float",
+        &[pointer_type, types::I64, types::I64], // ctx, list_ptr, element_f64_bits
+        &[types::I64],
+    )?;
     let merge_ref = declare_helper_func(
         module,
         &mut func,
@@ -758,11 +772,11 @@ pub(crate) fn lower_cell<M: Module>(
         &[pointer_type, types::I64, types::I64], // ctx, jit_str_pairs_ptr, count
         &[types::I64],
     )?;
-    let union_is_variant_by_id_ref = declare_helper_func(
+    let union_match_ref = declare_helper_func(
         module,
         &mut func,
-        "jit_rt_union_is_variant_by_id",
-        &[pointer_type, types::I64, types::I32], // ctx, union_ptr, tag_id
+        "jit_rt_union_match",
+        &[pointer_type, types::I64, types::I64, types::I64], // ctx, union_ptr, tag_ptr, tag_len
         &[types::I64],
     )?;
     let str_to_nb_ref = declare_helper_func(
@@ -792,13 +806,6 @@ pub(crate) fn lower_cell<M: Module>(
         &mut func,
         "jit_rt_union_unbox",
         &[pointer_type, types::I64],
-        &[types::I64],
-    )?;
-    let union_match_ref = declare_helper_func(
-        module,
-        &mut func,
-        "jit_rt_union_match",
-        &[pointer_type, types::I64, types::I64, types::I64], // ctx, union_ptr, tag_ptr, tag_len
         &[types::I64],
     )?;
     // Declare Is type-name helper: takes raw name bytes instead of JitString pointer.
@@ -1368,7 +1375,6 @@ pub(crate) fn lower_cell<M: Module>(
     // IsVariant stores the payload in union_match_cache_var; Unbox reads it
     // instead of making a second extern "C" call.
     let mut last_union_match_reg: Option<u16> = None;
-
     for (pc, inst) in cell.instructions.iter().enumerate() {
         if let Some(&target_block) = block_map.get(&pc) {
             if !terminated {
@@ -2945,16 +2951,31 @@ pub(crate) fn lower_cell<M: Module>(
             OpCode::Append => {
                 let list_ptr = use_var(&mut builder, &regs, &var_types, inst.a);
                 let elem_raw = use_var(&mut builder, &regs, &var_types, inst.b);
-                // Box RawInt elements — jit_rt_list_append uses nanbox_to_value which
-                // interprets non-NaN-masked values as raw float bits.
                 let elem_ty = var_types
                     .get(&(inst.b as u32))
                     .copied()
                     .unwrap_or(JitVarType::Int);
-                let element = ensure_boxed_int(&mut builder, elem_raw, elem_ty);
-                let call = builder
-                    .ins()
-                    .call(list_append_ref, &[vm_ctx_param, list_ptr, element]);
+
+                // Use typed helpers for known scalar element types to avoid
+                // generic NbValue decoding on the runtime side.
+                let call = match elem_ty {
+                    JitVarType::Int | JitVarType::RawInt => {
+                        let raw_int = ensure_raw_int(&mut builder, elem_raw, elem_ty);
+                        builder
+                            .ins()
+                            .call(list_append_int_ref, &[vm_ctx_param, list_ptr, raw_int])
+                    }
+                    JitVarType::Float => builder
+                        .ins()
+                        .call(list_append_float_ref, &[vm_ctx_param, list_ptr, elem_raw]),
+                    _ => {
+                        // Fallback generic path expects NbValue encoding.
+                        let element_nb = ensure_boxed_int(&mut builder, elem_raw, elem_ty);
+                        builder
+                            .ins()
+                            .call(list_append_ref, &[vm_ctx_param, list_ptr, element_nb])
+                    }
+                };
                 let result = builder.inst_results(call)[0];
                 var_types.insert(inst.a as u32, JitVarType::Ptr);
                 def_var(&mut builder, &mut regs, inst.a, result);
@@ -3191,11 +3212,10 @@ pub(crate) fn lower_cell<M: Module>(
                     ""
                 };
                 let tag_bytes = tag_str.as_bytes();
-                let tag_ptr = builder.ins().iconst(types::I64, tag_bytes.as_ptr() as i64);
+                let tag_ptr = builder
+                    .ins()
+                    .iconst(types::I64, tag_bytes.as_ptr() as i64);
                 let tag_len = builder.ins().iconst(types::I64, tag_bytes.len() as i64);
-                // Use combined IsVariant+Unbox helper: returns payload NaN-boxed
-                // on match, or UNION_NO_MATCH (-1) on mismatch. This eliminates
-                // the separate Unbox call that follows in the matched branch.
                 let call = builder.ins().call(
                     union_match_ref,
                     &[vm_ctx_param, union_ptr, tag_ptr, tag_len],

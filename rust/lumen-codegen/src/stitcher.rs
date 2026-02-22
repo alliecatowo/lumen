@@ -471,21 +471,23 @@ fn constant_to_nb(
                 NbValue::new_int(*n)
             } else {
                 // Large int: box on the heap. For the stitcher this is a cold path.
-                NbValue::from_legacy(lumen_core::values::Value::BigInt(num_bigint::BigInt::from(
-                    *n,
+                NbValue::new_ptr(std::sync::Arc::into_raw(std::sync::Arc::new(
+                    lumen_core::values::Value::BigInt(num_bigint::BigInt::from(*n)),
                 )))
             }
         }
         Constant::BigInt(n) => {
             // Always heap-boxed.
-            NbValue::from_legacy(lumen_core::values::Value::BigInt(n.clone()))
+            NbValue::new_ptr(std::sync::Arc::into_raw(std::sync::Arc::new(
+                lumen_core::values::Value::BigInt(n.clone()),
+            )))
         }
         Constant::Float(f) => NbValue::new_float(*f),
         Constant::String(s) => {
-            // Strings are heap-boxed via LegacyValue.
-            NbValue::from_legacy(lumen_core::values::Value::String(
-                lumen_core::values::StringRef::Owned(s.clone()),
-            ))
+            // Strings are heap-boxed.
+            NbValue::new_ptr(std::sync::Arc::into_raw(std::sync::Arc::new(
+                lumen_core::values::Value::String(lumen_core::values::StringRef::Owned(s.clone())),
+            )))
         }
         Constant::NbValue(bits) => NbValue(*bits),
     };

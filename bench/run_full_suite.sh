@@ -227,6 +227,7 @@ LUMEN_BENCHMARKS=(
 
 # Results array: "benchmark,language,run,time_ms,n"
 RESULTS=()
+declare -A SIZE_MISMATCH_BENCHES=()
 
 # Key output oracles (cross-language deterministic outputs).
 ORACLE_FIB_RESULT=9227465
@@ -265,6 +266,11 @@ supports_oracle_check() {
   esac
 }
 
+lang_enabled() {
+  local lang="$1"
+  [ -z "$FILTER_LANG" ] || [ "$FILTER_LANG" = "$lang" ]
+}
+
 float_within_tolerance() {
   local actual="$1"
   local expected="$2"
@@ -277,16 +283,24 @@ validate_output_oracle() {
   local lang="$2"
   local cmd="$3"
   local output
+  local sanitized
 
   if ! output=$(bash -c "$cmd" 2>&1); then
     printf "    [oracle] %-18s %-12s FAIL (execution error)\n" "$bench" "$lang"
     return 1
   fi
+  # Strip ANSI color sequences before parsing values.
+  sanitized=$(printf '%s\n' "$output" | sed -E 's/\x1B\[[0-9;]*[mK]//g')
 
   case "$bench" in
     fibonacci)
       local actual
-      actual=$(printf '%s\n' "$output" | grep -Eo '[-]?[0-9]+' | tail -1 || true)
+      actual=$(printf '%s\n' "$sanitized" \
+        | sed -nE 's/.*fib(onacci)?\([^)]*\)[^0-9-]*(-?[0-9]+).*/\2/p' \
+        | tail -1 || true)
+      if [ -z "$actual" ]; then
+        actual=$(printf '%s\n' "$sanitized" | grep -Eo '[-]?[0-9]+' | head -1 || true)
+      fi
       if [ -z "$actual" ] || [ "$actual" != "$ORACLE_FIB_RESULT" ]; then
         printf "    [oracle] %-18s %-12s FAIL (expected fib=%s, got=%s)\n" "$bench" "$lang" "$ORACLE_FIB_RESULT" "${actual:-<none>}"
         return 1
@@ -294,7 +308,10 @@ validate_output_oracle() {
       ;;
     nbody)
       local numbers
-      mapfile -t numbers < <(printf '%s\n' "$output" | grep -Eo '[-]?[0-9]+([.][0-9]+)?' || true)
+      mapfile -t numbers < <(
+        printf '%s\n' "$sanitized" | grep -E '^[[:space:]]*-?[0-9]+\.[0-9]+[[:space:]]*$' \
+        | sed -E 's/^[[:space:]]*//; s/[[:space:]]*$//' || true
+      )
       if [ "${#numbers[@]}" -lt 2 ]; then
         printf "    [oracle] %-18s %-12s FAIL (expected 2 energies)\n" "$bench" "$lang"
         return 1
@@ -310,7 +327,12 @@ validate_output_oracle() {
       ;;
     matrix_mult)
       local actual
-      actual=$(printf '%s\n' "$output" | grep -Eo '[-]?[0-9]+([.][0-9]+)?' | tail -1 || true)
+      actual=$(printf '%s\n' "$sanitized" \
+        | sed -nE 's/.*checksum[^0-9-]*(-?[0-9]+(\.[0-9]+)?).*/\1/p' \
+        | tail -1 || true)
+      if [ -z "$actual" ]; then
+        actual=$(printf '%s\n' "$sanitized" | grep -Eo '[-]?[0-9]+([.][0-9]+)?' | tail -1 || true)
+      fi
       if [ -z "$actual" ] || ! float_within_tolerance "$actual" "$ORACLE_MATRIX_CHECKSUM" "$ORACLE_FLOAT_TOL"; then
         printf "    [oracle] %-18s %-12s FAIL (checksum expected=%s got=%s)\n" "$bench" "$lang" "$ORACLE_MATRIX_CHECKSUM" "${actual:-<none>}"
         return 1
@@ -334,7 +356,11 @@ run_benchmark() {
   fi
 
   if [ "$STRICT_ORACLE" = true ] && supports_oracle_check "$bench"; then
-    validate_output_oracle "$bench" "$lang" "$cmd"
+    if [ -n "${SIZE_MISMATCH_BENCHES[$bench]:-}" ]; then
+      printf "    [oracle] %-18s %-12s SKIP (size mismatch)\n" "$bench" "$lang"
+    else
+      validate_output_oracle "$bench" "$lang" "$cmd"
+    fi
   fi
   
   for run in $(seq 1 "$RUNS"); do
@@ -365,7 +391,11 @@ if [ "$ONLY_LUMEN" = false ] && [ "$NO_CROSS" = false ]; then
     echo "▶ $bench_name"
     
     # Validate benchmark sizes across languages
-    validate_benchmark_sizes "$bench_name" || true
+    if validate_benchmark_sizes "$bench_name"; then
+      unset "SIZE_MISMATCH_BENCHES[$bench_name]"
+    else
+      SIZE_MISMATCH_BENCHES["$bench_name"]=1
+    fi
     
     # Log canonical N if defined
     canonical_n="${CANONICAL_N[$bench_name]:-}"
@@ -374,7 +404,7 @@ if [ "$ONLY_LUMEN" = false ] && [ "$NO_CROSS" = false ]; then
     fi
     
     # C
-    if $HAS_GCC && [ -f "$CROSS_DIR/$bench_name/${prefix}.c" ]; then
+    if lang_enabled c && $HAS_GCC && [ -f "$CROSS_DIR/$bench_name/${prefix}.c" ]; then
       if gcc -O2 -o "$BUILD_DIR/${bench_name}_c" "$CROSS_DIR/$bench_name/${prefix}.c" -lm 2>/dev/null; then
         run_benchmark "$bench_name" "c" "$BUILD_DIR/${bench_name}_c"
       else
@@ -383,7 +413,7 @@ if [ "$ONLY_LUMEN" = false ] && [ "$NO_CROSS" = false ]; then
     fi
     
     # Go
-    if $HAS_GO && [ -f "$CROSS_DIR/$bench_name/${prefix}.go" ]; then
+    if lang_enabled go && $HAS_GO && [ -f "$CROSS_DIR/$bench_name/${prefix}.go" ]; then
       if go build -o "$BUILD_DIR/${bench_name}_go" "$CROSS_DIR/$bench_name/${prefix}.go" 2>/dev/null; then
         run_benchmark "$bench_name" "go" "$BUILD_DIR/${bench_name}_go"
       else
@@ -392,7 +422,7 @@ if [ "$ONLY_LUMEN" = false ] && [ "$NO_CROSS" = false ]; then
     fi
     
     # Rust
-    if $HAS_RUST && [ -f "$CROSS_DIR/$bench_name/${prefix}.rs" ]; then
+    if lang_enabled rust && $HAS_RUST && [ -f "$CROSS_DIR/$bench_name/${prefix}.rs" ]; then
       if rustc -O -o "$BUILD_DIR/${bench_name}_rust" "$CROSS_DIR/$bench_name/${prefix}.rs" 2>/dev/null; then
         run_benchmark "$bench_name" "rust" "$BUILD_DIR/${bench_name}_rust"
       else
@@ -401,7 +431,7 @@ if [ "$ONLY_LUMEN" = false ] && [ "$NO_CROSS" = false ]; then
     fi
     
     # Zig
-    if $HAS_ZIG && [ -f "$CROSS_DIR/$bench_name/${prefix}.zig" ]; then
+    if lang_enabled zig && $HAS_ZIG && [ -f "$CROSS_DIR/$bench_name/${prefix}.zig" ]; then
       if zig build-exe "$CROSS_DIR/$bench_name/${prefix}.zig" -O ReleaseFast -femit-bin="$BUILD_DIR/${bench_name}_zig" 2>/dev/null; then
         run_benchmark "$bench_name" "zig" "$BUILD_DIR/${bench_name}_zig"
       else
@@ -410,12 +440,12 @@ if [ "$ONLY_LUMEN" = false ] && [ "$NO_CROSS" = false ]; then
     fi
     
     # Python
-    if $HAS_PY && [ -f "$CROSS_DIR/$bench_name/${prefix}.py" ]; then
+    if lang_enabled python && $HAS_PY && [ -f "$CROSS_DIR/$bench_name/${prefix}.py" ]; then
       run_benchmark "$bench_name" "python" "python3 $CROSS_DIR/$bench_name/${prefix}.py"
     fi
     
     # TypeScript
-    if $HAS_TS && [ -f "$CROSS_DIR/$bench_name/${prefix}.ts" ]; then
+    if lang_enabled typescript && $HAS_TS && [ -f "$CROSS_DIR/$bench_name/${prefix}.ts" ]; then
       if command -v tsx &>/dev/null; then
         run_benchmark "$bench_name" "typescript" "tsx $CROSS_DIR/$bench_name/${prefix}.ts"
       elif command -v npx &>/dev/null; then
@@ -424,7 +454,7 @@ if [ "$ONLY_LUMEN" = false ] && [ "$NO_CROSS" = false ]; then
     fi
     
     # Lumen
-    if $HAS_LUMEN && [ -f "$CROSS_DIR/$bench_name/${prefix}.lm" ]; then
+    if lang_enabled lumen && $HAS_LUMEN && [ -f "$CROSS_DIR/$bench_name/${prefix}.lm" ]; then
       run_benchmark "$bench_name" "lumen" "$LUMEN_BIN run $CROSS_DIR/$bench_name/${prefix}.lm"
     fi
     
@@ -436,7 +466,8 @@ fi
 # Lumen-Specific Benchmarks
 # ============================================================================
 
-if [ "$ONLY_LUMEN" = true ] || ([ "$NO_CROSS" = false ] && [ "$ONLY_LUMEN" = false ]); then
+if { [ "$ONLY_LUMEN" = true ] || ([ "$NO_CROSS" = false ] && [ "$ONLY_LUMEN" = false ]); } \
+  && { [ -z "$FILTER_LANG" ] || [ "$FILTER_LANG" = "lumen" ]; }; then
   echo "╔════════════════════════════════════════════════════════════════╗"
   echo "║        Lumen-Specific Benchmarks (8 language features)          ║"
   echo "╚════════════════════════════════════════════════════════════════╝"
@@ -525,10 +556,16 @@ for bench in "${!benchmarks_seen[@]}"; do
   done
   
   # Sort numeric, then extract language names
-  mapfile -t sorted_lang_times < <(printf '%s\n' "${lang_times[@]}" | sort -n)
+  if [ "${#lang_times[@]}" -gt 0 ]; then
+    mapfile -t sorted_lang_times < <(printf '%s\n' "${lang_times[@]}" | sort -n)
+  else
+    sorted_lang_times=()
+  fi
   sorted_langs=()
   for entry in "${sorted_lang_times[@]}"; do
+    [ -z "$entry" ] && continue
     lang="${entry#* }"
+    [ -z "$lang" ] && continue
     sorted_langs+=("$lang")
   done
   

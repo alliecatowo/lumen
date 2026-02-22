@@ -1189,6 +1189,8 @@ fn cmd_run(
     }
     let exec_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         vm.load(module);
+        #[cfg(feature = "jit")]
+        vm.enable_osr_jit();
         vm.execute(cell, vec![])
     }));
     match exec_outcome {

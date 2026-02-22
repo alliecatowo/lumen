@@ -219,6 +219,12 @@ fn effect_operation_name(expr: &Expr) -> Option<String> {
     }
 }
 
+fn call_arg_expr(arg: &CallArg) -> &Expr {
+    match arg {
+        CallArg::Positional(expr) | CallArg::Named(_, expr, _) | CallArg::Role(_, expr, _) => expr,
+    }
+}
+
 fn desugar_pipe_application(input: &Expr, stage: &Expr, span: Span) -> Expr {
     match stage {
         Expr::Call(callee, args, call_span) => {
@@ -375,6 +381,7 @@ fn optimize_move_own(instrs: &mut [Instruction]) {
         // Scan forward within the same basic block to determine if `src` is
         // written before it is read.
         let mut can_convert = false;
+        let mut exited_early = false;
         for j in (i + 1)..len {
             let op = instrs[j].op;
             let ja = instrs[j].a;
@@ -425,12 +432,23 @@ fn optimize_move_own(instrs: &mut [Instruction]) {
                         }
                     }
                 }
+                // Terminal boundaries end the current linear path. If this
+                // boundary instruction does not read `src`, ownership can be
+                // transferred safely because `src` is dead on this path.
+                if !can_convert
+                    && matches!(op, OpCode::Return | OpCode::Halt | OpCode::TailCall)
+                    && !instr_reads_reg(&instrs[j], src)
+                {
+                    can_convert = true;
+                }
+                exited_early = true;
                 break;
             }
 
             // Check if this instruction reads `src`.
             if instr_reads_reg(&instrs[j], src) {
                 // src is read before being overwritten — cannot convert.
+                exited_early = true;
                 break;
             }
 
@@ -438,6 +456,7 @@ fn optimize_move_own(instrs: &mut [Instruction]) {
             // destination register `a`).
             if instr_writes_to_a(op) && ja == src {
                 can_convert = true;
+                exited_early = true;
                 break;
             }
 
@@ -445,8 +464,16 @@ fn optimize_move_own(instrs: &mut [Instruction]) {
             // range (the result is placed at base=a after call returns).
             if op == OpCode::Call && ja == src {
                 can_convert = true;
+                exited_early = true;
                 break;
             }
+        }
+
+        // If we scanned to end of the linear stream without observing any read
+        // of `src` (and without crossing a basic-block boundary), then `src`
+        // is dead after this Move and we can transfer ownership.
+        if !can_convert && !exited_early {
+            can_convert = true;
         }
 
         if can_convert {
@@ -2369,19 +2396,11 @@ impl<'a> Lowerer<'a> {
                                 && !self.symbols.cells.contains_key(fn_name.as_str())
                             {
                                 // Check that the first arg is the same variable as the target
-                                let first_arg_expr = match &args[0] {
-                                    CallArg::Positional(e)
-                                    | CallArg::Named(_, e, _)
-                                    | CallArg::Role(_, e, _) => e,
-                                };
+                                let first_arg_expr = call_arg_expr(&args[0]);
                                 if let Expr::Ident(arg_name, _) = first_arg_expr {
                                     if arg_name == target_name {
                                         if let Some(list_reg) = ra.lookup(target_name) {
-                                            let elem_expr = match &args[1] {
-                                                CallArg::Positional(e)
-                                                | CallArg::Named(_, e, _)
-                                                | CallArg::Role(_, e, _) => e,
-                                            };
+                                            let elem_expr = call_arg_expr(&args[1]);
                                             let elem_reg =
                                                 self.lower_expr(elem_expr, ra, consts, instrs);
                                             instrs.push(Instruction::abc(
@@ -4043,6 +4062,19 @@ impl<'a> Lowerer<'a> {
                     };
 
                     if let Some(id) = intrinsic {
+                        if id == IntrinsicId::Append && args.len() == 2 {
+                            let list_expr = call_arg_expr(&args[0]);
+                            // Safe direct lowering only when the list argument is computed,
+                            // not a named binding. Named bindings keep the intrinsic path to
+                            // preserve value semantics for `append(xs, v)` expressions.
+                            if !matches!(list_expr, Expr::Ident(_, _)) {
+                                let list_reg = self.lower_expr(list_expr, ra, consts, instrs);
+                                let elem_reg = self.lower_expr(call_arg_expr(&args[1]), ra, consts, instrs);
+                                instrs.push(Instruction::abc(OpCode::Append, list_reg, elem_reg, 0));
+                                return list_reg;
+                            }
+                        }
+
                         // Evaluate args
                         let mut arg_regs = Vec::new();
                         for arg in args {
@@ -6198,6 +6230,108 @@ mod tests {
         assert!(
             ops.contains(&OpCode::NewList),
             "list literal should emit NewList"
+        );
+    }
+
+    #[test]
+    fn test_append_assignment_fast_path_still_uses_append_opcode() {
+        let src = "cell grow() -> list[Int]\n  let xs = [1]\n  xs = append(xs, 2)\n  return xs\nend";
+        let module = lower_src(src);
+        let instrs = &module.cells[0].instructions;
+        assert!(
+            instrs.iter().any(|i| i.op == OpCode::Append),
+            "x = append(x, y) should still emit OpCode::Append"
+        );
+        assert!(
+            !instrs
+                .iter()
+                .any(|i| i.op == OpCode::Intrinsic && i.b == IntrinsicId::Append as u16),
+            "x = append(x, y) should not use Intrinsic::Append"
+        );
+    }
+
+    #[test]
+    fn test_append_computed_expr_uses_append_and_returns_same_reg() {
+        let src = "cell build() -> list[Int]\n  return append([1, 2], 3)\nend";
+        let module = lower_src(src);
+        let instrs = &module.cells[0].instructions;
+
+        let append_idx = instrs
+            .iter()
+            .position(|i| i.op == OpCode::Append)
+            .expect("computed append should emit OpCode::Append");
+        let append_instr = instrs[append_idx];
+        let return_instr = instrs
+            .iter()
+            .find(|i| i.op == OpCode::Return)
+            .expect("cell should return");
+
+        assert_eq!(
+            return_instr.a, append_instr.a,
+            "append(list_expr, elem_expr) should return the appended list register"
+        );
+        assert!(
+            !instrs
+                .iter()
+                .any(|i| i.op == OpCode::Intrinsic && i.b == IntrinsicId::Append as u16),
+            "computed append should prefer OpCode::Append over Intrinsic::Append"
+        );
+    }
+
+    #[test]
+    fn test_append_named_list_expr_falls_back_to_intrinsic() {
+        let src = "cell grow(xs: list[Int], v: Int) -> list[Int]\n  return append(xs, v)\nend";
+        let module = lower_src(src);
+        let instrs = &module.cells[0].instructions;
+        assert!(
+            instrs
+                .iter()
+                .any(|i| i.op == OpCode::Intrinsic && i.b == IntrinsicId::Append as u16),
+            "append(xs, v) should stay on intrinsic path"
+        );
+    }
+
+    #[test]
+    fn test_sort_arg_move_becomes_moveown_when_source_dead() {
+        let src = "cell main() -> list[Int]\n  let data = [3, 1, 2]\n  let sorted = sort(data)\n  return sorted\nend";
+        let module = lower_src(src);
+        let instrs = &module.cells[0].instructions;
+        let sort_idx = instrs
+            .iter()
+            .position(|i| i.op == OpCode::Intrinsic && i.b == IntrinsicId::Sort as u16)
+            .expect("sort intrinsic should be emitted");
+        let sort = instrs[sort_idx];
+        let mover = instrs[..sort_idx]
+            .iter()
+            .rev()
+            .find(|i| (i.op == OpCode::Move || i.op == OpCode::MoveOwn) && i.a == sort.c)
+            .expect("sort arg should be moved into contiguous intrinsic arg block");
+        assert_eq!(
+            mover.op,
+            OpCode::MoveOwn,
+            "dead source feeding sort() should move ownership"
+        );
+    }
+
+    #[test]
+    fn test_sort_arg_move_stays_move_when_source_live() {
+        let src = "cell main() -> list[Int]\n  let data = [3, 1, 2]\n  let sorted = sort(data)\n  let n = len(data)\n  if n > 0\n    return sorted\n  end\n  return data\nend";
+        let module = lower_src(src);
+        let instrs = &module.cells[0].instructions;
+        let sort_idx = instrs
+            .iter()
+            .position(|i| i.op == OpCode::Intrinsic && i.b == IntrinsicId::Sort as u16)
+            .expect("sort intrinsic should be emitted");
+        let sort = instrs[sort_idx];
+        let mover = instrs[..sort_idx]
+            .iter()
+            .rev()
+            .find(|i| (i.op == OpCode::Move || i.op == OpCode::MoveOwn) && i.a == sort.c)
+            .expect("sort arg should be moved into contiguous intrinsic arg block");
+        assert_eq!(
+            mover.op,
+            OpCode::Move,
+            "live source feeding sort() must remain non-owning move"
         );
     }
 

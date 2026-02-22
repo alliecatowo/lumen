@@ -1,0 +1,6 @@
+[1;32m   Compiling[0m [1mbench/cross-language/sort/sort.lm[0m
+[1;32m     Running[0m [36mmain[0m
+sort(1000000) sorted=true
+
+sort(1000000) sorted=true
+[32m✓[0m Finished in 0.09s

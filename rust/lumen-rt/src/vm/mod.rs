@@ -250,7 +250,51 @@ impl VmError {
     }
 }
 
+/// Convert an NbValue to an owned Value without consuming heap ownership.
+/// For heap-allocated values this clones the Arc (bumps refcount).
+/// For inline types (int, float, bool, null) this is allocation-free.
+#[inline]
+fn nb_to_value(nb: NbValue) -> Value {
+    if nb.is_int() {
+        return Value::Int(nb.as_int().unwrap_or(0));
+    }
+    if !nb.is_nan_boxed() {
+        return Value::Float(f64::from_bits(nb.0));
+    }
+    if nb.is_bool() {
+        return Value::Bool(nb.as_bool().unwrap_or(false));
+    }
+    if nb.is_null() {
+        return Value::Null;
+    }
+    if let Some(v) = nb.as_heap_ref() {
+        return v.clone();
+    }
+    Value::Null
+}
+
+/// Convert a Value into an NbValue for storage in a register.
+/// Inline types (null, bool, small int, float) are stored without heap allocation.
+/// All other types are Arc-boxed and stored as TAG_PTR.
+#[inline]
+fn value_to_nb(v: Value) -> NbValue {
+    match v {
+        Value::Null => NbValue::new_null(),
+        Value::Bool(b) => NbValue::new_bool(b),
+        Value::Int(n) => {
+            if n >= NbValue::MIN_INT48 && n <= NbValue::MAX_INT48 {
+                NbValue::new_int(n)
+            } else {
+                NbValue::new_ptr(std::sync::Arc::into_raw(std::sync::Arc::new(Value::Int(n))))
+            }
+        }
+        Value::Float(f) => NbValue::new_float(f),
+        other => NbValue::new_ptr(std::sync::Arc::into_raw(std::sync::Arc::new(other))),
+    }
+}
+
 const MAX_CALL_DEPTH: usize = 4096;
+const FAST_CALL_ARITY_LIMIT: usize = 6;
 
 /// Call frame on the VM stack.
 #[derive(Debug, Clone)]
@@ -615,6 +659,16 @@ impl VM {
         self.osr_runtime.transition_count()
     }
 
+    /// Get the number of one-way OSR entry transfers.
+    pub fn osr_entry_transition_count(&self) -> u64 {
+        self.osr_runtime.entry_transition_count()
+    }
+
+    /// Get the number of OSR transitions that fell back to full-cell restart.
+    pub fn osr_restart_fallback_count(&self) -> u64 {
+        self.osr_runtime.restart_fallback_transition_count()
+    }
+
     /// Grow register file for a new call frame. Returns the new base index.
     /// Uses the `register_top` watermark to avoid unnecessary resize/truncate.
     #[inline(always)]
@@ -653,7 +707,7 @@ impl VM {
     /// Read a register, converting from NbValue to Value (non-destructive clone).
     #[inline(always)]
     pub(crate) fn reg(&self, idx: usize) -> Value {
-        self.registers[idx].peek_legacy()
+        nb_to_value(self.registers[idx])
     }
 
     /// Read a register by reference. Returns a reference to the raw NbValue.
@@ -669,7 +723,7 @@ impl VM {
     pub(crate) fn set_reg(&mut self, idx: usize, val: Value) {
         let old = self.registers[idx];
         old.drop_heap();
-        self.registers[idx] = NbValue::from_legacy(val);
+        self.registers[idx] = value_to_nb(val);
     }
 
     /// Write a raw NbValue into a register.
@@ -685,7 +739,7 @@ impl VM {
     /// that previously used `.clone()`).
     #[inline(always)]
     pub(crate) fn reg_clone(&self, idx: usize) -> Value {
-        self.registers[idx].peek_legacy()
+        nb_to_value(self.registers[idx])
     }
 
     /// Take a register value, replacing it with Null. Equivalent to std::mem::take
@@ -694,7 +748,7 @@ impl VM {
     pub(crate) fn reg_take(&mut self, idx: usize) -> Value {
         let old = self.registers[idx];
         self.registers[idx] = NbValue::new_null();
-        old.to_legacy() // Destructive is OK here since we took ownership
+        nb_to_value(old) // Destructive is OK here since we took ownership
     }
 
     /// Copy a register from src to dst without deep-cloning.
@@ -716,6 +770,32 @@ impl VM {
     #[inline(always)]
     pub(crate) fn reg_heap_ref(&self, idx: usize) -> Option<&Value> {
         self.registers[idx].as_heap_ref()
+    }
+
+    /// Convert an NbValue directly into a UnionPayload without going through
+    /// `Value` cloning. Returns `None` for sentinel/unsupported pointer forms,
+    /// allowing the caller to fall back to legacy conversion.
+    #[inline(always)]
+    fn nb_to_union_payload(&self, nb: NbValue) -> Option<UnionPayload> {
+        if nb.is_null() {
+            return Some(UnionPayload::Null);
+        }
+        if let Some(b) = nb.as_bool() {
+            return Some(UnionPayload::Bool(b));
+        }
+        if let Some(i) = nb.as_int() {
+            return Some(UnionPayload::Int(i));
+        }
+        if let Some(f) = nb.as_float() {
+            return Some(UnionPayload::Float(f));
+        }
+        if nb.is_heap_allocated() {
+            nb.inc_ref();
+            let ptr = nb.payload() as *const Value;
+            let arc = unsafe { Arc::from_raw(ptr) };
+            return Some(UnionPayload::from_arc(arc));
+        }
+        None
     }
 
     /// Bump Arc refcount for a heap-allocated NbValue so it stays alive
@@ -929,7 +1009,7 @@ impl VM {
                 };
             }
         }
-        let legacy = val.peek_legacy();
+        let legacy = nb_to_value(*val);
         match schema_name {
             "String" | "string" => matches!(legacy, Value::String(_)),
             "List" | "list" => matches!(legacy, Value::List(_)),
@@ -1254,8 +1334,7 @@ impl VM {
         // Wire the VmContext's string_table pointer to the VM's StringTable
         // so JIT runtime helpers (e.g. jit_rt_union_new) can intern strings.
         unsafe {
-            (*self.vm_ctx.as_ptr()).string_table =
-                &mut self.strings as *mut StringTable;
+            (*self.vm_ctx.as_ptr()).string_table = &mut self.strings as *mut StringTable;
         }
 
         // Automatically initialize OSR JIT and pre-compile cells with loops.
@@ -1379,7 +1458,7 @@ impl VM {
     pub fn read_register(&self, index: usize) -> Value {
         self.registers
             .get(index)
-            .map(|nb| nb.peek_legacy())
+            .map(|nb| nb_to_value(*nb))
             .unwrap_or(Value::Null)
     }
 
@@ -1684,7 +1763,7 @@ impl VM {
                 }
             };
             if !reused {
-                self.set_reg_nb(idx, NbValue::from_legacy(Value::Int(value)));
+                self.set_reg_nb(idx, value_to_nb(Value::Int(value)));
             }
         }
     }
@@ -2257,106 +2336,175 @@ impl VM {
                             // via Cranelift directly, bypassing interpreter.
                             #[cfg(feature = "jit")]
                             if let Some(fn_ptr) = self.osr_runtime.get_compiled_fn(target_idx) {
-                                // Stack-allocated arg buffer (max JIT arity is 6)
-                                let mut stack_buf = [0i64; 6];
-                                for i in 0..nargs {
-                                    let nb = self.reg_nb(base + a + 1 + i);
-                                    if nb.is_heap_allocated() {
-                                        unsafe {
-                                            let ptr = nb.payload() as *const Value;
-                                            std::sync::Arc::increment_strong_count(ptr);
+                                // Fast path only supports up to 6 args today. For larger
+                                // arities, fall through to normal tiered dispatch.
+                                if nargs <= FAST_CALL_ARITY_LIMIT {
+                                    let mut stack_buf = [0i64; FAST_CALL_ARITY_LIMIT];
+                                    for i in 0..nargs {
+                                        let nb = self.reg_nb(base + a + 1 + i);
+                                        if nb.is_heap_allocated() {
+                                            unsafe {
+                                                let ptr = nb.payload() as *const Value;
+                                                std::sync::Arc::increment_strong_count(ptr);
+                                            }
                                         }
+                                        stack_buf[i] = nb.0 as i64;
                                     }
-                                    stack_buf[i] = nb.0 as i64;
-                                }
-                                let i64_args = &stack_buf[..nargs];
-                                let osr_result = {
-                                    let ctx_mut = &*self.vm_ctx.inner
-                                        as *const lumen_codegen::vm_context::VmContext
-                                        as *mut lumen_codegen::vm_context::VmContext;
-                                    let raw = unsafe {
-                                        match nargs {
-                                            0 => {
-                                                let f: fn(*mut lumen_codegen::vm_context::VmContext) -> i64 =
-                                                    std::mem::transmute(fn_ptr);
-                                                f(ctx_mut)
+                                    let i64_args = &stack_buf[..nargs];
+                                    let osr_result = {
+                                        let ctx_mut = &*self.vm_ctx.inner
+                                            as *const lumen_codegen::vm_context::VmContext
+                                            as *mut lumen_codegen::vm_context::VmContext;
+                                        let raw = unsafe {
+                                            match nargs {
+                                                0 => {
+                                                    let f: fn(
+                                                        *mut lumen_codegen::vm_context::VmContext,
+                                                    )
+                                                        -> i64 = std::mem::transmute(fn_ptr);
+                                                    f(ctx_mut)
+                                                }
+                                                1 => {
+                                                    let f: fn(
+                                                        *mut lumen_codegen::vm_context::VmContext,
+                                                        i64,
+                                                    )
+                                                        -> i64 = std::mem::transmute(fn_ptr);
+                                                    f(ctx_mut, i64_args[0])
+                                                }
+                                                2 => {
+                                                    let f: fn(
+                                                        *mut lumen_codegen::vm_context::VmContext,
+                                                        i64,
+                                                        i64,
+                                                    )
+                                                        -> i64 = std::mem::transmute(fn_ptr);
+                                                    f(ctx_mut, i64_args[0], i64_args[1])
+                                                }
+                                                3 => {
+                                                    let f: fn(
+                                                        *mut lumen_codegen::vm_context::VmContext,
+                                                        i64,
+                                                        i64,
+                                                        i64,
+                                                    )
+                                                        -> i64 = std::mem::transmute(fn_ptr);
+                                                    f(
+                                                        ctx_mut,
+                                                        i64_args[0],
+                                                        i64_args[1],
+                                                        i64_args[2],
+                                                    )
+                                                }
+                                                4 => {
+                                                    let f: fn(
+                                                        *mut lumen_codegen::vm_context::VmContext,
+                                                        i64,
+                                                        i64,
+                                                        i64,
+                                                        i64,
+                                                    )
+                                                        -> i64 = std::mem::transmute(fn_ptr);
+                                                    f(
+                                                        ctx_mut,
+                                                        i64_args[0],
+                                                        i64_args[1],
+                                                        i64_args[2],
+                                                        i64_args[3],
+                                                    )
+                                                }
+                                                5 => {
+                                                    let f: fn(
+                                                        *mut lumen_codegen::vm_context::VmContext,
+                                                        i64,
+                                                        i64,
+                                                        i64,
+                                                        i64,
+                                                        i64,
+                                                    )
+                                                        -> i64 = std::mem::transmute(fn_ptr);
+                                                    f(
+                                                        ctx_mut,
+                                                        i64_args[0],
+                                                        i64_args[1],
+                                                        i64_args[2],
+                                                        i64_args[3],
+                                                        i64_args[4],
+                                                    )
+                                                }
+                                                6 => {
+                                                    let f: fn(
+                                                        *mut lumen_codegen::vm_context::VmContext,
+                                                        i64,
+                                                        i64,
+                                                        i64,
+                                                        i64,
+                                                        i64,
+                                                        i64,
+                                                    )
+                                                        -> i64 = std::mem::transmute(fn_ptr);
+                                                    f(
+                                                        ctx_mut,
+                                                        i64_args[0],
+                                                        i64_args[1],
+                                                        i64_args[2],
+                                                        i64_args[3],
+                                                        i64_args[4],
+                                                        i64_args[5],
+                                                    )
+                                                }
+                                                _ => unreachable!(
+                                                    "guarded by nargs <= FAST_CALL_ARITY_LIMIT"
+                                                ),
                                             }
-                                            1 => {
-                                                let f: fn(*mut lumen_codegen::vm_context::VmContext, i64) -> i64 =
-                                                    std::mem::transmute(fn_ptr);
-                                                f(ctx_mut, i64_args[0])
-                                            }
-                                            2 => {
-                                                let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64) -> i64 =
-                                                    std::mem::transmute(fn_ptr);
-                                                f(ctx_mut, i64_args[0], i64_args[1])
-                                            }
-                                            3 => {
-                                                let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64, i64) -> i64 =
-                                                    std::mem::transmute(fn_ptr);
-                                                f(ctx_mut, i64_args[0], i64_args[1], i64_args[2])
-                                            }
-                                            4 => {
-                                                let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64, i64, i64) -> i64 =
-                                                    std::mem::transmute(fn_ptr);
-                                                f(ctx_mut, i64_args[0], i64_args[1], i64_args[2], i64_args[3])
-                                            }
-                                            5 => {
-                                                let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64, i64, i64, i64) -> i64 =
-                                                    std::mem::transmute(fn_ptr);
-                                                f(ctx_mut, i64_args[0], i64_args[1], i64_args[2], i64_args[3], i64_args[4])
-                                            }
-                                            6 => {
-                                                let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64, i64, i64, i64, i64) -> i64 =
-                                                    std::mem::transmute(fn_ptr);
-                                                f(ctx_mut, i64_args[0], i64_args[1], i64_args[2], i64_args[3], i64_args[4], i64_args[5])
-                                            }
-                                            _ => return Err(VmError::Runtime(format!("unsupported JIT arity {nargs}"))),
+                                        };
+                                        if lumen_codegen::jit::jit_check_divzero_trap() {
+                                            None
+                                        } else {
+                                            Some(raw)
                                         }
                                     };
-                                    if lumen_codegen::jit::jit_check_divzero_trap() {
-                                        None
-                                    } else {
-                                        Some(raw)
-                                    }
-                                };
-                                if let Some(raw) = osr_result {
-                                    for i in 0..nargs {
-                                        let nb = self.reg_nb(base + a + 1 + i);
-                                        if nb.is_heap_allocated() {
-                                            unsafe {
-                                                let ptr = nb.payload() as *const Value;
-                                                std::sync::Arc::decrement_strong_count(ptr);
+                                    if let Some(raw) = osr_result {
+                                        for i in 0..nargs {
+                                            let nb = self.reg_nb(base + a + 1 + i);
+                                            if nb.is_heap_allocated() {
+                                                unsafe {
+                                                    let ptr = nb.payload() as *const Value;
+                                                    std::sync::Arc::decrement_strong_count(ptr);
+                                                }
                                             }
                                         }
-                                    }
-                                    // Return-type-aware result handling.
-                                    // JIT string-returning cells return a raw *mut JitString
-                                    // pointer (not NaN-boxed). Must convert to Value::String.
-                                    #[cfg(feature = "jit")]
-                                    {
-                                        use lumen_codegen::jit::JitVarType;
-                                        let callee_name = &module.cells[target_idx].name;
-                                        let ret_ty = self.osr_runtime
-                                            .return_type(callee_name)
-                                            .unwrap_or(JitVarType::Int);
-                                        if ret_ty == JitVarType::Str {
-                                            let s = unsafe { lumen_codegen::jit::jit_take_string(raw) };
-                                            let val = Value::String(StringRef::Owned(s));
-                                            self.set_reg(callee_reg, val);
-                                            continue;
+                                        // Return-type-aware result handling.
+                                        // JIT string-returning cells return a raw *mut JitString
+                                        // pointer (not NaN-boxed). Must convert to Value::String.
+                                        #[cfg(feature = "jit")]
+                                        {
+                                            use lumen_codegen::jit::JitVarType;
+                                            let callee_name = &module.cells[target_idx].name;
+                                            let ret_ty = self
+                                                .osr_runtime
+                                                .return_type(callee_name)
+                                                .unwrap_or(JitVarType::Int);
+                                            if ret_ty == JitVarType::Str {
+                                                let s = unsafe {
+                                                    lumen_codegen::jit::jit_take_string(raw)
+                                                };
+                                                let val = Value::String(StringRef::Owned(s));
+                                                self.set_reg(callee_reg, val);
+                                                continue;
+                                            }
                                         }
-                                    }
-                                    let nb = NbValue(raw as u64);
-                                    self.set_reg_nb(callee_reg, nb);
-                                    continue;
-                                } else {
-                                    for i in 0..nargs {
-                                        let nb = self.reg_nb(base + a + 1 + i);
-                                        if nb.is_heap_allocated() {
-                                            unsafe {
-                                                let ptr = nb.payload() as *const Value;
-                                                std::sync::Arc::decrement_strong_count(ptr);
+                                        let nb = NbValue(raw as u64);
+                                        self.set_reg_nb(callee_reg, nb);
+                                        continue;
+                                    } else {
+                                        for i in 0..nargs {
+                                            let nb = self.reg_nb(base + a + 1 + i);
+                                            if nb.is_heap_allocated() {
+                                                unsafe {
+                                                    let ptr = nb.payload() as *const Value;
+                                                    std::sync::Arc::decrement_strong_count(ptr);
+                                                }
                                             }
                                         }
                                     }
@@ -2417,65 +2565,68 @@ impl VM {
                                     // Heap-allocated values get an Arc refcount bump
                                     // so the JIT can safely read them.
                                     // Stack-allocated arg buffer (max JIT arity is 6)
-                                    let mut stack_buf = [0i64; 6];
-                                    for i in 0..nargs {
-                                        let nb = self.reg_nb(base + a + 1 + i);
-                                        if nb.is_heap_allocated() {
-                                            unsafe {
-                                                let ptr = nb.payload() as *const Value;
-                                                std::sync::Arc::increment_strong_count(ptr);
-                                            }
-                                        }
-                                        stack_buf[i] = nb.0 as i64;
-                                    }
-                                    let i64_args = &stack_buf[..nargs];
-                                    let callee_name_for_ret = callee_cell.name.clone();
-                                    if let Some(result) = self.jit_tier.execute_by_idx(
-                                        target_idx,
-                                        i64_args,
-                                        &self.vm_ctx.inner,
-                                        &callee_name_for_ret,
-                                    ) {
-                                        // Drop the extra refs we added before JIT call
+                                    if nargs <= FAST_CALL_ARITY_LIMIT {
+                                        let mut stack_buf = [0i64; FAST_CALL_ARITY_LIMIT];
                                         for i in 0..nargs {
                                             let nb = self.reg_nb(base + a + 1 + i);
                                             if nb.is_heap_allocated() {
                                                 unsafe {
                                                     let ptr = nb.payload() as *const Value;
-                                                    std::sync::Arc::decrement_strong_count(ptr);
+                                                    std::sync::Arc::increment_strong_count(ptr);
                                                 }
                                             }
+                                            stack_buf[i] = nb.0 as i64;
                                         }
-                                        // Convert JIT result to NbValue based on return type.
-                                        // Str returns are raw *mut JitString pointers — convert
-                                        // to Value::String and store as a proper NbValue.
-                                        #[cfg(feature = "jit")]
-                                        {
-                                            use lumen_codegen::jit::JitVarType;
-                                            let ret_ty = self.jit_tier
-                                                .return_type(&callee_name_for_ret)
-                                                .unwrap_or(JitVarType::Int);
-                                            if ret_ty == JitVarType::Str {
-                                                let s = unsafe {
-                                                    lumen_codegen::jit::jit_take_string(result)
-                                                };
-                                                let val = Value::String(StringRef::Owned(s));
-                                                self.set_reg(callee_reg, val);
-                                                continue;
+                                        let i64_args = &stack_buf[..nargs];
+                                        let callee_name_for_ret = callee_cell.name.clone();
+                                        if let Some(result) = self.jit_tier.execute_by_idx(
+                                            target_idx,
+                                            i64_args,
+                                            &self.vm_ctx.inner,
+                                            &callee_name_for_ret,
+                                        ) {
+                                            // Drop the extra refs we added before JIT call
+                                            for i in 0..nargs {
+                                                let nb = self.reg_nb(base + a + 1 + i);
+                                                if nb.is_heap_allocated() {
+                                                    unsafe {
+                                                        let ptr = nb.payload() as *const Value;
+                                                        std::sync::Arc::decrement_strong_count(ptr);
+                                                    }
+                                                }
                                             }
-                                        }
-                                        // All other types are already NaN-boxed — store directly.
-                                        let nb = NbValue(result as u64);
-                                        self.set_reg_nb(callee_reg, nb);
-                                        continue;
-                                    } else {
-                                        // JIT failed — drop the refs we added
-                                        for i in 0..nargs {
-                                            let nb = self.reg_nb(base + a + 1 + i);
-                                            if nb.is_heap_allocated() {
-                                                unsafe {
-                                                    let ptr = nb.payload() as *const Value;
-                                                    std::sync::Arc::decrement_strong_count(ptr);
+                                            // Convert JIT result to NbValue based on return type.
+                                            // Str returns are raw *mut JitString pointers — convert
+                                            // to Value::String and store as a proper NbValue.
+                                            #[cfg(feature = "jit")]
+                                            {
+                                                use lumen_codegen::jit::JitVarType;
+                                                let ret_ty = self
+                                                    .jit_tier
+                                                    .return_type(&callee_name_for_ret)
+                                                    .unwrap_or(JitVarType::Int);
+                                                if ret_ty == JitVarType::Str {
+                                                    let s = unsafe {
+                                                        lumen_codegen::jit::jit_take_string(result)
+                                                    };
+                                                    let val = Value::String(StringRef::Owned(s));
+                                                    self.set_reg(callee_reg, val);
+                                                    continue;
+                                                }
+                                            }
+                                            // All other types are already NaN-boxed — store directly.
+                                            let nb = NbValue(result as u64);
+                                            self.set_reg_nb(callee_reg, nb);
+                                            continue;
+                                        } else {
+                                            // JIT failed — drop the refs we added
+                                            for i in 0..nargs {
+                                                let nb = self.reg_nb(base + a + 1 + i);
+                                                if nb.is_heap_allocated() {
+                                                    unsafe {
+                                                        let ptr = nb.payload() as *const Value;
+                                                        std::sync::Arc::decrement_strong_count(ptr);
+                                                    }
                                                 }
                                             }
                                         }
@@ -2607,103 +2758,133 @@ impl VM {
                             if let Some(target_idx) = tc_target {
                                 if let Some(fn_ptr) = self.osr_runtime.get_compiled_fn(target_idx) {
                                     // Stack-allocated arg buffer (max JIT arity is 6)
-                                    let mut stack_buf = [0i64; 6];
-                                    for i in 0..nargs {
-                                        let nb = self.reg_nb(base + a + 1 + i);
-                                        if nb.is_heap_allocated() {
-                                            unsafe {
-                                                let ptr = nb.payload() as *const Value;
-                                                std::sync::Arc::increment_strong_count(ptr);
+                                    if nargs <= FAST_CALL_ARITY_LIMIT {
+                                        let mut stack_buf = [0i64; FAST_CALL_ARITY_LIMIT];
+                                        for i in 0..nargs {
+                                            let nb = self.reg_nb(base + a + 1 + i);
+                                            if nb.is_heap_allocated() {
+                                                unsafe {
+                                                    let ptr = nb.payload() as *const Value;
+                                                    std::sync::Arc::increment_strong_count(ptr);
+                                                }
                                             }
+                                            stack_buf[i] = nb.0 as i64;
                                         }
-                                        stack_buf[i] = nb.0 as i64;
-                                    }
-                                    let i64_args = &stack_buf[..nargs];
-                                    let osr_result = {
-                                        let ctx_mut = &*self.vm_ctx.inner
-                                            as *const lumen_codegen::vm_context::VmContext
-                                            as *mut lumen_codegen::vm_context::VmContext;
-                                        let raw = unsafe {
-                                            match nargs {
-                                                0 => {
-                                                    let f: fn(*mut lumen_codegen::vm_context::VmContext) -> i64 =
-                                                        std::mem::transmute(fn_ptr);
-                                                    f(ctx_mut)
+                                        let i64_args = &stack_buf[..nargs];
+                                        let osr_result = {
+                                            let ctx_mut = &*self.vm_ctx.inner
+                                                as *const lumen_codegen::vm_context::VmContext
+                                                as *mut lumen_codegen::vm_context::VmContext;
+                                            let raw = unsafe {
+                                                match nargs {
+                                                    0 => {
+                                                        let f: fn(*mut lumen_codegen::vm_context::VmContext) -> i64 =
+                                                            std::mem::transmute(fn_ptr);
+                                                        f(ctx_mut)
+                                                    }
+                                                    1 => {
+                                                        let f: fn(*mut lumen_codegen::vm_context::VmContext, i64) -> i64 =
+                                                            std::mem::transmute(fn_ptr);
+                                                        f(ctx_mut, i64_args[0])
+                                                    }
+                                                    2 => {
+                                                        let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64) -> i64 =
+                                                            std::mem::transmute(fn_ptr);
+                                                        f(ctx_mut, i64_args[0], i64_args[1])
+                                                    }
+                                                    3 => {
+                                                        let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64, i64) -> i64 =
+                                                            std::mem::transmute(fn_ptr);
+                                                        f(
+                                                            ctx_mut,
+                                                            i64_args[0],
+                                                            i64_args[1],
+                                                            i64_args[2],
+                                                        )
+                                                    }
+                                                    4 => {
+                                                        let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64, i64, i64) -> i64 =
+                                                            std::mem::transmute(fn_ptr);
+                                                        f(
+                                                            ctx_mut,
+                                                            i64_args[0],
+                                                            i64_args[1],
+                                                            i64_args[2],
+                                                            i64_args[3],
+                                                        )
+                                                    }
+                                                    5 => {
+                                                        let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64, i64, i64, i64) -> i64 =
+                                                            std::mem::transmute(fn_ptr);
+                                                        f(
+                                                            ctx_mut,
+                                                            i64_args[0],
+                                                            i64_args[1],
+                                                            i64_args[2],
+                                                            i64_args[3],
+                                                            i64_args[4],
+                                                        )
+                                                    }
+                                                    6 => {
+                                                        let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64, i64, i64, i64, i64) -> i64 =
+                                                            std::mem::transmute(fn_ptr);
+                                                        f(
+                                                            ctx_mut,
+                                                            i64_args[0],
+                                                            i64_args[1],
+                                                            i64_args[2],
+                                                            i64_args[3],
+                                                            i64_args[4],
+                                                            i64_args[5],
+                                                        )
+                                                    }
+                                                    _ => unreachable!(
+                                                        "guarded by nargs <= FAST_CALL_ARITY_LIMIT"
+                                                    ),
                                                 }
-                                                1 => {
-                                                    let f: fn(*mut lumen_codegen::vm_context::VmContext, i64) -> i64 =
-                                                        std::mem::transmute(fn_ptr);
-                                                    f(ctx_mut, i64_args[0])
-                                                }
-                                                2 => {
-                                                    let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64) -> i64 =
-                                                        std::mem::transmute(fn_ptr);
-                                                    f(ctx_mut, i64_args[0], i64_args[1])
-                                                }
-                                                3 => {
-                                                    let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64, i64) -> i64 =
-                                                        std::mem::transmute(fn_ptr);
-                                                    f(ctx_mut, i64_args[0], i64_args[1], i64_args[2])
-                                                }
-                                                4 => {
-                                                    let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64, i64, i64) -> i64 =
-                                                        std::mem::transmute(fn_ptr);
-                                                    f(ctx_mut, i64_args[0], i64_args[1], i64_args[2], i64_args[3])
-                                                }
-                                                5 => {
-                                                    let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64, i64, i64, i64) -> i64 =
-                                                        std::mem::transmute(fn_ptr);
-                                                    f(ctx_mut, i64_args[0], i64_args[1], i64_args[2], i64_args[3], i64_args[4])
-                                                }
-                                                6 => {
-                                                    let f: fn(*mut lumen_codegen::vm_context::VmContext, i64, i64, i64, i64, i64, i64) -> i64 =
-                                                        std::mem::transmute(fn_ptr);
-                                                    f(ctx_mut, i64_args[0], i64_args[1], i64_args[2], i64_args[3], i64_args[4], i64_args[5])
-                                                }
-                                                _ => return Err(VmError::Runtime(format!("unsupported JIT arity {nargs}"))),
+                                            };
+                                            if lumen_codegen::jit::jit_check_divzero_trap() {
+                                                None
+                                            } else {
+                                                Some(raw)
                                             }
                                         };
-                                        if lumen_codegen::jit::jit_check_divzero_trap() {
-                                            None
-                                        } else {
-                                            Some(raw)
-                                        }
-                                    };
-                                    if let Some(raw) = osr_result {
-                                        for i in 0..nargs {
-                                            let nb = self.reg_nb(base + a + 1 + i);
-                                            if nb.is_heap_allocated() {
-                                                unsafe {
-                                                    let ptr = nb.payload() as *const Value;
-                                                    std::sync::Arc::decrement_strong_count(ptr);
+                                        if let Some(raw) = osr_result {
+                                            for i in 0..nargs {
+                                                let nb = self.reg_nb(base + a + 1 + i);
+                                                if nb.is_heap_allocated() {
+                                                    unsafe {
+                                                        let ptr = nb.payload() as *const Value;
+                                                        std::sync::Arc::decrement_strong_count(ptr);
+                                                    }
                                                 }
                                             }
-                                        }
-                                        let nb = NbValue(raw as u64);
-                                        let result_value = nb.to_legacy();
-                                        let frame = self.frames.pop().ok_or_else(|| {
-                                            VmError::Runtime(
-                                                "call stack underflow on tailcall osr".into(),
-                                            )
-                                        })?;
-                                        self.shrink_registers(frame.base_register);
-                                        if self.frames.len() <= limit {
-                                            return Ok(result_value);
-                                        }
-                                        self.set_reg(frame.return_register, result_value);
-                                        let f = self.frames.last().unwrap();
-                                        cell_idx = f.cell_idx;
-                                        base = f.base_register;
-                                        ip = f.ip;
-                                        cell = &module.cells[cell_idx];
-                                        jit_handled = true;
-                                    } else {
-                                        for i in 0..nargs {
-                                            let nb = self.reg_nb(base + a + 1 + i);
-                                            if nb.is_heap_allocated() {
-                                                unsafe {
-                                                    let ptr = nb.payload() as *const Value;
-                                                    std::sync::Arc::decrement_strong_count(ptr);
+                                            let nb = NbValue(raw as u64);
+                                            let result_value = nb_to_value(nb);
+                                            let frame = self.frames.pop().ok_or_else(|| {
+                                                VmError::Runtime(
+                                                    "call stack underflow on tailcall osr".into(),
+                                                )
+                                            })?;
+                                            self.shrink_registers(frame.base_register);
+                                            if self.frames.len() <= limit {
+                                                return Ok(result_value);
+                                            }
+                                            self.set_reg(frame.return_register, result_value);
+                                            let f = self.frames.last().unwrap();
+                                            cell_idx = f.cell_idx;
+                                            base = f.base_register;
+                                            ip = f.ip;
+                                            cell = &module.cells[cell_idx];
+                                            jit_handled = true;
+                                        } else {
+                                            for i in 0..nargs {
+                                                let nb = self.reg_nb(base + a + 1 + i);
+                                                if nb.is_heap_allocated() {
+                                                    unsafe {
+                                                        let ptr = nb.payload() as *const Value;
+                                                        std::sync::Arc::decrement_strong_count(ptr);
+                                                    }
                                                 }
                                             }
                                         }
@@ -2714,78 +2895,82 @@ impl VM {
                                 // Skip stencil tier if Cranelift JIT already compiled this cell.
                                 let skip_stencil = self.jit_tier.is_compiled(target_idx);
                                 if !skip_stencil {
-                                let stencil_compiled = self.stencil_tier.is_compiled(target_idx);
-                                let stencil_try =
-                                    stencil_compiled || self.stencil_tier.record_call(target_idx);
-                                if stencil_try {
-                                    if !stencil_compiled {
-                                        self.stencil_tier.try_compile(target_idx, module);
-                                    }
-                                    if self.stencil_tier.is_compiled(target_idx) {
-                                        let callee_base = base + a + 1;
-                                        let target_cell = &module.cells[target_idx];
-                                        let needed = callee_base
-                                            + (target_cell.registers as usize).max(nargs + 4);
-                                        if needed > self.registers.len() {
-                                            self.registers.resize(needed, NbValue::new_null());
+                                    let stencil_compiled =
+                                        self.stencil_tier.is_compiled(target_idx);
+                                    let stencil_try = stencil_compiled
+                                        || self.stencil_tier.record_call(target_idx);
+                                    if stencil_try {
+                                        if !stencil_compiled {
+                                            self.stencil_tier.try_compile(target_idx, module);
                                         }
-                                        let mut stencil = std::mem::replace(
-                                            &mut self.stencil_tier,
-                                            StencilTier::disabled(),
-                                        );
-                                        let stencil_result =
-                                            stencil.execute(self, target_idx, callee_base);
-                                        self.stencil_tier = stencil;
-                                        if let Ok(()) = stencil_result {
-                                            let ret_nb = self
-                                                .registers
-                                                .get(callee_base)
-                                                .copied()
-                                                .unwrap_or(NbValue::new_null());
-                                            let result_value = ret_nb.to_legacy();
-                                            let frame = self.frames.pop().ok_or_else(|| {
-                                                VmError::Runtime(
-                                                    "call stack underflow on tailcall stencil"
-                                                        .into(),
-                                                )
-                                            })?;
-                                            if has_debug {
-                                                let cname =
-                                                    module.cells[frame.cell_idx].name.clone();
-                                                self.emit_debug_event(DebugEvent::CallExit {
-                                                    cell_name: cname,
-                                                    result: result_value.clone(),
-                                                });
+                                        if self.stencil_tier.is_compiled(target_idx) {
+                                            let callee_base = base + a + 1;
+                                            let target_cell = &module.cells[target_idx];
+                                            let needed = callee_base
+                                                + (target_cell.registers as usize).max(nargs + 4);
+                                            if needed > self.registers.len() {
+                                                self.registers.resize(needed, NbValue::new_null());
                                             }
-                                            self.shrink_registers(frame.base_register);
-                                            if let Some(fid) = frame.future_id {
-                                                self.future_states.insert(
-                                                    fid,
-                                                    FutureState::Completed(result_value),
-                                                );
-                                                if self.frames.len() <= limit {
-                                                    return Ok(Value::Null);
+                                            let mut stencil = std::mem::replace(
+                                                &mut self.stencil_tier,
+                                                StencilTier::disabled(),
+                                            );
+                                            let stencil_result =
+                                                stencil.execute(self, target_idx, callee_base);
+                                            self.stencil_tier = stencil;
+                                            if let Ok(()) = stencil_result {
+                                                let ret_nb = self
+                                                    .registers
+                                                    .get(callee_base)
+                                                    .copied()
+                                                    .unwrap_or(NbValue::new_null());
+                                                let result_value = nb_to_value(ret_nb);
+                                                let frame = self.frames.pop().ok_or_else(|| {
+                                                    VmError::Runtime(
+                                                        "call stack underflow on tailcall stencil"
+                                                            .into(),
+                                                    )
+                                                })?;
+                                                if has_debug {
+                                                    let cname =
+                                                        module.cells[frame.cell_idx].name.clone();
+                                                    self.emit_debug_event(DebugEvent::CallExit {
+                                                        cell_name: cname,
+                                                        result: result_value.clone(),
+                                                    });
                                                 }
-                                                let f = self.frames.last().unwrap();
-                                                cell_idx = f.cell_idx;
-                                                base = f.base_register;
-                                                ip = f.ip;
-                                                cell = &module.cells[cell_idx];
-                                                jit_handled = true;
-                                            } else if self.frames.len() <= limit {
-                                                return Ok(result_value);
-                                            } else {
-                                                self.set_reg(frame.return_register, result_value);
-                                                let f = self.frames.last().unwrap();
-                                                cell_idx = f.cell_idx;
-                                                base = f.base_register;
-                                                ip = f.ip;
-                                                cell = &module.cells[cell_idx];
-                                                jit_handled = true;
+                                                self.shrink_registers(frame.base_register);
+                                                if let Some(fid) = frame.future_id {
+                                                    self.future_states.insert(
+                                                        fid,
+                                                        FutureState::Completed(result_value),
+                                                    );
+                                                    if self.frames.len() <= limit {
+                                                        return Ok(Value::Null);
+                                                    }
+                                                    let f = self.frames.last().unwrap();
+                                                    cell_idx = f.cell_idx;
+                                                    base = f.base_register;
+                                                    ip = f.ip;
+                                                    cell = &module.cells[cell_idx];
+                                                    jit_handled = true;
+                                                } else if self.frames.len() <= limit {
+                                                    return Ok(result_value);
+                                                } else {
+                                                    self.set_reg(
+                                                        frame.return_register,
+                                                        result_value,
+                                                    );
+                                                    let f = self.frames.last().unwrap();
+                                                    cell_idx = f.cell_idx;
+                                                    base = f.base_register;
+                                                    ip = f.ip;
+                                                    cell = &module.cells[cell_idx];
+                                                    jit_handled = true;
+                                                }
                                             }
                                         }
                                     }
-                                }
                                 } // end skip_stencil guard
                             }
                         }
@@ -2831,90 +3016,92 @@ impl VM {
                                 if run_jit {
                                     let callee_cell = &module.cells[target_idx];
                                     // Stack-allocated arg buffer (max JIT arity is 6)
-                                    let mut stack_buf = [0i64; 6];
-                                    for i in 0..nargs {
-                                        let nb = self.reg_nb(base + a + 1 + i);
-                                        if nb.is_heap_allocated() {
-                                            unsafe {
-                                                let ptr = nb.payload() as *const Value;
-                                                std::sync::Arc::increment_strong_count(ptr);
-                                            }
-                                        }
-                                        stack_buf[i] = nb.0 as i64;
-                                    }
-                                    let i64_args = &stack_buf[..nargs];
-                                    if let Some(result) = self.jit_tier.execute_by_idx(
-                                        target_idx,
-                                        i64_args,
-                                        &self.vm_ctx.inner,
-                                        &callee_cell.name,
-                                    ) {
-                                        // Drop the extra refs we added before JIT call
+                                    if nargs <= FAST_CALL_ARITY_LIMIT {
+                                        let mut stack_buf = [0i64; FAST_CALL_ARITY_LIMIT];
                                         for i in 0..nargs {
                                             let nb = self.reg_nb(base + a + 1 + i);
                                             if nb.is_heap_allocated() {
                                                 unsafe {
                                                     let ptr = nb.payload() as *const Value;
-                                                    std::sync::Arc::decrement_strong_count(ptr);
+                                                    std::sync::Arc::increment_strong_count(ptr);
                                                 }
                                             }
+                                            stack_buf[i] = nb.0 as i64;
                                         }
-                                        // Result is already a NaN-boxed u64.
-                                        let result_nb = NbValue(result as u64);
-                                        let result_value = result_nb.peek_legacy();
-
-                                        // TailCall JIT success: simulate Return.
-                                        // Pop current frame and write result to caller.
-                                        let frame = self.frames.pop().ok_or_else(|| {
-                                            VmError::Runtime(
-                                                "call stack underflow on tailcall JIT".into(),
-                                            )
-                                        })?;
-
-                                        if has_debug {
-                                            let cname =
-                                                module.cells[frame.cell_idx].name.clone();
-                                            self.emit_debug_event(DebugEvent::CallExit {
-                                                cell_name: cname,
-                                                result: result_value.clone(),
-                                            });
-                                        }
-
-                                        self.shrink_registers(frame.base_register);
-
-                                        if let Some(fid) = frame.future_id {
-                                            self.future_states.insert(
-                                                fid,
-                                                FutureState::Completed(result_value),
-                                            );
-                                            if self.frames.len() <= limit {
-                                                return Ok(Value::Null);
+                                        let i64_args = &stack_buf[..nargs];
+                                        if let Some(result) = self.jit_tier.execute_by_idx(
+                                            target_idx,
+                                            i64_args,
+                                            &self.vm_ctx.inner,
+                                            &callee_cell.name,
+                                        ) {
+                                            // Drop the extra refs we added before JIT call
+                                            for i in 0..nargs {
+                                                let nb = self.reg_nb(base + a + 1 + i);
+                                                if nb.is_heap_allocated() {
+                                                    unsafe {
+                                                        let ptr = nb.payload() as *const Value;
+                                                        std::sync::Arc::decrement_strong_count(ptr);
+                                                    }
+                                                }
                                             }
-                                            let f = self.frames.last().unwrap();
-                                            cell_idx = f.cell_idx;
-                                            base = f.base_register;
-                                            ip = f.ip;
-                                            cell = &module.cells[cell_idx];
-                                            jit_handled = true;
-                                        } else if self.frames.len() <= limit {
-                                            return Ok(result_value);
+                                            // Result is already a NaN-boxed u64.
+                                            let result_nb = NbValue(result as u64);
+                                            let result_value = nb_to_value(result_nb);
+
+                                            // TailCall JIT success: simulate Return.
+                                            // Pop current frame and write result to caller.
+                                            let frame = self.frames.pop().ok_or_else(|| {
+                                                VmError::Runtime(
+                                                    "call stack underflow on tailcall JIT".into(),
+                                                )
+                                            })?;
+
+                                            if has_debug {
+                                                let cname =
+                                                    module.cells[frame.cell_idx].name.clone();
+                                                self.emit_debug_event(DebugEvent::CallExit {
+                                                    cell_name: cname,
+                                                    result: result_value.clone(),
+                                                });
+                                            }
+
+                                            self.shrink_registers(frame.base_register);
+
+                                            if let Some(fid) = frame.future_id {
+                                                self.future_states.insert(
+                                                    fid,
+                                                    FutureState::Completed(result_value),
+                                                );
+                                                if self.frames.len() <= limit {
+                                                    return Ok(Value::Null);
+                                                }
+                                                let f = self.frames.last().unwrap();
+                                                cell_idx = f.cell_idx;
+                                                base = f.base_register;
+                                                ip = f.ip;
+                                                cell = &module.cells[cell_idx];
+                                                jit_handled = true;
+                                            } else if self.frames.len() <= limit {
+                                                return Ok(result_value);
+                                            } else {
+                                                self.set_reg_nb(frame.return_register, result_nb);
+                                                let f = self.frames.last().unwrap();
+                                                cell_idx = f.cell_idx;
+                                                base = f.base_register;
+                                                ip = f.ip;
+                                                cell = &module.cells[cell_idx];
+                                                jit_handled = true;
+                                            }
                                         } else {
-                                            self.set_reg_nb(frame.return_register, result_nb);
-                                            let f = self.frames.last().unwrap();
-                                            cell_idx = f.cell_idx;
-                                            base = f.base_register;
-                                            ip = f.ip;
-                                            cell = &module.cells[cell_idx];
-                                            jit_handled = true;
-                                        }
-                                    } else {
-                                        // JIT failed — drop the refs we added
-                                        for i in 0..nargs {
-                                            let nb = self.reg_nb(base + a + 1 + i);
-                                            if nb.is_heap_allocated() {
-                                                unsafe {
-                                                    let ptr = nb.payload() as *const Value;
-                                                    std::sync::Arc::decrement_strong_count(ptr);
+                                            // JIT failed — drop the refs we added
+                                            for i in 0..nargs {
+                                                let nb = self.reg_nb(base + a + 1 + i);
+                                                if nb.is_heap_allocated() {
+                                                    unsafe {
+                                                        let ptr = nb.payload() as *const Value;
+                                                        std::sync::Arc::decrement_strong_count(ptr);
+                                                    }
                                                 }
                                             }
                                         }
@@ -2997,7 +3184,7 @@ impl VM {
                             // for interpreter execution. The JIT path uses raw u64 directly.
                             use lumen_core::nb_value::NbValue;
                             let nb = NbValue(*raw);
-                            nb.to_legacy()
+                            nb_to_value(nb)
                         }
                     };
                     self.set_reg(base + a, val);
@@ -3066,7 +3253,10 @@ impl VM {
                 OpCode::NewUnion => {
                     let tag_str = value_to_str_cow(&self.reg(base + b), &self.strings).into_owned();
                     let tag = self.strings.intern(&tag_str);
-                    let payload = UnionPayload::from_value(self.reg(base + c));
+                    let payload_nb = self.reg_nb(base + c);
+                    let payload = self
+                        .nb_to_union_payload(payload_nb)
+                        .unwrap_or_else(|| UnionPayload::from_value(self.reg(base + c)));
                     self.set_reg(base + a, Value::Union(UnionValue { tag, payload }));
                 }
                 OpCode::NewTuple | OpCode::NewTupleStack => {
@@ -3171,6 +3361,7 @@ impl VM {
                         }
                         _ => Value::Null,
                     };
+                    eprintln!("GETINDEX: obj={:?} idx={:?} -> {:?}", obj, idx, val);
                     self.set_reg(base + a, val);
                 }
                 OpCode::SetIndex => {
@@ -3253,7 +3444,12 @@ impl VM {
                     if let Some(result) =
                         self.try_arith_nb_fast(base + a, lhs_nb, rhs_nb, BinaryOp::Add)
                     {
-                        result?;
+                        let res = result?;
+                        eprintln!(
+                            "ADD fast: a=r{} b=r{} c=r{} lhs_nb={:?} rhs_nb={:?}",
+                            a, b, c, lhs_nb, rhs_nb
+                        );
+                        res;
                     } else {
                         // Read rhs first (usually small, e.g. "x").
                         let rhs = self.reg(base + c);
@@ -3265,6 +3461,10 @@ impl VM {
                         } else {
                             self.reg(base + b)
                         };
+                        eprintln!(
+                            "ADD slow: a=r{} b=r{} c=r{} lhs={:?} rhs={:?}",
+                            a, b, c, lhs, rhs
+                        );
                         // Check for strings first for concatenation
                         if matches!(lhs, Value::String(_)) || matches!(rhs, Value::String(_)) {
                             // In-place string concat optimization: when the destination
@@ -3576,8 +3776,8 @@ impl VM {
                             let rhs_ref = unsafe { &*(rhs_nb.payload() as *const Value) };
                             values_equal(lhs_ref, rhs_ref, &self.strings)
                         } else {
-                            let lhs = lhs_nb.peek_legacy();
-                            let rhs = rhs_nb.peek_legacy();
+                            let lhs = nb_to_value(lhs_nb);
+                            let rhs = nb_to_value(rhs_nb);
                             values_equal(&lhs, &rhs, &self.strings)
                         };
                         self.set_reg_nb(base + a, NbValue::new_bool(eq));
@@ -3588,21 +3788,49 @@ impl VM {
                     let lhs_nb = self.reg_nb(base + b);
                     let rhs_nb = self.reg_nb(base + c);
                     if let (Some(lhs_i), Some(rhs_i)) = (lhs_nb.as_int(), rhs_nb.as_int()) {
+                        eprintln!(
+                            "LT: lhs_int={} rhs_int={} -> {} (a=r{})",
+                            lhs_i,
+                            rhs_i,
+                            lhs_i < rhs_i,
+                            a
+                        );
                         self.set_reg_nb(base + a, NbValue::new_bool(lhs_i < rhs_i));
                     } else if let (Some(lhs_f), Some(rhs_f)) =
                         (lhs_nb.as_float(), rhs_nb.as_float())
                     {
+                        eprintln!(
+                            "LT: lhs_f={} rhs_f={} -> {} (a=r{})",
+                            lhs_f,
+                            rhs_f,
+                            lhs_f < rhs_f,
+                            a
+                        );
                         self.set_reg_nb(base + a, NbValue::new_bool(lhs_f < rhs_f));
                     } else if let (Some(lhs_i), Some(rhs_f)) = (lhs_nb.as_int(), rhs_nb.as_float())
                     {
+                        eprintln!(
+                            "LT: lhs_int={} rhs_f={} -> {} (a=r{})",
+                            lhs_i,
+                            rhs_f,
+                            (lhs_i as f64) < rhs_f,
+                            a
+                        );
                         self.set_reg_nb(base + a, NbValue::new_bool((lhs_i as f64) < rhs_f));
                     } else if let (Some(lhs_f), Some(rhs_i)) = (lhs_nb.as_float(), rhs_nb.as_int())
                     {
+                        eprintln!(
+                            "LT: lhs_f={} rhs_int={} -> {} (a=r{})",
+                            lhs_f,
+                            rhs_i,
+                            lhs_f < (rhs_i as f64),
+                            a
+                        );
                         self.set_reg_nb(base + a, NbValue::new_bool(lhs_f < (rhs_i as f64)));
                     } else {
                         // COLD PATH: strings, BigInt, etc.
-                        let b_val = lhs_nb.peek_legacy();
-                        let c_val = rhs_nb.peek_legacy();
+                        let b_val = nb_to_value(lhs_nb);
+                        let c_val = nb_to_value(rhs_nb);
                         let result = match (&b_val, &c_val) {
                             (Value::String(x), Value::String(y)) => {
                                 let s1 = match x {
@@ -3644,6 +3872,10 @@ impl VM {
                             }
                             _ => false,
                         };
+                        eprintln!(
+                            "LT: lhs={:?} rhs={:?} -> {} (a=r{})",
+                            b_val, c_val, result, a
+                        );
                         self.set_reg_nb(base + a, NbValue::new_bool(result));
                     }
                 }
@@ -3665,8 +3897,8 @@ impl VM {
                         self.set_reg_nb(base + a, NbValue::new_bool(lhs_f <= (rhs_i as f64)));
                     } else {
                         // COLD PATH: strings, BigInt, etc.
-                        let b_val = lhs_nb.peek_legacy();
-                        let c_val = rhs_nb.peek_legacy();
+                        let b_val = nb_to_value(lhs_nb);
+                        let c_val = nb_to_value(rhs_nb);
                         let result = match (&b_val, &c_val) {
                             (Value::String(x), Value::String(y)) => {
                                 let s1 = match x {
@@ -3798,9 +4030,13 @@ impl VM {
                             }
                         }
                     } else {
-                        let val = nb.peek_legacy();
+                        let val = nb_to_value(nb);
                         self.value_is_truthy(&val)
                     };
+                    eprintln!(
+                        "TEST: reg r{} nb={:?} truthy={} c={} ip={}",
+                        a, nb, truthy, c, ip
+                    );
                     if truthy != (c != 0) {
                         ip += 1;
                     }
@@ -4265,7 +4501,8 @@ impl VM {
                     // Safety: the register is the sole owner of the outer Arc
                     // (refcount == 1) because NbValue copies only happen via
                     // explicit inc_ref() calls, never by raw u64 duplication.
-                    let is_heap_list = self.registers[base + a].as_heap_ref()
+                    let is_heap_list = self.registers[base + a]
+                        .as_heap_ref()
                         .map_or(false, |v| matches!(v, Value::List(_)));
                     if is_heap_list {
                         let val = self.reg(base + b);
@@ -4494,22 +4731,23 @@ impl VM {
     fn dispatch_call(&mut self, base: usize, a: usize, nargs: usize) -> Result<(), VmError> {
         // Zero-copy fast path: resolve string callee name without deep-cloning
         // the entire Value. Only falls through to self.reg() for Closure/other.
-        let string_name: Option<Result<String, VmError>> = match self.registers[base + a].as_heap_ref() {
-            Some(Value::String(sr)) => Some(match sr {
-                StringRef::Owned(s) => Ok(s.clone()),
-                StringRef::Interned(id) => self
-                    .strings
-                    .resolve(*id)
-                    .ok_or_else(|| {
-                        VmError::Runtime(format!(
-                            "unknown interned string id {} for call target",
-                            id
-                        ))
-                    })
-                    .map(|s| s.to_string()),
-            }),
-            _ => None,
-        };
+        let string_name: Option<Result<String, VmError>> =
+            match self.registers[base + a].as_heap_ref() {
+                Some(Value::String(sr)) => Some(match sr {
+                    StringRef::Owned(s) => Ok(s.clone()),
+                    StringRef::Interned(id) => self
+                        .strings
+                        .resolve(*id)
+                        .ok_or_else(|| {
+                            VmError::Runtime(format!(
+                                "unknown interned string id {} for call target",
+                                id
+                            ))
+                        })
+                        .map(|s| s.to_string()),
+                }),
+                _ => None,
+            };
         if let Some(name_result) = string_name {
             let name = name_result?;
             {
@@ -4627,22 +4865,23 @@ impl VM {
     /// Dispatch a TAILCALL instruction: reuse current frame.
     fn dispatch_tailcall(&mut self, base: usize, a: usize, nargs: usize) -> Result<(), VmError> {
         // Zero-copy fast path for string callee names.
-        let string_name: Option<Result<String, VmError>> = match self.registers[base + a].as_heap_ref() {
-            Some(Value::String(sr)) => Some(match sr {
-                StringRef::Owned(s) => Ok(s.clone()),
-                StringRef::Interned(id) => self
-                    .strings
-                    .resolve(*id)
-                    .ok_or_else(|| {
-                        VmError::Runtime(format!(
-                            "unknown interned string id {} for tailcall target",
-                            id
-                        ))
-                    })
-                    .map(|s| s.to_string()),
-            }),
-            _ => None,
-        };
+        let string_name: Option<Result<String, VmError>> =
+            match self.registers[base + a].as_heap_ref() {
+                Some(Value::String(sr)) => Some(match sr {
+                    StringRef::Owned(s) => Ok(s.clone()),
+                    StringRef::Interned(id) => self
+                        .strings
+                        .resolve(*id)
+                        .ok_or_else(|| {
+                            VmError::Runtime(format!(
+                                "unknown interned string id {} for tailcall target",
+                                id
+                            ))
+                        })
+                        .map(|s| s.to_string()),
+                }),
+                _ => None,
+            };
         if let Some(name_result) = string_name {
             let name = name_result?;
             let module = self.module.as_ref().ok_or(VmError::NoModule)?;
@@ -7088,8 +7327,7 @@ end
         // So we pre-size and set up r1 at the right offset.
         let base = vm.registers.len();
         vm.registers.resize(base + 256, NbValue::new_null());
-        vm.registers[base + 1] =
-            NbValue::from_legacy(Value::String(StringRef::Interned(interned_id)));
+        vm.registers[base + 1] = value_to_nb(Value::String(StringRef::Interned(interned_id)));
 
         vm.frames.push(CallFrame {
             cell_idx: 0,
@@ -8234,7 +8472,9 @@ end
         let module = compile_lumen(md).expect("source should compile");
         let mut vm = VM::new();
         vm.load(module);
-        let err = vm.execute("main", vec![]).expect_err("execution should fail");
+        let err = vm
+            .execute("main", vec![])
+            .expect_err("execution should fail");
         let msg = format!("{}", err);
         assert!(
             msg.contains("Recent VM events (oldest to newest):"),
@@ -9352,5 +9592,51 @@ end
             .execute("main", vec![])
             .expect("2 calls within budget of 2 should succeed");
         assert_eq!(result, Value::String(StringRef::Owned("ok".into())));
+    }
+
+    #[test]
+    fn test_nb_to_union_payload_reuses_heap_arc() {
+        let vm = VM::new();
+        let tuple_val = Value::new_tuple(vec![Value::Int(1), Value::Int(2)]);
+        let nb = value_to_nb(tuple_val);
+        assert!(
+            nb.is_heap_allocated(),
+            "tuple should be heap-allocated NbValue"
+        );
+        let original_ptr = nb.payload() as *const Value;
+
+        let payload = vm
+            .nb_to_union_payload(nb)
+            .expect("heap NbValue should convert to UnionPayload");
+        match payload {
+            UnionPayload::Heap(v) => {
+                assert_eq!(
+                    Arc::as_ptr(&v),
+                    original_ptr,
+                    "Union payload should reuse existing Arc<Value> pointer"
+                );
+            }
+            other => panic!("expected heap payload, got: {other:?}"),
+        }
+
+        // Release the original NbValue owner; payload owns the reused Arc now.
+        nb.drop_heap();
+    }
+
+    #[test]
+    fn test_nb_to_union_payload_inlines_scalars() {
+        let vm = VM::new();
+        assert!(matches!(
+            vm.nb_to_union_payload(NbValue::new_int(7)),
+            Some(UnionPayload::Int(7))
+        ));
+        assert!(matches!(
+            vm.nb_to_union_payload(NbValue::new_bool(true)),
+            Some(UnionPayload::Bool(true))
+        ));
+        assert!(matches!(
+            vm.nb_to_union_payload(NbValue::new_null()),
+            Some(UnionPayload::Null)
+        ));
     }
 }

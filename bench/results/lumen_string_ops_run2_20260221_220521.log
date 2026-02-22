@@ -1,0 +1,6 @@
+[1;32m   Compiling[0m [1mbench/cross-language/string_ops/string_ops.lm[0m
+[1;32m     Running[0m [36mmain[0m
+Length: 100000
+
+null
+[32m✓[0m Finished in 0.00s

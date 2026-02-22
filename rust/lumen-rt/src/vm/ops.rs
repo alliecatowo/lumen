@@ -333,8 +333,8 @@ impl VM {
         let rhs_val = self.registers[base + c];
 
         // Convert to legacy Value for pattern matching (temporary until full NbValue migration)
-        let lhs_ref = lhs_val.peek_legacy();
-        let rhs_ref = rhs_val.peek_legacy();
+        let lhs_ref = nb_to_value(lhs_val);
+        let rhs_ref = nb_to_value(rhs_val);
 
         // HOT PATH: Int op Int — the vast majority of arithmetic in numeric code.
         // Using if-let instead of nested match to give the compiler the best branch layout.

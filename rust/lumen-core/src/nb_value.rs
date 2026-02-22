@@ -186,7 +186,7 @@ impl NbValue {
     /// (`MIN_INT48` to `MAX_INT48`). In release mode, the value is
     /// silently truncated (wraps around).
     ///
-    /// For values outside this range, use `from_legacy()` with `Value::BigInt`.
+    /// For values outside this range, heap-box the value as `Value::Int` and use `new_ptr()`.
     ///
     /// # Examples
     /// ```
@@ -379,8 +379,7 @@ impl NbValue {
     /// Extract a NaN-boxed float.
     ///
     /// Returns `None` if this is not a raw float (i.e., if it's NaN-boxed).
-    /// Note: Heap-allocated floats (TAG_PTR to Value::Float) return `None`;
-    /// use `to_legacy()` to access those.
+    /// Note: Heap-allocated floats (TAG_PTR to Value::Float) return `None`.
     #[inline(always)]
     pub fn as_float(self) -> Option<f64> {
         if self.is_nan_boxed() {
@@ -403,120 +402,6 @@ impl NbValue {
             return None;
         }
         Some(self.payload() as *const T)
-    }
-
-    // ═════════════════════════════════════════════════════════════════════════
-    // CONVERSION TO/FROM LEGACY Value ENUM
-    // ═════════════════════════════════════════════════════════════════════════
-
-    /// Convert a legacy `Value` to `NbValue`, heap-boxing when necessary.
-    ///
-    /// This is the main entry point for transitioning from the old Value
-    /// representation to the new NaN-boxed representation.
-    ///
-    /// # Conversion Table
-    /// | Value variant | NbValue representation |
-    /// |---------------|------------------------|
-    /// | Null          | TAG_NULL               |
-    /// | Bool(b)       | TAG_BOOL               |
-    /// | Int(i)        | TAG_INT (if in range)  |
-    /// | Int(i)        | TAG_PTR → Value::Int   |
-    /// | BigInt        | TAG_PTR → Value::BigInt|
-    /// | Float(f)      | Raw bits (or sentinel) |
-    /// | Other         | TAG_PTR → Value        |
-    ///
-    /// # Examples
-    /// ```
-    /// use lumen_core::nb_value::NbValue;
-    /// use lumen_core::values::Value;
-    ///
-    /// let nb = NbValue::from_legacy(Value::Int(42));
-    /// assert!(nb.is_int());
-    /// assert_eq!(nb.as_int(), Some(42));
-    /// ```
-    pub fn from_legacy(value: Value) -> Self {
-        match value {
-            Value::Null => NbValue::new_null(),
-            Value::Bool(b) => NbValue::new_bool(b),
-            Value::Int(n) => {
-                if n >= Self::MIN_INT48 && n <= Self::MAX_INT48 {
-                    NbValue::new_int(n)
-                } else {
-                    // Large integer - heap box it
-                    NbValue::new_ptr(Arc::into_raw(Arc::new(Value::Int(n))))
-                }
-            }
-            Value::Float(f) => NbValue::new_float(f),
-            // All other types are heap-allocated
-            other => NbValue::new_ptr(Arc::into_raw(Arc::new(other))),
-        }
-    }
-
-    /// Convert `NbValue` to legacy `Value`, consuming heap allocations.
-    ///
-    /// This is the inverse of `from_legacy()`. For TAG_PTR values with
-    /// payload > 1, this consumes the Arc (decrements reference count).
-    ///
-    /// To peek at the value without consuming, use `peek_legacy()`.
-    pub fn to_legacy(self) -> Value {
-        if !self.is_nan_boxed() {
-            // Raw float bits
-            return Value::Float(f64::from_bits(self.0));
-        }
-
-        match self.tag() {
-            Self::TAG_INT => Value::Int(self.as_int().unwrap_or(0)),
-            Self::TAG_BOOL => Value::Bool(self.payload() != 0),
-            Self::TAG_NULL => Value::Null,
-            Self::TAG_PTR => match self.payload() {
-                0 => Value::Null,
-                1 => Value::Float(f64::NAN),
-                payload => unsafe {
-                    let ptr = payload as *const Value;
-                    let arc = Arc::from_raw(ptr);
-                    // Try to unwrap; if shared, clone and drop our ref
-                    match Arc::try_unwrap(arc) {
-                        Ok(value) => value,
-                        Err(arc) => {
-                            let value = (*arc).clone();
-                            drop(arc);
-                            value
-                        }
-                    }
-                },
-            },
-            _ => Value::Null, // Unknown tag
-        }
-    }
-
-    /// Convert `NbValue` to legacy `Value` without consuming heap allocations.
-    ///
-    /// This clones the underlying value for heap-allocated types,
-    /// keeping the original Arc alive.
-    pub fn peek_legacy(self) -> Value {
-        if !self.is_nan_boxed() {
-            return Value::Float(f64::from_bits(self.0));
-        }
-
-        match self.tag() {
-            Self::TAG_INT => Value::Int(self.as_int().unwrap_or(0)),
-            Self::TAG_BOOL => Value::Bool(self.payload() != 0),
-            Self::TAG_NULL => Value::Null,
-            Self::TAG_PTR => match self.payload() {
-                0 => Value::Null,
-                1 => Value::Float(f64::NAN),
-                payload => unsafe {
-                    let ptr = payload as *const Value;
-                    // Increment ref count, then decrement via Arc::from_raw
-                    Arc::increment_strong_count(ptr);
-                    let arc = Arc::from_raw(ptr);
-                    let value = (*arc).clone();
-                    drop(arc);
-                    value
-                },
-            },
-            _ => Value::Null,
-        }
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -938,7 +823,7 @@ impl std::fmt::Debug for RegisterFile {
 #[cfg(test)]
 mod tests {
     use super::NbValue;
-    use crate::values::{StringRef, Value};
+    use crate::values::Value;
 
     // ═════════════════════════════════════════════════════════════════════════
     // Constructor/Extractor Round-trip Tests
@@ -950,7 +835,6 @@ mod tests {
         assert!(null.is_null());
         assert!(null.is_nan_boxed());
         assert_eq!(null.tag(), NbValue::TAG_NULL);
-        assert_eq!(null.to_legacy(), Value::Null);
         assert!(!null.is_truthy());
     }
 
@@ -966,9 +850,6 @@ mod tests {
 
         assert_eq!(t.as_bool(), Some(true));
         assert_eq!(f.as_bool(), Some(false));
-
-        assert_eq!(t.to_legacy(), Value::Bool(true));
-        assert_eq!(f.to_legacy(), Value::Bool(false));
 
         assert!(t.is_truthy());
         assert!(!f.is_truthy());
@@ -1010,7 +891,6 @@ mod tests {
         assert!(f.is_float());
         assert!(!f.is_nan_boxed());
         assert_eq!(f.as_float(), Some(3.14159));
-        assert_eq!(f.to_legacy(), Value::Float(3.14159));
 
         // Zero
         let zero = NbValue::new_float(0.0);
@@ -1028,101 +908,11 @@ mod tests {
         assert!(nan.is_nan_boxed());
         assert!(nan.is_ptr()); // Stored as TAG_PTR sentinel
         assert_eq!(nan.payload(), 1);
-        assert_eq!(nan.to_legacy(), Value::Float(f64::NAN));
 
         // Infinity
         let inf = NbValue::new_float(f64::INFINITY);
         assert!(inf.is_float());
         assert!(inf.is_truthy());
-    }
-
-    #[test]
-    fn test_pointer_roundtrip() {
-        let value = Value::String(StringRef::Owned("hello".to_string()));
-        let nb = NbValue::from_legacy(value.clone());
-
-        assert!(nb.is_ptr());
-        assert!(nb.is_nan_boxed());
-        assert!(nb.is_heap_allocated());
-        assert!(nb.payload() > 1);
-
-        // Peek doesn't consume
-        let peeked = nb.peek_legacy();
-        assert_eq!(peeked, value);
-
-        // Second peek should work
-        let peeked2 = nb.peek_legacy();
-        assert_eq!(peeked2, value);
-
-        // To consume
-        let consumed = nb.to_legacy();
-        assert_eq!(consumed, value);
-    }
-
-    // ═════════════════════════════════════════════════════════════════════════
-    // Legacy Value Conversion Tests
-    // ═════════════════════════════════════════════════════════════════════════
-
-    #[test]
-    fn test_from_legacy_null() {
-        let nb = NbValue::from_legacy(Value::Null);
-        assert!(nb.is_null());
-    }
-
-    #[test]
-    fn test_from_legacy_bool() {
-        let nb_true = NbValue::from_legacy(Value::Bool(true));
-        let nb_false = NbValue::from_legacy(Value::Bool(false));
-
-        assert!(nb_true.is_bool());
-        assert!(nb_false.is_bool());
-        assert_eq!(nb_true.as_bool(), Some(true));
-        assert_eq!(nb_false.as_bool(), Some(false));
-    }
-
-    #[test]
-    fn test_from_legacy_int_in_range() {
-        // Within 48-bit range -> inline
-        let nb = NbValue::from_legacy(Value::Int(42));
-        assert!(nb.is_int());
-        assert_eq!(nb.as_int(), Some(42));
-    }
-
-    #[test]
-    fn test_from_legacy_int_out_of_range() {
-        // Outside 48-bit range -> heap boxed
-        let big = NbValue::MAX_INT48 + 1;
-        let nb = NbValue::from_legacy(Value::Int(big));
-        assert!(nb.is_ptr());
-        assert!(nb.is_heap_allocated());
-        assert_eq!(nb.to_legacy(), Value::Int(big));
-    }
-
-    #[test]
-    fn test_from_legacy_float() {
-        let nb = NbValue::from_legacy(Value::Float(2.71828));
-        assert!(nb.is_float());
-        assert_eq!(nb.as_float(), Some(2.71828));
-    }
-
-    #[test]
-    fn test_from_legacy_string() {
-        let s = Value::String(StringRef::Owned("test".to_string()));
-        let nb = NbValue::from_legacy(s.clone());
-
-        assert!(nb.is_ptr());
-        assert!(nb.is_heap_allocated());
-        assert_eq!(nb.to_legacy(), s);
-    }
-
-    #[test]
-    fn test_from_legacy_list() {
-        let list = Value::new_list(vec![Value::Int(1), Value::Int(2)]);
-        let nb = NbValue::from_legacy(list.clone());
-
-        assert!(nb.is_ptr());
-        assert!(nb.is_heap_allocated());
-        assert_eq!(nb.to_legacy(), list);
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -1164,9 +954,11 @@ mod tests {
         assert!(!NbValue::new_bool(false).is_truthy());
         assert!(NbValue::new_bool(true).is_truthy());
 
-        // Pointers are truthy
-        let ptr = NbValue::from_legacy(Value::Int(999));
+        // Heap pointer is truthy
+        let value = std::sync::Arc::new(Value::Int(999));
+        let ptr = NbValue::new_ptr(std::sync::Arc::into_raw(value));
         assert!(ptr.is_truthy());
+        ptr.drop_heap();
     }
 
     #[test]
@@ -1190,7 +982,6 @@ mod tests {
         let _ = format!("{:?}", NbValue::new_bool(true));
         let _ = format!("{:?}", NbValue::new_int(42));
         let _ = format!("{:?}", NbValue::new_float(3.14));
-        let _ = format!("{:?}", NbValue::from_legacy(Value::Null));
     }
 
     #[test]

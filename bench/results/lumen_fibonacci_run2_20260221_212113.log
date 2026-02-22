@@ -1,0 +1,6 @@
+[1;32m   Compiling[0m [1mbench/cross-language/fibonacci/fib.lm[0m
+[1;32m     Running[0m [36mmain[0m
+fib(35) = 9227465
+
+null
+[32m✓[0m Finished in 0.0686s (tiered JIT: 1 cells compiled, 1 native calls)

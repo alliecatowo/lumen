@@ -1229,12 +1229,76 @@ fn register_collection_helpers(builder: &mut JITBuilder) {
         crate::collection_helpers::jit_rt_list_append_float as *const u8,
     );
     builder.symbol(
+        "jit_rt_range",
+        crate::collection_helpers::jit_rt_range as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_sort",
+        crate::collection_helpers::jit_rt_sort as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_sort_desc",
+        crate::collection_helpers::jit_rt_sort_desc as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_list_reverse",
+        crate::collection_helpers::jit_rt_list_reverse as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_list_flatten",
+        crate::collection_helpers::jit_rt_list_flatten as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_list_unique",
+        crate::collection_helpers::jit_rt_list_unique as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_list_take",
+        crate::collection_helpers::jit_rt_list_take as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_list_drop",
+        crate::collection_helpers::jit_rt_list_drop as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_list_first",
+        crate::collection_helpers::jit_rt_list_first as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_list_last",
+        crate::collection_helpers::jit_rt_list_last as *const u8,
+    );
+    builder.symbol(
         "jit_rt_merge",
         crate::collection_helpers::jit_rt_merge as *const u8,
     );
     builder.symbol(
         "jit_rt_merge_take_a",
         crate::collection_helpers::jit_rt_merge_take_a as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_map_keys",
+        crate::collection_helpers::jit_rt_map_keys as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_map_values",
+        crate::collection_helpers::jit_rt_map_values as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_map_entries",
+        crate::collection_helpers::jit_rt_map_entries as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_map_has_key",
+        crate::collection_helpers::jit_rt_map_has_key as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_map_remove",
+        crate::collection_helpers::jit_rt_map_remove as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_map_sorted_keys",
+        crate::collection_helpers::jit_rt_map_sorted_keys as *const u8,
     );
     builder.symbol("jit_rt_new_map_strs", jit_rt_new_map_strs as *const u8);
 }

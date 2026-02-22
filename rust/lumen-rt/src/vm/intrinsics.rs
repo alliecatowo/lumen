@@ -2555,30 +2555,59 @@ impl VM {
                     }));
                 }
                 106 => {
-                    // PARSE_JSON
-                    match arg_ref {
-                        Value::String(sr) => {
-                            let s = match sr {
-                                StringRef::Owned(s) => s.clone(),
-                                StringRef::Interned(id) => {
-                                    self.strings.resolve(*id).unwrap_or("").to_string()
-                                }
-                            };
-                            return match parse_json_optimized(&s) {
-                                Ok(v) => Ok(v),
-                                Err(e) => {
-                                    Ok(Value::String(StringRef::Owned(format!("parse error: {e}"))))
-                                }
-                            };
+                    // STRING_CONCAT
+                    let other_nb = self.registers[base + arg_reg + 1];
+                    let other = if let Some(val_ref) = self.nb_borrow_value(other_nb) {
+                        val_ref.clone()
+                    } else {
+                        Self::nb_to_value(other_nb)
+                    };
+                    return Ok(match (arg_ref, other) {
+                        (Value::String(StringRef::Owned(left)), rhs) => {
+                            let rhs_str = rhs.as_string_resolved(&self.strings);
+                            let mut left = left.clone();
+                            left.push_str(&rhs_str);
+                            Value::String(StringRef::Owned(left))
                         }
-                        _ => return Ok(Value::Null),
-                    }
+                        (left, rhs) => {
+                            let left_str = left.as_string_resolved(&self.strings);
+                            let rhs_str = rhs.as_string_resolved(&self.strings);
+                            Value::String(StringRef::Owned(format!("{}{}", left_str, rhs_str)))
+                        }
+                    });
                 }
                 107 => {
-                    // TO_JSON
-                    let json =
-                        serde_json::to_string(arg_ref).unwrap_or_else(|_| "null".to_string());
-                    return Ok(Value::String(StringRef::Owned(json)));
+                    // HTTP_GET
+                    let url = arg_ref.as_string_resolved(&self.strings);
+                    return Ok(http_builtin_get(&url));
+                }
+                108 => {
+                    // HTTP_POST
+                    let url = arg_ref.as_string_resolved(&self.strings);
+                    let body = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
+                    return Ok(http_builtin_post(&url, &body));
+                }
+                109 => {
+                    // HTTP_PUT
+                    let url = arg_ref.as_string_resolved(&self.strings);
+                    let body = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
+                    return Ok(http_builtin_put(&url, &body));
+                }
+                110 => {
+                    // HTTP_DELETE
+                    let url = arg_ref.as_string_resolved(&self.strings);
+                    return Ok(http_builtin_delete(&url));
+                }
+                111 => {
+                    // HTTP_REQUEST
+                    let method = arg_ref.as_string_resolved(&self.strings);
+                    let url = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
+                    let body = self.nb_to_string_resolved(self.registers[base + arg_reg + 2]);
+                    let headers = {
+                        let headers_val = Self::nb_to_value(self.registers[base + arg_reg + 3]);
+                        extract_headers_map(&headers_val)
+                    };
+                    return Ok(http_builtin_request(&method, &url, &body, &headers));
                 }
                 _ => {}
             }
@@ -2921,6 +2950,56 @@ impl VM {
                     (v, _, _) => v,
                 })
             }
+            106 => {
+                // STRING_CONCAT
+                let other = Self::nb_to_value(self.registers[base + arg_reg + 1]);
+                return Ok(match (arg, other) {
+                    (Value::String(StringRef::Owned(mut left)), rhs) => {
+                        let rhs_str = rhs.as_string_resolved(&self.strings);
+                        left.push_str(&rhs_str);
+                        Value::String(StringRef::Owned(left))
+                    }
+                    (left, rhs) => {
+                        let left_str = left.as_string_resolved(&self.strings);
+                        let rhs_str = rhs.as_string_resolved(&self.strings);
+                        Value::String(StringRef::Owned(format!("{}{}", left_str, rhs_str)))
+                    }
+                });
+            }
+            107 => {
+                // HTTP_GET
+                let url = arg.as_string_resolved(&self.strings);
+                return Ok(http_builtin_get(&url));
+            }
+            108 => {
+                // HTTP_POST
+                let url = arg.as_string_resolved(&self.strings);
+                let body = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
+                return Ok(http_builtin_post(&url, &body));
+            }
+            109 => {
+                // HTTP_PUT
+                let url = arg.as_string_resolved(&self.strings);
+                let body = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
+                return Ok(http_builtin_put(&url, &body));
+            }
+            110 => {
+                // HTTP_DELETE
+                let url = arg.as_string_resolved(&self.strings);
+                return Ok(http_builtin_delete(&url));
+            }
+            111 => {
+                // HTTP_REQUEST
+                let method = arg.as_string_resolved(&self.strings);
+                let url = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
+                let body = self.nb_to_string_resolved(self.registers[base + arg_reg + 2]);
+                let headers = {
+                    let headers_val = Self::nb_to_value(self.registers[base + arg_reg + 3]);
+                    extract_headers_map(&headers_val)
+                };
+                return Ok(http_builtin_request(&method, &url, &body, &headers));
+            }
+            // 106 = StringConcat, 107 = HttpGet — handled in the fast-path match above
             138 => {
                 // TAN
                 Ok(match arg {
@@ -3304,31 +3383,6 @@ impl VM {
                     (first, _) => first,
                 })
             }
-            106 => {
-                // PARSE_JSON
-                match arg {
-                    Value::String(sr) => {
-                        let s = match sr {
-                            StringRef::Owned(s) => s,
-                            StringRef::Interned(id) => {
-                                self.strings.resolve(id).unwrap_or("").to_string()
-                            }
-                        };
-                        match parse_json_optimized(&s) {
-                            Ok(v) => Ok(v),
-                            Err(e) => {
-                                Ok(Value::String(StringRef::Owned(format!("parse error: {e}"))))
-                            }
-                        }
-                    }
-                    _ => Ok(Value::Null),
-                }
-            }
-            107 => {
-                // TO_JSON
-                let json = serde_json::to_string(&arg).unwrap_or_else(|_| "null".to_string());
-                Ok(Value::String(StringRef::Owned(json)))
-            }
             _ => Err(VmError::Runtime(format!(
                 "unknown intrinsic ID: {}",
                 func_id
@@ -3391,6 +3445,138 @@ impl VM {
 }
 
 // ── Helper functions for intrinsics ──
+
+// ===========================================================================
+// HTTP client builtins (backed by ureq)
+// ===========================================================================
+
+/// Build a response map from a successful ureq response.
+fn http_response_to_value(resp: ureq::Response) -> Value {
+    let status = resp.status() as i64;
+    let ok = (200..300).contains(&(status as u16));
+    let body = resp.into_string().unwrap_or_default();
+
+    let mut map = BTreeMap::new();
+    map.insert("ok".to_string(), Value::Bool(ok));
+    map.insert("status".to_string(), Value::Int(status));
+    map.insert("body".to_string(), Value::String(StringRef::Owned(body)));
+    Value::new_map(map)
+}
+
+/// Build an error response map from a ureq error.
+fn http_error_to_value(err: ureq::Error) -> Value {
+    let mut map = BTreeMap::new();
+    map.insert("ok".to_string(), Value::Bool(false));
+    match err {
+        ureq::Error::Status(code, resp) => {
+            map.insert("status".to_string(), Value::Int(code as i64));
+            let body = resp.into_string().unwrap_or_default();
+            map.insert("body".to_string(), Value::String(StringRef::Owned(body)));
+        }
+        ureq::Error::Transport(transport) => {
+            map.insert("status".to_string(), Value::Int(0));
+            map.insert(
+                "error".to_string(),
+                Value::String(StringRef::Owned(transport.to_string())),
+            );
+            map.insert(
+                "body".to_string(),
+                Value::String(StringRef::Owned(String::new())),
+            );
+        }
+    }
+    Value::new_map(map)
+}
+
+fn http_builtin_get(url: &str) -> Value {
+    match ureq::get(url).call() {
+        Ok(resp) => http_response_to_value(resp),
+        Err(err) => http_error_to_value(err),
+    }
+}
+
+fn http_builtin_post(url: &str, body: &str) -> Value {
+    match ureq::post(url)
+        .set("Content-Type", "application/json")
+        .send_string(body)
+    {
+        Ok(resp) => http_response_to_value(resp),
+        Err(err) => http_error_to_value(err),
+    }
+}
+
+fn http_builtin_put(url: &str, body: &str) -> Value {
+    match ureq::put(url)
+        .set("Content-Type", "application/json")
+        .send_string(body)
+    {
+        Ok(resp) => http_response_to_value(resp),
+        Err(err) => http_error_to_value(err),
+    }
+}
+
+fn http_builtin_delete(url: &str) -> Value {
+    match ureq::delete(url).call() {
+        Ok(resp) => http_response_to_value(resp),
+        Err(err) => http_error_to_value(err),
+    }
+}
+
+fn http_builtin_request(
+    method: &str,
+    url: &str,
+    body: &str,
+    headers: &[(String, String)],
+) -> Value {
+    let mut req = match method.to_uppercase().as_str() {
+        "GET" => ureq::get(url),
+        "POST" => ureq::post(url),
+        "PUT" => ureq::put(url),
+        "DELETE" => ureq::delete(url),
+        "PATCH" => ureq::patch(url),
+        "HEAD" => ureq::head(url),
+        _ => {
+            let mut map = BTreeMap::new();
+            map.insert("ok".to_string(), Value::Bool(false));
+            map.insert("status".to_string(), Value::Int(0));
+            map.insert(
+                "error".to_string(),
+                Value::String(StringRef::Owned(format!(
+                    "unsupported HTTP method: {}",
+                    method
+                ))),
+            );
+            map.insert(
+                "body".to_string(),
+                Value::String(StringRef::Owned(String::new())),
+            );
+            return Value::new_map(map);
+        }
+    };
+
+    for (name, value) in headers {
+        req = req.set(name, value);
+    }
+
+    let result = if body.is_empty() {
+        req.call()
+    } else {
+        req.send_string(body)
+    };
+
+    match result {
+        Ok(resp) => http_response_to_value(resp),
+        Err(err) => http_error_to_value(err),
+    }
+}
+
+/// Extract headers from a Value::Map into a Vec of (name, value) pairs.
+fn extract_headers_map(val: &Value) -> Vec<(String, String)> {
+    match val {
+        Value::Map(m) => m.iter().map(|(k, v)| (k.clone(), v.as_string())).collect(),
+        _ => Vec::new(),
+    }
+}
 
 fn sort_list_homogeneous(items: &mut Vec<Value>) {
     if items.len() <= 1 {

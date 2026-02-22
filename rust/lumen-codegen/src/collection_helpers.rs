@@ -3,7 +3,9 @@
 // ---------------------------------------------------------------------------
 
 use crate::vm_context::VmContext;
-use lumen_core::values::{RecordValue, Value};
+use lumen_core::strings::StringTable;
+use lumen_core::values::{RecordValue, StringRef, Value};
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -13,6 +15,8 @@ use std::sync::Arc;
 const NAN_MASK_U: u64 = 0x7FF8_0000_0000_0000;
 const PAYLOAD_MASK_U: u64 = 0x0000_FFFF_FFFF_FFFF;
 const NAN_BOX_NULL_U: u64 = 0x7FFC_0000_0000_0000;
+const NAN_BOX_TRUE_U: u64 = NAN_MASK_U | (3u64 << 48) | 1;
+const NAN_BOX_FALSE_U: u64 = NAN_MASK_U | (3u64 << 48);
 
 /// Decode a NbValue-encoded i64 to a heap-allocated Value.
 /// Returns a `*mut Value` that must be freed by the caller.
@@ -99,6 +103,60 @@ fn singleton_list_value(element: Value) -> i64 {
 }
 
 #[inline]
+fn value_to_nanbox(value: &Value) -> i64 {
+    match value {
+        Value::Int(n) => {
+            let payload = (*n as u64) & PAYLOAD_MASK_U;
+            (NAN_MASK_U | (1u64 << 48) | payload) as i64
+        }
+        Value::Bool(true) => NAN_BOX_TRUE_U as i64,
+        Value::Bool(false) => NAN_BOX_FALSE_U as i64,
+        Value::Null => NAN_BOX_NULL_U as i64,
+        Value::Float(f) => f.to_bits() as i64,
+        other => wrap_nanbox_value(other.clone()),
+    }
+}
+
+#[inline]
+fn nb_to_int(value_nb: i64) -> Option<i64> {
+    match unsafe { nb_decode(value_nb) } {
+        Value::Int(i) => Some(i),
+        _ => None,
+    }
+}
+
+#[inline]
+fn cmp_value_natural(lhs: &Value, rhs: &Value) -> Ordering {
+    match (lhs, rhs) {
+        (Value::Int(a), Value::Int(b)) => a.cmp(b),
+        (Value::Float(a), Value::Float(b)) => a.total_cmp(b),
+        (Value::Int(a), Value::Float(b)) => (*a as f64).total_cmp(b),
+        (Value::Float(a), Value::Int(b)) => a.total_cmp(&(*b as f64)),
+        (Value::String(a), Value::String(b)) => match (a, b) {
+            (
+                lumen_core::values::StringRef::Owned(lhs),
+                lumen_core::values::StringRef::Owned(rhs),
+            ) => lhs.cmp(rhs),
+            (
+                lumen_core::values::StringRef::Interned(lhs),
+                lumen_core::values::StringRef::Interned(rhs),
+            ) => lhs.cmp(rhs),
+            (
+                lumen_core::values::StringRef::Interned(_),
+                lumen_core::values::StringRef::Owned(_),
+            ) => Ordering::Less,
+            (
+                lumen_core::values::StringRef::Owned(_),
+                lumen_core::values::StringRef::Interned(_),
+            ) => Ordering::Greater,
+        },
+        (Value::String(_), other) => lhs.as_string().cmp(&other.as_string()),
+        (other, Value::String(_)) => other.as_string().cmp(&rhs.as_string()),
+        _ => lhs.cmp(rhs),
+    }
+}
+
+#[inline]
 fn decode_value_ptr(list_ptr: i64) -> Option<*const Value> {
     let u = list_ptr as u64;
     if u == 0 || u == NAN_BOX_NULL_U {
@@ -135,6 +193,25 @@ fn append_to_list_value(list_ptr: i64, element_value: Value) -> i64 {
         Arc::make_mut(inner_arc).push(element_value);
     }
     wrap_nanbox_ptr(Arc::into_raw(arc_list))
+}
+
+#[inline]
+fn resolve_string(ctx: *mut VmContext, value: &Value) -> String {
+    let table: Option<&StringTable> = if ctx.is_null() {
+        None
+    } else {
+        let table_ptr = unsafe { (*ctx).string_table };
+        if table_ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { &*table_ptr })
+        }
+    };
+
+    match table {
+        Some(table) => value.as_string_resolved(table),
+        None => value.as_string(),
+    }
 }
 
 /// Create a new List value from an array of boxed Values.
@@ -339,6 +416,182 @@ pub extern "C" fn jit_rt_list_append_float(
     append_to_list_value(list_ptr, Value::Float(f64::from_bits(element_bits as u64)))
 }
 
+/// Create a list of integers for a range [start, end).
+#[no_mangle]
+pub extern "C" fn jit_rt_range(_ctx: *mut VmContext, start_nb: i64, end_nb: i64) -> i64 {
+    let start = nb_to_int(start_nb).unwrap_or(0);
+    let end = nb_to_int(end_nb).unwrap_or(0);
+    if end <= start {
+        return wrap_nanbox_value(Value::new_list(Vec::new()));
+    }
+    let mut list = Vec::with_capacity((end - start) as usize);
+    for value in start..end {
+        list.push(Value::Int(value));
+    }
+    wrap_nanbox_value(Value::new_list(list))
+}
+
+/// Sort a list in natural ascending order.
+#[no_mangle]
+pub extern "C" fn jit_rt_sort(_ctx: *mut VmContext, list_nb: i64) -> i64 {
+    let Some(raw_ptr) = decode_value_ptr(list_nb) else {
+        return list_nb;
+    };
+
+    let mut arc_value = unsafe { Arc::from_raw(raw_ptr) };
+    if let Value::List(list) = Arc::make_mut(&mut arc_value) {
+        Arc::make_mut(list).sort_by(cmp_value_natural);
+    }
+
+    wrap_nanbox_ptr(Arc::into_raw(arc_value))
+}
+
+/// Sort a list in natural descending order.
+#[no_mangle]
+pub extern "C" fn jit_rt_sort_desc(_ctx: *mut VmContext, list_nb: i64) -> i64 {
+    let Some(raw_ptr) = decode_value_ptr(list_nb) else {
+        return list_nb;
+    };
+
+    let mut arc_value = unsafe { Arc::from_raw(raw_ptr) };
+    if let Value::List(list) = Arc::make_mut(&mut arc_value) {
+        let list = Arc::make_mut(list);
+        list.sort_by(cmp_value_natural);
+        list.reverse();
+    }
+
+    wrap_nanbox_ptr(Arc::into_raw(arc_value))
+}
+
+/// Reverse a List in-place (copy-on-write) and return the list.
+#[no_mangle]
+pub extern "C" fn jit_rt_list_reverse(_ctx: *mut VmContext, list_nb: i64) -> i64 {
+    let Some(raw_ptr) = decode_value_ptr(list_nb) else {
+        return list_nb;
+    };
+
+    let mut arc_value = unsafe { Arc::from_raw(raw_ptr) };
+    if let Value::List(list) = Arc::make_mut(&mut arc_value) {
+        Arc::make_mut(list).reverse();
+    }
+
+    wrap_nanbox_ptr(Arc::into_raw(arc_value))
+}
+
+/// Flatten a List by one level.
+#[no_mangle]
+pub extern "C" fn jit_rt_list_flatten(_ctx: *mut VmContext, list_nb: i64) -> i64 {
+    let Some(raw_ptr) = decode_value_ptr(list_nb) else {
+        return list_nb;
+    };
+
+    let arc_value = unsafe { Arc::from_raw(raw_ptr) };
+    let Value::List(list) = arc_value.as_ref() else {
+        return wrap_nanbox_ptr(Arc::into_raw(arc_value));
+    };
+
+    let mut flat = Vec::new();
+    for item in list.iter() {
+        if let Value::List(inner) = item {
+            flat.extend(inner.iter().cloned());
+        } else {
+            flat.push(item.clone());
+        }
+    }
+
+    wrap_nanbox_value(Value::new_list(flat))
+}
+
+/// Remove duplicate elements from a List (first-occurrence order).
+#[no_mangle]
+pub extern "C" fn jit_rt_list_unique(_ctx: *mut VmContext, list_nb: i64) -> i64 {
+    let Some(raw_ptr) = decode_value_ptr(list_nb) else {
+        return list_nb;
+    };
+
+    let arc_value = unsafe { Arc::from_raw(raw_ptr) };
+    let Value::List(list) = arc_value.as_ref() else {
+        return wrap_nanbox_ptr(Arc::into_raw(arc_value));
+    };
+
+    let mut seen: Vec<Value> = Vec::new();
+    for item in list.iter() {
+        if !seen.contains(item) {
+            seen.push(item.clone());
+        }
+    }
+
+    wrap_nanbox_value(Value::new_list(seen))
+}
+
+/// Take the first N elements from a List.
+#[no_mangle]
+pub extern "C" fn jit_rt_list_take(_ctx: *mut VmContext, list_nb: i64, n_nb: i64) -> i64 {
+    let n = nb_to_int(n_nb).unwrap_or(0) as usize;
+    let Some(raw_ptr) = decode_value_ptr(list_nb) else {
+        return list_nb;
+    };
+
+    let arc_value = unsafe { Arc::from_raw(raw_ptr) };
+    let Value::List(list) = arc_value.as_ref() else {
+        return wrap_nanbox_ptr(Arc::into_raw(arc_value));
+    };
+
+    let taken: Vec<Value> = list.iter().take(n).cloned().collect();
+    wrap_nanbox_value(Value::new_list(taken))
+}
+
+/// Drop the first N elements from a List.
+#[no_mangle]
+pub extern "C" fn jit_rt_list_drop(_ctx: *mut VmContext, list_nb: i64, n_nb: i64) -> i64 {
+    let n = nb_to_int(n_nb).unwrap_or(0) as usize;
+    let Some(raw_ptr) = decode_value_ptr(list_nb) else {
+        return list_nb;
+    };
+
+    let arc_value = unsafe { Arc::from_raw(raw_ptr) };
+    let Value::List(list) = arc_value.as_ref() else {
+        return wrap_nanbox_ptr(Arc::into_raw(arc_value));
+    };
+
+    let dropped: Vec<Value> = list.iter().skip(n).cloned().collect();
+    wrap_nanbox_value(Value::new_list(dropped))
+}
+
+/// Return the first element of a List or null.
+#[no_mangle]
+pub extern "C" fn jit_rt_list_first(_ctx: *mut VmContext, list_nb: i64) -> i64 {
+    let Some(raw_ptr) = decode_value_ptr(list_nb) else {
+        return NAN_BOX_NULL_U as i64;
+    };
+
+    let arc_value = unsafe { Arc::from_raw(raw_ptr) };
+    let Value::List(list) = arc_value.as_ref() else {
+        return NAN_BOX_NULL_U as i64;
+    };
+
+    list.first()
+        .map(value_to_nanbox)
+        .unwrap_or(NAN_BOX_NULL_U as i64)
+}
+
+/// Return the last element of a List or null.
+#[no_mangle]
+pub extern "C" fn jit_rt_list_last(_ctx: *mut VmContext, list_nb: i64) -> i64 {
+    let Some(raw_ptr) = decode_value_ptr(list_nb) else {
+        return NAN_BOX_NULL_U as i64;
+    };
+
+    let arc_value = unsafe { Arc::from_raw(raw_ptr) };
+    let Value::List(list) = arc_value.as_ref() else {
+        return NAN_BOX_NULL_U as i64;
+    };
+
+    list.last()
+        .map(value_to_nanbox)
+        .unwrap_or(NAN_BOX_NULL_U as i64)
+}
+
 /// Merge two maps (or records) into one: `merge(a, b)` → new map with b's entries overlaid on a.
 /// Both `a_ptr` and `b_ptr` are NaN-boxed TAG_PTR values pointing to `Arc<Value>`.
 /// Returns a new NaN-boxed TAG_PTR to the merged map.
@@ -392,21 +645,19 @@ pub extern "C" fn jit_rt_merge_take_a(_ctx: *mut VmContext, a_nb: i64, b_nb: i64
     // Take ownership of a's Arc without incrementing refcount, so Arc::make_mut
     // can mutate in-place (count stays 1 after from_raw + try_unwrap).
     let u = a_nb as u64;
-    let a_val = if (u & NAN_MASK_U) == NAN_MASK_U
-        && ((u >> 48) & 0x7) == 0
-        && (u & PAYLOAD_MASK_U) > 1
-    {
-        // TAG_PTR: consume the Arc — count stays 1, no clone of BTreeMap.
-        let ptr = (u & PAYLOAD_MASK_U) as *const Value;
-        let arc = unsafe { Arc::<Value>::from_raw(ptr) };
-        match Arc::try_unwrap(arc) {
-            Ok(val) => val,
-            Err(shared) => (*shared).clone(), // fallback: someone else holds a ref
-        }
-    } else {
-        // Inline scalar — decode normally.
-        unsafe { nb_decode(a_nb) }
-    };
+    let a_val =
+        if (u & NAN_MASK_U) == NAN_MASK_U && ((u >> 48) & 0x7) == 0 && (u & PAYLOAD_MASK_U) > 1 {
+            // TAG_PTR: consume the Arc — count stays 1, no clone of BTreeMap.
+            let ptr = (u & PAYLOAD_MASK_U) as *const Value;
+            let arc = unsafe { Arc::<Value>::from_raw(ptr) };
+            match Arc::try_unwrap(arc) {
+                Ok(val) => val,
+                Err(shared) => (*shared).clone(), // fallback: someone else holds a ref
+            }
+        } else {
+            // Inline scalar — decode normally.
+            unsafe { nb_decode(a_nb) }
+        };
 
     let b_val = unsafe { nb_decode(b_nb) };
 
@@ -433,6 +684,118 @@ pub extern "C" fn jit_rt_merge_take_a(_ctx: *mut VmContext, a_nb: i64, b_nb: i64
     };
     let ptr = Arc::into_raw(Arc::new(result)) as u64;
     (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
+}
+
+/// Return a list of keys from a map/record.
+#[no_mangle]
+pub extern "C" fn jit_rt_map_keys(_ctx: *mut VmContext, map_nb: i64) -> i64 {
+    let map_val = unsafe { nb_decode(map_nb) };
+    let keys = match map_val {
+        Value::Map(m) => m
+            .keys()
+            .map(|k| Value::String(StringRef::Owned(k.clone())))
+            .collect(),
+        Value::Record(r) => r
+            .fields
+            .keys()
+            .map(|k| Value::String(StringRef::Owned(k.clone())))
+            .collect(),
+        _ => Vec::new(),
+    };
+    wrap_nanbox_value(Value::new_list(keys))
+}
+
+/// Return a list of values from a map/record.
+#[no_mangle]
+pub extern "C" fn jit_rt_map_values(_ctx: *mut VmContext, map_nb: i64) -> i64 {
+    let map_val = unsafe { nb_decode(map_nb) };
+    let values = match map_val {
+        Value::Map(m) => m.values().cloned().collect(),
+        Value::Record(r) => r.fields.values().cloned().collect(),
+        _ => Vec::new(),
+    };
+    wrap_nanbox_value(Value::new_list(values))
+}
+
+/// Return a list of (key, value) tuples from a map/record.
+#[no_mangle]
+pub extern "C" fn jit_rt_map_entries(_ctx: *mut VmContext, map_nb: i64) -> i64 {
+    let map_val = unsafe { nb_decode(map_nb) };
+    let entries = match map_val {
+        Value::Map(m) => m
+            .iter()
+            .map(|(k, v)| {
+                Value::new_tuple(vec![Value::String(StringRef::Owned(k.clone())), v.clone()])
+            })
+            .collect(),
+        Value::Record(r) => r
+            .fields
+            .iter()
+            .map(|(k, v)| {
+                Value::new_tuple(vec![Value::String(StringRef::Owned(k.clone())), v.clone()])
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    wrap_nanbox_value(Value::new_list(entries))
+}
+
+/// Check if a map/record has a key.
+#[no_mangle]
+pub extern "C" fn jit_rt_map_has_key(ctx: *mut VmContext, map_nb: i64, key_nb: i64) -> i64 {
+    let map_val = unsafe { nb_decode(map_nb) };
+    let key_val = unsafe { nb_decode(key_nb) };
+    let key = resolve_string(ctx, &key_val);
+    let has_key = match map_val {
+        Value::Map(m) => m.contains_key(&key),
+        Value::Record(r) => r.fields.contains_key(&key),
+        _ => false,
+    };
+    if has_key {
+        NAN_BOX_TRUE_U as i64
+    } else {
+        NAN_BOX_FALSE_U as i64
+    }
+}
+
+/// Remove a key from a map/record (returns a new map/record).
+#[no_mangle]
+pub extern "C" fn jit_rt_map_remove(ctx: *mut VmContext, map_nb: i64, key_nb: i64) -> i64 {
+    let map_val = unsafe { nb_decode(map_nb) };
+    let key_val = unsafe { nb_decode(key_nb) };
+    let key = resolve_string(ctx, &key_val);
+
+    let result = match map_val {
+        Value::Map(mut m) => {
+            Arc::make_mut(&mut m).remove(&key);
+            Value::Map(m)
+        }
+        Value::Record(r) => {
+            let mut fields = r.fields.clone();
+            fields.remove(&key);
+            Value::Record(Arc::new(RecordValue {
+                type_name: r.type_name.clone(),
+                fields,
+            }))
+        }
+        other => other,
+    };
+
+    wrap_nanbox_value(result)
+}
+
+/// Return keys from a map in sorted order (BTreeMap order).
+#[no_mangle]
+pub extern "C" fn jit_rt_map_sorted_keys(_ctx: *mut VmContext, map_nb: i64) -> i64 {
+    let map_val = unsafe { nb_decode(map_nb) };
+    let keys = match map_val {
+        Value::Map(m) => m
+            .keys()
+            .map(|k| Value::String(StringRef::Owned(k.clone())))
+            .collect(),
+        _ => Vec::new(),
+    };
+    wrap_nanbox_value(Value::new_list(keys))
 }
 
 #[cfg(test)]
@@ -485,5 +848,106 @@ mod tests {
         assert_eq!(&*out_list, &[Value::Int(1), Value::Int(2)]);
         let observed_list = extract_list(&shared_observer);
         assert_eq!(&*observed_list, &[Value::Int(1)]);
+    }
+
+    #[test]
+    fn range_builds_int_list() {
+        let out = jit_rt_range(
+            std::ptr::null_mut(),
+            value_to_nanbox(&Value::Int(1)),
+            value_to_nanbox(&Value::Int(4)),
+        );
+        let out_arc = decode_result_arc(out);
+        let list = extract_list(&out_arc);
+        assert_eq!(&*list, &[Value::Int(1), Value::Int(2), Value::Int(3)]);
+    }
+
+    #[test]
+    fn sort_orders_list_ascending() {
+        let list = Value::new_list(vec![Value::Int(3), Value::Int(1), Value::Int(2)]);
+        let input_nb = wrap_nanbox_value(list);
+        let out = jit_rt_sort(std::ptr::null_mut(), input_nb);
+        let out_arc = decode_result_arc(out);
+        let list = extract_list(&out_arc);
+        assert_eq!(&*list, &[Value::Int(1), Value::Int(2), Value::Int(3)]);
+    }
+
+    #[test]
+    fn sort_orders_list_descending() {
+        let list = Value::new_list(vec![Value::Int(2), Value::Int(3), Value::Int(1)]);
+        let input_nb = wrap_nanbox_value(list);
+        let out = jit_rt_sort_desc(std::ptr::null_mut(), input_nb);
+        let out_arc = decode_result_arc(out);
+        let list = extract_list(&out_arc);
+        assert_eq!(&*list, &[Value::Int(3), Value::Int(2), Value::Int(1)]);
+    }
+
+    #[test]
+    fn map_helpers_basic_flow() {
+        let mut map = BTreeMap::new();
+        map.insert("b".to_string(), Value::Int(2));
+        map.insert("a".to_string(), Value::Int(1));
+        let map_nb = wrap_nanbox_value(Value::new_map(map));
+
+        let keys_nb = jit_rt_map_keys(std::ptr::null_mut(), map_nb);
+        let keys_arc = decode_result_arc(keys_nb);
+        let keys = extract_list(&keys_arc);
+        assert_eq!(
+            &*keys,
+            &[
+                Value::String(StringRef::Owned("a".to_string())),
+                Value::String(StringRef::Owned("b".to_string())),
+            ]
+        );
+
+        let values_nb = jit_rt_map_values(std::ptr::null_mut(), map_nb);
+        let values_arc = decode_result_arc(values_nb);
+        let values = extract_list(&values_arc);
+        assert_eq!(&*values, &[Value::Int(1), Value::Int(2)]);
+
+        let entries_nb = jit_rt_map_entries(std::ptr::null_mut(), map_nb);
+        let entries_arc = decode_result_arc(entries_nb);
+        let entries = extract_list(&entries_arc);
+        assert_eq!(
+            &*entries,
+            &[
+                Value::new_tuple(vec![
+                    Value::String(StringRef::Owned("a".to_string())),
+                    Value::Int(1),
+                ]),
+                Value::new_tuple(vec![
+                    Value::String(StringRef::Owned("b".to_string())),
+                    Value::Int(2),
+                ]),
+            ]
+        );
+
+        let key_nb = wrap_nanbox_value(Value::String(StringRef::Owned("a".to_string())));
+        let has_key = jit_rt_map_has_key(std::ptr::null_mut(), map_nb, key_nb);
+        assert_eq!(has_key, NAN_BOX_TRUE_U as i64);
+
+        let missing_key = wrap_nanbox_value(Value::String(StringRef::Owned("z".to_string())));
+        let missing = jit_rt_map_has_key(std::ptr::null_mut(), map_nb, missing_key);
+        assert_eq!(missing, NAN_BOX_FALSE_U as i64);
+
+        let removed_nb = jit_rt_map_remove(std::ptr::null_mut(), map_nb, key_nb);
+        let removed_arc = decode_result_arc(removed_nb);
+        if let Value::Map(m) = &*removed_arc {
+            assert_eq!(m.len(), 1);
+            assert_eq!(m.get("b"), Some(&Value::Int(2)));
+        } else {
+            panic!("expected Value::Map after remove");
+        }
+
+        let sorted_nb = jit_rt_map_sorted_keys(std::ptr::null_mut(), map_nb);
+        let sorted_arc = decode_result_arc(sorted_nb);
+        let sorted = extract_list(&sorted_arc);
+        assert_eq!(
+            &*sorted,
+            &[
+                Value::String(StringRef::Owned("a".to_string())),
+                Value::String(StringRef::Owned("b".to_string())),
+            ]
+        );
     }
 }

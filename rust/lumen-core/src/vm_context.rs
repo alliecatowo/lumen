@@ -111,6 +111,18 @@ pub struct VmContext {
     /// Points to the pool of reusable fiber stacks, reducing allocation overhead
     /// when spawning and completing fibers.
     pub stack_pool: *mut (),
+
+    /// Pointer to the currently loaded module (for JIT helper callbacks).
+    pub module: *mut (),
+
+    /// Pointer to JIT function pointer table (per cell).
+    pub jit_fn_ptrs: *const *const u8,
+
+    /// Length of `jit_fn_ptrs` table.
+    pub jit_fn_ptrs_len: usize,
+
+    /// Closure call trampoline provided by the runtime.
+    pub call_closure: Option<extern "C" fn(*mut VmContext, i64, *const i64, i64) -> i64>,
 }
 
 impl VmContext {
@@ -124,6 +136,10 @@ impl VmContext {
             string_table: std::ptr::null_mut(),
             current_fiber: std::ptr::null_mut(),
             stack_pool: std::ptr::null_mut(),
+            module: std::ptr::null_mut(),
+            jit_fn_ptrs: std::ptr::null(),
+            jit_fn_ptrs_len: 0,
+            call_closure: None,
         }
     }
 
@@ -163,6 +179,10 @@ mod tests {
         assert!(ctx.string_table.is_null());
         assert!(ctx.current_fiber.is_null());
         assert!(ctx.stack_pool.is_null());
+        assert!(ctx.module.is_null());
+        assert!(ctx.jit_fn_ptrs.is_null());
+        assert_eq!(ctx.jit_fn_ptrs_len, 0);
+        assert!(ctx.call_closure.is_none());
     }
 
     #[test]
@@ -171,8 +191,8 @@ mod tests {
         use std::mem;
         assert_eq!(
             mem::size_of::<VmContext>(),
-            mem::size_of::<*mut u8>() * 7,
-            "VmContext should be exactly 7 pointers"
+            mem::size_of::<*mut u8>() * 10 + mem::size_of::<usize>(),
+            "VmContext should be exactly 10 pointers + usize"
         );
     }
 }

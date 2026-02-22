@@ -1333,8 +1333,19 @@ impl VM {
         self.osr_runtime = OsrRuntime::new(num_cells);
         // Wire the VmContext's string_table pointer to the VM's StringTable
         // so JIT runtime helpers (e.g. jit_rt_union_new) can intern strings.
+        // Also expose module and JIT fn pointer table for higher-order intrinsics.
         unsafe {
-            (*self.vm_ctx.as_ptr()).string_table = &mut self.strings as *mut StringTable;
+            let ctx_ptr = self.vm_ctx.as_ptr();
+            (*ctx_ptr).string_table = &mut self.strings as *mut StringTable;
+            let module_ptr = match self.module.as_mut() {
+                Some(module) => module as *mut LirModule,
+                None => std::ptr::null_mut(),
+            };
+            (*ctx_ptr).module = module_ptr as *mut ();
+            (*ctx_ptr).jit_fn_ptrs = self.jit_tier.fn_ptrs_ptr();
+            (*ctx_ptr).jit_fn_ptrs_len = self.jit_tier.fn_ptrs_len();
+            (*ctx_ptr).call_closure = Some(VM::jit_rt_call_closure);
+            (*ctx_ptr).stack_pool = self as *mut VM as *mut ();
         }
 
         // Automatically initialize OSR JIT and pre-compile cells with loops.
@@ -3444,12 +3455,7 @@ impl VM {
                     if let Some(result) =
                         self.try_arith_nb_fast(base + a, lhs_nb, rhs_nb, BinaryOp::Add)
                     {
-                        let res = result?;
-                        eprintln!(
-                            "ADD fast: a=r{} b=r{} c=r{} lhs_nb={:?} rhs_nb={:?}",
-                            a, b, c, lhs_nb, rhs_nb
-                        );
-                        res;
+                        result?;
                     } else {
                         // Read rhs first (usually small, e.g. "x").
                         let rhs = self.reg(base + c);

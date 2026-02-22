@@ -138,6 +138,32 @@ impl JitTier {
         self.stats = JitTierStats::default();
     }
 
+    /// Expose a raw pointer to the fn_ptrs table for JIT runtime helpers.
+    pub fn fn_ptrs_ptr(&self) -> *const *const u8 {
+        #[cfg(feature = "jit")]
+        {
+            return self.fn_ptrs.as_ptr() as *const *const u8;
+        }
+
+        #[cfg(not(feature = "jit"))]
+        {
+            std::ptr::null()
+        }
+    }
+
+    /// Expose the length of the fn_ptrs table for JIT runtime helpers.
+    pub fn fn_ptrs_len(&self) -> usize {
+        #[cfg(feature = "jit")]
+        {
+            return self.fn_ptrs.len();
+        }
+
+        #[cfg(not(feature = "jit"))]
+        {
+            0
+        }
+    }
+
     /// Check whether JIT is enabled.
     #[inline(always)]
     pub fn is_enabled(&self) -> bool {
@@ -446,6 +472,8 @@ impl JitTier {
     #[cfg(feature = "jit")]
     #[inline(always)]
     fn is_known_unsafe_opcode(op: OpCode) -> bool {
+        // NewRecord/NewSet JIT lowering segfaults due to Arc lifetime mismatch
+        // in the field-init sequence. Re-gate until a proper handle table is in place.
         matches!(op, OpCode::NewRecord | OpCode::NewSet)
     }
 

@@ -821,7 +821,7 @@ pub(crate) fn lower_cell<M: Module>(
         &[pointer_type, types::I64], // ctx, list_ptr
         &[types::I64],
     )?;
-    let merge_ref = declare_helper_func(
+    let _merge_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_merge",
@@ -941,6 +941,77 @@ pub(crate) fn lower_cell<M: Module>(
         &[pointer_type, types::I64, types::I64],
         &[types::I64],
     )?;
+    // Phase 1f: higher-order intrinsics helpers
+    let hof_map_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_hof_map",
+        &[pointer_type, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let hof_filter_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_hof_filter",
+        &[pointer_type, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let hof_reduce_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_hof_reduce",
+        &[pointer_type, types::I64, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let hof_flat_map_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_hof_flat_map",
+        &[pointer_type, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let hof_any_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_hof_any",
+        &[pointer_type, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let hof_all_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_hof_all",
+        &[pointer_type, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let hof_find_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_hof_find",
+        &[pointer_type, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let hof_position_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_hof_position",
+        &[pointer_type, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let hof_group_by_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_hof_group_by",
+        &[pointer_type, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let hof_sort_by_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_hof_sort_by",
+        &[pointer_type, types::I64, types::I64],
+        &[types::I64],
+    )?;
     let union_match_ref = declare_helper_func(
         module,
         &mut func,
@@ -963,7 +1034,7 @@ pub(crate) fn lower_cell<M: Module>(
         &[pointer_type, types::I64, types::I64, types::I64], // ctx, tag_ptr, tag_len, payload_ptr
         &[types::I64],
     )?;
-    let union_is_variant_ref = declare_helper_func(
+    let _union_is_variant_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_union_is_variant",
@@ -3115,7 +3186,19 @@ pub(crate) fn lower_cell<M: Module>(
             }
             OpCode::SetField => {
                 let record_ptr = use_var(&mut builder, &regs, &var_types, inst.a);
-                let value_ptr = use_var(&mut builder, &regs, &var_types, inst.c);
+                let val_raw = use_var(&mut builder, &regs, &var_types, inst.c);
+                let val_ty = var_types
+                    .get(&(inst.c as u32))
+                    .copied()
+                    .unwrap_or(JitVarType::Int);
+                let value_ptr = match val_ty {
+                    JitVarType::RawInt => ensure_boxed_int(&mut builder, val_raw, val_ty),
+                    JitVarType::Str => {
+                        let call = builder.ins().call(str_to_nb_ref, &[vm_ctx_param, val_raw]);
+                        builder.inst_results(call)[0]
+                    }
+                    _ => val_raw,
+                };
                 let field_name = if (inst.b as usize) < string_table.len() {
                     &string_table[inst.b as usize]
                 } else {
@@ -3154,7 +3237,14 @@ pub(crate) fn lower_cell<M: Module>(
                     .get(&(inst.c as u32))
                     .copied()
                     .unwrap_or(JitVarType::Int);
-                let index_ptr = ensure_boxed_int(&mut builder, idx_raw, idx_ty);
+                let index_ptr = match idx_ty {
+                    JitVarType::RawInt => ensure_boxed_int(&mut builder, idx_raw, idx_ty),
+                    JitVarType::Str => {
+                        let call = builder.ins().call(str_to_nb_ref, &[vm_ctx_param, idx_raw]);
+                        builder.inst_results(call)[0]
+                    }
+                    _ => idx_raw,
+                };
                 let call = builder
                     .ins()
                     .call(get_index_ref, &[vm_ctx_param, collection_ptr, index_ptr]);
@@ -3184,7 +3274,14 @@ pub(crate) fn lower_cell<M: Module>(
                     .get(&(inst.b as u32))
                     .copied()
                     .unwrap_or(JitVarType::Int);
-                let index_ptr = ensure_boxed_int(&mut builder, idx_raw, idx_ty);
+                let index_ptr = match idx_ty {
+                    JitVarType::RawInt => ensure_boxed_int(&mut builder, idx_raw, idx_ty),
+                    JitVarType::Str => {
+                        let call = builder.ins().call(str_to_nb_ref, &[vm_ctx_param, idx_raw]);
+                        builder.inst_results(call)[0]
+                    }
+                    _ => idx_raw,
+                };
                 let val_raw = use_var(&mut builder, &regs, &var_types, inst.c);
                 let val_ty = var_types
                     .get(&(inst.c as u32))
@@ -3194,7 +3291,14 @@ pub(crate) fn lower_cell<M: Module>(
                 //   Float bits (JitVarType::Float) → Value::Float  ✓ (no NaN mask)
                 //   NbValue int (JitVarType::Int) → Value::Int     ✓ (NAN | TAG_INT)
                 //   RawInt → must box to NbValue first
-                let value_nbval = ensure_boxed_int(&mut builder, val_raw, val_ty);
+                let value_nbval = match val_ty {
+                    JitVarType::RawInt => ensure_boxed_int(&mut builder, val_raw, val_ty),
+                    JitVarType::Str => {
+                        let call = builder.ins().call(str_to_nb_ref, &[vm_ctx_param, val_raw]);
+                        builder.inst_results(call)[0]
+                    }
+                    _ => val_raw,
+                };
                 let call = builder.ins().call(
                     set_index_ref,
                     &[vm_ctx_param, collection_ptr, index_ptr, value_nbval],
@@ -3254,7 +3358,20 @@ pub(crate) fn lower_cell<M: Module>(
 
                 // Fill the array with pointers from registers r[a+1] through r[a+b]
                 for i in 0..count {
-                    let value = use_var(&mut builder, &regs, &var_types, inst.a + 1 + i as u16);
+                    let reg = inst.a + 1 + i as u16;
+                    let raw = use_var(&mut builder, &regs, &var_types, reg);
+                    let ty = var_types
+                        .get(&(reg as u32))
+                        .copied()
+                        .unwrap_or(JitVarType::Int);
+                    let value = match ty {
+                        JitVarType::RawInt => ensure_boxed_int(&mut builder, raw, ty),
+                        JitVarType::Str => {
+                            let call = builder.ins().call(str_to_nb_ref, &[vm_ctx_param, raw]);
+                            builder.inst_results(call)[0]
+                        }
+                        _ => raw,
+                    };
                     let offset = (i * 8) as i32;
                     builder
                         .ins()
@@ -3388,7 +3505,20 @@ pub(crate) fn lower_cell<M: Module>(
 
                 // Fill the array with values from registers r[a+1] through r[a+b]
                 for i in 0..count {
-                    let value = use_var(&mut builder, &regs, &var_types, inst.a + 1 + i as u16);
+                    let reg = inst.a + 1 + i as u16;
+                    let raw = use_var(&mut builder, &regs, &var_types, reg);
+                    let ty = var_types
+                        .get(&(reg as u32))
+                        .copied()
+                        .unwrap_or(JitVarType::Int);
+                    let value = match ty {
+                        JitVarType::RawInt => ensure_boxed_int(&mut builder, raw, ty),
+                        JitVarType::Str => {
+                            let call = builder.ins().call(str_to_nb_ref, &[vm_ctx_param, raw]);
+                            builder.inst_results(call)[0]
+                        }
+                        _ => raw,
+                    };
                     let offset = (i * 8) as i32;
                     builder
                         .ins()
@@ -3420,7 +3550,20 @@ pub(crate) fn lower_cell<M: Module>(
 
                 // Fill the array with values from registers r[a+1] through r[a+b]
                 for i in 0..count {
-                    let value = use_var(&mut builder, &regs, &var_types, inst.a + 1 + i as u16);
+                    let reg = inst.a + 1 + i as u16;
+                    let raw = use_var(&mut builder, &regs, &var_types, reg);
+                    let ty = var_types
+                        .get(&(reg as u32))
+                        .copied()
+                        .unwrap_or(JitVarType::Int);
+                    let value = match ty {
+                        JitVarType::RawInt => ensure_boxed_int(&mut builder, raw, ty),
+                        JitVarType::Str => {
+                            let call = builder.ins().call(str_to_nb_ref, &[vm_ctx_param, raw]);
+                            builder.inst_results(call)[0]
+                        }
+                        _ => raw,
+                    };
                     let offset = (i * 8) as i32;
                     builder
                         .ins()
@@ -3636,6 +3779,147 @@ pub(crate) fn lower_cell<M: Module>(
                     30 => {
                         let list = use_var(&mut builder, &regs, &var_types, arg_base);
                         let call = builder.ins().call(list_reverse_ref, &[vm_ctx_param, list]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Ptr);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 31: Map(list, fn)
+                    // -------------------------------------------------------
+                    31 => {
+                        let list = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let closure = use_var(&mut builder, &regs, &var_types, arg_base + 1);
+                        let call = builder
+                            .ins()
+                            .call(hof_map_ref, &[vm_ctx_param, list, closure]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Ptr);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 32: Filter(list, fn)
+                    // -------------------------------------------------------
+                    32 => {
+                        let list = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let closure = use_var(&mut builder, &regs, &var_types, arg_base + 1);
+                        let call = builder
+                            .ins()
+                            .call(hof_filter_ref, &[vm_ctx_param, list, closure]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Ptr);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 33: Reduce(list, fn, init)
+                    // -------------------------------------------------------
+                    33 => {
+                        let list = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let closure = use_var(&mut builder, &regs, &var_types, arg_base + 1);
+                        let init = use_var(&mut builder, &regs, &var_types, arg_base + 2);
+                        let call = builder
+                            .ins()
+                            .call(hof_reduce_ref, &[vm_ctx_param, list, closure, init]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Ptr);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 34: FlatMap(list, fn)
+                    // -------------------------------------------------------
+                    34 => {
+                        let list = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let closure = use_var(&mut builder, &regs, &var_types, arg_base + 1);
+                        let call = builder
+                            .ins()
+                            .call(hof_flat_map_ref, &[vm_ctx_param, list, closure]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Ptr);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 37: Any(list, fn)
+                    // -------------------------------------------------------
+                    37 => {
+                        let list = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let closure = use_var(&mut builder, &regs, &var_types, arg_base + 1);
+                        let call = builder
+                            .ins()
+                            .call(hof_any_ref, &[vm_ctx_param, list, closure]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Bool);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 38: All(list, fn)
+                    // -------------------------------------------------------
+                    38 => {
+                        let list = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let closure = use_var(&mut builder, &regs, &var_types, arg_base + 1);
+                        let call = builder
+                            .ins()
+                            .call(hof_all_ref, &[vm_ctx_param, list, closure]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Bool);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 39: Find(list, fn)
+                    // -------------------------------------------------------
+                    39 => {
+                        let list = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let closure = use_var(&mut builder, &regs, &var_types, arg_base + 1);
+                        let call = builder
+                            .ins()
+                            .call(hof_find_ref, &[vm_ctx_param, list, closure]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Ptr);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 40: Position(list, fn)
+                    // -------------------------------------------------------
+                    40 => {
+                        let list = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let closure = use_var(&mut builder, &regs, &var_types, arg_base + 1);
+                        let call = builder
+                            .ins()
+                            .call(hof_position_ref, &[vm_ctx_param, list, closure]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Int);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 41: GroupBy(list, fn)
+                    // -------------------------------------------------------
+                    41 => {
+                        let list = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let closure = use_var(&mut builder, &regs, &var_types, arg_base + 1);
+                        let call = builder
+                            .ins()
+                            .call(hof_group_by_ref, &[vm_ctx_param, list, closure]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Ptr);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 131: SortBy(list, fn)
+                    // -------------------------------------------------------
+                    131 => {
+                        let list = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let closure = use_var(&mut builder, &regs, &var_types, arg_base + 1);
+                        let call = builder
+                            .ins()
+                            .call(hof_sort_by_ref, &[vm_ctx_param, list, closure]);
                         let result = builder.inst_results(call)[0];
                         var_types.insert(inst.a as u32, JitVarType::Ptr);
                         def_var(&mut builder, &mut regs, inst.a, result);

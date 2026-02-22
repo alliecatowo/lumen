@@ -97,9 +97,41 @@ fn wrap_nanbox_value(value: Value) -> i64 {
     wrap_nanbox_ptr(Arc::into_raw(Arc::new(value)))
 }
 
+/// Public wrapper for jit.rs to decode NbValue i64 → Value without an Arc leak.
+///
+/// # Safety
+/// `val` must be a valid NaN-boxed i64 produced by the JIT/VM.
+#[inline]
+pub unsafe fn nb_decode_pub(val: i64) -> Value {
+    nb_decode(val)
+}
+
+/// Public wrapper for jit.rs to encode a Value as a NaN-boxed i64 (Arc-backed).
+#[inline]
+pub fn wrap_nanbox_value_pub(value: Value) -> i64 {
+    wrap_nanbox_value(value)
+}
+
 #[inline]
 fn singleton_list_value(element: Value) -> i64 {
     wrap_nanbox_value(Value::new_list(vec![element]))
+}
+
+#[inline]
+fn value_is_truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::Int(n) => *n != 0,
+        Value::Float(f) => *f != 0.0,
+        Value::String(StringRef::Owned(s)) => !s.is_empty(),
+        Value::String(StringRef::Interned(_)) => true,
+        Value::List(l) => !l.is_empty(),
+        Value::Tuple(t) => !t.is_empty(),
+        Value::Set(s) => !s.is_empty(),
+        Value::Map(m) => !m.is_empty(),
+        _ => true,
+    }
 }
 
 #[inline]
@@ -179,6 +211,46 @@ fn decode_value_ptr(list_ptr: i64) -> Option<*const Value> {
     }
 
     None
+}
+
+/// Call a Lumen closure from JIT helper code.
+/// `closure_nb` is the NaN-boxed closure value.
+/// `args_ptr` points to an array of NaN-boxed i64 arguments.
+/// `arg_count` is the number of arguments.
+/// Returns a NaN-boxed i64 result.
+pub extern "C" fn jit_rt_call_closure(
+    ctx: *mut VmContext,
+    closure_nb: i64,
+    args_ptr: *const i64,
+    arg_count: i64,
+) -> i64 {
+    if !ctx.is_null() {
+        let trampoline = unsafe { (*ctx).call_closure };
+        if let Some(call) = trampoline {
+            return call(ctx, closure_nb, args_ptr, arg_count);
+        }
+    }
+    NAN_BOX_NULL_U as i64
+}
+
+// Call a unary closure (one arg) via ctx->call_closure trampoline.
+// The VM's call_closure already handles Option B: JIT fn_ptr if compiled, else interpreter.
+#[inline]
+fn call_hof_unary(ctx: *mut VmContext, closure_nb: i64, arg: &Value) -> Value {
+    let arg_nb = value_to_nanbox(arg);
+    let args = [arg_nb];
+    let result_nb = jit_rt_call_closure(ctx, closure_nb, args.as_ptr(), 1);
+    unsafe { nb_decode(result_nb) }
+}
+
+// Call a binary closure (two args) via ctx->call_closure trampoline.
+#[inline]
+fn call_hof_binary(ctx: *mut VmContext, closure_nb: i64, left: &Value, right: &Value) -> Value {
+    let left_nb = value_to_nanbox(left);
+    let right_nb = value_to_nanbox(right);
+    let args = [left_nb, right_nb];
+    let result_nb = jit_rt_call_closure(ctx, closure_nb, args.as_ptr(), 2);
+    unsafe { nb_decode(result_nb) }
 }
 
 #[inline]
@@ -381,6 +453,189 @@ pub extern "C" fn jit_rt_new_record(
     });
     let ptr = Arc::into_raw(Arc::new(record_value)) as u64;
     (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
+}
+
+/// Apply a closure to each element in a list, returning a new list.
+#[no_mangle]
+pub extern "C" fn jit_rt_hof_map(ctx: *mut VmContext, list_nb: i64, closure_nb: i64) -> i64 {
+    let list_val = unsafe { nb_decode(list_nb) };
+    let items = match list_val {
+        Value::List(list) => list,
+        _ => return wrap_nanbox_value(Value::new_list(Vec::new())),
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for elem in items.iter() {
+        out.push(call_hof_unary(ctx, closure_nb, elem));
+    }
+    wrap_nanbox_value(Value::new_list(out))
+}
+
+/// Filter list elements using a predicate closure.
+#[no_mangle]
+pub extern "C" fn jit_rt_hof_filter(ctx: *mut VmContext, list_nb: i64, closure_nb: i64) -> i64 {
+    let list_val = unsafe { nb_decode(list_nb) };
+    let items = match list_val {
+        Value::List(list) => list,
+        _ => return wrap_nanbox_value(Value::new_list(Vec::new())),
+    };
+    let mut out = Vec::new();
+    for elem in items.iter() {
+        let keep = call_hof_unary(ctx, closure_nb, elem);
+        if value_is_truthy(&keep) {
+            out.push(elem.clone());
+        }
+    }
+    wrap_nanbox_value(Value::new_list(out))
+}
+
+/// Reduce a list using a binary closure and initial accumulator.
+#[no_mangle]
+pub extern "C" fn jit_rt_hof_reduce(
+    ctx: *mut VmContext,
+    list_nb: i64,
+    closure_nb: i64,
+    init_nb: i64,
+) -> i64 {
+    let list_val = unsafe { nb_decode(list_nb) };
+    let items = match list_val {
+        Value::List(list) => list,
+        _ => return init_nb,
+    };
+    let mut acc = unsafe { nb_decode(init_nb) };
+    for elem in items.iter() {
+        acc = call_hof_binary(ctx, closure_nb, &acc, elem);
+    }
+    value_to_nanbox(&acc)
+}
+
+/// Map then flatten one level.
+#[no_mangle]
+pub extern "C" fn jit_rt_hof_flat_map(ctx: *mut VmContext, list_nb: i64, closure_nb: i64) -> i64 {
+    let list_val = unsafe { nb_decode(list_nb) };
+    let items = match list_val {
+        Value::List(list) => list,
+        _ => return wrap_nanbox_value(Value::new_list(Vec::new())),
+    };
+    let mut out = Vec::new();
+    for elem in items.iter() {
+        let mapped = call_hof_unary(ctx, closure_nb, elem);
+        match mapped {
+            Value::List(inner) => out.extend(inner.iter().cloned()),
+            other => out.push(other),
+        }
+    }
+    wrap_nanbox_value(Value::new_list(out))
+}
+
+/// True if any element matches predicate.
+#[no_mangle]
+pub extern "C" fn jit_rt_hof_any(ctx: *mut VmContext, list_nb: i64, closure_nb: i64) -> i64 {
+    let list_val = unsafe { nb_decode(list_nb) };
+    let items = match list_val {
+        Value::List(list) => list,
+        _ => return NAN_BOX_FALSE_U as i64,
+    };
+    for elem in items.iter() {
+        let pred = call_hof_unary(ctx, closure_nb, elem);
+        if value_is_truthy(&pred) {
+            return NAN_BOX_TRUE_U as i64;
+        }
+    }
+    NAN_BOX_FALSE_U as i64
+}
+
+/// True if all elements match predicate.
+#[no_mangle]
+pub extern "C" fn jit_rt_hof_all(ctx: *mut VmContext, list_nb: i64, closure_nb: i64) -> i64 {
+    let list_val = unsafe { nb_decode(list_nb) };
+    let items = match list_val {
+        Value::List(list) => list,
+        _ => return NAN_BOX_FALSE_U as i64,
+    };
+    for elem in items.iter() {
+        let pred = call_hof_unary(ctx, closure_nb, elem);
+        if !value_is_truthy(&pred) {
+            return NAN_BOX_FALSE_U as i64;
+        }
+    }
+    NAN_BOX_TRUE_U as i64
+}
+
+/// Return the first element that matches predicate or null.
+#[no_mangle]
+pub extern "C" fn jit_rt_hof_find(ctx: *mut VmContext, list_nb: i64, closure_nb: i64) -> i64 {
+    let list_val = unsafe { nb_decode(list_nb) };
+    let items = match list_val {
+        Value::List(list) => list,
+        _ => return NAN_BOX_NULL_U as i64,
+    };
+    for elem in items.iter() {
+        let pred = call_hof_unary(ctx, closure_nb, elem);
+        if value_is_truthy(&pred) {
+            return value_to_nanbox(elem);
+        }
+    }
+    NAN_BOX_NULL_U as i64
+}
+
+/// Return index of first match, or -1.
+#[no_mangle]
+pub extern "C" fn jit_rt_hof_position(ctx: *mut VmContext, list_nb: i64, closure_nb: i64) -> i64 {
+    let list_val = unsafe { nb_decode(list_nb) };
+    let items = match list_val {
+        Value::List(list) => list,
+        _ => return value_to_nanbox(&Value::Int(-1)),
+    };
+    for (idx, elem) in items.iter().enumerate() {
+        let pred = call_hof_unary(ctx, closure_nb, elem);
+        if value_is_truthy(&pred) {
+            return value_to_nanbox(&Value::Int(idx as i64));
+        }
+    }
+    value_to_nanbox(&Value::Int(-1))
+}
+
+/// Group elements by key function; keys are stringified.
+#[no_mangle]
+pub extern "C" fn jit_rt_hof_group_by(ctx: *mut VmContext, list_nb: i64, closure_nb: i64) -> i64 {
+    let list_val = unsafe { nb_decode(list_nb) };
+    let items = match list_val {
+        Value::List(list) => list,
+        _ => return wrap_nanbox_value(Value::new_map(BTreeMap::new())),
+    };
+    let mut groups: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    for elem in items.iter() {
+        let key_value = call_hof_unary(ctx, closure_nb, elem);
+        let key = resolve_string(ctx, &key_value);
+        groups.entry(key).or_default().push(elem.clone());
+    }
+    let mut map = BTreeMap::new();
+    for (key, values) in groups {
+        map.insert(key, Value::new_list(values));
+    }
+    wrap_nanbox_value(Value::new_map(map))
+}
+
+/// Sort a list using comparator closure returning Int.
+#[no_mangle]
+pub extern "C" fn jit_rt_hof_sort_by(ctx: *mut VmContext, list_nb: i64, closure_nb: i64) -> i64 {
+    let list_val = unsafe { nb_decode(list_nb) };
+    let items = match list_val {
+        Value::List(list) => list,
+        _ => return wrap_nanbox_value(Value::new_list(Vec::new())),
+    };
+    let mut values: Vec<Value> = items.iter().cloned().collect();
+    values.sort_by(|lhs, rhs| {
+        let cmp_val = call_hof_binary(ctx, closure_nb, lhs, rhs);
+        match cmp_val {
+            Value::Int(n) => n.cmp(&0),
+            Value::Float(f) => f.total_cmp(&0.0),
+            Value::Bool(true) => Ordering::Greater,
+            Value::Bool(false) => Ordering::Less,
+            _ => Ordering::Equal,
+        }
+    });
+    wrap_nanbox_value(Value::new_list(values))
 }
 
 /// Append a value to a List.
@@ -605,7 +860,7 @@ pub extern "C" fn jit_rt_to_set(_ctx: *mut VmContext, list_nb: i64) -> i64 {
     let val = unsafe { nb_decode(list_nb) };
     let set: BTreeSet<Value> = match val {
         Value::List(l) => l.iter().cloned().collect(),
-        Value::Set(s) => return list_nb, // already a set — return as-is
+        Value::Set(_s) => return list_nb, // already a set — return as-is
         _ => BTreeSet::new(),
     };
     wrap_nanbox_value(Value::Set(Arc::new(set)))

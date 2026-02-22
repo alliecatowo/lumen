@@ -4,6 +4,7 @@
 
 pub mod lir;
 pub mod nb_value;
+pub mod opcode_table;
 pub mod strings;
 pub mod types;
 pub mod values;

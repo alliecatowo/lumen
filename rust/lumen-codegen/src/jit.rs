@@ -866,58 +866,40 @@ fn wrap_nanbox_ptr(ptr: *const Value) -> i64 {
 /// `field_name_ptr` must be a valid `*const u8` pointer to UTF-8 bytes.
 extern "C" fn jit_rt_record_get_field(
     _ctx: *mut VmContext,
-    record_ptr: i64,
+    record_nb: i64,
     field_name_ptr: *const u8,
     field_name_len: usize,
 ) -> i64 {
-    let Some(ptr) = unwrap_value_ptr(record_ptr) else {
-        return NAN_BOX_NULL;
-    };
-
-    let value = unsafe { &*ptr };
+    // record_nb is a NaN-boxed NbValue — decode it safely via Arc clone.
+    let record_val = unsafe { crate::collection_helpers::nb_decode_pub(record_nb) };
     let field_name = unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(field_name_ptr, field_name_len))
     };
-
-    let result = match value {
+    let result = match record_val {
         Value::Record(r) => r.fields.get(field_name).cloned().unwrap_or(Value::Null),
         _ => Value::Null,
     };
-
-    wrap_nanbox_ptr(Arc::into_raw(Arc::new(result)))
+    crate::collection_helpers::wrap_nanbox_value_pub(result)
 }
 
 /// Set a field in a Record by field name.
-/// Creates a new Record with the updated field (copy-on-write).
-/// Returns a `*mut Value` as i64 (boxed Value::Record).
-///
-/// # Safety
-/// `record_ptr` must be a valid `*mut Value` pointer pointing to a `Value::Record`.
-/// `field_name_ptr` must be a valid `*const u8` pointer to UTF-8 bytes.
-/// `value_ptr` must be a valid `*mut Value` pointer.
+/// `record_nb` is a NaN-boxed NbValue for the record.
+/// `value_nb` is a NaN-boxed NbValue for the new field value.
+/// Returns a new NaN-boxed NbValue for the updated record (COW).
 extern "C" fn jit_rt_record_set_field(
     _ctx: *mut VmContext,
-    record_ptr: i64,
+    record_nb: i64,
     field_name_ptr: *const u8,
     field_name_len: usize,
-    value_ptr: i64,
+    value_nb: i64,
 ) -> i64 {
-    let Some(rec_ptr) = unwrap_value_ptr(record_ptr) else {
-        return NAN_BOX_NULL;
-    };
-
-    let value = unsafe { &*rec_ptr };
+    let record_val = unsafe { crate::collection_helpers::nb_decode_pub(record_nb) };
+    let new_value = unsafe { crate::collection_helpers::nb_decode_pub(value_nb) };
     let field_name = unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(field_name_ptr, field_name_len))
     };
-    let new_value = match unwrap_value_ptr(value_ptr) {
-        Some(vp) => unsafe { (*vp).clone() },
-        None => Value::Null,
-    };
-
-    let result = match value {
+    let result = match record_val {
         Value::Record(r) => {
-            // Clone the record and update the field
             let mut new_fields = r.fields.clone();
             new_fields.insert(field_name.to_string(), new_value);
             Value::new_record(RecordValue {
@@ -927,8 +909,7 @@ extern "C" fn jit_rt_record_set_field(
         }
         _ => Value::Null,
     };
-
-    wrap_nanbox_ptr(Arc::into_raw(Arc::new(result)))
+    crate::collection_helpers::wrap_nanbox_value_pub(result)
 }
 
 /// Get an element from a List, Tuple, or Map by index/key.
@@ -1333,6 +1314,47 @@ fn register_collection_helpers(builder: &mut JITBuilder) {
     builder.symbol(
         "jit_rt_window",
         crate::collection_helpers::jit_rt_window as *const u8,
+    );
+    // Phase 1f: higher-order intrinsic helpers
+    builder.symbol(
+        "jit_rt_hof_map",
+        crate::collection_helpers::jit_rt_hof_map as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_hof_filter",
+        crate::collection_helpers::jit_rt_hof_filter as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_hof_reduce",
+        crate::collection_helpers::jit_rt_hof_reduce as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_hof_flat_map",
+        crate::collection_helpers::jit_rt_hof_flat_map as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_hof_any",
+        crate::collection_helpers::jit_rt_hof_any as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_hof_all",
+        crate::collection_helpers::jit_rt_hof_all as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_hof_find",
+        crate::collection_helpers::jit_rt_hof_find as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_hof_position",
+        crate::collection_helpers::jit_rt_hof_position as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_hof_group_by",
+        crate::collection_helpers::jit_rt_hof_group_by as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_hof_sort_by",
+        crate::collection_helpers::jit_rt_hof_sort_by as *const u8,
     );
 }
 

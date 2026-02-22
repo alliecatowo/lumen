@@ -187,22 +187,6 @@ pub mod osr_check {
                 return false;
             }
 
-            {
-                use lumen_core::lir::OpCode;
-                let cell = &module.cells[cell_idx];
-
-                // Skip cells with NewRecord/NewSet which have known codegen
-                // bugs (SIGSEGV in generated code). NewMap and string
-                // arithmetic are fully supported.
-                if cell
-                    .instructions
-                    .iter()
-                    .any(|i| matches!(i.op, OpCode::NewRecord | OpCode::NewSet))
-                {
-                    return false;
-                }
-            }
-
             let cell_name = module.cells[cell_idx].name.clone();
 
             let mut compiled_entries: Option<HashMap<(usize, usize), OsrEntry>> = None;

@@ -3442,6 +3442,49 @@ impl VM {
         self.run_until(self.frames.len().saturating_sub(1))?;
         Ok(self.reg_take(new_base))
     }
+
+    /// FFI trampoline to call a Lumen closure from JIT helper code.
+    ///
+    /// # Safety
+    /// `ctx` must be a valid pointer to a live `VmContext` whose `stack_pool`
+    /// points to the owning `VM`.
+    #[no_mangle]
+    pub extern "C" fn jit_rt_call_closure(
+        ctx: *mut VmContext,
+        closure_nb: i64,
+        args_ptr: *const i64,
+        arg_count: i64,
+    ) -> i64 {
+        if ctx.is_null() {
+            return NbValue::NAN_BOX_NULL as i64;
+        }
+        let vm_ptr = unsafe { (*ctx).stack_pool } as *mut VM;
+        if vm_ptr.is_null() {
+            return NbValue::NAN_BOX_NULL as i64;
+        }
+        let vm = unsafe { &mut *vm_ptr };
+        let closure_value = Self::nb_to_value(NbValue(closure_nb as u64));
+        let closure = match closure_value {
+            Value::Closure(closure) => closure,
+            _ => return NbValue::NAN_BOX_NULL as i64,
+        };
+        let argc = arg_count.max(0) as usize;
+        let mut args = Vec::with_capacity(argc);
+        for i in 0..argc {
+            let nb_raw = unsafe { *args_ptr.add(i) };
+            let nb = NbValue(nb_raw as u64);
+            nb.inc_ref();
+            args.push(Self::nb_to_value(nb));
+            nb.drop_heap();
+        }
+        match vm.call_closure_sync(&closure, &args) {
+            Ok(result) => {
+                let nb = value_to_nb(result);
+                nb.0 as i64
+            }
+            Err(_) => NbValue::NAN_BOX_NULL as i64,
+        }
+    }
 }
 
 // ── Helper functions for intrinsics ──

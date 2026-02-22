@@ -237,16 +237,28 @@ impl JitTier {
                 return false;
             }
 
-            // Mark only the hot cell as compiled.
-            if engine.is_compiled(cell_name) {
-                self.compiled.insert(cell_idx);
-                self.stats.cells_compiled += 1;
-                // Cache raw fn pointer for O(1) indexed dispatch.
-                if let Some(ptr) = engine.get_compiled_fn(cell_name) {
-                    if cell_idx < self.fn_ptrs.len() {
-                        self.fn_ptrs[cell_idx] = Some(ptr as *const u8);
+            // Mark ALL module cells as compiled — compile_hot lowers the entire
+            // module into one JITModule with cross-cell direct calls. Only the
+            // triggering cell was previously marked, causing all other cells to
+            // keep falling back to the interpreter even though their native code
+            // already existed in the engine.
+            let mut any_compiled = false;
+            for (idx, c) in module.cells.iter().enumerate() {
+                if engine.is_compiled(&c.name) && !self.compiled.contains(&idx) {
+                    self.compiled.insert(idx);
+                    self.stats.cells_compiled += 1;
+                    any_compiled = true;
+                    // Cache raw fn pointer for O(1) indexed dispatch.
+                    if let Some(ptr) = engine.get_compiled_fn(&c.name) {
+                        if idx < self.fn_ptrs.len() {
+                            self.fn_ptrs[idx] = Some(ptr as *const u8);
+                        }
                     }
                 }
+            }
+            if !any_compiled {
+                self.stats.compile_failures += 1;
+                return false;
             }
             self.engine = Some(engine);
             true
@@ -364,7 +376,9 @@ impl JitTier {
                                 i64,
                                 i64,
                             ) -> i64 = std::mem::transmute(fn_ptr);
-                            f(ctx_mut, args[0], args[1], args[2], args[3], args[4], args[5])
+                            f(
+                                ctx_mut, args[0], args[1], args[2], args[3], args[4], args[5],
+                            )
                         }
                         _ => return None,
                     }

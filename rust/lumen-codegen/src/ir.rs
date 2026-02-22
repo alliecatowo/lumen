@@ -884,6 +884,63 @@ pub(crate) fn lower_cell<M: Module>(
         &[pointer_type, types::I64],
         &[types::I64],
     )?;
+    // Phase 1e: set/collection helpers
+    let to_set_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_to_set",
+        &[pointer_type, types::I64],
+        &[types::I64],
+    )?;
+    let set_add_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_set_add",
+        &[pointer_type, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let chars_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_chars",
+        &[pointer_type, types::I64],
+        &[types::I64],
+    )?;
+    let join_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_join",
+        &[pointer_type, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let zip_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_zip",
+        &[pointer_type, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let enumerate_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_enumerate",
+        &[pointer_type, types::I64],
+        &[types::I64],
+    )?;
+    let chunk_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_chunk",
+        &[pointer_type, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let window_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_window",
+        &[pointer_type, types::I64, types::I64],
+        &[types::I64],
+    )?;
     let union_match_ref = declare_helper_func(
         module,
         &mut func,
@@ -4885,6 +4942,87 @@ pub(crate) fn lower_cell<M: Module>(
                         let call = builder
                             .ins()
                             .call(map_sorted_keys_ref, &[vm_ctx_param, map]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Ptr);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // Phase 1e: set/collection ops
+                    // -------------------------------------------------------
+
+                    // 69: ToSet(list) -> set
+                    69 => {
+                        let list = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let call = builder.ins().call(to_set_ref, &[vm_ctx_param, list]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Ptr);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // 73: Add(set, elem) -> set
+                    73 => {
+                        let set = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let elem = use_var(&mut builder, &regs, &var_types, arg_base + 1);
+                        let call = builder.ins().call(set_add_ref, &[vm_ctx_param, set, elem]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Ptr);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // 51: Chars(str) -> list[String]
+                    51 => {
+                        let s = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let call = builder.ins().call(chars_ref, &[vm_ctx_param, s]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Ptr);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // 17: Join(list, sep) -> String
+                    17 => {
+                        let list = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let sep = use_var(&mut builder, &regs, &var_types, arg_base + 1);
+                        let call = builder.ins().call(join_ref, &[vm_ctx_param, list, sep]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Ptr);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // 35: Zip(a, b) -> list[tuple[T, U]]
+                    35 => {
+                        let a = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let b = use_var(&mut builder, &regs, &var_types, arg_base + 1);
+                        let call = builder.ins().call(zip_ref, &[vm_ctx_param, a, b]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Ptr);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // 36: Enumerate(list) -> list[tuple[Int, T]]
+                    36 => {
+                        let list = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let call = builder.ins().call(enumerate_ref, &[vm_ctx_param, list]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Ptr);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // 42: Chunk(list, n) -> list[list[T]]
+                    42 => {
+                        let list = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let n = use_var(&mut builder, &regs, &var_types, arg_base + 1);
+                        let call = builder.ins().call(chunk_ref, &[vm_ctx_param, list, n]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Ptr);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // 43: Window(list, n) -> list[list[T]]
+                    43 => {
+                        let list = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let n = use_var(&mut builder, &regs, &var_types, arg_base + 1);
+                        let call = builder.ins().call(window_ref, &[vm_ctx_param, list, n]);
                         let result = builder.inst_results(call)[0];
                         var_types.insert(inst.a as u32, JitVarType::Ptr);
                         def_var(&mut builder, &mut regs, inst.a, result);

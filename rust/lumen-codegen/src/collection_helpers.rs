@@ -593,6 +593,144 @@ pub extern "C" fn jit_rt_list_last(_ctx: *mut VmContext, list_nb: i64) -> i64 {
 }
 
 /// Merge two maps (or records) into one: `merge(a, b)` → new map with b's entries overlaid on a.
+// ---------------------------------------------------------------------------
+// Phase 1e: Set/collection ops — ToSet, Add, Chars, Join, Zip, Enumerate,
+//           Chunk, Window
+// ---------------------------------------------------------------------------
+
+/// Convert a list to a set (removing duplicates).
+/// Returns a NaN-boxed TAG_PTR to a Value::Set.
+#[no_mangle]
+pub extern "C" fn jit_rt_to_set(_ctx: *mut VmContext, list_nb: i64) -> i64 {
+    let val = unsafe { nb_decode(list_nb) };
+    let set: BTreeSet<Value> = match val {
+        Value::List(l) => l.iter().cloned().collect(),
+        Value::Set(s) => return list_nb, // already a set — return as-is
+        _ => BTreeSet::new(),
+    };
+    wrap_nanbox_value(Value::Set(Arc::new(set)))
+}
+
+/// Add an element to a set (returns new set).
+/// Returns a NaN-boxed TAG_PTR to a new Value::Set.
+#[no_mangle]
+pub extern "C" fn jit_rt_set_add(_ctx: *mut VmContext, set_nb: i64, elem_nb: i64) -> i64 {
+    let elem = unsafe { nb_decode(elem_nb) };
+    let set_val = unsafe { nb_decode(set_nb) };
+    let mut set: BTreeSet<Value> = match set_val {
+        Value::Set(s) => (*s).clone(),
+        Value::List(l) => l.iter().cloned().collect(),
+        _ => BTreeSet::new(),
+    };
+    set.insert(elem);
+    wrap_nanbox_value(Value::Set(Arc::new(set)))
+}
+
+/// Split a string into a list of single-character strings.
+/// Returns a NaN-boxed TAG_PTR to a Value::List.
+#[no_mangle]
+pub extern "C" fn jit_rt_chars(ctx: *mut VmContext, str_nb: i64) -> i64 {
+    let val = unsafe { nb_decode(str_nb) };
+    let s = resolve_string(ctx, &val);
+    let chars: Vec<Value> = s
+        .chars()
+        .map(|c| Value::String(lumen_core::values::StringRef::Owned(c.to_string())))
+        .collect();
+    wrap_nanbox_value(Value::new_list(chars))
+}
+
+/// Join a list of strings with a separator.
+/// `list_nb` is a NaN-boxed list of strings.
+/// `sep_nb` is a NaN-boxed string separator.
+/// Returns a NaN-boxed TAG_PTR (Str) of the joined string.
+#[no_mangle]
+pub extern "C" fn jit_rt_join(ctx: *mut VmContext, list_nb: i64, sep_nb: i64) -> i64 {
+    let list_val = unsafe { nb_decode(list_nb) };
+    let sep_val = unsafe { nb_decode(sep_nb) };
+    let sep = resolve_string(ctx, &sep_val);
+    let items: Vec<String> = match list_val {
+        Value::List(l) => l.iter().map(|v| resolve_string(ctx, v)).collect(),
+        _ => vec![],
+    };
+    let joined = items.join(&sep);
+    wrap_nanbox_value(Value::String(lumen_core::values::StringRef::Owned(joined)))
+}
+
+/// Zip two lists into a list of 2-tuples.
+/// Returns a NaN-boxed TAG_PTR to a Value::List of Value::Tuple pairs.
+#[no_mangle]
+pub extern "C" fn jit_rt_zip(_ctx: *mut VmContext, a_nb: i64, b_nb: i64) -> i64 {
+    let a_val = unsafe { nb_decode(a_nb) };
+    let b_val = unsafe { nb_decode(b_nb) };
+    let a_list: &[Value] = match &a_val {
+        Value::List(l) => unsafe { &*(l.as_slice() as *const [Value]) },
+        _ => &[],
+    };
+    let b_list: &[Value] = match &b_val {
+        Value::List(l) => unsafe { &*(l.as_slice() as *const [Value]) },
+        _ => &[],
+    };
+    let pairs: Vec<Value> = a_list
+        .iter()
+        .zip(b_list.iter())
+        .map(|(a, b)| Value::new_tuple(vec![a.clone(), b.clone()]))
+        .collect();
+    wrap_nanbox_value(Value::new_list(pairs))
+}
+
+/// Enumerate a list into a list of (index, element) 2-tuples.
+/// Returns a NaN-boxed TAG_PTR to a Value::List of Value::Tuple pairs.
+#[no_mangle]
+pub extern "C" fn jit_rt_enumerate(_ctx: *mut VmContext, list_nb: i64) -> i64 {
+    let val = unsafe { nb_decode(list_nb) };
+    let pairs: Vec<Value> = match val {
+        Value::List(l) => l
+            .iter()
+            .enumerate()
+            .map(|(i, v)| Value::new_tuple(vec![Value::Int(i as i64), v.clone()]))
+            .collect(),
+        _ => vec![],
+    };
+    wrap_nanbox_value(Value::new_list(pairs))
+}
+
+/// Split a list into fixed-size chunks.
+/// `n_nb` is the NaN-boxed chunk size (Int).
+/// Returns a NaN-boxed TAG_PTR to a Value::List of Value::List chunks.
+#[no_mangle]
+pub extern "C" fn jit_rt_chunk(_ctx: *mut VmContext, list_nb: i64, n_nb: i64) -> i64 {
+    let val = unsafe { nb_decode(list_nb) };
+    let n = nb_to_int(n_nb).unwrap_or(1).max(1) as usize;
+    let chunks: Vec<Value> = match val {
+        Value::List(l) => l
+            .chunks(n)
+            .map(|chunk| Value::new_list(chunk.to_vec()))
+            .collect(),
+        _ => vec![],
+    };
+    wrap_nanbox_value(Value::new_list(chunks))
+}
+
+/// Produce a list of sliding windows of size n.
+/// `n_nb` is the NaN-boxed window size (Int).
+/// Returns a NaN-boxed TAG_PTR to a Value::List of Value::List windows.
+#[no_mangle]
+pub extern "C" fn jit_rt_window(_ctx: *mut VmContext, list_nb: i64, n_nb: i64) -> i64 {
+    let val = unsafe { nb_decode(list_nb) };
+    let n = nb_to_int(n_nb).unwrap_or(1).max(1) as usize;
+    let windows: Vec<Value> = match val {
+        Value::List(l) => {
+            if n > l.len() {
+                vec![]
+            } else {
+                l.windows(n).map(|w| Value::new_list(w.to_vec())).collect()
+            }
+        }
+        _ => vec![],
+    };
+    wrap_nanbox_value(Value::new_list(windows))
+}
+
 /// Both `a_ptr` and `b_ptr` are NaN-boxed TAG_PTR values pointing to `Arc<Value>`.
 /// Returns a new NaN-boxed TAG_PTR to the merged map.
 ///

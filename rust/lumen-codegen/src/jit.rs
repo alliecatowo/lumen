@@ -1301,6 +1301,39 @@ fn register_collection_helpers(builder: &mut JITBuilder) {
         crate::collection_helpers::jit_rt_map_sorted_keys as *const u8,
     );
     builder.symbol("jit_rt_new_map_strs", jit_rt_new_map_strs as *const u8);
+    // Phase 1e: set/collection helpers
+    builder.symbol(
+        "jit_rt_to_set",
+        crate::collection_helpers::jit_rt_to_set as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_set_add",
+        crate::collection_helpers::jit_rt_set_add as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_chars",
+        crate::collection_helpers::jit_rt_chars as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_join",
+        crate::collection_helpers::jit_rt_join as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_zip",
+        crate::collection_helpers::jit_rt_zip as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_enumerate",
+        crate::collection_helpers::jit_rt_enumerate as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_chunk",
+        crate::collection_helpers::jit_rt_chunk as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_window",
+        crate::collection_helpers::jit_rt_window as *const u8,
+    );
 }
 
 // ---------------------------------------------------------------------------

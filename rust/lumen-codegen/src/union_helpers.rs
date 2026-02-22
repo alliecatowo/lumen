@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 use crate::vm_context::VmContext;
-use lumen_core::values::{UnionValue, Value};
+use lumen_core::values::{UnionPayload, UnionValue, Value};
 use std::sync::Arc;
 
 // NaN-boxing constants — must match ir.rs and NbValue in lumen-core exactly.
@@ -14,81 +14,33 @@ const NAN_BOX_FALSE: i64 = 0x7FFB_0000_0000_0000_u64 as i64; // NAN_MASK | (TAG_
 const NAN_MASK_U: u64 = 0x7FF8_0000_0000_0000;
 const PAYLOAD_MASK_U: u64 = 0x0000_FFFF_FFFF_FFFF;
 
-/// Decode a NbValue-encoded i64 from the JIT into a `Value`.
-///
-/// Encoding scheme matches NbValue in lumen-core:
-///   - Non-NaN bits: raw f64 float
-///   - TAG_PTR=0: heap pointer to a `Value` (or special: 0=Null, 1=NaN float)
-///   - TAG_INT=1: 48-bit signed integer
-///   - TAG_BOOL=3: boolean (payload 0=false, 1=true)
-///   - TAG_NULL=4: null value
-///
-/// # Safety
-/// If `val` is a TAG_PTR with payload > 1, it must be a valid `*const Value`.
-unsafe fn nanbox_to_value(val: i64) -> Value {
-    let u = val as u64;
-    if (u & NAN_MASK_U) != NAN_MASK_U {
-        // Not NaN-boxed: raw f64 float bits.
-        return Value::Float(f64::from_bits(u));
-    }
-    let tag = (u >> 48) & 0x7;
-    let payload = u & PAYLOAD_MASK_U;
-    match tag {
-        0 => {
-            // TAG_PTR: heap pointer or special sentinel.
-            if payload == 0 {
-                Value::Null
-            } else if payload == 1 {
-                Value::Float(f64::NAN)
-            } else {
-                (*(payload as *const Value)).clone()
-            }
-        }
-        1 => {
-            // TAG_INT: 48-bit two's-complement integer.
-            let signed = if payload & (1 << 47) != 0 {
-                (payload | !PAYLOAD_MASK_U) as i64
-            } else {
-                payload as i64
-            };
-            Value::Int(signed)
-        }
-        3 => {
-            // TAG_BOOL: payload 0=false, 1=true.
-            Value::Bool(payload != 0)
-        }
-        4 => Value::Null, // TAG_NULL
-        _ => Value::Null, // Unknown tag
-    }
-}
-
-/// Decode a NaN-boxed payload directly into an `Arc<Value>` for use as a
-/// union payload.  For heap pointers (TAG_PTR), takes ownership of the
-/// existing Arc via `Arc::from_raw` — **no deep clone**.  For inline types
-/// (Int, Bool, Null, Float), wraps in a fresh Arc.
+/// Decode a NaN-boxed value into a `UnionPayload`. For scalar types (Int, Bool,
+/// Null, Float), returns an inline `UnionPayload` variant with **no Arc
+/// allocation**. For heap pointers (TAG_PTR with payload > 1), takes ownership
+/// of the existing `Arc<Value>` via `Arc::from_raw` and wraps it in
+/// `UnionPayload::Heap` — again, no allocation.
 ///
 /// # Safety
 /// For TAG_PTR payloads with payload > 1, the raw pointer must have been
 /// produced by `Arc::into_raw` and must not be used again after this call.
 #[inline]
-unsafe fn nanbox_to_payload_arc(val: i64) -> Arc<Value> {
+unsafe fn nanbox_to_union_payload(val: i64) -> UnionPayload {
     let u = val as u64;
     if (u & NAN_MASK_U) != NAN_MASK_U {
-        return Arc::new(Value::Float(f64::from_bits(u)));
+        return UnionPayload::Float(f64::from_bits(u));
     }
     let tag = (u >> 48) & 0x7;
     let payload = u & PAYLOAD_MASK_U;
     match tag {
         0 => {
             if payload == 0 {
-                Arc::new(Value::Null)
+                UnionPayload::Null
             } else if payload == 1 {
-                Arc::new(Value::Float(f64::NAN))
+                UnionPayload::Float(f64::NAN)
             } else {
                 // Take ownership of the existing Arc — no clone needed.
-                // The JIT register holding this pointer is consumed (dead after
-                // NewUnion writes its result to a different register).
-                Arc::from_raw(payload as *const Value)
+                let arc = Arc::from_raw(payload as *const Value);
+                UnionPayload::from_arc(arc)
             }
         }
         1 => {
@@ -97,11 +49,34 @@ unsafe fn nanbox_to_payload_arc(val: i64) -> Arc<Value> {
             } else {
                 payload as i64
             };
-            Arc::new(Value::Int(signed))
+            UnionPayload::Int(signed)
         }
-        3 => Arc::new(Value::Bool(payload != 0)),
-        4 => Arc::new(Value::Null),
-        _ => Arc::new(Value::Null),
+        3 => UnionPayload::Bool(payload != 0),
+        4 => UnionPayload::Null,
+        _ => UnionPayload::Null,
+    }
+}
+
+/// Convert a `UnionPayload` to its NaN-boxed i64 representation. For inline
+/// scalars (Int, Bool, Null, Float) this is a direct encoding with no
+/// allocation. For `Heap` values, bumps the Arc refcount via `Arc::clone` and
+/// returns the raw pointer — **no deep clone**.
+#[inline]
+fn union_payload_to_nanbox(p: &UnionPayload) -> i64 {
+    match p {
+        UnionPayload::Int(n) => {
+            let payload = (*n as u64) & PAYLOAD_MASK_U;
+            (NAN_MASK_U | (1u64 << 48) | payload) as i64
+        }
+        UnionPayload::Bool(true) => NAN_BOX_TRUE,
+        UnionPayload::Bool(false) => NAN_BOX_FALSE,
+        UnionPayload::Null => NAN_BOX_NULL,
+        UnionPayload::Float(f) => f.to_bits() as i64,
+        UnionPayload::Heap(arc) => {
+            // Bump refcount and return raw pointer — no deep clone.
+            let ptr = Arc::into_raw(Arc::clone(arc)) as u64;
+            (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
+        }
     }
 }
 
@@ -129,14 +104,10 @@ pub extern "C" fn jit_rt_union_new(
         st.intern(tag_str)
     };
 
-    // Take ownership of the payload Arc directly — avoids deep clone + extra
-    // Arc allocation that was the #1 bottleneck in build_tree (262K nodes).
-    let payload_arc = unsafe { nanbox_to_payload_arc(payload) };
+    // Decode payload into UnionPayload — inline scalars avoid Arc allocation.
+    let payload = unsafe { nanbox_to_union_payload(payload) };
 
-    let union_val = Value::Union(UnionValue {
-        tag,
-        payload: payload_arc,
-    });
+    let union_val = Value::Union(UnionValue { tag, payload });
     let ptr = Arc::into_raw(Arc::new(union_val)) as u64;
     (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
 }
@@ -164,8 +135,6 @@ pub extern "C" fn jit_rt_union_is_variant(
 
     match value {
         Value::Union(uv) => {
-            // Resolve the union's tag ID to a string via Vec lookup (O(1)),
-            // then compare strings directly.
             let st = unsafe { &*(*ctx).string_table };
             if let Some(resolved) = st.resolve(uv.tag) {
                 if resolved == tag_str { 1 } else { 0 }
@@ -179,13 +148,6 @@ pub extern "C" fn jit_rt_union_is_variant(
 
 /// Re-encode a `Value` into its NbValue-compatible i64 representation so the
 /// result can be used directly by JIT-compiled code.
-///
-/// - `Int(n)` → `NAN_MASK | (TAG_INT << 48) | (n & PAYLOAD_MASK)`
-/// - `Bool(true)` → `NAN_BOX_TRUE`
-/// - `Bool(false)` → `NAN_BOX_FALSE`
-/// - `Null` → `NAN_BOX_NULL`
-/// - `Float(f)` → raw f64 bits (NOT NaN-boxed)
-/// - Everything else → heap-allocate via `Arc<Value>` and return as TAG_PTR.
 fn value_to_nanbox(v: &Value) -> i64 {
     match v {
         Value::Int(n) => {
@@ -197,8 +159,6 @@ fn value_to_nanbox(v: &Value) -> i64 {
         Value::Null => NAN_BOX_NULL,
         Value::Float(f) => f.to_bits() as i64,
         other => {
-            // Must use Arc to match NbValue's heap convention (peek_legacy /
-            // drop_heap use Arc reference counting).
             let ptr = Arc::into_raw(Arc::new(other.clone())) as u64;
             (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
         }
@@ -221,25 +181,7 @@ pub extern "C" fn jit_rt_union_unbox(_ctx: *mut VmContext, union_ptr: i64) -> i6
     }
     let value = unsafe { &*((u & PAYLOAD_MASK_U) as *const Value) };
     match value {
-        Value::Union(uv) => {
-            // Fast path for inline types — return NaN-boxed directly.
-            match &*uv.payload {
-                Value::Int(n) => {
-                    let payload = (*n as u64) & PAYLOAD_MASK_U;
-                    (NAN_MASK_U | (1u64 << 48) | payload) as i64
-                }
-                Value::Bool(true) => NAN_BOX_TRUE,
-                Value::Bool(false) => NAN_BOX_FALSE,
-                Value::Null => NAN_BOX_NULL,
-                Value::Float(f) => f.to_bits() as i64,
-                _ => {
-                    // Reuse existing payload Arc — just bump refcount instead
-                    // of cloning the Value and wrapping in a redundant new Arc.
-                    let ptr = Arc::into_raw(Arc::clone(&uv.payload)) as u64;
-                    (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
-                }
-            }
-        }
+        Value::Union(uv) => union_payload_to_nanbox(&uv.payload),
         _ => NAN_BOX_NULL,
     }
 }
@@ -251,9 +193,6 @@ pub const UNION_NO_MATCH: i64 = -1_i64; // 0xFFFF_FFFF_FFFF_FFFF
 /// Combined IsVariant + Unbox: check if a union has the given tag and, if so,
 /// return the payload NaN-boxed.  Returns `UNION_NO_MATCH` if the tag does not
 /// match (or the value is not a union).
-///
-/// This eliminates a separate Unbox extern "C" call after every IsVariant check,
-/// saving ~524K function calls for the tree benchmark.
 ///
 /// # Safety
 /// `union_ptr` must be a valid NaN-boxed TAG_PTR to an `Arc<Value>`.
@@ -280,21 +219,7 @@ pub extern "C" fn jit_rt_union_match(
                 if resolved != tag_str {
                     return UNION_NO_MATCH;
                 }
-                // Tag matches — return the payload NaN-boxed.
-                match &*uv.payload {
-                    Value::Int(n) => {
-                        let payload = (*n as u64) & PAYLOAD_MASK_U;
-                        (NAN_MASK_U | (1u64 << 48) | payload) as i64
-                    }
-                    Value::Bool(true) => NAN_BOX_TRUE,
-                    Value::Bool(false) => NAN_BOX_FALSE,
-                    Value::Null => NAN_BOX_NULL,
-                    Value::Float(f) => f.to_bits() as i64,
-                    _ => {
-                        let ptr = Arc::into_raw(Arc::clone(&uv.payload)) as u64;
-                        (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
-                    }
-                }
+                union_payload_to_nanbox(&uv.payload)
             } else {
                 UNION_NO_MATCH
             }
@@ -350,21 +275,7 @@ pub extern "C" fn jit_rt_union_match_by_id(
             if uv.tag != tag_id {
                 return UNION_NO_MATCH;
             }
-            // Tag matches — return the payload NaN-boxed.
-            match &*uv.payload {
-                Value::Int(n) => {
-                    let payload = (*n as u64) & PAYLOAD_MASK_U;
-                    (NAN_MASK_U | (1u64 << 48) | payload) as i64
-                }
-                Value::Bool(true) => NAN_BOX_TRUE,
-                Value::Bool(false) => NAN_BOX_FALSE,
-                Value::Null => NAN_BOX_NULL,
-                Value::Float(f) => f.to_bits() as i64,
-                _ => {
-                    let ptr = Arc::into_raw(Arc::clone(&uv.payload)) as u64;
-                    (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
-                }
-            }
+            union_payload_to_nanbox(&uv.payload)
         }
         _ => UNION_NO_MATCH,
     }

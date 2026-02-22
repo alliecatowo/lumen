@@ -744,6 +744,20 @@ pub(crate) fn lower_cell<M: Module>(
         &[pointer_type, types::I64, types::I64], // ctx, a_ptr, b_ptr
         &[types::I64],
     )?;
+    let merge_take_a_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_merge_take_a",
+        &[pointer_type, types::I64, types::I64], // ctx, a_owned_nb, b_nb
+        &[types::I64],
+    )?;
+    let new_map_strs_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_new_map_strs",
+        &[pointer_type, types::I64, types::I64], // ctx, jit_str_pairs_ptr, count
+        &[types::I64],
+    )?;
     let union_is_variant_by_id_ref = declare_helper_func(
         module,
         &mut func,
@@ -785,6 +799,15 @@ pub(crate) fn lower_cell<M: Module>(
         &mut func,
         "jit_rt_union_match",
         &[pointer_type, types::I64, types::I64, types::I64], // ctx, union_ptr, tag_ptr, tag_len
+        &[types::I64],
+    )?;
+    // Declare Is type-name helper: takes raw name bytes instead of JitString pointer.
+    // Used by Is opcode when the type name is a compile-time constant.
+    let is_type_name_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_is_type_name",
+        &[pointer_type, types::I64, types::I64, types::I64], // ctx, value_ptr, name_ptr, name_len
         &[types::I64],
     )?;
     // Declare intrinsic runtime helper functions (for JIT builtin support).
@@ -1198,6 +1221,12 @@ pub(crate) fn lower_cell<M: Module>(
     // Call/TailCall callee names. For these we skip heap string allocation.
     let call_name_regs = identify_call_name_registers(cell);
 
+    // Pre-scan: identify LoadK PCs whose strings are only used as `Is` type-name
+    // operands. For these we skip JitString allocation (262K allocs saved for tree).
+    // Also builds a map from Is-instruction PC → type name string for the Is handler.
+    let (is_type_name_regs, is_pc_to_type_name) =
+        identify_is_type_name_registers(cell);
+
     // Pre-scan: identify chains of string Add/Concat that can be batched into
     // a single jit_rt_string_concat_multi call.
     let string_param_regs: std::collections::HashSet<u16> = cell
@@ -1366,9 +1395,11 @@ pub(crate) fn lower_cell<M: Module>(
                 if let Some(constant) = cell.constants.get(bx) {
                     match constant {
                         Constant::String(s) => {
-                            if call_name_regs.contains(&pc) {
+                            if call_name_regs.contains(&pc) || is_type_name_regs.contains(&pc) {
                                 // This LoadK PC is only used as a Call/TailCall
-                                // base (callee name). Skip heap string allocation.
+                                // base (callee name) or an `Is` type-name operand.
+                                // Skip heap string allocation — the Is handler uses
+                                // raw bytes directly, and Call names are passed as 0.
                                 let dummy = builder.ins().iconst(types::I64, 0);
                                 var_types.insert(a as u32, JitVarType::Int);
                                 def_var(&mut builder, &mut regs, a, dummy);
@@ -1635,12 +1666,19 @@ pub(crate) fn lower_cell<M: Module>(
                             // In-place: a = a + c
                             // Inline fast path: if refcount==1 && cap>=len_a+len_b,
                             // do memcpy inline and skip the runtime call entirely.
+                            //
+                            // JitString layout (offsets):
+                            //   0: refcount (i64)
+                            //   8: len (i64)
+                            //  16: char_count (i64)
+                            //  24: cap (i64)
+                            //  32: ptr (*mut u8)
                             let flags = MemFlags::new();
 
                             // Load JitString fields for lhs (a)
                             let refcount_a = builder.ins().load(types::I64, flags, lhs, 0);
                             let len_a = builder.ins().load(types::I64, flags, lhs, 8);
-                            let cap_a = builder.ins().load(types::I64, flags, lhs, 16);
+                            let cap_a = builder.ins().load(types::I64, flags, lhs, 24);
 
                             // Load len for rhs (b)
                             let len_b = builder.ins().load(types::I64, flags, rhs, 8);
@@ -1674,8 +1712,8 @@ pub(crate) fn lower_cell<M: Module>(
 
                             // --- Inline fast path block ---
                             builder.switch_to_block(inline_block);
-                            let ptr_a = builder.ins().load(types::I64, flags, lhs, 24);
-                            let ptr_b = builder.ins().load(types::I64, flags, rhs, 24);
+                            let ptr_a = builder.ins().load(types::I64, flags, lhs, 32);
+                            let ptr_b = builder.ins().load(types::I64, flags, rhs, 32);
                             let dst = builder.ins().iadd(ptr_a, len_a);
                             builder
                                 .ins()
@@ -1738,13 +1776,26 @@ pub(crate) fn lower_cell<M: Module>(
                 } else {
                     let lhs = use_var(&mut builder, &regs, &var_types, inst.b);
                     let rhs = use_var(&mut builder, &regs, &var_types, inst.c);
-                    // NaN-boxing: unbox ints (sshr 1), add, rebox
-                    let lhs_i = emit_unbox_int(&mut builder, lhs);
-                    let rhs_i = emit_unbox_int(&mut builder, rhs);
+                    let lhs_ty = var_types.get(&(inst.b as u32)).copied().unwrap_or(JitVarType::Int);
+                    let rhs_ty = var_types.get(&(inst.c as u32)).copied().unwrap_or(JitVarType::Int);
+                    // RawInt optimization: operate on unboxed ints, defer boxing
+                    let lhs_i = ensure_raw_int(&mut builder, lhs, lhs_ty);
+                    let rhs_i = ensure_raw_int(&mut builder, rhs, rhs_ty);
                     let res_i = builder.ins().iadd(lhs_i, rhs_i);
-                    let res = emit_box_int(&mut builder, res_i);
-                    var_types.insert(inst.a as u32, JitVarType::Int);
-                    def_var(&mut builder, &mut regs, inst.a, res);
+                    // If the destination register is a multi-block Variable (used in a loop
+                    // phi merge), we must NaN-box the result to keep a consistent
+                    // representation across all incoming edges of the phi.
+                    // Without boxing, the phi could merge NaN-boxed(first entry) with
+                    // RawInt(back-edge), causing GetIndex/jit_rt_get_index to receive
+                    // a raw integer (e.g. 0x1) instead of a NaN-boxed one.
+                    if regs.vars.contains_key(&inst.a) {
+                        let res_boxed = emit_box_int(&mut builder, res_i);
+                        var_types.insert(inst.a as u32, JitVarType::Int);
+                        def_var(&mut builder, &mut regs, inst.a, res_boxed);
+                    } else {
+                        var_types.insert(inst.a as u32, JitVarType::RawInt);
+                        def_var(&mut builder, &mut regs, inst.a, res_i);
+                    }
                 }
             }
             // Explicit string/list concatenation operator (++).
@@ -1846,12 +1897,19 @@ pub(crate) fn lower_cell<M: Module>(
                     if dest_ty == JitVarType::Str && inst.a == inst.b && lhs_ty == JitVarType::Str {
                         // Inline fast path: if refcount==1 && cap>=len_a+len_b,
                         // do memcpy inline and skip the runtime call entirely.
+                        //
+                        // JitString layout (offsets):
+                        //   0: refcount (i64)
+                        //   8: len (i64)
+                        //  16: char_count (i64)
+                        //  24: cap (i64)
+                        //  32: ptr (*mut u8)
                         let flags = MemFlags::new();
 
                         // Load JitString fields for lhs (a)
                         let refcount_a = builder.ins().load(types::I64, flags, lhs, 0);
                         let len_a = builder.ins().load(types::I64, flags, lhs, 8);
-                        let cap_a = builder.ins().load(types::I64, flags, lhs, 16);
+                        let cap_a = builder.ins().load(types::I64, flags, lhs, 24);
 
                         // Load len for rhs (b)
                         let len_b = builder.ins().load(types::I64, flags, rhs, 8);
@@ -1884,8 +1942,8 @@ pub(crate) fn lower_cell<M: Module>(
 
                         // --- Inline fast path block ---
                         builder.switch_to_block(inline_block);
-                        let ptr_a = builder.ins().load(types::I64, flags, lhs, 24);
-                        let ptr_b = builder.ins().load(types::I64, flags, rhs, 24);
+                        let ptr_a = builder.ins().load(types::I64, flags, lhs, 32);
+                        let ptr_b = builder.ins().load(types::I64, flags, rhs, 32);
                         let dst = builder.ins().iadd(ptr_a, len_a);
                         builder
                             .ins()
@@ -1938,59 +1996,66 @@ pub(crate) fn lower_cell<M: Module>(
                 let lhs = use_var(&mut builder, &regs, &var_types, inst.b);
                 let rhs = use_var(&mut builder, &regs, &var_types, inst.c);
                 let is_float = is_float_op(&var_types, inst.b, inst.c);
-                let res = if is_float {
+                if is_float {
                     // NaN-boxing: unbox floats, sub, rebox
                     let lhs_f = emit_unbox_float(&mut builder, lhs);
                     let rhs_f = emit_unbox_float(&mut builder, rhs);
                     let r = builder.ins().fsub(lhs_f, rhs_f);
-                    emit_box_float(&mut builder, r)
+                    let res = emit_box_float(&mut builder, r);
+                    var_types.insert(inst.a as u32, JitVarType::Float);
+                    def_var(&mut builder, &mut regs, inst.a, res);
                 } else {
-                    // NaN-boxing: unbox ints, sub, rebox
-                    let lhs_i = emit_unbox_int(&mut builder, lhs);
-                    let rhs_i = emit_unbox_int(&mut builder, rhs);
+                    // RawInt optimization: operate on unboxed ints, defer boxing
+                    let lhs_ty = var_types.get(&(inst.b as u32)).copied().unwrap_or(JitVarType::Int);
+                    let rhs_ty = var_types.get(&(inst.c as u32)).copied().unwrap_or(JitVarType::Int);
+                    let lhs_i = ensure_raw_int(&mut builder, lhs, lhs_ty);
+                    let rhs_i = ensure_raw_int(&mut builder, rhs, rhs_ty);
                     let r = builder.ins().isub(lhs_i, rhs_i);
-                    emit_box_int(&mut builder, r)
-                };
-                var_types.insert(
-                    inst.a as u32,
-                    if is_float {
-                        JitVarType::Float
+                    // Box if dest is a multi-block Variable (loop phi merge point).
+                    if regs.vars.contains_key(&inst.a) {
+                        let res_boxed = emit_box_int(&mut builder, r);
+                        var_types.insert(inst.a as u32, JitVarType::Int);
+                        def_var(&mut builder, &mut regs, inst.a, res_boxed);
                     } else {
-                        JitVarType::Int
-                    },
-                );
-                def_var(&mut builder, &mut regs, inst.a, res);
+                        var_types.insert(inst.a as u32, JitVarType::RawInt);
+                        def_var(&mut builder, &mut regs, inst.a, r);
+                    }
+                }
             }
             OpCode::Mul => {
                 let lhs = use_var(&mut builder, &regs, &var_types, inst.b);
                 let rhs = use_var(&mut builder, &regs, &var_types, inst.c);
                 let is_float = is_float_op(&var_types, inst.b, inst.c);
-                let res = if is_float {
+                if is_float {
                     let lhs_f = emit_unbox_float(&mut builder, lhs);
                     let rhs_f = emit_unbox_float(&mut builder, rhs);
                     let r = builder.ins().fmul(lhs_f, rhs_f);
-                    emit_box_float(&mut builder, r)
+                    let res = emit_box_float(&mut builder, r);
+                    var_types.insert(inst.a as u32, JitVarType::Float);
+                    def_var(&mut builder, &mut regs, inst.a, res);
                 } else {
-                    let lhs_i = emit_unbox_int(&mut builder, lhs);
-                    let rhs_i = emit_unbox_int(&mut builder, rhs);
+                    // RawInt optimization: operate on unboxed ints, defer boxing
+                    let lhs_ty = var_types.get(&(inst.b as u32)).copied().unwrap_or(JitVarType::Int);
+                    let rhs_ty = var_types.get(&(inst.c as u32)).copied().unwrap_or(JitVarType::Int);
+                    let lhs_i = ensure_raw_int(&mut builder, lhs, lhs_ty);
+                    let rhs_i = ensure_raw_int(&mut builder, rhs, rhs_ty);
                     let r = builder.ins().imul(lhs_i, rhs_i);
-                    emit_box_int(&mut builder, r)
-                };
-                var_types.insert(
-                    inst.a as u32,
-                    if is_float {
-                        JitVarType::Float
+                    // Box if dest is a multi-block Variable (loop phi merge point).
+                    if regs.vars.contains_key(&inst.a) {
+                        let res_boxed = emit_box_int(&mut builder, r);
+                        var_types.insert(inst.a as u32, JitVarType::Int);
+                        def_var(&mut builder, &mut regs, inst.a, res_boxed);
                     } else {
-                        JitVarType::Int
-                    },
-                );
-                def_var(&mut builder, &mut regs, inst.a, res);
+                        var_types.insert(inst.a as u32, JitVarType::RawInt);
+                        def_var(&mut builder, &mut regs, inst.a, r);
+                    }
+                }
             }
             OpCode::Div => {
                 let lhs = use_var(&mut builder, &regs, &var_types, inst.b);
                 let rhs = use_var(&mut builder, &regs, &var_types, inst.c);
                 let is_float = is_float_op(&var_types, inst.b, inst.c);
-                let res = if is_float {
+                if is_float {
                     let rhs_f = emit_unbox_float(&mut builder, rhs);
                     let zero_f = builder.ins().f64const(0.0);
                     let is_zero = builder.ins().fcmp(FloatCC::Equal, rhs_f, zero_f);
@@ -2013,10 +2078,15 @@ pub(crate) fn lower_cell<M: Module>(
                     builder.ins().jump(merge_block, &[boxed]);
                     builder.switch_to_block(merge_block);
                     builder.seal_block(merge_block);
-                    builder.block_params(merge_block)[0]
+                    let res = builder.block_params(merge_block)[0];
+                    var_types.insert(inst.a as u32, JitVarType::Float);
+                    def_var(&mut builder, &mut regs, inst.a, res);
                 } else {
-                    let lhs_i = emit_unbox_int(&mut builder, lhs);
-                    let rhs_i = emit_unbox_int(&mut builder, rhs);
+                    // RawInt optimization: operate on unboxed ints, defer boxing
+                    let lhs_ty = var_types.get(&(inst.b as u32)).copied().unwrap_or(JitVarType::Int);
+                    let rhs_ty = var_types.get(&(inst.c as u32)).copied().unwrap_or(JitVarType::Int);
+                    let lhs_i = ensure_raw_int(&mut builder, lhs, lhs_ty);
+                    let rhs_i = ensure_raw_int(&mut builder, rhs, rhs_ty);
                     // Div-by-zero guard: branch to trap_block if rhs_i == 0.
                     let zero = builder.ins().iconst(types::I64, 0);
                     let is_zero = builder.ins().icmp(IntCC::Equal, rhs_i, zero);
@@ -2030,28 +2100,26 @@ pub(crate) fn lower_cell<M: Module>(
                     builder.seal_block(trap_block);
                     let sentinel = builder.ins().call(trap_divzero_ref, &[vm_ctx_param]);
                     let sentinel_val = builder.inst_results(sentinel)[0];
-                    let boxed_sentinel = emit_box_int(&mut builder, sentinel_val);
-                    builder.ins().jump(merge_block, &[boxed_sentinel]);
+                    builder.ins().jump(merge_block, &[sentinel_val]);
                     // Div block: perform the division, jump to merge with result.
                     builder.switch_to_block(div_block);
                     builder.seal_block(div_block);
                     let r = builder.ins().sdiv(lhs_i, rhs_i);
-                    let boxed = emit_box_int(&mut builder, r);
-                    builder.ins().jump(merge_block, &[boxed]);
-                    // Merge block: result is the block param.
+                    builder.ins().jump(merge_block, &[r]);
+                    // Merge block: result is the block param (RawInt).
                     builder.switch_to_block(merge_block);
                     builder.seal_block(merge_block);
-                    builder.block_params(merge_block)[0]
-                };
-                var_types.insert(
-                    inst.a as u32,
-                    if is_float {
-                        JitVarType::Float
+                    let res = builder.block_params(merge_block)[0];
+                    // Box if dest is a multi-block Variable (loop phi merge point).
+                    if regs.vars.contains_key(&inst.a) {
+                        let res_boxed = emit_box_int(&mut builder, res);
+                        var_types.insert(inst.a as u32, JitVarType::Int);
+                        def_var(&mut builder, &mut regs, inst.a, res_boxed);
                     } else {
-                        JitVarType::Int
-                    },
-                );
-                def_var(&mut builder, &mut regs, inst.a, res);
+                        var_types.insert(inst.a as u32, JitVarType::RawInt);
+                        def_var(&mut builder, &mut regs, inst.a, res);
+                    }
+                }
             }
             OpCode::Mod => {
                 let lhs = use_var(&mut builder, &regs, &var_types, inst.b);
@@ -2088,9 +2156,11 @@ pub(crate) fn lower_cell<M: Module>(
                     var_types.insert(inst.a as u32, JitVarType::Float);
                     def_var(&mut builder, &mut regs, inst.a, merged);
                 } else {
-                    // NaN-boxing: unbox ints, srem with div-by-zero guard.
-                    let lhs_i = emit_unbox_int(&mut builder, lhs);
-                    let rhs_i = emit_unbox_int(&mut builder, rhs);
+                    // RawInt optimization: operate on unboxed ints, defer boxing
+                    let lhs_ty = var_types.get(&(inst.b as u32)).copied().unwrap_or(JitVarType::Int);
+                    let rhs_ty = var_types.get(&(inst.c as u32)).copied().unwrap_or(JitVarType::Int);
+                    let lhs_i = ensure_raw_int(&mut builder, lhs, lhs_ty);
+                    let rhs_i = ensure_raw_int(&mut builder, rhs, rhs_ty);
                     let zero = builder.ins().iconst(types::I64, 0);
                     let is_zero = builder.ins().icmp(IntCC::Equal, rhs_i, zero);
                     let trap_block = builder.create_block();
@@ -2102,47 +2172,47 @@ pub(crate) fn lower_cell<M: Module>(
                     builder.seal_block(trap_block);
                     let sentinel = builder.ins().call(trap_divzero_ref, &[vm_ctx_param]);
                     let sentinel_val = builder.inst_results(sentinel)[0];
-                    let boxed_sentinel = emit_box_int(&mut builder, sentinel_val);
-                    builder.ins().jump(merge_block, &[boxed_sentinel]);
+                    builder.ins().jump(merge_block, &[sentinel_val]);
                     builder.switch_to_block(rem_block);
                     builder.seal_block(rem_block);
                     let res_i = builder.ins().srem(lhs_i, rhs_i);
-                    let res = emit_box_int(&mut builder, res_i);
-                    builder.ins().jump(merge_block, &[res]);
+                    builder.ins().jump(merge_block, &[res_i]);
                     builder.switch_to_block(merge_block);
                     builder.seal_block(merge_block);
                     let result = builder.block_params(merge_block)[0];
-                    var_types.insert(inst.a as u32, JitVarType::Int);
-                    def_var(&mut builder, &mut regs, inst.a, result);
+                    // Box if dest is a multi-block Variable (loop phi merge point).
+                    if regs.vars.contains_key(&inst.a) {
+                        let result_boxed = emit_box_int(&mut builder, result);
+                        var_types.insert(inst.a as u32, JitVarType::Int);
+                        def_var(&mut builder, &mut regs, inst.a, result_boxed);
+                    } else {
+                        var_types.insert(inst.a as u32, JitVarType::RawInt);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
                 }
             }
             OpCode::Neg => {
                 let operand = use_var(&mut builder, &regs, &var_types, inst.b);
-                let is_float = var_types.get(&(inst.b as u32)).copied() == Some(JitVarType::Float);
-                let res = if is_float {
+                let op_ty = var_types.get(&(inst.b as u32)).copied().unwrap_or(JitVarType::Int);
+                if op_ty == JitVarType::Float {
                     let f = emit_unbox_float(&mut builder, operand);
                     let r = builder.ins().fneg(f);
-                    emit_box_float(&mut builder, r)
+                    let res = emit_box_float(&mut builder, r);
+                    var_types.insert(inst.a as u32, JitVarType::Float);
+                    def_var(&mut builder, &mut regs, inst.a, res);
                 } else {
-                    let i = emit_unbox_int(&mut builder, operand);
+                    // RawInt optimization
+                    let i = ensure_raw_int(&mut builder, operand, op_ty);
                     let r = builder.ins().ineg(i);
-                    emit_box_int(&mut builder, r)
-                };
-                var_types.insert(
-                    inst.a as u32,
-                    if is_float {
-                        JitVarType::Float
-                    } else {
-                        JitVarType::Int
-                    },
-                );
-                def_var(&mut builder, &mut regs, inst.a, res);
+                    var_types.insert(inst.a as u32, JitVarType::RawInt);
+                    def_var(&mut builder, &mut regs, inst.a, r);
+                }
             }
             OpCode::FloorDiv => {
                 let lhs = use_var(&mut builder, &regs, &var_types, inst.b);
                 let rhs = use_var(&mut builder, &regs, &var_types, inst.c);
                 let is_float = is_float_op(&var_types, inst.b, inst.c);
-                let res = if is_float {
+                if is_float {
                     let rhs_f = emit_unbox_float(&mut builder, rhs);
                     let zero_f = builder.ins().f64const(0.0);
                     let is_zero = builder.ins().fcmp(FloatCC::Equal, rhs_f, zero_f);
@@ -2166,10 +2236,14 @@ pub(crate) fn lower_cell<M: Module>(
                     builder.ins().jump(merge_block, &[boxed]);
                     builder.switch_to_block(merge_block);
                     builder.seal_block(merge_block);
-                    builder.block_params(merge_block)[0]
+                    let res = builder.block_params(merge_block)[0];
+                    def_var(&mut builder, &mut regs, inst.a, res);
                 } else {
-                    let lhs_i = emit_unbox_int(&mut builder, lhs);
-                    let rhs_i = emit_unbox_int(&mut builder, rhs);
+                    // RawInt optimization: operate on unboxed ints, defer boxing
+                    let lhs_ty = var_types.get(&(inst.b as u32)).copied().unwrap_or(JitVarType::Int);
+                    let rhs_ty = var_types.get(&(inst.c as u32)).copied().unwrap_or(JitVarType::Int);
+                    let lhs_i = ensure_raw_int(&mut builder, lhs, lhs_ty);
+                    let rhs_i = ensure_raw_int(&mut builder, rhs, rhs_ty);
                     // Div-by-zero guard for integer floor division.
                     let zero = builder.ins().iconst(types::I64, 0);
                     let is_zero = builder.ins().icmp(IntCC::Equal, rhs_i, zero);
@@ -2182,26 +2256,24 @@ pub(crate) fn lower_cell<M: Module>(
                     builder.seal_block(trap_block);
                     let sentinel = builder.ins().call(trap_divzero_ref, &[vm_ctx_param]);
                     let sentinel_val = builder.inst_results(sentinel)[0];
-                    let boxed_sentinel = emit_box_int(&mut builder, sentinel_val);
-                    builder.ins().jump(merge_block, &[boxed_sentinel]);
+                    builder.ins().jump(merge_block, &[sentinel_val]);
                     builder.switch_to_block(div_block);
                     builder.seal_block(div_block);
                     let r = builder.ins().sdiv(lhs_i, rhs_i);
-                    let boxed = emit_box_int(&mut builder, r);
-                    builder.ins().jump(merge_block, &[boxed]);
+                    builder.ins().jump(merge_block, &[r]);
                     builder.switch_to_block(merge_block);
                     builder.seal_block(merge_block);
-                    builder.block_params(merge_block)[0]
-                };
-                var_types.insert(
-                    inst.a as u32,
-                    if is_float {
-                        JitVarType::Float
+                    let res = builder.block_params(merge_block)[0];
+                    // Box if dest is a multi-block Variable (loop phi merge point).
+                    if regs.vars.contains_key(&inst.a) {
+                        let res_boxed = emit_box_int(&mut builder, res);
+                        var_types.insert(inst.a as u32, JitVarType::Int);
+                        def_var(&mut builder, &mut regs, inst.a, res_boxed);
                     } else {
-                        JitVarType::Int
-                    },
-                );
-                def_var(&mut builder, &mut regs, inst.a, res);
+                        var_types.insert(inst.a as u32, JitVarType::RawInt);
+                        def_var(&mut builder, &mut regs, inst.a, res);
+                    }
+                }
             }
             OpCode::Pow => {
                 let lhs = use_var(&mut builder, &regs, &var_types, inst.b);
@@ -2310,8 +2382,13 @@ pub(crate) fn lower_cell<M: Module>(
                     let lhs_f = emit_unbox_float(&mut builder, lhs);
                     let rhs_f = emit_unbox_float(&mut builder, rhs);
                     builder.ins().fcmp(FloatCC::Equal, lhs_f, rhs_f)
+                } else if lhs_ty == JitVarType::RawInt || rhs_ty == JitVarType::RawInt {
+                    // RawInt (unboxed) vs Int (NaN-boxed): normalize both to raw before comparing.
+                    let lhs_i = ensure_raw_int(&mut builder, lhs, lhs_ty);
+                    let rhs_i = ensure_raw_int(&mut builder, rhs, rhs_ty);
+                    builder.ins().icmp(IntCC::Equal, lhs_i, rhs_i)
                 } else {
-                    // Int: can compare NaN-boxed values directly (monotonic)
+                    // Int: can compare NaN-boxed values directly (both are identically encoded)
                     builder.ins().icmp(IntCC::Equal, lhs, rhs)
                 };
                 let one = builder.ins().iconst(types::I64, 1);
@@ -2579,6 +2656,10 @@ pub(crate) fn lower_cell<M: Module>(
                 }
                 let val = use_var(&mut builder, &regs, &var_types, ret_reg);
                 // NaN-boxing: all values are I64, no bitcast needed.
+                // If the return value is a RawInt (from the RawInt optimization),
+                // box it before returning so callers receive a proper NaN-boxed value.
+                let ret_ty = var_types.get(&(ret_reg as u32)).copied().unwrap_or(JitVarType::Int);
+                let val = ensure_boxed_int(&mut builder, val, ret_ty);
                 builder.ins().return_(&[val]);
                 terminated = true;
             }
@@ -2691,13 +2772,24 @@ pub(crate) fn lower_cell<M: Module>(
                     if let Some(loop_block) = tco_loop_block {
                         let mut new_args: Vec<cranelift_codegen::ir::Value> =
                             Vec::with_capacity(num_args);
+                        let mut new_arg_types: Vec<JitVarType> = Vec::with_capacity(num_args);
                         for i in 0..num_args {
                             let arg_reg = base + 1 + i as u16;
-                            new_args.push(use_var(&mut builder, &regs, &var_types, arg_reg));
+                            let arg_ty = var_types.get(&(arg_reg as u32)).copied().unwrap_or(JitVarType::Int);
+                            let val = use_var(&mut builder, &regs, &var_types, arg_reg);
+                            // Box RawInt args before storing back to the loop variable,
+                            // so parameter registers are always in NaN-boxed form on
+                            // the next iteration (matches the initial parameter setup).
+                            let val = ensure_boxed_int(&mut builder, val, arg_ty);
+                            new_args.push(val);
+                            new_arg_types.push(if arg_ty == JitVarType::RawInt { JitVarType::Int } else { arg_ty });
                         }
-                        for (i, &val) in new_args.iter().enumerate() {
+                        for (i, (&val, &arg_ty)) in new_args.iter().zip(new_arg_types.iter()).enumerate() {
                             if i < regs.num_regs {
                                 def_var(&mut builder, &mut regs, i as u16, val);
+                                // Reset the type of the parameter register to its boxed form
+                                // so subsequent instructions (and Return) see the correct type.
+                                var_types.insert(i as u32, arg_ty);
                             }
                         }
                         builder.ins().jump(loop_block, &[]);
@@ -2905,58 +2997,71 @@ pub(crate) fn lower_cell<M: Module>(
             OpCode::NewMap => {
                 let count = inst.b as usize; // number of key-value pairs
 
-                // Allocate stack space for the array of key-value pointers (count * 2 * 8 bytes)
+                // Fast path: if ALL keys and values are JitString pointers, use
+                // jit_rt_new_map_strs which converts each in one copy (vs. the
+                // general path which does str_to_nb_ref → nb_decode = two copies).
+                let all_strings = count > 0 && (0..count).all(|i| {
+                    let key_reg = inst.a + 1 + (i * 2) as u16;
+                    let val_reg = inst.a + 2 + (i * 2) as u16;
+                    var_types.get(&(key_reg as u32)).copied() == Some(JitVarType::Str)
+                        && var_types.get(&(val_reg as u32)).copied() == Some(JitVarType::Str)
+                });
+
+                // Allocate stack space for key-value array (count * 2 * 8 bytes)
                 let slot = builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
-                    (count * 2 * 8) as u32,
+                    (count * 2 * 8).max(8) as u32,
                     8,
                 ));
                 let array_ptr = builder.ins().stack_addr(types::I64, slot, 0);
 
-                // Fill the array with alternating key and value pointers.
-                // jit_rt_new_map expects NaN-boxed values, so JitString pointers
-                // must be converted to NaN-boxed Value::String via str_to_nb.
-                for i in 0..count {
-                    let key_reg = inst.a + 1 + (i * 2) as u16;
-                    let val_reg = inst.a + 2 + (i * 2) as u16;
-                    let raw_key = use_var(&mut builder, &regs, &var_types, key_reg);
-                    let raw_value = use_var(&mut builder, &regs, &var_types, val_reg);
-                    let key_ty = var_types.get(&(key_reg as u32)).copied().unwrap_or(JitVarType::Int);
-                    let val_ty = var_types.get(&(val_reg as u32)).copied().unwrap_or(JitVarType::Int);
+                if all_strings {
+                    // Pass raw JitString pointers directly — no str_to_nb_ref overhead.
+                    for i in 0..count {
+                        let key_reg = inst.a + 1 + (i * 2) as u16;
+                        let val_reg = inst.a + 2 + (i * 2) as u16;
+                        let raw_key = use_var(&mut builder, &regs, &var_types, key_reg);
+                        let raw_value = use_var(&mut builder, &regs, &var_types, val_reg);
+                        builder.ins().store(MemFlags::new(), raw_key, array_ptr, (i * 2 * 8) as i32);
+                        builder.ins().store(MemFlags::new(), raw_value, array_ptr, ((i * 2 + 1) * 8) as i32);
+                    }
+                    let count_val = builder.ins().iconst(types::I64, count as i64);
+                    let call = builder.ins().call(new_map_strs_ref, &[vm_ctx_param, array_ptr, count_val]);
+                    let result = builder.inst_results(call)[0];
+                    var_types.insert(inst.a as u32, JitVarType::Ptr);
+                    def_var(&mut builder, &mut regs, inst.a, result);
+                } else {
+                    // General path: convert JitString to NaN-boxed Value via str_to_nb.
+                    for i in 0..count {
+                        let key_reg = inst.a + 1 + (i * 2) as u16;
+                        let val_reg = inst.a + 2 + (i * 2) as u16;
+                        let raw_key = use_var(&mut builder, &regs, &var_types, key_reg);
+                        let raw_value = use_var(&mut builder, &regs, &var_types, val_reg);
+                        let key_ty = var_types.get(&(key_reg as u32)).copied().unwrap_or(JitVarType::Int);
+                        let val_ty = var_types.get(&(val_reg as u32)).copied().unwrap_or(JitVarType::Int);
 
-                    // Convert JitString pointers to NaN-boxed values for the collection helper.
-                    let key = if key_ty == JitVarType::Str {
-                        let call = builder.ins().call(str_to_nb_ref, &[vm_ctx_param, raw_key]);
-                        builder.inst_results(call)[0]
-                    } else {
-                        raw_key
-                    };
-                    let value = if val_ty == JitVarType::Str {
-                        let call = builder.ins().call(str_to_nb_ref, &[vm_ctx_param, raw_value]);
-                        builder.inst_results(call)[0]
-                    } else {
-                        raw_value
-                    };
+                        let key = if key_ty == JitVarType::Str {
+                            let call = builder.ins().call(str_to_nb_ref, &[vm_ctx_param, raw_key]);
+                            builder.inst_results(call)[0]
+                        } else {
+                            raw_key
+                        };
+                        let value = if val_ty == JitVarType::Str {
+                            let call = builder.ins().call(str_to_nb_ref, &[vm_ctx_param, raw_value]);
+                            builder.inst_results(call)[0]
+                        } else {
+                            raw_value
+                        };
 
-                    let key_offset = (i * 2 * 8) as i32;
-                    let value_offset = ((i * 2 + 1) * 8) as i32;
-
-                    builder
-                        .ins()
-                        .store(MemFlags::new(), key, array_ptr, key_offset);
-                    builder
-                        .ins()
-                        .store(MemFlags::new(), value, array_ptr, value_offset);
+                        builder.ins().store(MemFlags::new(), key, array_ptr, (i * 2 * 8) as i32);
+                        builder.ins().store(MemFlags::new(), value, array_ptr, ((i * 2 + 1) * 8) as i32);
+                    }
+                    let count_val = builder.ins().iconst(types::I64, count as i64);
+                    let call = builder.ins().call(new_map_ref, &[vm_ctx_param, array_ptr, count_val]);
+                    let result = builder.inst_results(call)[0];
+                    var_types.insert(inst.a as u32, JitVarType::Ptr);
+                    def_var(&mut builder, &mut regs, inst.a, result);
                 }
-
-                // Call jit_rt_new_map(array_ptr, count)
-                let count_val = builder.ins().iconst(types::I64, count as i64);
-                let call = builder
-                    .ins()
-                    .call(new_map_ref, &[vm_ctx_param, array_ptr, count_val]);
-                let result = builder.inst_results(call)[0];
-                var_types.insert(inst.a as u32, JitVarType::Ptr);
-                def_var(&mut builder, &mut regs, inst.a, result);
             }
 
             // NewTuple: Create a tuple from register values
@@ -4255,14 +4360,17 @@ pub(crate) fn lower_cell<M: Module>(
                     }
 
                     // -------------------------------------------------------
-                    // 71: Merge — merge two maps/records
+                    // 71: Merge — merge two maps/records.
+                    // Uses merge_take_a which takes ownership of a's Arc so
+                    // Arc::make_mut can mutate in-place (O(log n)) instead of
+                    // deep-copying the BTreeMap (O(n)) on every call.
                     // -------------------------------------------------------
                     71 => {
                         let a = use_var(&mut builder, &regs, &var_types, arg_base);
                         let b = use_var(&mut builder, &regs, &var_types, arg_base + 1);
                         let call = builder
                             .ins()
-                            .call(merge_ref, &[vm_ctx_param, a, b]);
+                            .call(merge_take_a_ref, &[vm_ctx_param, a, b]);
                         let result = builder.inst_results(call)[0];
                         var_types.insert(inst.a as u32, JitVarType::Ptr);
                         def_var(&mut builder, &mut regs, inst.a, result);
@@ -4692,29 +4800,42 @@ pub(crate) fn lower_cell<M: Module>(
             OpCode::Is => {
                 // Is dest, val_reg, type_name_reg
                 // Instruction format: ABC (a=dest, b=val_reg, c=type_name_reg)
-                // Runtime helper signature:
-                //   jit_rt_is(vm_ctx, value_ptr, type_id) -> i64
                 //
-                // Returns NAN_BOX_TRUE if value's runtime type matches the type name,
-                // NAN_BOX_FALSE otherwise.
-                let is_sig = module.make_signature();
-                let is_fn = module
-                    .declare_function("jit_rt_is", Linkage::Import, &{
-                        let mut sig = is_sig;
-                        sig.params.push(AbiParam::new(pointer_type)); // vm_ctx
-                        sig.params.push(AbiParam::new(types::I64)); // value (NaN-boxed)
-                        sig.params.push(AbiParam::new(types::I64)); // type_id (NaN-boxed string or index)
-                        sig.returns.push(AbiParam::new(types::I64)); // result (NAN_BOX_TRUE/FALSE)
-                        sig
-                    })
-                    .map_err(|e| CodegenError::LoweringError(e.to_string()))?;
-                let is_ref = module.declare_func_in_func(is_fn, &mut builder.func);
-
+                // Fast path: if the type name is a compile-time constant (the common
+                // case — type names are always literals like "Tuple", "List", etc.),
+                // pass raw bytes directly to jit_rt_is_type_name instead of using a
+                // JitString pointer. This saves one malloc + string-drop per call.
                 let vm_ctx = vm_ctx_param;
                 let value = use_var(&mut builder, &regs, &var_types, inst.b);
-                let type_id = use_var(&mut builder, &regs, &var_types, inst.c);
-                let call = builder.ins().call(is_ref, &[vm_ctx, value, type_id]);
-                let result = builder.inst_results(call)[0];
+
+                let result = if let Some(type_name) = is_pc_to_type_name.get(&pc) {
+                    // Compile-time type name: embed raw bytes as constants.
+                    let name_bytes = type_name.as_bytes();
+                    let name_ptr = builder.ins().iconst(types::I64, name_bytes.as_ptr() as i64);
+                    let name_len = builder.ins().iconst(types::I64, name_bytes.len() as i64);
+                    let call = builder.ins().call(
+                        is_type_name_ref,
+                        &[vm_ctx, value, name_ptr, name_len],
+                    );
+                    builder.inst_results(call)[0]
+                } else {
+                    // Fallback: use JitString pointer (type name came from a variable).
+                    let is_sig = module.make_signature();
+                    let is_fn = module
+                        .declare_function("jit_rt_is", Linkage::Import, &{
+                            let mut sig = is_sig;
+                            sig.params.push(AbiParam::new(pointer_type)); // vm_ctx
+                            sig.params.push(AbiParam::new(types::I64)); // value (NaN-boxed)
+                            sig.params.push(AbiParam::new(types::I64)); // type_id (JitString ptr)
+                            sig.returns.push(AbiParam::new(types::I64)); // result
+                            sig
+                        })
+                        .map_err(|e| CodegenError::LoweringError(e.to_string()))?;
+                    let is_ref = module.declare_func_in_func(is_fn, &mut builder.func);
+                    let type_id = use_var(&mut builder, &regs, &var_types, inst.c);
+                    let call = builder.ins().call(is_ref, &[vm_ctx, value, type_id]);
+                    builder.inst_results(call)[0]
+                };
                 var_types.insert(inst.a as u32, JitVarType::Ptr);
                 def_var(&mut builder, &mut regs, inst.a, result);
             }
@@ -5125,6 +5246,117 @@ fn identify_call_name_registers(cell: &LirCell) -> std::collections::HashSet<usi
     }
 
     result
+}
+
+/// Identify LoadK PCs whose string constants are only used as `Is` type-name
+/// operands (register c of `Is` instructions). For those LoadKs we skip
+/// JitString heap allocation — the type name is embedded as raw bytes in the
+/// generated code. Returns both:
+///   - `HashSet<usize>`: LoadK PCs to skip JitString allocation for
+///   - `HashMap<usize, String>`: Is-instruction PCs → type name string
+fn identify_is_type_name_registers(
+    cell: &LirCell,
+) -> (
+    std::collections::HashSet<usize>,
+    std::collections::HashMap<usize, String>,
+) {
+    use std::collections::{HashMap, HashSet};
+
+    let mut skip_alloc: HashSet<usize> = HashSet::new();
+    let mut is_type_map: HashMap<usize, String> = HashMap::new();
+    let instructions = &cell.instructions;
+
+    // First pass: find all `Is` instructions and the register they use as type_name (inst.c).
+    // Trace each back through Move chains to find the defining LoadK.
+    for (is_pc, is_inst) in instructions.iter().enumerate() {
+        if is_inst.op != OpCode::Is {
+            continue;
+        }
+        let type_name_reg = is_inst.c;
+
+        // Walk backward from is_pc to find the LoadK that last defined type_name_reg.
+        // Simple backward scan — stops at the most recent definition.
+        let mut found_loadk_pc: Option<usize> = None;
+        let mut current_reg = type_name_reg;
+
+        'outer: for (scan_pc, scan_inst) in instructions[..is_pc].iter().enumerate().rev() {
+            if scan_inst.a == current_reg {
+                match scan_inst.op {
+                    OpCode::LoadK => {
+                        let bx = scan_inst.bx() as usize;
+                        if let Some(Constant::String(s)) = cell.constants.get(bx) {
+                            found_loadk_pc = Some(scan_pc);
+                            is_type_map.insert(is_pc, s.clone());
+                        }
+                        break 'outer;
+                    }
+                    OpCode::Move | OpCode::MoveOwn => {
+                        // Follow the move chain backward.
+                        current_reg = scan_inst.b;
+                    }
+                    _ => break 'outer,
+                }
+            }
+        }
+
+        if let Some(loadk_pc) = found_loadk_pc {
+            // Verify this LoadK's register is ONLY used as an Is type-name operand
+            // and is never passed to string-consuming instructions.
+            let origin_reg = instructions[loadk_pc].a;
+            let mut aliases: HashSet<u16> = HashSet::new();
+            aliases.insert(origin_reg);
+            let mut only_is_use = false;
+            let mut invalidated = false;
+
+            for inst in &instructions[(loadk_pc + 1)..=is_pc] {
+                match inst.op {
+                    OpCode::Is => {
+                        if aliases.contains(&inst.c) {
+                            only_is_use = true;
+                            aliases.remove(&inst.c);
+                        }
+                        // inst.b is the value operand — not a string use.
+                    }
+                    OpCode::Move | OpCode::MoveOwn => {
+                        if aliases.contains(&inst.b) {
+                            aliases.insert(inst.a);
+                        } else if aliases.contains(&inst.a) {
+                            aliases.remove(&inst.a);
+                        }
+                    }
+                    OpCode::LoadK | OpCode::LoadBool | OpCode::LoadInt | OpCode::LoadNil => {
+                        aliases.remove(&inst.a);
+                    }
+                    OpCode::Return => {
+                        if aliases.contains(&inst.a) {
+                            invalidated = true;
+                        }
+                        break;
+                    }
+                    _ => {
+                        // Any other use of the string register invalidates the optimization.
+                        if aliases.contains(&inst.b) || aliases.contains(&inst.c) {
+                            invalidated = true;
+                            break;
+                        }
+                        aliases.remove(&inst.a);
+                    }
+                }
+                if aliases.is_empty() {
+                    break;
+                }
+            }
+
+            if only_is_use && !invalidated {
+                skip_alloc.insert(loadk_pc);
+            } else {
+                // If invalidated, remove from is_type_map so we use the fallback path.
+                is_type_map.remove(&is_pc);
+            }
+        }
+    }
+
+    (skip_alloc, is_type_map)
 }
 
 /// Result of concat chain analysis: identifies chains of string Add/Concat

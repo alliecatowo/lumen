@@ -59,19 +59,138 @@ pub struct RecordValue {
     pub fields: BTreeMap<String, Value>,
 }
 
+/// Inline payload for union values. Avoids Arc allocation for scalar payloads
+/// (Null, Bool, Int, Float) which dominate in practice (e.g. Leaf(n) in tree
+/// benchmarks). Compound payloads fall back to `Heap(Arc<Value>)`.
+#[derive(Debug, Clone)]
+pub enum UnionPayload {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Heap(Arc<Value>),
+}
+
+impl UnionPayload {
+    /// Construct from a `Value`, inlining scalars and wrapping compounds in Arc.
+    #[inline]
+    pub fn from_value(v: Value) -> Self {
+        match v {
+            Value::Null => UnionPayload::Null,
+            Value::Bool(b) => UnionPayload::Bool(b),
+            Value::Int(n) => UnionPayload::Int(n),
+            Value::Float(f) => UnionPayload::Float(f),
+            other => UnionPayload::Heap(Arc::new(other)),
+        }
+    }
+
+    /// Construct from an existing `Arc<Value>`, inlining scalars.
+    /// For non-scalar values, reuses the Arc (no clone).
+    #[inline]
+    pub fn from_arc(arc: Arc<Value>) -> Self {
+        match &*arc {
+            Value::Null => UnionPayload::Null,
+            Value::Bool(b) => UnionPayload::Bool(*b),
+            Value::Int(n) => UnionPayload::Int(*n),
+            Value::Float(f) => UnionPayload::Float(*f),
+            _ => UnionPayload::Heap(arc),
+        }
+    }
+
+    /// Convert to a `Value`. Scalars are zero-copy; heap values are cloned.
+    #[inline]
+    pub fn to_value(&self) -> Value {
+        match self {
+            UnionPayload::Null => Value::Null,
+            UnionPayload::Bool(b) => Value::Bool(*b),
+            UnionPayload::Int(n) => Value::Int(*n),
+            UnionPayload::Float(f) => Value::Float(*f),
+            UnionPayload::Heap(v) => (**v).clone(),
+        }
+    }
+
+    /// Check if payload is null.
+    #[inline]
+    pub fn is_null(&self) -> bool {
+        matches!(self, UnionPayload::Null)
+    }
+
+    /// Pretty-display the payload (without string table).
+    pub fn display_pretty(&self) -> String {
+        match self {
+            UnionPayload::Null => "null".to_string(),
+            UnionPayload::Bool(b) => b.to_string(),
+            UnionPayload::Int(n) => n.to_string(),
+            UnionPayload::Float(f) => format_float(*f),
+            UnionPayload::Heap(v) => v.display_pretty(),
+        }
+    }
+
+    /// String representation, resolving interned strings via the provided table.
+    pub fn as_string_resolved(&self, strings: &crate::strings::StringTable) -> String {
+        match self {
+            UnionPayload::Null => "null".to_string(),
+            UnionPayload::Bool(b) => b.to_string(),
+            UnionPayload::Int(n) => n.to_string(),
+            UnionPayload::Float(f) => format_float(*f),
+            UnionPayload::Heap(v) => v.as_string_resolved(strings),
+        }
+    }
+}
+
+impl PartialEq for UnionPayload {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (UnionPayload::Null, UnionPayload::Null) => true,
+            (UnionPayload::Bool(a), UnionPayload::Bool(b)) => a == b,
+            (UnionPayload::Int(a), UnionPayload::Int(b)) => a == b,
+            (UnionPayload::Float(a), UnionPayload::Float(b)) => a.to_bits() == b.to_bits(),
+            (UnionPayload::Heap(a), UnionPayload::Heap(b)) => a == b,
+            // Cross-variant: compare as Values
+            _ => self.to_value() == other.to_value(),
+        }
+    }
+}
+
+impl Eq for UnionPayload {}
+
+impl PartialOrd for UnionPayload {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for UnionPayload {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.to_value().cmp(&other.to_value())
+    }
+}
+
+impl Serialize for UnionPayload {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.to_value().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for UnionPayload {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let v = Value::deserialize(deserializer)?;
+        Ok(UnionPayload::from_value(v))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UnionValue {
     /// Interned string ID for the variant tag (e.g., "Leaf", "Branch", "ok", "err").
     /// Resolved via `StringTable::resolve(tag)` when a human-readable name is needed.
     pub tag: u32,
-    pub payload: Arc<Value>,
+    pub payload: UnionPayload,
 }
 
 impl Serialize for UnionValue {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
         let mut s = serializer.serialize_struct("UnionValue", 2)?;
-        // Serialize the intern ID as-is; the deserializer will re-intern.
         s.serialize_field("tag", &self.tag)?;
         s.serialize_field("payload", &self.payload)?;
         s.end()
@@ -88,7 +207,7 @@ impl<'de> Deserialize<'de> for UnionValue {
         let h = Helper::deserialize(deserializer)?;
         Ok(UnionValue {
             tag: h.tag,
-            payload: Arc::new(h.payload),
+            payload: UnionPayload::from_value(h.payload),
         })
     }
 }
@@ -211,7 +330,7 @@ impl Value {
             }
             Value::Union(u) => {
                 // Without string table, show intern ID
-                if matches!(*u.payload, Value::Null) {
+                if u.payload.is_null() {
                     format!("<union:{}>", u.tag)
                 } else {
                     format!("<union:{}>({})", u.tag, u.payload.display_pretty())
@@ -236,7 +355,7 @@ impl Value {
             }
             Value::Union(u) => {
                 let tag_str = strings.resolve(u.tag).unwrap_or("<unknown>");
-                if matches!(*u.payload, Value::Null) {
+                if u.payload.is_null() {
                     tag_str.to_string()
                 } else {
                     format!("{}({})", tag_str, u.payload.as_string_resolved(strings))
@@ -426,7 +545,7 @@ impl Value {
             }
             Value::Union(u) => {
                 // Without string table, show intern ID
-                if matches!(*u.payload, Value::Null) {
+                if u.payload.is_null() {
                     format!("<union:{}>", u.tag)
                 } else {
                     format!("<union:{}>({})", u.tag, u.payload.display_pretty())
@@ -512,6 +631,18 @@ impl PartialEq for Value {
 
 impl Eq for Value {}
 
+/// Helper: compare two UnionPayloads with string resolution.
+fn union_payloads_equal(a: &UnionPayload, b: &UnionPayload, strings: &StringTable) -> bool {
+    match (a, b) {
+        (UnionPayload::Null, UnionPayload::Null) => true,
+        (UnionPayload::Bool(x), UnionPayload::Bool(y)) => x == y,
+        (UnionPayload::Int(x), UnionPayload::Int(y)) => x == y,
+        (UnionPayload::Float(x), UnionPayload::Float(y)) => x.to_bits() == y.to_bits(),
+        (UnionPayload::Heap(x), UnionPayload::Heap(y)) => values_equal(x, y, strings),
+        _ => values_equal(&a.to_value(), &b.to_value(), strings),
+    }
+}
+
 /// Compare two values for equality, resolving interned strings via the provided
 /// `StringTable`. This enables correct cross-representation string equality
 /// (interned vs owned) at all nesting depths (lists, maps, records, etc.).
@@ -581,7 +712,7 @@ pub fn values_equal(a: &Value, b: &Value, strings: &StringTable) -> bool {
                 })
         }
         (Value::Union(x), Value::Union(y)) => {
-            x.tag == y.tag && values_equal(&x.payload, &y.payload, strings)
+            x.tag == y.tag && union_payloads_equal(&x.payload, &y.payload, strings)
         }
         (Value::Closure(x), Value::Closure(y)) => {
             x.cell_idx == y.cell_idx && x.captures == y.captures
@@ -656,6 +787,7 @@ impl Ord for Value {
             (Value::Union(a), Value::Union(b)) => {
                 a.tag.cmp(&b.tag).then_with(|| a.payload.cmp(&b.payload))
             }
+
             (Value::Closure(a), Value::Closure(b)) => a
                 .cell_idx
                 .cmp(&b.cell_idx)

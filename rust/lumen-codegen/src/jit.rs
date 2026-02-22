@@ -707,6 +707,48 @@ pub extern "C" fn jit_rt_str_to_nb(_ctx: *mut VmContext, str_ptr: i64) -> i64 {
     (NBVAL_NAN_MASK | (ptr & NBVAL_PAYLOAD_MASK)) as i64
 }
 
+/// Create a new Map from an array of raw JitString pointer pairs (key, value, key, value, ...).
+/// Avoids the double-conversion overhead of str_to_nb_ref + nb_decode:
+/// each JitString is converted to a String with a single copy.
+///
+/// `pairs_ptr` points to `count * 2` i64 values: [key_ptr, val_ptr, key_ptr, val_ptr, ...]
+/// where each element is a raw `*mut JitString` (or 0 for empty string).
+/// Returns a NaN-boxed `Arc<Value::Map>` pointer.
+///
+/// # Safety
+/// All non-null pointers must be valid `*mut JitString` pointers.
+#[no_mangle]
+pub extern "C" fn jit_rt_new_map_strs(
+    _ctx: *mut VmContext,
+    pairs_ptr: *const i64,
+    count: i64,
+) -> i64 {
+    use lumen_core::values::StringRef;
+    use std::collections::BTreeMap;
+    let count = count as usize;
+    let mut map: BTreeMap<String, Value> = BTreeMap::new();
+    for i in 0..count {
+        let key_ptr = unsafe { *pairs_ptr.add(i * 2) };
+        let val_ptr = unsafe { *pairs_ptr.add(i * 2 + 1) };
+        let key_str = if key_ptr == 0 {
+            String::new()
+        } else {
+            let js = unsafe { &*(key_ptr as *const JitString) };
+            unsafe { js.as_str() }.to_string()
+        };
+        let val_str = if val_ptr == 0 {
+            String::new()
+        } else {
+            let js = unsafe { &*(val_ptr as *const JitString) };
+            unsafe { js.as_str() }.to_string()
+        };
+        map.insert(key_str, Value::String(StringRef::Owned(val_str)));
+    }
+    let map_value = Value::new_map(map);
+    let ptr = Arc::into_raw(Arc::new(map_value)) as u64;
+    (NBVAL_NAN_MASK | (ptr & NBVAL_PAYLOAD_MASK)) as i64
+}
+
 /// Register all JIT string runtime helper symbols with a JITBuilder.
 fn register_string_helpers(builder: &mut JITBuilder) {
     builder.symbol("jit_rt_malloc", jit_rt_malloc as *const u8);
@@ -1178,6 +1220,14 @@ fn register_collection_helpers(builder: &mut JITBuilder) {
     builder.symbol(
         "jit_rt_merge",
         crate::collection_helpers::jit_rt_merge as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_merge_take_a",
+        crate::collection_helpers::jit_rt_merge_take_a as *const u8,
+    );
+    builder.symbol(
+        "jit_rt_new_map_strs",
+        jit_rt_new_map_strs as *const u8,
     );
     builder.symbol(
         "jit_rt_union_is_variant_by_id",
@@ -2165,10 +2215,76 @@ extern "C" fn jit_rt_is(_ctx: *mut VmContext, _value_ptr: i64, _type_id: i64) ->
     NAN_BOX_FALSE
 }
 
+/// Fast `Is` type check with a compile-time-constant type name (raw bytes).
+/// Called by the JIT when the type name is known at code-generation time,
+/// avoiding the JitString heap allocation that `jit_rt_is` requires.
+///
+/// Returns `NAN_BOX_TRUE` if the value's runtime type matches `name`, or
+/// `NAN_BOX_FALSE` otherwise.
+///
+/// # Safety
+/// `name_ptr` must point to valid UTF-8 bytes of length `name_len`.
+extern "C" fn jit_rt_is_type_name(
+    _ctx: *mut VmContext,
+    value_ptr: i64,
+    name_ptr: i64,
+    name_len: usize,
+) -> i64 {
+    let type_name =
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr as *const u8, name_len)) };
+
+    // Determine the runtime type of value_ptr.
+    let u = value_ptr as u64;
+    let runtime_type = if (u & NBVAL_NAN_MASK) != NBVAL_NAN_MASK {
+        // Raw f64 (not NaN-boxed): Float
+        "Float"
+    } else {
+        let tag = (u >> 48) & 0x7;
+        let payload = u & NBVAL_PAYLOAD_MASK;
+        match tag {
+            0 => {
+                // TAG_PTR
+                if payload == 0 {
+                    "Null"
+                } else if payload == 1 {
+                    "Float" // NaN sentinel
+                } else {
+                    let value = unsafe { &*(payload as *const Value) };
+                    match value {
+                        Value::List(_) => "List",
+                        Value::Tuple(_) => "Tuple",
+                        Value::Map(_) => "Map",
+                        Value::Set(_) => "Set",
+                        Value::Record(_) => "Record",
+                        Value::Union(_) => "Union",
+                        Value::String(_) => "String",
+                        Value::Int(_) => "Int",
+                        Value::Float(_) => "Float",
+                        Value::Bool(_) => "Bool",
+                        Value::Null => "Null",
+                        _ => "Unknown",
+                    }
+                }
+            }
+            1 => "Int",
+            3 => "Bool",
+            4 => "Null",
+            _ => "Unknown",
+        }
+    };
+
+    if runtime_type == type_name {
+        NAN_BOX_TRUE
+    } else {
+        NAN_BOX_FALSE
+    }
+}
+
 /// Register all JIT type/membership runtime helper symbols with a JITBuilder.
 fn register_type_helpers(builder: &mut JITBuilder) {
     builder.symbol("jit_rt_in", jit_rt_in as *const u8);
     builder.symbol("jit_rt_is", jit_rt_is as *const u8);
+    builder.symbol("jit_rt_is_type_name", jit_rt_is_type_name as *const u8);
 }
 
 // ---------------------------------------------------------------------------

@@ -4069,8 +4069,14 @@ impl<'a> Lowerer<'a> {
                             // preserve value semantics for `append(xs, v)` expressions.
                             if !matches!(list_expr, Expr::Ident(_, _)) {
                                 let list_reg = self.lower_expr(list_expr, ra, consts, instrs);
-                                let elem_reg = self.lower_expr(call_arg_expr(&args[1]), ra, consts, instrs);
-                                instrs.push(Instruction::abc(OpCode::Append, list_reg, elem_reg, 0));
+                                let elem_reg =
+                                    self.lower_expr(call_arg_expr(&args[1]), ra, consts, instrs);
+                                instrs.push(Instruction::abc(
+                                    OpCode::Append,
+                                    list_reg,
+                                    elem_reg,
+                                    0,
+                                ));
                                 return list_reg;
                             }
                         }
@@ -5398,6 +5404,8 @@ impl<'a> Lowerer<'a> {
                         param_count: handler.params.len() as u8,
                         handler_ip: 0, // patched later
                     });
+                    self.intern_string(&handler.effect_name);
+                    self.intern_string(&handler.operation);
                     let push_idx = instrs.len();
                     // Placeholder: a=meta_idx, bx=0 (patched later)
                     instrs.push(Instruction::abx(OpCode::HandlePush, meta_idx as u16, 0));
@@ -6235,7 +6243,8 @@ mod tests {
 
     #[test]
     fn test_append_assignment_fast_path_still_uses_append_opcode() {
-        let src = "cell grow() -> list[Int]\n  let xs = [1]\n  xs = append(xs, 2)\n  return xs\nend";
+        let src =
+            "cell grow() -> list[Int]\n  let xs = [1]\n  xs = append(xs, 2)\n  return xs\nend";
         let module = lower_src(src);
         let instrs = &module.cells[0].instructions;
         assert!(

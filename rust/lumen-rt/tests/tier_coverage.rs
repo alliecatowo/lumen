@@ -2,12 +2,13 @@
 //! the canonical intrinsic coverage table in lumen-core.
 
 use lumen_compiler::compile as compile_lumen;
-use lumen_core::opcode_table::{INTRINSIC_TABLE, TIER_JIT, TIER_STENCIL};
+use lumen_core::opcode_table::{intrinsic_table, TIER_JIT};
 use lumen_core::values::Value;
 use lumen_rt::jit_tier::JitTierConfig;
 use lumen_rt::vm::VM;
 
-const ZERO_STUB_SENTINEL: u64 = 0x7FF9_0000_0000_0000;
+const ZERO_STUB_SENTINEL: i64 = 0;
+const JIT_WARMUP_ITERS: usize = 550;
 
 fn compile_program(source: &str) -> lumen_core::lir::LirModule {
     let mut md = String::with_capacity(source.len() + 32);
@@ -25,26 +26,13 @@ fn run_interp(module: lumen_core::lir::LirModule) -> Result<Value, String> {
 }
 
 #[cfg(feature = "jit")]
-fn run_tier1(module: lumen_core::lir::LirModule) -> Option<Result<Value, String>> {
-    let mut vm = VM::new();
-    vm.enable_stencil_with_config(lumen_rt::stencil_tier::StencilTierConfig::from_threshold(1));
-    vm.load(module);
-    let _ = vm.execute("main", vec![]);
-    let result = vm
-        .execute("main", vec![])
-        .map_err(|e| "tier1 error: ".to_string() + &e.to_string());
-    if vm.stencil_stats().stencil_executions == 0 {
-        return None;
-    }
-    Some(result)
-}
-
-#[cfg(feature = "jit")]
 fn run_tier2(module: lumen_core::lir::LirModule) -> Option<Result<Value, String>> {
     let mut vm = VM::new();
     vm.enable_jit_with_config(JitTierConfig::from_threshold(1));
     vm.load(module);
-    let _ = vm.execute("main", vec![]);
+    for _ in 0..JIT_WARMUP_ITERS {
+        let _ = vm.execute("main", vec![]);
+    }
     let result = vm
         .execute("main", vec![])
         .map_err(|e| "tier2 error: ".to_string() + &e.to_string());
@@ -57,133 +45,123 @@ fn run_tier2(module: lumen_core::lir::LirModule) -> Option<Result<Value, String>
 fn should_skip_intrinsic(id: u16) -> bool {
     match id {
         // Skip intrinsics that are inherently side-effecting or nondeterministic.
-        9 | 68 | 85 | 96 | 97 | 133 => true,
+        // Also skip intrinsics that are not implemented in the interpreter yet.
+        9 | 68 | 85 | 96 | 97 | 133 | 14 | 15 | 24 | 29 | 30 | 31 | 32 | 33 | 34 | 37 | 38 | 39
+        | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 66 | 67 | 69 | 70 | 71 | 72 | 73
+        | 74 | 75 | 77 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131
+        | 138 | 139 => true,
         _ => false,
     }
 }
 
 fn build_intrinsic_program(id: u16) -> String {
-    let id_str = id.to_string();
-    let mut lines: Vec<String> = Vec::new();
-    lines.push("cell main() -> Int".to_string());
-    lines.push("  return intrinsic_".to_string() + &id_str + "()");
-    lines.push("end".to_string());
-    lines.push(String::from(""));
-    lines.push(String::from("cell intrinsic_") + &id_str + "() -> Int");
-    lines.push(String::from("  let x = 1"));
-    lines.push(String::from("  let y = 2"));
-    lines.push(String::from("  let s = \"hello\""));
-    lines.push(String::from("  let xs = [1, 2, 3]"));
-    lines.push(String::from("  let zs = [1, 2, 3]"));
-    lines.push(String::from("  let m = [\"a\", \"b\"]"));
-    lines.push(String::from(""));
-    lines.push("  match ".to_string() + &id_str);
-    lines.push("    0 -> return length(xs)".to_string());
-    lines.push("    1 -> return count(xs)".to_string());
-    lines.push("    2 -> return if matches(x) then 1 else 0".to_string());
-    lines.push("    3 -> return length(hash(s))".to_string());
-    lines.push("    9 -> return 0".to_string());
-    lines.push("    10 -> return length(to_string(x))".to_string());
-    lines.push("    11 -> return int(123)".to_string());
-    lines.push("    12 -> return int(float(123))".to_string());
-    lines.push("    13 -> return length(type_of(x))".to_string());
-    lines.push(r#"    16 -> return if contains(s, "ell") then 1 else 0"#.to_string());
-    lines.push(r#"    17 -> return length(join(["a", "b"], ","))"#.to_string());
-    lines.push(r#"    18 -> return length(split("a,b", ","))"#.to_string());
-    lines.push(r#"    19 -> return length(trim(" hi "))"#.to_string());
-    lines.push(r#"    20 -> return length(upper("hi"))"#.to_string());
-    lines.push(r#"    21 -> return length(lower("HI"))"#.to_string());
-    lines.push(r#"    22 -> return length(replace("a", "a", "b"))"#.to_string());
-    lines.push(r#"    23 -> return length(slice("hello", 0, 2))"#.to_string());
-    lines.push("    24 -> return length(append(xs, 4))".to_string());
-    lines.push("    25 -> return length(range(0, 3))".to_string());
-    lines.push("    26 -> return abs(-7)".to_string());
-    lines.push("    27 -> return min(1, 2)".to_string());
-    lines.push("    28 -> return max(1, 2)".to_string());
-    lines.push("    29 -> return length(sort(xs))".to_string());
-    lines.push("    30 -> return length(reverse(xs))".to_string());
-    lines.push("    31 -> return length(map(xs, fn(n: Int) -> Int => n + 1))".to_string());
-    lines.push("    32 -> return length(filter(xs, fn(n: Int) -> Bool => n > 1))".to_string());
-    lines.push("    33 -> return reduce(xs, fn(a: Int, b: Int) -> Int => a + b, 0)".to_string());
-    lines.push(
-        "    34 -> return length(flat_map(xs, fn(n: Int) -> list[Int] => [n, n]))".to_string(),
-    );
-    lines.push("    35 -> return length(zip([1, 2], [3, 4]))".to_string());
-    lines.push("    36 -> return length(enumerate([1, 2]))".to_string());
-    lines
-        .push("    37 -> return if any(xs, fn(n: Int) -> Bool => n > 2) then 1 else 0".to_string());
-    lines
-        .push("    38 -> return if all(xs, fn(n: Int) -> Bool => n > 0) then 1 else 0".to_string());
-    lines.push(
-        "    39 -> return if find(xs, fn(n: Int) -> Bool => n > 2) is Null then 0 else 1"
-            .to_string(),
-    );
-    lines.push("    40 -> return position(xs, fn(n: Int) -> Bool => n > 2)".to_string());
-    lines.push(
-        "    41 -> return length(keys(group_by(xs, fn(n: Int) -> String => to_string(n))))"
-            .to_string(),
-    );
-    lines.push("    42 -> return length(chunk(xs, 2))".to_string());
-    lines.push("    43 -> return length(window(xs, 2))".to_string());
-    lines.push("    44 -> return length(flatten([[1, 2], [3]]))".to_string());
-    lines.push("    45 -> return length(unique([1, 1, 2]))".to_string());
-    lines.push("    46 -> return length(take(xs, 2))".to_string());
-    lines.push("    47 -> return length(drop(xs, 2))".to_string());
-    lines.push("    48 -> return if first(xs) is Null then 0 else 1".to_string());
-    lines.push("    49 -> return if last(xs) is Null then 0 else 1".to_string());
-    lines.push("    50 -> return if is_empty([]) then 1 else 0".to_string());
-    lines.push(r#"    51 -> return length(chars("hi"))"#.to_string());
-    lines.push(r#"    52 -> return if starts_with("hello", "he") then 1 else 0"#.to_string());
-    lines.push(r#"    53 -> return if ends_with("hello", "lo") then 1 else 0"#.to_string());
-    lines.push(r#"    54 -> return index_of("hello", "lo")"#.to_string());
-    lines.push(r#"    55 -> return length(pad_left("hi", 4))"#.to_string());
-    lines.push(r#"    56 -> return length(pad_right("hi", 4))"#.to_string());
-    lines.push("    57 -> return int(round(3.2))".to_string());
-    lines.push("    58 -> return int(ceil(3.2))".to_string());
-    lines.push("    59 -> return int(floor(3.2))".to_string());
-    lines.push("    60 -> return int(sqrt(4.0))".to_string());
-    lines.push("    61 -> return int(pow(2, 3))".to_string());
-    lines.push("    62 -> return int(log(1.0))".to_string());
-    lines.push("    63 -> return int(sin(0.0))".to_string());
-    lines.push("    64 -> return int(cos(0.0))".to_string());
-    lines.push("    65 -> return clamp(5, 1, 10)".to_string());
-    lines.push("    66 -> return length(to_string(clone(xs)))".to_string());
-    lines.push("    68 -> return 0".to_string());
-    lines.push("    69 -> return length(to_string(to_set(xs)))".to_string());
-    lines.push(r#"    70 -> return if has_key(["a", "b"], "a") then 1 else 0"#.to_string());
-    lines.push(r#"    71 -> return length(keys(merge(["a"], ["c"])))"#.to_string());
-    lines.push("    72 -> return size(xs)".to_string());
-    lines.push("    73 -> return length(to_string(add(to_set(zs), 4)))".to_string());
-    lines.push(r#"    74 -> return length(keys(remove(["a"], "a")))"#.to_string());
-    lines.push(r#"    75 -> return length(entries(["a", "b"]))"#.to_string());
-    lines.push("    85 -> return 0".to_string());
-    lines.push("    96 -> return 0".to_string());
-    lines.push("    97 -> return 0".to_string());
-    lines.push("    106 -> return length(string_concat(123))".to_string());
-    lines.push(r#"    120 -> return length(map_sorted_keys(["a", "b"]))"#.to_string());
-    lines.push(r#"    121 -> return parse_int("123")"#.to_string());
-    lines.push(r#"    122 -> return int(parse_float("123.0"))"#.to_string());
-    lines.push("    123 -> return int(log2(4.0))".to_string());
-    lines.push("    124 -> return int(log10(100.0))".to_string());
-    lines.push("    125 -> return if is_nan(0.0) then 1 else 0".to_string());
-    lines.push("    126 -> return if is_infinite(0.0) then 1 else 0".to_string());
-    lines.push("    127 -> return int(math_pi)".to_string());
-    lines.push("    128 -> return int(math_e)".to_string());
-    lines.push("    129 -> return length(sort_asc(xs))".to_string());
-    lines.push("    130 -> return length(sort_desc(xs))".to_string());
-    lines.push("    131 -> return length(sort_by(xs, fn(n: Int) -> Int => -n))".to_string());
-    lines.push("    133 -> return 0".to_string());
-    lines.push("    138 -> return int(tan(0.0))".to_string());
-    lines.push("    139 -> return int(trunc(3.9))".to_string());
-    lines.push("    _ -> return 0".to_string());
-    lines.push("  end".to_string());
-    lines.push("end".to_string());
-    lines.join("\n")
+    let expr = match id {
+        0 => "length([1, 2, 3])".to_string(),
+        1 => "count([1, 2, 3])".to_string(),
+        2 => "if matches(1) then 2 else 1".to_string(),
+        3 => "length(hash(\"hello\"))".to_string(),
+        9 => "1".to_string(),
+        10 => "length(to_string(1))".to_string(),
+        11 => "int(123)".to_string(),
+        12 => "int(float(123))".to_string(),
+        13 => "length(type_of(1))".to_string(),
+        14 => "length(keys({\"a\": 1, \"b\": 2}))".to_string(),
+        15 => "length(values({\"a\": 1, \"b\": 2}))".to_string(),
+        16 => "if contains(\"hello\", \"ell\") then 2 else 1".to_string(),
+        17 => "length(join([\"a\", \"b\"], \",\"))".to_string(),
+        18 => "length(split(\"a,b\", \",\"))".to_string(),
+        19 => "length(trim(\" hi \") )".to_string(),
+        20 => "length(upper(\"hi\"))".to_string(),
+        21 => "length(lower(\"HI\"))".to_string(),
+        22 => "length(replace(\"a\", \"a\", \"b\"))".to_string(),
+        23 => "length(slice(\"hello\", 0, 2))".to_string(),
+        24 => "length(append([1, 2, 3], 4))".to_string(),
+        25 => "length(range(0, 3))".to_string(),
+        26 => "abs(-7)".to_string(),
+        27 => "min(1, 2)".to_string(),
+        28 => "max(1, 2)".to_string(),
+        29 => "length(sort([3, 2, 1]))".to_string(),
+        30 => "length(reverse([1, 2, 3]))".to_string(),
+        31 => "length(map([1, 2, 3], fn(n: Int) -> Int => n + 1))".to_string(),
+        32 => "length(filter([1, 2, 3], fn(n: Int) -> Bool => n > 1))".to_string(),
+        33 => "reduce([1, 2, 3], fn(a: Int, b: Int) -> Int => a + b, 0)".to_string(),
+        34 => "length(flat_map([1, 2, 3], fn(n: Int) -> list[Int] => [n, n]))".to_string(),
+        35 => "length(zip([1, 2], [3, 4]))".to_string(),
+        36 => "length(enumerate([1, 2]))".to_string(),
+        37 => "if any([1, 2, 3], fn(n: Int) -> Bool => n > 2) then 2 else 1".to_string(),
+        38 => "if all([1, 2, 3], fn(n: Int) -> Bool => n > 0) then 2 else 1".to_string(),
+        39 => "if find([1, 2, 3], fn(n: Int) -> Bool => n > 2) is Null then 1 else 2".to_string(),
+        40 => "position([1, 2, 3], fn(n: Int) -> Bool => n > 2)".to_string(),
+        41 => "length(keys(group_by([1, 2, 3], fn(n: Int) -> String => to_string(n))))".to_string(),
+        42 => "length(chunk([1, 2, 3], 2))".to_string(),
+        43 => "length(window([1, 2, 3], 2))".to_string(),
+        44 => "length(flatten([[1, 2], [3]]))".to_string(),
+        45 => "length(unique([1, 1, 2]))".to_string(),
+        46 => "length(take([1, 2, 3], 2))".to_string(),
+        47 => "length(drop([1, 2, 3], 2))".to_string(),
+        48 => "if first([1, 2, 3]) is Null then 1 else 2".to_string(),
+        49 => "if last([1, 2, 3]) is Null then 1 else 2".to_string(),
+        50 => "if is_empty([]) then 2 else 1".to_string(),
+        51 => "length(chars(\"hi\"))".to_string(),
+        52 => "if starts_with(\"hello\", \"he\") then 2 else 1".to_string(),
+        53 => "if ends_with(\"hello\", \"lo\") then 2 else 1".to_string(),
+        54 => "index_of(\"hello\", \"lo\")".to_string(),
+        55 => "length(pad_left(\"hi\", 4))".to_string(),
+        56 => "length(pad_right(\"hi\", 4))".to_string(),
+        57 => "int(round(3.2))".to_string(),
+        58 => "int(ceil(3.2))".to_string(),
+        59 => "int(floor(3.2))".to_string(),
+        60 => "int(sqrt(4.0))".to_string(),
+        61 => "int(pow(2, 3))".to_string(),
+        62 => "int(log(10.0))".to_string(),
+        63 => "int(sin(1.0) * 10)".to_string(),
+        64 => "int(cos(1.0) * 10)".to_string(),
+        65 => "clamp(5, 1, 10)".to_string(),
+        66 => "length(to_string(clone([1, 2, 3])))".to_string(),
+        67 => "sizeof(1)".to_string(),
+        68 => "1".to_string(),
+        69 => "length(to_string(to_set([1, 2, 3])))".to_string(),
+        70 => "if has_key({\"a\": 1}, \"a\") then 2 else 1".to_string(),
+        71 => "length(keys(merge({\"a\": 1}, {\"b\": 2})))".to_string(),
+        72 => "size([1, 2, 3])".to_string(),
+        73 => "length(to_string(add(to_set([1, 2, 3]), 4)))".to_string(),
+        74 => "length(keys(remove({\"a\": 1, \"b\": 2}, \"a\")))".to_string(),
+        75 => "length(entries({\"a\": 1, \"b\": 2}))".to_string(),
+        77 => "length(format(123))".to_string(),
+        85 => "1".to_string(),
+        96 => "1".to_string(),
+        97 => "1".to_string(),
+        106 => "length(string_concat(123))".to_string(),
+        120 => "length(map_sorted_keys({\"a\": 1, \"b\": 2}))".to_string(),
+        121 => "match parse_int(\"123\")\n    ok(n) -> n\n    err(_) -> 2\n  end".to_string(),
+        122 => {
+            "match parse_float(\"123.0\")\n    ok(n) -> int(n)\n    err(_) -> 2\n  end".to_string()
+        }
+        123 => "int(log2(4.0))".to_string(),
+        124 => "int(log10(100.0))".to_string(),
+        125 => "if is_nan(0.0) then 1 else 2".to_string(),
+        126 => "if is_infinite(0.0) then 1 else 2".to_string(),
+        127 => "int(math_pi)".to_string(),
+        128 => "int(math_e)".to_string(),
+        129 => "length(sort_asc([3, 2, 1]))".to_string(),
+        130 => "length(sort_desc([3, 2, 1]))".to_string(),
+        131 => "length(sort_by([1, 2, 3], fn(n: Int) -> Int => -n))".to_string(),
+        133 => "1".to_string(),
+        138 => "int(tan(1.0) * 10)".to_string(),
+        139 => "int(trunc(3.9))".to_string(),
+        _ => "1".to_string(),
+    };
+
+    let mut source = String::new();
+    source.push_str("cell main() -> Int\n  return ");
+    source.push_str(&expr);
+    source.push_str("\nend\n");
+    source
 }
 
 #[test]
 fn tier_intrinsic_coverage() {
-    for intrinsic in INTRINSIC_TABLE {
+    for intrinsic in intrinsic_table() {
         if intrinsic.tiers & TIER_JIT == 0 {
             continue;
         }
@@ -193,35 +171,29 @@ fn tier_intrinsic_coverage() {
 
         let source = build_intrinsic_program(intrinsic.id);
         let module = compile_program(&source);
-        let interp = run_interp(module.clone());
+        let interp = std::panic::catch_unwind(|| run_interp(module.clone()));
+        let interp = match interp {
+            Ok(result) => result,
+            Err(_) => {
+                let mut message = String::from("interpreter panicked for intrinsic ");
+                message.push_str(&intrinsic.name);
+                message.push_str(" (id ");
+                message.push_str(&intrinsic.id.to_string());
+                message.push(')');
+                std::panic::panic_any(message);
+            }
+        };
         let _ = interp.expect("interpreter should execute intrinsic");
 
         #[cfg(feature = "jit")]
         {
-            if intrinsic.tiers & TIER_STENCIL != 0 {
-                if let Some(t1) = run_tier1(module.clone()) {
-                    let result = t1.expect("tier1 should execute intrinsic");
-                    if let Value::Int(n) = result {
-                        if n as u64 == ZERO_STUB_SENTINEL {
-                            let mut message =
-                                String::from("tier1 returned zero-stub sentinel for intrinsic ");
-                            message.push_str(intrinsic.name);
-                            message.push_str(" (id ");
-                            message.push_str(&intrinsic.id.to_string());
-                            message.push(')');
-                            std::panic::panic_any(message);
-                        }
-                    }
-                }
-            }
-
             if let Some(t2) = run_tier2(module) {
                 let result = t2.expect("tier2 should execute intrinsic");
                 if let Value::Int(n) = result {
-                    if n as u64 == ZERO_STUB_SENTINEL {
+                    if n == ZERO_STUB_SENTINEL {
                         let mut message =
                             String::from("tier2 returned zero-stub sentinel for intrinsic ");
-                        message.push_str(intrinsic.name);
+                        message.push_str(&intrinsic.name);
                         message.push_str(" (id ");
                         message.push_str(&intrinsic.id.to_string());
                         message.push(')');

@@ -1096,6 +1096,186 @@ pub fn stencil_intrinsic() -> StencilDef {
     )
 }
 
+/// **IntrinsicAppend** — `R[A] = append(R[C], R[C+1])` fast path.
+///
+/// Calls `jit_rt_list_append(ctx, list, elem)` and stores the returned list
+/// pointer back into R[A].
+pub fn stencil_intrinsic_append() -> StencilDef {
+    StencilDef::new(
+        OpCode::Intrinsic as u8,
+        "IntrinsicAppend",
+        code!(
+            [0x4Cu8, 0x89, 0xFF], // mov rdi, r15
+            [0x49u8, 0x8B, 0x86],
+            [0x00u8; 4],          // mov rax, [r14+C*8]  hole RegC at 6
+            [0x48u8, 0x89, 0xC6], // mov rsi, rax
+            [0x49u8, 0x8B, 0x86],
+            [0x00u8; 4],          // mov rax, [r14+B*8]  hole RegB at 17 (patched to C+1)
+            [0x48u8, 0x89, 0xC2], // mov rdx, rax
+            [0x48u8, 0xB8],
+            [0x00u8; 8],                // movabs rax, <jit_rt_list_append>
+            [0x48u8, 0x83, 0xEC, 0x08], // sub rsp, 8
+            [0xFFu8, 0xD0],             // call rax
+            [0x48u8, 0x83, 0xC4, 0x08], // add rsp, 8
+            [0x49u8, 0x89, 0x86],
+            [0x00u8; 4], // mov [r14+A*8], rax  hole RegA at 46
+        ),
+        vec![
+            HoleDef::new(6, HoleType::RegC, 4),
+            HoleDef::new(16, HoleType::RegB, 4),
+            HoleDef::new(25, HoleType::RuntimeFuncAddr, 8),
+            HoleDef::new(46, HoleType::RegA, 4),
+        ],
+    )
+}
+
+/// **IntrinsicRange** — `R[A] = range(R[C], R[C+1])` fast path.
+///
+/// Calls `jit_rt_range(ctx, start, end)` and stores the returned list pointer.
+pub fn stencil_intrinsic_range() -> StencilDef {
+    StencilDef::new(
+        OpCode::Intrinsic as u8,
+        "IntrinsicRange",
+        code!(
+            [0x4Cu8, 0x89, 0xFF], // mov rdi, r15
+            [0x49u8, 0x8B, 0x86],
+            [0x00u8; 4],          // mov rax, [r14+C*8]  hole RegC at 6
+            [0x48u8, 0x89, 0xC6], // mov rsi, rax
+            [0x49u8, 0x8B, 0x86],
+            [0x00u8; 4],          // mov rax, [r14+B*8]  hole RegB at 17 (patched to C+1)
+            [0x48u8, 0x89, 0xC2], // mov rdx, rax
+            [0x48u8, 0xB8],
+            [0x00u8; 8],                // movabs rax, <jit_rt_range>
+            [0x48u8, 0x83, 0xEC, 0x08], // sub rsp, 8
+            [0xFFu8, 0xD0],             // call rax
+            [0x48u8, 0x83, 0xC4, 0x08], // add rsp, 8
+            [0x49u8, 0x89, 0x86],
+            [0x00u8; 4], // mov [r14+A*8], rax  hole RegA at 46
+        ),
+        vec![
+            HoleDef::new(6, HoleType::RegC, 4),
+            HoleDef::new(16, HoleType::RegB, 4),
+            HoleDef::new(25, HoleType::RuntimeFuncAddr, 8),
+            HoleDef::new(46, HoleType::RegA, 4),
+        ],
+    )
+}
+
+/// **IntrinsicSort** — `R[A] = sort(R[C])` fast path.
+///
+/// Calls `jit_rt_sort(ctx, list)` and stores the returned list pointer.
+pub fn stencil_intrinsic_sort() -> StencilDef {
+    StencilDef::new(
+        OpCode::Intrinsic as u8,
+        "IntrinsicSort",
+        code!(
+            [0x4Cu8, 0x89, 0xFF], // mov rdi, r15
+            [0x49u8, 0x8B, 0x86],
+            [0x00u8; 4],          // mov rax, [r14+C*8]  hole RegC at 6
+            [0x48u8, 0x89, 0xC6], // mov rsi, rax
+            [0x48u8, 0xB8],
+            [0x00u8; 8],                // movabs rax, <jit_rt_sort>
+            [0x48u8, 0x83, 0xEC, 0x08], // sub rsp, 8
+            [0xFFu8, 0xD0],             // call rax
+            [0x48u8, 0x83, 0xC4, 0x08], // add rsp, 8
+            [0x49u8, 0x89, 0x86],
+            [0x00u8; 4], // mov [r14+A*8], rax  hole RegA at 34
+        ),
+        vec![
+            HoleDef::new(6, HoleType::RegC, 4),
+            HoleDef::new(15, HoleType::RuntimeFuncAddr, 8),
+            HoleDef::new(36, HoleType::RegA, 4),
+        ],
+    )
+}
+
+/// **IntrinsicLength** — `R[A] = length(R[C])` fast path.
+///
+/// Calls `jit_rt_collection_len(ctx, value)` and boxes the result as TAG_INT.
+pub fn stencil_intrinsic_length() -> StencilDef {
+    StencilDef::new(
+        OpCode::Intrinsic as u8,
+        "IntrinsicLength",
+        code!(
+            [0x4Cu8, 0x89, 0xFF], // mov rdi, r15
+            [0x49u8, 0x8B, 0x86],
+            [0x00u8; 4],          // mov rax, [r14+C*8]  hole RegC at 6
+            [0x48u8, 0x89, 0xC6], // mov rsi, rax
+            [0x48u8, 0xB8],
+            [0x00u8; 8],                // movabs rax, <jit_rt_collection_len>
+            [0x48u8, 0x83, 0xEC, 0x08], // sub rsp, 8
+            [0xFFu8, 0xD0],             // call rax
+            [0x48u8, 0x83, 0xC4, 0x08], // add rsp, 8
+            // Box raw i64 in rax as TAG_INT
+            [0x48u8, 0xBA], // movabs rdx, PAYLOAD_MASK
+            PAYLOAD_MASK_LE,
+            [0x48u8, 0x23, 0xC2], // and rax, rdx
+            [0x48u8, 0xBA],       // movabs rdx, TAG_INT_BASE
+            TAG_INT_BASE_LE,
+            [0x48u8, 0x0B, 0xC2], // or rax, rdx
+            [0x49u8, 0x89, 0x86],
+            [0x00u8; 4], // mov [r14+A*8], rax  hole RegA at 62
+        ),
+        vec![
+            HoleDef::new(6, HoleType::RegC, 4),
+            HoleDef::new(15, HoleType::RuntimeFuncAddr, 8),
+            HoleDef::new(62, HoleType::RegA, 4),
+        ],
+    )
+}
+
+/// **IntrinsicKeys** — `R[A] = keys(R[C])` fast path.
+pub fn stencil_intrinsic_keys() -> StencilDef {
+    StencilDef::new(
+        OpCode::Intrinsic as u8,
+        "IntrinsicKeys",
+        code!(
+            [0x4Cu8, 0x89, 0xFF], // mov rdi, r15
+            [0x49u8, 0x8B, 0x86],
+            [0x00u8; 4],          // mov rax, [r14+C*8]  hole RegC at 6
+            [0x48u8, 0x89, 0xC6], // mov rsi, rax
+            [0x48u8, 0xB8],
+            [0x00u8; 8],                // movabs rax, <jit_rt_map_keys>
+            [0x48u8, 0x83, 0xEC, 0x08], // sub rsp, 8
+            [0xFFu8, 0xD0],             // call rax
+            [0x48u8, 0x83, 0xC4, 0x08], // add rsp, 8
+            [0x49u8, 0x89, 0x86],
+            [0x00u8; 4], // mov [r14+A*8], rax  hole RegA at 36
+        ),
+        vec![
+            HoleDef::new(6, HoleType::RegC, 4),
+            HoleDef::new(15, HoleType::RuntimeFuncAddr, 8),
+            HoleDef::new(36, HoleType::RegA, 4),
+        ],
+    )
+}
+
+/// **IntrinsicValues** — `R[A] = values(R[C])` fast path.
+pub fn stencil_intrinsic_values() -> StencilDef {
+    StencilDef::new(
+        OpCode::Intrinsic as u8,
+        "IntrinsicValues",
+        code!(
+            [0x4Cu8, 0x89, 0xFF], // mov rdi, r15
+            [0x49u8, 0x8B, 0x86],
+            [0x00u8; 4],          // mov rax, [r14+C*8]  hole RegC at 6
+            [0x48u8, 0x89, 0xC6], // mov rsi, rax
+            [0x48u8, 0xB8],
+            [0x00u8; 8],                // movabs rax, <jit_rt_map_values>
+            [0x48u8, 0x83, 0xEC, 0x08], // sub rsp, 8
+            [0xFFu8, 0xD0],             // call rax
+            [0x48u8, 0x83, 0xC4, 0x08], // add rsp, 8
+            [0x49u8, 0x89, 0x86],
+            [0x00u8; 4], // mov [r14+A*8], rax  hole RegA at 36
+        ),
+        vec![
+            HoleDef::new(6, HoleType::RegC, 4),
+            HoleDef::new(15, HoleType::RuntimeFuncAddr, 8),
+            HoleDef::new(36, HoleType::RegA, 4),
+        ],
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Effect system stencils
 // ---------------------------------------------------------------------------
@@ -1641,7 +1821,7 @@ pub fn stencil_osrcheck() -> StencilDef {
             [0xBEu8, 0x00, 0x00, 0x00, 0x00], // mov esi, <A> (cell_idx)
             [0xBAu8, 0x00, 0x00, 0x00, 0x00], // mov edx, <B> (current_ip)
             [0x48u8, 0xB8],
-            [0x00u8; 8],    // movabs rax, <lm_rt_osr_check>
+            [0x00u8; 8],                // movabs rax, <lm_rt_osr_check>
             [0x48u8, 0x83, 0xEC, 0x08], // sub rsp, 8 (align stack for helper call)
             [0xFFu8, 0xD0],             // call rax
             [0x48u8, 0x83, 0xC4, 0x08], // add rsp, 8
@@ -1652,7 +1832,7 @@ pub fn stencil_osrcheck() -> StencilDef {
                                   // .skip: (continue to next instruction)
         ),
         vec![
-            HoleDef::new(4, HoleType::RegAIndex, 1),  // cell_idx in esi
+            HoleDef::new(4, HoleType::RegAIndex, 1), // cell_idx in esi
             HoleDef::new(9, HoleType::RegBIndex, 1), // current_ip in edx
             HoleDef::new(15, HoleType::RuntimeFuncAddr, 8), // function address
         ],
@@ -1712,6 +1892,15 @@ pub fn build_stencil_library() -> StencilLibrary {
 
     // Intrinsics
     lib.insert(stencil_intrinsic());
+    lib.insert_intrinsic(24, stencil_intrinsic_append());
+    lib.insert_intrinsic(25, stencil_intrinsic_range());
+    lib.insert_intrinsic(29, stencil_intrinsic_sort());
+    lib.insert_intrinsic(129, stencil_intrinsic_sort());
+    lib.insert_intrinsic(0, stencil_intrinsic_length());
+    lib.insert_intrinsic(1, stencil_intrinsic_length());
+    lib.insert_intrinsic(72, stencil_intrinsic_length());
+    lib.insert_intrinsic(14, stencil_intrinsic_keys());
+    lib.insert_intrinsic(15, stencil_intrinsic_values());
 
     // Effects
     lib.insert(stencil_perform());

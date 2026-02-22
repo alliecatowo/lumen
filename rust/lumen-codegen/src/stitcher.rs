@@ -175,7 +175,14 @@ impl Stitcher {
             for instr in &cell.instructions {
                 instruction_offsets.push(offset);
                 let op = instr.op as u8;
-                if let Some(stencil) = self.library.get(op) {
+                let stencil = if instr.op == OpCode::Intrinsic {
+                    self.library
+                        .get_intrinsic(instr.b as u8)
+                        .or_else(|| self.library.get(op))
+                } else {
+                    self.library.get(op)
+                };
+                if let Some(stencil) = stencil {
                     offset += stencil.code.len();
                 } else {
                     // Unknown opcodes get a fallback size of 0 (will error in second pass)
@@ -189,10 +196,18 @@ impl Stitcher {
             .instructions
             .iter()
             .map(|i| {
-                self.library
-                    .get(i.op as u8)
-                    .map(|s| s.code.len())
-                    .unwrap_or(0)
+                if i.op == OpCode::Intrinsic {
+                    self.library
+                        .get_intrinsic(i.b as u8)
+                        .or_else(|| self.library.get(i.op as u8))
+                        .map(|s| s.code.len())
+                        .unwrap_or(0)
+                } else {
+                    self.library
+                        .get(i.op as u8)
+                        .map(|s| s.code.len())
+                        .unwrap_or(0)
+                }
             })
             .sum();
 
@@ -209,11 +224,26 @@ impl Stitcher {
         // don't hold an immutable borrow on `self.library` while mutating
         // `self.code_buffer` through `emit_bytes` / `patch_*`.
         for (pc, instr) in cell.instructions.iter().enumerate() {
-            let op_byte = instr.op as u8;
-            let stencil = self
-                .library
-                .get(op_byte)
-                .ok_or_else(|| StitchError::MissingStencil(op_byte, format!("{:?}", instr.op)))?;
+            let stencil = if instr.op == OpCode::Intrinsic {
+                let intrinsic_id = instr.b as u8;
+                let stencil = self
+                    .library
+                    .get_intrinsic(intrinsic_id)
+                    .or_else(|| self.library.get(instr.op as u8));
+                let Some(stencil) = stencil else {
+                    return Err(StitchError::MissingStencil(
+                        instr.op as u8,
+                        format!("Intrinsic({intrinsic_id})"),
+                    ));
+                };
+                stencil
+            } else {
+                let op_byte = instr.op as u8;
+                let stencil = self.library.get(op_byte).ok_or_else(|| {
+                    StitchError::MissingStencil(op_byte, format!("{:?}", instr.op))
+                })?;
+                stencil
+            };
 
             // Copy stencil code and holes out of the library to release the
             // immutable borrow on `self` before we call `emit_bytes`.
@@ -236,7 +266,14 @@ impl Stitcher {
                         self.patch_i32(patch_addr, disp);
                     }
                     HoleType::RegB => {
-                        let disp = (instr.b as i32) * 8;
+                        let disp = if instr.op == OpCode::Intrinsic {
+                            match instr.b as u8 {
+                                24 | 25 => (instr.c as i32 + 1) * 8,
+                                _ => (instr.b as i32) * 8,
+                            }
+                        } else {
+                            (instr.b as i32) * 8
+                        };
                         self.patch_i32(patch_addr, disp);
                     }
                     HoleType::RegC => {

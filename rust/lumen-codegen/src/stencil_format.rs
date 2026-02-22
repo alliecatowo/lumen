@@ -52,6 +52,9 @@ use std::collections::HashMap;
 pub struct StencilLibrary {
     /// Map from `OpCode as u8` → stencil definition.
     pub stencils: HashMap<u8, StencilDef>,
+
+    /// Optional intrinsic-specific stencil overrides keyed by intrinsic ID.
+    pub intrinsic_stencils: HashMap<u8, StencilDef>,
 }
 
 impl StencilLibrary {
@@ -59,6 +62,7 @@ impl StencilLibrary {
     pub fn new() -> Self {
         Self {
             stencils: HashMap::new(),
+            intrinsic_stencils: HashMap::new(),
         }
     }
 
@@ -67,19 +71,29 @@ impl StencilLibrary {
         self.stencils.insert(def.opcode, def);
     }
 
+    /// Register an intrinsic-specialized stencil definition.
+    pub fn insert_intrinsic(&mut self, intrinsic_id: u8, def: StencilDef) {
+        self.intrinsic_stencils.insert(intrinsic_id, def);
+    }
+
     /// Look up the stencil for a given opcode byte.
     pub fn get(&self, opcode: u8) -> Option<&StencilDef> {
         self.stencils.get(&opcode)
     }
 
+    /// Look up a specialized stencil for a given intrinsic ID.
+    pub fn get_intrinsic(&self, intrinsic_id: u8) -> Option<&StencilDef> {
+        self.intrinsic_stencils.get(&intrinsic_id)
+    }
+
     /// Number of registered stencils.
     pub fn len(&self) -> usize {
-        self.stencils.len()
+        self.stencils.len() + self.intrinsic_stencils.len()
     }
 
     /// Returns `true` when the library contains no stencils.
     pub fn is_empty(&self) -> bool {
-        self.stencils.is_empty()
+        self.stencils.is_empty() && self.intrinsic_stencils.is_empty()
     }
 
     // ------------------------------------------------------------------
@@ -110,10 +124,34 @@ impl StencilLibrary {
         let mut entries: Vec<&StencilDef> = self.stencils.values().collect();
         entries.sort_by_key(|s| s.opcode);
 
-        out.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        let total = entries.len() + self.intrinsic_stencils.len();
+        out.extend_from_slice(&(total as u32).to_le_bytes());
 
         for def in entries {
             out.push(def.opcode);
+
+            let name_bytes = def.name.as_bytes();
+            out.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+            out.extend_from_slice(name_bytes);
+
+            out.extend_from_slice(&(def.code.len() as u32).to_le_bytes());
+            out.extend_from_slice(&def.code);
+
+            out.push(def.holes.len() as u8);
+            for hole in &def.holes {
+                out.extend_from_slice(&hole.offset.to_le_bytes());
+                out.push(hole.hole_type as u8);
+                out.push(hole.size);
+            }
+        }
+
+        // Encode intrinsic stencils with a sentinel opcode byte 0xFF followed by intrinsic ID.
+        let mut intrinsic_entries: Vec<(&u8, &StencilDef)> =
+            self.intrinsic_stencils.iter().collect();
+        intrinsic_entries.sort_by_key(|(id, _)| *id);
+        for (intrinsic_id, def) in intrinsic_entries {
+            out.push(0xFF);
+            out.push(*intrinsic_id);
 
             let name_bytes = def.name.as_bytes();
             out.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
@@ -142,6 +180,11 @@ impl StencilLibrary {
 
         for _ in 0..num_stencils {
             let opcode = read_u8(data, &mut pos)?;
+            let intrinsic_id = if opcode == 0xFF {
+                Some(read_u8(data, &mut pos)?)
+            } else {
+                None
+            };
 
             let name_len = read_u16(data, &mut pos)? as usize;
             let name = std::str::from_utf8(read_bytes(data, &mut pos, name_len)?)
@@ -166,12 +209,18 @@ impl StencilLibrary {
                 });
             }
 
-            lib.insert(StencilDef {
+            let def = StencilDef {
                 opcode,
                 name,
                 code,
                 holes,
-            });
+            };
+
+            if let Some(id) = intrinsic_id {
+                lib.insert_intrinsic(id, def);
+            } else {
+                lib.insert(def);
+            }
         }
 
         Ok(lib)
@@ -469,6 +518,10 @@ mod tests {
     fn test_round_trip_serialisation() {
         let mut lib = StencilLibrary::new();
         lib.insert(make_move_stencil());
+        lib.insert_intrinsic(
+            24,
+            StencilDef::new(0x50, "IntrinsicAppend", vec![0x90], vec![]),
+        );
 
         // Also add a LoadNull stencil.
         lib.insert(StencilDef::new(
@@ -486,7 +539,7 @@ mod tests {
         let bytes = lib.to_bytes();
         let lib2 = StencilLibrary::from_bytes(&bytes).expect("round-trip failed");
 
-        assert_eq!(lib2.len(), 2);
+        assert_eq!(lib2.len(), 3);
 
         let mv = lib2.get(0x05).unwrap();
         assert_eq!(mv.name, "Move");
@@ -494,6 +547,9 @@ mod tests {
         assert_eq!(mv.holes.len(), 2);
         assert_eq!(mv.holes[0].hole_type, HoleType::RegB);
         assert_eq!(mv.holes[1].hole_type, HoleType::RegA);
+
+        let intr = lib2.get_intrinsic(24).unwrap();
+        assert_eq!(intr.name, "IntrinsicAppend");
     }
 
     #[test]

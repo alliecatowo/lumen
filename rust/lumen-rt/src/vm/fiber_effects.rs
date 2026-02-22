@@ -34,6 +34,7 @@ use super::fiber::{Fiber, FiberPool, FiberStatus, DEFAULT_FIBER_STACK_SIZE};
 use crate::platform;
 use lumen_core::nb_value::NbValue;
 use lumen_core::vm_context::VmContext;
+use std::cell::Cell;
 
 // ── Effect handler entry record ───────────────────────────────────────────────
 
@@ -151,6 +152,22 @@ impl Drop for FiberEffectStack {
         }
         // The FiberPool drops itself, munmapping all cached stacks.
     }
+}
+
+// ── Thread-local VM context for handler entry ───────────────────────────────
+
+thread_local! {
+    static CURRENT_CTX: Cell<*mut VmContext> = Cell::new(std::ptr::null_mut());
+}
+
+#[inline(always)]
+fn set_current_ctx(ctx: *mut VmContext) {
+    CURRENT_CTX.with(|cell| cell.set(ctx));
+}
+
+#[inline(always)]
+fn current_ctx() -> *mut VmContext {
+    CURRENT_CTX.with(|cell| cell.get())
 }
 
 // ── Helper: cast VmContext::effect_stack to FiberEffectStack ─────────────────
@@ -372,6 +389,7 @@ pub unsafe extern "C" fn lm_rt_perform(
     op_id: u32,
     arg: u64, // NbValue bits
 ) -> u64 {
+    set_current_ctx(ctx);
     let stack = effect_stack_of(ctx);
     drain_pending_handler_frees(ctx, stack);
 
@@ -506,18 +524,41 @@ pub unsafe extern "C" fn lm_rt_resume(ctx: *mut VmContext, value: u64) -> u64 {
     // Switch back to the performer, passing `value` as the resume result.
     // The performer's lm_rt_perform call will return this value.
     #[cfg(target_arch = "x86_64")]
-    {
-        super::fiber::fiber_switch(handler_fiber, performer_fiber, value);
-    }
+    let resume_val = { super::fiber::fiber_switch(handler_fiber, performer_fiber, value) };
 
     #[cfg(not(target_arch = "x86_64"))]
-    {
+    let resume_val = {
         let _ = (handler_fiber, performer_fiber, value);
-    }
+        NbValue::new_null().0
+    };
 
     // Handler fiber continues here after the performer calls perform again,
     // or when the performer finishes and the handle block pops the handler.
-    NbValue::new_null().0
+    resume_val
+}
+
+// ── lm_rt_effect_handler_entry ─────────────────────────────────────────────
+
+/// Default handler entry for JIT effect handlers.
+///
+/// This trampoline resumes the performer with the perform argument (identity
+/// handler). It loops so the handler can service multiple performs.
+///
+/// # Safety
+/// Assumes `lm_rt_perform` has set the current thread's VmContext pointer.
+#[no_mangle]
+pub unsafe extern "C" fn lm_rt_effect_handler_entry(arg: u64) {
+    let ctx = current_ctx();
+    if ctx.is_null() {
+        return;
+    }
+    let mut next_arg = arg;
+    loop {
+        // Resume performer with the current argument. When the performer calls
+        // perform again, lm_rt_resume returns the next perform argument.
+        let resumed = lm_rt_resume(ctx, next_arg);
+        next_arg = resumed;
+    }
 }
 
 // ── lm_rt_resume_explicit: resume a specific fiber by pointer ────────────────

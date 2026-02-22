@@ -2529,7 +2529,11 @@ impl VM {
                                     stencil_compiled || self.stencil_tier.record_call(target_idx);
                                 if stencil_try {
                                     if !stencil_compiled {
-                                        self.stencil_tier.try_compile(target_idx, module);
+                                        self.stencil_tier.try_compile(
+                                            target_idx,
+                                            module,
+                                            &mut self.jit_tier,
+                                        );
                                     }
                                     if self.stencil_tier.is_compiled(target_idx) {
                                         let callee_base = base + a + 1;
@@ -2912,7 +2916,11 @@ impl VM {
                                         || self.stencil_tier.record_call(target_idx);
                                     if stencil_try {
                                         if !stencil_compiled {
-                                            self.stencil_tier.try_compile(target_idx, module);
+                                            self.stencil_tier.try_compile(
+                                                target_idx,
+                                                module,
+                                                &mut self.jit_tier,
+                                            );
                                         }
                                         if self.stencil_tier.is_compiled(target_idx) {
                                             let callee_base = base + a + 1;
@@ -3178,6 +3186,47 @@ impl VM {
             // For all other opcodes, use the cached module/cell references directly
             // No need to re-borrow self.module
 
+            // If we're running on a handler fiber installed by the JIT runtime,
+            // replay the handler block directly in the interpreter.
+            if self.suspended_continuation.is_some()
+                && !self.vm_ctx.inner.current_fiber.is_null()
+                && (self.vm_ctx.inner.current_fiber as *mut Fiber)
+                    != &mut *self.main_fiber as *mut _
+            {
+                let handler_ip = ip;
+                let handler_idx = self
+                    .effect_handlers
+                    .iter()
+                    .rposition(|scope| scope.handler_ip == handler_ip);
+                if let Some(idx) = handler_idx {
+                    let arg_reg = base + a + 1;
+                    let arg_nb = self
+                        .registers
+                        .get(arg_reg)
+                        .copied()
+                        .unwrap_or(NbValue::new_null());
+                    let arg_value = nb_to_value(arg_nb);
+                    let scope = self.effect_handlers.remove(idx);
+
+                    let handler_base = base + a + 1;
+                    if handler_base + 1 > self.registers.len() {
+                        self.registers.resize(handler_base + 1, NbValue::new_null());
+                    }
+                    self.set_reg(handler_base, arg_value);
+
+                    if let Some(frame) = self.frames.get_mut(scope.frame_idx) {
+                        frame.ip = scope.handler_ip;
+                        frame.base_register = handler_base;
+                    }
+                    let f = self.frames.last().unwrap();
+                    cell_idx = f.cell_idx;
+                    base = f.base_register;
+                    ip = f.ip;
+                    cell = &module.cells[cell_idx];
+                    continue;
+                }
+            }
+
             match instr.op {
                 OpCode::Nop => { /* no operation */ }
 
@@ -3193,7 +3242,6 @@ impl VM {
                         Constant::NbValue(raw) => {
                             // Pre-boxed NaN-boxed value: decode back to legacy Value
                             // for interpreter execution. The JIT path uses raw u64 directly.
-                            use lumen_core::nb_value::NbValue;
                             let nb = NbValue(*raw);
                             nb_to_value(nb)
                         }
@@ -4594,7 +4642,7 @@ impl VM {
                         fiber_effects::lm_rt_handle_push(
                             self.vm_ctx.as_ptr(),
                             meta_idx as u32,
-                            meta_idx as u32,
+                            offset as u32,
                             interp_effect_noop,
                         );
                     }

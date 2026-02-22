@@ -134,7 +134,12 @@ impl StencilTier {
         call_count == 1 || call_count == self.config.hot_threshold.saturating_add(1)
     }
 
-    pub fn try_compile(&mut self, cell_idx: usize, module: &LirModule) -> bool {
+    pub fn try_compile(
+        &mut self,
+        cell_idx: usize,
+        module: &LirModule,
+        jit_tier: &mut crate::jit_tier::JitTier,
+    ) -> bool {
         let cell = match module.cells.get(cell_idx) {
             Some(cell) => cell,
             None => {
@@ -143,37 +148,7 @@ impl StencilTier {
             }
         };
 
-        // Crash-mitigation: skip Tier1 stencil compilation for cells that
-        // contain dynamic call opcodes. These cells fall back to interpreter
-        // or Tier2 JIT paths, which are safer for nested call behavior.
-        if cell
-            .instructions
-            .iter()
-            .any(|instr| matches!(instr.op, OpCode::Call | OpCode::TailCall))
-        {
-            return false;
-        }
-
-        // Semantic guard: multi-step cells are only stencil-safe for a narrow
-        // subset of opcode mixes. Keep Tier1 enabled for pure arithmetic chains,
-        // but block the known unsafe parameter-fed arithmetic pattern.
-        let effective_len = cell
-            .instructions
-            .iter()
-            .position(|instr| matches!(instr.op, OpCode::Return | OpCode::Halt))
-            .map(|idx| idx + 1)
-            .unwrap_or(cell.instructions.len());
-
-        let multi_step = effective_len > 2;
-        if multi_step {
-            let body = &cell.instructions[..effective_len];
-            if body.iter().any(|instr| !is_pure_arith(instr.op)) {
-                return false;
-            }
-            if has_known_unsafe_multi_step_arith_pattern(cell, body) {
-                return false;
-            }
-        }
+        let _ = cell;
 
         let code_len = {
             let stitcher = match self.stitcher.as_mut() {
@@ -191,6 +166,10 @@ impl StencilTier {
                     // Do NOT mark as compiled — code_ptr is NULL/invalid.
                     self.stats.compile_failures += 1;
                     return false;
+                }
+                Err(lumen_codegen::stitcher::StitchError::MissingStencil(_, _)) => {
+                    self.stats.compile_failures += 1;
+                    return jit_tier.try_compile(cell_idx, module);
                 }
                 Err(_) => {
                     self.stats.compile_failures += 1;
@@ -223,13 +202,25 @@ impl StencilTier {
             let mut byte_offset = 0usize; // offset within this cell's code
             for instr in &cell.instructions {
                 let op_byte = instr.op as u8;
-                if let Some(stencil) = library.get(op_byte) {
+                let stencil = if instr.op == OpCode::Intrinsic {
+                    library
+                        .get_intrinsic(instr.b as u8)
+                        .or_else(|| library.get(op_byte))
+                } else {
+                    library.get(op_byte)
+                };
+                if let Some(stencil) = stencil {
                     // Check all holes in this stencil for RuntimeFuncAddr.
                     for hole in &stencil.holes {
                         if hole.hole_type
                             == lumen_codegen::stencil_format::HoleType::RuntimeFuncAddr
                         {
-                            let func_name = opcode_to_runtime_func(instr.op);
+                            let func_name = if instr.op == OpCode::Intrinsic {
+                                intrinsic_runtime_helper(instr.b as u8)
+                                    .unwrap_or_else(|| opcode_to_runtime_func(instr.op))
+                            } else {
+                                opcode_to_runtime_func(instr.op)
+                            };
                             if let Some(addr) = resolve_runtime_helper(func_name) {
                                 let abs_offset =
                                     cell_start_buf_offset + byte_offset + hole.offset as usize;
@@ -302,7 +293,7 @@ impl StencilTier {
         Ok(())
     }
 
-pub fn stats(&self) -> StencilTierStats {
+    pub fn stats(&self) -> StencilTierStats {
         self.stats.clone()
     }
 }
@@ -336,7 +327,12 @@ impl StencilTier {
         false
     }
 
-    pub fn try_compile(&mut self, _cell_idx: usize, _module: &LirModule) -> bool {
+    pub fn try_compile(
+        &mut self,
+        _cell_idx: usize,
+        _module: &LirModule,
+        _jit_tier: &mut crate::jit_tier::JitTier,
+    ) -> bool {
         false
     }
 
@@ -349,60 +345,22 @@ impl StencilTier {
     }
 }
 
-fn is_pure_arith(op: OpCode) -> bool {
-    matches!(
-        op,
-        OpCode::LoadK
-            | OpCode::LoadInt
-            | OpCode::LoadNil
-            | OpCode::LoadBool
-            | OpCode::Add
-            | OpCode::Sub
-            | OpCode::Mul
-            | OpCode::Div
-            | OpCode::Mod
-            | OpCode::FloorDiv
-            | OpCode::Neg
-            | OpCode::Return
-            | OpCode::Halt
-    )
-}
-
 #[cfg(feature = "jit")]
-fn has_known_unsafe_multi_step_arith_pattern(
-    cell: &lumen_core::lir::LirCell,
-    body: &[lumen_core::lir::Instruction],
-) -> bool {
-    // Known bad shape: chained arithmetic that reads parameter registers
-    // directly can produce wrong results when invoked through call helpers.
-    if cell.params.is_empty() {
-        return false;
+fn intrinsic_runtime_helper(func_id: u8) -> Option<&'static str> {
+    match func_id {
+        // Append
+        24 => Some("jit_rt_list_append"),
+        // Range
+        25 => Some("jit_rt_range"),
+        // Sort / SortAsc
+        29 | 129 => Some("jit_rt_sort"),
+        // Length / Count / Size
+        0 | 1 | 72 => Some("jit_rt_collection_len"),
+        // Keys / Values
+        14 => Some("jit_rt_map_keys"),
+        15 => Some("jit_rt_map_values"),
+        _ => None,
     }
-
-    let reads_param = |reg: u16| cell.params.iter().any(|p| p.register == reg);
-    let mut arith_steps = 0usize;
-    let mut uses_param_input = false;
-
-    for instr in body {
-        match instr.op {
-            OpCode::Add
-            | OpCode::Sub
-            | OpCode::Mul
-            | OpCode::Div
-            | OpCode::Mod
-            | OpCode::FloorDiv => {
-                arith_steps += 1;
-                uses_param_input |= reads_param(instr.b) || reads_param(instr.c);
-            }
-            OpCode::Neg => {
-                arith_steps += 1;
-                uses_param_input |= reads_param(instr.b);
-            }
-            _ => {}
-        }
-    }
-
-    arith_steps >= 2 && uses_param_input
 }
 
 /// Map an opcode to the runtime helper function name it needs for its
@@ -453,6 +411,20 @@ fn resolve_runtime_helper(name: &str) -> Option<u64> {
             Some(crate::stencil_runtime::lm_rt_stencil_runtime as usize as u64)
         }
         "lm_rt_osr_check" => Some(crate::vm::osr::osr_check::lm_rt_osr_check as usize as u64),
+        "jit_rt_list_append" => {
+            Some(lumen_codegen::collection_helpers::jit_rt_list_append as usize as u64)
+        }
+        "jit_rt_range" => Some(lumen_codegen::collection_helpers::jit_rt_range as usize as u64),
+        "jit_rt_sort" => Some(lumen_codegen::collection_helpers::jit_rt_sort as usize as u64),
+        "jit_rt_collection_len" => {
+            Some(lumen_codegen::collection_helpers::jit_rt_collection_len as usize as u64)
+        }
+        "jit_rt_map_keys" => {
+            Some(lumen_codegen::collection_helpers::jit_rt_map_keys as usize as u64)
+        }
+        "jit_rt_map_values" => {
+            Some(lumen_codegen::collection_helpers::jit_rt_map_values as usize as u64)
+        }
         _ => None,
     }
 }

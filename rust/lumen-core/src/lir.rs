@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
     Hash,
     Serialize,
     Deserialize,
+    strum_macros::AsRefStr,
     strum_macros::EnumIter,
     strum_macros::EnumCount,
 )]
@@ -134,6 +135,7 @@ pub enum OpCode {
     Eq,
     Serialize,
     Deserialize,
+    strum_macros::AsRefStr,
     strum_macros::EnumIter,
     strum_macros::EnumCount,
 )]

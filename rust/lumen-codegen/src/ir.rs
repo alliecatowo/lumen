@@ -5366,40 +5366,61 @@ pub(crate) fn lower_cell<M: Module>(
                 // Runtime helper signature:
                 //   jit_rt_perform(vm_ctx, effect_id, operation_id, args_ptr, arg_count) -> i64
                 //
-                // TODO: Implement once VmContext is defined. For now, emit a call
-                // to the stub helper that returns NAN_BOX_NULL.
-                //
-                // Full implementation will need:
-                // - vm_ctx pointer (first parameter to cell, or thread-local)
-                // - effect_id (inst.b) and operation_id (inst.c) as constant indices
-                // - args_ptr and arg_count (need to determine where args are stored)
-                //
-                // For now: declare the helper function and call it with dummy arguments.
-                let perform_sig = module.make_signature();
-                let perform_fn = module
-                    .declare_function("jit_rt_perform", Linkage::Import, &{
-                        let mut sig = perform_sig;
-                        sig.params.push(AbiParam::new(pointer_type)); // vm_ctx
-                        sig.params.push(AbiParam::new(types::I32)); // effect_id
-                        sig.params.push(AbiParam::new(types::I32)); // operation_id
-                        sig.params.push(AbiParam::new(pointer_type)); // args_ptr
-                        sig.params.push(AbiParam::new(pointer_type)); // arg_count (usize)
-                        sig.returns.push(AbiParam::new(types::I64)); // result
-                        sig
-                    })
-                    .map_err(|e| CodegenError::LoweringError(e.to_string()))?;
-                let perform_ref = module.declare_func_in_func(perform_fn, &mut builder.func);
+                // We pass effect/op as string-table IDs. The helper will resolve the
+                // names and dispatch through the fiber-based effect runtime.
+                let perform_ref = declare_helper_func(
+                    module,
+                    &mut builder.func,
+                    "jit_rt_perform",
+                    &[
+                        pointer_type,
+                        types::I32,
+                        types::I32,
+                        pointer_type,
+                        pointer_type,
+                    ],
+                    &[types::I64],
+                )?;
 
-                // Placeholder call with dummy arguments (vm_ctx, effect_id=inst.b,
-                // operation_id=inst.c, args_ptr=null, arg_count=0)
                 let vm_ctx = vm_ctx_param;
-                let effect_id = builder.ins().iconst(types::I32, inst.b as i64);
-                let operation_id = builder.ins().iconst(types::I32, inst.c as i64);
-                let args_ptr = builder.ins().iconst(pointer_type, 0);
-                let arg_count = builder.ins().iconst(pointer_type, 0);
+                let effect_id =
+                    if let Some(Constant::String(s)) = cell.constants.get(inst.b as usize) {
+                        let id = string_table.iter().position(|item| item == s).unwrap_or(0) as i64;
+                        builder.ins().iconst(types::I32, id)
+                    } else {
+                        builder.ins().iconst(types::I32, 0)
+                    };
+                let operation_id =
+                    if let Some(Constant::String(s)) = cell.constants.get(inst.c as usize) {
+                        let id = string_table.iter().position(|item| item == s).unwrap_or(0) as i64;
+                        builder.ins().iconst(types::I32, id)
+                    } else {
+                        builder.ins().iconst(types::I32, 0)
+                    };
+
+                let arg_ptr = if (inst.a + 1) < cell.registers {
+                    let arg_reg = inst.a + 1;
+                    let arg_val = use_var(&mut builder, &regs, &var_types, arg_reg);
+                    let arg_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        8,
+                        8,
+                    ));
+                    let arg_ptr = builder.ins().stack_addr(pointer_type, arg_slot, 0);
+                    builder.ins().store(MemFlags::new(), arg_val, arg_ptr, 0);
+                    arg_ptr
+                } else {
+                    builder.ins().iconst(pointer_type, 0)
+                };
+                let arg_count = if (inst.a + 1) < cell.registers {
+                    builder.ins().iconst(pointer_type, 1)
+                } else {
+                    builder.ins().iconst(pointer_type, 0)
+                };
+
                 let call = builder.ins().call(
                     perform_ref,
-                    &[vm_ctx, effect_id, operation_id, args_ptr, arg_count],
+                    &[vm_ctx, effect_id, operation_id, arg_ptr, arg_count],
                 );
                 let result = builder.inst_results(call)[0];
                 var_types.insert(inst.a as u32, JitVarType::Ptr);
@@ -5410,45 +5431,54 @@ pub(crate) fn lower_cell<M: Module>(
                 // HandlePush meta_idx, offset
                 // Instruction format: ABX (a=meta_idx, bx=offset to handler code)
                 // Runtime helper signature:
-                //   jit_rt_handle_push(vm_ctx, meta_idx, offset)
-                //
-                // TODO: Implement once VmContext is defined.
-                let handle_push_sig = module.make_signature();
-                let handle_push_fn = module
-                    .declare_function("jit_rt_handle_push", Linkage::Import, &{
-                        let mut sig = handle_push_sig;
-                        sig.params.push(AbiParam::new(pointer_type)); // vm_ctx
-                        sig.params.push(AbiParam::new(pointer_type)); // meta_idx (usize)
-                        sig.params.push(AbiParam::new(types::I32)); // offset (i32)
-                        sig
-                    })
-                    .map_err(|e| CodegenError::LoweringError(e.to_string()))?;
-                let handle_push_ref =
-                    module.declare_func_in_func(handle_push_fn, &mut builder.func);
+                //   jit_rt_handle_push(vm_ctx, effect_id, operation_id)
+                let handle_push_ref = declare_helper_func(
+                    module,
+                    &mut builder.func,
+                    "jit_rt_handle_push",
+                    &[pointer_type, types::I32, types::I32],
+                    &[],
+                )?;
 
                 let vm_ctx = vm_ctx_param;
-                let meta_idx = builder.ins().iconst(pointer_type, inst.a as i64);
-                let offset = builder.ins().iconst(types::I32, inst.bx() as i64);
+                let meta_idx = inst.a as usize;
+                let (effect_id, operation_id) = if meta_idx < cell.effect_handler_metas.len() {
+                    let meta = &cell.effect_handler_metas[meta_idx];
+                    let eff_id = string_table
+                        .iter()
+                        .position(|item| item == &meta.effect_name)
+                        .unwrap_or(0) as i64;
+                    let op_id = string_table
+                        .iter()
+                        .position(|item| item == &meta.operation)
+                        .unwrap_or(0) as i64;
+                    (
+                        builder.ins().iconst(types::I32, eff_id),
+                        builder.ins().iconst(types::I32, op_id),
+                    )
+                } else {
+                    (
+                        builder.ins().iconst(types::I32, 0),
+                        builder.ins().iconst(types::I32, 0),
+                    )
+                };
+
                 builder
                     .ins()
-                    .call(handle_push_ref, &[vm_ctx, meta_idx, offset]);
+                    .call(handle_push_ref, &[vm_ctx, effect_id, operation_id]);
             }
 
             OpCode::HandlePop => {
                 // HandlePop
                 // Runtime helper signature:
                 //   jit_rt_handle_pop(vm_ctx)
-                //
-                // TODO: Implement once VmContext is defined.
-                let handle_pop_sig = module.make_signature();
-                let handle_pop_fn = module
-                    .declare_function("jit_rt_handle_pop", Linkage::Import, &{
-                        let mut sig = handle_pop_sig;
-                        sig.params.push(AbiParam::new(pointer_type)); // vm_ctx
-                        sig
-                    })
-                    .map_err(|e| CodegenError::LoweringError(e.to_string()))?;
-                let handle_pop_ref = module.declare_func_in_func(handle_pop_fn, &mut builder.func);
+                let handle_pop_ref = declare_helper_func(
+                    module,
+                    &mut builder.func,
+                    "jit_rt_handle_pop",
+                    &[pointer_type],
+                    &[],
+                )?;
 
                 let vm_ctx = vm_ctx_param;
                 builder.ins().call(handle_pop_ref, &[vm_ctx]);
@@ -5459,19 +5489,13 @@ pub(crate) fn lower_cell<M: Module>(
                 // Instruction format: ABC (a=dest, b=value_reg)
                 // Runtime helper signature:
                 //   jit_rt_resume(vm_ctx, value) -> i64
-                //
-                // TODO: Implement once VmContext is defined.
-                let resume_sig = module.make_signature();
-                let resume_fn = module
-                    .declare_function("jit_rt_resume", Linkage::Import, &{
-                        let mut sig = resume_sig;
-                        sig.params.push(AbiParam::new(pointer_type)); // vm_ctx
-                        sig.params.push(AbiParam::new(types::I64)); // value (NaN-boxed)
-                        sig.returns.push(AbiParam::new(types::I64)); // result
-                        sig
-                    })
-                    .map_err(|e| CodegenError::LoweringError(e.to_string()))?;
-                let resume_ref = module.declare_func_in_func(resume_fn, &mut builder.func);
+                let resume_ref = declare_helper_func(
+                    module,
+                    &mut builder.func,
+                    "jit_rt_resume",
+                    &[pointer_type, types::I64],
+                    &[types::I64],
+                )?;
 
                 let vm_ctx = vm_ctx_param;
                 let value = use_var(&mut builder, &regs, &var_types, inst.b);

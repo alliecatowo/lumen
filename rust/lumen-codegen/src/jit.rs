@@ -24,6 +24,19 @@ use crate::ir::{nan_box_int, nan_unbox_int, NAN_BOX_FALSE, NAN_BOX_NULL, NAN_BOX
 use crate::types::lir_type_str_to_cl_type;
 use crate::vm_context::VmContext;
 
+extern "C" {
+    fn lm_rt_perform(ctx: *mut VmContext, effect_id: u32, op_id: u32, arg: u64) -> u64;
+    fn lm_rt_handle_push(
+        ctx: *mut VmContext,
+        effect_id: u32,
+        op_id: u32,
+        handler_entry: unsafe extern "C" fn(u64),
+    );
+    fn lm_rt_handle_pop(ctx: *mut VmContext);
+    fn lm_rt_resume(ctx: *mut VmContext, value: u64) -> u64;
+    fn lm_rt_effect_handler_entry(arg: u64);
+}
+
 // ---------------------------------------------------------------------------
 // Granular opcode JIT capability classification
 // ---------------------------------------------------------------------------
@@ -1974,8 +1987,8 @@ fn register_intrinsic_helpers(builder: &mut JITBuilder) {
 ///
 /// # Parameters
 /// - `vm_ctx`: Opaque pointer to VM context
-/// - `effect_id`: LIR effect index (i32, matching ir.rs Cranelift I32 ABI param)
-/// - `operation_id`: LIR operation index within the effect (i32)
+/// - `effect_id`: Interned effect name ID (i32, matching ir.rs Cranelift I32 ABI param)
+/// - `operation_id`: Interned operation name ID (i32)
 /// - `args_ptr`: Pointer to NaN-boxed argument array (may be null for single-arg shortcut)
 /// - `arg_count`: Number of arguments at args_ptr (isize)
 ///
@@ -1989,15 +2002,18 @@ fn register_intrinsic_helpers(builder: &mut JITBuilder) {
 ///   params: [pointer_type, I32, I32, pointer_type, pointer_type]
 ///   returns: [I64]
 extern "C" fn jit_rt_perform(
-    _vm_ctx: *mut VmContext,
-    _effect_id: i32,
-    _operation_id: i32,
-    _args_ptr: *const i64,
-    _arg_count: isize,
+    vm_ctx: *mut VmContext,
+    effect_id: i32,
+    operation_id: i32,
+    args_ptr: *const i64,
+    arg_count: isize,
 ) -> i64 {
-    // TODO: full implementation via lm_rt_perform from lumen-rt fiber_effects.
-    // For now return null — effects in JIT-compiled code fall back to the stub.
-    NAN_BOX_NULL
+    let arg = if args_ptr.is_null() || arg_count <= 0 {
+        NAN_BOX_NULL
+    } else {
+        unsafe { args_ptr.read() }
+    };
+    unsafe { lm_rt_perform(vm_ctx, effect_id as u32, operation_id as u32, arg as u64) as i64 }
 }
 
 /// Push an effect handler scope onto the stack.
@@ -2006,18 +2022,24 @@ extern "C" fn jit_rt_perform(
 ///
 /// # Parameters
 /// - `vm_ctx`: Opaque pointer to VM context
-/// - `meta_idx`: Handler metadata index (usize, pointer_type in Cranelift ABI)
-/// - `offset`: PC offset to handler code (i32)
+/// - `effect_id`: Interned effect name ID (i32)
+/// - `operation_id`: Interned operation name ID (i32)
 ///
 /// # Safety
 /// `vm_ctx` must be a valid pointer to an initialized VmContext with effect stack.
 ///
 /// # Signature matches ir.rs declaration:
-///   params: [pointer_type, pointer_type, I32]
+///   params: [pointer_type, I32, I32]
 ///   no return value
-extern "C" fn jit_rt_handle_push(_vm_ctx: *mut VmContext, _meta_idx: usize, _offset: i32) {
-    // TODO: full implementation via lm_rt_handle_push from lumen-rt fiber_effects.
-    // For now this is a no-op stub — effects in JIT-compiled code are not yet dispatched.
+extern "C" fn jit_rt_handle_push(vm_ctx: *mut VmContext, effect_id: i32, operation_id: i32) {
+    unsafe {
+        lm_rt_handle_push(
+            vm_ctx,
+            effect_id as u32,
+            operation_id as u32,
+            lm_rt_effect_handler_entry,
+        );
+    }
 }
 
 /// Pop an effect handler scope from the stack.
@@ -2031,9 +2053,12 @@ extern "C" fn jit_rt_handle_push(_vm_ctx: *mut VmContext, _meta_idx: usize, _off
 /// `vm_ctx` must be a valid pointer to an initialized VmContext with effect stack.
 ///
 /// # Implementation Note
-/// Full implementation requires the fiber_effects module from lumen-rt.
-/// This is a placeholder that does nothing.
-extern "C" fn jit_rt_handle_pop(_vm_ctx: *mut VmContext) {}
+/// This forwards to the fiber-based effect runtime in lumen-rt.
+extern "C" fn jit_rt_handle_pop(vm_ctx: *mut VmContext) {
+    unsafe {
+        lm_rt_handle_pop(vm_ctx);
+    }
+}
 
 /// Resume a suspended continuation with a value.
 ///
@@ -2050,10 +2075,9 @@ extern "C" fn jit_rt_handle_pop(_vm_ctx: *mut VmContext) {}
 /// `vm_ctx` must be a valid pointer to an initialized VmContext with a suspended performer.
 ///
 /// # Implementation Note
-/// Full implementation requires the fiber_effects module from lumen-rt.
-/// This stub returns null as a placeholder.
-extern "C" fn jit_rt_resume(_vm_ctx: *mut VmContext, _value: u64) -> i64 {
-    NAN_BOX_NULL
+/// This forwards to the fiber-based effect runtime in lumen-rt.
+extern "C" fn jit_rt_resume(vm_ctx: *mut VmContext, value: u64) -> i64 {
+    unsafe { lm_rt_resume(vm_ctx, value) as i64 }
 }
 
 /// Register all JIT effect system runtime helper symbols with a JITBuilder.
@@ -2062,6 +2086,10 @@ fn register_effect_helpers(builder: &mut JITBuilder) {
     builder.symbol("jit_rt_handle_push", jit_rt_handle_push as *const u8);
     builder.symbol("jit_rt_handle_pop", jit_rt_handle_pop as *const u8);
     builder.symbol("jit_rt_resume", jit_rt_resume as *const u8);
+    builder.symbol(
+        "lm_rt_effect_handler_entry",
+        lm_rt_effect_handler_entry as *const u8,
+    );
 }
 
 // ---------------------------------------------------------------------------

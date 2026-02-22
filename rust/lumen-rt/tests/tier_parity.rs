@@ -654,6 +654,28 @@ end
     assert_eq!(result, Value::Int(1), "unexpected effect result");
 }
 
+#[test]
+fn parity_effect_basic() {
+    assert_parity(
+        r#"
+effect Log
+  cell log(msg: String) -> Null
+end
+
+cell main() -> Int
+  let result = handle
+    perform Log.log("hello")
+    42
+  with
+    Log.log(msg) =>
+      resume(null)
+  end
+  return result
+end
+"#,
+    );
+}
+
 // ── effect latency benchmark ──────────────────────────────────────────────────
 
 /// Measure the per-effect overhead in the interpreter.

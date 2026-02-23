@@ -33,6 +33,13 @@ pub struct StitchedCode {
     pub code_ptr: *const u8,
     /// Length of the stitched code in bytes.
     pub code_len: usize,
+    /// Byte offsets for each LIR instruction within this cell's code.
+    ///
+    /// `instruction_offsets[i]` is the byte offset from `code_ptr` where the
+    /// stencil for LIR instruction `i` begins.
+    pub instruction_offsets: Vec<usize>,
+    /// Total register count for this cell.
+    pub register_count: usize,
 }
 
 // SAFETY: The code pointer points into a long-lived mmap region owned by the
@@ -169,9 +176,11 @@ impl Stitcher {
 
         // First pass: compute the byte offset of each instruction's stencil
         // in the output buffer. We need this for jump patching.
+        //
+        // Offsets are relative to the start of this cell's code (0-based).
         let mut instruction_offsets: Vec<usize> = Vec::with_capacity(cell.instructions.len());
         {
-            let mut offset = start_offset;
+            let mut offset = 0usize;
             for instr in &cell.instructions {
                 instruction_offsets.push(offset);
                 let op = instr.op as u8;
@@ -319,7 +328,7 @@ impl Stitcher {
                         };
 
                         let target_addr = if target_pc < instruction_offsets.len() {
-                            instruction_offsets[target_pc]
+                            start_offset + instruction_offsets[target_pc]
                         } else if matches!(instr.op, OpCode::IsVariant | OpCode::Test) {
                             // Skip-next at end of stream should jump to the final `ret`.
                             start_offset + total_size
@@ -363,6 +372,8 @@ impl Stitcher {
         let code = StitchedCode {
             code_ptr: unsafe { self.code_buffer.add(start_offset) },
             code_len,
+            instruction_offsets,
+            register_count: cell.registers as usize,
         };
 
         self.compiled.insert(cell_index, code);

@@ -576,7 +576,7 @@ pub struct FiberPool {
 unsafe impl Send for FiberPool {}
 
 /// Default number of stacks to pre-allocate in `FiberPool::new`.
-pub const DEFAULT_POOL_PRE_ALLOCATE: usize = 16;
+pub const DEFAULT_POOL_PRE_ALLOCATE: usize = 8;
 /// Default maximum number of cached stacks in a `FiberPool`.
 pub const DEFAULT_POOL_MAX_CACHED: usize = 64;
 
@@ -654,6 +654,7 @@ impl FiberPool {
         Self::munmap_stack(stack_bottom, stack_size);
     }
 
+    #[cfg(test)]
     fn cached_count(&self, size: usize) -> usize {
         self.free_stacks
             .get(&size)

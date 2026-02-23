@@ -515,11 +515,6 @@ impl JitVarType {
             _ => JitVarType::Ptr,      // Union, Tuple, Record, List, etc. → heap pointer
         }
     }
-
-    /// Returns true if this type is an integer (boxed or raw).
-    fn is_int(self) -> bool {
-        matches!(self, JitVarType::Int | JitVarType::RawInt)
-    }
 }
 
 /// Unified cell lowering function that works with any Module implementation.

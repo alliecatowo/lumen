@@ -5403,6 +5403,7 @@ impl<'a> Lowerer<'a> {
                         operation: handler.operation.clone(),
                         param_count: handler.params.len() as u8,
                         handler_ip: 0, // patched later
+                        is_fast: false,
                     });
                     self.intern_string(&handler.effect_name);
                     self.intern_string(&handler.operation);

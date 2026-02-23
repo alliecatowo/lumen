@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 use crate::vm_context::VmContext;
+use lumen_core::nb_value::NbValue;
 use lumen_core::values::{UnionPayload, UnionValue, Value};
 use std::sync::Arc;
 
@@ -39,8 +40,13 @@ unsafe fn nanbox_to_union_payload(val: i64) -> UnionPayload {
                 UnionPayload::Float(f64::NAN)
             } else {
                 // Take ownership of the existing Arc — no clone needed.
-                let arc = Arc::from_raw(payload as *const Value);
-                UnionPayload::from_arc(arc)
+                if payload & NbValue::PTR_ARENA_FLAG != 0 {
+                    let value = &*((payload & !NbValue::PTR_ARENA_FLAG) as *const Value);
+                    UnionPayload::from_value(value.clone())
+                } else {
+                    let arc = Arc::from_raw((payload & !NbValue::PTR_ARENA_FLAG) as *const Value);
+                    UnionPayload::from_arc(arc)
+                }
             }
         }
         1 => {
@@ -137,31 +143,16 @@ pub extern "C" fn jit_rt_union_is_variant(
         Value::Union(uv) => {
             let st = unsafe { &*(*ctx).string_table };
             if let Some(resolved) = st.resolve(uv.tag) {
-                if resolved == tag_str { 1 } else { 0 }
+                if resolved == tag_str {
+                    1
+                } else {
+                    0
+                }
             } else {
                 0
             }
         }
         _ => 0,
-    }
-}
-
-/// Re-encode a `Value` into its NbValue-compatible i64 representation so the
-/// result can be used directly by JIT-compiled code.
-fn value_to_nanbox(v: &Value) -> i64 {
-    match v {
-        Value::Int(n) => {
-            let payload = (*n as u64) & PAYLOAD_MASK_U;
-            (NAN_MASK_U | (1u64 << 48) | payload) as i64
-        }
-        Value::Bool(true) => NAN_BOX_TRUE,
-        Value::Bool(false) => NAN_BOX_FALSE,
-        Value::Null => NAN_BOX_NULL,
-        Value::Float(f) => f.to_bits() as i64,
-        other => {
-            let ptr = Arc::into_raw(Arc::new(other.clone())) as u64;
-            (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
-        }
     }
 }
 
@@ -247,7 +238,11 @@ pub extern "C" fn jit_rt_union_is_variant_by_id(
     let value = unsafe { &*((u & PAYLOAD_MASK_U) as *const Value) };
     match value {
         Value::Union(uv) => {
-            if uv.tag == tag_id { 1 } else { 0 }
+            if uv.tag == tag_id {
+                1
+            } else {
+                0
+            }
         }
         _ => 0,
     }

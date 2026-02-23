@@ -116,6 +116,21 @@ impl StencilTier {
         self.compiled.contains(&cell_idx)
     }
 
+    /// Return an OSR entry point for a stitched cell at the given LIR IP.
+    pub fn get_osr_entry(&self, cell_idx: usize, lir_ip: usize) -> Option<OsrStencilEntry> {
+        let stitcher = self.stitcher.as_ref()?;
+        let code = stitcher.get_compiled(cell_idx)?;
+        if lir_ip >= code.instruction_offsets.len() {
+            return None;
+        }
+        let offset = code.instruction_offsets[lir_ip];
+        let code_ptr = unsafe { code.code_ptr.add(offset) };
+        Some(OsrStencilEntry {
+            code_ptr,
+            reg_count: code.register_count,
+        })
+    }
+
     pub fn record_call(&mut self, cell_idx: usize) -> bool {
         if !self.config.enabled {
             return false;
@@ -298,6 +313,13 @@ impl StencilTier {
     }
 }
 
+#[cfg(feature = "jit")]
+#[derive(Debug, Clone, Copy)]
+pub struct OsrStencilEntry {
+    pub code_ptr: *const u8,
+    pub reg_count: usize,
+}
+
 #[cfg(not(feature = "jit"))]
 impl StencilTier {
     pub fn new(_config: StencilTierConfig) -> Self {
@@ -323,6 +345,10 @@ impl StencilTier {
         false
     }
 
+    pub fn get_osr_entry(&self, _cell_idx: usize, _lir_ip: usize) -> Option<OsrStencilEntry> {
+        None
+    }
+
     pub fn record_call(&mut self, _cell_idx: usize) -> bool {
         false
     }
@@ -343,6 +369,13 @@ impl StencilTier {
     pub fn stats(&self) -> StencilTierStats {
         self.stats.clone()
     }
+}
+
+#[cfg(not(feature = "jit"))]
+#[derive(Debug, Clone, Copy)]
+pub struct OsrStencilEntry {
+    pub code_ptr: *const u8,
+    pub reg_count: usize,
 }
 
 #[cfg(feature = "jit")]
@@ -397,41 +430,39 @@ fn opcode_to_runtime_func(op: OpCode) -> &'static str {
 
 #[cfg(feature = "jit")]
 fn resolve_runtime_helper(name: &str) -> Option<u64> {
+    // Cast via *const () to satisfy Rust's "direct cast of fn item to integer" lint.
+    macro_rules! fn_addr {
+        ($f:expr) => {
+            Some($f as *const () as usize as u64)
+        };
+    }
     match name {
-        "lm_rt_return" => Some(crate::stencil_runtime::lm_rt_return as usize as u64),
-        "lm_rt_halt" => Some(crate::stencil_runtime::lm_rt_halt as usize as u64),
-        "lm_rt_call" => Some(crate::stencil_runtime::lm_rt_call as usize as u64),
-        "lm_rt_tailcall" => Some(crate::stencil_runtime::lm_rt_tailcall as usize as u64),
-        "lm_rt_intrinsic" => Some(crate::stencil_runtime::lm_rt_intrinsic as usize as u64),
-        "lm_rt_perform" => Some(crate::vm::fiber_effects::lm_rt_perform as usize as u64),
-        "lm_rt_handle_push" => Some(crate::vm::fiber_effects::lm_rt_handle_push as usize as u64),
-        "lm_rt_handle_pop" => Some(crate::vm::fiber_effects::lm_rt_handle_pop as usize as u64),
-        "lm_rt_resume" => Some(crate::vm::fiber_effects::lm_rt_resume as usize as u64),
-        "lm_rt_stencil_runtime" => {
-            Some(crate::stencil_runtime::lm_rt_stencil_runtime as usize as u64)
-        }
-        "lm_rt_osr_check" => Some(crate::vm::osr::osr_check::lm_rt_osr_check as usize as u64),
-        "jit_rt_list_append" => {
-            Some(lumen_codegen::collection_helpers::jit_rt_list_append as usize as u64)
-        }
-        "jit_rt_range" => Some(lumen_codegen::collection_helpers::jit_rt_range as usize as u64),
-        "jit_rt_sort" => Some(lumen_codegen::collection_helpers::jit_rt_sort as usize as u64),
+        "lm_rt_return" => fn_addr!(crate::stencil_runtime::lm_rt_return),
+        "lm_rt_halt" => fn_addr!(crate::stencil_runtime::lm_rt_halt),
+        "lm_rt_call" => fn_addr!(crate::stencil_runtime::lm_rt_call),
+        "lm_rt_tailcall" => fn_addr!(crate::stencil_runtime::lm_rt_tailcall),
+        "lm_rt_intrinsic" => fn_addr!(crate::stencil_runtime::lm_rt_intrinsic),
+        "lm_rt_perform" => fn_addr!(crate::vm::fiber_effects::lm_rt_perform),
+        "lm_rt_handle_push" => fn_addr!(crate::vm::fiber_effects::lm_rt_handle_push),
+        "lm_rt_handle_pop" => fn_addr!(crate::vm::fiber_effects::lm_rt_handle_pop),
+        "lm_rt_resume" => fn_addr!(crate::vm::fiber_effects::lm_rt_resume),
+        "lm_rt_stencil_runtime" => fn_addr!(crate::stencil_runtime::lm_rt_stencil_runtime),
+        "lm_rt_osr_check" => fn_addr!(crate::vm::osr::osr_check::lm_rt_osr_check),
+        "jit_rt_list_append" => fn_addr!(lumen_codegen::collection_helpers::jit_rt_list_append),
+        "jit_rt_range" => fn_addr!(lumen_codegen::collection_helpers::jit_rt_range),
+        "jit_rt_sort" => fn_addr!(lumen_codegen::collection_helpers::jit_rt_sort),
         "jit_rt_collection_len" => {
-            Some(lumen_codegen::collection_helpers::jit_rt_collection_len as usize as u64)
+            fn_addr!(lumen_codegen::collection_helpers::jit_rt_collection_len)
         }
-        "jit_rt_map_keys" => {
-            Some(lumen_codegen::collection_helpers::jit_rt_map_keys as usize as u64)
-        }
-        "jit_rt_map_values" => {
-            Some(lumen_codegen::collection_helpers::jit_rt_map_values as usize as u64)
-        }
+        "jit_rt_map_keys" => fn_addr!(lumen_codegen::collection_helpers::jit_rt_map_keys),
+        "jit_rt_map_values" => fn_addr!(lumen_codegen::collection_helpers::jit_rt_map_values),
         _ => None,
     }
 }
 
 #[cfg(feature = "jit")]
 #[cfg(target_arch = "x86_64")]
-unsafe fn call_stitched(code_ptr: *const u8, regs: *mut NbValue, ctx: *mut VmContext) {
+pub(crate) unsafe fn call_stitched(code_ptr: *const u8, regs: *mut NbValue, ctx: *mut VmContext) {
     // The System V x86-64 ABI requires RSP to be 16-byte aligned immediately
     // before a `call` instruction.  Rust's function prologue may leave RSP at
     // an unknown alignment inside an inline-asm block.  We align explicitly.
@@ -465,4 +496,9 @@ unsafe fn call_stitched(code_ptr: *const u8, regs: *mut NbValue, ctx: *mut VmCon
 
 #[cfg(feature = "jit")]
 #[cfg(not(target_arch = "x86_64"))]
-unsafe fn call_stitched(_code_ptr: *const u8, _regs: *mut NbValue, _ctx: *mut VmContext) {}
+pub(crate) unsafe fn call_stitched(
+    _code_ptr: *const u8,
+    _regs: *mut NbValue,
+    _ctx: *mut VmContext,
+) {
+}

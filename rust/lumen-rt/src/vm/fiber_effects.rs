@@ -30,7 +30,9 @@
 //! - The `FiberEffectStack` outlives all fibers registered with it.
 //! - `fiber_switch` is only called with fibers in valid states.
 
-use super::fiber::{Fiber, FiberPool, FiberStatus, DEFAULT_FIBER_STACK_SIZE};
+use super::fiber::{
+    Fiber, FiberPool, FiberStatus, DEFAULT_FIBER_STACK_SIZE, DEFAULT_POOL_PRE_ALLOCATE,
+};
 use crate::platform;
 use lumen_core::nb_value::NbValue;
 use lumen_core::vm_context::VmContext;
@@ -92,6 +94,8 @@ pub struct FiberEffectStack {
     /// Only one performer can be in flight per stack (one-shot semantics).
     suspended: Option<SuspendedPerformer>,
     /// Stack allocator for handler fibers.
+    /// TODO: wire lm_rt_handle_push to use this pool instead of bare Fiber::new.
+    #[allow(dead_code)]
     pool: FiberPool,
     /// Handler fibers pending free after we switch off their stacks.
     pending_handler_frees: Vec<*mut Fiber>,
@@ -103,7 +107,7 @@ impl FiberEffectStack {
         FiberEffectStack {
             handler_stack: Vec::new(),
             suspended: None,
-            pool: FiberPool::new(DEFAULT_FIBER_STACK_SIZE, 0),
+            pool: FiberPool::new(DEFAULT_FIBER_STACK_SIZE, DEFAULT_POOL_PRE_ALLOCATE),
             pending_handler_frees: Vec::new(),
         }
     }

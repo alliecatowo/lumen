@@ -371,7 +371,9 @@ impl VM {
                 let coll_nb = self.registers[base + a + 1];
                 let needle_nb = self.registers[base + a + 2];
                 if coll_nb.is_ptr() && coll_nb.payload() > 1 {
-                    let coll_ref = unsafe { &*(coll_nb.payload() as *const Value) };
+                    let coll_ref = unsafe {
+                        &*((coll_nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value)
+                    };
                     // Fast-path: int needle in list (primes sieve pattern)
                     if needle_nb.is_int() {
                         let needle_val = Value::Int(needle_nb.as_int().unwrap_or(0));
@@ -415,7 +417,9 @@ impl VM {
                 };
                 // TAG_PTR borrow-through for the list
                 if list_nb.is_ptr() && list_nb.payload() > 1 {
-                    let val_ref = unsafe { &*(list_nb.payload() as *const Value) };
+                    let val_ref = unsafe {
+                        &*((list_nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value)
+                    };
                     if let Value::List(l) = val_ref {
                         let joined = l
                             .iter()
@@ -749,7 +753,8 @@ impl VM {
             "flatten" => {
                 let nb = self.registers[base + a + 1];
                 if nb.is_ptr() && nb.payload() > 1 {
-                    let val_ref = unsafe { &*(nb.payload() as *const Value) };
+                    let val_ref =
+                        unsafe { &*((nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
                     if let Value::List(l) = val_ref {
                         let mut result = Vec::new();
                         for item in l.iter() {
@@ -780,7 +785,8 @@ impl VM {
             "unique" => {
                 let nb = self.registers[base + a + 1];
                 if nb.is_ptr() && nb.payload() > 1 {
-                    let val_ref = unsafe { &*(nb.payload() as *const Value) };
+                    let val_ref =
+                        unsafe { &*((nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
                     if let Value::List(l) = val_ref {
                         let mut result = Vec::new();
                         for item in l.iter() {
@@ -808,7 +814,8 @@ impl VM {
                 let nb = self.registers[base + a + 1];
                 let n = self.nb_to_int(self.registers[base + a + 2]).unwrap_or(0) as usize;
                 if nb.is_ptr() && nb.payload() > 1 {
-                    let val_ref = unsafe { &*(nb.payload() as *const Value) };
+                    let val_ref =
+                        unsafe { &*((nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
                     if let Value::List(l) = val_ref {
                         return Ok(Value::new_list(l.iter().take(n).cloned().collect()));
                     }
@@ -824,7 +831,8 @@ impl VM {
                 let nb = self.registers[base + a + 1];
                 let n = self.nb_to_int(self.registers[base + a + 2]).unwrap_or(0) as usize;
                 if nb.is_ptr() && nb.payload() > 1 {
-                    let val_ref = unsafe { &*(nb.payload() as *const Value) };
+                    let val_ref =
+                        unsafe { &*((nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
                     if let Value::List(l) = val_ref {
                         return Ok(Value::new_list(l.iter().skip(n).cloned().collect()));
                     }
@@ -1121,7 +1129,8 @@ impl VM {
             "json_encode" | "to_json" => {
                 let nb = self.registers[base + a + 1];
                 if nb.is_ptr() && nb.payload() > 1 {
-                    let val_ref = unsafe { &*(nb.payload() as *const Value) };
+                    let val_ref =
+                        unsafe { &*((nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
                     let j = helpers::value_to_json(val_ref, &self.strings);
                     return Ok(Value::String(StringRef::Owned(j.to_string())));
                 }
@@ -1132,7 +1141,8 @@ impl VM {
             "json_pretty" => {
                 let nb = self.registers[base + a + 1];
                 if nb.is_ptr() && nb.payload() > 1 {
-                    let val_ref = unsafe { &*(nb.payload() as *const Value) };
+                    let val_ref =
+                        unsafe { &*((nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
                     let j = helpers::value_to_json(val_ref, &self.strings);
                     let pretty = serde_json::to_string_pretty(&j)
                         .map_err(|e| VmError::Runtime(format!("json_pretty failed: {}", e)))?;
@@ -1260,7 +1270,8 @@ impl VM {
                 // Convert a Bytes value back to a String. Returns Null on non-Bytes input.
                 let nb = self.registers[base + a + 1];
                 if nb.is_ptr() && nb.payload() > 1 {
-                    let val_ref = unsafe { &*(nb.payload() as *const Value) };
+                    let val_ref =
+                        unsafe { &*((nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
                     return Ok(match val_ref {
                         Value::Bytes(b) => {
                             Value::String(StringRef::Owned(String::from_utf8_lossy(b).to_string()))
@@ -1275,7 +1286,8 @@ impl VM {
                 // Return the number of bytes in a Bytes value. Returns 0 for non-Bytes.
                 let nb = self.registers[base + a + 1];
                 if nb.is_ptr() && nb.payload() > 1 {
-                    let val_ref = unsafe { &*(nb.payload() as *const Value) };
+                    let val_ref =
+                        unsafe { &*((nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
                     return Ok(match val_ref {
                         Value::Bytes(b) => Value::Int(b.len() as i64),
                         _ => Value::Int(0),
@@ -1305,7 +1317,8 @@ impl VM {
                     Value::Bytes(b[start..end].to_vec())
                 };
                 if nb.is_ptr() && nb.payload() > 1 {
-                    let val_ref = unsafe { &*(nb.payload() as *const Value) };
+                    let val_ref =
+                        unsafe { &*((nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
                     return Ok(match val_ref {
                         Value::Bytes(b) => get_slice(b),
                         _ => Value::Null,
@@ -1323,7 +1336,8 @@ impl VM {
                 let nb_a = self.registers[base + a + 1];
                 let nb_b = self.registers[base + a + 2];
                 let bytes_a = if nb_a.is_ptr() && nb_a.payload() > 1 {
-                    let val_ref = unsafe { &*(nb_a.payload() as *const Value) };
+                    let val_ref =
+                        unsafe { &*((nb_a.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
                     match val_ref {
                         Value::Bytes(b) => Some(b.clone()),
                         _ => None,
@@ -1335,7 +1349,8 @@ impl VM {
                     }
                 };
                 let bytes_b = if nb_b.is_ptr() && nb_b.payload() > 1 {
-                    let val_ref = unsafe { &*(nb_b.payload() as *const Value) };
+                    let val_ref =
+                        unsafe { &*((nb_b.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
                     match val_ref {
                         Value::Bytes(b) => Some(b.clone()),
                         _ => None,

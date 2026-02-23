@@ -24,6 +24,7 @@
 //! 3. Remain valid for the duration of the function call
 //! 4. Not be modified concurrently from multiple threads
 
+use crate::arena::ValueArena;
 use crate::strings::StringTable;
 
 /// Opaque effect handler stack type.
@@ -123,6 +124,10 @@ pub struct VmContext {
 
     /// Closure call trampoline provided by the runtime.
     pub call_closure: Option<extern "C" fn(*mut VmContext, i64, *const i64, i64) -> i64>,
+
+    /// Per-frame value arena for JIT allocations.
+    /// When null, runtime helpers fall back to Arc allocations.
+    pub arena: *mut ValueArena,
 }
 
 impl VmContext {
@@ -140,6 +145,7 @@ impl VmContext {
             jit_fn_ptrs: std::ptr::null(),
             jit_fn_ptrs_len: 0,
             call_closure: None,
+            arena: std::ptr::null_mut(),
         }
     }
 
@@ -183,6 +189,7 @@ mod tests {
         assert!(ctx.jit_fn_ptrs.is_null());
         assert_eq!(ctx.jit_fn_ptrs_len, 0);
         assert!(ctx.call_closure.is_none());
+        assert!(ctx.arena.is_null());
     }
 
     #[test]
@@ -191,8 +198,8 @@ mod tests {
         use std::mem;
         assert_eq!(
             mem::size_of::<VmContext>(),
-            mem::size_of::<*mut u8>() * 10 + mem::size_of::<usize>(),
-            "VmContext should be exactly 10 pointers + usize"
+            mem::size_of::<*mut u8>() * 11 + mem::size_of::<usize>(),
+            "VmContext should be exactly 11 pointers + usize"
         );
     }
 }

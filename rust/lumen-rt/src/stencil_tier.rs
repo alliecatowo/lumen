@@ -163,7 +163,20 @@ impl StencilTier {
             }
         };
 
-        let _ = cell;
+        // Don't stencil-compile cells with Call/TailCall opcodes.
+        // Stencil's lm_rt_call re-enters the interpreter on the main Rust stack.
+        // For recursive or cross-cell calls, this causes deep Rust stack nesting
+        // that overflows the stack (each LIR call ≈ 4–5 Rust frames deep).
+        // Cells with calls are better served by the Cranelift JIT (tier 2).
+        use lumen_core::lir::OpCode;
+        let has_call = cell
+            .instructions
+            .iter()
+            .any(|i| matches!(i.op, OpCode::Call | OpCode::TailCall));
+        if has_call {
+            self.stats.compile_failures += 1;
+            return jit_tier.try_compile(cell_idx, module);
+        }
 
         let code_len = {
             let stitcher = match self.stitcher.as_mut() {

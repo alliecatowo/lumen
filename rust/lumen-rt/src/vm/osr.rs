@@ -12,6 +12,7 @@
 //! 5. The stencil code jumps to the optimized code with captured state
 
 use crate::vm::VM;
+use lumen_codegen::collection_helpers::value_to_nanbox;
 use lumen_core::lir::LirModule;
 use lumen_core::nb_value::NbValue;
 use lumen_core::values::Value;
@@ -82,6 +83,8 @@ pub mod osr_check {
         /// Whether synthetic OSR entry cells have been compiled into the engine.
         #[cfg(feature = "jit")]
         osr_entries_compiled: bool,
+        /// Guard to prevent recursive OSR transitions from stencil callbacks.
+        osr_transition_in_progress: bool,
     }
 
     impl OsrRuntime {
@@ -103,6 +106,7 @@ pub mod osr_check {
                 osr_entries: HashMap::new(),
                 #[cfg(feature = "jit")]
                 osr_entries_compiled: false,
+                osr_transition_in_progress: false,
             }
         }
 
@@ -315,7 +319,7 @@ pub mod osr_check {
     pub unsafe extern "C" fn lm_rt_osr_check(
         ctx: *mut VmContext,
         cell_idx: usize,
-        _current_ip: usize,
+        current_ip: usize,
     ) -> *const () {
         debug_assert!(!ctx.is_null(), "lm_rt_osr_check: null VmContext");
         let vm: &mut VM = {
@@ -324,7 +328,35 @@ pub mod osr_check {
             &mut *ptr
         };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            osr_check_interp(vm, cell_idx)
+            let ptr = osr_check_interp(vm, cell_idx);
+            if !ptr.is_null() {
+                if vm.osr_runtime.osr_transition_in_progress {
+                    return std::ptr::null();
+                }
+                vm.osr_runtime.osr_transition_in_progress = true;
+                let cell_opt = vm
+                    .module
+                    .as_ref()
+                    .and_then(|m| m.cells.get(cell_idx).cloned());
+                if let Some(cell) = cell_opt {
+                    let result_val = perform_osr_transition(vm, &cell, current_ip);
+
+                    if let Ok(val) = result_val {
+                        // Stencil OSR expects the result in r0 of the stencil frame.
+                        let base = vm.stencil_base;
+                        if base < vm.registers.len() {
+                            let nb = NbValue(value_to_nanbox(&val) as u64);
+                            let old = vm.registers[base];
+                            old.drop_heap();
+                            vm.registers[base] = nb;
+                        }
+                    }
+                }
+                vm.osr_runtime.osr_transition_in_progress = false;
+                // Return null so the stencil continues after OsrCheck.
+                return std::ptr::null();
+            }
+            std::ptr::null()
         }));
         result.unwrap_or(std::ptr::null())
     }
@@ -690,20 +722,60 @@ pub fn perform_osr_transition(
                 && base.saturating_add(entry.arg_count) <= vm.registers.len()
                 && vm.osr_runtime.return_type(&entry.cell_name).is_some();
             if entry_is_valid {
-                let args: Vec<i64> = (0..entry.arg_count)
-                    .map(|reg| vm.registers[base + reg].0 as i64)
-                    .collect();
+                // Capture live register values and bump refcounts for heap values
+                // so the compiled entry can safely consume them.
+                let mut args: Vec<i64> = Vec::with_capacity(entry.arg_count);
+                for reg in 0..entry.arg_count {
+                    let nb = vm.registers[base + reg];
+                    if nb.is_heap_allocated() {
+                        unsafe {
+                            let ptr = (nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value;
+                            std::sync::Arc::increment_strong_count(ptr);
+                        }
+                    }
+                    args.push(nb.0 as i64);
+                }
+
                 let result = execute_compiled_cell(vm, &entry.cell_name, &args)?;
+
+                // Drop extra refs added for the OSR entry call.
+                for reg in 0..entry.arg_count {
+                    let nb = vm.registers[base + reg];
+                    if nb.is_heap_allocated() {
+                        unsafe {
+                            let ptr = (nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value;
+                            std::sync::Arc::decrement_strong_count(ptr);
+                        }
+                    }
+                }
+
                 vm.osr_runtime.record_entry_transition();
                 return Ok(result);
             }
         }
 
         // Safe fallback: restart the full cell from its declared parameters.
-        let args: Vec<i64> = (0..cell.params.len())
-            .map(|i| vm.registers[base + i].0 as i64)
-            .collect();
+        let mut args: Vec<i64> = Vec::with_capacity(cell.params.len());
+        for i in 0..cell.params.len() {
+            let nb = vm.registers[base + i];
+            if nb.is_heap_allocated() {
+                unsafe {
+                    let ptr = (nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value;
+                    std::sync::Arc::increment_strong_count(ptr);
+                }
+            }
+            args.push(nb.0 as i64);
+        }
         let result = execute_compiled_cell(vm, &cell.name, &args)?;
+        for i in 0..cell.params.len() {
+            let nb = vm.registers[base + i];
+            if nb.is_heap_allocated() {
+                unsafe {
+                    let ptr = (nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value;
+                    std::sync::Arc::decrement_strong_count(ptr);
+                }
+            }
+        }
         vm.osr_runtime.record_restart_fallback_transition();
         Ok(result)
     }

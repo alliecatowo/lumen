@@ -158,7 +158,7 @@ fn value_is_truthy(value: &Value) -> bool {
 }
 
 #[inline]
-fn value_to_nanbox(value: &Value) -> i64 {
+pub fn value_to_nanbox(value: &Value) -> i64 {
     match value {
         Value::Int(n) => {
             let payload = (*n as u64) & PAYLOAD_MASK_U;
@@ -725,8 +725,33 @@ pub extern "C" fn jit_rt_range(ctx: *mut VmContext, start_nb: i64, end_nb: i64) 
 }
 
 /// Sort a list in natural ascending order.
+///
+/// NOTE: This function is hot in benchmarks; avoid decoding/cloning the entire
+/// list when the pointer is already a heap Value::List.
 #[no_mangle]
 pub extern "C" fn jit_rt_sort(ctx: *mut VmContext, list_nb: i64) -> i64 {
+    // Fast path: treat the NbValue as a heap pointer and sort in place if it
+    // points to a list. This avoids arc churn in tight loops.
+    let u = list_nb as u64;
+    if (u & NAN_MASK_U) == NAN_MASK_U && ((u >> 48) & 0x7) == 0 {
+        let payload = u & PAYLOAD_MASK_U;
+        if payload > 1 {
+            let raw_ptr = (payload & !PTR_ARENA_FLAG_U) as *mut Value;
+            unsafe {
+                if let Value::List(list) = &mut *raw_ptr {
+                    Arc::make_mut(list).sort_by(cmp_value_natural);
+                }
+            }
+            // Preserve original arena flag in the returned NbValue.
+            return if (payload & PTR_ARENA_FLAG_U) != 0 {
+                wrap_nanbox_ptr_arena(raw_ptr as *const Value)
+            } else {
+                wrap_nanbox_ptr(raw_ptr as *const Value)
+            };
+        }
+    }
+
+    // Fallback for null / non-pointer inputs.
     let Some(raw_ptr) = decode_value_ptr(list_nb) else {
         return list_nb;
     };
@@ -751,12 +776,12 @@ pub extern "C" fn jit_rt_sort(ctx: *mut VmContext, list_nb: i64) -> i64 {
         return wrap_nanbox_ptr_arena(raw_ptr);
     }
 
-    let mut arc_value = unsafe { Arc::from_raw(raw_ptr) };
-    if let Value::List(list) = Arc::make_mut(&mut arc_value) {
+    let mut value_arc = unsafe { Arc::from_raw(raw_ptr) };
+    if let Value::List(list) = Arc::make_mut(&mut value_arc) {
         Arc::make_mut(list).sort_by(cmp_value_natural);
     }
 
-    wrap_nanbox_ptr(Arc::into_raw(arc_value))
+    wrap_nanbox_ptr(Arc::into_raw(value_arc))
 }
 
 /// Sort a list in natural descending order.
@@ -788,14 +813,14 @@ pub extern "C" fn jit_rt_sort_desc(ctx: *mut VmContext, list_nb: i64) -> i64 {
         return wrap_nanbox_ptr_arena(raw_ptr);
     }
 
-    let mut arc_value = unsafe { Arc::from_raw(raw_ptr) };
-    if let Value::List(list) = Arc::make_mut(&mut arc_value) {
+    let mut value_arc = unsafe { Arc::from_raw(raw_ptr) };
+    if let Value::List(list) = Arc::make_mut(&mut value_arc) {
         let list = Arc::make_mut(list);
         list.sort_by(cmp_value_natural);
         list.reverse();
     }
 
-    wrap_nanbox_ptr(Arc::into_raw(arc_value))
+    wrap_nanbox_ptr(Arc::into_raw(value_arc))
 }
 
 /// Reverse a List in-place (copy-on-write) and return the list.
@@ -825,12 +850,12 @@ pub extern "C" fn jit_rt_list_reverse(ctx: *mut VmContext, list_nb: i64) -> i64 
         return wrap_nanbox_ptr_arena(raw_ptr);
     }
 
-    let mut arc_value = unsafe { Arc::from_raw(raw_ptr) };
-    if let Value::List(list) = Arc::make_mut(&mut arc_value) {
+    let mut value_arc = unsafe { Arc::from_raw(raw_ptr) };
+    if let Value::List(list) = Arc::make_mut(&mut value_arc) {
         Arc::make_mut(list).reverse();
     }
 
-    wrap_nanbox_ptr(Arc::into_raw(arc_value))
+    wrap_nanbox_ptr(Arc::into_raw(value_arc))
 }
 
 /// Flatten a List by one level.
@@ -851,16 +876,14 @@ pub extern "C" fn jit_rt_list_flatten(ctx: *mut VmContext, list_nb: i64) -> i64 
         false
     };
 
-    let items: Vec<Value> = if is_arena_ptr {
-        match unsafe { &*(raw_ptr as *const Value) } {
-            Value::List(list) => list.iter().cloned().collect(),
-            _ => return wrap_nanbox_ptr_arena(raw_ptr),
-        }
-    } else {
-        let arc_value = unsafe { Arc::from_raw(raw_ptr) };
-        match arc_value.as_ref() {
-            Value::List(list) => list.iter().cloned().collect(),
-            _ => return wrap_nanbox_ptr(Arc::into_raw(arc_value)),
+    let items: Vec<Value> = match unsafe { &*(raw_ptr as *const Value) } {
+        Value::List(list) => list.iter().cloned().collect(),
+        _ => {
+            return if is_arena_ptr {
+                wrap_nanbox_ptr_arena(raw_ptr)
+            } else {
+                wrap_nanbox_ptr(raw_ptr)
+            }
         }
     };
 
@@ -894,16 +917,14 @@ pub extern "C" fn jit_rt_list_unique(ctx: *mut VmContext, list_nb: i64) -> i64 {
         false
     };
 
-    let items: Vec<Value> = if is_arena_ptr {
-        match unsafe { &*(raw_ptr as *const Value) } {
-            Value::List(list) => list.iter().cloned().collect(),
-            _ => return wrap_nanbox_ptr_arena(raw_ptr),
-        }
-    } else {
-        let arc_value = unsafe { Arc::from_raw(raw_ptr) };
-        match arc_value.as_ref() {
-            Value::List(list) => list.iter().cloned().collect(),
-            _ => return wrap_nanbox_ptr(Arc::into_raw(arc_value)),
+    let items: Vec<Value> = match unsafe { &*(raw_ptr as *const Value) } {
+        Value::List(list) => list.iter().cloned().collect(),
+        _ => {
+            return if is_arena_ptr {
+                wrap_nanbox_ptr_arena(raw_ptr)
+            } else {
+                wrap_nanbox_ptr(raw_ptr)
+            }
         }
     };
 
@@ -936,16 +957,14 @@ pub extern "C" fn jit_rt_list_take(ctx: *mut VmContext, list_nb: i64, n_nb: i64)
         false
     };
 
-    let taken: Vec<Value> = if is_arena_ptr {
-        match unsafe { &*(raw_ptr as *const Value) } {
-            Value::List(list) => list.iter().take(n).cloned().collect(),
-            _ => return wrap_nanbox_ptr_arena(raw_ptr),
-        }
-    } else {
-        let arc_value = unsafe { Arc::from_raw(raw_ptr) };
-        match arc_value.as_ref() {
-            Value::List(list) => list.iter().take(n).cloned().collect(),
-            _ => return wrap_nanbox_ptr(Arc::into_raw(arc_value)),
+    let taken: Vec<Value> = match unsafe { &*(raw_ptr as *const Value) } {
+        Value::List(list) => list.iter().take(n).cloned().collect(),
+        _ => {
+            return if is_arena_ptr {
+                wrap_nanbox_ptr_arena(raw_ptr)
+            } else {
+                wrap_nanbox_ptr(raw_ptr)
+            }
         }
     };
     wrap_nanbox_value_with_ctx(ctx, Value::new_list(taken))
@@ -970,16 +989,14 @@ pub extern "C" fn jit_rt_list_drop(ctx: *mut VmContext, list_nb: i64, n_nb: i64)
         false
     };
 
-    let dropped: Vec<Value> = if is_arena_ptr {
-        match unsafe { &*(raw_ptr as *const Value) } {
-            Value::List(list) => list.iter().skip(n).cloned().collect(),
-            _ => return wrap_nanbox_ptr_arena(raw_ptr),
-        }
-    } else {
-        let arc_value = unsafe { Arc::from_raw(raw_ptr) };
-        match arc_value.as_ref() {
-            Value::List(list) => list.iter().skip(n).cloned().collect(),
-            _ => return wrap_nanbox_ptr(Arc::into_raw(arc_value)),
+    let dropped: Vec<Value> = match unsafe { &*(raw_ptr as *const Value) } {
+        Value::List(list) => list.iter().skip(n).cloned().collect(),
+        _ => {
+            return if is_arena_ptr {
+                wrap_nanbox_ptr_arena(raw_ptr)
+            } else {
+                wrap_nanbox_ptr(raw_ptr)
+            }
         }
     };
     wrap_nanbox_value_with_ctx(ctx, Value::new_list(dropped))
@@ -992,7 +1009,7 @@ pub extern "C" fn jit_rt_list_first(ctx: *mut VmContext, list_nb: i64) -> i64 {
         return NAN_BOX_NULL_U as i64;
     };
 
-    let is_arena_ptr = if !ctx.is_null() {
+    let _is_arena_ptr = if !ctx.is_null() {
         let arena = unsafe { (*ctx).arena };
         if arena.is_null() {
             false
@@ -1003,23 +1020,12 @@ pub extern "C" fn jit_rt_list_first(ctx: *mut VmContext, list_nb: i64) -> i64 {
         false
     };
 
-    if is_arena_ptr {
-        match unsafe { &*(raw_ptr as *const Value) } {
-            Value::List(list) => list
-                .first()
-                .map(|v| value_to_nanbox_with_ctx(ctx, v))
-                .unwrap_or(NAN_BOX_NULL_U as i64),
-            _ => NAN_BOX_NULL_U as i64,
-        }
-    } else {
-        let arc_value = unsafe { Arc::from_raw(raw_ptr) };
-        match arc_value.as_ref() {
-            Value::List(list) => list
-                .first()
-                .map(|v| value_to_nanbox_with_ctx(ctx, v))
-                .unwrap_or(NAN_BOX_NULL_U as i64),
-            _ => NAN_BOX_NULL_U as i64,
-        }
+    match unsafe { &*(raw_ptr as *const Value) } {
+        Value::List(list) => list
+            .first()
+            .map(|v| value_to_nanbox_with_ctx(ctx, v))
+            .unwrap_or(NAN_BOX_NULL_U as i64),
+        _ => NAN_BOX_NULL_U as i64,
     }
 }
 
@@ -1030,7 +1036,7 @@ pub extern "C" fn jit_rt_list_last(ctx: *mut VmContext, list_nb: i64) -> i64 {
         return NAN_BOX_NULL_U as i64;
     };
 
-    let is_arena_ptr = if !ctx.is_null() {
+    let _is_arena_ptr = if !ctx.is_null() {
         let arena = unsafe { (*ctx).arena };
         if arena.is_null() {
             false
@@ -1041,23 +1047,12 @@ pub extern "C" fn jit_rt_list_last(ctx: *mut VmContext, list_nb: i64) -> i64 {
         false
     };
 
-    if is_arena_ptr {
-        match unsafe { &*(raw_ptr as *const Value) } {
-            Value::List(list) => list
-                .last()
-                .map(|v| value_to_nanbox_with_ctx(ctx, v))
-                .unwrap_or(NAN_BOX_NULL_U as i64),
-            _ => NAN_BOX_NULL_U as i64,
-        }
-    } else {
-        let arc_value = unsafe { Arc::from_raw(raw_ptr) };
-        match arc_value.as_ref() {
-            Value::List(list) => list
-                .last()
-                .map(|v| value_to_nanbox_with_ctx(ctx, v))
-                .unwrap_or(NAN_BOX_NULL_U as i64),
-            _ => NAN_BOX_NULL_U as i64,
-        }
+    match unsafe { &*(raw_ptr as *const Value) } {
+        Value::List(list) => list
+            .last()
+            .map(|v| value_to_nanbox_with_ctx(ctx, v))
+            .unwrap_or(NAN_BOX_NULL_U as i64),
+        _ => NAN_BOX_NULL_U as i64,
     }
 }
 

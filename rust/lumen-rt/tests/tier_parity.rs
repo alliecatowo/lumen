@@ -819,3 +819,43 @@ end
         );
     }
 }
+
+#[test]
+fn parity_recursive_fibonacci() {
+    assert_parity(
+        r#"
+cell fibonacci(n: Int) -> Int
+  if n < 2
+    return n
+  end
+  return fibonacci(n - 1) + fibonacci(n - 2)
+end
+
+cell main() -> Int
+  return fibonacci(10)
+end
+"#,
+    );
+}
+
+#[test]
+fn debug_jit_fibonacci_tier2_only() {
+    let source = r#"
+cell fibonacci(n: Int) -> Int
+  if n < 2
+    return n
+  end
+  return fibonacci(n - 1) + fibonacci(n - 2)
+end
+
+cell main() -> Int
+  return fibonacci(10)
+end
+"#;
+    let module = compile(source);
+    // Tier 2 (Cranelift JIT) only — threshold=1 means compile after first call
+    if let Some(result) = run_tier2(module, "main") {
+        let r = result.expect("tier2 should succeed");
+        assert_eq!(r, Value::Int(55), "fib(10) should be 55");
+    }
+}

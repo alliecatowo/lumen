@@ -1458,6 +1458,15 @@ pub(crate) fn lower_cell<M: Module>(
             _ => {}
         }
     }
+    // String-producing opcodes (e.g., Add/Concat) are not tracked in the pre-scan.
+    // For any arithmetic or concatenation opcode, conservatively clear string
+    // typing for the destination to avoid treating numeric results as strings
+    // (which would cause string-drop on NaN-boxed ints and crash).
+    for inst in &cell.instructions {
+        if matches!(inst.op, OpCode::Add | OpCode::Concat) {
+            string_regs.remove(&inst.a);
+        }
+    }
 
     // Pre-scan: identify registers that hold string constants used ONLY as
     // Call/TailCall callee names. For these we skip heap string allocation.
@@ -2054,7 +2063,7 @@ pub(crate) fn lower_cell<M: Module>(
                     // a raw integer (e.g. 0x1) instead of a NaN-boxed one.
                     if regs.vars.contains_key(&inst.a) {
                         let res_boxed = emit_box_int(&mut builder, res_i);
-                        var_types.insert(inst.a as u32, JitVarType::Bool);
+                        var_types.insert(inst.a as u32, JitVarType::Int);
                         def_var(&mut builder, &mut regs, inst.a, res_boxed);
                     } else {
                         var_types.insert(inst.a as u32, JitVarType::RawInt);
@@ -2305,7 +2314,7 @@ pub(crate) fn lower_cell<M: Module>(
                     // Box if dest is a multi-block Variable (loop phi merge point).
                     if regs.vars.contains_key(&inst.a) {
                         let res_boxed = emit_box_int(&mut builder, r);
-                        var_types.insert(inst.a as u32, JitVarType::Bool);
+                        var_types.insert(inst.a as u32, JitVarType::Int);
                         def_var(&mut builder, &mut regs, inst.a, res_boxed);
                     } else {
                         var_types.insert(inst.a as u32, JitVarType::RawInt);
@@ -2340,7 +2349,7 @@ pub(crate) fn lower_cell<M: Module>(
                     // Box if dest is a multi-block Variable (loop phi merge point).
                     if regs.vars.contains_key(&inst.a) {
                         let res_boxed = emit_box_int(&mut builder, r);
-                        var_types.insert(inst.a as u32, JitVarType::Bool);
+                        var_types.insert(inst.a as u32, JitVarType::Int);
                         def_var(&mut builder, &mut regs, inst.a, res_boxed);
                     } else {
                         var_types.insert(inst.a as u32, JitVarType::RawInt);
@@ -2416,7 +2425,7 @@ pub(crate) fn lower_cell<M: Module>(
                     // Box if dest is a multi-block Variable (loop phi merge point).
                     if regs.vars.contains_key(&inst.a) {
                         let res_boxed = emit_box_int(&mut builder, res);
-                        var_types.insert(inst.a as u32, JitVarType::Bool);
+                        var_types.insert(inst.a as u32, JitVarType::Int);
                         def_var(&mut builder, &mut regs, inst.a, res_boxed);
                     } else {
                         var_types.insert(inst.a as u32, JitVarType::RawInt);
@@ -2492,7 +2501,7 @@ pub(crate) fn lower_cell<M: Module>(
                     // Box if dest is a multi-block Variable (loop phi merge point).
                     if regs.vars.contains_key(&inst.a) {
                         let result_boxed = emit_box_int(&mut builder, result);
-                        var_types.insert(inst.a as u32, JitVarType::Bool);
+                        var_types.insert(inst.a as u32, JitVarType::Int);
                         def_var(&mut builder, &mut regs, inst.a, result_boxed);
                     } else {
                         var_types.insert(inst.a as u32, JitVarType::RawInt);

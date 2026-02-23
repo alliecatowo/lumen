@@ -34,6 +34,7 @@ pub mod osr_check {
     /// Per-cell OSR state tracked during execution
     #[derive(Debug, Clone, Copy)]
     pub struct OsrState {
+        #[allow(dead_code)]
         pub cell_idx: usize,
         pub loop_count: u64,
         pub compiled: bool,
@@ -131,15 +132,12 @@ pub mod osr_check {
             &mut self.states[cell_idx]
         }
 
+        #[allow(dead_code)]
         pub fn is_compiled(&self, cell_idx: usize) -> bool {
             self.states
                 .get(cell_idx)
                 .map(|state| state.compiled)
                 .unwrap_or(false)
-        }
-
-        pub fn record_transition(&mut self) {
-            self.transition_count += 1;
         }
 
         pub fn record_entry_transition(&mut self) {
@@ -168,6 +166,14 @@ pub mod osr_check {
         pub fn record_and_check(&mut self, cell_idx: usize) -> bool {
             let state = self.get_state(cell_idx);
             state.record_check()
+        }
+
+        /// Returns true if the OSR loop counter has reached the hot threshold.
+        pub fn is_hot(&self, cell_idx: usize) -> bool {
+            self.states
+                .get(cell_idx)
+                .map(|state| state.loop_count >= OSR_HOT_THRESHOLD)
+                .unwrap_or(false)
         }
 
         /// Attempt to compile a cell for OSR
@@ -327,10 +333,6 @@ pub mod osr_check {
 /// Errors returned by OSR transition attempts.
 #[derive(Debug, Error)]
 pub enum OsrError {
-    #[error("OSR point not found for cell '{cell}' at ip {ip}")]
-    OsrPointNotFound { cell: String, ip: usize },
-    #[error("cell not found for OSR: {0}")]
-    CellNotFound(String),
     #[error("OSR transition is not available: {0}")]
     Unavailable(String),
 }
@@ -339,6 +341,7 @@ pub enum OsrError {
 #[derive(Debug, Clone)]
 pub struct OsrEntry {
     pub cell_name: String,
+    #[allow(dead_code)]
     pub ip: usize,
     pub arg_count: usize,
 }
@@ -579,15 +582,11 @@ fn execute_compiled_cell(vm: &mut VM, cell_name: &str, args: &[i64]) -> Result<V
     Ok(result)
 }
 
-/// Capture a snapshot of the interpreter's register state as NbValue slice.
-/// Properly increments Arc refcounts for heap-allocated NbValues so the
-/// returned Vec owns its references independently of the live register file.
+/// Capture a snapshot of the interpreter's register state as an NbValue slice.
+///
+/// The returned Vec is a raw bitwise copy; it does NOT adjust refcounts.
 pub fn capture_register_state(vm: &VM, base: usize, register_count: usize) -> Vec<NbValue> {
-    let snapshot = vm.registers[base..base + register_count].to_vec();
-    for nb in &snapshot {
-        nb.inc_ref();
-    }
-    snapshot
+    vm.registers[base..base + register_count].to_vec()
 }
 
 /// Copy interpreter register state to compiled code's stack frame.
@@ -599,6 +598,7 @@ pub fn capture_register_state(vm: &VM, base: usize, register_count: usize) -> Ve
 /// The layout follows the OSR calling convention from stackmap.rs:
 /// - Registers 0-5: passed in rdi, rsi, rdx, rcx, r8, r9
 /// - Registers 6+: passed on stack after return address and callee-saved regs
+#[allow(dead_code)]
 pub fn transplant_registers(regs: &[NbValue], frame_pointer: *mut u8) {
     use lumen_codegen::stackmap::osr_calling_convention::{
         ARG_REGISTERS, CALLEE_SAVED, MAX_REG_ARGS,
@@ -650,9 +650,31 @@ pub fn perform_osr_transition(
                 OsrError::Unavailable("OSR transition requested with no frame".into())
             })?;
 
-        // Prefer one-way entry transfer for the exact safepoint. If the
-        // safepoint instruction is OsrCheck and metadata uses the first
-        // post-check instruction, allow `(ip + 1)` as a compatible entry.
+        // Fast path: Tier 1 stencil OSR entry at exact IP (or IP+1 if OsrCheck
+        // metadata points to the first post-check instruction).
+        let stencil_entry = vm.stencil_tier.get_osr_entry(cell_idx, ip).or_else(|| {
+            if ip < cell.instructions.len()
+                && cell.instructions[ip].op == OpCode::OsrCheck
+                && ip + 1 < cell.instructions.len()
+            {
+                vm.stencil_tier.get_osr_entry(cell_idx, ip + 1)
+            } else {
+                None
+            }
+        });
+        if let Some(entry) = stencil_entry {
+            let needed = base.saturating_add(entry.reg_count);
+            if entry.code_ptr.is_null() || needed > vm.registers.len() {
+                // fall through to JIT / restart
+            } else {
+                let regs = capture_register_state(vm, base, entry.reg_count);
+                let result = vm.execute_stencil_osr(entry, base, &regs)?;
+                vm.osr_runtime.record_entry_transition();
+                return Ok(result);
+            }
+        }
+
+        // Prefer one-way entry transfer for the exact safepoint in Tier 2.
         let entry = vm.osr_runtime.osr_entry(cell_idx, ip).cloned().or_else(|| {
             if ip < cell.instructions.len()
                 && cell.instructions[ip].op == OpCode::OsrCheck
@@ -693,11 +715,4 @@ pub fn perform_osr_transition(
             "OSR transition requires jit feature".to_string(),
         ))
     }
-}
-
-/// Reconstruct interpreter state from an OSR snapshot.
-pub fn reconstruct_interpreter_state(_vm: &mut VM) -> Result<(), OsrError> {
-    Err(OsrError::Unavailable(
-        "OSR reconstruction not yet implemented".to_string(),
-    ))
 }

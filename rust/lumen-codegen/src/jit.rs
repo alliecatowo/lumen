@@ -23,6 +23,7 @@ use crate::emit::CodegenError;
 use crate::ir::{nan_box_int, nan_unbox_int, NAN_BOX_FALSE, NAN_BOX_NULL, NAN_BOX_TRUE};
 use crate::types::lir_type_str_to_cl_type;
 use crate::vm_context::VmContext;
+use lumen_core::nb_value::NbValue;
 
 extern "C" {
     fn lm_rt_perform(ctx: *mut VmContext, effect_id: u32, op_id: u32, arg: u64) -> u64;
@@ -848,7 +849,7 @@ fn unwrap_value_ptr(v: i64) -> Option<*const Value> {
     if (u & NANBOX_MASK) == NANBOX_MASK && ((u >> 48) & 0x7) == 0 {
         let payload = u & NANBOX_PAYLOAD;
         if payload > 1 {
-            return Some(payload as *const Value);
+            return Some((payload & !NbValue::PTR_ARENA_FLAG) as *const Value);
         }
         return None;
     }
@@ -878,7 +879,7 @@ fn wrap_nanbox_ptr(ptr: *const Value) -> i64 {
 /// `record_ptr` must be a valid NaN-boxed TAG_PTR or raw `*mut Value` pointer.
 /// `field_name_ptr` must be a valid `*const u8` pointer to UTF-8 bytes.
 extern "C" fn jit_rt_record_get_field(
-    _ctx: *mut VmContext,
+    ctx: *mut VmContext,
     record_nb: i64,
     field_name_ptr: *const u8,
     field_name_len: usize,
@@ -892,7 +893,7 @@ extern "C" fn jit_rt_record_get_field(
         Value::Record(r) => r.fields.get(field_name).cloned().unwrap_or(Value::Null),
         _ => Value::Null,
     };
-    crate::collection_helpers::wrap_nanbox_value_pub(result)
+    crate::collection_helpers::wrap_nanbox_value_with_ctx_pub(ctx, result)
 }
 
 /// Set a field in a Record by field name.
@@ -900,7 +901,7 @@ extern "C" fn jit_rt_record_get_field(
 /// `value_nb` is a NaN-boxed NbValue for the new field value.
 /// Returns a new NaN-boxed NbValue for the updated record (COW).
 extern "C" fn jit_rt_record_set_field(
-    _ctx: *mut VmContext,
+    ctx: *mut VmContext,
     record_nb: i64,
     field_name_ptr: *const u8,
     field_name_len: usize,
@@ -922,7 +923,7 @@ extern "C" fn jit_rt_record_set_field(
         }
         _ => Value::Null,
     };
-    crate::collection_helpers::wrap_nanbox_value_pub(result)
+    crate::collection_helpers::wrap_nanbox_value_with_ctx_pub(ctx, result)
 }
 
 /// Get an element from a List, Tuple, or Map by index/key.
@@ -1055,7 +1056,7 @@ fn nbval_to_value(v: i64) -> Value {
             } else if payload == 1 {
                 Value::Float(f64::NAN)
             } else {
-                unsafe { (*(payload as *const Value)).clone() }
+                unsafe { (*((payload & !NbValue::PTR_ARENA_FLAG) as *const Value)).clone() }
             }
         }
         1 => {
@@ -1126,12 +1127,12 @@ extern "C" fn jit_rt_set_index(
 ///
 /// # Safety
 /// `value_ptr` must be a valid `*mut Value` pointer.
-extern "C" fn jit_rt_value_clone(_ctx: *mut VmContext, value_ptr: i64) -> i64 {
+extern "C" fn jit_rt_value_clone(ctx: *mut VmContext, value_ptr: i64) -> i64 {
     let Some(ptr) = unwrap_value_ptr(value_ptr) else {
         return NAN_BOX_NULL;
     };
     let value = unsafe { &*ptr };
-    wrap_nanbox_ptr(Arc::into_raw(Arc::new(value.clone())))
+    crate::collection_helpers::wrap_nanbox_value_with_ctx_pub(ctx, value.clone())
 }
 
 /// Free an Arc-allocated Value.
@@ -1140,8 +1141,25 @@ extern "C" fn jit_rt_value_clone(_ctx: *mut VmContext, value_ptr: i64) -> i64 {
 /// `value_ptr` must be a valid NaN-boxed TAG_PTR pointing to an Arc-allocated
 /// Value created by one of the JIT runtime functions. Must not be called twice
 /// on the same pointer.
-extern "C" fn jit_rt_value_drop(_ctx: *mut VmContext, value_ptr: i64) {
-    if let Some(ptr) = unwrap_value_ptr(value_ptr) {
+extern "C" fn jit_rt_value_drop(ctx: *mut VmContext, value_ptr: i64) {
+    let Some(ptr) = unwrap_value_ptr(value_ptr) else {
+        return;
+    };
+    let is_arena_ptr = if !ctx.is_null() {
+        let arena = unsafe { (*ctx).arena };
+        if arena.is_null() {
+            false
+        } else {
+            unsafe { (*arena).contains_ptr(ptr) }
+        }
+    } else {
+        false
+    };
+    if is_arena_ptr {
+        unsafe {
+            (ptr as *mut Value).drop_in_place();
+        }
+    } else {
         unsafe {
             let _ = Arc::from_raw(ptr);
         }
@@ -2401,7 +2419,7 @@ extern "C" fn jit_rt_is_type_name(
                 } else if payload == 1 {
                     "Float" // NaN sentinel
                 } else {
-                    let value = unsafe { &*(payload as *const Value) };
+                    let value = unsafe { &*((payload & !NbValue::PTR_ARENA_FLAG) as *const Value) };
                     match value {
                         Value::List(_) => "List",
                         Value::Tuple(_) => "Tuple",

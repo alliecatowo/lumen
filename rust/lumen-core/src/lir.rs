@@ -519,6 +519,8 @@ pub struct LirEffectHandlerMeta {
     pub operation: String,
     pub param_count: u8,
     pub handler_ip: usize,
+    #[serde(default)]
+    pub is_fast: bool,
 }
 
 /// OSR metadata describing a safepoint within a cell.

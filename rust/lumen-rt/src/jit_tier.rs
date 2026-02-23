@@ -472,9 +472,8 @@ impl JitTier {
     #[cfg(feature = "jit")]
     #[inline(always)]
     fn is_known_unsafe_opcode(op: OpCode) -> bool {
-        // NewRecord/NewSet JIT lowering segfaults due to Arc lifetime mismatch
-        // in the field-init sequence. Re-gate until a proper handle table is in place.
-        matches!(op, OpCode::NewRecord | OpCode::NewSet)
+        let _ = op;
+        false
     }
 
     #[cfg(feature = "jit")]

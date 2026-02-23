@@ -16,7 +16,7 @@ pub(crate) use processes::{
 };
 
 use crate::jit_tier::{JitTier, JitTierConfig};
-use crate::stencil_tier::{StencilTier, StencilTierConfig};
+use crate::stencil_tier::{OsrStencilEntry, StencilTier, StencilTierConfig};
 use crate::vm::ops::BinaryOp;
 use lumen_core::lir::*;
 use lumen_core::nb_value::{NbValue, RegisterFile};
@@ -30,6 +30,7 @@ use lumen_core::values::{
 use crate::platform;
 use crate::services::tools::{ProviderRegistry, ToolDispatcher, ToolRequest};
 use crate::vm::fiber::{Fiber, FiberStatus, DEFAULT_MAX_STACK_SIZE};
+use lumen_core::arena::ValueArena;
 use lumen_core::vm_context::VmContext;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
@@ -346,6 +347,14 @@ pub(crate) struct EffectScope {
     pub effect_name: String,
     /// The operation name this handler matches (e.g. "log")
     pub operation: String,
+    /// Whether the handler can be executed inline without fiber switching.
+    pub is_fast: bool,
+    /// Register holding the perform argument (if any) for fast handlers.
+    #[allow(dead_code)]
+    pub arg_register: Option<usize>,
+    /// Instruction pointer to resume after handler returns.
+    #[allow(dead_code)]
+    pub resume_ip: usize,
 }
 
 /// A suspended continuation for algebraic effects (one-shot).
@@ -372,6 +381,13 @@ pub(crate) struct SuspendedContinuation {
     pub result_reg: usize,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct InlineHandlerState {
+    frame_idx: usize,
+    resume_ip: usize,
+    result_reg: usize,
+}
+
 // RegisterFile handles Clone (inc_ref on heap NbValues) and Drop (drop_heap)
 // correctly, so SuspendedContinuation no longer needs manual impls.
 
@@ -393,21 +409,31 @@ impl std::fmt::Debug for SuspendedContinuation {
 /// out of `VM` (e.g. `vm.output` in tests).
 pub(crate) struct OwnedVmCtx {
     pub(crate) inner: Box<VmContext>,
+    pub(crate) arena: Box<ValueArena>,
 }
 
 impl OwnedVmCtx {
     /// Allocate a new `VmContext` and initialize an empty `FiberEffectStack` in it.
     fn new() -> Self {
         let mut inner = Box::new(VmContext::new());
+        let mut arena = Box::new(ValueArena::new());
         // Safety: inner is valid and stable (Box heap allocation).
         unsafe { fiber_effects::lm_rt_effect_stack_init(&mut *inner as *mut VmContext) }
-        OwnedVmCtx { inner }
+        // Install arena pointer (stable Box allocation).
+        inner.arena = &mut *arena as *mut ValueArena;
+        OwnedVmCtx { inner, arena }
     }
 
     /// Return a raw mutable pointer to the inner `VmContext`.
     #[inline]
     pub fn as_ptr(&mut self) -> *mut VmContext {
         &mut *self.inner as *mut VmContext
+    }
+
+    #[inline]
+    pub fn reset_arena(&mut self) {
+        self.arena.reset();
+        self.inner.arena = &mut *self.arena as *mut ValueArena;
     }
 
     /// Free the current `FiberEffectStack` and replace it with a fresh empty one.
@@ -459,6 +485,7 @@ pub struct VM {
     pub(crate) await_fuel: u32,
     pub(crate) effect_handlers: Vec<EffectScope>,
     pub(crate) suspended_continuation: Option<SuspendedContinuation>,
+    pub(crate) inline_handler: Option<InlineHandlerState>,
     /// VM context for JIT interop and fiber-based effect handling.
     /// Owns the `FiberEffectStack` (via `effect_stack` raw pointer) and
     /// tracks `current_fiber` for the interpreter's main thread.
@@ -581,6 +608,7 @@ impl VM {
             await_fuel: MAX_AWAIT_RETRIES,
             effect_handlers: Vec::new(),
             suspended_continuation: None,
+            inline_handler: None,
             vm_ctx,
             main_fiber,
             max_instructions: DEFAULT_MAX_INSTRUCTIONS,
@@ -735,13 +763,6 @@ impl VM {
         self.registers[idx] = nb;
     }
 
-    /// Clone a register's Value (same as reg() but named for clarity at call sites
-    /// that previously used `.clone()`).
-    #[inline(always)]
-    pub(crate) fn reg_clone(&self, idx: usize) -> Value {
-        nb_to_value(self.registers[idx])
-    }
-
     /// Take a register value, replacing it with Null. Equivalent to std::mem::take
     /// on the old Vec<Value>. Returns the Value and leaves Null in the register.
     #[inline(always)]
@@ -791,31 +812,11 @@ impl VM {
         }
         if nb.is_heap_allocated() {
             nb.inc_ref();
-            let ptr = nb.payload() as *const Value;
+            let ptr = (nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value;
             let arc = unsafe { Arc::from_raw(ptr) };
             return Some(UnionPayload::from_arc(arc));
         }
         None
-    }
-
-    /// Bump Arc refcount for a heap-allocated NbValue so it stays alive
-    /// while the JIT executes with its raw bits.  No-op for inline types.
-    #[inline(always)]
-    fn nb_inc_heap_temp_ref(nb: NbValue) {
-        nb.inc_ref();
-    }
-
-    /// Drop the temporary Arc reference added by `nb_inc_heap_temp_ref`.
-    /// No-op for inline types.
-    #[inline(always)]
-    fn nb_dec_heap_temp_ref(nb: NbValue) {
-        nb.drop_heap();
-    }
-
-    // ── Stencil runtime helpers ──────────────────────────────────────
-
-    pub(crate) fn current_base(&self) -> usize {
-        self.frames.last().map(|f| f.base_register).unwrap_or(0)
     }
 
     /// Copy the stencil cell's return value into r0 of the stencil frame.
@@ -1021,6 +1022,74 @@ impl VM {
                 _ => false,
             },
         }
+    }
+
+    /// Execute Tier-1 stitched code from an OSR entry, transplanting registers.
+    #[cfg(feature = "jit")]
+    pub(crate) fn execute_stencil_osr(
+        &mut self,
+        entry: OsrStencilEntry,
+        base: usize,
+        regs: &[NbValue],
+    ) -> Result<Value, crate::vm::osr::OsrError> {
+        if entry.code_ptr.is_null() {
+            return Err(crate::vm::osr::OsrError::Unavailable(
+                "stencil entry pointer is null".into(),
+            ));
+        }
+        let needed = base.saturating_add(entry.reg_count);
+        if needed > self.registers.len() {
+            return Err(crate::vm::osr::OsrError::Unavailable(
+                "stencil entry register window out of bounds".into(),
+            ));
+        }
+
+        // Pre-grow registers to prevent reallocation during runtime callbacks.
+        let reserve_target = needed.saturating_add(64 * 1024 + (1 << 20));
+        if reserve_target > self.registers.capacity() {
+            self.registers
+                .reserve(reserve_target - self.registers.capacity());
+        }
+
+        // Transplant register state into the live register window.
+        for (idx, nb) in regs.iter().enumerate() {
+            if base + idx >= self.registers.len() {
+                break;
+            }
+            nb.inc_ref();
+            let old = self.registers[base + idx];
+            old.drop_heap();
+            self.registers[base + idx] = *nb;
+        }
+
+        let prev_stencil_base = self.stencil_base;
+        self.stencil_base = base;
+        let run_result = (|| -> Result<(), crate::vm::VmError> {
+            let regs_ptr = unsafe { self.registers.as_mut_ptr().add(base) };
+            let ctx_ptr = self.vm_ctx.as_ptr();
+            unsafe {
+                (*ctx_ptr).stack_pool = self as *mut VM as *mut ();
+            }
+            unsafe {
+                crate::stencil_tier::call_stitched(entry.code_ptr, regs_ptr, ctx_ptr);
+            }
+            Ok(())
+        })();
+        self.stencil_base = prev_stencil_base;
+
+        if let Err(e) = run_result {
+            return Err(crate::vm::osr::OsrError::Unavailable(format!(
+                "stencil OSR execution failed: {e}"
+            )));
+        }
+
+        // Stitched code writes its return into r0 (base register).
+        let ret_nb = self
+            .registers
+            .get(base)
+            .copied()
+            .unwrap_or(NbValue::new_null());
+        Ok(nb_to_value(ret_nb))
     }
 
     pub(crate) fn extract_pattern_captures(
@@ -1360,6 +1429,10 @@ impl VM {
                 for cell_idx in 0..num_cells {
                     let cell_instrs = &module_ref.cells[cell_idx].instructions;
                     let has_osr = cell_instrs.iter().any(|i| i.op == OpCode::OsrCheck);
+                    if has_osr && self.stencil_tier.is_enabled() {
+                        self.stencil_tier
+                            .try_compile(cell_idx, module_ref, &mut self.jit_tier);
+                    }
                     // Only pre-compile cells that have loops (OsrCheck) AND no
                     // Call/TailCall opcodes. Cells with Call opcodes may invoke
                     // builtins (print, to_string, etc.) which the JIT cannot
@@ -2355,7 +2428,8 @@ impl VM {
                                         let nb = self.reg_nb(base + a + 1 + i);
                                         if nb.is_heap_allocated() {
                                             unsafe {
-                                                let ptr = nb.payload() as *const Value;
+                                                let ptr = (nb.payload() & !NbValue::PTR_ARENA_FLAG)
+                                                    as *const Value;
                                                 std::sync::Arc::increment_strong_count(ptr);
                                             }
                                         }
@@ -2480,7 +2554,9 @@ impl VM {
                                             let nb = self.reg_nb(base + a + 1 + i);
                                             if nb.is_heap_allocated() {
                                                 unsafe {
-                                                    let ptr = nb.payload() as *const Value;
+                                                    let ptr = (nb.payload()
+                                                        & !NbValue::PTR_ARENA_FLAG)
+                                                        as *const Value;
                                                     std::sync::Arc::decrement_strong_count(ptr);
                                                 }
                                             }
@@ -2513,7 +2589,9 @@ impl VM {
                                             let nb = self.reg_nb(base + a + 1 + i);
                                             if nb.is_heap_allocated() {
                                                 unsafe {
-                                                    let ptr = nb.payload() as *const Value;
+                                                    let ptr = (nb.payload()
+                                                        & !NbValue::PTR_ARENA_FLAG)
+                                                        as *const Value;
                                                     std::sync::Arc::decrement_strong_count(ptr);
                                                 }
                                             }
@@ -2586,7 +2664,9 @@ impl VM {
                                             let nb = self.reg_nb(base + a + 1 + i);
                                             if nb.is_heap_allocated() {
                                                 unsafe {
-                                                    let ptr = nb.payload() as *const Value;
+                                                    let ptr = (nb.payload()
+                                                        & !NbValue::PTR_ARENA_FLAG)
+                                                        as *const Value;
                                                     std::sync::Arc::increment_strong_count(ptr);
                                                 }
                                             }
@@ -2605,7 +2685,9 @@ impl VM {
                                                 let nb = self.reg_nb(base + a + 1 + i);
                                                 if nb.is_heap_allocated() {
                                                     unsafe {
-                                                        let ptr = nb.payload() as *const Value;
+                                                        let ptr = (nb.payload()
+                                                            & !NbValue::PTR_ARENA_FLAG)
+                                                            as *const Value;
                                                         std::sync::Arc::decrement_strong_count(ptr);
                                                     }
                                                 }
@@ -2639,7 +2721,9 @@ impl VM {
                                                 let nb = self.reg_nb(base + a + 1 + i);
                                                 if nb.is_heap_allocated() {
                                                     unsafe {
-                                                        let ptr = nb.payload() as *const Value;
+                                                        let ptr = (nb.payload()
+                                                            & !NbValue::PTR_ARENA_FLAG)
+                                                            as *const Value;
                                                         std::sync::Arc::decrement_strong_count(ptr);
                                                     }
                                                 }
@@ -2779,7 +2863,9 @@ impl VM {
                                             let nb = self.reg_nb(base + a + 1 + i);
                                             if nb.is_heap_allocated() {
                                                 unsafe {
-                                                    let ptr = nb.payload() as *const Value;
+                                                    let ptr = (nb.payload()
+                                                        & !NbValue::PTR_ARENA_FLAG)
+                                                        as *const Value;
                                                     std::sync::Arc::increment_strong_count(ptr);
                                                 }
                                             }
@@ -2869,7 +2955,9 @@ impl VM {
                                                 let nb = self.reg_nb(base + a + 1 + i);
                                                 if nb.is_heap_allocated() {
                                                     unsafe {
-                                                        let ptr = nb.payload() as *const Value;
+                                                        let ptr = (nb.payload()
+                                                            & !NbValue::PTR_ARENA_FLAG)
+                                                            as *const Value;
                                                         std::sync::Arc::decrement_strong_count(ptr);
                                                     }
                                                 }
@@ -2897,7 +2985,9 @@ impl VM {
                                                 let nb = self.reg_nb(base + a + 1 + i);
                                                 if nb.is_heap_allocated() {
                                                     unsafe {
-                                                        let ptr = nb.payload() as *const Value;
+                                                        let ptr = (nb.payload()
+                                                            & !NbValue::PTR_ARENA_FLAG)
+                                                            as *const Value;
                                                         std::sync::Arc::decrement_strong_count(ptr);
                                                     }
                                                 }
@@ -3041,7 +3131,9 @@ impl VM {
                                             let nb = self.reg_nb(base + a + 1 + i);
                                             if nb.is_heap_allocated() {
                                                 unsafe {
-                                                    let ptr = nb.payload() as *const Value;
+                                                    let ptr = (nb.payload()
+                                                        & !NbValue::PTR_ARENA_FLAG)
+                                                        as *const Value;
                                                     std::sync::Arc::increment_strong_count(ptr);
                                                 }
                                             }
@@ -3059,7 +3151,9 @@ impl VM {
                                                 let nb = self.reg_nb(base + a + 1 + i);
                                                 if nb.is_heap_allocated() {
                                                     unsafe {
-                                                        let ptr = nb.payload() as *const Value;
+                                                        let ptr = (nb.payload()
+                                                            & !NbValue::PTR_ARENA_FLAG)
+                                                            as *const Value;
                                                         std::sync::Arc::decrement_strong_count(ptr);
                                                     }
                                                 }
@@ -3118,7 +3212,9 @@ impl VM {
                                                 let nb = self.reg_nb(base + a + 1 + i);
                                                 if nb.is_heap_allocated() {
                                                     unsafe {
-                                                        let ptr = nb.payload() as *const Value;
+                                                        let ptr = (nb.payload()
+                                                            & !NbValue::PTR_ARENA_FLAG)
+                                                            as *const Value;
                                                         std::sync::Arc::decrement_strong_count(ptr);
                                                     }
                                                 }
@@ -3225,6 +3321,19 @@ impl VM {
                     cell = &module.cells[cell_idx];
                     continue;
                 }
+            }
+
+            if let Some(inline) = self.inline_handler.take() {
+                if let Some(frame) = self.frames.get_mut(inline.frame_idx) {
+                    frame.ip = inline.resume_ip;
+                }
+                let result = self.reg(inline.result_reg);
+                let frame = self
+                    .frames
+                    .pop()
+                    .ok_or_else(|| VmError::Runtime("call stack underflow".into()))?;
+                self.shrink_registers(frame.base_register);
+                return Ok(result);
             }
 
             match instr.op {
@@ -3826,8 +3935,12 @@ impl VM {
                             && lhs_nb.payload() > 1
                             && rhs_nb.payload() > 1
                         {
-                            let lhs_ref = unsafe { &*(lhs_nb.payload() as *const Value) };
-                            let rhs_ref = unsafe { &*(rhs_nb.payload() as *const Value) };
+                            let lhs_ref = unsafe {
+                                &*((lhs_nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value)
+                            };
+                            let rhs_ref = unsafe {
+                                &*((rhs_nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value)
+                            };
                             values_equal(lhs_ref, rhs_ref, &self.strings)
                         } else {
                             let lhs = nb_to_value(lhs_nb);
@@ -4126,6 +4239,7 @@ impl VM {
                     // This prevents unbounded register growth from deep recursion
                     // and avoids massive memory overhead from abandoned callee registers.
                     self.shrink_registers(frame.base_register);
+                    self.vm_ctx.reset_arena();
 
                     if let Some(fid) = frame.future_id {
                         self.future_states
@@ -4531,6 +4645,7 @@ impl VM {
                         }
                     }
                 }
+
                 OpCode::Spawn => {
                     // Sync IP before spawn (which may push frames in Eager mode)
                     if let Some(f) = self.frames.last_mut() {
@@ -4555,15 +4670,20 @@ impl VM {
                     // Safety: the register is the sole owner of the outer Arc
                     // (refcount == 1) because NbValue copies only happen via
                     // explicit inc_ref() calls, never by raw u64 duplication.
-                    let is_heap_list = self.registers[base + a]
-                        .as_heap_ref()
-                        .map_or(false, |v| matches!(v, Value::List(_)));
+                    let is_heap_list =
+                        if let Some(ptr) = self.registers[base + a].as_pointer::<Value>() {
+                            unsafe { matches!(&*ptr, Value::List(_)) }
+                        } else {
+                            false
+                        };
                     if is_heap_list {
                         let val = self.reg(base + b);
                         unsafe {
                             let nb = &mut self.registers[base + a];
-                            if let Some(Value::List(ref mut l)) = nb.as_heap_mut() {
-                                Arc::make_mut(l).push(val);
+                            if let Some(ptr) = nb.as_pointer::<Value>() {
+                                if let Value::List(ref mut l) = &mut *(ptr as *mut Value) {
+                                    Arc::make_mut(l).push(val);
+                                }
                             }
                         }
                     } else {
@@ -4624,6 +4744,37 @@ impl VM {
                         (String::new(), String::new())
                     };
 
+                    let is_fast = if meta_idx < cell.effect_handler_metas.len() {
+                        let meta = &cell.effect_handler_metas[meta_idx];
+                        if meta.is_fast {
+                            true
+                        } else {
+                            let handler_cell_idx = cell_idx;
+                            if let Some(handler_cell) = module.cells.get(handler_cell_idx) {
+                                let mut has_perform = false;
+                                for instr in &handler_cell.instructions {
+                                    if instr.op == OpCode::Perform {
+                                        has_perform = true;
+                                        break;
+                                    }
+                                }
+                                if !has_perform {
+                                    let meta_mut = &mut self.module.as_mut().unwrap().cells
+                                        [handler_cell_idx]
+                                        .effect_handler_metas[meta_idx];
+                                    meta_mut.is_fast = true;
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        }
+                    } else {
+                        false
+                    };
+
                     self.effect_handlers.push(EffectScope {
                         handler_ip,
                         frame_idx: self.frames.len() - 1,
@@ -4631,6 +4782,9 @@ impl VM {
                         cell_idx,
                         effect_name: eff_name,
                         operation: op_name,
+                        is_fast,
+                        arg_register: None,
+                        resume_ip: handler_ip,
                     });
 
                     // Sync FiberEffectStack for JIT interop. The interpreter does not
@@ -4690,6 +4844,18 @@ impl VM {
                         .cloned();
 
                     if let Some(scope) = handler_scope {
+                        if scope.is_fast {
+                            let handler_idx = scope.cell_idx;
+                            let handler_ip = scope.handler_ip;
+                            let arg_value = if base + a + 1 < self.registers.len() {
+                                self.reg(base + a + 1)
+                            } else {
+                                Value::Null
+                            };
+                            let result = self.call_inline(handler_idx, handler_ip, &[arg_value])?;
+                            self.set_reg(base + a, result);
+                            continue;
+                        }
                         // Sync IP back before saving continuation
                         if let Some(f) = self.frames.last_mut() {
                             f.ip = ip;
@@ -4756,7 +4922,9 @@ impl VM {
                     // propagate normally. `lm_rt_osr_check` (extern "C" + catch_unwind)
                     // would add ~10-100ns per loop iteration just for the unwind frame.
                     let compiled_ptr = crate::vm::osr::osr_check::osr_check_interp(self, cell_idx);
-                    if !compiled_ptr.is_null() {
+                    let stencil_ready = self.osr_runtime.is_hot(cell_idx)
+                        && self.stencil_tier.is_compiled(cell_idx);
+                    if !compiled_ptr.is_null() || stencil_ready {
                         if let Ok(result) =
                             crate::vm::osr::perform_osr_transition(self, cell, osr_ip)
                         {
@@ -4765,6 +4933,7 @@ impl VM {
                                 .pop()
                                 .ok_or_else(|| VmError::Runtime("call stack underflow".into()))?;
                             self.shrink_registers(frame.base_register);
+                            self.vm_ctx.reset_arena();
                             if self.frames.len() <= limit {
                                 return Ok(result);
                             }
@@ -4990,6 +5159,65 @@ impl VM {
             }
         }
         Ok(())
+    }
+
+    fn call_inline(
+        &mut self,
+        handler_cell_idx: usize,
+        handler_ip: usize,
+        args: &[Value],
+    ) -> Result<Value, VmError> {
+        // Extract what we need from the module before taking any mutable borrow.
+        let (num_regs, param_registers, cell_registers) = {
+            let module = self.module.as_ref().ok_or(VmError::NoModule)?;
+            if handler_cell_idx >= module.cells.len() {
+                return Err(VmError::Runtime(format!(
+                    "handler cell index {} out of bounds",
+                    handler_cell_idx
+                )));
+            }
+            let handler_cell = &module.cells[handler_cell_idx];
+            let param_regs: Vec<usize> = handler_cell
+                .params
+                .iter()
+                .map(|p| p.register as usize)
+                .collect();
+            (
+                handler_cell.registers as usize,
+                param_regs,
+                handler_cell.registers,
+            )
+        };
+
+        let callee_base = self.grow_registers(num_regs.max(16));
+
+        // Copy args into parameter registers.
+        for (i, arg) in args.iter().enumerate() {
+            if i < param_registers.len() {
+                let dst = param_registers[i];
+                self.check_register(dst, cell_registers)?;
+                self.set_reg(callee_base + dst, arg.clone());
+            }
+        }
+
+        let frame_idx = self.frames.len();
+        self.frames.push(CallFrame {
+            cell_idx: handler_cell_idx,
+            base_register: callee_base,
+            ip: handler_ip,
+            return_register: callee_base,
+            future_id: None,
+            osr_points: 0,
+        });
+
+        self.inline_handler = Some(InlineHandlerState {
+            frame_idx,
+            resume_ip: handler_ip,
+            result_reg: callee_base,
+        });
+
+        let result = self.run_until(frame_idx)?;
+        Ok(result)
     }
 }
 
@@ -8711,6 +8939,7 @@ end
                     operation: "test_op".into(),
                     param_count: 0,
                     handler_ip: 4,
+                    is_fast: false,
                 }],
                 osr_points: vec![],
             }],
@@ -8743,6 +8972,9 @@ end
             cell_idx: 0,
             effect_name: "TestEffect".into(),
             operation: "test_op".into(),
+            is_fast: false,
+            arg_register: None,
+            resume_ip: 0,
         });
         assert_eq!(vm.effect_handlers.len(), 1);
         vm.effect_handlers.pop();
@@ -8799,6 +9031,7 @@ end
                     operation: "log".into(),
                     param_count: 1,
                     handler_ip: 5,
+                    is_fast: false,
                 }],
                 osr_points: vec![],
             }],
@@ -8856,6 +9089,7 @@ end
                     operation: "log".into(), // handler is for "log", not "read_line"
                     param_count: 1,
                     handler_ip: 4,
+                    is_fast: false,
                 }],
                 osr_points: vec![],
             }],
@@ -8936,12 +9170,14 @@ end
                         operation: "log".into(),
                         param_count: 1,
                         handler_ip: 8,
+                        is_fast: false,
                     },
                     LirEffectHandlerMeta {
                         effect_name: "Console".into(),
                         operation: "read_line".into(),
                         param_count: 0,
                         handler_ip: 10,
+                        is_fast: false,
                     },
                 ],
                 osr_points: vec![],
@@ -9657,7 +9893,7 @@ end
             nb.is_heap_allocated(),
             "tuple should be heap-allocated NbValue"
         );
-        let original_ptr = nb.payload() as *const Value;
+        let original_ptr = (nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value;
 
         let payload = vm
             .nb_to_union_payload(nb)

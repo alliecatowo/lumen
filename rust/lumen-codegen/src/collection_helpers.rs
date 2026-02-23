@@ -14,25 +14,10 @@ use std::sync::Arc;
 //   TAG_PTR=0, TAG_INT=1, TAG_ATOM=2, TAG_BOOL=3, TAG_NULL=4, TAG_FIBER=5
 const NAN_MASK_U: u64 = 0x7FF8_0000_0000_0000;
 const PAYLOAD_MASK_U: u64 = 0x0000_FFFF_FFFF_FFFF;
+const PTR_ARENA_FLAG_U: u64 = 1;
 const NAN_BOX_NULL_U: u64 = 0x7FFC_0000_0000_0000;
 const NAN_BOX_TRUE_U: u64 = NAN_MASK_U | (3u64 << 48) | 1;
 const NAN_BOX_FALSE_U: u64 = NAN_MASK_U | (3u64 << 48);
-
-/// Decode a NbValue-encoded i64 to a heap-allocated Value.
-/// Returns a `*mut Value` that must be freed by the caller.
-///
-/// Encoding scheme matches NbValue in lumen-core:
-///   - Non-NaN bits: raw f64 float
-///   - TAG_PTR=0: heap pointer to a `Value` (or special: 0=Null, 1=NaN float)
-///   - TAG_INT=1: 48-bit signed integer
-///   - TAG_BOOL=3: boolean (payload 0=false, 1=true)
-///   - TAG_NULL=4: null value
-///
-/// # Safety
-/// If `val` is a TAG_PTR with payload > 1, it must be a valid `*const Value` pointer.
-unsafe fn nanbox_to_value(val: i64) -> *mut Value {
-    Box::into_raw(Box::new(nb_decode(val)))
-}
 
 /// Decode a NbValue-encoded i64 directly to a stack-allocated Value.
 /// Unlike `nanbox_to_value`, this avoids heap allocation for inline types
@@ -59,7 +44,7 @@ unsafe fn nb_decode(val: i64) -> Value {
             } else if payload == 1 {
                 Value::Float(f64::NAN)
             } else {
-                (*(payload as *const Value)).clone()
+                (*((payload & !PTR_ARENA_FLAG_U) as *const Value)).clone()
             }
         }
         1 => {
@@ -93,8 +78,41 @@ fn wrap_nanbox_ptr(ptr: *const Value) -> i64 {
 }
 
 #[inline]
+fn wrap_nanbox_ptr_arena(ptr: *const Value) -> i64 {
+    let raw = (ptr as u64) & PAYLOAD_MASK_U;
+    (NAN_MASK_U | (raw | PTR_ARENA_FLAG_U)) as i64
+}
+
+#[inline]
 fn wrap_nanbox_value(value: Value) -> i64 {
     wrap_nanbox_ptr(Arc::into_raw(Arc::new(value)))
+}
+
+#[inline]
+fn wrap_nanbox_value_with_ctx(ctx: *mut VmContext, value: Value) -> i64 {
+    if !ctx.is_null() {
+        let arena = unsafe { (*ctx).arena };
+        if !arena.is_null() {
+            let ptr = unsafe { (*arena).alloc_value(value) };
+            return wrap_nanbox_ptr_arena(ptr as *const Value);
+        }
+    }
+    wrap_nanbox_value(value)
+}
+
+#[inline]
+fn value_to_nanbox_with_ctx(ctx: *mut VmContext, value: &Value) -> i64 {
+    match value {
+        Value::Int(n) => {
+            let payload = (*n as u64) & PAYLOAD_MASK_U;
+            (NAN_MASK_U | (1u64 << 48) | payload) as i64
+        }
+        Value::Bool(true) => NAN_BOX_TRUE_U as i64,
+        Value::Bool(false) => NAN_BOX_FALSE_U as i64,
+        Value::Null => NAN_BOX_NULL_U as i64,
+        Value::Float(f) => f.to_bits() as i64,
+        other => wrap_nanbox_value_with_ctx(ctx, other.clone()),
+    }
 }
 
 /// Public wrapper for jit.rs to decode NbValue i64 → Value without an Arc leak.
@@ -110,6 +128,11 @@ pub unsafe fn nb_decode_pub(val: i64) -> Value {
 #[inline]
 pub fn wrap_nanbox_value_pub(value: Value) -> i64 {
     wrap_nanbox_value(value)
+}
+
+#[inline]
+pub fn wrap_nanbox_value_with_ctx_pub(ctx: *mut VmContext, value: Value) -> i64 {
+    wrap_nanbox_value_with_ctx(ctx, value)
 }
 
 #[inline]
@@ -199,7 +222,7 @@ fn decode_value_ptr(list_ptr: i64) -> Option<*const Value> {
     if (u & NAN_MASK_U) == NAN_MASK_U && ((u >> 48) & 0x7) == 0 {
         let payload = u & PAYLOAD_MASK_U;
         return if payload > 1 {
-            Some(payload as *const Value)
+            Some((payload & !PTR_ARENA_FLAG_U) as *const Value)
         } else {
             None
         };
@@ -254,10 +277,30 @@ fn call_hof_binary(ctx: *mut VmContext, closure_nb: i64, left: &Value, right: &V
 }
 
 #[inline]
-fn append_to_list_value(list_ptr: i64, element_value: Value) -> i64 {
+fn append_to_list_value(ctx: *mut VmContext, list_ptr: i64, element_value: Value) -> i64 {
     let Some(raw_ptr) = decode_value_ptr(list_ptr) else {
         return singleton_list_value(element_value);
     };
+
+    let is_arena_ptr = if !ctx.is_null() {
+        let arena = unsafe { (*ctx).arena };
+        if arena.is_null() {
+            false
+        } else {
+            unsafe { (*arena).contains_ptr(raw_ptr) }
+        }
+    } else {
+        false
+    };
+
+    if is_arena_ptr {
+        unsafe {
+            if let Value::List(inner_arc) = &mut *(raw_ptr as *mut Value) {
+                Arc::make_mut(inner_arc).push(element_value);
+            }
+        }
+        return wrap_nanbox_ptr_arena(raw_ptr);
+    }
 
     // Take ownership via Arc — the caller overwrites the source register.
     let mut arc_list = unsafe { Arc::from_raw(raw_ptr) };
@@ -294,7 +337,7 @@ fn resolve_string(ctx: *mut VmContext, value: &Value) -> String {
 /// # Safety
 /// `values_ptr` must point to a valid array of `count` i64 values.
 #[no_mangle]
-pub extern "C" fn jit_rt_new_list(_ctx: *mut VmContext, values_ptr: *const i64, count: i64) -> i64 {
+pub extern "C" fn jit_rt_new_list(ctx: *mut VmContext, values_ptr: *const i64, count: i64) -> i64 {
     let count = count as usize;
     let mut list = Vec::with_capacity(count);
 
@@ -305,8 +348,7 @@ pub extern "C" fn jit_rt_new_list(_ctx: *mut VmContext, values_ptr: *const i64, 
     }
 
     let list_value = Value::new_list(list);
-    let ptr = Arc::into_raw(Arc::new(list_value)) as u64;
-    (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
+    wrap_nanbox_value_with_ctx(ctx, list_value)
 }
 
 /// Create a new Map value from an array of key-value pairs.
@@ -319,7 +361,7 @@ pub extern "C" fn jit_rt_new_list(_ctx: *mut VmContext, values_ptr: *const i64, 
 /// # Safety
 /// `kvpairs_ptr` must point to a valid array of `count * 2` i64 values.
 #[no_mangle]
-pub extern "C" fn jit_rt_new_map(_ctx: *mut VmContext, kvpairs_ptr: *const i64, count: i64) -> i64 {
+pub extern "C" fn jit_rt_new_map(ctx: *mut VmContext, kvpairs_ptr: *const i64, count: i64) -> i64 {
     let count = count as usize;
     let mut map = BTreeMap::new();
 
@@ -336,8 +378,7 @@ pub extern "C" fn jit_rt_new_map(_ctx: *mut VmContext, kvpairs_ptr: *const i64, 
     }
 
     let map_value = Value::new_map(map);
-    let ptr = Arc::into_raw(Arc::new(map_value)) as u64;
-    (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
+    wrap_nanbox_value_with_ctx(ctx, map_value)
 }
 
 /// Create a new Tuple value from an array of boxed Values.
@@ -348,11 +389,7 @@ pub extern "C" fn jit_rt_new_map(_ctx: *mut VmContext, kvpairs_ptr: *const i64, 
 /// # Safety
 /// `values_ptr` must point to a valid array of `count` i64 values.
 #[no_mangle]
-pub extern "C" fn jit_rt_new_tuple(
-    _ctx: *mut VmContext,
-    values_ptr: *const i64,
-    count: i64,
-) -> i64 {
+pub extern "C" fn jit_rt_new_tuple(ctx: *mut VmContext, values_ptr: *const i64, count: i64) -> i64 {
     let count = count as usize;
     let mut elements = Vec::with_capacity(count);
 
@@ -363,8 +400,7 @@ pub extern "C" fn jit_rt_new_tuple(
     }
 
     let tuple_value = Value::new_tuple(elements);
-    let ptr = Arc::into_raw(Arc::new(tuple_value)) as u64;
-    (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
+    wrap_nanbox_value_with_ctx(ctx, tuple_value)
 }
 
 /// Get the length of a collection (List, Map, Set, Tuple, or String).
@@ -404,7 +440,7 @@ pub extern "C" fn jit_rt_collection_len(_ctx: *mut VmContext, value_ptr: i64) ->
 /// # Safety
 /// `values_ptr` must point to a valid array of `count` i64 values.
 #[no_mangle]
-pub extern "C" fn jit_rt_new_set(_ctx: *mut VmContext, values_ptr: *const i64, count: i64) -> i64 {
+pub extern "C" fn jit_rt_new_set(ctx: *mut VmContext, values_ptr: *const i64, count: i64) -> i64 {
     let count = count as usize;
     let mut set = BTreeSet::new();
 
@@ -415,8 +451,7 @@ pub extern "C" fn jit_rt_new_set(_ctx: *mut VmContext, values_ptr: *const i64, c
     }
 
     let set_value = Value::Set(Arc::new(set));
-    let ptr = Arc::into_raw(Arc::new(set_value)) as u64;
-    (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
+    wrap_nanbox_value_with_ctx(ctx, set_value)
 }
 
 /// Create a new Record value with the given type name and an empty field map.
@@ -436,7 +471,7 @@ pub extern "C" fn jit_rt_new_set(_ctx: *mut VmContext, values_ptr: *const i64, c
 /// `type_name_ptr` must point to a valid UTF-8 byte sequence of length `type_name_len`.
 #[no_mangle]
 pub extern "C" fn jit_rt_new_record(
-    _ctx: *mut VmContext,
+    ctx: *mut VmContext,
     type_name_ptr: *const u8,
     type_name_len: i64,
 ) -> i64 {
@@ -451,8 +486,7 @@ pub extern "C" fn jit_rt_new_record(
         type_name,
         fields: BTreeMap::new(),
     });
-    let ptr = Arc::into_raw(Arc::new(record_value)) as u64;
-    (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
+    wrap_nanbox_value_with_ctx(ctx, record_value)
 }
 
 /// Apply a closure to each element in a list, returning a new list.
@@ -461,13 +495,13 @@ pub extern "C" fn jit_rt_hof_map(ctx: *mut VmContext, list_nb: i64, closure_nb: 
     let list_val = unsafe { nb_decode(list_nb) };
     let items = match list_val {
         Value::List(list) => list,
-        _ => return wrap_nanbox_value(Value::new_list(Vec::new())),
+        _ => return wrap_nanbox_value_with_ctx(ctx, Value::new_list(Vec::new())),
     };
     let mut out = Vec::with_capacity(items.len());
     for elem in items.iter() {
         out.push(call_hof_unary(ctx, closure_nb, elem));
     }
-    wrap_nanbox_value(Value::new_list(out))
+    wrap_nanbox_value_with_ctx(ctx, Value::new_list(out))
 }
 
 /// Filter list elements using a predicate closure.
@@ -476,7 +510,7 @@ pub extern "C" fn jit_rt_hof_filter(ctx: *mut VmContext, list_nb: i64, closure_n
     let list_val = unsafe { nb_decode(list_nb) };
     let items = match list_val {
         Value::List(list) => list,
-        _ => return wrap_nanbox_value(Value::new_list(Vec::new())),
+        _ => return wrap_nanbox_value_with_ctx(ctx, Value::new_list(Vec::new())),
     };
     let mut out = Vec::new();
     for elem in items.iter() {
@@ -485,7 +519,7 @@ pub extern "C" fn jit_rt_hof_filter(ctx: *mut VmContext, list_nb: i64, closure_n
             out.push(elem.clone());
         }
     }
-    wrap_nanbox_value(Value::new_list(out))
+    wrap_nanbox_value_with_ctx(ctx, Value::new_list(out))
 }
 
 /// Reduce a list using a binary closure and initial accumulator.
@@ -514,7 +548,7 @@ pub extern "C" fn jit_rt_hof_flat_map(ctx: *mut VmContext, list_nb: i64, closure
     let list_val = unsafe { nb_decode(list_nb) };
     let items = match list_val {
         Value::List(list) => list,
-        _ => return wrap_nanbox_value(Value::new_list(Vec::new())),
+        _ => return wrap_nanbox_value_with_ctx(ctx, Value::new_list(Vec::new())),
     };
     let mut out = Vec::new();
     for elem in items.iter() {
@@ -524,7 +558,7 @@ pub extern "C" fn jit_rt_hof_flat_map(ctx: *mut VmContext, list_nb: i64, closure
             other => out.push(other),
         }
     }
-    wrap_nanbox_value(Value::new_list(out))
+    wrap_nanbox_value_with_ctx(ctx, Value::new_list(out))
 }
 
 /// True if any element matches predicate.
@@ -601,7 +635,7 @@ pub extern "C" fn jit_rt_hof_group_by(ctx: *mut VmContext, list_nb: i64, closure
     let list_val = unsafe { nb_decode(list_nb) };
     let items = match list_val {
         Value::List(list) => list,
-        _ => return wrap_nanbox_value(Value::new_map(BTreeMap::new())),
+        _ => return wrap_nanbox_value_with_ctx(ctx, Value::new_map(BTreeMap::new())),
     };
     let mut groups: BTreeMap<String, Vec<Value>> = BTreeMap::new();
     for elem in items.iter() {
@@ -613,7 +647,7 @@ pub extern "C" fn jit_rt_hof_group_by(ctx: *mut VmContext, list_nb: i64, closure
     for (key, values) in groups {
         map.insert(key, Value::new_list(values));
     }
-    wrap_nanbox_value(Value::new_map(map))
+    wrap_nanbox_value_with_ctx(ctx, Value::new_map(map))
 }
 
 /// Sort a list using comparator closure returning Int.
@@ -622,7 +656,7 @@ pub extern "C" fn jit_rt_hof_sort_by(ctx: *mut VmContext, list_nb: i64, closure_
     let list_val = unsafe { nb_decode(list_nb) };
     let items = match list_val {
         Value::List(list) => list,
-        _ => return wrap_nanbox_value(Value::new_list(Vec::new())),
+        _ => return wrap_nanbox_value_with_ctx(ctx, Value::new_list(Vec::new())),
     };
     let mut values: Vec<Value> = items.iter().cloned().collect();
     values.sort_by(|lhs, rhs| {
@@ -635,7 +669,7 @@ pub extern "C" fn jit_rt_hof_sort_by(ctx: *mut VmContext, list_nb: i64, closure_
             _ => Ordering::Equal,
         }
     });
-    wrap_nanbox_value(Value::new_list(values))
+    wrap_nanbox_value_with_ctx(ctx, Value::new_list(values))
 }
 
 /// Append a value to a List.
@@ -649,49 +683,73 @@ pub extern "C" fn jit_rt_hof_sort_by(ctx: *mut VmContext, list_nb: i64, closure_
 /// `list_ptr` must be a valid `*mut Value` produced by a JIT collection helper,
 /// or 0 / NAN_BOX_NULL for empty list fallback.
 #[no_mangle]
-pub extern "C" fn jit_rt_list_append(_ctx: *mut VmContext, list_ptr: i64, element: i64) -> i64 {
-    append_to_list_value(list_ptr, unsafe { nb_decode(element) })
+pub extern "C" fn jit_rt_list_append(ctx: *mut VmContext, list_ptr: i64, element: i64) -> i64 {
+    append_to_list_value(ctx, list_ptr, unsafe { nb_decode(element) })
 }
 
 /// Append a raw i64 integer value to a List.
 /// `element` is an unboxed integer (not NbValue-encoded).
 #[no_mangle]
-pub extern "C" fn jit_rt_list_append_int(_ctx: *mut VmContext, list_ptr: i64, element: i64) -> i64 {
-    append_to_list_value(list_ptr, Value::Int(element))
+pub extern "C" fn jit_rt_list_append_int(ctx: *mut VmContext, list_ptr: i64, element: i64) -> i64 {
+    append_to_list_value(ctx, list_ptr, Value::Int(element))
 }
 
 /// Append a raw f64-bit-pattern value to a List.
 /// `element_bits` is interpreted as IEEE-754 `f64` bits.
 #[no_mangle]
 pub extern "C" fn jit_rt_list_append_float(
-    _ctx: *mut VmContext,
+    ctx: *mut VmContext,
     list_ptr: i64,
     element_bits: i64,
 ) -> i64 {
-    append_to_list_value(list_ptr, Value::Float(f64::from_bits(element_bits as u64)))
+    append_to_list_value(
+        ctx,
+        list_ptr,
+        Value::Float(f64::from_bits(element_bits as u64)),
+    )
 }
 
 /// Create a list of integers for a range [start, end).
 #[no_mangle]
-pub extern "C" fn jit_rt_range(_ctx: *mut VmContext, start_nb: i64, end_nb: i64) -> i64 {
+pub extern "C" fn jit_rt_range(ctx: *mut VmContext, start_nb: i64, end_nb: i64) -> i64 {
     let start = nb_to_int(start_nb).unwrap_or(0);
     let end = nb_to_int(end_nb).unwrap_or(0);
     if end <= start {
-        return wrap_nanbox_value(Value::new_list(Vec::new()));
+        return wrap_nanbox_value_with_ctx(ctx, Value::new_list(Vec::new()));
     }
     let mut list = Vec::with_capacity((end - start) as usize);
     for value in start..end {
         list.push(Value::Int(value));
     }
-    wrap_nanbox_value(Value::new_list(list))
+    wrap_nanbox_value_with_ctx(ctx, Value::new_list(list))
 }
 
 /// Sort a list in natural ascending order.
 #[no_mangle]
-pub extern "C" fn jit_rt_sort(_ctx: *mut VmContext, list_nb: i64) -> i64 {
+pub extern "C" fn jit_rt_sort(ctx: *mut VmContext, list_nb: i64) -> i64 {
     let Some(raw_ptr) = decode_value_ptr(list_nb) else {
         return list_nb;
     };
+
+    let is_arena_ptr = if !ctx.is_null() {
+        let arena = unsafe { (*ctx).arena };
+        if arena.is_null() {
+            false
+        } else {
+            unsafe { (*arena).contains_ptr(raw_ptr) }
+        }
+    } else {
+        false
+    };
+
+    if is_arena_ptr {
+        unsafe {
+            if let Value::List(list) = &mut *(raw_ptr as *mut Value) {
+                Arc::make_mut(list).sort_by(cmp_value_natural);
+            }
+        }
+        return wrap_nanbox_ptr_arena(raw_ptr);
+    }
 
     let mut arc_value = unsafe { Arc::from_raw(raw_ptr) };
     if let Value::List(list) = Arc::make_mut(&mut arc_value) {
@@ -703,10 +761,32 @@ pub extern "C" fn jit_rt_sort(_ctx: *mut VmContext, list_nb: i64) -> i64 {
 
 /// Sort a list in natural descending order.
 #[no_mangle]
-pub extern "C" fn jit_rt_sort_desc(_ctx: *mut VmContext, list_nb: i64) -> i64 {
+pub extern "C" fn jit_rt_sort_desc(ctx: *mut VmContext, list_nb: i64) -> i64 {
     let Some(raw_ptr) = decode_value_ptr(list_nb) else {
         return list_nb;
     };
+
+    let is_arena_ptr = if !ctx.is_null() {
+        let arena = unsafe { (*ctx).arena };
+        if arena.is_null() {
+            false
+        } else {
+            unsafe { (*arena).contains_ptr(raw_ptr) }
+        }
+    } else {
+        false
+    };
+
+    if is_arena_ptr {
+        unsafe {
+            if let Value::List(list) = &mut *(raw_ptr as *mut Value) {
+                let list = Arc::make_mut(list);
+                list.sort_by(cmp_value_natural);
+                list.reverse();
+            }
+        }
+        return wrap_nanbox_ptr_arena(raw_ptr);
+    }
 
     let mut arc_value = unsafe { Arc::from_raw(raw_ptr) };
     if let Value::List(list) = Arc::make_mut(&mut arc_value) {
@@ -720,10 +800,30 @@ pub extern "C" fn jit_rt_sort_desc(_ctx: *mut VmContext, list_nb: i64) -> i64 {
 
 /// Reverse a List in-place (copy-on-write) and return the list.
 #[no_mangle]
-pub extern "C" fn jit_rt_list_reverse(_ctx: *mut VmContext, list_nb: i64) -> i64 {
+pub extern "C" fn jit_rt_list_reverse(ctx: *mut VmContext, list_nb: i64) -> i64 {
     let Some(raw_ptr) = decode_value_ptr(list_nb) else {
         return list_nb;
     };
+
+    let is_arena_ptr = if !ctx.is_null() {
+        let arena = unsafe { (*ctx).arena };
+        if arena.is_null() {
+            false
+        } else {
+            unsafe { (*arena).contains_ptr(raw_ptr) }
+        }
+    } else {
+        false
+    };
+
+    if is_arena_ptr {
+        unsafe {
+            if let Value::List(list) = &mut *(raw_ptr as *mut Value) {
+                Arc::make_mut(list).reverse();
+            }
+        }
+        return wrap_nanbox_ptr_arena(raw_ptr);
+    }
 
     let mut arc_value = unsafe { Arc::from_raw(raw_ptr) };
     if let Value::List(list) = Arc::make_mut(&mut arc_value) {
@@ -735,116 +835,230 @@ pub extern "C" fn jit_rt_list_reverse(_ctx: *mut VmContext, list_nb: i64) -> i64
 
 /// Flatten a List by one level.
 #[no_mangle]
-pub extern "C" fn jit_rt_list_flatten(_ctx: *mut VmContext, list_nb: i64) -> i64 {
+pub extern "C" fn jit_rt_list_flatten(ctx: *mut VmContext, list_nb: i64) -> i64 {
     let Some(raw_ptr) = decode_value_ptr(list_nb) else {
         return list_nb;
     };
 
-    let arc_value = unsafe { Arc::from_raw(raw_ptr) };
-    let Value::List(list) = arc_value.as_ref() else {
-        return wrap_nanbox_ptr(Arc::into_raw(arc_value));
+    let is_arena_ptr = if !ctx.is_null() {
+        let arena = unsafe { (*ctx).arena };
+        if arena.is_null() {
+            false
+        } else {
+            unsafe { (*arena).contains_ptr(raw_ptr) }
+        }
+    } else {
+        false
+    };
+
+    let items: Vec<Value> = if is_arena_ptr {
+        match unsafe { &*(raw_ptr as *const Value) } {
+            Value::List(list) => list.iter().cloned().collect(),
+            _ => return wrap_nanbox_ptr_arena(raw_ptr),
+        }
+    } else {
+        let arc_value = unsafe { Arc::from_raw(raw_ptr) };
+        match arc_value.as_ref() {
+            Value::List(list) => list.iter().cloned().collect(),
+            _ => return wrap_nanbox_ptr(Arc::into_raw(arc_value)),
+        }
     };
 
     let mut flat = Vec::new();
-    for item in list.iter() {
-        if let Value::List(inner) = item {
+    for item in items {
+        if let Value::List(inner) = &item {
             flat.extend(inner.iter().cloned());
         } else {
-            flat.push(item.clone());
+            flat.push(item);
         }
     }
 
-    wrap_nanbox_value(Value::new_list(flat))
+    wrap_nanbox_value_with_ctx(ctx, Value::new_list(flat))
 }
 
 /// Remove duplicate elements from a List (first-occurrence order).
 #[no_mangle]
-pub extern "C" fn jit_rt_list_unique(_ctx: *mut VmContext, list_nb: i64) -> i64 {
+pub extern "C" fn jit_rt_list_unique(ctx: *mut VmContext, list_nb: i64) -> i64 {
     let Some(raw_ptr) = decode_value_ptr(list_nb) else {
         return list_nb;
     };
 
-    let arc_value = unsafe { Arc::from_raw(raw_ptr) };
-    let Value::List(list) = arc_value.as_ref() else {
-        return wrap_nanbox_ptr(Arc::into_raw(arc_value));
+    let is_arena_ptr = if !ctx.is_null() {
+        let arena = unsafe { (*ctx).arena };
+        if arena.is_null() {
+            false
+        } else {
+            unsafe { (*arena).contains_ptr(raw_ptr) }
+        }
+    } else {
+        false
+    };
+
+    let items: Vec<Value> = if is_arena_ptr {
+        match unsafe { &*(raw_ptr as *const Value) } {
+            Value::List(list) => list.iter().cloned().collect(),
+            _ => return wrap_nanbox_ptr_arena(raw_ptr),
+        }
+    } else {
+        let arc_value = unsafe { Arc::from_raw(raw_ptr) };
+        match arc_value.as_ref() {
+            Value::List(list) => list.iter().cloned().collect(),
+            _ => return wrap_nanbox_ptr(Arc::into_raw(arc_value)),
+        }
     };
 
     let mut seen: Vec<Value> = Vec::new();
-    for item in list.iter() {
-        if !seen.contains(item) {
-            seen.push(item.clone());
+    for item in items {
+        if !seen.contains(&item) {
+            seen.push(item);
         }
     }
 
-    wrap_nanbox_value(Value::new_list(seen))
+    wrap_nanbox_value_with_ctx(ctx, Value::new_list(seen))
 }
 
 /// Take the first N elements from a List.
 #[no_mangle]
-pub extern "C" fn jit_rt_list_take(_ctx: *mut VmContext, list_nb: i64, n_nb: i64) -> i64 {
+pub extern "C" fn jit_rt_list_take(ctx: *mut VmContext, list_nb: i64, n_nb: i64) -> i64 {
     let n = nb_to_int(n_nb).unwrap_or(0) as usize;
     let Some(raw_ptr) = decode_value_ptr(list_nb) else {
         return list_nb;
     };
 
-    let arc_value = unsafe { Arc::from_raw(raw_ptr) };
-    let Value::List(list) = arc_value.as_ref() else {
-        return wrap_nanbox_ptr(Arc::into_raw(arc_value));
+    let is_arena_ptr = if !ctx.is_null() {
+        let arena = unsafe { (*ctx).arena };
+        if arena.is_null() {
+            false
+        } else {
+            unsafe { (*arena).contains_ptr(raw_ptr) }
+        }
+    } else {
+        false
     };
 
-    let taken: Vec<Value> = list.iter().take(n).cloned().collect();
-    wrap_nanbox_value(Value::new_list(taken))
+    let taken: Vec<Value> = if is_arena_ptr {
+        match unsafe { &*(raw_ptr as *const Value) } {
+            Value::List(list) => list.iter().take(n).cloned().collect(),
+            _ => return wrap_nanbox_ptr_arena(raw_ptr),
+        }
+    } else {
+        let arc_value = unsafe { Arc::from_raw(raw_ptr) };
+        match arc_value.as_ref() {
+            Value::List(list) => list.iter().take(n).cloned().collect(),
+            _ => return wrap_nanbox_ptr(Arc::into_raw(arc_value)),
+        }
+    };
+    wrap_nanbox_value_with_ctx(ctx, Value::new_list(taken))
 }
 
 /// Drop the first N elements from a List.
 #[no_mangle]
-pub extern "C" fn jit_rt_list_drop(_ctx: *mut VmContext, list_nb: i64, n_nb: i64) -> i64 {
+pub extern "C" fn jit_rt_list_drop(ctx: *mut VmContext, list_nb: i64, n_nb: i64) -> i64 {
     let n = nb_to_int(n_nb).unwrap_or(0) as usize;
     let Some(raw_ptr) = decode_value_ptr(list_nb) else {
         return list_nb;
     };
 
-    let arc_value = unsafe { Arc::from_raw(raw_ptr) };
-    let Value::List(list) = arc_value.as_ref() else {
-        return wrap_nanbox_ptr(Arc::into_raw(arc_value));
+    let is_arena_ptr = if !ctx.is_null() {
+        let arena = unsafe { (*ctx).arena };
+        if arena.is_null() {
+            false
+        } else {
+            unsafe { (*arena).contains_ptr(raw_ptr) }
+        }
+    } else {
+        false
     };
 
-    let dropped: Vec<Value> = list.iter().skip(n).cloned().collect();
-    wrap_nanbox_value(Value::new_list(dropped))
+    let dropped: Vec<Value> = if is_arena_ptr {
+        match unsafe { &*(raw_ptr as *const Value) } {
+            Value::List(list) => list.iter().skip(n).cloned().collect(),
+            _ => return wrap_nanbox_ptr_arena(raw_ptr),
+        }
+    } else {
+        let arc_value = unsafe { Arc::from_raw(raw_ptr) };
+        match arc_value.as_ref() {
+            Value::List(list) => list.iter().skip(n).cloned().collect(),
+            _ => return wrap_nanbox_ptr(Arc::into_raw(arc_value)),
+        }
+    };
+    wrap_nanbox_value_with_ctx(ctx, Value::new_list(dropped))
 }
 
 /// Return the first element of a List or null.
 #[no_mangle]
-pub extern "C" fn jit_rt_list_first(_ctx: *mut VmContext, list_nb: i64) -> i64 {
+pub extern "C" fn jit_rt_list_first(ctx: *mut VmContext, list_nb: i64) -> i64 {
     let Some(raw_ptr) = decode_value_ptr(list_nb) else {
         return NAN_BOX_NULL_U as i64;
     };
 
-    let arc_value = unsafe { Arc::from_raw(raw_ptr) };
-    let Value::List(list) = arc_value.as_ref() else {
-        return NAN_BOX_NULL_U as i64;
+    let is_arena_ptr = if !ctx.is_null() {
+        let arena = unsafe { (*ctx).arena };
+        if arena.is_null() {
+            false
+        } else {
+            unsafe { (*arena).contains_ptr(raw_ptr) }
+        }
+    } else {
+        false
     };
 
-    list.first()
-        .map(value_to_nanbox)
-        .unwrap_or(NAN_BOX_NULL_U as i64)
+    if is_arena_ptr {
+        match unsafe { &*(raw_ptr as *const Value) } {
+            Value::List(list) => list
+                .first()
+                .map(|v| value_to_nanbox_with_ctx(ctx, v))
+                .unwrap_or(NAN_BOX_NULL_U as i64),
+            _ => NAN_BOX_NULL_U as i64,
+        }
+    } else {
+        let arc_value = unsafe { Arc::from_raw(raw_ptr) };
+        match arc_value.as_ref() {
+            Value::List(list) => list
+                .first()
+                .map(|v| value_to_nanbox_with_ctx(ctx, v))
+                .unwrap_or(NAN_BOX_NULL_U as i64),
+            _ => NAN_BOX_NULL_U as i64,
+        }
+    }
 }
 
 /// Return the last element of a List or null.
 #[no_mangle]
-pub extern "C" fn jit_rt_list_last(_ctx: *mut VmContext, list_nb: i64) -> i64 {
+pub extern "C" fn jit_rt_list_last(ctx: *mut VmContext, list_nb: i64) -> i64 {
     let Some(raw_ptr) = decode_value_ptr(list_nb) else {
         return NAN_BOX_NULL_U as i64;
     };
 
-    let arc_value = unsafe { Arc::from_raw(raw_ptr) };
-    let Value::List(list) = arc_value.as_ref() else {
-        return NAN_BOX_NULL_U as i64;
+    let is_arena_ptr = if !ctx.is_null() {
+        let arena = unsafe { (*ctx).arena };
+        if arena.is_null() {
+            false
+        } else {
+            unsafe { (*arena).contains_ptr(raw_ptr) }
+        }
+    } else {
+        false
     };
 
-    list.last()
-        .map(value_to_nanbox)
-        .unwrap_or(NAN_BOX_NULL_U as i64)
+    if is_arena_ptr {
+        match unsafe { &*(raw_ptr as *const Value) } {
+            Value::List(list) => list
+                .last()
+                .map(|v| value_to_nanbox_with_ctx(ctx, v))
+                .unwrap_or(NAN_BOX_NULL_U as i64),
+            _ => NAN_BOX_NULL_U as i64,
+        }
+    } else {
+        let arc_value = unsafe { Arc::from_raw(raw_ptr) };
+        match arc_value.as_ref() {
+            Value::List(list) => list
+                .last()
+                .map(|v| value_to_nanbox_with_ctx(ctx, v))
+                .unwrap_or(NAN_BOX_NULL_U as i64),
+            _ => NAN_BOX_NULL_U as i64,
+        }
+    }
 }
 
 /// Merge two maps (or records) into one: `merge(a, b)` → new map with b's entries overlaid on a.
@@ -856,20 +1070,20 @@ pub extern "C" fn jit_rt_list_last(_ctx: *mut VmContext, list_nb: i64) -> i64 {
 /// Convert a list to a set (removing duplicates).
 /// Returns a NaN-boxed TAG_PTR to a Value::Set.
 #[no_mangle]
-pub extern "C" fn jit_rt_to_set(_ctx: *mut VmContext, list_nb: i64) -> i64 {
+pub extern "C" fn jit_rt_to_set(ctx: *mut VmContext, list_nb: i64) -> i64 {
     let val = unsafe { nb_decode(list_nb) };
     let set: BTreeSet<Value> = match val {
         Value::List(l) => l.iter().cloned().collect(),
         Value::Set(_s) => return list_nb, // already a set — return as-is
         _ => BTreeSet::new(),
     };
-    wrap_nanbox_value(Value::Set(Arc::new(set)))
+    wrap_nanbox_value_with_ctx(ctx, Value::Set(Arc::new(set)))
 }
 
 /// Add an element to a set (returns new set).
 /// Returns a NaN-boxed TAG_PTR to a new Value::Set.
 #[no_mangle]
-pub extern "C" fn jit_rt_set_add(_ctx: *mut VmContext, set_nb: i64, elem_nb: i64) -> i64 {
+pub extern "C" fn jit_rt_set_add(ctx: *mut VmContext, set_nb: i64, elem_nb: i64) -> i64 {
     let elem = unsafe { nb_decode(elem_nb) };
     let set_val = unsafe { nb_decode(set_nb) };
     let mut set: BTreeSet<Value> = match set_val {
@@ -878,7 +1092,7 @@ pub extern "C" fn jit_rt_set_add(_ctx: *mut VmContext, set_nb: i64, elem_nb: i64
         _ => BTreeSet::new(),
     };
     set.insert(elem);
-    wrap_nanbox_value(Value::Set(Arc::new(set)))
+    wrap_nanbox_value_with_ctx(ctx, Value::Set(Arc::new(set)))
 }
 
 /// Split a string into a list of single-character strings.
@@ -891,7 +1105,7 @@ pub extern "C" fn jit_rt_chars(ctx: *mut VmContext, str_nb: i64) -> i64 {
         .chars()
         .map(|c| Value::String(lumen_core::values::StringRef::Owned(c.to_string())))
         .collect();
-    wrap_nanbox_value(Value::new_list(chars))
+    wrap_nanbox_value_with_ctx(ctx, Value::new_list(chars))
 }
 
 /// Join a list of strings with a separator.
@@ -908,13 +1122,16 @@ pub extern "C" fn jit_rt_join(ctx: *mut VmContext, list_nb: i64, sep_nb: i64) ->
         _ => vec![],
     };
     let joined = items.join(&sep);
-    wrap_nanbox_value(Value::String(lumen_core::values::StringRef::Owned(joined)))
+    wrap_nanbox_value_with_ctx(
+        ctx,
+        Value::String(lumen_core::values::StringRef::Owned(joined)),
+    )
 }
 
 /// Zip two lists into a list of 2-tuples.
 /// Returns a NaN-boxed TAG_PTR to a Value::List of Value::Tuple pairs.
 #[no_mangle]
-pub extern "C" fn jit_rt_zip(_ctx: *mut VmContext, a_nb: i64, b_nb: i64) -> i64 {
+pub extern "C" fn jit_rt_zip(ctx: *mut VmContext, a_nb: i64, b_nb: i64) -> i64 {
     let a_val = unsafe { nb_decode(a_nb) };
     let b_val = unsafe { nb_decode(b_nb) };
     let a_list: &[Value] = match &a_val {
@@ -930,13 +1147,13 @@ pub extern "C" fn jit_rt_zip(_ctx: *mut VmContext, a_nb: i64, b_nb: i64) -> i64 
         .zip(b_list.iter())
         .map(|(a, b)| Value::new_tuple(vec![a.clone(), b.clone()]))
         .collect();
-    wrap_nanbox_value(Value::new_list(pairs))
+    wrap_nanbox_value_with_ctx(ctx, Value::new_list(pairs))
 }
 
 /// Enumerate a list into a list of (index, element) 2-tuples.
 /// Returns a NaN-boxed TAG_PTR to a Value::List of Value::Tuple pairs.
 #[no_mangle]
-pub extern "C" fn jit_rt_enumerate(_ctx: *mut VmContext, list_nb: i64) -> i64 {
+pub extern "C" fn jit_rt_enumerate(ctx: *mut VmContext, list_nb: i64) -> i64 {
     let val = unsafe { nb_decode(list_nb) };
     let pairs: Vec<Value> = match val {
         Value::List(l) => l
@@ -946,14 +1163,14 @@ pub extern "C" fn jit_rt_enumerate(_ctx: *mut VmContext, list_nb: i64) -> i64 {
             .collect(),
         _ => vec![],
     };
-    wrap_nanbox_value(Value::new_list(pairs))
+    wrap_nanbox_value_with_ctx(ctx, Value::new_list(pairs))
 }
 
 /// Split a list into fixed-size chunks.
 /// `n_nb` is the NaN-boxed chunk size (Int).
 /// Returns a NaN-boxed TAG_PTR to a Value::List of Value::List chunks.
 #[no_mangle]
-pub extern "C" fn jit_rt_chunk(_ctx: *mut VmContext, list_nb: i64, n_nb: i64) -> i64 {
+pub extern "C" fn jit_rt_chunk(ctx: *mut VmContext, list_nb: i64, n_nb: i64) -> i64 {
     let val = unsafe { nb_decode(list_nb) };
     let n = nb_to_int(n_nb).unwrap_or(1).max(1) as usize;
     let chunks: Vec<Value> = match val {
@@ -963,14 +1180,14 @@ pub extern "C" fn jit_rt_chunk(_ctx: *mut VmContext, list_nb: i64, n_nb: i64) ->
             .collect(),
         _ => vec![],
     };
-    wrap_nanbox_value(Value::new_list(chunks))
+    wrap_nanbox_value_with_ctx(ctx, Value::new_list(chunks))
 }
 
 /// Produce a list of sliding windows of size n.
 /// `n_nb` is the NaN-boxed window size (Int).
 /// Returns a NaN-boxed TAG_PTR to a Value::List of Value::List windows.
 #[no_mangle]
-pub extern "C" fn jit_rt_window(_ctx: *mut VmContext, list_nb: i64, n_nb: i64) -> i64 {
+pub extern "C" fn jit_rt_window(ctx: *mut VmContext, list_nb: i64, n_nb: i64) -> i64 {
     let val = unsafe { nb_decode(list_nb) };
     let n = nb_to_int(n_nb).unwrap_or(1).max(1) as usize;
     let windows: Vec<Value> = match val {
@@ -983,7 +1200,7 @@ pub extern "C" fn jit_rt_window(_ctx: *mut VmContext, list_nb: i64, n_nb: i64) -
         }
         _ => vec![],
     };
-    wrap_nanbox_value(Value::new_list(windows))
+    wrap_nanbox_value_with_ctx(ctx, Value::new_list(windows))
 }
 
 /// Both `a_ptr` and `b_ptr` are NaN-boxed TAG_PTR values pointing to `Arc<Value>`.
@@ -992,7 +1209,7 @@ pub extern "C" fn jit_rt_window(_ctx: *mut VmContext, list_nb: i64, n_nb: i64) -
 /// # Safety
 /// Both pointers must be valid NaN-boxed TAG_PTR to `Arc<Value>` (Map or Record).
 #[no_mangle]
-pub extern "C" fn jit_rt_merge(_ctx: *mut VmContext, a_ptr: i64, b_ptr: i64) -> i64 {
+pub extern "C" fn jit_rt_merge(ctx: *mut VmContext, a_ptr: i64, b_ptr: i64) -> i64 {
     let a_val = unsafe { nb_decode(a_ptr) };
     let b_val = unsafe { nb_decode(b_ptr) };
 
@@ -1016,8 +1233,7 @@ pub extern "C" fn jit_rt_merge(_ctx: *mut VmContext, a_ptr: i64, b_ptr: i64) -> 
         }
         (first, _) => first,
     };
-    let ptr = Arc::into_raw(Arc::new(result)) as u64;
-    (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
+    wrap_nanbox_value_with_ctx(ctx, result)
 }
 
 /// Merge two maps/records, taking ownership of the first argument's Arc.
@@ -1034,7 +1250,7 @@ pub extern "C" fn jit_rt_merge(_ctx: *mut VmContext, a_ptr: i64, b_ptr: i64) -> 
 /// `a_ptr` must be a valid NaN-boxed `Arc<Value>` pointer whose Arc refcount is 1,
 /// OR an inline scalar (TAG_INT/BOOL/NULL), in which case we fall back to `nb_decode`.
 #[no_mangle]
-pub extern "C" fn jit_rt_merge_take_a(_ctx: *mut VmContext, a_nb: i64, b_nb: i64) -> i64 {
+pub extern "C" fn jit_rt_merge_take_a(ctx: *mut VmContext, a_nb: i64, b_nb: i64) -> i64 {
     // Take ownership of a's Arc without incrementing refcount, so Arc::make_mut
     // can mutate in-place (count stays 1 after from_raw + try_unwrap).
     let u = a_nb as u64;
@@ -1075,13 +1291,12 @@ pub extern "C" fn jit_rt_merge_take_a(_ctx: *mut VmContext, a_nb: i64, b_nb: i64
         }
         (first, _) => first,
     };
-    let ptr = Arc::into_raw(Arc::new(result)) as u64;
-    (NAN_MASK_U | (ptr & PAYLOAD_MASK_U)) as i64
+    wrap_nanbox_value_with_ctx(ctx, result)
 }
 
 /// Return a list of keys from a map/record.
 #[no_mangle]
-pub extern "C" fn jit_rt_map_keys(_ctx: *mut VmContext, map_nb: i64) -> i64 {
+pub extern "C" fn jit_rt_map_keys(ctx: *mut VmContext, map_nb: i64) -> i64 {
     let map_val = unsafe { nb_decode(map_nb) };
     let keys = match map_val {
         Value::Map(m) => m
@@ -1095,24 +1310,24 @@ pub extern "C" fn jit_rt_map_keys(_ctx: *mut VmContext, map_nb: i64) -> i64 {
             .collect(),
         _ => Vec::new(),
     };
-    wrap_nanbox_value(Value::new_list(keys))
+    wrap_nanbox_value_with_ctx(ctx, Value::new_list(keys))
 }
 
 /// Return a list of values from a map/record.
 #[no_mangle]
-pub extern "C" fn jit_rt_map_values(_ctx: *mut VmContext, map_nb: i64) -> i64 {
+pub extern "C" fn jit_rt_map_values(ctx: *mut VmContext, map_nb: i64) -> i64 {
     let map_val = unsafe { nb_decode(map_nb) };
     let values = match map_val {
         Value::Map(m) => m.values().cloned().collect(),
         Value::Record(r) => r.fields.values().cloned().collect(),
         _ => Vec::new(),
     };
-    wrap_nanbox_value(Value::new_list(values))
+    wrap_nanbox_value_with_ctx(ctx, Value::new_list(values))
 }
 
 /// Return a list of (key, value) tuples from a map/record.
 #[no_mangle]
-pub extern "C" fn jit_rt_map_entries(_ctx: *mut VmContext, map_nb: i64) -> i64 {
+pub extern "C" fn jit_rt_map_entries(ctx: *mut VmContext, map_nb: i64) -> i64 {
     let map_val = unsafe { nb_decode(map_nb) };
     let entries = match map_val {
         Value::Map(m) => m
@@ -1130,7 +1345,7 @@ pub extern "C" fn jit_rt_map_entries(_ctx: *mut VmContext, map_nb: i64) -> i64 {
             .collect(),
         _ => Vec::new(),
     };
-    wrap_nanbox_value(Value::new_list(entries))
+    wrap_nanbox_value_with_ctx(ctx, Value::new_list(entries))
 }
 
 /// Check if a map/record has a key.
@@ -1174,12 +1389,12 @@ pub extern "C" fn jit_rt_map_remove(ctx: *mut VmContext, map_nb: i64, key_nb: i6
         other => other,
     };
 
-    wrap_nanbox_value(result)
+    wrap_nanbox_value_with_ctx(ctx, result)
 }
 
 /// Return keys from a map in sorted order (BTreeMap order).
 #[no_mangle]
-pub extern "C" fn jit_rt_map_sorted_keys(_ctx: *mut VmContext, map_nb: i64) -> i64 {
+pub extern "C" fn jit_rt_map_sorted_keys(ctx: *mut VmContext, map_nb: i64) -> i64 {
     let map_val = unsafe { nb_decode(map_nb) };
     let keys = match map_val {
         Value::Map(m) => m
@@ -1188,7 +1403,7 @@ pub extern "C" fn jit_rt_map_sorted_keys(_ctx: *mut VmContext, map_nb: i64) -> i
             .collect(),
         _ => Vec::new(),
     };
-    wrap_nanbox_value(Value::new_list(keys))
+    wrap_nanbox_value_with_ctx(ctx, Value::new_list(keys))
 }
 
 #[cfg(test)]

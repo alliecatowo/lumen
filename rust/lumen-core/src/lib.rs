@@ -2,6 +2,7 @@
 //!
 //! Shared types, LIR definitions, and values used across the compiler, VM, and runtime.
 
+pub mod arena;
 pub mod lir;
 pub mod nb_value;
 pub mod opcode_table;

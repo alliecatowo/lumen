@@ -5,7 +5,7 @@
 
 use serde::Serialize;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Result of a single benchmark run.
@@ -149,7 +149,7 @@ fn run_bench(
     bench_fn(source, 3);
 
     // Measure
-    let rss_before = current_rss_kb();
+    let _rss_before = current_rss_kb();
     let total = bench_fn(source, iterations);
     let rss_after = peak_rss_kb();
 

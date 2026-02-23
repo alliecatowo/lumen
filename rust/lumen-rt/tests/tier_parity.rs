@@ -315,6 +315,34 @@ end
 }
 
 #[test]
+#[cfg(feature = "jit")]
+fn parity_osr_stencil_transplant() {
+    let source = r#"
+cell main() -> Int
+  let i = 0
+  let sum = 0
+  while i < 200
+    sum = sum + i
+    i = i + 1
+  end
+  return sum
+end
+"#;
+
+    let module = compile(source);
+    let mut vm = VM::new();
+    vm.enable_jit_with_config(JitTierConfig::from_threshold(1));
+    vm.enable_stencil_tier();
+    vm.load(module);
+    let result = vm.execute("main", vec![]).expect("execution failed");
+    assert_eq!(result, Value::Int(19900));
+    assert!(
+        vm.osr_transition_count() > 0,
+        "expected at least one OSR transition"
+    );
+}
+
+#[test]
 fn parity_match_int() {
     assert_parity(
         r#"

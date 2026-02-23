@@ -80,6 +80,10 @@ impl NbValue {
     /// 48-bit payload mask — bits 0-47.
     pub const PAYLOAD_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 
+    /// Flag bit for arena-allocated Value pointers.
+    /// When set in the payload, the pointer is arena-owned (no Arc refcount).
+    pub const PTR_ARENA_FLAG: u64 = 1;
+
     /// Bit shift for tag storage (bit 48).
     pub const TAG_SHIFT: u64 = 48;
 
@@ -323,7 +327,13 @@ impl NbValue {
     /// Null and NaN float sentinel are not considered heap-allocated.
     #[inline(always)]
     pub fn is_heap_allocated(self) -> bool {
-        self.is_ptr() && self.payload() > 1
+        self.is_ptr() && self.payload() > 1 && (self.payload() & Self::PTR_ARENA_FLAG == 0)
+    }
+
+    /// Returns `true` if this value is arena-allocated.
+    #[inline(always)]
+    pub fn is_arena_allocated(self) -> bool {
+        self.is_ptr() && self.payload() > 1 && (self.payload() & Self::PTR_ARENA_FLAG != 0)
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -401,7 +411,11 @@ impl NbValue {
         if !self.is_ptr() {
             return None;
         }
-        Some(self.payload() as *const T)
+        let payload = self.payload();
+        if payload <= 1 {
+            return None;
+        }
+        Some((payload & !Self::PTR_ARENA_FLAG) as *const T)
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -421,7 +435,7 @@ impl NbValue {
         }
         let payload = self.payload();
         unsafe {
-            let ptr = payload as *const Value;
+            let ptr = (payload & !Self::PTR_ARENA_FLAG) as *const Value;
             drop(Arc::from_raw(ptr));
         }
     }
@@ -433,7 +447,7 @@ impl NbValue {
     pub fn inc_ref(self) {
         if self.is_heap_allocated() {
             unsafe {
-                let ptr = self.payload() as *const Value;
+                let ptr = (self.payload() & !Self::PTR_ARENA_FLAG) as *const Value;
                 Arc::increment_strong_count(ptr);
             }
         }
@@ -458,7 +472,7 @@ impl NbValue {
             return None; // Null pointer or NaN sentinel
         }
         unsafe {
-            let ptr = payload as *const Value;
+            let ptr = (payload & !Self::PTR_ARENA_FLAG) as *const Value;
             Some(&*ptr)
         }
     }
@@ -486,7 +500,7 @@ impl NbValue {
         if payload <= 1 {
             return None; // Null pointer or NaN sentinel
         }
-        let ptr = payload as *mut Value;
+        let ptr = (payload & !Self::PTR_ARENA_FLAG) as *mut Value;
         Some(&mut *ptr)
     }
 

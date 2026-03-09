@@ -1585,7 +1585,7 @@ impl VM {
                                                 // Convert the raw *mut String pointer back to a
                                                 // Value::String. This consumes the heap allocation.
                                                 let s = unsafe {
-                                                    lumen_codegen::jit::jit_take_string(result)
+                                                    crate::jit_tier::take_jit_string(result)
                                                 };
                                                 self.registers[callee_reg] =
                                                     Value::String(StringRef::Owned(s));
@@ -1778,7 +1778,7 @@ impl VM {
                                                 .returns_string(&callee_cell.name)
                                             {
                                                 let s = unsafe {
-                                                    lumen_codegen::jit::jit_take_string(result)
+                                                    crate::jit_tier::take_jit_string(result)
                                                 };
                                                 Value::String(StringRef::Owned(s))
                                             } else {

@@ -1,11 +1,11 @@
 //! Tests for is/as expressions and implicit returns.
 
 use lumen_compiler::compiler::lexer::Lexer;
-use lumen_core::lir::{IntrinsicId, OpCode};
 use lumen_compiler::compiler::lower::lower;
 use lumen_compiler::compiler::parser::Parser;
 use lumen_compiler::compiler::resolve::resolve;
 use lumen_compiler::compiler::typecheck::typecheck;
+use lumen_core::lir::{IntrinsicId, OpCode};
 
 fn compile_to_lir(src: &str) -> lumen_core::lir::LirModule {
     let mut lexer = Lexer::new(src, 1, 0);

@@ -1587,7 +1587,7 @@ impl VM {
                                                 #[cfg(feature = "jit")]
                                                 {
                                                     let s = unsafe {
-                                                        lumen_codegen::jit::jit_take_string(result)
+                                                        crate::jit_tier::take_jit_string(result)
                                                     };
                                                     self.registers[callee_reg] =
                                                         Value::String(StringRef::Owned(s));
@@ -1788,7 +1788,7 @@ impl VM {
                                                 #[cfg(feature = "jit")]
                                                 {
                                                     let s = unsafe {
-                                                        lumen_codegen::jit::jit_take_string(result)
+                                                        crate::jit_tier::take_jit_string(result)
                                                     };
                                                     Value::String(StringRef::Owned(s))
                                                 }

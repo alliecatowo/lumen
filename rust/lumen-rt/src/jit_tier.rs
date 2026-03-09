@@ -309,21 +309,13 @@ impl JitTier {
     }
 }
 
-/// Take ownership of a heap-allocated `String` that was produced by a JIT stencil
-/// via `Box::into_raw`.  Wraps `lumen_codegen::jit::jit_take_string` so that call
-/// sites in `vm/mod.rs` don't need to reference `lumen_codegen` directly (which
-/// would fail to compile when the `jit` feature is disabled).
-///
-/// # Safety
-/// The pointer must have been produced by stencil code through `Box::into_raw::<String>`.
+/// Wrapper for `lumen_codegen::jit::jit_take_string` that compiles away when
+/// the `jit` feature is disabled — prevents wasm32 build errors.
 #[cfg(feature = "jit")]
 pub(crate) unsafe fn take_jit_string(ptr: i64) -> String {
     lumen_codegen::jit::jit_take_string(ptr)
 }
 
-/// No-op stub used when the `jit` feature is disabled.  The code path that calls
-/// this function is guarded by `jit_tier.returns_string()` which returns `false`
-/// when JIT is disabled, so this is genuinely unreachable at runtime.
 #[cfg(not(feature = "jit"))]
 pub(crate) unsafe fn take_jit_string(_ptr: i64) -> String {
     unreachable!("jit feature is not enabled")

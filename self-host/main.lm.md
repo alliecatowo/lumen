@@ -11,6 +11,7 @@ import self_host.errors: CompileError, LexError, ParseError, ResolveError, Typec
 import self_host.symbols: SymbolTable, new_symbol_table
 import self_host.intern: StringInterner, new_interner
 import self_host.serialize: LirModule, write_module
+import self_host.lexer: lex, Token
 ```
 
 ## Compiler Pipeline
@@ -115,11 +116,13 @@ cell extract_markdown(source: String) -> String
   result
 end
 
-cell lex(source: String) -> result[list[String], LexError]
-  # Stub: tokenize source into token list.
-  # Will be replaced by self_host.lexer module.
-  Ok([])
-end
+# lex() is now provided by self_host.lexer (imported above).
+# The stub below is kept as documentation only.
+#
+# cell lex(source: String) -> result[list[Token], LexError]
+#   # Now implemented in self-host/lexer.lm.md (Phase 1, S051-S090).
+#   self_host.lexer.lex(source)
+# end
 
 cell parse(tokens: list[String]) -> result[String, list[ParseError]]
   # Stub: parse tokens into AST.

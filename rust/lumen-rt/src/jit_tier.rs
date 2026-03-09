@@ -308,3 +308,15 @@ impl JitTier {
         self.config.hot_threshold
     }
 }
+
+/// Wrapper for `lumen_codegen::jit::jit_take_string` that compiles away when
+/// the `jit` feature is disabled — prevents wasm32 build errors.
+#[cfg(feature = "jit")]
+pub(crate) unsafe fn take_jit_string(ptr: i64) -> String {
+    lumen_codegen::jit::jit_take_string(ptr)
+}
+
+#[cfg(not(feature = "jit"))]
+pub(crate) unsafe fn take_jit_string(_ptr: i64) -> String {
+    unreachable!("jit feature is not enabled")
+}

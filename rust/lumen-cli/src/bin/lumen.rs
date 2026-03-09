@@ -1184,9 +1184,9 @@ fn cmd_run(
 
     // Optionally set up tracing
     let trace_store = trace_dir.map(|dir| {
-        Arc::new(Mutex::new(lumen_rt::services::trace::store::TraceStore::new(
-            &dir,
-        )))
+        Arc::new(Mutex::new(
+            lumen_rt::services::trace::store::TraceStore::new(&dir),
+        ))
     });
     let mut trace_run_id: Option<String> = None;
 
@@ -1379,7 +1379,9 @@ fn cmd_trace_show(run_id: &str, trace_dir: &Path, format: TraceShowFormat, verif
     }
 }
 
-fn read_trace_events(path: &Path) -> Result<Vec<lumen_rt::services::trace::events::TraceEvent>, String> {
+fn read_trace_events(
+    path: &Path,
+) -> Result<Vec<lumen_rt::services::trace::events::TraceEvent>, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read trace '{}': {}", path.display(), e))?;
 
@@ -1393,7 +1395,9 @@ fn read_trace_events(path: &Path) -> Result<Vec<lumen_rt::services::trace::event
         .collect()
 }
 
-fn verify_trace_chain(events: &[lumen_rt::services::trace::events::TraceEvent]) -> Result<(), String> {
+fn verify_trace_chain(
+    events: &[lumen_rt::services::trace::events::TraceEvent],
+) -> Result<(), String> {
     lumen_rt::services::trace::store::verify_event_chain(events)
 }
 

@@ -4562,7 +4562,6 @@ fn toml_format_scalar(val: &Value) -> String {
 // ===========================================================================
 
 /// Helper: build an "unsupported on wasm32" error Value.
-#[cfg(target_arch = "wasm32")]
 fn net_unsupported(op: &str) -> Value {
     let mut map = BTreeMap::new();
     map.insert("ok".to_string(), Value::Bool(false));
@@ -4575,8 +4574,6 @@ fn net_unsupported(op: &str) -> Value {
     );
     Value::new_map(map)
 }
-
-// ---- Native (non-wasm32) HTTP implementation ----
 
 #[cfg(not(target_arch = "wasm32"))]
 /// Build a response map from a successful ureq response.
@@ -4787,7 +4784,8 @@ impl HandleRegistry {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-static NET_HANDLES: Lazy<Mutex<HandleRegistry>> = Lazy::new(|| Mutex::new(HandleRegistry::new()));
+static NET_HANDLES: Lazy<Mutex<HandleRegistry>> =
+    Lazy::new(|| Mutex::new(HandleRegistry::new()));
 
 #[cfg(not(target_arch = "wasm32"))]
 fn net_tcp_connect(addr: &str) -> Value {

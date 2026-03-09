@@ -4562,6 +4562,7 @@ fn toml_format_scalar(val: &Value) -> String {
 // ===========================================================================
 
 /// Helper: build an "unsupported on wasm32" error Value.
+#[cfg(target_arch = "wasm32")]
 fn net_unsupported(op: &str) -> Value {
     let mut map = BTreeMap::new();
     map.insert("ok".to_string(), Value::Bool(false));

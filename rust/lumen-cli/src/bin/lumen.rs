@@ -53,9 +53,7 @@ fn install_panic_hook() {
         );
         eprintln!("  Details: {}", msg);
         eprintln!();
-        eprintln!(
-            "  This is a bug in lumen. Please report it at:"
-        );
+        eprintln!("  This is a bug in lumen. Please report it at:");
         eprintln!("  https://github.com/alliecatowo/lumen/issues");
     }));
 }

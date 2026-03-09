@@ -45,8 +45,10 @@ fn remove_nops(cell: &mut LirCell) {
         if cell.instructions[old_index].op == OpCode::Nop {
             // Find the next non-Nop
             let mut next_pos = new_index; // Default to end
-            for search_idx in (old_index + 1)..cell.instructions.len() {
-                if cell.instructions[search_idx].op != OpCode::Nop {
+            for (search_idx, search_instr) in
+                cell.instructions.iter().enumerate().skip(old_index + 1)
+            {
+                if search_instr.op != OpCode::Nop {
                     next_pos = index_map[search_idx];
                     break;
                 }
@@ -133,6 +135,7 @@ fn remove_nops(cell: &mut LirCell) {
 /// Currently we perform a conservative optimization that only removes the `Test`
 /// and updates the `Eq` to use its built-in skip-next. Full dead-register analysis
 /// is not yet implemented, so we assume the pattern is intentional when found.
+#[allow(dead_code)]
 fn optimize_eq_test_sequences(cell: &mut LirCell) {
     let mut i = 0;
     let mut to_remove = Vec::new();
@@ -190,7 +193,7 @@ fn optimize_eq_test_sequences(cell: &mut LirCell) {
         for &old_index in &to_remove {
             // Find the next kept instruction
             let mut next_pos = new_index; // Default to end
-            for search_idx in (old_index + 1)..cell.instructions.len() {
+            for (search_idx, _) in cell.instructions.iter().enumerate().skip(old_index + 1) {
                 if !to_remove.contains(&search_idx) {
                     next_pos = index_map[search_idx];
                     break;

@@ -245,7 +245,7 @@ fn generate_stencils_file(path: &PathBuf, stencils: &[StencilData]) {
                 output.push_str(&format!("0x{:02x}, ", byte));
             }
             if i < stencil.code_bytes.len() / 16 {
-                output.push_str("\n");
+                output.push('\n');
             }
         }
         output.push_str("\n];\n\n");
@@ -256,7 +256,7 @@ fn generate_stencils_file(path: &PathBuf, stencils: &[StencilData]) {
                 "/// Relocation holes for {} instruction\n",
                 stencil.op_name
             ));
-            output.push_str(&format!("/// Format: (byte_offset, relocation_kind)\n"));
+            output.push_str("/// Format: (byte_offset, relocation_kind)\n");
             output.push_str(&format!(
                 "pub const STENCIL_{}_HOLES: &[(usize, &str)] = &[\n",
                 stencil.op_name

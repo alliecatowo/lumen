@@ -112,7 +112,7 @@ pub fn emit_function_with_control_flow(
             OpCode::Jmp => {
                 // Unconditional jump: set PC and branch to $dispatch
                 let offset = inst.sax_val();
-                let target_pc = (idx as i64 + offset) as i32;
+                let target_pc = (idx as i64 + offset as i64) as i32;
                 func.instruction(&WasmInst::I32Const(target_pc));
                 func.instruction(&WasmInst::LocalSet(pc_local));
                 // Branch to dispatch loop (depth = num_insts + 1 - idx)
@@ -184,7 +184,7 @@ pub fn emit_function_with_control_flow(
             OpCode::Break => {
                 // Break: similar to Jmp, exit from loop
                 let offset = inst.sax_val();
-                let target_pc = (idx as i64 + offset) as i32;
+                let target_pc = (idx as i64 + offset as i64) as i32;
                 func.instruction(&WasmInst::I32Const(target_pc));
                 func.instruction(&WasmInst::LocalSet(pc_local));
                 func.instruction(&WasmInst::Br(num_insts as u32 - idx as u32 + 1));
@@ -192,7 +192,7 @@ pub fn emit_function_with_control_flow(
             OpCode::Continue => {
                 // Continue: similar to Jmp, continue to loop start
                 let offset = inst.sax_val();
-                let target_pc = (idx as i64 + offset) as i32;
+                let target_pc = (idx as i64 + offset as i64) as i32;
                 func.instruction(&WasmInst::I32Const(target_pc));
                 func.instruction(&WasmInst::LocalSet(pc_local));
                 func.instruction(&WasmInst::Br(num_insts as u32 - idx as u32 + 1));
@@ -293,7 +293,7 @@ fn emit_single_instruction(
         OpCode::LoadK => {
             let a = inst.a;
             let bx = inst.bx() as usize;
-            emit_wasm_load_constant(func, cell, bx, a)?;
+            emit_wasm_load_constant(func, cell, bx, a as u16)?;
         }
         OpCode::LoadInt => {
             let a = inst.a;

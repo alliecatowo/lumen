@@ -11,10 +11,10 @@ pub mod interpreter;
 pub mod intrinsics;
 pub mod jit_tier;
 pub mod parity_concurrency;
+pub mod services;
 pub mod tagged;
 pub mod tlab;
 pub mod vm;
-pub mod services;
 
 // Re-export core types from lumen-core for backward compatibility
 pub use lumen_core::{strings, types, values};

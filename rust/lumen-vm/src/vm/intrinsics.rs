@@ -4786,8 +4786,7 @@ impl HandleRegistry {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-static NET_HANDLES: Lazy<Mutex<HandleRegistry>> =
-    Lazy::new(|| Mutex::new(HandleRegistry::new()));
+static NET_HANDLES: Lazy<Mutex<HandleRegistry>> = Lazy::new(|| Mutex::new(HandleRegistry::new()));
 
 #[cfg(not(target_arch = "wasm32"))]
 fn net_tcp_connect(addr: &str) -> Value {

@@ -4558,9 +4558,24 @@ fn toml_format_scalar(val: &Value) -> String {
 }
 
 // ===========================================================================
-// HTTP client builtins (backed by ureq)
+// HTTP client builtins (backed by ureq — native targets only)
 // ===========================================================================
 
+/// Helper: build an "unsupported on wasm32" error Value.
+fn net_unsupported(op: &str) -> Value {
+    let mut map = BTreeMap::new();
+    map.insert("ok".to_string(), Value::Bool(false));
+    map.insert(
+        "error".to_string(),
+        Value::String(StringRef::Owned(format!(
+            "{} is not supported on WebAssembly",
+            op
+        ))),
+    );
+    Value::new_map(map)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 /// Build a response map from a successful ureq response.
 fn http_response_to_value(resp: ureq::Response) -> Value {
     let status = resp.status() as i64;
@@ -4574,6 +4589,7 @@ fn http_response_to_value(resp: ureq::Response) -> Value {
     Value::new_map(map)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Build an error response map from a ureq error.
 fn http_error_to_value(err: ureq::Error) -> Value {
     let mut map = BTreeMap::new();
@@ -4599,13 +4615,19 @@ fn http_error_to_value(err: ureq::Error) -> Value {
     Value::new_map(map)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn http_builtin_get(url: &str) -> Value {
     match ureq::get(url).call() {
         Ok(resp) => http_response_to_value(resp),
         Err(err) => http_error_to_value(err),
     }
 }
+#[cfg(target_arch = "wasm32")]
+fn http_builtin_get(_url: &str) -> Value {
+    net_unsupported("http_get")
+}
 
+#[cfg(not(target_arch = "wasm32"))]
 fn http_builtin_post(url: &str, body: &str) -> Value {
     match ureq::post(url)
         .set("Content-Type", "application/json")
@@ -4615,7 +4637,12 @@ fn http_builtin_post(url: &str, body: &str) -> Value {
         Err(err) => http_error_to_value(err),
     }
 }
+#[cfg(target_arch = "wasm32")]
+fn http_builtin_post(_url: &str, _body: &str) -> Value {
+    net_unsupported("http_post")
+}
 
+#[cfg(not(target_arch = "wasm32"))]
 fn http_builtin_put(url: &str, body: &str) -> Value {
     match ureq::put(url)
         .set("Content-Type", "application/json")
@@ -4625,14 +4652,24 @@ fn http_builtin_put(url: &str, body: &str) -> Value {
         Err(err) => http_error_to_value(err),
     }
 }
+#[cfg(target_arch = "wasm32")]
+fn http_builtin_put(_url: &str, _body: &str) -> Value {
+    net_unsupported("http_put")
+}
 
+#[cfg(not(target_arch = "wasm32"))]
 fn http_builtin_delete(url: &str) -> Value {
     match ureq::delete(url).call() {
         Ok(resp) => http_response_to_value(resp),
         Err(err) => http_error_to_value(err),
     }
 }
+#[cfg(target_arch = "wasm32")]
+fn http_builtin_delete(_url: &str) -> Value {
+    net_unsupported("http_delete")
+}
 
+#[cfg(not(target_arch = "wasm32"))]
 fn http_builtin_request(
     method: &str,
     url: &str,
@@ -4680,6 +4717,15 @@ fn http_builtin_request(
         Err(err) => http_error_to_value(err),
     }
 }
+#[cfg(target_arch = "wasm32")]
+fn http_builtin_request(
+    _method: &str,
+    _url: &str,
+    _body: &str,
+    _headers: &[(String, String)],
+) -> Value {
+    net_unsupported("http_request")
+}
 
 /// Extract headers from a Value::Map into a Vec of (name, value) pairs.
 fn extract_headers_map(val: &Value) -> Vec<(String, String)> {
@@ -4690,26 +4736,33 @@ fn extract_headers_map(val: &Value) -> Vec<(String, String)> {
 }
 
 // ===========================================================================
-// TCP/UDP networking builtins (backed by std::net)
+// TCP/UDP networking builtins (native targets only — not available on wasm32)
 // ===========================================================================
 
+#[cfg(not(target_arch = "wasm32"))]
 use once_cell::sync::Lazy;
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::{Read, Write};
+#[cfg(not(target_arch = "wasm32"))]
 use std::net::{TcpListener, TcpStream, UdpSocket};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Mutex;
 
 /// Enum that can hold a TCP stream or a UDP socket.
+#[cfg(not(target_arch = "wasm32"))]
 enum NetHandle {
     TcpStream(TcpStream),
     UdpSocket(UdpSocket),
 }
 
 /// Global registry of network handles, keyed by monotonic integer IDs.
+#[cfg(not(target_arch = "wasm32"))]
 struct HandleRegistry {
     handles: HashMap<i64, NetHandle>,
     next_id: i64,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl HandleRegistry {
     fn new() -> Self {
         Self {
@@ -4730,8 +4783,11 @@ impl HandleRegistry {
     }
 }
 
-static NET_HANDLES: Lazy<Mutex<HandleRegistry>> = Lazy::new(|| Mutex::new(HandleRegistry::new()));
+#[cfg(not(target_arch = "wasm32"))]
+static NET_HANDLES: Lazy<Mutex<HandleRegistry>> =
+    Lazy::new(|| Mutex::new(HandleRegistry::new()));
 
+#[cfg(not(target_arch = "wasm32"))]
 fn net_tcp_connect(addr: &str) -> Value {
     match TcpStream::connect(addr) {
         Ok(stream) => {
@@ -4755,7 +4811,12 @@ fn net_tcp_connect(addr: &str) -> Value {
         }
     }
 }
+#[cfg(target_arch = "wasm32")]
+fn net_tcp_connect(_addr: &str) -> Value {
+    net_unsupported("tcp_connect")
+}
 
+#[cfg(not(target_arch = "wasm32"))]
 fn net_tcp_listen(addr: &str) -> Value {
     match TcpListener::bind(addr) {
         Ok(listener) => {
@@ -4797,7 +4858,12 @@ fn net_tcp_listen(addr: &str) -> Value {
         }
     }
 }
+#[cfg(target_arch = "wasm32")]
+fn net_tcp_listen(_addr: &str) -> Value {
+    net_unsupported("tcp_listen")
+}
 
+#[cfg(not(target_arch = "wasm32"))]
 fn net_tcp_send(handle: i64, data: &str) -> Value {
     let mut registry = NET_HANDLES.lock().expect("NET_HANDLES lock poisoned");
     match registry.handles.get_mut(&handle) {
@@ -4827,7 +4893,12 @@ fn net_tcp_send(handle: i64, data: &str) -> Value {
         }
     }
 }
+#[cfg(target_arch = "wasm32")]
+fn net_tcp_send(_handle: i64, _data: &str) -> Value {
+    net_unsupported("tcp_send")
+}
 
+#[cfg(not(target_arch = "wasm32"))]
 fn net_tcp_recv(handle: i64, max_bytes: i64) -> Value {
     let mut registry = NET_HANDLES.lock().expect("NET_HANDLES lock poisoned");
     match registry.handles.get_mut(&handle) {
@@ -4869,13 +4940,21 @@ fn net_tcp_recv(handle: i64, max_bytes: i64) -> Value {
         }
     }
 }
+#[cfg(target_arch = "wasm32")]
+fn net_tcp_recv(_handle: i64, _max_bytes: i64) -> Value {
+    net_unsupported("tcp_recv")
+}
 
+#[cfg(not(target_arch = "wasm32"))]
 fn net_tcp_close(handle: i64) {
     let mut registry = NET_HANDLES.lock().expect("NET_HANDLES lock poisoned");
     // Dropping the handle closes the underlying socket.
     registry.remove(handle);
 }
+#[cfg(target_arch = "wasm32")]
+fn net_tcp_close(_handle: i64) {}
 
+#[cfg(not(target_arch = "wasm32"))]
 fn net_udp_bind(addr: &str) -> Value {
     match UdpSocket::bind(addr) {
         Ok(socket) => {
@@ -4899,7 +4978,12 @@ fn net_udp_bind(addr: &str) -> Value {
         }
     }
 }
+#[cfg(target_arch = "wasm32")]
+fn net_udp_bind(_addr: &str) -> Value {
+    net_unsupported("udp_bind")
+}
 
+#[cfg(not(target_arch = "wasm32"))]
 fn net_udp_send(handle: i64, addr: &str, data: &str) -> Value {
     let registry = NET_HANDLES.lock().expect("NET_HANDLES lock poisoned");
     match registry.handles.get(&handle) {
@@ -4929,7 +5013,12 @@ fn net_udp_send(handle: i64, addr: &str, data: &str) -> Value {
         }
     }
 }
+#[cfg(target_arch = "wasm32")]
+fn net_udp_send(_handle: i64, _addr: &str, _data: &str) -> Value {
+    net_unsupported("udp_send")
+}
 
+#[cfg(not(target_arch = "wasm32"))]
 fn net_udp_recv(handle: i64, max_bytes: i64) -> Value {
     let registry = NET_HANDLES.lock().expect("NET_HANDLES lock poisoned");
     match registry.handles.get(&handle) {
@@ -4974,4 +5063,8 @@ fn net_udp_recv(handle: i64, max_bytes: i64) -> Value {
             Value::new_map(map)
         }
     }
+}
+#[cfg(target_arch = "wasm32")]
+fn net_udp_recv(_handle: i64, _max_bytes: i64) -> Value {
+    net_unsupported("udp_recv")
 }

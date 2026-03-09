@@ -1,0 +1,96 @@
+##############################################################################
+# Lumen Benchmark CI Workflow
+#
+# Copy to .github/workflows/bench.yml to enable.
+# Runs benchmark suite on every push to main and on manual dispatch.
+# Results are uploaded as artifacts for comparison over time.
+##############################################################################
+
+name: Benchmarks
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      jit:
+        description: 'JIT mode (default|on|off)'
+        required: false
+        default: 'default'
+
+jobs:
+  bench:
+    name: Benchmark Suite (Lumen vs Python vs Node)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Lumen (release)
+        run: cargo build --release --bin lumen
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check runtime versions
+        run: |
+          ./target/release/lumen --version || true
+          python3 --version
+          node --version
+
+      - name: Run benchmark suite (default JIT)
+        run: |
+          chmod +x benchmarks/run.sh
+          ./benchmarks/run.sh 2>&1 | tee bench-results.txt
+
+      - name: Run benchmark suite (JIT disabled, for comparison)
+        run: |
+          ./benchmarks/run.sh --no-jit 2>&1 | tee bench-results-no-jit.txt
+        continue-on-error: true
+
+      - name: Run existing cross-language benchmarks
+        run: |
+          chmod +x bench/run_all.sh
+          bash bench/run_all.sh --csv bench/results/ci-run.csv --runs 3 2>&1 | tee bench-cross-language.txt
+        continue-on-error: true
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: |
+            bench-results.txt
+            bench-results-no-jit.txt
+            bench-cross-language.txt
+            bench/results/ci-run.csv
+          retention-days: 90
+
+      - name: Comment results on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = '## Benchmark Results\n\n```\n';
+            try {
+              body += fs.readFileSync('bench-results.txt', 'utf8');
+            } catch (e) {
+              body += '(benchmark output not available)';
+            }
+            body += '\n```\n';
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });

@@ -154,6 +154,31 @@ fn register_string_helpers(builder: &mut JITBuilder) {
     builder.symbol("jit_rt_string_drop", jit_rt_string_drop as *const u8);
 }
 
+/// Float modulo, matching Rust `f64` remainder semantics.
+extern "C" fn jit_rt_fmod(a: f64, b: f64) -> f64 {
+    a % b
+}
+
+/// Floating-point exponentiation.
+extern "C" fn jit_rt_pow_float(base: f64, exp: f64) -> f64 {
+    base.powf(exp)
+}
+
+/// Integer exponentiation with saturating-negative exponent behavior.
+extern "C" fn jit_rt_pow_int(base: i64, exp: i64) -> i64 {
+    if exp < 0 {
+        0
+    } else {
+        base.pow(exp as u32)
+    }
+}
+
+fn register_math_helpers(builder: &mut JITBuilder) {
+    builder.symbol("jit_rt_fmod", jit_rt_fmod as *const u8);
+    builder.symbol("jit_rt_pow_float", jit_rt_pow_float as *const u8);
+    builder.symbol("jit_rt_pow_int", jit_rt_pow_int as *const u8);
+}
+
 // ---------------------------------------------------------------------------
 // Execution profiling
 // ---------------------------------------------------------------------------
@@ -308,6 +333,8 @@ struct CompiledFunction {
     param_count: usize,
     /// True if the function returns a heap-allocated string pointer.
     returns_string: bool,
+    /// True if the function returns an F64 value.
+    returns_float: bool,
 }
 
 // Safety: The function pointers are valid for the lifetime of the JITModule
@@ -417,8 +444,9 @@ impl JitEngine {
         )
         .map_err(|e| JitError::ModuleError(format!("JITBuilder creation failed: {e}")))?;
 
-        // Register string runtime helper symbols so JIT code can call them.
+        // Register runtime helper symbols so JIT code can call them.
         register_string_helpers(&mut builder);
+        register_math_helpers(&mut builder);
 
         let mut jit_module = JITModule::new(builder);
         let pointer_type = jit_module.isa().pointer_type();
@@ -440,6 +468,7 @@ impl JitEngine {
                     fn_ptr,
                     param_count: func.param_count,
                     returns_string: func.returns_string,
+                    returns_float: func.returns_float,
                 },
             );
             self.stats.cells_compiled += 1;
@@ -474,8 +503,13 @@ impl JitEngine {
         // valid for the lifetime of the JITModule (which we own). The
         // caller guarantees the signature matches.
         let result = unsafe {
-            let code_fn: fn() -> i64 = std::mem::transmute(fn_ptr);
-            code_fn()
+            if compiled.returns_float {
+                let code_fn: fn() -> f64 = std::mem::transmute(fn_ptr);
+                code_fn().to_bits() as i64
+            } else {
+                let code_fn: fn() -> i64 = std::mem::transmute(fn_ptr);
+                code_fn()
+            }
         };
         Ok(result)
     }
@@ -492,8 +526,13 @@ impl JitEngine {
         self.stats.executions += 1;
 
         let result = unsafe {
-            let code_fn: fn(i64) -> i64 = std::mem::transmute(fn_ptr);
-            code_fn(arg)
+            if compiled.returns_float {
+                let code_fn: fn(i64) -> f64 = std::mem::transmute(fn_ptr);
+                code_fn(arg).to_bits() as i64
+            } else {
+                let code_fn: fn(i64) -> i64 = std::mem::transmute(fn_ptr);
+                code_fn(arg)
+            }
         };
         Ok(result)
     }
@@ -515,8 +554,13 @@ impl JitEngine {
         self.stats.executions += 1;
 
         let result = unsafe {
-            let code_fn: fn(i64, i64) -> i64 = std::mem::transmute(fn_ptr);
-            code_fn(arg1, arg2)
+            if compiled.returns_float {
+                let code_fn: fn(i64, i64) -> f64 = std::mem::transmute(fn_ptr);
+                code_fn(arg1, arg2).to_bits() as i64
+            } else {
+                let code_fn: fn(i64, i64) -> i64 = std::mem::transmute(fn_ptr);
+                code_fn(arg1, arg2)
+            }
         };
         Ok(result)
     }
@@ -539,8 +583,13 @@ impl JitEngine {
         self.stats.executions += 1;
 
         let result = unsafe {
-            let code_fn: fn(i64, i64, i64) -> i64 = std::mem::transmute(fn_ptr);
-            code_fn(arg1, arg2, arg3)
+            if compiled.returns_float {
+                let code_fn: fn(i64, i64, i64) -> f64 = std::mem::transmute(fn_ptr);
+                code_fn(arg1, arg2, arg3).to_bits() as i64
+            } else {
+                let code_fn: fn(i64, i64, i64) -> i64 = std::mem::transmute(fn_ptr);
+                code_fn(arg1, arg2, arg3)
+            }
         };
         Ok(result)
     }
@@ -682,6 +731,7 @@ struct JitLoweredFunction {
     func_id: FuncId,
     param_count: usize,
     returns_string: bool,
+    returns_float: bool,
 }
 
 /// Lower an entire LIR module into Cranelift IR inside the given `JITModule`.
@@ -784,11 +834,17 @@ fn lower_module_jit(
             .as_deref()
             .map(|s| s == "String")
             .unwrap_or(false);
+        let ret_is_float = cell
+            .returns
+            .as_deref()
+            .map(|s| s == "Float")
+            .unwrap_or(false);
         lowered.functions.push(JitLoweredFunction {
             name: cell.name.clone(),
             func_id,
             param_count: cell.params.len(),
             returns_string: ret_is_string,
+            returns_float: ret_is_float,
         });
     }
 
@@ -1545,6 +1601,79 @@ mod tests {
         assert_eq!(engine.execute_jit_unary("choose", 5).unwrap(), 100);
         assert_eq!(engine.execute_jit_unary("choose", -1).unwrap(), 50);
         assert_eq!(engine.execute_jit_unary("choose", 0).unwrap(), 50);
+    }
+
+    #[test]
+    fn jit_opcode_pow_int() {
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "pow_int".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![],
+            instructions: vec![
+                Instruction::abc(OpCode::LoadInt, 0, 2, 0),
+                Instruction::abc(OpCode::LoadInt, 1, 10, 0),
+                Instruction::abc(OpCode::Pow, 2, 0, 1),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let mut engine = JitEngine::new(CodegenSettings::default(), 0);
+        engine.compile_module(&lir).expect("compile");
+
+        assert_eq!(engine.execute_jit_nullary("pow_int").unwrap(), 1024);
+    }
+
+    #[test]
+    fn jit_opcode_pow_float() {
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "pow_float".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 3,
+            constants: vec![Constant::Float(3.0), Constant::Float(2.0)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Pow, 2, 0, 1),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let mut engine = JitEngine::new(CodegenSettings::default(), 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("pow_float").expect("execute");
+        let result = f64::from_bits(raw as u64);
+        assert!((result - 9.0).abs() < 1e-10, "expected 9.0, got {result}");
+    }
+
+    #[test]
+    fn jit_opcode_mod_float() {
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "mod_float".to_string(),
+            params: Vec::new(),
+            returns: Some("Float".to_string()),
+            registers: 3,
+            constants: vec![Constant::Float(10.0), Constant::Float(3.0)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Mod, 2, 0, 1),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        }]);
+
+        let mut engine = JitEngine::new(CodegenSettings::default(), 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine.execute_jit_nullary("mod_float").expect("execute");
+        let result = f64::from_bits(raw as u64);
+        assert!((result - 1.0).abs() < 1e-10, "expected 1.0, got {result}");
     }
 
     #[test]

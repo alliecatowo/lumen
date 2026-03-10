@@ -15,7 +15,7 @@ use cranelift_codegen::Context;
 use cranelift_frontend::FunctionBuilderContext;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use lumen_core::lir::{LirCell, LirModule, OpCode};
 
@@ -374,6 +374,38 @@ impl JitEngine {
     /// If a cell is already cached, the cache entry is preserved (with a
     /// cache-hit bump).
     pub fn compile_module(&mut self, module: &LirModule) -> Result<(), JitError> {
+        self.compile_selected_cells(module, None)
+    }
+
+    /// Compile only `cell_name` and the cells it can directly or transitively
+    /// call. This keeps hot-path compilation focused while still ensuring that
+    /// cross-cell calls from the hot cell remain resolvable from native code.
+    pub fn compile_hot(&mut self, cell_name: &str, module: &LirModule) -> Result<(), JitError> {
+        // Return early if already cached.
+        if self.cache.contains_key(cell_name) {
+            self.stats.cache_hits += 1;
+            return Ok(());
+        }
+
+        let reachable = collect_reachable_cells(module, cell_name)
+            .ok_or_else(|| JitError::CellNotFound(cell_name.to_string()))?;
+        self.compile_selected_cells(module, Some(&reachable))?;
+
+        if !self.cache.contains_key(cell_name) {
+            return Err(JitError::CellNotFound(cell_name.to_string()));
+        }
+
+        // Reset the profile counter so we don't re-trigger immediately.
+        self.profile.reset(cell_name);
+
+        Ok(())
+    }
+
+    fn compile_selected_cells(
+        &mut self,
+        module: &LirModule,
+        selected_cells: Option<&HashSet<String>>,
+    ) -> Result<(), JitError> {
         // Create a new JIT module for this compilation batch.
         // Enable Cranelift's `speed` optimization level so the generated
         // native code is competitive with ahead-of-time compilers. Without
@@ -392,7 +424,7 @@ impl JitEngine {
         let pointer_type = jit_module.isa().pointer_type();
 
         // Lower all cells into the JIT module.
-        let lowered = lower_module_jit(&mut jit_module, module, pointer_type)?;
+        let lowered = lower_module_jit(&mut jit_module, module, pointer_type, selected_cells)?;
 
         // Finalize all definitions so we can retrieve function pointers.
         jit_module
@@ -419,32 +451,6 @@ impl JitEngine {
 
         // Retain optimized cells so string constant pointers stay valid.
         self._retained_cells = lowered._retained_cells;
-
-        Ok(())
-    }
-
-    /// Compile a single cell from the given `LirModule` to native code via
-    /// Cranelift JIT. The compiled function pointer is stored in the cache.
-    ///
-    /// If the cell is already cached, returns Ok immediately (with a
-    /// cache-hit bump).
-    pub fn compile_hot(&mut self, cell_name: &str, module: &LirModule) -> Result<(), JitError> {
-        // Return early if already cached.
-        if self.cache.contains_key(cell_name) {
-            self.stats.cache_hits += 1;
-            return Ok(());
-        }
-
-        // Compile the entire module (all cells) since cross-cell calls need
-        // all functions present.
-        self.compile_module(module)?;
-
-        if !self.cache.contains_key(cell_name) {
-            return Err(JitError::CellNotFound(cell_name.to_string()));
-        }
-
-        // Reset the profile counter so we don't re-trigger immediately.
-        self.profile.reset(cell_name);
 
         Ok(())
     }
@@ -685,6 +691,7 @@ fn lower_module_jit(
     module: &mut JITModule,
     lir: &LirModule,
     pointer_type: ClifType,
+    selected_cells: Option<&HashSet<String>>,
 ) -> Result<JitLoweredModule, CodegenError> {
     let mut fb_ctx = FunctionBuilderContext::new();
 
@@ -692,7 +699,12 @@ fn lower_module_jit(
     let compilable_cells: Vec<&LirCell> = lir
         .cells
         .iter()
-        .filter(|c| is_cell_jit_compilable(c))
+        .filter(|c| {
+            selected_cells
+                .map(|names| names.contains(&c.name))
+                .unwrap_or(true)
+                && is_cell_jit_compilable(c)
+        })
         .collect();
 
     if compilable_cells.is_empty() {
@@ -782,6 +794,67 @@ fn lower_module_jit(
 
     lowered._retained_cells = retained_cells;
     Ok(lowered)
+}
+
+fn collect_reachable_cells(module: &LirModule, root: &str) -> Option<HashSet<String>> {
+    let root_cell = module.cells.iter().find(|cell| cell.name == root)?;
+    let cell_map: HashMap<&str, &LirCell> =
+        module.cells.iter().map(|cell| (cell.name.as_str(), cell)).collect();
+
+    let mut reachable = HashSet::new();
+    let mut queue = VecDeque::new();
+    reachable.insert(root_cell.name.clone());
+    queue.push_back(root_cell.name.clone());
+
+    while let Some(cell_name) = queue.pop_front() {
+        let Some(cell) = cell_map.get(cell_name.as_str()).copied() else {
+            continue;
+        };
+
+        for callee in collect_direct_callees(cell) {
+            if cell_map.contains_key(callee.as_str()) && reachable.insert(callee.clone()) {
+                queue.push_back(callee);
+            }
+        }
+    }
+
+    Some(reachable)
+}
+
+fn collect_direct_callees(cell: &LirCell) -> HashSet<String> {
+    let mut callees = HashSet::new();
+    for (pc, inst) in cell.instructions.iter().enumerate() {
+        if matches!(inst.op, OpCode::Call | OpCode::TailCall) {
+            if let Some(name) = find_callee_name(cell, &cell.instructions, pc, inst.a) {
+                callees.insert(name);
+            }
+        }
+    }
+    callees
+}
+
+fn find_callee_name(
+    cell: &LirCell,
+    instructions: &[lumen_core::lir::Instruction],
+    call_pc: usize,
+    base_reg: u8,
+) -> Option<String> {
+    for i in (0..call_pc).rev() {
+        let inst = &instructions[i];
+        match inst.op {
+            OpCode::LoadK if inst.a == base_reg => {
+                let bx = inst.bx() as usize;
+                if let Some(lumen_core::lir::Constant::String(name)) = cell.constants.get(bx) {
+                    return Some(name.clone());
+                }
+            }
+            OpCode::Move | OpCode::MoveOwn if inst.a == base_reg => {
+                return find_callee_name(cell, instructions, i, inst.b);
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -1281,6 +1354,134 @@ mod tests {
         engine.execute_jit_nullary("answer").expect("execute");
         let s3 = engine.stats();
         assert_eq!(s3.executions, 1);
+    }
+
+    #[test]
+    fn jit_compile_hot_limits_to_reachable_subgraph() {
+        let root = LirCell {
+            name: "root".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 4,
+            constants: vec![Constant::String("child".to_string()), Constant::Int(21)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Call, 0, 1, 1),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+        let child = LirCell {
+            name: "child".to_string(),
+            params: vec![LirParam {
+                name: "x".to_string(),
+                ty: "Int".to_string(),
+                register: 0,
+                variadic: false,
+            }],
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![Constant::Int(2)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 1, 0),
+                Instruction::abc(OpCode::Mul, 2, 0, 1),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+        let unrelated = LirCell {
+            name: "unrelated".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 2,
+            constants: vec![Constant::Int(99)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+        let lir = make_module_with_cells(vec![root, child, unrelated]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_hot("root", &lir).expect("compile reachable hot path");
+
+        assert!(engine.is_compiled("root"));
+        assert!(engine.is_compiled("child"));
+        assert!(
+            !engine.is_compiled("unrelated"),
+            "compile_hot should not eagerly compile unrelated cells"
+        );
+    }
+
+    #[test]
+    fn jit_compile_hot_traverses_transitive_callees() {
+        let root = LirCell {
+            name: "root".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 4,
+            constants: vec![Constant::String("mid".to_string()), Constant::Int(21)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Call, 0, 1, 1),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+        let mid = LirCell {
+            name: "mid".to_string(),
+            params: vec![LirParam {
+                name: "x".to_string(),
+                ty: "Int".to_string(),
+                register: 0,
+                variadic: false,
+            }],
+            returns: Some("Int".to_string()),
+            registers: 4,
+            constants: vec![Constant::String("leaf".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 1, 0),
+                Instruction::abc(OpCode::Move, 2, 0, 0),
+                Instruction::abc(OpCode::Call, 1, 1, 1),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+        let leaf = LirCell {
+            name: "leaf".to_string(),
+            params: vec![LirParam {
+                name: "x".to_string(),
+                ty: "Int".to_string(),
+                register: 0,
+                variadic: false,
+            }],
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![Constant::Int(1)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 1, 0),
+                Instruction::abc(OpCode::Add, 2, 0, 1),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+        let lir = make_module_with_cells(vec![root, mid, leaf]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_hot("root", &lir).expect("compile transitive hot path");
+
+        assert!(engine.is_compiled("root"));
+        assert!(engine.is_compiled("mid"));
+        assert!(engine.is_compiled("leaf"));
+        assert_eq!(
+            engine.execute_jit_nullary("root").expect("execute root"),
+            22
+        );
     }
 
     #[test]

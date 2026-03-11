@@ -80,6 +80,9 @@ pub struct JitTier {
     call_counts: Vec<u64>,
     /// Per-cell eligibility cache.
     eligibility: Vec<CellEligibility>,
+    /// Roots that have crossed the hot threshold and must remain in the
+    /// rebuilt engine when new hot cells are compiled.
+    hot_roots: HashSet<usize>,
     /// Set of cell indices that have been compiled.
     compiled: HashSet<usize>,
     /// Configuration.
@@ -110,6 +113,7 @@ impl JitTier {
         Self {
             call_counts: Vec::new(),
             eligibility: Vec::new(),
+            hot_roots: HashSet::new(),
             compiled: HashSet::new(),
             config,
             #[cfg(feature = "jit")]
@@ -131,6 +135,7 @@ impl JitTier {
     pub fn init_for_module(&mut self, num_cells: usize) {
         self.call_counts.resize(num_cells, 0);
         self.eligibility.resize(num_cells, CellEligibility::Unknown);
+        self.hot_roots.clear();
         self.compiled.clear();
         self.stats = JitTierStats::default();
     }
@@ -213,21 +218,32 @@ impl JitTier {
             // Create a new engine each time (Cranelift JITModule doesn't support
             // incremental addition of functions after finalize_definitions).
             let mut engine = JitEngine::new(settings, 0);
-            let Some(cell_name) = module.cells.get(_cell_idx).map(|cell| cell.name.as_str()) else {
+            let Some(_) = module.cells.get(_cell_idx) else {
                 self.stats.compile_failures += 1;
                 return false;
             };
 
-            match engine.compile_hot(cell_name, module) {
+            let mut hot_roots = self.hot_roots.iter().copied().collect::<Vec<_>>();
+            hot_roots.push(_cell_idx);
+            hot_roots.sort_unstable();
+            hot_roots.dedup();
+            let hot_root_names = hot_roots
+                .iter()
+                .map(|idx| module.cells[*idx].name.clone())
+                .collect::<Vec<_>>();
+
+            match engine.compile_hot_roots(&hot_root_names, module) {
                 Ok(()) => {
+                    self.hot_roots = hot_roots.into_iter().collect();
+                    self.compiled.clear();
                     // Only mark cells that were actually compiled for the hot
                     // cell's dependency closure.
                     for (idx, cell) in module.cells.iter().enumerate() {
                         if engine.is_compiled(&cell.name) {
                             self.compiled.insert(idx);
-                            self.stats.cells_compiled += 1;
                         }
                     }
+                    self.stats.cells_compiled = self.compiled.len() as u64;
                     self.engine = Some(engine);
                     true
                 }
@@ -413,5 +429,79 @@ mod tests {
         let stats = tier.tier_stats();
         assert_eq!(stats.cells_compiled, 2);
         assert_eq!(stats.compile_failures, 0);
+    }
+
+    #[test]
+    fn try_compile_preserves_existing_hot_roots_across_engine_rebuilds() {
+        let left_root = LirCell {
+            name: "left_root".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![Constant::String("left_leaf".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Call, 0, 0, 1),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+        let left_leaf = LirCell {
+            name: "left_leaf".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 2,
+            constants: vec![Constant::Int(11)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+        let right_root = LirCell {
+            name: "right_root".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![Constant::String("right_leaf".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Call, 0, 0, 1),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+        let right_leaf = LirCell {
+            name: "right_leaf".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 2,
+            constants: vec![Constant::Int(29)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+        let module = make_module_with_cells(vec![left_root, left_leaf, right_root, right_leaf]);
+
+        let mut tier = JitTier::new(JitTierConfig {
+            hot_threshold: 0,
+            opt_level: JitOptLevel::Speed,
+            enabled: true,
+        });
+        tier.init_for_module(module.cells.len());
+
+        assert!(tier.try_compile(0, &module));
+        assert_eq!(tier.execute("left_root", &[]), Some(11));
+
+        assert!(tier.try_compile(2, &module));
+        assert_eq!(tier.execute("left_root", &[]), Some(11));
+        assert_eq!(tier.execute("right_root", &[]), Some(29));
+        assert!(tier.is_compiled(0));
+        assert!(tier.is_compiled(1));
+        assert!(tier.is_compiled(2));
+        assert!(tier.is_compiled(3));
+        assert_eq!(tier.tier_stats().cells_compiled, 4);
     }
 }

@@ -428,6 +428,35 @@ impl JitEngine {
         Ok(())
     }
 
+    /// Compile the union of multiple hot roots and their reachable callees.
+    pub fn compile_hot_roots(
+        &mut self,
+        cell_names: &[String],
+        module: &LirModule,
+    ) -> Result<(), JitError> {
+        if cell_names.is_empty() {
+            return Ok(());
+        }
+
+        let mut reachable = HashSet::new();
+        for cell_name in cell_names {
+            let closure = collect_reachable_cells(module, cell_name)
+                .ok_or_else(|| JitError::CellNotFound(cell_name.clone()))?;
+            reachable.extend(closure);
+        }
+
+        self.compile_selected_cells(module, Some(&reachable))?;
+
+        for cell_name in cell_names {
+            if !self.cache.contains_key(cell_name) {
+                return Err(JitError::CellNotFound(cell_name.clone()));
+            }
+            self.profile.reset(cell_name);
+        }
+
+        Ok(())
+    }
+
     fn compile_selected_cells(
         &mut self,
         module: &LirModule,
@@ -460,6 +489,7 @@ impl JitEngine {
             .map_err(|e| JitError::ModuleError(format!("finalize_definitions failed: {e}")))?;
 
         // Retrieve and cache function pointers.
+        self.cache.clear();
         for func in &lowered.functions {
             let fn_ptr = jit_module.get_finalized_function(func.func_id);
             self.cache.insert(
@@ -854,8 +884,11 @@ fn lower_module_jit(
 
 fn collect_reachable_cells(module: &LirModule, root: &str) -> Option<HashSet<String>> {
     let root_cell = module.cells.iter().find(|cell| cell.name == root)?;
-    let cell_map: HashMap<&str, &LirCell> =
-        module.cells.iter().map(|cell| (cell.name.as_str(), cell)).collect();
+    let cell_map: HashMap<&str, &LirCell> = module
+        .cells
+        .iter()
+        .map(|cell| (cell.name.as_str(), cell))
+        .collect();
 
     let mut reachable = HashSet::new();
     let mut queue = VecDeque::new();
@@ -1462,7 +1495,9 @@ mod tests {
 
         let settings = CodegenSettings::default();
         let mut engine = JitEngine::new(settings, 0);
-        engine.compile_hot("root", &lir).expect("compile reachable hot path");
+        engine
+            .compile_hot("root", &lir)
+            .expect("compile reachable hot path");
 
         assert!(engine.is_compiled("root"));
         assert!(engine.is_compiled("child"));
@@ -1529,7 +1564,9 @@ mod tests {
 
         let settings = CodegenSettings::default();
         let mut engine = JitEngine::new(settings, 0);
-        engine.compile_hot("root", &lir).expect("compile transitive hot path");
+        engine
+            .compile_hot("root", &lir)
+            .expect("compile transitive hot path");
 
         assert!(engine.is_compiled("root"));
         assert!(engine.is_compiled("mid"));
@@ -1537,6 +1574,96 @@ mod tests {
         assert_eq!(
             engine.execute_jit_nullary("root").expect("execute root"),
             22
+        );
+    }
+
+    #[test]
+    fn jit_compile_hot_roots_preserves_multiple_independent_hot_paths() {
+        let lir = LirModule {
+            version: "1.0.0".to_string(),
+            doc_hash: "test".to_string(),
+            strings: Vec::new(),
+            types: Vec::new(),
+            cells: vec![
+                LirCell {
+                    name: "left_root".to_string(),
+                    params: Vec::new(),
+                    returns: Some("Int".to_string()),
+                    registers: 3,
+                    constants: vec![Constant::String("left_leaf".to_string())],
+                    instructions: vec![
+                        Instruction::abx(OpCode::LoadK, 0, 0),
+                        Instruction::abc(OpCode::Call, 0, 0, 1),
+                        Instruction::abc(OpCode::Return, 0, 1, 0),
+                    ],
+                    effect_handler_metas: Vec::new(),
+                },
+                LirCell {
+                    name: "left_leaf".to_string(),
+                    params: Vec::new(),
+                    returns: Some("Int".to_string()),
+                    registers: 2,
+                    constants: vec![Constant::Int(11)],
+                    instructions: vec![
+                        Instruction::abx(OpCode::LoadK, 0, 0),
+                        Instruction::abc(OpCode::Return, 0, 1, 0),
+                    ],
+                    effect_handler_metas: Vec::new(),
+                },
+                LirCell {
+                    name: "right_root".to_string(),
+                    params: Vec::new(),
+                    returns: Some("Int".to_string()),
+                    registers: 3,
+                    constants: vec![Constant::String("right_leaf".to_string())],
+                    instructions: vec![
+                        Instruction::abx(OpCode::LoadK, 0, 0),
+                        Instruction::abc(OpCode::Call, 0, 0, 1),
+                        Instruction::abc(OpCode::Return, 0, 1, 0),
+                    ],
+                    effect_handler_metas: Vec::new(),
+                },
+                LirCell {
+                    name: "right_leaf".to_string(),
+                    params: Vec::new(),
+                    returns: Some("Int".to_string()),
+                    registers: 2,
+                    constants: vec![Constant::Int(29)],
+                    instructions: vec![
+                        Instruction::abx(OpCode::LoadK, 0, 0),
+                        Instruction::abc(OpCode::Return, 0, 1, 0),
+                    ],
+                    effect_handler_metas: Vec::new(),
+                },
+            ],
+            tools: Vec::new(),
+            policies: Vec::new(),
+            agents: Vec::new(),
+            addons: Vec::new(),
+            effects: Vec::new(),
+            effect_binds: Vec::new(),
+            handlers: Vec::new(),
+        };
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine
+            .compile_hot_roots(&["left_root".to_string(), "right_root".to_string()], &lir)
+            .expect("compile multiple hot roots");
+
+        assert!(engine.is_compiled("left_root"));
+        assert!(engine.is_compiled("left_leaf"));
+        assert!(engine.is_compiled("right_root"));
+        assert!(engine.is_compiled("right_leaf"));
+        assert_eq!(
+            engine.execute_jit_nullary("left_root").expect("left root"),
+            11
+        );
+        assert_eq!(
+            engine
+                .execute_jit_nullary("right_root")
+                .expect("right root"),
+            29
         );
     }
 
@@ -1791,7 +1918,7 @@ mod tests {
                 instructions: vec![
                     Instruction::abc(OpCode::LoadInt, 0, 0, 0), // r0 = 0 (stub record ptr)
                     Instruction::abc(OpCode::GetField, 1, 0, 0), // r1 = r0.field[0]
-                    Instruction::abc(OpCode::Return, 1, 1, 0), // return r1
+                    Instruction::abc(OpCode::Return, 1, 1, 0),  // return r1
                 ],
                 effect_handler_metas: Vec::new(),
             },
@@ -1805,7 +1932,7 @@ mod tests {
                     Instruction::abc(OpCode::LoadInt, 0, 0, 0), // r0 = 0 (stub record ptr)
                     Instruction::abc(OpCode::LoadInt, 1, 42, 0), // r1 = 42
                     Instruction::abc(OpCode::SetField, 0, 0, 1), // r0.field[0] = r1
-                    Instruction::abc(OpCode::Return, 1, 1, 0), // return r1
+                    Instruction::abc(OpCode::Return, 1, 1, 0),  // return r1
                 ],
                 effect_handler_metas: Vec::new(),
             },

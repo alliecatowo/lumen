@@ -3,6 +3,7 @@
 //! Standalone binary for running compiler and VM benchmarks with
 //! JSON/CSV output and peak memory tracking.
 
+use lumen_bench::{compile_vm_benchmark, execute_main, load_vm_benchmark_source, VM_BENCHMARKS};
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
@@ -134,6 +135,18 @@ fn bench_compile(source: &str, iterations: u32) -> Duration {
     total
 }
 
+/// Run a VM benchmark program via the interpreter or tiered JIT.
+fn bench_vm(source: &str, iterations: u32, enable_jit: bool) -> Duration {
+    let module = compile_vm_benchmark(source).expect("compile VM benchmark source");
+    let mut total = Duration::ZERO;
+    for _ in 0..iterations {
+        let start = Instant::now();
+        let _ = execute_main(&module, enable_jit, 0).expect("execute VM benchmark");
+        total += start.elapsed();
+    }
+    total
+}
+
 /// Run a single benchmark and produce a BenchResult.
 fn run_bench(
     name: &str,
@@ -170,6 +183,35 @@ fn run_bench(
     }
 }
 
+fn run_vm_bench(
+    name: &str,
+    file_name: &str,
+    source: &str,
+    iterations: u32,
+    enable_jit: bool,
+) -> BenchResult {
+    let lines = count_lines(source);
+    let bytes = source.len();
+
+    bench_vm(source, 1, enable_jit);
+
+    let total = bench_vm(source, iterations, enable_jit);
+    let rss_after = peak_rss_kb();
+    let avg_duration = total.as_secs_f64() / iterations as f64;
+
+    BenchResult {
+        name: name.to_string(),
+        corpus_file: file_name.to_string(),
+        source_lines: lines,
+        source_bytes: bytes,
+        duration_ms: avg_duration * 1000.0,
+        throughput_lines_per_sec: lines as f64 / avg_duration,
+        throughput_bytes_per_sec: bytes as f64 / avg_duration,
+        peak_rss_kb: rss_after,
+        iterations,
+    }
+}
+
 fn print_csv_header() {
     println!("name,corpus_file,source_lines,source_bytes,duration_ms,lines_per_sec,bytes_per_sec,peak_rss_kb,iterations");
 }
@@ -192,7 +234,8 @@ fn print_csv_row(r: &BenchResult) {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let output_format = args.get(1).map(|s| s.as_str()).unwrap_or("text");
-    let iterations: u32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10);
+    let compiler_iterations: u32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10);
+    let vm_iterations: u32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
 
     let corpus_files = ["tiny.lm", "small.lm", "medium.lm", "large.lm", "huge.lm"];
 
@@ -208,7 +251,13 @@ fn main() {
         };
 
         // Lex benchmark
-        results.push(run_bench("lex", &filename, &source, bench_lex, iterations));
+        results.push(run_bench(
+            "lex",
+            &filename,
+            &source,
+            bench_lex,
+            compiler_iterations,
+        ));
 
         // Parse benchmark
         results.push(run_bench(
@@ -216,7 +265,7 @@ fn main() {
             &filename,
             &source,
             bench_parse,
-            iterations,
+            compiler_iterations,
         ));
 
         // Full compile benchmark
@@ -225,7 +274,37 @@ fn main() {
             &filename,
             &source,
             bench_compile,
-            iterations,
+            compiler_iterations,
+        ));
+    }
+
+    for (label, file_name, _) in VM_BENCHMARKS {
+        let source = match load_vm_benchmark_source(file_name) {
+            Ok(source) => source,
+            Err(err) => {
+                eprintln!(
+                    "Warning: VM benchmark file '{}' not found: {}",
+                    file_name, err
+                );
+                continue;
+            }
+        };
+
+        results.push(run_vm_bench(
+            &format!("vm_interpreter_{label}"),
+            file_name,
+            &source,
+            vm_iterations,
+            false,
+        ));
+
+        #[cfg(target_arch = "x86_64")]
+        results.push(run_vm_bench(
+            &format!("vm_jit_{label}"),
+            file_name,
+            &source,
+            vm_iterations,
+            true,
         ));
     }
 
@@ -241,8 +320,8 @@ fn main() {
         }
         _ => {
             // Human-readable text output
-            println!("Lumen Compiler Benchmarks");
-            println!("========================");
+            println!("Lumen Benchmarks");
+            println!("================");
             println!();
             for r in &results {
                 println!(
@@ -258,5 +337,30 @@ fn main() {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_vm_bench;
+    use lumen_bench::load_vm_benchmark_source;
+
+    #[test]
+    fn standalone_runner_records_interpreter_vm_results() {
+        let source = load_vm_benchmark_source("b_int_fib.lm").expect("load fib benchmark");
+        let result = run_vm_bench("vm_interpreter_fib", "b_int_fib.lm", &source, 1, false);
+        assert_eq!(result.name, "vm_interpreter_fib");
+        assert_eq!(result.corpus_file, "b_int_fib.lm");
+        assert!(result.duration_ms >= 0.0);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn standalone_runner_records_jit_vm_results() {
+        let source = load_vm_benchmark_source("b_int_fib.lm").expect("load fib benchmark");
+        let result = run_vm_bench("vm_jit_fib", "b_int_fib.lm", &source, 1, true);
+        assert_eq!(result.name, "vm_jit_fib");
+        assert_eq!(result.corpus_file, "b_int_fib.lm");
+        assert!(result.duration_ms >= 0.0);
     }
 }

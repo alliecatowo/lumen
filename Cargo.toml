@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "rust/lumen-bench",
     "rust/lumen-core",
     "rust/lumen-compiler",
     "rust/lumen-rt",

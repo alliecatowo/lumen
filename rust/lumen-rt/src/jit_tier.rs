@@ -213,11 +213,15 @@ impl JitTier {
             // Create a new engine each time (Cranelift JITModule doesn't support
             // incremental addition of functions after finalize_definitions).
             let mut engine = JitEngine::new(settings, 0);
-            match engine.compile_module(module) {
+            let Some(cell_name) = module.cells.get(_cell_idx).map(|cell| cell.name.as_str()) else {
+                self.stats.compile_failures += 1;
+                return false;
+            };
+
+            match engine.compile_hot(cell_name, module) {
                 Ok(()) => {
-                    // Only mark cells that were actually compiled by the engine.
-                    // Cells with unsupported opcodes are silently skipped by
-                    // compile_module and won't be in the engine's cache.
+                    // Only mark cells that were actually compiled for the hot
+                    // cell's dependency closure.
                     for (idx, cell) in module.cells.iter().enumerate() {
                         if engine.is_compiled(&cell.name) {
                             self.compiled.insert(idx);
@@ -319,4 +323,95 @@ pub(crate) unsafe fn take_jit_string(ptr: i64) -> String {
 #[cfg(not(feature = "jit"))]
 pub(crate) unsafe fn take_jit_string(_ptr: i64) -> String {
     unreachable!("jit feature is not enabled")
+}
+
+#[cfg(all(test, feature = "jit", target_arch = "x86_64"))]
+mod tests {
+    use super::{JitOptLevel, JitTier, JitTierConfig};
+    use lumen_core::lir::{Constant, Instruction, LirCell, LirModule, LirParam, OpCode};
+
+    fn make_module_with_cells(cells: Vec<LirCell>) -> LirModule {
+        LirModule {
+            version: "1.0.0".to_string(),
+            doc_hash: "test".to_string(),
+            strings: Vec::new(),
+            types: Vec::new(),
+            cells,
+            tools: Vec::new(),
+            policies: Vec::new(),
+            agents: Vec::new(),
+            addons: Vec::new(),
+            effects: Vec::new(),
+            effect_binds: Vec::new(),
+            handlers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn try_compile_marks_only_hot_cell_dependency_closure() {
+        let root = LirCell {
+            name: "root".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 4,
+            constants: vec![Constant::String("child".to_string()), Constant::Int(21)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abx(OpCode::LoadK, 1, 1),
+                Instruction::abc(OpCode::Call, 0, 1, 1),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+        let child = LirCell {
+            name: "child".to_string(),
+            params: vec![LirParam {
+                name: "x".to_string(),
+                ty: "Int".to_string(),
+                register: 0,
+                variadic: false,
+            }],
+            returns: Some("Int".to_string()),
+            registers: 3,
+            constants: vec![Constant::Int(2)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 1, 0),
+                Instruction::abc(OpCode::Mul, 2, 0, 1),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+        let unrelated = LirCell {
+            name: "unrelated".to_string(),
+            params: Vec::new(),
+            returns: Some("Int".to_string()),
+            registers: 2,
+            constants: vec![Constant::Int(99)],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Return, 0, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+        };
+        let module = make_module_with_cells(vec![root, child, unrelated]);
+
+        let mut tier = JitTier::new(JitTierConfig {
+            hot_threshold: 0,
+            opt_level: JitOptLevel::Speed,
+            enabled: true,
+        });
+        tier.init_for_module(module.cells.len());
+
+        assert!(tier.try_compile(0, &module));
+        assert!(tier.is_compiled(0));
+        assert!(tier.is_compiled(1));
+        assert!(
+            !tier.is_compiled(2),
+            "runtime tier should not mark unrelated cells as compiled"
+        );
+
+        let stats = tier.tier_stats();
+        assert_eq!(stats.cells_compiled, 2);
+        assert_eq!(stats.compile_failures, 0);
+    }
 }

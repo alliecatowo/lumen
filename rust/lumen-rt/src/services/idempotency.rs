@@ -27,6 +27,8 @@
 //! assert!(!executed);
 //! ```
 
+#[cfg(not(target_arch = "wasm32"))]
+use bincode;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -37,8 +39,10 @@ use std::collections::HashMap;
 /// Errors from idempotency store operations.
 #[derive(Debug, thiserror::Error)]
 pub enum IdempotencyError {
+    #[cfg(not(target_arch = "wasm32"))]
     #[error("serialization failed: {0}")]
     Serialize(String),
+    #[cfg(not(target_arch = "wasm32"))]
     #[error("deserialization failed: {0}")]
     Deserialize(String),
 }
@@ -65,6 +69,7 @@ impl IdempotencyStore {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Check whether a result is cached for `key`. If so, deserialize and
     /// return it. Otherwise, execute `f()`, serialize and cache the result,
     /// then return it.
@@ -121,11 +126,13 @@ impl IdempotencyStore {
         self.entries.keys().map(|s| s.as_str())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Get the raw cached bytes for a key (for debugging / inspection).
     pub fn get_raw(&self, key: &str) -> Option<&[u8]> {
         self.entries.get(key).map(|v| v.as_slice())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Insert a pre-serialized result directly (useful when hydrating from
     /// a replay log or external source).
     pub fn insert_raw(&mut self, key: String, data: Vec<u8>) {
@@ -143,7 +150,7 @@ impl Default for IdempotencyStore {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

@@ -5,25 +5,31 @@
 //! [`Receiver`] pair is created by [`bounded()`] or [`unbounded()`], and the
 //! channel can be closed by dropping all senders or calling [`Sender::close`].
 
+#[cfg(not(target_arch = "wasm32"))]
 use crossbeam_channel::{self as cb};
+#[cfg(not(target_arch = "wasm32"))]
 use std::fmt;
 
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Error returned when sending on a closed channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendError<T>(pub T);
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<T> fmt::Display for SendError<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "send failed: channel is closed")
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<T: fmt::Debug> std::error::Error for SendError<T> {}
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Error returned by [`Receiver::try_recv`] when the channel is empty or
 /// closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +40,7 @@ pub enum TryRecvError {
     Disconnected,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl fmt::Display for TryRecvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -43,34 +50,35 @@ impl fmt::Display for TryRecvError {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl std::error::Error for TryRecvError {}
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Error returned by [`Receiver::recv`] when the channel is closed and
 /// drained.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecvError;
 
+#[cfg(not(target_arch = "wasm32"))]
 impl fmt::Display for RecvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "recv failed: channel is closed and empty")
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl std::error::Error for RecvError {}
 
 // ---------------------------------------------------------------------------
 // Sender
 // ---------------------------------------------------------------------------
 
-/// The sending half of a channel.
-///
-/// Cloning a [`Sender`] creates an additional handle to the same underlying
-/// channel; the channel is only fully closed when *all* senders are dropped
-/// (or [`close`](Sender::close) is called on any of them).
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Sender<T> {
     inner: cb::Sender<T>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<T> Clone for Sender<T> {
     fn clone(&self) -> Self {
         Self {
@@ -79,12 +87,14 @@ impl<T> Clone for Sender<T> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<T> fmt::Debug for Sender<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Sender").finish_non_exhaustive()
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<T> Sender<T> {
     /// Send a value into the channel.
     ///
@@ -127,14 +137,12 @@ impl<T> Sender<T> {
 // Receiver
 // ---------------------------------------------------------------------------
 
-/// The receiving half of a channel.
-///
-/// Cloning a [`Receiver`] creates an additional consumer; each message is
-/// delivered to exactly one receiver (MPMC semantics from crossbeam).
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Receiver<T> {
     pub(crate) inner: cb::Receiver<T>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<T> Clone for Receiver<T> {
     fn clone(&self) -> Self {
         Self {
@@ -143,12 +151,14 @@ impl<T> Clone for Receiver<T> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<T> fmt::Debug for Receiver<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Receiver").finish_non_exhaustive()
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<T> Receiver<T> {
     /// Block until a message is available or the channel is closed.
     pub fn recv(&self) -> Result<T, RecvError> {
@@ -178,6 +188,7 @@ impl<T> Receiver<T> {
 // Constructors
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Create a bounded channel with the given capacity.
 ///
 /// The sender will block when the buffer is full.
@@ -186,6 +197,7 @@ pub fn bounded<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
     (Sender { inner: tx }, Receiver { inner: rx })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Create an unbounded channel.
 ///
 /// The sender never blocks (memory is the only limit).
@@ -198,7 +210,7 @@ pub fn unbounded<T>() -> (Sender<T>, Receiver<T>) {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use std::thread;

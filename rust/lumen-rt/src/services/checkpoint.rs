@@ -7,6 +7,7 @@
 //! [`CheckpointEngine`] wraps a store and provides higher-level operations such
 //! as `latest()` and `prune()`.
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::services::snapshot::{Snapshot, SnapshotError, SnapshotId};
 use std::fs;
 use std::path::PathBuf;

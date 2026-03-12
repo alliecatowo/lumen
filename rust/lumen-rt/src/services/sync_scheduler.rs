@@ -19,6 +19,7 @@
 
 use crate::services::injection::InjectionQueue;
 use crate::services::process::{ProcessControlBlock, ProcessId, ProcessStatus};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::services::scheduler::Task;
 
 use std::collections::VecDeque;
@@ -81,7 +82,8 @@ impl SyncScheduler {
     /// Passing `0` defaults to 1 (at least one worker is required).
     pub fn new(num_workers: usize) -> Self {
         let num_workers = num_workers.max(1);
-        let local_queues = (0..num_workers).map(|_| VecDeque::new()).collect();
+        let local_queues: Vec<VecDeque<Task>> =
+            (0..num_workers).map(|_| VecDeque::new()).collect();
         Self {
             num_workers,
             local_queues,

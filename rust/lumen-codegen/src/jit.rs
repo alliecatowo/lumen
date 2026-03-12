@@ -1414,7 +1414,7 @@ mod tests {
             registers: 3,
             constants: vec![],
             instructions: vec![
-                Instruction::abx(OpCode::LoadInt, 0, 0), // r0 = 0 (record ptr stub)
+                Instruction::abc(OpCode::LoadInt, 0, 0, 0), // r0 = 0 (record ptr stub)
                 Instruction::abc(OpCode::GetField, 1, 0, 0), // r1 = r0.field[0]
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
@@ -1428,8 +1428,8 @@ mod tests {
             registers: 3,
             constants: vec![],
             instructions: vec![
-                Instruction::abx(OpCode::LoadInt, 0, 0), // r0 = 0 (record ptr stub)
-                Instruction::abx(OpCode::LoadInt, 1, 42), // r1 = 42
+                Instruction::abc(OpCode::LoadInt, 0, 0, 0), // r0 = 0 (record ptr stub)
+                Instruction::abc(OpCode::LoadInt, 1, 42, 0), // r1 = 42
                 Instruction::abc(OpCode::SetField, 0, 0, 1), // r0.field[0] = r1
                 Instruction::abc(OpCode::Return, 1, 1, 0),
             ],
@@ -1459,7 +1459,7 @@ mod tests {
                 registers: 3,
                 constants: vec![],
                 instructions: vec![
-                    Instruction::abx(OpCode::LoadInt, 0, 0), // r0 = 0 (stub record ptr)
+                    Instruction::abc(OpCode::LoadInt, 0, 0, 0), // r0 = 0 (stub record ptr)
                     Instruction::abc(OpCode::GetField, 1, 0, 0), // r1 = r0.field[0]
                     Instruction::abc(OpCode::Return, 1, 1, 0), // return r1
                 ],
@@ -1472,8 +1472,8 @@ mod tests {
                 registers: 3,
                 constants: vec![],
                 instructions: vec![
-                    Instruction::abx(OpCode::LoadInt, 0, 0), // r0 = 0 (stub record ptr)
-                    Instruction::abx(OpCode::LoadInt, 1, 42), // r1 = 42
+                    Instruction::abc(OpCode::LoadInt, 0, 0, 0), // r0 = 0 (stub record ptr)
+                    Instruction::abc(OpCode::LoadInt, 1, 42, 0), // r1 = 42
                     Instruction::abc(OpCode::SetField, 0, 0, 1), // r0.field[0] = r1
                     Instruction::abc(OpCode::Return, 1, 1, 0), // return r1
                 ],

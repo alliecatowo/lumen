@@ -8,9 +8,12 @@ pub mod actor;
 pub mod cache;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod channel;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod checkpoint;
 pub mod crypto;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod debugger;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod durability;
 pub mod effect_budget;
 pub mod error_context;
@@ -43,6 +46,7 @@ pub mod select;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod snapshot;
 pub mod supervisor;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod sync_scheduler;
 pub mod tools;
 pub mod trace;

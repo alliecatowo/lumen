@@ -11,6 +11,53 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+// ---------------------------------------------------------------------------
+// Exit codes
+// ---------------------------------------------------------------------------
+/// Exit code when any error occurs (compile error, IO error, etc.).
+const EXIT_ERROR: i32 = 1;
+/// Exit code when an unexpected internal panic is caught.
+const EXIT_INTERNAL_ERROR: i32 = 101;
+
+// ---------------------------------------------------------------------------
+// Panic hook — converts raw Rust panics into user-friendly messages.
+//
+// Without this, a panic prints a raw backtrace like:
+//   thread 'main' panicked at 'index out of bounds', compiler/lower.rs:342
+//
+// With this hook the user sees:
+//   ✗ Internal error: lumen encountered an unexpected error.
+//     This is a bug. Please report it at: https://github.com/alliecatowo/lumen/issues
+//     Details: index out of bounds
+// ---------------------------------------------------------------------------
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let msg = if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else {
+            "unknown internal error".to_string()
+        };
+
+        // Include location information if available (helps with bug reports).
+        let location = info
+            .location()
+            .map(|l| format!(" (at {}:{})", l.file(), l.line()))
+            .unwrap_or_default();
+
+        eprintln!(
+            "{} lumen encountered an unexpected internal error{}.",
+            red("✗ Internal error:"),
+            location
+        );
+        eprintln!("  Details: {}", msg);
+        eprintln!();
+        eprintln!("  This is a bug in lumen. Please report it at:");
+        eprintln!("  https://github.com/alliecatowo/lumen/issues");
+    }));
+}
+
 #[derive(ClapParser)]
 #[command(
     name = "lumen",
@@ -375,9 +422,31 @@ fn register_providers(
 }
 
 fn main() {
+    // Install the custom panic hook before anything else so that any unexpected
+    // internal panic shows a friendly message instead of a raw Rust backtrace.
+    install_panic_hook();
+
     let cli = Cli::parse();
 
-    match cli.command {
+    // Wrap the entire command dispatch in catch_unwind so that any panic that
+    // somehow escapes the individual command handlers is still caught here and
+    // results in a clean EXIT_INTERNAL_ERROR exit instead of an abort/signal.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        dispatch_command(cli.command)
+    }));
+
+    match result {
+        Ok(()) => {}
+        Err(_) => {
+            // The panic hook already printed the user-friendly message.
+            std::process::exit(EXIT_INTERNAL_ERROR);
+        }
+    }
+}
+
+/// Dispatch a parsed CLI command to its handler.
+fn dispatch_command(command: Commands) {
+    match command {
         Commands::Check {
             file,
             output_format,
@@ -457,7 +526,7 @@ fn cmd_lint(files: Vec<PathBuf>, strict: bool) {
                     summary.total_warnings,
                     summary.total_errors
                 );
-                std::process::exit(1);
+                std::process::exit(EXIT_ERROR);
             } else if strict {
                 println!(
                     "{} Finished in {:.2}s — {} warning(s) (strict mode)",
@@ -465,7 +534,7 @@ fn cmd_lint(files: Vec<PathBuf>, strict: bool) {
                     elapsed.as_secs_f64(),
                     summary.total_warnings
                 );
-                std::process::exit(1);
+                std::process::exit(EXIT_ERROR);
             } else {
                 println!(
                     "{} Finished in {:.2}s — {} warning(s)",
@@ -477,7 +546,7 @@ fn cmd_lint(files: Vec<PathBuf>, strict: bool) {
         }
         Err(e) => {
             eprintln!("{} {}", red("✗ Error:"), e);
-            std::process::exit(1);
+            std::process::exit(EXIT_ERROR);
         }
     }
 }
@@ -487,7 +556,7 @@ fn cmd_doc(path: &Path, format: &str, output: Option<PathBuf>) {
         Ok(()) => {}
         Err(e) => {
             eprintln!("{} {}", red("error:"), e);
-            std::process::exit(1);
+            std::process::exit(EXIT_ERROR);
         }
     }
 }
@@ -747,13 +816,26 @@ fn is_lumen_source(path: &Path) -> bool {
 
 fn read_source(path: &PathBuf) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|e| {
-        eprintln!(
-            "{} cannot read file '{}': {}",
-            red("error:"),
-            bold(&path.display().to_string()),
-            e
-        );
-        std::process::exit(1);
+        // Give a more actionable message for the common "file not found" case.
+        if e.kind() == std::io::ErrorKind::NotFound {
+            eprintln!(
+                "{} file not found: '{}'",
+                red("error:"),
+                bold(&path.display().to_string())
+            );
+            eprintln!(
+                "  hint: check the path or run {} to see available files",
+                cyan("lumen --help")
+            );
+        } else {
+            eprintln!(
+                "{} cannot read file '{}': {}",
+                red("error:"),
+                bold(&path.display().to_string()),
+                e
+            );
+        }
+        std::process::exit(EXIT_ERROR);
     })
 }
 
@@ -815,7 +897,7 @@ fn cmd_check(file: &PathBuf, output_format: &str, allow_unstable: bool) {
             output_format,
             ci_output::OutputFormat::names().join(", ")
         );
-        std::process::exit(1);
+        std::process::exit(EXIT_ERROR);
     });
 
     let source = read_source(file);
@@ -839,7 +921,7 @@ fn cmd_check(file: &PathBuf, output_format: &str, allow_unstable: bool) {
                 Err(e) => {
                     let formatted = lumen_compiler::format_error(&e, &source, &filename);
                     eprint!("{}", formatted);
-                    std::process::exit(1);
+                    std::process::exit(EXIT_ERROR);
                 }
             }
         }
@@ -877,7 +959,7 @@ fn cmd_check(file: &PathBuf, output_format: &str, allow_unstable: bool) {
             println!("{}", output);
 
             if has_failures {
-                std::process::exit(1);
+                std::process::exit(EXIT_ERROR);
             }
         }
     }
@@ -896,12 +978,12 @@ fn cmd_watch(path: &Path, interval_ms: u64) {
                 red("error:"),
                 path.display()
             );
-            std::process::exit(1);
+            std::process::exit(EXIT_ERROR);
         }
         source_files.push(path.to_path_buf());
     } else if let Err(e) = collect_lumen_sources(path, &mut source_files) {
         eprintln!("{} {}", red("error:"), e);
-        std::process::exit(1);
+        std::process::exit(EXIT_ERROR);
     }
 
     if source_files.is_empty() {
@@ -910,7 +992,7 @@ fn cmd_watch(path: &Path, interval_ms: u64) {
             red("error:"),
             path.display()
         );
-        std::process::exit(1);
+        std::process::exit(EXIT_ERROR);
     }
 
     source_files.sort();
@@ -1084,7 +1166,7 @@ fn cmd_run(
             eprintln!("{}", chain.format_with_prefix(&red("✗")));
             let formatted = lumen_compiler::format_error(&e, &source, &filename);
             eprint!("{}", formatted);
-            std::process::exit(1);
+            std::process::exit(EXIT_ERROR);
         }
     };
 
@@ -1201,7 +1283,7 @@ fn cmd_run(
             }
             let chain = error_chain::chain_from_error(&e);
             eprintln!("{}", chain.format_with_prefix(&red("✗ Error:")));
-            std::process::exit(1);
+            std::process::exit(EXIT_ERROR);
         }
     }
 }
@@ -1227,14 +1309,14 @@ fn cmd_emit(file: &PathBuf, output: Option<PathBuf>, allow_unstable: bool) {
             eprintln!("{}", chain.format_with_prefix(&red("✗")));
             let formatted = lumen_compiler::format_error(&e, &source, &filename);
             eprint!("{}", formatted);
-            std::process::exit(1);
+            std::process::exit(EXIT_ERROR);
         }
     };
 
     let json = lumen_compiler::compiler::emit::emit_json(&module).unwrap_or_else(|e| {
         let chain = error_chain::ErrorChain::new("emit failed").caused_by(e.to_string());
         eprintln!("{}", chain.format_with_prefix(&red("✗")));
-        std::process::exit(1);
+        std::process::exit(EXIT_ERROR);
     });
 
     if let Some(ref out_path) = output {
@@ -1246,7 +1328,7 @@ fn cmd_emit(file: &PathBuf, output: Option<PathBuf>, allow_unstable: bool) {
                 out_path.display(),
                 e
             );
-            std::process::exit(1);
+            std::process::exit(EXIT_ERROR);
         });
     } else {
         println!("{} LIR to stdout", status_label("Emitting"));
@@ -1265,7 +1347,7 @@ fn cmd_trace_show(run_id: &str, trace_dir: &Path, format: TraceShowFormat, verif
                     Ok(()) => println!("{} trace chain verified", green("✓")),
                     Err(msg) => {
                         eprintln!("{} {}", red("error:"), msg);
-                        std::process::exit(1);
+                        std::process::exit(EXIT_ERROR);
                     }
                 }
             }
@@ -1292,7 +1374,7 @@ fn cmd_trace_show(run_id: &str, trace_dir: &Path, format: TraceShowFormat, verif
                 path.display(),
                 e
             );
-            std::process::exit(1);
+            std::process::exit(EXIT_ERROR);
         }
     }
 }
@@ -1395,7 +1477,7 @@ fn cmd_cache_clear(cache_dir: &PathBuf) {
     if cache_dir.exists() {
         std::fs::remove_dir_all(cache_dir).unwrap_or_else(|e| {
             eprintln!("{} clearing cache: {}", red("error:"), e);
-            std::process::exit(1);
+            std::process::exit(EXIT_ERROR);
         });
         println!("{} cache cleared", green("✓"));
     } else {
@@ -1410,7 +1492,7 @@ fn cmd_cache_clear(cache_dir: &PathBuf) {
 fn cmd_fmt(files: Vec<PathBuf>, check: bool) {
     if files.is_empty() {
         eprintln!("{} no files specified", red("✗ Error:"));
-        std::process::exit(1);
+        std::process::exit(EXIT_ERROR);
     }
 
     let action = if check { "Checking" } else { "Formatting" };
@@ -1432,7 +1514,7 @@ fn cmd_fmt(files: Vec<PathBuf>, check: bool) {
                         yellow("⚠"),
                         reformatted_count
                     );
-                    std::process::exit(1);
+                    std::process::exit(EXIT_ERROR);
                 } else {
                     println!(
                         "{} Finished in {:.2}s — all files formatted",
@@ -1451,7 +1533,7 @@ fn cmd_fmt(files: Vec<PathBuf>, check: bool) {
         }
         Err(e) => {
             eprintln!("{} {}", red("✗ Error:"), e);
-            std::process::exit(1);
+            std::process::exit(EXIT_ERROR);
         }
     }
 }
@@ -1488,7 +1570,7 @@ fn cmd_build_wasm(target: &str, release: bool) {
                 }
                 _ => {}
             }
-            std::process::exit(1);
+            std::process::exit(EXIT_ERROR);
         }
     }
 
@@ -1500,7 +1582,7 @@ fn cmd_build_wasm(target: &str, release: bool) {
         );
         eprintln!("\nThe WASM compilation target is still in development.");
         eprintln!("See docs/WASM_STRATEGY.md for more information.");
-        std::process::exit(1);
+        std::process::exit(EXIT_ERROR);
     }
 
     println!("{} WASM target: {}", status_label("Building"), cyan(target));
@@ -1517,12 +1599,12 @@ fn cmd_build_wasm(target: &str, release: bool) {
 
     let status = cmd.status().unwrap_or_else(|e| {
         eprintln!("{} executing wasm-pack: {}", red("error:"), e);
-        std::process::exit(1);
+        std::process::exit(EXIT_ERROR);
     });
 
     if !status.success() {
         eprintln!("{} wasm-pack build failed", red("error:"));
-        std::process::exit(1);
+        std::process::exit(EXIT_ERROR);
     }
 
     println!("{} WASM build complete", green("✓"));

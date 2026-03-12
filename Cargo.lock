@@ -1464,6 +1464,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "leb128"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "884e2677b40cc8c339eaefcb701c32ef1fd2493d71118dc0ca4b6a736c93bd67"
+
+[[package]]
 name = "libc"
 version = "0.2.181"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1549,14 +1555,14 @@ dependencies = [
  "keyring",
  "lumen-codegen",
  "lumen-compiler",
+ "lumen-core",
  "lumen-provider-crypto",
  "lumen-provider-env",
  "lumen-provider-fs",
  "lumen-provider-gemini",
  "lumen-provider-http",
  "lumen-provider-json",
- "lumen-runtime",
- "lumen-vm",
+ "lumen-rt",
  "open",
  "rand 0.8.5",
  "regex",
@@ -1585,15 +1591,18 @@ dependencies = [
  "cranelift-native",
  "cranelift-object",
  "lumen-compiler",
+ "lumen-core",
  "target-lexicon",
  "thiserror 2.0.18",
+ "wasm-encoder",
 ]
 
 [[package]]
 name = "lumen-compiler"
 version = "0.5.0"
 dependencies = [
- "lumen-vm",
+ "lumen-core",
+ "lumen-rt",
  "num-bigint",
  "num-traits",
  "serde",
@@ -1602,6 +1611,21 @@ dependencies = [
  "strum",
  "strum_macros",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "lumen-core"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "num-bigint",
+ "num-traits",
+ "serde",
+ "serde_json",
+ "strum",
+ "strum_macros",
+ "thiserror 2.0.18",
+ "uuid",
 ]
 
 [[package]]
@@ -1624,7 +1648,7 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "hmac",
- "lumen-runtime",
+ "lumen-rt",
  "md-5",
  "rand 0.8.5",
  "serde",
@@ -1638,7 +1662,7 @@ dependencies = [
 name = "lumen-provider-env"
 version = "0.5.0"
 dependencies = [
- "lumen-runtime",
+ "lumen-rt",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -1648,7 +1672,7 @@ dependencies = [
 name = "lumen-provider-fs"
 version = "0.5.0"
 dependencies = [
- "lumen-runtime",
+ "lumen-rt",
  "serde",
  "serde_json",
  "uuid",
@@ -1658,7 +1682,7 @@ dependencies = [
 name = "lumen-provider-gemini"
 version = "0.5.0"
 dependencies = [
- "lumen-runtime",
+ "lumen-rt",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -1668,7 +1692,7 @@ dependencies = [
 name = "lumen-provider-http"
 version = "0.5.0"
 dependencies = [
- "lumen-runtime",
+ "lumen-rt",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -1679,7 +1703,7 @@ dependencies = [
 name = "lumen-provider-json"
 version = "0.5.0"
 dependencies = [
- "lumen-runtime",
+ "lumen-rt",
  "serde",
  "serde_json",
 ]
@@ -1688,13 +1712,13 @@ dependencies = [
 name = "lumen-provider-mcp"
 version = "0.5.0"
 dependencies = [
- "lumen-runtime",
+ "lumen-rt",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "lumen-runtime"
+name = "lumen-rt"
 version = "0.5.0"
 dependencies = [
  "bincode",
@@ -1702,14 +1726,23 @@ dependencies = [
  "crossbeam-channel",
  "crossbeam-deque",
  "flate2",
+ "lumen-codegen",
+ "lumen-compiler",
+ "lumen-core",
  "lumen-provider-crypto",
  "lumen-provider-env",
  "lumen-provider-fs",
+ "num-bigint",
+ "num-traits",
  "num_cpus",
+ "object",
+ "once_cell",
+ "regex",
  "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
+ "ureq",
  "uuid",
 ]
 
@@ -1719,26 +1752,6 @@ version = "0.5.0"
 dependencies = [
  "num-traits",
  "serde",
-]
-
-[[package]]
-name = "lumen-vm"
-version = "0.5.0"
-dependencies = [
- "chrono",
- "lumen-codegen",
- "lumen-compiler",
- "lumen-runtime",
- "num-bigint",
- "num-traits",
- "once_cell",
- "regex",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "ureq",
- "uuid",
 ]
 
 [[package]]
@@ -1913,9 +1926,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62948e14d923ea95ea2c7c86c71013138b66525b86bdc08d2dcc262bdb497b87"
 dependencies = [
  "crc32fast",
+ "flate2",
  "hashbrown 0.15.5",
  "indexmap",
  "memchr",
+ "ruzstd",
 ]
 
 [[package]]
@@ -2569,6 +2584,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruzstd"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fad02996bfc73da3e301efe90b1837be9ed8f4a462b6ed410aa35d00381de89f"
+dependencies = [
+ "twox-hash",
+]
+
+[[package]]
 name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2791,6 +2815,12 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "static_assertions"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "strsim"
@@ -3170,6 +3200,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "twox-hash"
+version = "1.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97fee6b57c6a41524a810daee9286c02d7752c4253064d0b05472833a438f675"
+dependencies = [
+ "cfg-if",
+ "static_assertions",
+]
+
+[[package]]
 name = "typenum"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3359,6 +3399,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f01b580c9ac74c8d8f0c0e4afb04eeef2acf145458e52c03845ee9cd23e3d12"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "wasm-encoder"
+version = "0.218.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "491f7e48672d0a1efdeadf897d98ac1f45942c26c3829cb44a6b828f6f26155f"
+dependencies = [
+ "leb128",
 ]
 
 [[package]]

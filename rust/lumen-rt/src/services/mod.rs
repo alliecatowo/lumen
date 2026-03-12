@@ -1,0 +1,50 @@
+//! Lumen Runtime
+//!
+//! Provides trace, cache, tool dispatch, process management, scheduling, and
+//! inter-process communication infrastructure.
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod actor;
+pub mod cache;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod channel;
+pub mod checkpoint;
+pub mod crypto;
+pub mod debugger;
+pub mod durability;
+pub mod effect_budget;
+pub mod error_context;
+pub mod execution_graph;
+pub mod fs_async;
+pub mod graph;
+pub mod http;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod idempotency;
+pub mod injection;
+pub mod json_ops;
+pub mod linear_collections;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod mailbox;
+pub mod mock_effects;
+pub mod net;
+pub mod nursery;
+pub mod panic_boundary;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod parity_durability;
+pub mod process;
+pub mod reduction;
+pub mod replay;
+pub mod retry;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod scheduler;
+pub mod schema_drift;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod select;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod snapshot;
+pub mod supervisor;
+pub mod sync_scheduler;
+pub mod tools;
+pub mod trace;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod versioning;

@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::compiler::lir::{IntrinsicId, OpCode};
+use lumen_core::lir::{IntrinsicId, OpCode};
 use strum::IntoEnumIterator;
 
 // ---------------------------------------------------------------------------

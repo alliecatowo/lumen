@@ -9,6 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+lumen-core = { path = "../lumen-core", version = "0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -19,4 +20,4 @@ num-bigint = { workspace = true, features = ["serde"] }
 num-traits = { workspace = true }
 
 [dev-dependencies]
-lumen-vm = { path = "../lumen-vm", version = "0.5.0" }
+lumen-rt = { path = "../lumen-rt", version = "0.5.0" }

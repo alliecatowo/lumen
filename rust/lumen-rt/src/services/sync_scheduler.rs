@@ -19,6 +19,7 @@
 
 use crate::services::injection::InjectionQueue;
 use crate::services::process::{ProcessControlBlock, ProcessId, ProcessStatus};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::services::scheduler::Task;
 
 use std::collections::VecDeque;
@@ -114,7 +115,7 @@ impl SyncScheduler {
 
     /// Return the total number of tasks across all local queues.
     pub fn pending_local_tasks(&self) -> usize {
-        self.local_queues.iter().map(|q| q.len()).sum()
+        self.local_queues.iter().map(|q: &VecDeque<Task>| q.len()).sum()
     }
 
     /// Return the number of tasks in the injection queue.

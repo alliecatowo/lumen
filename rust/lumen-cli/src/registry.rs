@@ -281,7 +281,7 @@ impl RegistryClient {
         }
     }
 
-    fn verify_signature(
+    pub fn verify_signature(
         &self,
         metadata: &RegistryVersionMetadata,
         sig: &PackageSignature,

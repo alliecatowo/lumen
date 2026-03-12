@@ -5,6 +5,7 @@
 
 #[cfg(feature = "ed25519")]
 mod signature_tests {
+    use base64::Engine as _;
     use lumen_cli::registry::{
         ArtifactInfo, PackageSignature, RegistryClient, RegistryVersionMetadata,
     };

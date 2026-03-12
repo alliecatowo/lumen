@@ -20,31 +20,40 @@
 //! assert!(mailbox.is_empty());
 //! ```
 
+#[cfg(not(target_arch = "wasm32"))]
 use crossbeam_channel::{self as cb};
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::VecDeque;
+#[cfg(not(target_arch = "wasm32"))]
 use std::fmt;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Error returned when sending into a closed mailbox.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailboxSendError<T>(pub T);
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<T> fmt::Display for MailboxSendError<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "mailbox send failed: receiver has been dropped")
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<T: fmt::Debug> std::error::Error for MailboxSendError<T> {}
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Error returned by blocking receive when the mailbox is closed and empty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MailboxRecvError;
 
+#[cfg(not(target_arch = "wasm32"))]
 impl fmt::Display for MailboxRecvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -54,21 +63,19 @@ impl fmt::Display for MailboxRecvError {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl std::error::Error for MailboxRecvError {}
 
 // ---------------------------------------------------------------------------
 // MailboxSender
 // ---------------------------------------------------------------------------
 
-/// The sending half of a mailbox.
-///
-/// Cheaply cloneable — multiple producers can hold a `MailboxSender` and
-/// send messages concurrently. The mailbox is only closed when *all* senders
-/// are dropped.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct MailboxSender<T> {
     inner: cb::Sender<T>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<T> Clone for MailboxSender<T> {
     fn clone(&self) -> Self {
         Self {
@@ -77,6 +84,7 @@ impl<T> Clone for MailboxSender<T> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<T> fmt::Debug for MailboxSender<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MailboxSender")
@@ -85,6 +93,7 @@ impl<T> fmt::Debug for MailboxSender<T> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<T> MailboxSender<T> {
     /// Non-blocking send. Returns `Err` if the mailbox receiver has been dropped.
     pub fn send(&self, msg: T) -> Result<(), MailboxSendError<T>> {
@@ -106,16 +115,7 @@ impl<T> MailboxSender<T> {
 // Mailbox
 // ---------------------------------------------------------------------------
 
-/// A receive-side mailbox wrapping an MPSC channel with an Erlang-style
-/// save queue for selective receive.
-///
-/// Provides non-blocking (`recv`), blocking (`recv_blocking`), and
-/// timeout-based (`recv_timeout`) receive operations. Supports selective
-/// receive via [`recv_selective`](Mailbox::recv_selective) which scans for
-/// matching messages while preserving non-matching ones in order.
-///
-/// Integrates with the actor system — an actor's message loop can be driven
-/// by a `Mailbox`.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Mailbox<T> {
     inner: cb::Receiver<T>,
     /// Erlang-style save queue: messages that were inspected during selective
@@ -124,6 +124,7 @@ pub struct Mailbox<T> {
     save_queue: std::cell::RefCell<VecDeque<T>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<T> fmt::Debug for Mailbox<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Mailbox")
@@ -135,6 +136,7 @@ impl<T> fmt::Debug for Mailbox<T> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<T> Mailbox<T> {
     /// Create an unbounded mailbox, returning `(sender, mailbox)`.
     ///
@@ -358,6 +360,7 @@ impl<T> Mailbox<T> {
 // Integration: convert between Mailbox and Actor-compatible channel
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Create a mailbox-backed actor message loop.
 ///
 /// This is a convenience for wiring a `Mailbox` into an actor's receive loop
@@ -377,7 +380,7 @@ pub fn mailbox_pair<T>(capacity: Option<usize>) -> (MailboxSender<T>, Mailbox<T>
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};

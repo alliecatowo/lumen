@@ -14,6 +14,7 @@
 //! The actual CLI front-end will live in `lumen-cli`; this module only provides
 //! the session / state management layer.
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::services::snapshot::{InstructionPointer, SerializedValue};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};

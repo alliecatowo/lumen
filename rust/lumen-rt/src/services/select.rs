@@ -31,10 +31,14 @@
 //! assert!(matches!(result, SelectResult::Matched(_)));
 //! ```
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::services::channel::Receiver;
+#[cfg(not(target_arch = "wasm32"))]
 use crossbeam_channel::{self as cb};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Type alias for the boxed handler closures stored inside [`Selector`].
 type HandlerFn<'a> = Box<dyn FnOnce() -> Option<SelectResult> + 'a>;
 
@@ -42,6 +46,7 @@ type HandlerFn<'a> = Box<dyn FnOnce() -> Option<SelectResult> + 'a>;
 // Result type
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Outcome of a [`Selector::select`] call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SelectResult {
@@ -59,6 +64,7 @@ pub enum SelectResult {
 // Selector builder
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
 /// A builder for multiplexed channel receives.
 ///
 /// Construct with [`Selector::new`], register channels with [`recv`](Selector::recv),
@@ -79,6 +85,7 @@ pub struct Selector<'a> {
     default_handler: Option<Box<dyn FnOnce() -> SelectResult + 'a>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Internal helper trait to erase `T` from `Receiver<T>` so we can store
 /// heterogeneous receivers in the same vec.
 trait AsRawReceiver {
@@ -88,6 +95,7 @@ trait AsRawReceiver {
         's: 'sel;
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<T> AsRawReceiver for Receiver<T> {
     fn register<'s, 'sel>(&'s self, sel: &mut cb::Select<'sel>) -> usize
     where
@@ -97,6 +105,7 @@ impl<T> AsRawReceiver for Receiver<T> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<'a> Selector<'a> {
     /// Create an empty selector.
     pub fn new() -> Self {
@@ -274,6 +283,7 @@ impl<'a> Selector<'a> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<'a> Default for Selector<'a> {
     fn default() -> Self {
         Self::new()
@@ -284,7 +294,7 @@ impl<'a> Default for Selector<'a> {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::services::channel;

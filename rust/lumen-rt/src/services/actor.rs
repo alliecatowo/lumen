@@ -19,18 +19,25 @@
 //! Each spawned actor is assigned a unique [`ProcessId`] for integration with
 //! the existing process management system.
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::services::process::ProcessId;
 
+#[cfg(not(target_arch = "wasm32"))]
 use crossbeam_channel::{self as cb};
+#[cfg(not(target_arch = "wasm32"))]
 use std::fmt;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread::{self, JoinHandle};
 
 // ---------------------------------------------------------------------------
 // ActorResult
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
 /// The result of handling a message.
 ///
 /// Determines whether the actor continues processing or stops.
@@ -48,6 +55,7 @@ pub enum ActorResult<S> {
 // Actor trait
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Core actor trait — implement to create an actor.
 ///
 /// The associated types define the message and state types. All three must be
@@ -72,6 +80,7 @@ pub trait Actor: Send + 'static {
 // ActorError
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Errors that can occur when interacting with an actor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorError {
@@ -83,6 +92,7 @@ pub enum ActorError {
     Panicked(String),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl fmt::Display for ActorError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -93,13 +103,14 @@ impl fmt::Display for ActorError {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl std::error::Error for ActorError {}
 
 // ---------------------------------------------------------------------------
 // Envelope — internal message wrapper
 // ---------------------------------------------------------------------------
 
-/// Internal envelope that wraps user messages and control signals.
+#[cfg(not(target_arch = "wasm32"))]
 enum Envelope<M> {
     /// A user-supplied message.
     Msg(M),
@@ -116,12 +127,14 @@ enum Envelope<M> {
 /// `ActorRef` is cheaply cloneable. When all clones are dropped (and no
 /// explicit stop was sent), the actor's mailbox disconnects and the actor
 /// will stop after processing any remaining buffered messages.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct ActorRef<M: Send + 'static> {
     sender: cb::Sender<Envelope<M>>,
     id: ProcessId,
     stopped: Arc<AtomicBool>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<M: Send + 'static> Clone for ActorRef<M> {
     fn clone(&self) -> Self {
         Self {
@@ -132,6 +145,7 @@ impl<M: Send + 'static> Clone for ActorRef<M> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<M: Send + 'static> fmt::Debug for ActorRef<M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ActorRef")
@@ -141,6 +155,7 @@ impl<M: Send + 'static> fmt::Debug for ActorRef<M> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<M: Send + 'static> ActorRef<M> {
     /// Send a message to the actor.
     ///
@@ -176,6 +191,7 @@ impl<M: Send + 'static> ActorRef<M> {
 // spawn_actor
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Spawn an actor on a new OS thread, returning an [`ActorRef`] handle.
 ///
 /// The actor's `init` method is called on the new thread, and then the actor
@@ -244,6 +260,7 @@ pub fn spawn_actor<A: Actor>(
 ///
 /// This trait allows the system to manage actors with different message types
 /// in a single collection.
+#[cfg(not(target_arch = "wasm32"))]
 pub trait ActorHandle: Send {
     /// Return the actor's [`ProcessId`].
     fn id(&self) -> ProcessId;
@@ -259,11 +276,13 @@ pub trait ActorHandle: Send {
 }
 
 /// Concrete implementation of [`ActorHandle`] for a specific message type.
+#[cfg(not(target_arch = "wasm32"))]
 struct TypedActorHandle<M: Send + 'static> {
     actor_ref: ActorRef<M>,
     join_handle: Option<JoinHandle<Result<(), ActorError>>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<M: Send + 'static> ActorHandle for TypedActorHandle<M> {
     fn id(&self) -> ProcessId {
         self.actor_ref.id()
@@ -309,10 +328,12 @@ impl<M: Send + 'static> ActorHandle for TypedActorHandle<M> {
 ///
 /// Actors are spawned into the system and tracked by their [`ProcessId`].
 /// The system provides bulk lifecycle operations (stop all, wait for all).
+#[cfg(not(target_arch = "wasm32"))]
 pub struct ActorSystem {
     actors: Vec<Box<dyn ActorHandle>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ActorSystem {
     /// Create a new, empty actor system.
     pub fn new() -> Self {
@@ -374,12 +395,14 @@ impl ActorSystem {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Default for ActorSystem {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl fmt::Debug for ActorSystem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ActorSystem")
@@ -393,7 +416,7 @@ impl fmt::Debug for ActorSystem {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};

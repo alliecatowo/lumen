@@ -40,7 +40,8 @@
 /// // b has been freed, a has been modified in-place
 /// ```
 #[no_mangle]
-pub extern "C" fn lumen_rt_string_concat(a: *mut String, b: *mut String) -> *mut String {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub unsafe extern "C" fn lumen_rt_string_concat(a: *mut String, b: *mut String) -> *mut String {
     // Take ownership of both strings
     let mut boxed_a = unsafe { Box::from_raw(a) };
     let boxed_b = unsafe { Box::from_raw(b) };
@@ -75,7 +76,7 @@ mod tests {
         let a = Box::into_raw(Box::new(s1));
         let b = Box::into_raw(Box::new(s2));
 
-        let result = lumen_rt_string_concat(a, b);
+        let result = unsafe { lumen_rt_string_concat(a, b) };
 
         let result_string = unsafe { Box::from_raw(result) };
         assert_eq!(&*result_string, "hello world");
@@ -89,7 +90,7 @@ mod tests {
         let a = Box::into_raw(Box::new(s1));
         let b = Box::into_raw(Box::new(s2));
 
-        let result = lumen_rt_string_concat(a, b);
+        let result = unsafe { lumen_rt_string_concat(a, b) };
 
         let result_string = unsafe { Box::from_raw(result) };
         assert_eq!(&*result_string, "hello world!");
@@ -103,7 +104,7 @@ mod tests {
         let a = Box::into_raw(Box::new(s1));
         let b = Box::into_raw(Box::new(s2));
 
-        let result = lumen_rt_string_concat(a, b);
+        let result = unsafe { lumen_rt_string_concat(a, b) };
 
         let result_string = unsafe { Box::from_raw(result) };
         assert_eq!(&*result_string, "");
@@ -117,7 +118,7 @@ mod tests {
         let a = Box::into_raw(Box::new(s1));
         let b = Box::into_raw(Box::new(s2));
 
-        let result = lumen_rt_string_concat(a, b);
+        let result = unsafe { lumen_rt_string_concat(a, b) };
 
         let result_string = unsafe { Box::from_raw(result) };
         assert_eq!(&*result_string, "hello");

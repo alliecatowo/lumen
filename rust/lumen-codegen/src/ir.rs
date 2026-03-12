@@ -166,6 +166,27 @@ pub fn lower_cell<M: Module>(
     )?;
     let str_drop_ref =
         declare_helper_func(module, &mut func, "jit_rt_string_drop", &[types::I64], &[])?;
+    let fmod_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_fmod",
+        &[types::F64, types::F64],
+        &[types::F64],
+    )?;
+    let pow_float_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_pow_float",
+        &[types::F64, types::F64],
+        &[types::F64],
+    )?;
+    let pow_int_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_pow_int",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )?;
 
     // Suppress unused-variable warnings for helpers not yet used in all paths.
     let _ = str_clone_ref;
@@ -180,9 +201,19 @@ pub fn lower_cell<M: Module>(
     // Track the semantic type of each variable for type-aware code generation.
     let mut var_types: HashMap<u32, JitVarType> = HashMap::new();
 
-    // Pre-scan constants to determine which registers receive float/string values.
-    let mut float_regs: std::collections::HashSet<u8> = std::collections::HashSet::new();
-    let mut string_regs: std::collections::HashSet<u8> = std::collections::HashSet::new();
+    // Pre-scan registers to determine which ones need F64 or String storage.
+    let mut float_regs: std::collections::HashSet<u8> = cell
+        .params
+        .iter()
+        .filter(|param| param.ty == "Float")
+        .map(|param| param.register)
+        .collect();
+    let mut string_regs: std::collections::HashSet<u8> = cell
+        .params
+        .iter()
+        .filter(|param| param.ty == "String")
+        .map(|param| param.register)
+        .collect();
     for inst in &cell.instructions {
         if inst.op == OpCode::LoadK {
             let bx = inst.bx() as usize;
@@ -194,6 +225,29 @@ pub fn lower_cell<M: Module>(
                     string_regs.insert(inst.a);
                 }
                 _ => {}
+            }
+        }
+    }
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for inst in &cell.instructions {
+            let dest = inst.a;
+            let mark_dest_float = match inst.op {
+                OpCode::Move | OpCode::MoveOwn => float_regs.contains(&inst.b),
+                OpCode::Add
+                | OpCode::Sub
+                | OpCode::Mul
+                | OpCode::Div
+                | OpCode::Mod
+                | OpCode::FloorDiv
+                | OpCode::Pow => float_regs.contains(&inst.b) || float_regs.contains(&inst.c),
+                OpCode::Neg => float_regs.contains(&inst.b),
+                _ => false,
+            };
+            if mark_dest_float && float_regs.insert(dest) {
+                changed = true;
             }
         }
     }
@@ -528,7 +582,21 @@ pub fn lower_cell<M: Module>(
             OpCode::Mod => {
                 let lhs = use_var(&mut builder, &vars, inst.b);
                 let rhs = use_var(&mut builder, &vars, inst.c);
-                let res = builder.ins().srem(lhs, rhs);
+                let is_float = is_float_op(&var_types, inst.b, inst.c);
+                let res = if is_float {
+                    let call = builder.ins().call(fmod_ref, &[lhs, rhs]);
+                    builder.inst_results(call)[0]
+                } else {
+                    builder.ins().srem(lhs, rhs)
+                };
+                var_types.insert(
+                    inst.a as u32,
+                    if is_float {
+                        JitVarType::Float
+                    } else {
+                        JitVarType::Int
+                    },
+                );
                 def_var(&mut builder, &vars, inst.a, res);
             }
             OpCode::Neg => {
@@ -570,13 +638,17 @@ pub fn lower_cell<M: Module>(
                 def_var(&mut builder, &vars, inst.a, res);
             }
             OpCode::Pow => {
+                let lhs = use_var(&mut builder, &vars, inst.b);
+                let rhs = use_var(&mut builder, &vars, inst.c);
                 let is_float = is_float_op(&var_types, inst.b, inst.c);
                 if is_float {
-                    let zero = builder.ins().f64const(0.0);
+                    let call = builder.ins().call(pow_float_ref, &[lhs, rhs]);
+                    let zero = builder.inst_results(call)[0];
                     var_types.insert(inst.a as u32, JitVarType::Float);
                     def_var(&mut builder, &vars, inst.a, zero);
                 } else {
-                    let zero = builder.ins().iconst(types::I64, 0);
+                    let call = builder.ins().call(pow_int_ref, &[lhs, rhs]);
+                    let zero = builder.inst_results(call)[0];
                     var_types.insert(inst.a as u32, JitVarType::Int);
                     def_var(&mut builder, &vars, inst.a, zero);
                 }

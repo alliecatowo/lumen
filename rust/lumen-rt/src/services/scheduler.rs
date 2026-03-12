@@ -16,19 +16,28 @@
 //! Task completion is tracked via a shared [`AtomicUsize`] counter so callers
 //! can wait for a known number of tasks to finish.
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::services::process::{ProcessControlBlock, ProcessId, ProcessStatus};
+#[cfg(not(target_arch = "wasm32"))]
 use crossbeam_deque::{Injector, Steal, Stealer, Worker};
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::fmt;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Arc, Mutex, MutexGuard};
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // Lock helper — see Panic Policy in process.rs for rationale.
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Acquire a mutex lock, converting a `PoisonError` into `Err(String)`.
 fn lock_inner<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>, String> {
     mutex.lock().map_err(|e| format!("Mutex poisoned: {}", e))
@@ -38,6 +47,7 @@ fn lock_inner<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>, String> {
 // Task
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
 /// A schedulable unit of work.
 ///
 /// Each task is associated with a [`ProcessId`] (so it can be correlated back
@@ -51,6 +61,7 @@ pub struct Task {
     work: Option<Box<dyn FnOnce() + Send + 'static>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Task {
     /// Create a new task for the given process.
     pub fn new<F>(process_id: ProcessId, f: F) -> Self
@@ -77,6 +88,7 @@ impl Task {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl fmt::Debug for Task {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Task")
@@ -90,6 +102,7 @@ impl fmt::Debug for Task {
 // WorkerHandle (per-thread bookkeeping exposed to the Scheduler)
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Per-worker metadata visible to the [`Scheduler`].
 ///
 /// Each OS thread owns a [`Worker`] deque (push/pop from the owning thread)
@@ -109,6 +122,7 @@ struct WorkerHandle {
 // Scheduler
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
 /// An M:N work-stealing task scheduler.
 ///
 /// The scheduler owns a pool of worker threads and a global injection queue.
@@ -128,6 +142,7 @@ pub struct Scheduler {
     process_registry: Arc<Mutex<HashMap<ProcessId, Arc<ProcessControlBlock>>>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Scheduler {
     /// Create a new scheduler with `num_workers` OS threads.
     ///
@@ -393,6 +408,7 @@ impl Scheduler {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for Scheduler {
     fn drop(&mut self) {
         if !self.is_shutdown() {
@@ -401,6 +417,7 @@ impl Drop for Scheduler {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl fmt::Debug for Scheduler {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Scheduler")
@@ -415,7 +432,7 @@ impl fmt::Debug for Scheduler {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;

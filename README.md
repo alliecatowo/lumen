@@ -9,14 +9,14 @@
 </p>
 
 <p align="center">
-  <em>Build deterministic agent workflows with static types, first-class AI primitives, and markdown-native source files.</em>
+  <em>Statically typed. Effect-aware. Markdown-native.<br>Built for the age of AI — where code, docs, and intelligence live together.</em>
 </p>
 
 <p align="center">
-  <a href="https://alliecatowo.github.io/lumen/"><strong>📚 Documentation</strong></a> ·
-  <a href="https://alliecatowo.github.io/lumen/playground"><strong>🎮 Playground</strong></a> ·
-  <a href="https://github.com/alliecatowo/lumen/issues"><strong>🐛 Issues</strong></a> ·
-  <a href="https://github.com/alliecatowo/lumen/discussions"><strong>💬 Discussions</strong></a>
+  <a href="https://alliecatowo.github.io/lumen/"><strong>📚 Docs</strong></a> &nbsp;·&nbsp;
+  <a href="https://alliecatowo.github.io/lumen/playground"><strong>🎮 Playground</strong></a> &nbsp;·&nbsp;
+  <a href="https://github.com/alliecatowo/lumen/issues"><strong>🐛 Issues</strong></a> &nbsp;·&nbsp;
+  <a href="https://github.com/alliecatowo/lumen/discussions"><strong>💬 Discuss</strong></a>
 </p>
 
 <p align="center">
@@ -32,27 +32,92 @@
 
 ## Why Lumen?
 
-Building AI systems today means juggling Python notebooks, API clients, prompt templates, and orchestration frameworks. **Lumen unifies this into one language:**
+Building AI systems today means juggling Python notebooks, API clients, prompt templates, and orchestration frameworks. **Lumen unifies this into one language** — with the type system as the single source of truth for *what code is allowed to do*.
 
-| Feature | Lumen | Traditional Stack |
-|---------|-------|-------------------|
-| **Tools** | Typed interfaces with policy constraints | Framework wrappers |
-| **Grants** | Built-in safety limits (tokens, timeouts, domains) | Manual validation |
-| **Agents** | First-class language construct | Class hierarchies |
-| **Processes** | Pipelines, state machines, memory built-in | External libraries |
-| **Effects** | Algebraic effects with handlers, explicit in type signatures | Try/catch or monads, implicit |
-| **Source** | Markdown-native (`.lm.md`, `.lumen`) + raw (`.lm`) | Separate code and docs |
+| Capability | Lumen | Traditional Stack |
+|-----------|-------|-------------------|
+| **Effects** | Algebraic effects declared in the type signature — tracked, composable, and handleable | Try/catch or monads, implicit and untracked |
+| **Tools** | Typed interfaces with compile-time policy constraints | Framework wrappers, runtime surprises |
+| **Grants** | Built-in safety limits (tokens, timeouts, domains) enforced by the VM | Manual validation, easy to skip |
+| **Processes** | Pipelines, state machines, memory stores as first-class constructs | Bolted-on libraries |
+| **Source format** | Markdown-native `.lm.md` / `.lumen` — code and docs are one file | Separate code files and documentation forever out of sync |
+| **Determinism** | `@deterministic true` rejects non-deterministic ops at compile time | Hope and convention |
+
+---
+
+## ⚡ The Killer Feature: Algebraic Effects
+
+This is what gets me most excited about Lumen.
+
+In most languages, *side effects are invisible* — a function can log, call an API, or throw without the caller knowing. Lumen fixes that at the type level. Every cell declares exactly what effects it can perform, right in its signature:
+
+```lumen
+cell fetch_user(id: String) -> result[User, String] / {Http, Log}
+```
+
+The `/ {Http, Log}` part isn't a comment — it's enforced by the compiler. If you call something that uses `Http` without declaring it, the build fails.
+
+Better still: effects are *handleable*. You can intercept, mock, or redirect them at any call site using **one-shot delimited continuations**:
+
+```lumen
+# Declare the effects
+effect Http
+  cell get(url: String) -> String
+end
+
+effect Log
+  cell info(msg: String) -> Unit
+end
+
+# A cell that uses both — declared in its signature
+cell load_profile(user_id: String) -> String / {Http, Log}
+  perform Log.info("Fetching profile for {user_id}")
+  let raw = perform Http.get("https://api.example.com/users/{user_id}")
+  return "Profile: {raw}"
+end
+
+# In production: real HTTP + structured logging
+cell main() -> String
+  handle
+    handle load_profile("42")
+    with Http.get(url) ->
+      let res = http_client_get(url)
+      resume(res)
+    end
+  with Log.info(msg) ->
+    print("[INFO] {msg}")
+    resume(unit)
+  end
+end
+
+# In tests: swap both out without touching load_profile at all
+cell test_load_profile() -> Bool
+  let result = handle
+    handle load_profile("42")
+    with Http.get(_url) ->
+      resume("{\"name\": \"Ada\"}")
+    end
+  with Log.info(_msg) ->
+    resume(unit)  # silently swallow logs
+  end
+  return result == "Profile: {\"name\": \"Ada\"}"
+end
+```
+
+No dependency injection framework. No mock libraries. No monkey-patching. **The effect system *is* the seam.**
+
+---
 
 ## Quick Start
 
 ```bash
-# Install (One-liner)
+# Install
 curl -fsSL https://raw.githubusercontent.com/alliecatowo/lumen/main/scripts/install.sh | sh
 
 # Or via Cargo
 cargo install lumen-lang
 
-# Create your first program
+# Write your first program
 cat > hello.lm.md << 'EOF'
 cell main() -> String
   return "Hello, World!"
@@ -63,23 +128,18 @@ EOF
 lumen run hello.lm.md
 ```
 
-## Features
+---
 
-- **Algebraic Effects**: First-class effect handling with `perform` and `handle` constructs
-- **Markdown-Native Source**: Write code and docs together in `.lm.md` or `.lumen` files
-- **Static Typing**: Full type inference with compile-time error checking
-- **AI Tool Dispatch**: Typed tool interfaces with policy constraints
-- **Register-Based VM**: Efficient bytecode execution
-- **Full LSP Support**: Hover, document symbols, signature help, semantic tokens, diagnostics
+## Feature Highlights
 
 ### 📝 Markdown-Native Source
 
-Write code and documentation together in `.lm.md` or `.lumen`, or use `.lm` for source-only modules:
+Lumen source files *are* documents. Write prose and code together — no separate README needed:
 
 ````markdown
 # User Authentication
 
-This module handles user login and session management.
+This module handles login and session management.
 
 ```lumen
 record User
@@ -94,12 +154,17 @@ end
 ```
 ````
 
-### 🔒 Statically Typed
+### 🔒 Statically Typed with Constraint Validation
 
-Catch errors at compile time:
+Types aren't just shapes — they carry invariants:
 
 ```lumen
-cell divide(a: Int, b: Int) -> result[Int, String]
+record Product
+  name: String where length(name) > 0
+  price: Float where price >= 0.0
+end
+
+cell safe_divide(a: Int, b: Int) -> result[Int, String]
   if b == 0
     return err("Division by zero")
   end
@@ -107,28 +172,9 @@ cell divide(a: Int, b: Int) -> result[Int, String]
 end
 ```
 
-### 🎯 Algebraic Effects
-
-First-class effect handling with one-shot delimited continuations:
-
-```lumen
-effect Log
-  cell info(msg: String) -> Unit
-end
-
-cell main() -> String / {Log}
-  perform Log.info("Starting")
-  return "Done"
-end
-
-handle main() with Log.info(msg) -> resume(unit)
-  print("LOG: {msg}")
-end
-```
-
 ### 🤖 AI-Native Constructs
 
-Tools, grants, and agents are built-in:
+Tools, grants, and agents are built into the language — not bolted on:
 
 ```lumen
 use tool llm.chat as Chat
@@ -147,28 +193,131 @@ agent Assistant
 end
 ```
 
-### ⚡ Deterministic Runtime
+### ⏱ Deterministic Runtime
 
-Reproducible execution for auditable AI:
+Reproduce any AI run exactly — perfect for audits, debugging, and compliance:
 
 ```lumen
 @deterministic true
 
 cell main() -> String
-  # Nondeterministic operations rejected at compile time
-  # uuid()      # Error!
-  # timestamp() # Error!
-  return "Deterministic output"
+  # uuid()      # Compile error: nondeterministic
+  # timestamp() # Compile error: nondeterministic
+  return "Always the same output"
+end
+```
+
+### 🔄 First-Class Pipelines & State Machines
+
+```lumen
+pipeline DataProcessor
+  stages:
+    -> extract
+    -> transform
+    -> load
+
+  cell extract(source: String) -> list[Json]
+    # Pull raw data
+  end
+
+  cell transform(data: list[Json]) -> list[Record]
+    # Shape it
+  end
+
+  cell load(records: list[Record]) -> Int
+    # Persist it; return row count
+  end
 end
 ```
 
 ### 🌐 WASM Ready
 
-Compile to WebAssembly for browser execution:
-
 ```bash
-lumen build wasm --target web
+lumen build wasm --target web     # Browser (ES modules)
+lumen build wasm --target nodejs  # Node.js
 ```
+
+---
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│           .lm.md / .lm / .lumen  Source Files                    │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │
+                           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│   Markdown Extraction (.lm.md/.lumen) │ Direct Parse (.lm)       │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │
+                           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│   Lexer → Parser → Resolver → Typechecker → Constraint Val       │
+│                        (effect rows tracked at every stage)      │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │
+                           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                      LIR Bytecode                                │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │
+                           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                      Register VM                                 │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─────────────────────┐ │
+│  │  Values  │ │ Futures  │ │  Tools   │ │ Effect Handler Stack│ │
+│  └──────────┘ └──────────┘ └──────────┘ └─────────────────────┘ │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Language Tour
+
+### Cells (Functions)
+
+```lumen
+cell greet(name: String) -> String
+  return "Hello, {name}!"
+end
+```
+
+### Pattern Matching (Exhaustiveness Checked)
+
+```lumen
+cell classify(n: Int) -> String
+  match n
+    0 -> return "zero"
+    1 -> return "one"
+    _ -> return "many"
+  end
+end
+```
+
+### Error Handling with `result[T, E]`
+
+```lumen
+cell safe_divide(a: Int, b: Int) -> String
+  match divide(a, b)
+    ok(value) -> return "Result: {value}"
+    err(msg)  -> return "Error: {msg}"
+  end
+end
+```
+
+### Pipes and Composition
+
+```lumen
+# |>  pipes a VALUE through functions (eager)
+let result = raw_data |> parse() |> validate() |> format()
+
+# ~>  COMPOSES functions into a new function (lazy)
+let pipeline = parse ~> validate ~> format
+let result   = pipeline(raw_data)
+```
+
+---
 
 ## Documentation
 
@@ -196,101 +345,7 @@ lumen build wasm --target web
 
 See all [30 examples](https://github.com/alliecatowo/lumen/tree/main/examples) in the examples directory.
 
-## Language Tour
-
-### Cells (Functions)
-
-```lumen
-cell greet(name: String) -> String
-  return "Hello, {name}!"
-end
-```
-
-### Records with Constraints
-
-```lumen
-record Product
-  name: String where length(name) > 0
-  price: Float where price >= 0.0
-end
-```
-
-### Pattern Matching
-
-```lumen
-cell classify(n: Int) -> String
-  match n
-    0 -> return "zero"
-    1 -> return "one"
-    _ -> return "many"
-  end
-end
-```
-
-### Error Handling
-
-```lumen
-cell safe_divide(a: Int, b: Int) -> String
-  match divide(a, b)
-    ok(value) -> return "Result: {value}"
-    err(msg) -> return "Error: {msg}"
-  end
-end
-```
-
-### Processes
-
-```lumen
-pipeline DataProcessor
-  stages:
-    -> extract
-    -> transform
-    -> load
-  
-  cell extract(source: String) -> list[Json]
-    # Extract data
-  end
-  
-  cell transform(data: list[Json]) -> list[Record]
-    # Transform data
-  end
-  
-  cell load(records: list[Record]) -> Int
-    # Load data
-  end
-end
-```
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│            .lm.md / .lm / .lumen Source Files                 │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Markdown Extraction (.lm.md/.lumen) / Direct Parse (.lm)    │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Lexer → Parser → Resolver → Typechecker → Constraint Val   │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    LIR Bytecode                              │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Register VM                               │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐       │
-│  │  Values  │ │ Futures  │ │  Tools   │ │ Traces   │       │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘       │
-└─────────────────────────────────────────────────────────────┘
-```
+---
 
 ## Development
 
@@ -302,7 +357,7 @@ cd lumen
 # Build
 cargo build --release
 
-# Test (1365+ tests)
+# Test (5,300+ passing)
 cargo test --workspace
 
 # Run
@@ -318,23 +373,25 @@ lumen/
 │   ├── reference/          # Language specification
 │   ├── api/                # Standard library docs
 │   └── examples/           # Example documentation
-├── examples/               # Example programs
-├── editors/               # Editor support (VS Code)
+├── examples/               # 30 example programs
+├── editors/                # Editor support (VS Code)
 ├── rust/
-│   ├── lumen-compiler/    # Compiler pipeline
-│   ├── lumen-vm/          # Register-based virtual machine
-│   ├── lumen-runtime/     # Runtime: tool dispatch, caching, tracing
-│   ├── lumen-cli/         # Command-line interface
-│   ├── lumen-lsp/         # Language Server Protocol
-│   ├── lumen-wasm/        # WebAssembly bindings
-│   └── lumen-provider-*/  # Tool providers (HTTP, JSON, FS, MCP)
-├── SPEC.md                # Implementation-accurate spec
-└── CLAUDE.md              # AI assistant instructions
+│   ├── lumen-compiler/     # Full compiler pipeline
+│   ├── lumen-vm/           # Register-based VM
+│   ├── lumen-runtime/      # Tool dispatch, caching, tracing
+│   ├── lumen-cli/          # CLI (check, run, fmt, repl, pkg, …)
+│   ├── lumen-lsp/          # Language Server Protocol
+│   ├── lumen-wasm/         # WebAssembly bindings
+│   └── lumen-provider-*/   # Tool providers (HTTP, JSON, FS, MCP)
+├── SPEC.md                 # Implementation-accurate language spec
+└── CLAUDE.md               # AI assistant instructions
 ```
+
+---
 
 ## Contributing
 
-We welcome contributions! Please see:
+We welcome contributions!
 
 - [Contributing Guide](https://github.com/alliecatowo/lumen/blob/main/CONTRIBUTING.md)
 - [Code of Conduct](https://github.com/alliecatowo/lumen/blob/main/CODE_OF_CONDUCT.md)
@@ -342,7 +399,7 @@ We welcome contributions! Please see:
 
 ## License
 
-MIT License - see [LICENSE](https://github.com/alliecatowo/lumen/blob/main/LICENSE) for details.
+MIT — see [LICENSE](https://github.com/alliecatowo/lumen/blob/main/LICENSE) for details.
 
 ---
 

@@ -2,7 +2,7 @@
   <img src="./docs/public/logo.svg" alt="Lumen Logo" width="200" />
 </p>
 
-<h1 align="center">Lumen</h1>
+<h1 align="center">LUMEN</h1>
 
 <p align="center">
   <strong>The AI-Native Programming Language.</strong><br/>

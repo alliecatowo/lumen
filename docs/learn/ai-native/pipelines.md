@@ -241,5 +241,6 @@ end
 
 ## Next Steps
 
-- [Orchestration](./orchestration) —- [Agents](./agents) — Agent definition
-- [Processes](./processes) — Process definitionline documentation
+- [Orchestration](./orchestration) — Multi-agent coordination
+- [Agents](./agents) — Agent definition
+- [Processes](./processes) — Process definition

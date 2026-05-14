@@ -94,12 +94,22 @@ agent ConservativeBot
     max_tokens 100      # Very limited
     temperature 0.1     # Very deterministic
 
+  cell respond(message: String) -> String / {llm}
+    return Chat(prompt: message)
+  end
+end
+
 agent CreativeBot
   use tool llm.chat as Chat
   grant Chat
     model "gpt-4o"
     max_tokens 4000     # More room
     temperature 0.9     # More creative
+
+  cell respond(message: String) -> String / {llm}
+    return Chat(prompt: message)
+  end
+end
 
 cell main() -> String / {llm}
   let conservative = ConservativeBot()
@@ -240,5 +250,5 @@ end
 ## Next Steps
 
 - [Processes](./processes) — Process definition
-- [Pipelines](./pipelines) — Pipeline compositionnt documentation
-```
+- [Pipelines](./pipelines) — Pipeline composition
+- [Orchestration](./orchestration) — Multi-agent coordination

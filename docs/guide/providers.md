@@ -25,7 +25,7 @@ default_model = "gpt-4o"
 #### Configuration Options
 
 | Option | Description | Default |
-|--------|-------------|---------|
+|--------|-------------|----------|
 | `base_url` | API base URL | Required |
 | `api_key_env` | Environment variable for API key | Required |
 | `default_model` | Default model ID | `gpt-4` |
@@ -93,7 +93,7 @@ trait ToolProvider {
     fn schema() -> ToolSchema;
     fn call(input: Json) -> result;
     fn effects() -> list[EffectKind];
-    fn capabilities() -> list[Capability>;
+    fn capabilities() -> Vec<Capability>;
 }
 ```
 

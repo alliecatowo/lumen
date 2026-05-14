@@ -342,4 +342,4 @@ end
 
 - [Pipelines](./pipelines) — Detailed pipeline guide
 - [Agents](./agents) — Agent definition
-- [Pipelines](./pipelines) — Pipeline composition
+- [Orchestration](./orchestration) — Multi-agent coordination

@@ -109,7 +109,7 @@ end
 
 ## Timeout
 
-Add timeout constraints:
+Add time limit:
 
 ```lumen
 cell bounded_fetch(url: String) -> result[String, String] / {http}
@@ -272,6 +272,7 @@ orchestration EnsembleAnalyzer
     let sentiment = await vote
       r1.sentiment
       r2.sentiment
+    end
     
     return ConsensusAnalysis(
       sentiment: sentiment,

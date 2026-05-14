@@ -78,7 +78,7 @@ grant Fetch domain "*.trusted.org"     # Multiple patterns
 ### Pattern Syntax
 
 | Pattern | Matches |
-|---------|---------|
+|---------|--------|
 | `exact.com` | Exact domain only |
 | `*.domain.com` | Any subdomain |
 | `**.domain.com` | Any subdomain (recursive) |
@@ -92,10 +92,12 @@ Grants inside agents/processes are scoped:
 agent ConservativeBot
   use tool llm.chat as Chat
   grant Chat max_tokens 100    # Only affects this agent
+end
 
 agent CreativeBot
   use tool llm.chat as Chat
   grant Chat max_tokens 4000   # Different limit
+end
 ```
 
 ## Effect Constraints

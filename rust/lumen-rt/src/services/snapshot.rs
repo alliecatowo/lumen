@@ -9,6 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -210,12 +211,14 @@ impl Snapshot {
         self.serialize().map(|v| v.len()).unwrap_or(0)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Serialize and compress this snapshot to a byte vector (bincode + gzip).
     pub fn serialize_compressed(&self) -> Result<Vec<u8>, SnapshotError> {
         let raw = self.serialize()?;
         compress(&raw).map_err(|e| SnapshotError::Serialize(e.to_string()))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Decompress and deserialize a snapshot from compressed bytes.
     pub fn deserialize_compressed(bytes: &[u8]) -> Result<Self, SnapshotError> {
         let raw = decompress(bytes).map_err(|e| SnapshotError::Deserialize(e.to_string()))?;
@@ -227,6 +230,7 @@ impl Snapshot {
 // Compression / decompression (gzip via flate2)
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Compress data using gzip (flate2, compression level 6).
 pub fn compress(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
@@ -234,6 +238,7 @@ pub fn compress(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
     encoder.finish()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Decompress gzip-compressed data.
 pub fn decompress(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
     let mut decoder = flate2::read::GzDecoder::new(data);
@@ -485,6 +490,7 @@ mod tests {
     // Compression tests
     // =====================================================================
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn compress_decompress_round_trip() {
         let data = b"Hello, Lumen! This is test data for compression.";
@@ -493,6 +499,7 @@ mod tests {
         assert_eq!(decompressed, data);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn compress_empty_data() {
         let data = b"";
@@ -501,6 +508,7 @@ mod tests {
         assert_eq!(decompressed, data.to_vec());
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn compress_reduces_size_for_repetitive_data() {
         // Highly repetitive data should compress well
@@ -514,6 +522,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn snapshot_compressed_round_trip() {
         let snap = sample_snapshot();
@@ -528,6 +537,7 @@ mod tests {
         assert_eq!(snap.metadata, restored.metadata);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn compressed_snapshot_is_smaller() {
         // Create a snapshot with enough data that compression helps
@@ -564,10 +574,37 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn decompress_invalid_data_fails() {
         let bad_data = vec![0x00, 0x01, 0x02, 0x03];
         assert!(decompress(&bad_data).is_err());
+    }
+
+    /// Regression: `deserialize_compressed` must propagate version mismatches
+    /// through the full compressed → bincode-deserialize → version-check path.
+    ///
+    /// This test was absent when the wasm32 gating was introduced (ALLIE-276).
+    /// It exists to prove that the compressed path enforces the same version
+    /// guard as `deserialize`, and that neither `compress` nor
+    /// `serialize_compressed` accidentally swallows the error.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn deserialize_compressed_rejects_wrong_version() {
+        let mut snap = sample_snapshot();
+        // Forge a future version number that the current runtime does not understand.
+        snap.version = 999;
+        // We bypass `serialize_compressed` for the write side so we can produce
+        // a compressed blob that really does contain version=999.
+        let raw = bincode::serialize(&snap).unwrap();
+        let compressed = compress(&raw).unwrap();
+        match Snapshot::deserialize_compressed(&compressed).unwrap_err() {
+            SnapshotError::VersionMismatch {
+                expected: 1,
+                found: 999,
+            } => {}
+            other => panic!("expected VersionMismatch, got: {:?}", other),
+        }
     }
 
     // =====================================================================

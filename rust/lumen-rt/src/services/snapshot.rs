@@ -581,6 +581,32 @@ mod tests {
         assert!(decompress(&bad_data).is_err());
     }
 
+    /// Regression: `deserialize_compressed` must propagate version mismatches
+    /// through the full compressed → bincode-deserialize → version-check path.
+    ///
+    /// This test was absent when the wasm32 gating was introduced (ALLIE-276).
+    /// It exists to prove that the compressed path enforces the same version
+    /// guard as `deserialize`, and that neither `compress` nor
+    /// `serialize_compressed` accidentally swallows the error.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn deserialize_compressed_rejects_wrong_version() {
+        let mut snap = sample_snapshot();
+        // Forge a future version number that the current runtime does not understand.
+        snap.version = 999;
+        // We bypass `serialize_compressed` for the write side so we can produce
+        // a compressed blob that really does contain version=999.
+        let raw = bincode::serialize(&snap).unwrap();
+        let compressed = compress(&raw).unwrap();
+        match Snapshot::deserialize_compressed(&compressed).unwrap_err() {
+            SnapshotError::VersionMismatch {
+                expected: 1,
+                found: 999,
+            } => {}
+            other => panic!("expected VersionMismatch, got: {:?}", other),
+        }
+    }
+
     // =====================================================================
     // SnapshotPruner tests
     // =====================================================================

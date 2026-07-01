@@ -21,7 +21,7 @@
 //!
 //! | Tag | Name  | Payload Meaning                          |
 //! |-----|-------|------------------------------------------|
-//! | 0   | PTR   | Pointer to heap-allocated Value (Arc)    |
+//! | 0   | PTR   | Pointer to heap-allocated HeapValue (Arc) |
 //! | 1   | INT   | 48-bit signed integer (two's complement) |
 //! | 2   | ATOM  | Atom ID (interned symbol)                |
 //! | 3   | BOOL  | Boolean (0 = false, 1 = true)            |
@@ -38,12 +38,12 @@
 //!
 //! 48-bit signed integers can represent values from -140,737,488,355,328 to
 //! +140,737,488,355,327 (±140 trillion). Values outside this range must be
-//! heap-allocated as `Value::BigInt`.
+//! heap-allocated as `HeapValue::BigInt`.
 //!
 //! # Safety Invariants
 //!
 //! - Pointer values MUST be 48-bit addressable (x86_64 guarantees this in user space)
-//! - TAG_PTR values with payload > 1 are assumed to be valid `Arc<Value>` pointers
+//! - TAG_PTR values with payload > 1 are assumed to be valid `Arc<HeapValue>` pointers
 //! - The implementation uses `Arc` for heap types to maintain reference counting
 //!
 //! # JIT Compatibility
@@ -53,9 +53,15 @@
 //! - `lumen-codegen/src/union_helpers.rs`
 //! - `lumen-codegen/src/stencils.rs`
 
+use std::cmp::Ordering;
+use std::collections::BTreeMap;
+use std::hash::Hash;
 use std::sync::Arc;
 
-use crate::values::Value;
+use serde::{Deserialize, Serialize};
+
+use crate::heap_value::{ClosureData, HeapValue, RecordData, UnionData};
+use num_bigint::BigInt;
 
 /// NaN-boxed 64-bit value used by the VM register file and JIT.
 ///
@@ -65,8 +71,58 @@ use crate::values::Value;
 /// - Inline storage of small integers and booleans
 /// - Direct use of f64 without conversion
 #[repr(transparent)]
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy)]
 pub struct NbValue(pub u64);
+
+impl PartialEq for NbValue {
+    #[inline(always)]
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp_total(*other) == Ordering::Equal
+    }
+}
+
+impl Eq for NbValue {}
+
+impl PartialOrd for NbValue {
+    #[inline(always)]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp_total(*other))
+    }
+}
+
+impl Ord for NbValue {
+    #[inline(always)]
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.cmp_total(*other)
+    }
+}
+
+impl Hash for NbValue {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        if self.is_int() {
+            self.as_int().unwrap_or(0).hash(state);
+            return;
+        }
+        if !self.is_nan_boxed() {
+            self.0.hash(state);
+            return;
+        }
+        if self.is_bool() {
+            self.as_bool().hash(state);
+            return;
+        }
+        if self.is_null() {
+            0u8.hash(state);
+            return;
+        }
+        if let Some(hv) = self.as_heap_ref() {
+            std::mem::discriminant(hv).hash(state);
+            hv.hash(state);
+            return;
+        }
+        self.0.hash(state);
+    }
+}
 
 impl NbValue {
     // ═════════════════════════════════════════════════════════════════════════
@@ -80,7 +136,7 @@ impl NbValue {
     /// 48-bit payload mask — bits 0-47.
     pub const PAYLOAD_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 
-    /// Flag bit for arena-allocated Value pointers.
+    /// Flag bit for arena-allocated heap pointers.
     /// When set in the payload, the pointer is arena-owned (no Arc refcount).
     pub const PTR_ARENA_FLAG: u64 = 1;
 
@@ -95,7 +151,7 @@ impl NbValue {
     // ═════════════════════════════════════════════════════════════════════════
 
     /// Tag for heap pointers (payload is raw pointer bits).
-    /// Pointer values are `Arc<Value>` allocations.
+    /// Pointer values are `Arc<HeapValue>` allocations.
     pub const TAG_PTR: u64 = 0;
 
     /// Tag for 48-bit signed integers.
@@ -190,7 +246,7 @@ impl NbValue {
     /// (`MIN_INT48` to `MAX_INT48`). In release mode, the value is
     /// silently truncated (wraps around).
     ///
-    /// For values outside this range, heap-box the value as `Value::Int` and use `new_ptr()`.
+    /// For values outside this range, heap-box the value as BigInt.
     ///
     /// # Examples
     /// ```
@@ -211,6 +267,12 @@ impl NbValue {
         );
         let payload = (value as u64) & Self::PAYLOAD_MASK;
         NbValue(Self::NAN_MASK | (Self::TAG_INT << Self::TAG_SHIFT) | payload)
+    }
+
+    /// Create a NaN-boxed BigInt value.
+    #[inline(always)]
+    pub fn new_bigint(value: BigInt) -> Self {
+        NbValue::new_heap(HeapValue::BigInt(Arc::new(value)))
     }
 
     /// Create a NaN-boxed float value.
@@ -239,41 +301,95 @@ impl NbValue {
         }
     }
 
-    /// Create a NaN-boxed pointer to a heap-allocated `Value`.
+    /// Create a NaN-boxed pointer to a heap-allocated `HeapValue`.
     ///
-    /// The pointer is wrapped in an `Arc` for reference counting.
-    /// This consumes the pointer - the caller should not use it afterward.
-    ///
-    /// # Safety
-    ///
-    /// The pointer must be a valid, non-null pointer obtained from `Arc::into_raw()`.
-    /// It must be 48-bit addressable (upper 16 bits must be zero).
-    ///
-    /// # Panics
-    ///
-    /// Panics in debug mode if the pointer has bits set in positions 48-63.
+    /// The value is wrapped in an `Arc` for reference counting.
     #[inline(always)]
-    pub fn new_ptr(ptr: *const Value) -> Self {
+    pub fn new_heap(value: HeapValue) -> Self {
+        let ptr = Arc::into_raw(Arc::new(value));
         let addr = ptr as u64;
         debug_assert!(
             addr & !Self::PAYLOAD_MASK == 0,
-            "NbValue::new_ptr: pointer {:p} is not 48-bit addressable",
+            "NbValue::new_heap: pointer {:p} is not 48-bit addressable",
             ptr
         );
         NbValue(Self::NAN_MASK | (addr & Self::PAYLOAD_MASK))
     }
 
-    /// Create a NaN-boxed value from a raw pointer to any type.
-    ///
-    /// This is a convenience wrapper around `new_ptr` for generic pointers.
-    /// The pointer will be cast to `*const Value`.
-    ///
-    /// # Safety
-    ///
-    /// See `new_ptr` for safety requirements.
+    /// Create a NaN-boxed string value.
     #[inline(always)]
-    pub fn from_pointer<T>(ptr: *const T) -> Self {
-        Self::new_ptr(ptr as *const Value)
+    pub fn new_str(s: &str) -> Self {
+        NbValue::new_heap(HeapValue::Str(Arc::from(s)))
+    }
+
+    /// Create a NaN-boxed bytes value.
+    #[inline(always)]
+    pub fn new_bytes(bytes: Arc<[u8]>) -> Self {
+        NbValue::new_heap(HeapValue::Bytes(bytes))
+    }
+
+    /// Create a NaN-boxed set value.
+    #[inline(always)]
+    pub fn new_set(set: std::collections::BTreeSet<NbValue>) -> Self {
+        NbValue::new_heap(HeapValue::Set(Arc::new(set)))
+    }
+
+    /// Create a NaN-boxed future value.
+    #[inline(always)]
+    pub fn new_future(future: crate::heap_value::FutureData) -> Self {
+        NbValue::new_heap(HeapValue::Future(Arc::new(future)))
+    }
+
+    /// Create a NaN-boxed list value.
+    #[inline(always)]
+    pub fn new_list(elems: Vec<NbValue>) -> Self {
+        NbValue::new_heap(HeapValue::List(Arc::new(elems)))
+    }
+
+    /// Create a NaN-boxed tuple value.
+    #[inline(always)]
+    pub fn new_tuple(elems: Vec<NbValue>) -> Self {
+        NbValue::new_heap(HeapValue::Tuple(Arc::new(elems)))
+    }
+
+    /// Create a NaN-boxed map value.
+    #[inline(always)]
+    pub fn new_map(map: BTreeMap<String, NbValue>) -> Self {
+        NbValue::new_heap(HeapValue::Map(Arc::new(map)))
+    }
+
+    /// Create a NaN-boxed record value.
+    #[inline(always)]
+    pub fn new_record(type_name: &str, fields: BTreeMap<String, NbValue>) -> Self {
+        NbValue::new_heap(HeapValue::Record(Arc::new(RecordData {
+            type_name: Arc::from(type_name),
+            fields,
+        })))
+    }
+
+    /// Create a NaN-boxed union value.
+    #[inline(always)]
+    pub fn new_union(tag: &str, payload: NbValue) -> Self {
+        NbValue::new_union_arc(Arc::from(tag), payload)
+    }
+
+    /// Create a NaN-boxed union value from an existing Arc tag.
+    ///
+    /// This avoids allocating a new tag string when the caller already
+    /// owns an `Arc<str>` (e.g., when reusing a tag from a string literal
+    /// loaded into an NbValue register).
+    #[inline(always)]
+    pub fn new_union_arc(tag: Arc<str>, payload: NbValue) -> Self {
+        NbValue::new_heap(HeapValue::Union(UnionData { tag, payload }))
+    }
+
+    /// Create a NaN-boxed closure value.
+    #[inline(always)]
+    pub fn new_closure(cell_idx: usize, captures: Vec<NbValue>) -> Self {
+        NbValue::new_heap(HeapValue::Closure(Arc::new(ClosureData {
+            cell_idx,
+            captures,
+        })))
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -389,7 +505,7 @@ impl NbValue {
     /// Extract a NaN-boxed float.
     ///
     /// Returns `None` if this is not a raw float (i.e., if it's NaN-boxed).
-    /// Note: Heap-allocated floats (TAG_PTR to Value::Float) return `None`.
+    /// Note: Heap-allocated floats return `None`.
     #[inline(always)]
     pub fn as_float(self) -> Option<f64> {
         if self.is_nan_boxed() {
@@ -435,7 +551,7 @@ impl NbValue {
         }
         let payload = self.payload();
         unsafe {
-            let ptr = (payload & !Self::PTR_ARENA_FLAG) as *const Value;
+            let ptr = (payload & !Self::PTR_ARENA_FLAG) as *const HeapValue;
             drop(Arc::from_raw(ptr));
         }
     }
@@ -447,20 +563,20 @@ impl NbValue {
     pub fn inc_ref(self) {
         if self.is_heap_allocated() {
             unsafe {
-                let ptr = (self.payload() & !Self::PTR_ARENA_FLAG) as *const Value;
+                let ptr = (self.payload() & !Self::PTR_ARENA_FLAG) as *const HeapValue;
                 Arc::increment_strong_count(ptr);
             }
         }
     }
 
-    /// Get a reference to the heap-allocated Value without cloning or touching refcounts.
+    /// Get a reference to the heap-allocated HeapValue without cloning or touching refcounts.
     /// Returns None for inline types (int, bool, null, float) and special pointer values.
     ///
     /// # Safety
     /// The returned reference is valid as long as this NbValue (or its register) is alive.
     /// Do not call drop_heap() or overwrite the register while holding this reference.
     #[inline(always)]
-    pub fn as_heap_ref(&self) -> Option<&Value> {
+    pub fn as_heap_ref(&self) -> Option<&HeapValue> {
         if !self.is_nan_boxed() {
             return None; // Raw float
         }
@@ -472,24 +588,15 @@ impl NbValue {
             return None; // Null pointer or NaN sentinel
         }
         unsafe {
-            let ptr = (payload & !Self::PTR_ARENA_FLAG) as *const Value;
+            let ptr = (payload & !Self::PTR_ARENA_FLAG) as *const HeapValue;
             Some(&*ptr)
         }
     }
 
-    /// Get a mutable reference to the heap-allocated Value.
+    /// Get an owned Arc for the heap-allocated value.
     /// Returns None for inline types (int, bool, null, float) and special pointer values.
-    ///
-    /// # Safety
-    /// The caller MUST guarantee that this NbValue is the sole owner of the
-    /// underlying `Arc<Value>` (i.e., Arc strong count == 1). This is true when
-    /// the NbValue is held in a single register with no other copies.
-    /// Calling this when the Arc is shared causes undefined behavior.
-    ///
-    /// The returned reference is valid as long as this NbValue (or its register) is alive.
-    /// Do not call drop_heap() or overwrite the register while holding this reference.
     #[inline(always)]
-    pub unsafe fn as_heap_mut(&mut self) -> Option<&mut Value> {
+    pub fn as_heap_mut(&self) -> Option<Arc<HeapValue>> {
         if !self.is_nan_boxed() {
             return None; // Raw float
         }
@@ -500,18 +607,14 @@ impl NbValue {
         if payload <= 1 {
             return None; // Null pointer or NaN sentinel
         }
-        let ptr = (payload & !Self::PTR_ARENA_FLAG) as *mut Value;
-        Some(&mut *ptr)
+        unsafe {
+            let ptr = (payload & !Self::PTR_ARENA_FLAG) as *const HeapValue;
+            Arc::increment_strong_count(ptr);
+            Some(Arc::from_raw(ptr))
+        }
     }
 
     /// Returns `true` if this value is truthy.
-    ///
-    /// Truthiness rules:
-    /// - Null: false
-    /// - Bool(b): b
-    /// - Int(n): n != 0
-    /// - Float(f): f != 0.0 && !f.is_nan()
-    /// - Everything else: true (including empty collections)
     pub fn is_truthy(self) -> bool {
         // Handle raw floats first
         if !self.is_nan_boxed() {
@@ -523,13 +626,12 @@ impl NbValue {
             Self::TAG_NULL => false,
             Self::TAG_BOOL => self.payload() != 0,
             Self::TAG_INT => self.as_int().map_or(true, |n| n != 0),
-            Self::TAG_PTR => {
-                // NaN sentinel (payload = 1) is not truthy
-                // Null sentinel (payload = 0) is not truthy
-                // Other pointers are truthy
-                self.payload() > 1
-            }
-            _ => true, // Atoms, fibers, and other types are truthy
+            Self::TAG_PTR => match self.payload() {
+                0 => false,
+                1 => false,
+                _ => self.as_heap_ref().map_or(true, |hv| hv.is_truthy()),
+            },
+            _ => true,
         }
     }
 
@@ -541,18 +643,80 @@ impl NbValue {
             return "Float";
         }
         match self.tag() {
-            Self::TAG_PTR => {
-                match self.payload() {
-                    0 => "Null",
-                    1 => "Float", // NaN sentinel
-                    _ => "Pointer",
-                }
-            }
+            Self::TAG_PTR => match self.payload() {
+                0 => "Null",
+                1 => "Float", // NaN sentinel
+                _ => self.as_heap_ref().map_or("Heap", |hv| hv.type_name()),
+            },
             Self::TAG_INT => "Int",
             Self::TAG_BOOL => "Bool",
             Self::TAG_NULL => "Null",
             _ => "Unknown",
         }
+    }
+
+    /// Display this value without converting to legacy Value.
+    pub fn display(self) -> String {
+        if self.is_int() {
+            return self.as_int().unwrap_or(0).to_string();
+        }
+        if !self.is_nan_boxed() {
+            return format!("{}", f64::from_bits(self.0));
+        }
+        if self.is_bool() {
+            return if self.payload() != 0 {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            };
+        }
+        if self.is_null() {
+            return "null".to_string();
+        }
+        if let Some(hv) = self.as_heap_ref() {
+            return hv.display();
+        }
+        "null".to_string()
+    }
+
+    /// Extract a string from heap if this is a Str variant.
+    pub fn as_str_ref(self) -> Option<Arc<str>> {
+        self.as_heap_ref().and_then(|hv| match hv {
+            HeapValue::Str(s) => Some(Arc::clone(s)),
+            _ => None,
+        })
+    }
+
+    /// Extract list reference from heap if this is a List variant.
+    pub fn as_list_ref(self) -> Option<Arc<Vec<NbValue>>> {
+        self.as_heap_ref().and_then(|hv| match hv {
+            HeapValue::List(l) => Some(Arc::clone(l)),
+            _ => None,
+        })
+    }
+
+    /// Extract map reference from heap if this is a Map variant.
+    pub fn as_map_ref(self) -> Option<Arc<BTreeMap<String, NbValue>>> {
+        self.as_heap_ref().and_then(|hv| match hv {
+            HeapValue::Map(m) => Some(Arc::clone(m)),
+            _ => None,
+        })
+    }
+
+    /// Extract record reference from heap if this is a Record variant.
+    pub fn as_record_ref(self) -> Option<Arc<RecordData>> {
+        self.as_heap_ref().and_then(|hv| match hv {
+            HeapValue::Record(r) => Some(Arc::clone(r)),
+            _ => None,
+        })
+    }
+
+    /// Extract union data from heap if this is a Union variant.
+    pub fn as_union_ref(self) -> Option<UnionData> {
+        self.as_heap_ref().and_then(|hv| match hv {
+            HeapValue::Union(u) => Some(u.clone()),
+            _ => None,
+        })
     }
 
     /// Get the raw u64 bits.
@@ -571,6 +735,38 @@ impl NbValue {
     pub const fn from_bits(bits: u64) -> Self {
         NbValue(bits)
     }
+
+    /// Compare to another NbValue for total ordering.
+    #[inline(always)]
+    fn cmp_total(self, other: NbValue) -> Ordering {
+        if self.is_null() && other.is_null() {
+            return Ordering::Equal;
+        }
+        if self.is_null() {
+            return Ordering::Less;
+        }
+        if other.is_null() {
+            return Ordering::Greater;
+        }
+
+        if self.is_int() && other.is_int() {
+            return self.as_int().unwrap_or(0).cmp(&other.as_int().unwrap_or(0));
+        }
+        if !self.is_nan_boxed() && !other.is_nan_boxed() {
+            return self.0.cmp(&other.0);
+        }
+        if self.is_bool() && other.is_bool() {
+            return self.as_bool().cmp(&other.as_bool());
+        }
+
+        // Heap values: compare by discriminant then by HeapValue::cmp
+        match (self.as_heap_ref(), other.as_heap_ref()) {
+            (Some(a), Some(b)) => a.cmp(b),
+            (Some(_), None) => Ordering::Greater,
+            (None, Some(_)) => Ordering::Less,
+            (None, None) => self.0.cmp(&other.0),
+        }
+    }
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -580,6 +776,19 @@ impl NbValue {
 impl Default for NbValue {
     fn default() -> Self {
         Self::new_null()
+    }
+}
+
+impl Serialize for NbValue {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.display())
+    }
+}
+
+impl<'de> Deserialize<'de> for NbValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Ok(NbValue::new_str(&value))
     }
 }
 
@@ -619,18 +828,23 @@ impl std::fmt::Debug for NbValue {
 
 impl std::fmt::Display for NbValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.tag() {
-            _ if !self.is_nan_boxed() => write!(f, "{}", f64::from_bits(self.0)),
-            Self::TAG_INT => write!(f, "{}", self.as_int().unwrap_or(0)),
-            Self::TAG_BOOL => write!(f, "{}", self.payload() != 0),
-            Self::TAG_NULL => write!(f, "null"),
-            Self::TAG_PTR => match self.payload() {
-                0 => write!(f, "null"),
-                1 => write!(f, "NaN"),
-                _ => write!(f, "<ptr:{:012x}>", self.payload()),
-            },
-            _ => write!(f, "<unknown:{:016x}>", self.0),
-        }
+        write!(f, "{}", self.display())
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// UNIT TESTS
+// ═════════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod heap_value_tests {
+    use super::NbValue;
+
+    #[test]
+    fn test_heap_display_and_type_name() {
+        let s = NbValue::new_str("hello");
+        assert_eq!(s.display(), "hello");
+        assert_eq!(s.type_name(), "String");
     }
 }
 
@@ -837,7 +1051,6 @@ impl std::fmt::Debug for RegisterFile {
 #[cfg(test)]
 mod tests {
     use super::NbValue;
-    use crate::values::Value;
 
     // ═════════════════════════════════════════════════════════════════════════
     // Constructor/Extractor Round-trip Tests
@@ -940,8 +1153,8 @@ mod tests {
         assert_eq!(NbValue::new_int(42).type_name(), "Int");
         assert_eq!(NbValue::new_float(1.0).type_name(), "Float");
 
-        let ptr = NbValue::from_pointer(&Value::Null);
-        assert_eq!(ptr.type_name(), "Pointer");
+        let ptr = NbValue::new_str("hi");
+        assert_eq!(ptr.type_name(), "String");
     }
 
     #[test]
@@ -969,10 +1182,8 @@ mod tests {
         assert!(NbValue::new_bool(true).is_truthy());
 
         // Heap pointer is truthy
-        let value = std::sync::Arc::new(Value::Int(999));
-        let ptr = NbValue::new_ptr(std::sync::Arc::into_raw(value));
+        let ptr = NbValue::new_str("truthy");
         assert!(ptr.is_truthy());
-        ptr.drop_heap();
     }
 
     #[test]

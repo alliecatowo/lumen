@@ -1,16 +1,16 @@
-//! Per-frame bump-pointer arena for JIT-allocated Values.
+//! Per-frame bump-pointer arena for JIT-allocated HeapValues.
 //!
 //! Allocated once per call frame, freed en masse on frame exit.
 //! NOT thread-safe — each fiber/thread has its own.
 
 use std::mem;
 
-use crate::values::Value;
+use crate::heap_value::HeapValue;
 
 /// Size of each arena chunk (64 KiB).
 pub const ARENA_CHUNK_SIZE: usize = 64 * 1024;
 
-/// Per-frame bump-pointer arena for JIT-allocated Values.
+/// Per-frame bump-pointer arena for JIT-allocated HeapValues.
 ///
 /// Values allocated in the arena live until `reset()` or `clear()` is called.
 ///
@@ -25,8 +25,8 @@ pub struct ValueArena {
     bump: usize,
     /// Capacity of the current chunk.
     capacity: usize,
-    /// Pointers to Values allocated in this arena (for drop on reset/clear).
-    values: Vec<*mut Value>,
+    /// Pointers to HeapValues allocated in this arena (for drop on reset/clear).
+    values: Vec<*mut HeapValue>,
 }
 
 impl ValueArena {
@@ -67,13 +67,13 @@ impl ValueArena {
         self.alloc_aligned(size, 8)
     }
 
-    /// Allocate a Value in the arena.
+    /// Allocate a HeapValue in the arena.
     ///
     /// Returns a raw pointer valid for the arena's lifetime.
-    pub fn alloc_value(&mut self, v: Value) -> *mut Value {
-        let size = mem::size_of::<Value>();
-        let align = mem::align_of::<Value>();
-        let ptr = self.alloc_aligned(size, align) as *mut Value;
+    pub fn alloc_value(&mut self, v: HeapValue) -> *mut HeapValue {
+        let size = mem::size_of::<HeapValue>();
+        let align = mem::align_of::<HeapValue>();
+        let ptr = self.alloc_aligned(size, align) as *mut HeapValue;
         unsafe {
             ptr.write(v);
         }
@@ -165,11 +165,12 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn arena_alloc_value_drops_on_reset() {
+    fn arena_alloc_heap_value_drops_on_reset() {
         let mut arena = ValueArena::new();
-        let shared = Arc::new(vec![Value::Int(1)]);
+        let shared: Arc<Vec<crate::nb_value::NbValue>> =
+            Arc::new(vec![crate::nb_value::NbValue::new_int(1)]);
         let keep = shared.clone();
-        let value = Value::List(shared);
+        let value = HeapValue::List(shared);
         let _ptr = arena.alloc_value(value);
         assert_eq!(Arc::strong_count(&keep), 2);
         arena.reset();

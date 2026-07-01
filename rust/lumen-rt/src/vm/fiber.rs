@@ -1115,7 +1115,6 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     fn fiber_switch_roundtrip() {
         use std::sync::atomic::{AtomicU64, Ordering};
-        use std::sync::Arc;
 
         // Shared result slot (written by the worker, read by main).
         static RESULT: AtomicU64 = AtomicU64::new(0);
@@ -1407,7 +1406,7 @@ mod tests {
     #[test]
     fn fiber_growth_count_increments_after_growth() {
         // Create a fiber with small initial stack
-        let mut fiber = Fiber::with_config(FiberStackConfig {
+        let fiber = Fiber::with_config(FiberStackConfig {
             initial_size: 16 * 1024,
             max_size: 256 * 1024,
             ..Default::default()

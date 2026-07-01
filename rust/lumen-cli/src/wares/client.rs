@@ -238,8 +238,9 @@ impl RegistryClient {
         _metadata: &RegistryVersionMetadata,
         _sig: &PackageSignature,
     ) -> Result<(), String> {
-        // TODO: Implement actual signature verification
-        // For v0, we just check that a signature exists
+        // UNIMPLEMENTED: requires signature verification against trusted
+        // registry keys (TUF root/targets or registry-specific trust anchors).
+        // For v0, we just check that a signature exists.
         Ok(())
     }
 }

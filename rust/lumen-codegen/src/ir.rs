@@ -823,7 +823,7 @@ pub(crate) fn lower_cell<M: Module>(
         &[pointer_type, types::I64, types::I64], // ctx, a_ptr, b_ptr
         &[types::I64],
     )?;
-    let merge_take_a_ref = declare_helper_func(
+    let _merge_take_a_ref = declare_helper_func(
         module,
         &mut func,
         "jit_rt_merge_take_a",
@@ -1160,6 +1160,13 @@ pub(crate) fn lower_cell<M: Module>(
         &[pointer_type, types::F64],
         &[types::I64],
     )?;
+    let intrinsic_to_string_nb_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_to_string_nb",
+        &[pointer_type, types::I64],
+        &[types::I64],
+    )?;
     let intrinsic_to_int_from_float_ref = declare_helper_func(
         module,
         &mut func,
@@ -1267,6 +1274,27 @@ pub(crate) fn lower_cell<M: Module>(
         &[pointer_type, types::I64, types::I64],
         &[types::I64],
     )?;
+    let intrinsic_json_parse_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_json_parse",
+        &[pointer_type, types::I64],
+        &[types::I64],
+    )?;
+    let intrinsic_json_encode_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_json_encode",
+        &[pointer_type, types::I64],
+        &[types::I64],
+    )?;
+    let intrinsic_json_pretty_ref = declare_helper_func(
+        module,
+        &mut func,
+        "jit_rt_json_pretty",
+        &[pointer_type, types::I64],
+        &[types::I64],
+    )?;
     let intrinsic_hrtime_ref = declare_helper_func(
         module,
         &mut func,
@@ -1358,12 +1386,18 @@ pub(crate) fn lower_cell<M: Module>(
     let mut float_regs: std::collections::HashSet<u16> = std::collections::HashSet::new();
     let mut string_regs: std::collections::HashSet<u16> = std::collections::HashSet::new();
     // Map from register → declared param type string (for collection element inference).
-    let mut param_type_map: HashMap<u16, &str> = HashMap::new();
-    // Seed float_regs from parameters
+    let mut param_type_map: HashMap<u16, String> = HashMap::new();
+    // Seed float_regs from parameters (variadic params are packed into a list)
     for (i, p) in cell.params.iter().enumerate() {
-        param_type_map.insert(i as u16, p.ty.as_str());
-        if p.ty == "Float" {
-            float_regs.insert(i as u16);
+        if p.variadic {
+            // Variadic params are passed as list[T] at runtime
+            let list_ty = format!("list[{}]", p.ty);
+            param_type_map.insert(i as u16, list_ty);
+        } else {
+            param_type_map.insert(i as u16, p.ty.clone());
+            if p.ty == "Float" {
+                float_regs.insert(i as u16);
+            }
         }
     }
     for inst in &cell.instructions {
@@ -1406,6 +1440,8 @@ pub(crate) fn lower_cell<M: Module>(
                     12 | 122 => {
                         float_regs.insert(inst.a);
                     }
+                    // Json encode/pretty produce JSON values; parse returns JSON value.
+                    141 | 142 => {}
                     // String-producing intrinsics: ToString, StringConcat,
                     // Upper, Lower, Trim, Replace, Slice, PadLeft, PadRight, TypeOf
                     10 | 106 | 13 | 19 | 20 | 21 | 22 | 23 | 55 | 56 => {
@@ -1441,7 +1477,7 @@ pub(crate) fn lower_cell<M: Module>(
             OpCode::GetIndex => {
                 let collection_reg = inst.b;
                 if let Some(param_ty) = param_type_map.get(&collection_reg) {
-                    if param_ty.contains("Float") || *param_ty == "list[Float]" {
+                    if param_ty.contains("Float") || param_ty.as_str() == "list[Float]" {
                         float_regs.insert(inst.a);
                     }
                 }
@@ -1483,7 +1519,7 @@ pub(crate) fn lower_cell<M: Module>(
         .params
         .iter()
         .enumerate()
-        .filter(|(_i, p)| p.ty == "String")
+        .filter(|(_i, p)| p.ty == "String" && !p.variadic)
         .map(|(i, _p)| i as u16)
         .collect();
     let concat_chains = identify_concat_chains(cell, &string_param_regs);
@@ -1500,7 +1536,12 @@ pub(crate) fn lower_cell<M: Module>(
     // Single-block registers use pure SSA Values tracked in regs.ssa_vals.
     for i in 0..num_regs {
         let var_ty = if i < cell.params.len() {
-            JitVarType::from_lir_return_type(&cell.params[i].ty)
+            let param = &cell.params[i];
+            if param.variadic {
+                JitVarType::Ptr
+            } else {
+                JitVarType::from_lir_return_type(&param.ty)
+            }
         } else if float_regs.contains(&(i as u16)) {
             JitVarType::Float
         } else if string_regs.contains(&(i as u16)) {
@@ -2709,14 +2750,11 @@ pub(crate) fn lower_cell<M: Module>(
                     let lhs_f = emit_unbox_float(&mut builder, lhs);
                     let rhs_f = emit_unbox_float(&mut builder, rhs);
                     builder.ins().fcmp(FloatCC::Equal, lhs_f, rhs_f)
-                } else if lhs_ty == JitVarType::RawInt || rhs_ty == JitVarType::RawInt {
-                    // RawInt (unboxed) vs Int (NaN-boxed): normalize both to raw before comparing.
+                } else {
+                    // Int/RawInt: normalize both to raw before comparing.
                     let lhs_i = ensure_raw_int(&mut builder, lhs, lhs_ty);
                     let rhs_i = ensure_raw_int(&mut builder, rhs, rhs_ty);
                     builder.ins().icmp(IntCC::Equal, lhs_i, rhs_i)
-                } else {
-                    // Int: can compare NaN-boxed values directly (both are identically encoded)
-                    builder.ins().icmp(IntCC::Equal, lhs, rhs)
                 };
                 let one = builder.ins().iconst(types::I64, 1);
                 let zero = builder.ins().iconst(types::I64, 0);
@@ -2746,10 +2784,9 @@ pub(crate) fn lower_cell<M: Module>(
                     let rhs_f = emit_unbox_float(&mut builder, rhs);
                     builder.ins().fcmp(FloatCC::LessThan, lhs_f, rhs_f)
                 } else {
-                    // Int: must unbox before comparing — NbValue encoding does NOT preserve
-                    // signed ordering (negative values have high payload bits set).
-                    let lhs_i = emit_unbox_int(&mut builder, lhs);
-                    let rhs_i = emit_unbox_int(&mut builder, rhs);
+                    // Int/RawInt: normalize before comparing.
+                    let lhs_i = ensure_raw_int(&mut builder, lhs, lhs_ty);
+                    let rhs_i = ensure_raw_int(&mut builder, rhs, rhs_ty);
                     builder.ins().icmp(IntCC::SignedLessThan, lhs_i, rhs_i)
                 };
                 let one = builder.ins().iconst(types::I64, 1);
@@ -2782,10 +2819,9 @@ pub(crate) fn lower_cell<M: Module>(
                     let rhs_f = emit_unbox_float(&mut builder, rhs);
                     builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs_f, rhs_f)
                 } else {
-                    // Int: must unbox before comparing — NbValue encoding does NOT preserve
-                    // signed ordering (negative values have high payload bits set).
-                    let lhs_i = emit_unbox_int(&mut builder, lhs);
-                    let rhs_i = emit_unbox_int(&mut builder, rhs);
+                    // Int/RawInt: normalize before comparing.
+                    let lhs_i = ensure_raw_int(&mut builder, lhs, lhs_ty);
+                    let rhs_i = ensure_raw_int(&mut builder, rhs, rhs_ty);
                     builder
                         .ins()
                         .icmp(IntCC::SignedLessThanOrEqual, lhs_i, rhs_i)
@@ -3322,26 +3358,18 @@ pub(crate) fn lower_cell<M: Module>(
                     .copied()
                     .unwrap_or(JitVarType::Int);
 
-                // Use typed helpers for known scalar element types to avoid
-                // generic NbValue decoding on the runtime side.
-                let call = match elem_ty {
-                    JitVarType::Int | JitVarType::RawInt => {
-                        let raw_int = ensure_raw_int(&mut builder, elem_raw, elem_ty);
-                        builder
-                            .ins()
-                            .call(list_append_int_ref, &[vm_ctx_param, list_ptr, raw_int])
+                // jit_rt_list_append expects NbValue encoding for the element.
+                let element_nb = match elem_ty {
+                    JitVarType::RawInt => ensure_boxed_int(&mut builder, elem_raw, elem_ty),
+                    JitVarType::Str => {
+                        let call = builder.ins().call(str_to_nb_ref, &[vm_ctx_param, elem_raw]);
+                        builder.inst_results(call)[0]
                     }
-                    JitVarType::Float => builder
-                        .ins()
-                        .call(list_append_float_ref, &[vm_ctx_param, list_ptr, elem_raw]),
-                    _ => {
-                        // Fallback generic path expects NbValue encoding.
-                        let element_nb = ensure_boxed_int(&mut builder, elem_raw, elem_ty);
-                        builder
-                            .ins()
-                            .call(list_append_ref, &[vm_ctx_param, list_ptr, element_nb])
-                    }
+                    _ => elem_raw,
                 };
+                let call = builder
+                    .ins()
+                    .call(list_append_ref, &[vm_ctx_param, list_ptr, element_nb]);
                 let result = builder.inst_results(call)[0];
                 var_types.insert(inst.a as u32, JitVarType::Ptr);
                 def_var(&mut builder, &mut regs, inst.a, result);
@@ -4112,6 +4140,75 @@ pub(crate) fn lower_cell<M: Module>(
                                 def_var(&mut builder, &mut regs, inst.a, result);
                             }
                         }
+                    }
+
+                    // -------------------------------------------------------
+                    // 140: JsonParse
+                    // -------------------------------------------------------
+                    140 => {
+                        let arg_ty = var_types.get(&(arg_base as u32)).copied();
+                        let val_raw = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let json_str = match arg_ty {
+                            Some(JitVarType::Str) => val_raw,
+                            Some(JitVarType::Float) => {
+                                let fv = emit_unbox_float(&mut builder, val_raw);
+                                let call = builder
+                                    .ins()
+                                    .call(intrinsic_to_string_float_ref, &[vm_ctx_param, fv]);
+                                builder.inst_results(call)[0]
+                            }
+                            Some(JitVarType::Int)
+                            | Some(JitVarType::RawInt)
+                            | Some(JitVarType::Bool) => {
+                                let iv = ensure_raw_int(
+                                    &mut builder,
+                                    val_raw,
+                                    arg_ty.unwrap_or(JitVarType::Int),
+                                );
+                                let call = builder
+                                    .ins()
+                                    .call(intrinsic_to_string_int_ref, &[vm_ctx_param, iv]);
+                                builder.inst_results(call)[0]
+                            }
+                            _ => {
+                                let call = builder
+                                    .ins()
+                                    .call(intrinsic_to_string_nb_ref, &[vm_ctx_param, val_raw]);
+                                builder.inst_results(call)[0]
+                            }
+                        };
+                        let call = builder
+                            .ins()
+                            .call(intrinsic_json_parse_ref, &[vm_ctx_param, json_str]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Ptr);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 141: JsonEncode
+                    // -------------------------------------------------------
+                    141 => {
+                        let val_raw = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let call = builder
+                            .ins()
+                            .call(intrinsic_json_encode_ref, &[vm_ctx_param, val_raw]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Ptr);
+                        def_var(&mut builder, &mut regs, inst.a, result);
+                    }
+
+                    // -------------------------------------------------------
+                    // 142: JsonPretty
+                    // -------------------------------------------------------
+                    142 => {
+                        let val_raw = use_var(&mut builder, &regs, &var_types, arg_base);
+                        let call = builder
+                            .ins()
+                            .call(intrinsic_json_pretty_ref, &[vm_ctx_param, val_raw]);
+                        let result = builder.inst_results(call)[0];
+                        var_types.insert(inst.a as u32, JitVarType::Ptr);
+                        def_var(&mut builder, &mut regs, inst.a, result);
                     }
 
                     // -------------------------------------------------------
@@ -5128,14 +5225,13 @@ pub(crate) fn lower_cell<M: Module>(
 
                     // -------------------------------------------------------
                     // 71: Merge — merge two maps/records.
-                    // Uses merge_take_a which takes ownership of a's Arc so
-                    // Arc::make_mut can mutate in-place (O(log n)) instead of
-                    // deep-copying the BTreeMap (O(n)) on every call.
+                    // Uses the safe merge helper to avoid taking ownership of
+                    // arena-backed pointers while still preserving COW behavior.
                     // -------------------------------------------------------
                     71 => {
                         let a = use_var(&mut builder, &regs, &var_types, arg_base);
                         let b = use_var(&mut builder, &regs, &var_types, arg_base + 1);
-                        let call = builder.ins().call(merge_take_a_ref, &[vm_ctx_param, a, b]);
+                        let call = builder.ins().call(_merge_ref, &[vm_ctx_param, a, b]);
                         let result = builder.inst_results(call)[0];
                         var_types.insert(inst.a as u32, JitVarType::Ptr);
                         def_var(&mut builder, &mut regs, inst.a, result);

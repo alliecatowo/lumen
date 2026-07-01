@@ -3,6 +3,11 @@
 
 use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+use crate::heap_value::HeapValue;
+use crate::nb_value::NbValue;
+use crate::strings::StringTable;
 
 /// Opcodes for the Lumen register VM.
 /// Hex values match SPEC section 40.2.
@@ -286,6 +291,9 @@ pub enum IntrinsicId {
     EnvVars = 137,
     Tan = 138,
     Trunc = 139,
+    JsonParse = 140,
+    JsonEncode = 141,
+    JsonPretty = 142,
 }
 
 /// A 64-bit instruction.
@@ -398,6 +406,27 @@ pub enum Constant {
     String(String),
     /// NaN-boxed 64-bit value representation (JIT optimization)
     NbValue(u64),
+}
+
+impl Constant {
+    /// Convert this constant into an NbValue without using Value.
+    pub fn to_nb_value(&self, _strings: &StringTable) -> NbValue {
+        match self {
+            Constant::Null => NbValue::new_null(),
+            Constant::Bool(b) => NbValue::new_bool(*b),
+            Constant::Int(i) => {
+                if *i >= NbValue::MIN_INT48 && *i <= NbValue::MAX_INT48 {
+                    NbValue::new_int(*i)
+                } else {
+                    NbValue::new_bigint(BigInt::from(*i))
+                }
+            }
+            Constant::BigInt(n) => NbValue::new_heap(HeapValue::BigInt(Arc::new(n.clone()))),
+            Constant::Float(f) => NbValue::new_float(*f),
+            Constant::String(s) => NbValue::new_str(s),
+            Constant::NbValue(bits) => NbValue::from_bits(*bits),
+        }
+    }
 }
 
 /// Type definition in LIR

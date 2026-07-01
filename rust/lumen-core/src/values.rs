@@ -9,6 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
+use crate::nb_value::NbValue;
+
 /// Runtime values in the Lumen VM.
 ///
 /// # Scalar copy optimization
@@ -35,8 +37,8 @@ pub enum Value {
     Float(f64),
     String(StringRef),
     Bytes(Vec<u8>),
-    List(Arc<Vec<Value>>),
-    Tuple(Arc<Vec<Value>>),
+    List(Arc<Vec<NbValue>>),
+    Tuple(Arc<Vec<NbValue>>),
     Set(Arc<BTreeSet<Value>>),
     Map(Arc<BTreeMap<String, Value>>),
     Record(Arc<RecordValue>),
@@ -241,11 +243,27 @@ impl Value {
     // -- Constructors (wrap inner data in Arc) --
 
     pub fn new_list(v: Vec<Value>) -> Self {
-        Value::List(Arc::new(v))
+        let list = v
+            .into_iter()
+            .map(|value| {
+                // SHIM: delete when P2 complete
+                let heap = crate::heap_value::HeapValue::from(value);
+                NbValue::new_heap(heap)
+            })
+            .collect();
+        Value::List(Arc::new(list))
     }
 
     pub fn new_tuple(v: Vec<Value>) -> Self {
-        Value::Tuple(Arc::new(v))
+        let tuple = v
+            .into_iter()
+            .map(|value| {
+                // SHIM: delete when P2 complete
+                let heap = crate::heap_value::HeapValue::from(value);
+                NbValue::new_heap(heap)
+            })
+            .collect();
+        Value::Tuple(Arc::new(tuple))
     }
 
     pub fn new_set(s: BTreeSet<Value>) -> Self {
@@ -293,17 +311,11 @@ impl Value {
             Value::Bytes(b) => format!("<bytes:{}>", b.len()),
             Value::List(l) => format!(
                 "[{}]",
-                l.iter()
-                    .map(|v| v.display_pretty())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                l.iter().map(|v| v.display()).collect::<Vec<_>>().join(", ")
             ),
             Value::Tuple(t) => format!(
                 "({})",
-                t.iter()
-                    .map(|v| v.display_pretty())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                t.iter().map(|v| v.display()).collect::<Vec<_>>().join(", ")
             ),
             Value::Set(s) => format!(
                 "set[{}]",
@@ -405,11 +417,21 @@ impl Value {
         }
     }
 
-    pub fn as_list(&self) -> Option<&Vec<Value>> {
+    pub fn as_list(&self) -> Option<&Vec<NbValue>> {
         match self {
             Value::List(l) => Some(l),
             _ => None,
         }
+    }
+
+    /// Convert a list to a Vec<Value> by cloning elements.
+    pub fn list_to_values(list: &Vec<NbValue>) -> Vec<Value> {
+        // SHIM: delete when P2 complete
+        list.iter()
+            .map(|v| crate::heap_value::HeapValue::from_nbvalue(*v).display())
+            .map(StringRef::Owned)
+            .map(Value::String)
+            .collect()
     }
 
     pub fn as_record(&self) -> Option<&RecordValue> {
@@ -513,11 +535,11 @@ impl Value {
             Value::BigInt(n) => n.to_string(),
             Value::Float(f) => format_float(*f),
             Value::List(l) => {
-                let items: Vec<String> = l.iter().map(|v| v.display_quoted()).collect();
+                let items: Vec<String> = l.iter().map(|v| v.display()).collect();
                 format!("[{}]", items.join(", "))
             }
             Value::Tuple(t) => {
-                let items: Vec<String> = t.iter().map(|v| v.display_quoted()).collect();
+                let items: Vec<String> = t.iter().map(|v| v.display()).collect();
                 format!("({})", items.join(", "))
             }
             Value::Set(s) => {
@@ -611,8 +633,12 @@ impl PartialEq for Value {
             (Value::String(StringRef::Interned(_)), Value::String(StringRef::Owned(_))) => false,
             (Value::Int(a), Value::Float(b)) => (*a as f64) == *b,
             (Value::Float(a), Value::Int(b)) => *a == (*b as f64),
-            (Value::List(a), Value::List(b)) => **a == **b,
-            (Value::Tuple(a), Value::Tuple(b)) => **a == **b,
+            (Value::List(a), Value::List(b)) => {
+                a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x == y)
+            }
+            (Value::Tuple(a), Value::Tuple(b)) => {
+                a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x == y)
+            }
             (Value::Set(a), Value::Set(b)) => **a == **b,
             (Value::Map(a), Value::Map(b)) => **a == **b,
             (Value::Record(a), Value::Record(b)) => {
@@ -677,16 +703,10 @@ pub fn values_equal(a: &Value, b: &Value, strings: &StringTable) -> bool {
         (Value::Int(x), Value::Float(y)) => (*x as f64) == *y,
         (Value::Float(x), Value::Int(y)) => *x == (*y as f64),
         (Value::List(x), Value::List(y)) => {
-            x.len() == y.len()
-                && x.iter()
-                    .zip(y.iter())
-                    .all(|(a, b)| values_equal(a, b, strings))
+            x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| a == b)
         }
         (Value::Tuple(x), Value::Tuple(y)) => {
-            x.len() == y.len()
-                && x.iter()
-                    .zip(y.iter())
-                    .all(|(a, b)| values_equal(a, b, strings))
+            x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| a == b)
         }
         (Value::Set(x), Value::Set(y)) => {
             // For sets, element-wise comparison with string resolution.
@@ -751,8 +771,18 @@ impl Ord for Value {
                 (StringRef::Owned(_), StringRef::Interned(_)) => Ordering::Greater,
             },
             (Value::Bytes(a), Value::Bytes(b)) => a.cmp(b),
-            (Value::List(a), Value::List(b)) => (**a).cmp(&**b),
-            (Value::Tuple(a), Value::Tuple(b)) => (**a).cmp(&**b),
+            (Value::List(a), Value::List(b)) => a
+                .iter()
+                .zip(b.iter())
+                .map(|(x, y)| x.cmp(y))
+                .find(|ord| *ord != Ordering::Equal)
+                .unwrap_or_else(|| a.len().cmp(&b.len())),
+            (Value::Tuple(a), Value::Tuple(b)) => a
+                .iter()
+                .zip(b.iter())
+                .map(|(x, y)| x.cmp(y))
+                .find(|ord| *ord != Ordering::Equal)
+                .unwrap_or_else(|| a.len().cmp(&b.len())),
             (Value::Set(a), Value::Set(b)) => a.len().cmp(&b.len()).then_with(|| (**a).cmp(&**b)),
             (Value::Map(a), Value::Map(b)) => {
                 let ak: Vec<_> = a.keys().collect();
@@ -1099,7 +1129,7 @@ mod tests {
 
     #[test]
     fn test_scalars_have_no_heap_indirection() {
-        // Scalars must be smaller than a heap-allocated variant (Arc<Vec<Value>>)
+        // Scalars must be smaller than a heap-allocated variant (Arc<Vec<NbValue>>)
         // to confirm they carry no hidden Box/Arc wrapper.
         let null_size = std::mem::size_of_val(&Value::Null);
         let bool_size = std::mem::size_of_val(&Value::Bool(true));

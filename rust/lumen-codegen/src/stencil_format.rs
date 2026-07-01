@@ -379,6 +379,18 @@ pub enum HoleType {
     ///
     /// Used by runtime-call stencils that pass the raw instruction to helpers.
     InstructionWord = 12,
+
+    /// Patch 4 bytes with the 32-bit cell index passed to `Stitcher::compile`.
+    ///
+    /// Used by the `OsrCheck` stencil to embed the actual cell index at
+    /// stitch time, since the LIR instruction always has `a=0`.
+    CellIdx32 = 13,
+
+    /// Patch 4 bytes with the 32-bit instruction program counter (index within
+    /// the cell's instruction array) for the current stencil instruction.
+    ///
+    /// Used by the `OsrCheck` stencil to embed the correct IP at stitch time.
+    Ip32 = 14,
 }
 
 impl HoleType {
@@ -398,6 +410,8 @@ impl HoleType {
             10 => Some(Self::VmContextAddr),
             11 => Some(Self::SBx),
             12 => Some(Self::InstructionWord),
+            13 => Some(Self::CellIdx32),
+            14 => Some(Self::Ip32),
             _ => None,
         }
     }
@@ -562,6 +576,8 @@ mod tests {
             HoleType::JumpOffset32,
             HoleType::RuntimeFuncAddr,
             HoleType::InstructionWord,
+            HoleType::CellIdx32,
+            HoleType::Ip32,
         ];
         for ht in types {
             assert_eq!(HoleType::from_u8(ht as u8), Some(ht));

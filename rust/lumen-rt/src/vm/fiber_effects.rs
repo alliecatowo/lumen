@@ -94,7 +94,7 @@ pub struct FiberEffectStack {
     /// Only one performer can be in flight per stack (one-shot semantics).
     suspended: Option<SuspendedPerformer>,
     /// Stack allocator for handler fibers.
-    /// TODO: wire lm_rt_handle_push to use this pool instead of bare Fiber::new.
+    /// UNIMPLEMENTED: wire lm_rt_handle_push to use this pool instead of bare Fiber::new.
     #[allow(dead_code)]
     pool: FiberPool,
     /// Handler fibers pending free after we switch off their stacks.
@@ -629,7 +629,7 @@ mod tests {
 
     #[test]
     fn effect_stack_init_and_free() {
-        let (ptr, mut ctx) = make_ctx_with_stack();
+        let (ptr, ctx) = make_ctx_with_stack();
         assert!(!ctx.effect_stack.is_null());
         unsafe { lm_rt_effect_stack_free(ptr) };
         assert!(ctx.effect_stack.is_null());

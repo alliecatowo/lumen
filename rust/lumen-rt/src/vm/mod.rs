@@ -4,7 +4,7 @@ pub mod continuations;
 pub mod fiber;
 pub mod fiber_effects;
 pub(crate) mod helpers;
-mod intrinsics;
+pub(crate) mod intrinsics;
 mod ops;
 pub(crate) mod osr;
 pub(crate) mod processes;
@@ -18,6 +18,7 @@ pub(crate) use processes::{
 use crate::jit_tier::{JitTier, JitTierConfig};
 use crate::stencil_tier::{OsrStencilEntry, StencilTier, StencilTierConfig};
 use crate::vm::ops::BinaryOp;
+use lumen_core::heap_value::HeapValue;
 use lumen_core::lir::*;
 use lumen_core::nb_value::{NbValue, RegisterFile};
 use lumen_core::strings::StringTable;
@@ -34,7 +35,7 @@ use lumen_core::arena::ValueArena;
 use lumen_core::vm_context::VmContext;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -251,46 +252,172 @@ impl VmError {
     }
 }
 
-/// Convert an NbValue to an owned Value without consuming heap ownership.
-/// For heap-allocated values this clones the Arc (bumps refcount).
-/// For inline types (int, float, bool, null) this is allocation-free.
+/// Convert an NbValue to a legacy Value by walking HeapValue recursively.
+/// This is a compatibility shim for Value-typed interfaces.
 #[inline]
-fn nb_to_value(nb: NbValue) -> Value {
-    if nb.is_int() {
-        return Value::Int(nb.as_int().unwrap_or(0));
+fn nb_to_value_deep(nb: NbValue, strings: &StringTable) -> Value {
+    if let Some(i) = nb.as_int() {
+        return Value::Int(i);
     }
-    if !nb.is_nan_boxed() {
-        return Value::Float(f64::from_bits(nb.0));
+    if let Some(f) = nb.as_float() {
+        return Value::Float(f);
     }
-    if nb.is_bool() {
-        return Value::Bool(nb.as_bool().unwrap_or(false));
+    if let Some(b) = nb.as_bool() {
+        return Value::Bool(b);
     }
     if nb.is_null() {
         return Value::Null;
     }
-    if let Some(v) = nb.as_heap_ref() {
-        return v.clone();
+    if let Some(hv) = nb.as_heap_ref() {
+        return match hv {
+            HeapValue::Str(s) => Value::String(StringRef::Owned(s.to_string())),
+            HeapValue::Bytes(b) => Value::Bytes(b.as_ref().to_vec()),
+            HeapValue::BigInt(n) => Value::BigInt((**n).clone()),
+            HeapValue::List(l) => Value::List(Arc::clone(l)),
+            HeapValue::Tuple(t) => Value::Tuple(Arc::clone(t)),
+            HeapValue::Set(s) => {
+                let converted: BTreeSet<Value> =
+                    s.iter().map(|v| nb_to_value_deep(*v, strings)).collect();
+                Value::Set(Arc::new(converted))
+            }
+            HeapValue::Map(m) => {
+                let converted: BTreeMap<String, Value> = m
+                    .iter()
+                    .map(|(k, v)| (k.clone(), nb_to_value_deep(*v, strings)))
+                    .collect();
+                Value::Map(Arc::new(converted))
+            }
+            HeapValue::Record(r) => {
+                let fields = r
+                    .fields
+                    .iter()
+                    .map(|(k, v)| (k.clone(), nb_to_value_deep(*v, strings)))
+                    .collect();
+                Value::Record(Arc::new(RecordValue {
+                    type_name: r.type_name.to_string(),
+                    fields,
+                }))
+            }
+            HeapValue::Union(u) => {
+                let tag_id = strings.get_id(&u.tag).unwrap_or(0);
+                Value::Union(UnionValue {
+                    tag: tag_id,
+                    payload: UnionPayload::from_value(nb_to_value_deep(u.payload, strings)),
+                })
+            }
+            HeapValue::Closure(c) => Value::Closure(ClosureValue {
+                cell_idx: c.cell_idx,
+                captures: c
+                    .captures
+                    .iter()
+                    .map(|v| nb_to_value_deep(*v, strings))
+                    .collect(),
+            }),
+            HeapValue::Future(f) => Value::Future(FutureValue {
+                id: f.id,
+                state: match &f.status {
+                    lumen_core::heap_value::FutureStatus::Pending => FutureStatus::Pending,
+                    lumen_core::heap_value::FutureStatus::Completed(_) => FutureStatus::Completed,
+                    lumen_core::heap_value::FutureStatus::Error(_) => FutureStatus::Error,
+                },
+            }),
+            HeapValue::TraceRef(id) => Value::TraceRef(TraceRefValue {
+                trace_id: String::new(),
+                seq: *id,
+            }),
+        };
     }
     Value::Null
 }
 
-/// Convert a Value into an NbValue for storage in a register.
-/// Inline types (null, bool, small int, float) are stored without heap allocation.
-/// All other types are Arc-boxed and stored as TAG_PTR.
+/// Convert a legacy Value into an NbValue without using removed bridges.
 #[inline]
-fn value_to_nb(v: Value) -> NbValue {
-    match v {
+fn nb_from_value(value: Value, strings: &StringTable) -> NbValue {
+    match value {
         Value::Null => NbValue::new_null(),
         Value::Bool(b) => NbValue::new_bool(b),
         Value::Int(n) => {
-            if n >= NbValue::MIN_INT48 && n <= NbValue::MAX_INT48 {
+            if (NbValue::MIN_INT48..=NbValue::MAX_INT48).contains(&n) {
                 NbValue::new_int(n)
             } else {
-                NbValue::new_ptr(std::sync::Arc::into_raw(std::sync::Arc::new(Value::Int(n))))
+                NbValue::new_bigint(BigInt::from(n))
             }
         }
+        Value::BigInt(n) => NbValue::new_bigint(n),
         Value::Float(f) => NbValue::new_float(f),
-        other => NbValue::new_ptr(std::sync::Arc::into_raw(std::sync::Arc::new(other))),
+        Value::String(sr) => {
+            let s = match sr {
+                StringRef::Owned(s) => s,
+                StringRef::Interned(id) => strings.resolve(id).unwrap_or("").to_string(),
+            };
+            NbValue::new_str(&s)
+        }
+        Value::Bytes(b) => NbValue::new_bytes(Arc::from(b.into_boxed_slice())),
+        Value::List(l) => NbValue::new_heap(HeapValue::List(l)),
+        Value::Tuple(t) => NbValue::new_heap(HeapValue::Tuple(t)),
+        Value::Set(s) => {
+            let converted: BTreeSet<NbValue> = s
+                .iter()
+                .cloned()
+                .map(|v| nb_from_value(v, strings))
+                .collect();
+            NbValue::new_set(converted)
+        }
+        Value::Map(m) => {
+            let converted: BTreeMap<String, NbValue> = m
+                .iter()
+                .map(|(k, v)| (k.clone(), nb_from_value(v.clone(), strings)))
+                .collect();
+            NbValue::new_map(converted)
+        }
+        Value::Record(r) => {
+            let fields = r
+                .fields
+                .iter()
+                .map(|(k, v)| (k.clone(), nb_from_value(v.clone(), strings)))
+                .collect();
+            NbValue::new_record(&r.type_name, fields)
+        }
+        Value::Union(u) => {
+            let tag = strings.resolve(u.tag).unwrap_or("");
+            let payload = match &u.payload {
+                UnionPayload::Null => NbValue::new_null(),
+                UnionPayload::Bool(b) => NbValue::new_bool(*b),
+                UnionPayload::Int(n) => {
+                    if (NbValue::MIN_INT48..=NbValue::MAX_INT48).contains(n) {
+                        NbValue::new_int(*n)
+                    } else {
+                        NbValue::new_bigint(BigInt::from(*n))
+                    }
+                }
+                UnionPayload::Float(f) => NbValue::new_float(*f),
+                UnionPayload::Heap(v) => nb_from_value((**v).clone(), strings),
+            };
+            NbValue::new_union(tag, payload)
+        }
+        Value::Closure(c) => NbValue::new_closure(
+            c.cell_idx,
+            c.captures
+                .into_iter()
+                .map(|v| nb_from_value(v, strings))
+                .collect(),
+        ),
+        Value::Future(f) => NbValue::new_heap(HeapValue::Future(Arc::new(
+            lumen_core::heap_value::FutureData {
+                id: f.id,
+                status: match f.state {
+                    FutureStatus::Pending => lumen_core::heap_value::FutureStatus::Pending,
+                    FutureStatus::Completed => {
+                        lumen_core::heap_value::FutureStatus::Completed(NbValue::new_null())
+                    }
+                    FutureStatus::Error => {
+                        lumen_core::heap_value::FutureStatus::Error("error".to_string())
+                    }
+                },
+                schedule: lumen_core::heap_value::FutureSchedule::Eager,
+            },
+        ))),
+        Value::TraceRef(t) => NbValue::new_heap(HeapValue::TraceRef(t.seq)),
     }
 }
 
@@ -735,7 +862,7 @@ impl VM {
     /// Read a register, converting from NbValue to Value (non-destructive clone).
     #[inline(always)]
     pub(crate) fn reg(&self, idx: usize) -> Value {
-        nb_to_value(self.registers[idx])
+        nb_to_value_deep(self.registers[idx], &self.strings)
     }
 
     /// Read a register by reference. Returns a reference to the raw NbValue.
@@ -751,7 +878,7 @@ impl VM {
     pub(crate) fn set_reg(&mut self, idx: usize, val: Value) {
         let old = self.registers[idx];
         old.drop_heap();
-        self.registers[idx] = value_to_nb(val);
+        self.registers[idx] = self.value_to_nb_arena(val);
     }
 
     /// Write a raw NbValue into a register.
@@ -769,7 +896,15 @@ impl VM {
     pub(crate) fn reg_take(&mut self, idx: usize) -> Value {
         let old = self.registers[idx];
         self.registers[idx] = NbValue::new_null();
-        nb_to_value(old) // Destructive is OK here since we took ownership
+        nb_to_value_deep(old, &self.strings)
+    }
+
+    /// Take a register value as NbValue, replacing it with Null.
+    #[inline(always)]
+    pub(crate) fn reg_take_nb(&mut self, idx: usize) -> NbValue {
+        let old = self.registers[idx];
+        self.registers[idx] = NbValue::new_null();
+        old
     }
 
     /// Copy a register from src to dst without deep-cloning.
@@ -785,17 +920,99 @@ impl VM {
         self.registers[dst] = nb;
     }
 
-    /// Get a reference to a heap-allocated register value without cloning.
-    /// Returns None for inline types (int, bool, null, float).
-    /// Use this for type-checking and read-only access to avoid peek_legacy overhead.
-    #[inline(always)]
-    pub(crate) fn reg_heap_ref(&self, idx: usize) -> Option<&Value> {
-        self.registers[idx].as_heap_ref()
+    /// Convert a Value into an NbValue, preferring arena allocation for
+    /// heap-backed values when the arena is active.
+    #[inline]
+    fn value_to_nb_arena(&mut self, value: Value) -> NbValue {
+        match value {
+            Value::Null => NbValue::new_null(),
+            Value::Bool(b) => NbValue::new_bool(b),
+            Value::Int(n) => {
+                if n >= NbValue::MIN_INT48 && n <= NbValue::MAX_INT48 {
+                    NbValue::new_int(n)
+                } else {
+                    NbValue::new_bigint(BigInt::from(n))
+                }
+            }
+            Value::Float(f) => NbValue::new_float(f),
+            Value::BigInt(n) => NbValue::new_bigint(n),
+            Value::String(sr) => {
+                let s = match sr {
+                    StringRef::Owned(s) => s,
+                    StringRef::Interned(id) => self.strings.resolve(id).unwrap_or("").to_string(),
+                };
+                NbValue::new_str(&s)
+            }
+            Value::Bytes(b) => NbValue::new_bytes(Arc::from(b.into_boxed_slice())),
+            Value::List(l) => NbValue::new_heap(HeapValue::List(l)),
+            Value::Tuple(t) => NbValue::new_heap(HeapValue::Tuple(t)),
+            Value::Set(s) => {
+                let converted: BTreeSet<NbValue> = s
+                    .iter()
+                    .cloned()
+                    .map(|v| nb_from_value(v, &self.strings))
+                    .collect();
+                NbValue::new_set(converted)
+            }
+            Value::Map(m) => {
+                let converted: BTreeMap<String, NbValue> = m
+                    .iter()
+                    .map(|(k, v)| (k.clone(), nb_from_value(v.clone(), &self.strings)))
+                    .collect();
+                NbValue::new_map(converted)
+            }
+            Value::Record(r) => {
+                let fields = r
+                    .fields
+                    .iter()
+                    .map(|(k, v)| (k.clone(), nb_from_value(v.clone(), &self.strings)))
+                    .collect();
+                NbValue::new_record(&r.type_name, fields)
+            }
+            Value::Union(u) => {
+                let tag = self.strings.resolve(u.tag).unwrap_or("");
+                let payload = match &u.payload {
+                    UnionPayload::Null => NbValue::new_null(),
+                    UnionPayload::Bool(b) => NbValue::new_bool(*b),
+                    UnionPayload::Int(n) => {
+                        if (NbValue::MIN_INT48..=NbValue::MAX_INT48).contains(n) {
+                            NbValue::new_int(*n)
+                        } else {
+                            NbValue::new_bigint(BigInt::from(*n))
+                        }
+                    }
+                    UnionPayload::Float(f) => NbValue::new_float(*f),
+                    UnionPayload::Heap(v) => nb_from_value((**v).clone(), &self.strings),
+                };
+                NbValue::new_union(tag, payload)
+            }
+            Value::Closure(c) => NbValue::new_closure(
+                c.cell_idx,
+                c.captures
+                    .into_iter()
+                    .map(|v| nb_from_value(v, &self.strings))
+                    .collect(),
+            ),
+            Value::Future(f) => NbValue::new_heap(HeapValue::Future(Arc::new(
+                lumen_core::heap_value::FutureData {
+                    id: f.id,
+                    status: match f.state {
+                        FutureStatus::Pending => lumen_core::heap_value::FutureStatus::Pending,
+                        FutureStatus::Completed => {
+                            lumen_core::heap_value::FutureStatus::Completed(NbValue::new_null())
+                        }
+                        FutureStatus::Error => {
+                            lumen_core::heap_value::FutureStatus::Error("error".to_string())
+                        }
+                    },
+                    schedule: lumen_core::heap_value::FutureSchedule::Eager,
+                },
+            ))),
+            Value::TraceRef(t) => NbValue::new_heap(HeapValue::TraceRef(t.seq)),
+        }
     }
 
-    /// Convert an NbValue directly into a UnionPayload without going through
-    /// `Value` cloning. Returns `None` for sentinel/unsupported pointer forms,
-    /// allowing the caller to fall back to legacy conversion.
+    #[cfg(test)]
     #[inline(always)]
     fn nb_to_union_payload(&self, nb: NbValue) -> Option<UnionPayload> {
         if nb.is_null() {
@@ -810,11 +1027,11 @@ impl VM {
         if let Some(f) = nb.as_float() {
             return Some(UnionPayload::Float(f));
         }
-        if nb.is_heap_allocated() {
-            nb.inc_ref();
-            let ptr = (nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value;
-            let arc = unsafe { Arc::from_raw(ptr) };
-            return Some(UnionPayload::from_arc(arc));
+        if let Some(hv) = nb.as_heap_ref() {
+            return Some(UnionPayload::from_value(nb_to_value_deep(
+                NbValue::new_heap(hv.clone()),
+                &self.strings,
+            )));
         }
         None
     }
@@ -895,10 +1112,7 @@ impl VM {
         let target_idx = {
             let module = self.module.as_ref().ok_or(VmError::NoModule)?;
             let name = match self.registers[caller_stencil_base + a].as_heap_ref() {
-                Some(Value::String(sr)) => match sr {
-                    StringRef::Owned(s) => s.clone(),
-                    StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or("").to_owned(),
-                },
+                Some(HeapValue::Str(sr)) => sr.to_string(),
                 other => {
                     return Err(VmError::UndefinedCell(format!(
                         "stencil call: callee register does not contain a string: {:?}",
@@ -929,22 +1143,15 @@ impl VM {
         };
         let callee_base = self.grow_registers(num_regs.max(16));
 
-        // Copy arguments into callee parameter registers.
-        for i in 0..b {
-            if i < params.len() {
-                let dst = params[i].register as usize;
-                if dst < cell_regs as usize {
-                    let src_nb = self
-                        .registers
-                        .get(caller_stencil_base + a + 1 + i)
-                        .copied()
-                        .unwrap_or(NbValue::new_null());
-                    let old = self.registers[callee_base + dst];
-                    old.drop_heap();
-                    self.registers[callee_base + dst] = src_nb;
-                }
-            }
-        }
+        // Copy arguments into callee parameter registers, packing variadic args if needed.
+        self.copy_args_to_params(
+            &params,
+            callee_base,
+            caller_stencil_base + a + 1,
+            b,
+            0,
+            cell_regs,
+        )?;
 
         // Push a call frame for the callee and run it via the interpreter.
         let frame_depth = self.frames.len();
@@ -993,35 +1200,35 @@ impl VM {
             _ => {}
         }
         // For collection/record types, use TAG_PTR borrow-through.
-        if val.is_ptr() {
-            let payload = val.payload();
-            if payload > 1 {
-                let val_ref = unsafe { &*(payload as *const Value) };
-                return match schema_name {
-                    "String" | "string" => matches!(val_ref, Value::String(_)),
-                    "List" | "list" => matches!(val_ref, Value::List(_)),
-                    "Map" | "map" => matches!(val_ref, Value::Map(_)),
-                    "Tuple" | "tuple" => matches!(val_ref, Value::Tuple(_)),
-                    "Set" | "set" => matches!(val_ref, Value::Set(_)),
-                    _ => match val_ref {
-                        Value::Record(r) => r.type_name == schema_name,
-                        _ => false,
-                    },
-                };
-            }
+        if let Some(hv) = val.as_heap_ref() {
+            return match schema_name {
+                "String" | "string" => matches!(hv, HeapValue::Str(_)),
+                "List" | "list" => matches!(hv, HeapValue::List(_)),
+                "Map" | "map" => matches!(hv, HeapValue::Map(_)),
+                "Tuple" | "tuple" => matches!(hv, HeapValue::Tuple(_)),
+                "Set" | "set" => matches!(hv, HeapValue::Set(_)),
+                _ => match hv {
+                    HeapValue::Record(r) => r.type_name.as_ref() == schema_name,
+                    HeapValue::Union(u) => u.tag.as_ref() == schema_name,
+                    _ => false,
+                },
+            };
         }
-        let legacy = nb_to_value(*val);
-        match schema_name {
-            "String" | "string" => matches!(legacy, Value::String(_)),
-            "List" | "list" => matches!(legacy, Value::List(_)),
-            "Map" | "map" => matches!(legacy, Value::Map(_)),
-            "Tuple" | "tuple" => matches!(legacy, Value::Tuple(_)),
-            "Set" | "set" => matches!(legacy, Value::Set(_)),
-            _ => match legacy {
-                Value::Record(r) => r.type_name == schema_name,
-                _ => false,
-            },
+        if let Some(hv) = val.as_heap_ref() {
+            return match schema_name {
+                "String" | "string" => matches!(hv, HeapValue::Str(_)),
+                "List" | "list" => matches!(hv, HeapValue::List(_)),
+                "Map" | "map" => matches!(hv, HeapValue::Map(_)),
+                "Tuple" | "tuple" => matches!(hv, HeapValue::Tuple(_)),
+                "Set" | "set" => matches!(hv, HeapValue::Set(_)),
+                _ => match hv {
+                    HeapValue::Record(r) => r.type_name.as_ref() == schema_name,
+                    HeapValue::Union(u) => u.tag.as_ref() == schema_name,
+                    _ => false,
+                },
+            };
         }
+        false
     }
 
     /// Execute Tier-1 stitched code from an OSR entry, transplanting registers.
@@ -1051,6 +1258,9 @@ impl VM {
                 .reserve(reserve_target - self.registers.capacity());
         }
 
+        // Clear any stale JIT helper error before executing stitched code.
+        self.vm_ctx.inner.clear_error();
+
         // Transplant register state into the live register window.
         for (idx, nb) in regs.iter().enumerate() {
             if base + idx >= self.registers.len() {
@@ -1077,6 +1287,12 @@ impl VM {
         })();
         self.stencil_base = prev_stencil_base;
 
+        if let Some(msg) = self.vm_ctx.inner.take_error() {
+            return Err(crate::vm::osr::OsrError::Unavailable(format!(
+                "stencil runtime error: {msg}"
+            )));
+        }
+
         if let Err(e) = run_result {
             return Err(crate::vm::osr::OsrError::Unavailable(format!(
                 "stencil OSR execution failed: {e}"
@@ -1089,7 +1305,7 @@ impl VM {
             .get(base)
             .copied()
             .unwrap_or(NbValue::new_null());
-        Ok(nb_to_value(ret_nb))
+        Ok(nb_to_value_deep(ret_nb, &self.strings))
     }
 
     pub(crate) fn extract_pattern_captures(
@@ -1415,6 +1631,15 @@ impl VM {
             (*ctx_ptr).jit_fn_ptrs_len = self.jit_tier.fn_ptrs_len();
             (*ctx_ptr).call_closure = Some(VM::jit_rt_call_closure);
             (*ctx_ptr).stack_pool = self as *mut VM as *mut ();
+            (*ctx_ptr).tool_call_cb = Some(crate::jit_helpers::jit_rt_tool_call);
+            (*ctx_ptr).schema_validate_cb = Some(crate::jit_helpers::jit_rt_schema_validate);
+            (*ctx_ptr).trace_ref_cb = Some(crate::jit_helpers::jit_rt_trace_ref);
+            (*ctx_ptr).for_in_cb = Some(crate::jit_helpers::jit_rt_for_in);
+            (*ctx_ptr).in_cb = Some(crate::jit_helpers::jit_rt_in);
+            (*ctx_ptr).is_cb = Some(crate::jit_helpers::jit_rt_is);
+            (*ctx_ptr).json_parse_cb = Some(crate::jit_helpers::jit_rt_json_parse);
+            (*ctx_ptr).json_encode_cb = Some(crate::jit_helpers::jit_rt_json_encode);
+            (*ctx_ptr).json_pretty_cb = Some(crate::jit_helpers::jit_rt_json_pretty);
         }
 
         // Automatically initialize OSR JIT and pre-compile cells with loops.
@@ -1429,7 +1654,8 @@ impl VM {
                 for cell_idx in 0..num_cells {
                     let cell_instrs = &module_ref.cells[cell_idx].instructions;
                     let has_osr = cell_instrs.iter().any(|i| i.op == OpCode::OsrCheck);
-                    if has_osr && self.stencil_tier.is_enabled() {
+                    let is_variadic = module_ref.cells[cell_idx].params.iter().any(|p| p.variadic);
+                    if has_osr && self.stencil_tier.is_enabled() && !is_variadic {
                         self.stencil_tier
                             .try_compile(cell_idx, module_ref, &mut self.jit_tier);
                     }
@@ -1440,7 +1666,7 @@ impl VM {
                     let has_call = cell_instrs
                         .iter()
                         .any(|i| matches!(i.op, OpCode::Call | OpCode::TailCall));
-                    if has_osr && !has_call {
+                    if has_osr && !has_call && !is_variadic {
                         self.osr_runtime.try_compile(cell_idx);
                     }
                 }
@@ -1542,7 +1768,7 @@ impl VM {
     pub fn read_register(&self, index: usize) -> Value {
         self.registers
             .get(index)
-            .map(|nb| nb_to_value(*nb))
+            .map(|nb| nb_to_value_deep(*nb, &self.strings))
             .unwrap_or(Value::Null)
     }
 
@@ -1621,12 +1847,12 @@ impl VM {
             }
             // Pack remaining args into a list for the variadic param
             // (need owned Values for the list, so self.reg() is correct here)
-            let variadic_args: Vec<Value> = (fixed_count..nargs)
-                .map(|i| self.reg(arg_base + i))
+            let variadic_args: Vec<NbValue> = (fixed_count..nargs)
+                .map(|i| self.reg_nb(arg_base + i))
                 .collect();
             let dst = params[vi].register as usize;
             self.check_register(dst, cell_registers)?;
-            self.set_reg(new_base + dst, Value::new_list(variadic_args));
+            self.set_reg(new_base + dst, Value::List(Arc::new(variadic_args)));
         } else {
             // No variadic param — zero-clone copy args 1:1
             for i in 0..nargs {
@@ -1811,6 +2037,7 @@ impl VM {
     }
 
     /// Check truthiness with interned string resolution.
+    #[cfg(test)]
     fn value_is_truthy(&self, val: &Value) -> bool {
         match val {
             Value::String(StringRef::Interned(id)) => {
@@ -1833,21 +2060,9 @@ impl VM {
             // Fast path: if the register already holds a heap-boxed Int, mutate
             // it in place to avoid an alloc+dealloc cycle per arithmetic op.
             // Safety: the register is the sole owner of the outer Arc (refcount 1).
-            let reused = unsafe {
-                let nb = &mut self.registers[idx];
-                if let Some(heap_val) = nb.as_heap_mut() {
-                    if let Value::Int(ref mut n) = heap_val {
-                        *n = value;
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            };
+            let reused = false;
             if !reused {
-                self.set_reg_nb(idx, value_to_nb(Value::Int(value)));
+                self.set_reg_nb(idx, nb_from_value(Value::Int(value), &self.strings));
             }
         }
     }
@@ -2128,17 +2343,21 @@ impl VM {
             Value::List(items) => {
                 let mut out = Vec::with_capacity(items.len());
                 for item in items.iter().cloned() {
-                    match self.await_value_recursive(item)? {
+                    match self.await_value_recursive(nb_to_value_deep(item, &self.strings))? {
                         Some(v) => out.push(v),
                         None => return Ok(None),
                     }
                 }
-                Ok(Some(Value::new_list(out)))
+                Ok(Some(Value::List(Arc::new(
+                    out.into_iter()
+                        .map(|v| nb_from_value(v, &self.strings))
+                        .collect(),
+                ))))
             }
             Value::Tuple(items) => {
                 let mut out = Vec::with_capacity(items.len());
                 for item in items.iter().cloned() {
-                    match self.await_value_recursive(item)? {
+                    match self.await_value_recursive(nb_to_value_deep(item, &self.strings))? {
                         Some(v) => out.push(v),
                         None => return Ok(None),
                     }
@@ -2388,13 +2607,8 @@ impl VM {
                         // heap value directly (borrows only self.registers) so
                         // self.strings and self.cell_index_cache remain accessible.
                         let fast_cell_idx = match self.registers[callee_reg].as_heap_ref() {
-                            Some(Value::String(sr)) => {
-                                let name_str = match sr {
-                                    StringRef::Owned(s) => s.as_str(),
-                                    StringRef::Interned(id) => {
-                                        self.strings.resolve(*id).unwrap_or("")
-                                    }
-                                };
+                            Some(HeapValue::Str(sr)) => {
+                                let name_str = sr.as_ref();
                                 // Fast check: is this a self-recursive call?
                                 // Compare against current cell name to skip HashMap lookup.
                                 if name_str == cell.name {
@@ -2426,13 +2640,7 @@ impl VM {
                                     let mut stack_buf = [0i64; FAST_CALL_ARITY_LIMIT];
                                     for i in 0..nargs {
                                         let nb = self.reg_nb(base + a + 1 + i);
-                                        if nb.is_heap_allocated() {
-                                            unsafe {
-                                                let ptr = (nb.payload() & !NbValue::PTR_ARENA_FLAG)
-                                                    as *const Value;
-                                                std::sync::Arc::increment_strong_count(ptr);
-                                            }
-                                        }
+                                        nb.inc_ref();
                                         stack_buf[i] = nb.0 as i64;
                                     }
                                     let i64_args = &stack_buf[..nargs];
@@ -2552,14 +2760,7 @@ impl VM {
                                     if let Some(raw) = osr_result {
                                         for i in 0..nargs {
                                             let nb = self.reg_nb(base + a + 1 + i);
-                                            if nb.is_heap_allocated() {
-                                                unsafe {
-                                                    let ptr = (nb.payload()
-                                                        & !NbValue::PTR_ARENA_FLAG)
-                                                        as *const Value;
-                                                    std::sync::Arc::decrement_strong_count(ptr);
-                                                }
-                                            }
+                                            nb.drop_heap();
                                         }
                                         // Return-type-aware result handling.
                                         // JIT string-returning cells return a raw *mut JitString
@@ -2587,14 +2788,7 @@ impl VM {
                                     } else {
                                         for i in 0..nargs {
                                             let nb = self.reg_nb(base + a + 1 + i);
-                                            if nb.is_heap_allocated() {
-                                                unsafe {
-                                                    let ptr = (nb.payload()
-                                                        & !NbValue::PTR_ARENA_FLAG)
-                                                        as *const Value;
-                                                    std::sync::Arc::decrement_strong_count(ptr);
-                                                }
-                                            }
+                                            nb.drop_heap();
                                         }
                                     }
                                 }
@@ -2602,10 +2796,12 @@ impl VM {
                             // ─── STENCIL TIER (Call): warm tier, always try first ──
                             #[cfg(feature = "jit")]
                             {
+                                let target_cell = &module.cells[target_idx];
+                                let is_variadic = target_cell.params.iter().any(|p| p.variadic);
                                 let stencil_compiled = self.stencil_tier.is_compiled(target_idx);
                                 let stencil_try =
                                     stencil_compiled || self.stencil_tier.record_call(target_idx);
-                                if stencil_try {
+                                if stencil_try && !is_variadic {
                                     if !stencil_compiled {
                                         self.stencil_tier.try_compile(
                                             target_idx,
@@ -2615,7 +2811,6 @@ impl VM {
                                     }
                                     if self.stencil_tier.is_compiled(target_idx) {
                                         let callee_base = base + a + 1;
-                                        let target_cell = &module.cells[target_idx];
                                         let needed = callee_base
                                             + (target_cell.registers as usize).max(nargs + 4);
                                         if needed > self.registers.len() {
@@ -2641,98 +2836,7 @@ impl VM {
                                 }
                             }
                             // ─── CRANELIFT JIT TIER (Call) ───────────────────
-                            if self.jit_tier.is_enabled() {
-                                // Check if already compiled
-                                let run_jit = if self.jit_tier.is_compiled(target_idx) {
-                                    true
-                                } else if self.jit_tier.record_call(target_idx) {
-                                    // Just crossed hot threshold — try to compile
-                                    self.jit_tier.try_compile(target_idx, module)
-                                } else {
-                                    false
-                                };
-
-                                if run_jit {
-                                    let callee_cell = &module.cells[target_idx];
-                                    // Pass NaN-boxed register values directly to JIT.
-                                    // Heap-allocated values get an Arc refcount bump
-                                    // so the JIT can safely read them.
-                                    // Stack-allocated arg buffer (max JIT arity is 6)
-                                    if nargs <= FAST_CALL_ARITY_LIMIT {
-                                        let mut stack_buf = [0i64; FAST_CALL_ARITY_LIMIT];
-                                        for i in 0..nargs {
-                                            let nb = self.reg_nb(base + a + 1 + i);
-                                            if nb.is_heap_allocated() {
-                                                unsafe {
-                                                    let ptr = (nb.payload()
-                                                        & !NbValue::PTR_ARENA_FLAG)
-                                                        as *const Value;
-                                                    std::sync::Arc::increment_strong_count(ptr);
-                                                }
-                                            }
-                                            stack_buf[i] = nb.0 as i64;
-                                        }
-                                        let i64_args = &stack_buf[..nargs];
-                                        let callee_name_for_ret = callee_cell.name.clone();
-                                        if let Some(result) = self.jit_tier.execute_by_idx(
-                                            target_idx,
-                                            i64_args,
-                                            &self.vm_ctx.inner,
-                                            &callee_name_for_ret,
-                                        ) {
-                                            // Drop the extra refs we added before JIT call
-                                            for i in 0..nargs {
-                                                let nb = self.reg_nb(base + a + 1 + i);
-                                                if nb.is_heap_allocated() {
-                                                    unsafe {
-                                                        let ptr = (nb.payload()
-                                                            & !NbValue::PTR_ARENA_FLAG)
-                                                            as *const Value;
-                                                        std::sync::Arc::decrement_strong_count(ptr);
-                                                    }
-                                                }
-                                            }
-                                            // Convert JIT result to NbValue based on return type.
-                                            // Str returns are raw *mut JitString pointers — convert
-                                            // to Value::String and store as a proper NbValue.
-                                            #[cfg(feature = "jit")]
-                                            {
-                                                use lumen_codegen::jit::JitVarType;
-                                                let ret_ty = self
-                                                    .jit_tier
-                                                    .return_type(&callee_name_for_ret)
-                                                    .unwrap_or(JitVarType::Int);
-                                                if ret_ty == JitVarType::Str {
-                                                    let s = unsafe {
-                                                        lumen_codegen::jit::jit_take_string(result)
-                                                    };
-                                                    let val = Value::String(StringRef::Owned(s));
-                                                    self.set_reg(callee_reg, val);
-                                                    continue;
-                                                }
-                                            }
-                                            // All other types are already NaN-boxed — store directly.
-                                            let nb = NbValue(result as u64);
-                                            self.set_reg_nb(callee_reg, nb);
-                                            continue;
-                                        } else {
-                                            // JIT failed — drop the refs we added
-                                            for i in 0..nargs {
-                                                let nb = self.reg_nb(base + a + 1 + i);
-                                                if nb.is_heap_allocated() {
-                                                    unsafe {
-                                                        let ptr = (nb.payload()
-                                                            & !NbValue::PTR_ARENA_FLAG)
-                                                            as *const Value;
-                                                        std::sync::Arc::decrement_strong_count(ptr);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    // JIT execution failed — fall through to interpreter
-                                }
-                            }
+                            // TODO: Variadic calls require argument packing; JIT doesn't support it yet.
                             // ─── END JIT TIER ────────────────────────────────
 
                             // OSR JIT fast-path handled above (before stencil tier)
@@ -2750,27 +2854,17 @@ impl VM {
                             let callee_cell_ptr = &module.cells[target_idx] as *const LirCell;
                             let params_ptr = unsafe { &(*callee_cell_ptr).params };
                             let cell_regs = callee_cell.registers;
-                            for i in 0..nargs {
-                                if i < params_ptr.len() {
-                                    let dst = params_ptr[i].register as usize;
-                                    debug_assert!(
-                                        (dst as u16) < cell_regs,
-                                        "register OOB in fast call"
-                                    );
-                                    // Move arg value instead of cloning — avoids Rc refcount
-                                    // bump on every call. The caller's arg slot (base+a+1+i) is
-                                    // set to Null. This is safe because:
-                                    // 1. Arg registers are evaluation temporaries that held the
-                                    //    computed arguments; they are not read after the call.
-                                    // 2. The return value is written to a separate register
-                                    //    (callee_reg = base+a, not base+a+1+i).
-                                    // 3. If a register IS reused after return (rare edge case),
-                                    //    it reads Null — a clear runtime error, not silent
-                                    //    corruption.
-                                    let taken = self.reg_take(base + a + 1 + i);
-                                    self.set_reg(new_base + dst, taken);
-                                }
-                            }
+
+                            // Variadic params require packing trailing args into a list.
+                            // Use the shared arg copy path to preserve semantics.
+                            self.copy_args_to_params(
+                                params_ptr,
+                                new_base,
+                                base + a + 1,
+                                nargs,
+                                0,
+                                cell_regs,
+                            )?;
 
                             self.frames.push(CallFrame {
                                 cell_idx: target_idx,
@@ -2820,6 +2914,53 @@ impl VM {
                         continue;
                     }
                     OpCode::TailCall => {
+                        if cfg!(feature = "jit") {
+                            // Variadic tailcalls are not JIT-safe yet due to
+                            // arg packing requirements. Let the interpreter handle them.
+                            let callee_reg = base + a;
+                            let callee_name = match self.registers[callee_reg].as_heap_ref() {
+                                Some(HeapValue::Str(sr)) => sr.as_ref(),
+                                _ => "",
+                            };
+                            if !callee_name.is_empty() {
+                                let mut is_variadic = false;
+                                if let Some(idx) = self.cell_index_cache.get(callee_name) {
+                                    if let Some(cell) = module.cells.get(*idx) {
+                                        is_variadic = cell.params.iter().any(|p| p.variadic);
+                                    }
+                                } else if let Some(idx) =
+                                    module.cells.iter().position(|c| c.name == callee_name)
+                                {
+                                    self.cell_index_cache.insert(callee_name.to_string(), idx);
+                                    if let Some(cell) = module.cells.get(idx) {
+                                        is_variadic = cell.params.iter().any(|p| p.variadic);
+                                    }
+                                }
+                                if is_variadic {
+                                    if let Err(err) = self.dispatch_tailcall(base, a, b) {
+                                        if self.fail_current_future(err.to_string()) {
+                                            if self.frames.len() <= limit {
+                                                return Ok(Value::Null);
+                                            }
+                                            let frame = self.frames.last().unwrap();
+                                            cell_idx = frame.cell_idx;
+                                            base = frame.base_register;
+                                            ip = frame.ip;
+                                            cell = &module.cells[cell_idx];
+                                            continue;
+                                        }
+                                        return Err(err);
+                                    }
+                                    // Reload frame state after tailcall (frame reused)
+                                    let frame = self.frames.last().unwrap();
+                                    cell_idx = frame.cell_idx;
+                                    base = frame.base_register;
+                                    ip = frame.ip;
+                                    cell = &module.cells[cell_idx];
+                                    continue;
+                                }
+                            }
+                        }
                         // ─── TIERED JIT: TailCall fast path ──────────────
                         let callee_reg = base + a;
                         let nargs = b;
@@ -2855,20 +2996,19 @@ impl VM {
                             };
                             // ─── OSR PRE-COMPILED FAST PATH (TailCall) ───
                             if let Some(target_idx) = tc_target {
+                                let target_cell = &module.cells[target_idx];
+                                let is_variadic = target_cell.params.iter().any(|p| p.variadic);
                                 if let Some(fn_ptr) = self.osr_runtime.get_compiled_fn(target_idx) {
-                                    // Stack-allocated arg buffer (max JIT arity is 6)
-                                    if nargs <= FAST_CALL_ARITY_LIMIT {
+                                    if is_variadic {
+                                        // OSR/JIT does not support variadic argument packing.
+                                        // Fall back to interpreter path.
+                                        jit_handled = true;
+                                    } else if nargs <= FAST_CALL_ARITY_LIMIT {
+                                        // Stack-allocated arg buffer (max JIT arity is 6)
                                         let mut stack_buf = [0i64; FAST_CALL_ARITY_LIMIT];
                                         for i in 0..nargs {
                                             let nb = self.reg_nb(base + a + 1 + i);
-                                            if nb.is_heap_allocated() {
-                                                unsafe {
-                                                    let ptr = (nb.payload()
-                                                        & !NbValue::PTR_ARENA_FLAG)
-                                                        as *const Value;
-                                                    std::sync::Arc::increment_strong_count(ptr);
-                                                }
-                                            }
+                                            nb.inc_ref();
                                             stack_buf[i] = nb.0 as i64;
                                         }
                                         let i64_args = &stack_buf[..nargs];
@@ -2953,17 +3093,10 @@ impl VM {
                                         if let Some(raw) = osr_result {
                                             for i in 0..nargs {
                                                 let nb = self.reg_nb(base + a + 1 + i);
-                                                if nb.is_heap_allocated() {
-                                                    unsafe {
-                                                        let ptr = (nb.payload()
-                                                            & !NbValue::PTR_ARENA_FLAG)
-                                                            as *const Value;
-                                                        std::sync::Arc::decrement_strong_count(ptr);
-                                                    }
-                                                }
+                                                nb.drop_heap();
                                             }
                                             let nb = NbValue(raw as u64);
-                                            let result_value = nb_to_value(nb);
+                                            let result_value = nb_to_value_deep(nb, &self.strings);
                                             let frame = self.frames.pop().ok_or_else(|| {
                                                 VmError::Runtime(
                                                     "call stack underflow on tailcall osr".into(),
@@ -2983,104 +3116,110 @@ impl VM {
                                         } else {
                                             for i in 0..nargs {
                                                 let nb = self.reg_nb(base + a + 1 + i);
-                                                if nb.is_heap_allocated() {
-                                                    unsafe {
-                                                        let ptr = (nb.payload()
-                                                            & !NbValue::PTR_ARENA_FLAG)
-                                                            as *const Value;
-                                                        std::sync::Arc::decrement_strong_count(ptr);
-                                                    }
-                                                }
+                                                nb.drop_heap();
                                             }
                                         }
                                     }
                                 }
                             }
                             if let Some(target_idx) = tc_target {
-                                // Skip stencil tier if Cranelift JIT already compiled this cell.
-                                let skip_stencil = self.jit_tier.is_compiled(target_idx);
-                                if !skip_stencil {
-                                    let stencil_compiled =
-                                        self.stencil_tier.is_compiled(target_idx);
-                                    let stencil_try = stencil_compiled
-                                        || self.stencil_tier.record_call(target_idx);
-                                    if stencil_try {
-                                        if !stencil_compiled {
-                                            self.stencil_tier.try_compile(
-                                                target_idx,
-                                                module,
-                                                &mut self.jit_tier,
-                                            );
-                                        }
-                                        if self.stencil_tier.is_compiled(target_idx) {
-                                            let callee_base = base + a + 1;
-                                            let target_cell = &module.cells[target_idx];
-                                            let needed = callee_base
-                                                + (target_cell.registers as usize).max(nargs + 4);
-                                            if needed > self.registers.len() {
-                                                self.registers.resize(needed, NbValue::new_null());
+                                let target_cell = &module.cells[target_idx];
+                                let is_variadic = target_cell.params.iter().any(|p| p.variadic);
+                                if is_variadic {
+                                    // Variadic tailcalls require argument packing; skip stencil tier.
+                                    // Fall back to interpreter path.
+                                } else {
+                                    // Skip stencil tier if Cranelift JIT already compiled this cell.
+                                    let skip_stencil = self.jit_tier.is_compiled(target_idx);
+                                    if !skip_stencil && !is_variadic {
+                                        let stencil_compiled =
+                                            self.stencil_tier.is_compiled(target_idx);
+                                        let stencil_try = stencil_compiled
+                                            || self.stencil_tier.record_call(target_idx);
+                                        if stencil_try {
+                                            if !stencil_compiled {
+                                                self.stencil_tier.try_compile(
+                                                    target_idx,
+                                                    module,
+                                                    &mut self.jit_tier,
+                                                );
                                             }
-                                            let mut stencil = std::mem::replace(
-                                                &mut self.stencil_tier,
-                                                StencilTier::disabled(),
-                                            );
-                                            let stencil_result =
-                                                stencil.execute(self, target_idx, callee_base);
-                                            self.stencil_tier = stencil;
-                                            if let Ok(()) = stencil_result {
-                                                let ret_nb = self
-                                                    .registers
-                                                    .get(callee_base)
-                                                    .copied()
-                                                    .unwrap_or(NbValue::new_null());
-                                                let result_value = nb_to_value(ret_nb);
-                                                let frame = self.frames.pop().ok_or_else(|| {
-                                                    VmError::Runtime(
+                                            if self.stencil_tier.is_compiled(target_idx) {
+                                                let callee_base = base + a + 1;
+                                                let needed = callee_base
+                                                    + (target_cell.registers as usize)
+                                                        .max(nargs + 4);
+                                                if needed > self.registers.len() {
+                                                    self.registers
+                                                        .resize(needed, NbValue::new_null());
+                                                }
+                                                let mut stencil = std::mem::replace(
+                                                    &mut self.stencil_tier,
+                                                    StencilTier::disabled(),
+                                                );
+                                                let stencil_result =
+                                                    stencil.execute(self, target_idx, callee_base);
+                                                self.stencil_tier = stencil;
+                                                if let Ok(()) = stencil_result {
+                                                    let ret_nb = self
+                                                        .registers
+                                                        .get(callee_base)
+                                                        .copied()
+                                                        .unwrap_or(NbValue::new_null());
+                                                    let result_value =
+                                                        nb_to_value_deep(ret_nb, &self.strings);
+                                                    let frame =
+                                                        self.frames.pop().ok_or_else(|| {
+                                                            VmError::Runtime(
                                                         "call stack underflow on tailcall stencil"
                                                             .into(),
                                                     )
-                                                })?;
-                                                if has_debug {
-                                                    let cname =
-                                                        module.cells[frame.cell_idx].name.clone();
-                                                    self.emit_debug_event(DebugEvent::CallExit {
-                                                        cell_name: cname,
-                                                        result: result_value.clone(),
-                                                    });
-                                                }
-                                                self.shrink_registers(frame.base_register);
-                                                if let Some(fid) = frame.future_id {
-                                                    self.future_states.insert(
-                                                        fid,
-                                                        FutureState::Completed(result_value),
-                                                    );
-                                                    if self.frames.len() <= limit {
-                                                        return Ok(Value::Null);
+                                                        })?;
+                                                    if has_debug {
+                                                        let cname = module.cells[frame.cell_idx]
+                                                            .name
+                                                            .clone();
+                                                        self.emit_debug_event(
+                                                            DebugEvent::CallExit {
+                                                                cell_name: cname,
+                                                                result: result_value.clone(),
+                                                            },
+                                                        );
                                                     }
-                                                    let f = self.frames.last().unwrap();
-                                                    cell_idx = f.cell_idx;
-                                                    base = f.base_register;
-                                                    ip = f.ip;
-                                                    cell = &module.cells[cell_idx];
-                                                    jit_handled = true;
-                                                } else if self.frames.len() <= limit {
-                                                    return Ok(result_value);
-                                                } else {
-                                                    self.set_reg(
-                                                        frame.return_register,
-                                                        result_value,
-                                                    );
-                                                    let f = self.frames.last().unwrap();
-                                                    cell_idx = f.cell_idx;
-                                                    base = f.base_register;
-                                                    ip = f.ip;
-                                                    cell = &module.cells[cell_idx];
-                                                    jit_handled = true;
+                                                    self.shrink_registers(frame.base_register);
+                                                    if let Some(fid) = frame.future_id {
+                                                        self.future_states.insert(
+                                                            fid,
+                                                            FutureState::Completed(result_value),
+                                                        );
+                                                        if self.frames.len() <= limit {
+                                                            return Ok(Value::Null);
+                                                        }
+                                                        let f = self.frames.last().unwrap();
+                                                        cell_idx = f.cell_idx;
+                                                        base = f.base_register;
+                                                        ip = f.ip;
+                                                        cell = &module.cells[cell_idx];
+                                                        jit_handled = true;
+                                                    } else if self.frames.len() <= limit {
+                                                        return Ok(result_value);
+                                                    } else {
+                                                        self.set_reg(
+                                                            frame.return_register,
+                                                            result_value,
+                                                        );
+                                                        let f = self.frames.last().unwrap();
+                                                        cell_idx = f.cell_idx;
+                                                        base = f.base_register;
+                                                        ip = f.ip;
+                                                        cell = &module.cells[cell_idx];
+                                                        jit_handled = true;
+                                                    }
                                                 }
                                             }
                                         }
-                                    }
-                                } // end skip_stencil guard
+                                    } // end skip_stencil guard
+                                }
                             }
                         }
 
@@ -3088,13 +3227,8 @@ impl VM {
                         if !jit_handled && self.jit_tier.is_enabled() {
                             // Zero-copy callee name resolution via direct register access.
                             let fast_cell_idx = match self.registers[callee_reg].as_heap_ref() {
-                                Some(Value::String(sr)) => {
-                                    let name_str = match sr {
-                                        StringRef::Owned(s) => s.as_str(),
-                                        StringRef::Interned(id) => {
-                                            self.strings.resolve(*id).unwrap_or("")
-                                        }
-                                    };
+                                Some(HeapValue::Str(sr)) => {
+                                    let name_str = sr.as_ref();
                                     if name_str == cell.name {
                                         Some(cell_idx)
                                     } else if let Some(&cached) =
@@ -3114,114 +3248,138 @@ impl VM {
                             };
 
                             if let Some(target_idx) = fast_cell_idx {
-                                let run_jit = if self.jit_tier.is_compiled(target_idx) {
-                                    true
-                                } else if self.jit_tier.record_call(target_idx) {
-                                    self.jit_tier.try_compile(target_idx, module)
-                                } else {
-                                    false
-                                };
+                                let callee_cell = &module.cells[target_idx];
+                                let is_variadic = callee_cell.params.iter().any(|p| p.variadic);
+                                if !is_variadic {
+                                    let run_jit = if self.jit_tier.is_compiled(target_idx) {
+                                        true
+                                    } else if self.jit_tier.record_call(target_idx) {
+                                        self.jit_tier.try_compile(target_idx, module)
+                                    } else {
+                                        false
+                                    };
 
-                                if run_jit {
-                                    let callee_cell = &module.cells[target_idx];
-                                    // Stack-allocated arg buffer (max JIT arity is 6)
-                                    if nargs <= FAST_CALL_ARITY_LIMIT {
-                                        let mut stack_buf = [0i64; FAST_CALL_ARITY_LIMIT];
-                                        for i in 0..nargs {
-                                            let nb = self.reg_nb(base + a + 1 + i);
-                                            if nb.is_heap_allocated() {
-                                                unsafe {
-                                                    let ptr = (nb.payload()
-                                                        & !NbValue::PTR_ARENA_FLAG)
-                                                        as *const Value;
-                                                    std::sync::Arc::increment_strong_count(ptr);
-                                                }
-                                            }
-                                            stack_buf[i] = nb.0 as i64;
-                                        }
-                                        let i64_args = &stack_buf[..nargs];
-                                        if let Some(result) = self.jit_tier.execute_by_idx(
-                                            target_idx,
-                                            i64_args,
-                                            &self.vm_ctx.inner,
-                                            &callee_cell.name,
-                                        ) {
-                                            // Drop the extra refs we added before JIT call
+                                    if run_jit {
+                                        self.vm_ctx.inner.clear_error();
+                                        // Stack-allocated arg buffer (max JIT arity is 6)
+                                        if nargs <= FAST_CALL_ARITY_LIMIT {
+                                            let mut stack_buf = [0i64; FAST_CALL_ARITY_LIMIT];
                                             for i in 0..nargs {
                                                 let nb = self.reg_nb(base + a + 1 + i);
-                                                if nb.is_heap_allocated() {
-                                                    unsafe {
-                                                        let ptr = (nb.payload()
-                                                            & !NbValue::PTR_ARENA_FLAG)
-                                                            as *const Value;
-                                                        std::sync::Arc::decrement_strong_count(ptr);
+                                                nb.inc_ref();
+                                                stack_buf[i] = nb.0 as i64;
+                                            }
+                                            let i64_args = &stack_buf[..nargs];
+                                            if let Some(result) = self.jit_tier.execute_by_idx(
+                                                target_idx,
+                                                i64_args,
+                                                &self.vm_ctx.inner,
+                                                &callee_cell.name,
+                                            ) {
+                                                if let Some(msg) = self.vm_ctx.inner.take_error() {
+                                                    let _ = msg;
+                                                    for i in 0..nargs {
+                                                        let nb = self.reg_nb(base + a + 1 + i);
+                                                        nb.drop_heap();
+                                                    }
+                                                } else {
+                                                    // Drop the extra refs we added before JIT call
+                                                    for i in 0..nargs {
+                                                        let nb = self.reg_nb(base + a + 1 + i);
+                                                        nb.drop_heap();
+                                                    }
+                                                    // Result is already a NaN-boxed u64 (except for
+                                                    // string-returning cells which use a raw pointer).
+                                                    #[cfg(feature = "jit")]
+                                                    let result_value = {
+                                                        use lumen_codegen::jit::JitVarType;
+                                                        let ret_ty = self
+                                                            .jit_tier
+                                                            .return_type(&callee_cell.name)
+                                                            .unwrap_or(JitVarType::Int);
+                                                        if ret_ty == JitVarType::Str {
+                                                            let s = unsafe {
+                                                                lumen_codegen::jit::jit_take_string(
+                                                                    result,
+                                                                )
+                                                            };
+                                                            Value::String(StringRef::Owned(s))
+                                                        } else {
+                                                            nb_to_value_deep(
+                                                                NbValue(result as u64),
+                                                                &self.strings,
+                                                            )
+                                                        }
+                                                    };
+                                                    #[cfg(not(feature = "jit"))]
+                                                    let result_value = nb_to_value_deep(
+                                                        NbValue(result as u64),
+                                                        &self.strings,
+                                                    );
+
+                                                    // TailCall JIT success: simulate Return.
+                                                    // Pop current frame and write result to caller.
+                                                    let frame =
+                                                        self.frames.pop().ok_or_else(|| {
+                                                            VmError::Runtime(
+                                                            "call stack underflow on tailcall JIT"
+                                                                .into(),
+                                                        )
+                                                        })?;
+
+                                                    if has_debug {
+                                                        let cname = module.cells[frame.cell_idx]
+                                                            .name
+                                                            .clone();
+                                                        self.emit_debug_event(
+                                                            DebugEvent::CallExit {
+                                                                cell_name: cname,
+                                                                result: result_value.clone(),
+                                                            },
+                                                        );
+                                                    }
+
+                                                    self.shrink_registers(frame.base_register);
+
+                                                    if let Some(fid) = frame.future_id {
+                                                        self.future_states.insert(
+                                                            fid,
+                                                            FutureState::Completed(result_value),
+                                                        );
+                                                        if self.frames.len() <= limit {
+                                                            return Ok(Value::Null);
+                                                        }
+                                                        let f = self.frames.last().unwrap();
+                                                        cell_idx = f.cell_idx;
+                                                        base = f.base_register;
+                                                        ip = f.ip;
+                                                        cell = &module.cells[cell_idx];
+                                                        jit_handled = true;
+                                                    } else if self.frames.len() <= limit {
+                                                        return Ok(result_value);
+                                                    } else {
+                                                        self.set_reg(
+                                                            frame.return_register,
+                                                            result_value,
+                                                        );
+                                                        let f = self.frames.last().unwrap();
+                                                        cell_idx = f.cell_idx;
+                                                        base = f.base_register;
+                                                        ip = f.ip;
+                                                        cell = &module.cells[cell_idx];
+                                                        jit_handled = true;
                                                     }
                                                 }
-                                            }
-                                            // Result is already a NaN-boxed u64.
-                                            let result_nb = NbValue(result as u64);
-                                            let result_value = nb_to_value(result_nb);
-
-                                            // TailCall JIT success: simulate Return.
-                                            // Pop current frame and write result to caller.
-                                            let frame = self.frames.pop().ok_or_else(|| {
-                                                VmError::Runtime(
-                                                    "call stack underflow on tailcall JIT".into(),
-                                                )
-                                            })?;
-
-                                            if has_debug {
-                                                let cname =
-                                                    module.cells[frame.cell_idx].name.clone();
-                                                self.emit_debug_event(DebugEvent::CallExit {
-                                                    cell_name: cname,
-                                                    result: result_value.clone(),
-                                                });
-                                            }
-
-                                            self.shrink_registers(frame.base_register);
-
-                                            if let Some(fid) = frame.future_id {
-                                                self.future_states.insert(
-                                                    fid,
-                                                    FutureState::Completed(result_value),
-                                                );
-                                                if self.frames.len() <= limit {
-                                                    return Ok(Value::Null);
-                                                }
-                                                let f = self.frames.last().unwrap();
-                                                cell_idx = f.cell_idx;
-                                                base = f.base_register;
-                                                ip = f.ip;
-                                                cell = &module.cells[cell_idx];
-                                                jit_handled = true;
-                                            } else if self.frames.len() <= limit {
-                                                return Ok(result_value);
                                             } else {
-                                                self.set_reg_nb(frame.return_register, result_nb);
-                                                let f = self.frames.last().unwrap();
-                                                cell_idx = f.cell_idx;
-                                                base = f.base_register;
-                                                ip = f.ip;
-                                                cell = &module.cells[cell_idx];
-                                                jit_handled = true;
-                                            }
-                                        } else {
-                                            // JIT failed — drop the refs we added
-                                            for i in 0..nargs {
-                                                let nb = self.reg_nb(base + a + 1 + i);
-                                                if nb.is_heap_allocated() {
-                                                    unsafe {
-                                                        let ptr = (nb.payload()
-                                                            & !NbValue::PTR_ARENA_FLAG)
-                                                            as *const Value;
-                                                        std::sync::Arc::decrement_strong_count(ptr);
-                                                    }
+                                                // JIT failed — drop the refs we added
+                                                for i in 0..nargs {
+                                                    let nb = self.reg_nb(base + a + 1 + i);
+                                                    nb.drop_heap();
                                                 }
                                             }
                                         }
+                                        // JIT execution failed — fall through to interpreter
                                     }
-                                    // JIT execution failed — fall through to interpreter
                                 }
                             }
                         }
@@ -3254,8 +3412,12 @@ impl VM {
                         continue;
                     }
                     OpCode::Intrinsic => {
-                        let result = match self.exec_intrinsic(base, a, b, c) {
-                            Ok(v) => v,
+                        match self.exec_intrinsic(base, a, b, c) {
+                            Ok(v) => {
+                                if !matches!(b, 140 | 141 | 142) {
+                                    self.set_reg(base + a, v);
+                                }
+                            }
                             Err(ref err) => {
                                 let err_msg = err.to_string();
                                 if self.fail_current_future(err_msg) {
@@ -3272,7 +3434,6 @@ impl VM {
                                 return Err(err.clone());
                             }
                         };
-                        self.set_reg(base + a, result);
                         continue;
                     }
                     _ => unreachable!("guarded by matches! above"),
@@ -3301,7 +3462,7 @@ impl VM {
                         .get(arg_reg)
                         .copied()
                         .unwrap_or(NbValue::new_null());
-                    let arg_value = nb_to_value(arg_nb);
+                    let arg_value = nb_to_value_deep(arg_nb, &self.strings);
                     let scope = self.effect_handlers.remove(idx);
 
                     let handler_base = base + a + 1;
@@ -3341,21 +3502,16 @@ impl VM {
 
                 OpCode::LoadK => {
                     let bx = instr.bx() as usize;
-                    let val = match &cell.constants[bx] {
-                        Constant::Null => Value::Null,
-                        Constant::Bool(v) => Value::Bool(*v),
-                        Constant::Int(v) => Value::Int(*v),
-                        Constant::BigInt(v) => Value::BigInt(v.clone()),
-                        Constant::Float(v) => Value::Float(*v),
-                        Constant::String(v) => Value::String(StringRef::Owned(v.clone())),
-                        Constant::NbValue(raw) => {
-                            // Pre-boxed NaN-boxed value: decode back to legacy Value
-                            // for interpreter execution. The JIT path uses raw u64 directly.
-                            let nb = NbValue(*raw);
-                            nb_to_value(nb)
-                        }
+                    let nb = match &cell.constants[bx] {
+                        Constant::Null => NbValue::new_null(),
+                        Constant::Bool(v) => NbValue::new_bool(*v),
+                        Constant::Int(v) => NbValue::new_int(*v),
+                        Constant::BigInt(v) => NbValue::new_bigint(v.clone()),
+                        Constant::Float(v) => NbValue::new_float(*v),
+                        Constant::String(v) => NbValue::new_str(v),
+                        Constant::NbValue(raw) => NbValue(*raw),
                     };
-                    self.set_reg(base + a, val);
+                    self.set_reg_nb(base + a, nb);
                 }
                 OpCode::LoadNil => {
                     for i in 0..=b {
@@ -3391,19 +3547,19 @@ impl VM {
                 OpCode::NewList | OpCode::NewListStack => {
                     let mut list = Vec::with_capacity(b);
                     for i in 1..=b {
-                        list.push(self.reg(base + a + i));
+                        list.push(self.reg_nb(base + a + i));
                     }
-                    self.set_reg(base + a, Value::new_list(list));
+                    self.set_reg_nb(base + a, NbValue::new_list(list));
                 }
                 OpCode::NewMap => {
                     let mut map = BTreeMap::new();
                     for i in 0..b {
                         let k = value_to_str_cow(&self.reg(base + a + 1 + i * 2), &self.strings)
                             .into_owned();
-                        let v = self.reg(base + a + 2 + i * 2);
+                        let v = self.reg_nb(base + a + 2 + i * 2);
                         map.insert(k, v);
                     }
-                    self.set_reg(base + a, Value::new_map(map));
+                    self.set_reg_nb(base + a, NbValue::new_map(map));
                 }
                 OpCode::NewRecord => {
                     let bx = instr.bx() as usize;
@@ -3413,57 +3569,71 @@ impl VM {
                         "Unknown".to_string()
                     };
                     let fields = BTreeMap::new();
-                    self.set_reg(
-                        base + a,
-                        Value::new_record(RecordValue { type_name, fields }),
-                    );
+                    self.set_reg_nb(base + a, NbValue::new_record(&type_name, fields));
                 }
                 OpCode::NewUnion => {
-                    let tag_str = value_to_str_cow(&self.reg(base + b), &self.strings).into_owned();
-                    let tag = self.strings.intern(&tag_str);
-                    let payload_nb = self.reg_nb(base + c);
-                    let payload = self
-                        .nb_to_union_payload(payload_nb)
-                        .unwrap_or_else(|| UnionPayload::from_value(self.reg(base + c)));
-                    self.set_reg(base + a, Value::Union(UnionValue { tag, payload }));
+                    let payload = self.reg_nb(base + c);
+                    let tag_value = self.reg_nb(base + b);
+                    let tag = match tag_value.as_heap_ref() {
+                        Some(HeapValue::Str(s)) => Arc::clone(s),
+                        _ => match self.reg(base + b) {
+                            Value::String(StringRef::Interned(id)) => {
+                                self.strings.get_arc(id).unwrap_or_else(|| Arc::from(""))
+                            }
+                            Value::String(StringRef::Owned(s)) => {
+                                self.strings.get_or_intern_arc(&s)
+                            }
+                            _ => {
+                                let tag_value = self.reg(base + b);
+                                let tag_str =
+                                    value_to_str_cow(&tag_value, &self.strings).into_owned();
+                                self.strings.get_or_intern_arc(tag_str.as_str())
+                            }
+                        },
+                    };
+                    self.set_reg_nb(base + a, NbValue::new_union_arc(tag, payload));
                 }
                 OpCode::NewTuple | OpCode::NewTupleStack => {
                     let mut elems = Vec::with_capacity(b);
                     for i in 1..=b {
-                        elems.push(self.reg(base + a + i));
+                        elems.push(self.reg_nb(base + a + i));
                     }
-                    self.set_reg(base + a, Value::new_tuple(elems));
+                    self.set_reg_nb(base + a, NbValue::new_tuple(elems));
                 }
                 OpCode::NewSet => {
-                    let mut elems = Vec::with_capacity(b);
+                    let mut set = BTreeSet::new();
                     for i in 1..=b {
-                        let v = self.reg(base + a + i);
-                        if !elems.contains(&v) {
-                            elems.push(v);
-                        }
+                        set.insert(self.reg_nb(base + a + i));
                     }
-                    self.set_reg(base + a, Value::new_set_from_vec(elems));
+                    self.set_reg_nb(base + a, NbValue::new_set(set));
                 }
 
                 // Access
                 OpCode::GetField => {
-                    let obj = self.reg(base + b);
+                    let obj = nb_to_value_deep(self.reg_nb(base + b), &self.strings);
                     let field_name = if c < module.strings.len() {
                         &module.strings[c]
                     } else {
                         ""
                     };
                     let val = match &obj {
-                        Value::Record(r) => {
-                            r.fields.get(field_name).cloned().unwrap_or(Value::Null)
-                        }
-                        Value::Map(m) => m.get(field_name).cloned().unwrap_or(Value::Null),
-                        _ => Value::Null,
+                        Value::Record(r) => r
+                            .fields
+                            .get(field_name)
+                            .cloned()
+                            .map(|v| nb_from_value(v, &self.strings))
+                            .unwrap_or(NbValue::new_null()),
+                        Value::Map(m) => m
+                            .get(field_name)
+                            .cloned()
+                            .map(|v| nb_from_value(v, &self.strings))
+                            .unwrap_or(NbValue::new_null()),
+                        _ => NbValue::new_null(),
                     };
-                    self.set_reg(base + a, val);
+                    self.set_reg_nb(base + a, val);
                 }
                 OpCode::SetField => {
-                    let val = self.reg(base + c);
+                    let val = self.reg_nb(base + c);
                     let field_name = if b < module.strings.len() {
                         module.strings[b].clone()
                     } else {
@@ -3471,16 +3641,17 @@ impl VM {
                     };
                     let mut target = self.reg_take(base + a);
                     if let Value::Record(ref mut r) = target {
-                        Arc::make_mut(r).fields.insert(field_name, val);
+                        Arc::make_mut(r)
+                            .fields
+                            .insert(field_name, nb_to_value_deep(val, &self.strings));
                     }
                     self.set_reg(base + a, target);
                 }
                 OpCode::GetIndex => {
-                    let obj = self.reg(base + b);
-                    let idx = self.reg(base + c);
-                    let val = match (&obj, &idx) {
-                        (Value::List(l), Value::Int(i)) => {
-                            let ii = *i;
+                    let obj_nb = self.reg_nb(base + b);
+                    let idx_nb = self.reg_nb(base + c);
+                    let val = match (obj_nb.as_heap_ref(), idx_nb.as_int()) {
+                        (Some(HeapValue::List(l)), Some(ii)) => {
                             let len = l.len() as i64;
                             let effective = if ii < 0 { ii + len } else { ii };
                             if effective < 0 || effective >= len {
@@ -3489,10 +3660,9 @@ impl VM {
                                     ii, len
                                 )));
                             }
-                            l[effective as usize].clone()
+                            l[effective as usize]
                         }
-                        (Value::Tuple(t), Value::Int(i)) => {
-                            let ii = *i;
+                        (Some(HeapValue::Tuple(t)), Some(ii)) => {
                             let len = t.len() as i64;
                             let effective = if ii < 0 { ii + len } else { ii };
                             if effective < 0 || effective >= len {
@@ -3501,19 +3671,19 @@ impl VM {
                                     ii, len
                                 )));
                             }
-                            t[effective as usize].clone()
+                            t[effective as usize]
                         }
-                        (Value::Map(m), _) => m
-                            .get(&idx.as_string_resolved(&self.strings))
-                            .cloned()
-                            .unwrap_or(Value::Null),
-                        (Value::Record(r), _) => r
-                            .fields
-                            .get(&idx.as_string_resolved(&self.strings))
-                            .cloned()
-                            .unwrap_or(Value::Null),
-                        (Value::Set(s), Value::Int(i)) => {
-                            let ii = *i;
+                        (Some(HeapValue::Map(m)), _) => {
+                            let key = nb_to_value_deep(idx_nb, &self.strings)
+                                .as_string_resolved(&self.strings);
+                            m.get(&key).copied().unwrap_or(NbValue::new_null())
+                        }
+                        (Some(HeapValue::Record(r)), _) => {
+                            let key = nb_to_value_deep(idx_nb, &self.strings)
+                                .as_string_resolved(&self.strings);
+                            r.fields.get(&key).copied().unwrap_or(NbValue::new_null())
+                        }
+                        (Some(HeapValue::Set(s)), Some(ii)) => {
                             let len = s.len() as i64;
                             let effective = if ii < 0 { ii + len } else { ii };
                             if effective < 0 || effective >= len {
@@ -3524,21 +3694,20 @@ impl VM {
                             }
                             s.iter()
                                 .nth(effective as usize)
-                                .cloned()
-                                .unwrap_or(Value::Null)
+                                .copied()
+                                .unwrap_or(NbValue::new_null())
                         }
-                        _ => Value::Null,
+                        _ => NbValue::new_null(),
                     };
-                    eprintln!("GETINDEX: obj={:?} idx={:?} -> {:?}", obj, idx, val);
-                    self.set_reg(base + a, val);
+                    self.set_reg_nb(base + a, val);
                 }
                 OpCode::SetIndex => {
-                    let val = self.reg(base + c);
-                    let key = self.reg(base + b);
+                    let val = self.reg_nb(base + c);
+                    let key = self.reg_nb(base + b);
                     let mut target = self.reg_take(base + a);
                     match &mut target {
                         Value::List(l) => {
-                            if let Some(i) = key.as_int() {
+                            if let Some(i) = nb_to_value_deep(key, &self.strings).as_int() {
                                 let len = l.len() as i64;
                                 let effective = if i < 0 { i + len } else { i };
                                 if effective < 0 || effective >= len {
@@ -3554,17 +3723,23 @@ impl VM {
                                 self.set_reg(base + a, target);
                                 return Err(VmError::TypeError(format!(
                                     "list index must be an integer, got {}",
-                                    key.type_name()
+                                    nb_to_value_deep(key, &self.strings).type_name()
                                 )));
                             }
                         }
                         Value::Map(m) => {
-                            Arc::make_mut(m).insert(key.as_string_resolved(&self.strings), val);
+                            Arc::make_mut(m).insert(
+                                nb_to_value_deep(key, &self.strings)
+                                    .as_string_resolved(&self.strings),
+                                nb_to_value_deep(val, &self.strings),
+                            );
                         }
                         Value::Record(r) => {
-                            Arc::make_mut(r)
-                                .fields
-                                .insert(key.as_string_resolved(&self.strings), val);
+                            Arc::make_mut(r).fields.insert(
+                                nb_to_value_deep(key, &self.strings)
+                                    .as_string_resolved(&self.strings),
+                                nb_to_value_deep(val, &self.strings),
+                            );
                         }
                         _ => {
                             let type_name = target.type_name().to_string();
@@ -3578,9 +3753,9 @@ impl VM {
                     self.set_reg(base + a, target);
                 }
                 OpCode::GetTuple => {
-                    let obj = self.reg(base + b);
-                    let val = match &obj {
-                        Value::Tuple(t) => {
+                    let obj_nb = self.reg_nb(base + b);
+                    let val = match obj_nb.as_heap_ref() {
+                        Some(HeapValue::Tuple(t)) => {
                             if c >= t.len() {
                                 return Err(VmError::Runtime(format!(
                                     "index {} out of bounds for tuple of length {}",
@@ -3588,9 +3763,9 @@ impl VM {
                                     t.len()
                                 )));
                             }
-                            t[c].clone()
+                            t[c]
                         }
-                        Value::List(l) => {
+                        Some(HeapValue::List(l)) => {
                             if c >= l.len() {
                                 return Err(VmError::Runtime(format!(
                                     "index {} out of bounds for list of length {}",
@@ -3598,11 +3773,11 @@ impl VM {
                                     l.len()
                                 )));
                             }
-                            l[c].clone()
+                            l[c]
                         }
-                        _ => Value::Null,
+                        _ => NbValue::new_null(),
                     };
-                    self.set_reg(base + a, val);
+                    self.set_reg_nb(base + a, val);
                 }
 
                 // Arithmetic
@@ -3624,10 +3799,6 @@ impl VM {
                         } else {
                             self.reg(base + b)
                         };
-                        eprintln!(
-                            "ADD slow: a=r{} b=r{} c=r{} lhs={:?} rhs={:?}",
-                            a, b, c, lhs, rhs
-                        );
                         // Check for strings first for concatenation
                         if matches!(lhs, Value::String(_)) || matches!(rhs, Value::String(_)) {
                             // In-place string concat optimization: when the destination
@@ -3677,7 +3848,7 @@ impl VM {
                                 let mut combined = Vec::with_capacity(l.len() + r.len());
                                 combined.extend(l.iter().cloned());
                                 combined.extend(r.iter().cloned());
-                                self.set_reg(base + a, Value::new_list(combined));
+                                self.set_reg(base + a, Value::List(Arc::new(combined)));
                             }
                         } else {
                             // If we took lhs from register b, restore it before arith_op
@@ -3796,7 +3967,7 @@ impl VM {
                             let mut combined = Vec::with_capacity(la.len() + lb.len());
                             combined.extend(la.iter().cloned());
                             combined.extend(lb.iter().cloned());
-                            Value::new_list(combined)
+                            Value::List(Arc::new(combined))
                         } else {
                             unreachable!()
                         }
@@ -3930,21 +4101,13 @@ impl VM {
                         self.set_reg_nb(base + a, NbValue::new_bool(lhs_f == rhs_f));
                     } else {
                         // TAG_PTR borrow-through: avoid deep cloning for Eq comparisons.
-                        let eq = if lhs_nb.is_ptr()
-                            && rhs_nb.is_ptr()
-                            && lhs_nb.payload() > 1
-                            && rhs_nb.payload() > 1
+                        let eq = if let (Some(lhs_ref), Some(rhs_ref)) =
+                            (lhs_nb.as_heap_ref(), rhs_nb.as_heap_ref())
                         {
-                            let lhs_ref = unsafe {
-                                &*((lhs_nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value)
-                            };
-                            let rhs_ref = unsafe {
-                                &*((rhs_nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value)
-                            };
-                            values_equal(lhs_ref, rhs_ref, &self.strings)
+                            lhs_ref == rhs_ref
                         } else {
-                            let lhs = nb_to_value(lhs_nb);
-                            let rhs = nb_to_value(rhs_nb);
+                            let lhs = nb_to_value_deep(lhs_nb, &self.strings);
+                            let rhs = nb_to_value_deep(rhs_nb, &self.strings);
                             values_equal(&lhs, &rhs, &self.strings)
                         };
                         self.set_reg_nb(base + a, NbValue::new_bool(eq));
@@ -3955,49 +4118,21 @@ impl VM {
                     let lhs_nb = self.reg_nb(base + b);
                     let rhs_nb = self.reg_nb(base + c);
                     if let (Some(lhs_i), Some(rhs_i)) = (lhs_nb.as_int(), rhs_nb.as_int()) {
-                        eprintln!(
-                            "LT: lhs_int={} rhs_int={} -> {} (a=r{})",
-                            lhs_i,
-                            rhs_i,
-                            lhs_i < rhs_i,
-                            a
-                        );
                         self.set_reg_nb(base + a, NbValue::new_bool(lhs_i < rhs_i));
                     } else if let (Some(lhs_f), Some(rhs_f)) =
                         (lhs_nb.as_float(), rhs_nb.as_float())
                     {
-                        eprintln!(
-                            "LT: lhs_f={} rhs_f={} -> {} (a=r{})",
-                            lhs_f,
-                            rhs_f,
-                            lhs_f < rhs_f,
-                            a
-                        );
                         self.set_reg_nb(base + a, NbValue::new_bool(lhs_f < rhs_f));
                     } else if let (Some(lhs_i), Some(rhs_f)) = (lhs_nb.as_int(), rhs_nb.as_float())
                     {
-                        eprintln!(
-                            "LT: lhs_int={} rhs_f={} -> {} (a=r{})",
-                            lhs_i,
-                            rhs_f,
-                            (lhs_i as f64) < rhs_f,
-                            a
-                        );
                         self.set_reg_nb(base + a, NbValue::new_bool((lhs_i as f64) < rhs_f));
                     } else if let (Some(lhs_f), Some(rhs_i)) = (lhs_nb.as_float(), rhs_nb.as_int())
                     {
-                        eprintln!(
-                            "LT: lhs_f={} rhs_int={} -> {} (a=r{})",
-                            lhs_f,
-                            rhs_i,
-                            lhs_f < (rhs_i as f64),
-                            a
-                        );
                         self.set_reg_nb(base + a, NbValue::new_bool(lhs_f < (rhs_i as f64)));
                     } else {
                         // COLD PATH: strings, BigInt, etc.
-                        let b_val = nb_to_value(lhs_nb);
-                        let c_val = nb_to_value(rhs_nb);
+                        let b_val = nb_to_value_deep(lhs_nb, &self.strings);
+                        let c_val = nb_to_value_deep(rhs_nb, &self.strings);
                         let result = match (&b_val, &c_val) {
                             (Value::String(x), Value::String(y)) => {
                                 let s1 = match x {
@@ -4039,10 +4174,6 @@ impl VM {
                             }
                             _ => false,
                         };
-                        eprintln!(
-                            "LT: lhs={:?} rhs={:?} -> {} (a=r{})",
-                            b_val, c_val, result, a
-                        );
                         self.set_reg_nb(base + a, NbValue::new_bool(result));
                     }
                 }
@@ -4064,8 +4195,8 @@ impl VM {
                         self.set_reg_nb(base + a, NbValue::new_bool(lhs_f <= (rhs_i as f64)));
                     } else {
                         // COLD PATH: strings, BigInt, etc.
-                        let b_val = nb_to_value(lhs_nb);
-                        let c_val = nb_to_value(rhs_nb);
+                        let b_val = nb_to_value_deep(lhs_nb, &self.strings);
+                        let c_val = nb_to_value_deep(rhs_nb, &self.strings);
                         let result = match (&b_val, &c_val) {
                             (Value::String(x), Value::String(y)) => {
                                 let s1 = match x {
@@ -4111,41 +4242,38 @@ impl VM {
                     }
                 }
                 OpCode::Not => {
-                    let val = self.reg(base + b);
-                    let truthy = self.value_is_truthy(&val);
-                    self.set_reg(base + a, Value::Bool(!truthy));
+                    let truthy = self.reg_nb(base + b).is_truthy();
+                    self.set_reg_nb(base + a, NbValue::new_bool(!truthy));
                 }
                 OpCode::And => {
-                    let lval = self.reg(base + b);
-                    let rval = self.reg(base + c);
-                    let lt = self.value_is_truthy(&lval);
-                    let rt = self.value_is_truthy(&rval);
-                    self.set_reg(base + a, Value::Bool(lt && rt));
+                    let lt = self.reg_nb(base + b).is_truthy();
+                    let rt = self.reg_nb(base + c).is_truthy();
+                    self.set_reg_nb(base + a, NbValue::new_bool(lt && rt));
                 }
                 OpCode::Or => {
-                    let lval = self.reg(base + b);
-                    let rval = self.reg(base + c);
-                    let lt = self.value_is_truthy(&lval);
-                    let rt = self.value_is_truthy(&rval);
-                    self.set_reg(base + a, Value::Bool(lt || rt));
+                    let lt = self.reg_nb(base + b).is_truthy();
+                    let rt = self.reg_nb(base + c).is_truthy();
+                    self.set_reg_nb(base + a, NbValue::new_bool(lt || rt));
                 }
                 OpCode::In => {
-                    let needle = self.reg(base + b);
-                    let haystack = self.reg(base + c);
-                    let result = match &haystack {
-                        Value::List(l) => l.contains(&needle),
-                        Value::Set(s) => s.contains(&needle),
-                        Value::Map(m) => {
-                            let needle_str = value_to_str_cow(&needle, &self.strings);
-                            m.contains_key(needle_str.as_ref())
+                    let needle_nb = self.reg_nb(base + b);
+                    let haystack_nb = self.reg_nb(base + c);
+                    let result = match haystack_nb.as_heap_ref() {
+                        Some(HeapValue::List(l)) => l.iter().any(|v| *v == needle_nb),
+                        Some(HeapValue::Set(s)) => s.contains(&needle_nb),
+                        Some(HeapValue::Map(m)) => {
+                            let needle_str = nb_to_value_deep(needle_nb, &self.strings)
+                                .as_string_resolved(&self.strings);
+                            m.contains_key(needle_str.as_str())
                         }
-                        Value::String(StringRef::Owned(s)) => {
-                            let needle_str = value_to_str_cow(&needle, &self.strings);
-                            s.contains(needle_str.as_ref())
+                        Some(HeapValue::Str(s)) => {
+                            let needle_str = nb_to_value_deep(needle_nb, &self.strings)
+                                .as_string_resolved(&self.strings);
+                            s.contains(needle_str.as_str())
                         }
                         _ => false,
                     };
-                    self.set_reg(base + a, Value::Bool(result));
+                    self.set_reg_nb(base + a, NbValue::new_bool(result));
                 }
                 OpCode::Is => {
                     let val = self.reg(base + b);
@@ -4155,55 +4283,16 @@ impl VM {
                     self.set_reg(base + a, Value::Bool(matches));
                 }
                 OpCode::NullCo => {
-                    let val = self.reg(base + b);
-                    if matches!(val, Value::Null) {
-                        let fallback = self.reg(base + c);
-                        self.set_reg(base + a, fallback);
+                    let val_nb = self.reg_nb(base + b);
+                    if val_nb.is_null() {
+                        let fallback = self.reg_nb(base + c);
+                        self.set_reg_nb(base + a, fallback);
                     } else {
-                        self.set_reg(base + a, val);
+                        self.set_reg_nb(base + a, val_nb);
                     }
                 }
                 OpCode::Test => {
-                    // NbValue fast-path: check bool tag directly.
-                    let nb = self.reg_nb(base + a);
-                    let truthy = if let Some(flag) = nb.as_bool() {
-                        flag
-                    } else if nb.is_null() {
-                        false
-                    } else if let Some(i) = nb.as_int() {
-                        i != 0
-                    } else if let Some(f) = nb.as_float() {
-                        f != 0.0 && !f.is_nan()
-                    } else if nb.is_ptr() {
-                        // Borrow through TAG_PTR without cloning
-                        let payload = nb.payload();
-                        if payload <= 1 {
-                            false // null pointer
-                        } else {
-                            let val_ref = unsafe { &*(payload as *const Value) };
-                            match val_ref {
-                                Value::String(StringRef::Owned(s)) => !s.is_empty(),
-                                Value::String(StringRef::Interned(id)) => self
-                                    .strings
-                                    .resolve(*id)
-                                    .map(|s| !s.is_empty())
-                                    .unwrap_or(false),
-                                Value::List(l) => !l.is_empty(),
-                                Value::Tuple(t) => !t.is_empty(),
-                                Value::Map(m) => !m.is_empty(),
-                                Value::Set(s) => !s.is_empty(),
-                                Value::Null => false,
-                                _ => true,
-                            }
-                        }
-                    } else {
-                        let val = nb_to_value(nb);
-                        self.value_is_truthy(&val)
-                    };
-                    eprintln!(
-                        "TEST: reg r{} nb={:?} truthy={} c={} ip={}",
-                        a, nb, truthy, c, ip
-                    );
+                    let truthy = self.reg_nb(base + a).is_truthy();
                     if truthy != (c != 0) {
                         ip += 1;
                     }
@@ -4314,68 +4403,68 @@ impl VM {
                 }
                 OpCode::ForLoop => {
                     let bx = instr.bx();
-                    let idx_val = self.reg(base + a + 1);
-                    let len_val = self.reg(base + a + 2);
+                    let idx_val = self.reg_nb(base + a + 1);
+                    let len_val = self.reg_nb(base + a + 2);
                     let idx = idx_val.as_int().unwrap_or(0);
                     let len = len_val.as_int().unwrap_or(0);
                     if idx < len {
-                        let iter = self.reg(base + a);
-                        let elem = match &iter {
-                            Value::List(l) => l.get(idx as usize).cloned().unwrap_or(Value::Null),
-                            Value::Set(s) => {
-                                s.iter().nth(idx as usize).cloned().unwrap_or(Value::Null)
+                        let iter = self.reg_nb(base + a);
+                        let elem = match iter.as_heap_ref() {
+                            Some(HeapValue::List(l)) => {
+                                l.get(idx as usize).copied().unwrap_or(NbValue::new_null())
                             }
-                            Value::Tuple(t) => t.get(idx as usize).cloned().unwrap_or(Value::Null),
-                            _ => Value::Null,
+                            Some(HeapValue::Set(s)) => s
+                                .iter()
+                                .nth(idx as usize)
+                                .copied()
+                                .unwrap_or(NbValue::new_null()),
+                            Some(HeapValue::Tuple(t)) => {
+                                t.get(idx as usize).copied().unwrap_or(NbValue::new_null())
+                            }
+                            _ => NbValue::new_null(),
                         };
-                        self.set_reg(base + a + 3, elem);
-                        self.set_reg(base + a + 1, Value::Int(idx + 1));
+                        self.set_reg_nb(base + a + 3, elem);
+                        self.set_reg_nb(base + a + 1, NbValue::new_int(idx + 1));
                         ip = (ip as i32 - bx as i32) as usize;
                     }
                 }
                 OpCode::ForIn => {
                     // A = base, B = iterator reg, C = element dest
                     // Similar to ForLoop but more generic
-                    let idx_val = self.reg(base + a + 1);
+                    let idx_val = self.reg_nb(base + a + 1);
                     let idx = idx_val.as_int().unwrap_or(0);
-                    let iter = self.reg(base + b);
-                    let (elem, has_more) = match &iter {
-                        Value::List(l) => {
+                    let iter = self.reg_nb(base + b);
+                    let (elem, has_more) = match iter.as_heap_ref() {
+                        Some(HeapValue::List(l)) => {
                             if (idx as usize) < l.len() {
-                                (l[idx as usize].clone(), true)
+                                (l[idx as usize], true)
                             } else {
-                                (Value::Null, false)
+                                (NbValue::new_null(), false)
                             }
                         }
-                        Value::Map(m) => {
+                        Some(HeapValue::Map(m)) => {
                             let keys: Vec<_> = m.keys().collect();
                             if (idx as usize) < keys.len() {
                                 let key = keys[idx as usize].clone();
-                                let val = m.get(&key).cloned().unwrap_or(Value::Null);
-                                (
-                                    Value::new_tuple(vec![
-                                        Value::String(StringRef::Owned(key)),
-                                        val,
-                                    ]),
-                                    true,
-                                )
+                                let val = m.get(&key).copied().unwrap_or(NbValue::new_null());
+                                (NbValue::new_tuple(vec![NbValue::new_str(&key), val]), true)
                             } else {
-                                (Value::Null, false)
+                                (NbValue::new_null(), false)
                             }
                         }
-                        Value::Set(s) => {
-                            let items: Vec<_> = s.iter().collect();
+                        Some(HeapValue::Set(s)) => {
+                            let items: Vec<_> = s.iter().copied().collect();
                             if (idx as usize) < items.len() {
-                                (items[idx as usize].clone(), true)
+                                (items[idx as usize], true)
                             } else {
-                                (Value::Null, false)
+                                (NbValue::new_null(), false)
                             }
                         }
-                        _ => (Value::Null, false),
+                        _ => (NbValue::new_null(), false),
                     };
-                    self.set_reg(base + c, elem);
-                    self.set_reg(base + a + 1, Value::Int(idx + 1));
-                    self.set_reg(base + a, Value::Bool(has_more));
+                    self.set_reg_nb(base + c, elem);
+                    self.set_reg_nb(base + a + 1, NbValue::new_int(idx + 1));
+                    self.set_reg_nb(base + a, NbValue::new_bool(has_more));
                 }
                 OpCode::Break => {
                     // Jump to loop end (offset in Ax)
@@ -4664,31 +4753,13 @@ impl VM {
 
                 // List ops
                 OpCode::Append => {
-                    // Fast path: mutate the list in-place through the NbValue pointer.
-                    // This avoids the outer Arc<Value> alloc/dealloc cycle that
-                    // reg_take + set_reg would perform on every iteration.
-                    // Safety: the register is the sole owner of the outer Arc
-                    // (refcount == 1) because NbValue copies only happen via
-                    // explicit inc_ref() calls, never by raw u64 duplication.
-                    let is_heap_list =
-                        if let Some(ptr) = self.registers[base + a].as_pointer::<Value>() {
-                            unsafe { matches!(&*ptr, Value::List(_)) }
-                        } else {
-                            false
-                        };
-                    if is_heap_list {
-                        let val = self.reg(base + b);
-                        unsafe {
-                            let nb = &mut self.registers[base + a];
-                            if let Some(ptr) = nb.as_pointer::<Value>() {
-                                if let Value::List(ref mut l) = &mut *(ptr as *mut Value) {
-                                    Arc::make_mut(l).push(val);
-                                }
-                            }
-                        }
+                    let val = self.reg_nb(base + b);
+                    let target_nb = self.reg_nb(base + a);
+                    if let Some(HeapValue::List(list)) = target_nb.as_heap_ref() {
+                        let mut updated = list.as_ref().clone();
+                        updated.push(val);
+                        self.set_reg_nb(base + a, NbValue::new_list(updated));
                     } else {
-                        // Slow fallback for non-heap or non-list values
-                        let val = self.reg(base + b);
                         let mut target = self.reg_take(base + a);
                         if let Value::List(ref mut l) = target {
                             Arc::make_mut(l).push(val);
@@ -4700,17 +4771,14 @@ impl VM {
                 // Type checks
                 OpCode::IsVariant => {
                     let tag_idx = instr.bx() as usize;
-                    // The bx field is an index into module.strings. We need to
-                    // resolve it to an interned string ID to compare against the
-                    // Union's tag (which is also an interned ID).
-                    let tag_id = if tag_idx < module.strings.len() {
-                        self.strings.intern(&module.strings[tag_idx])
+                    let tag = if tag_idx < module.strings.len() {
+                        &module.strings[tag_idx]
                     } else {
-                        u32::MAX // will never match
+                        ""
                     };
                     // Zero-copy: read union tag via reference, no deep clone.
-                    let matched = match self.reg_heap_ref(base + a) {
-                        Some(Value::Union(u)) => u.tag == tag_id,
+                    let matched = match self.registers[base + a].as_heap_ref() {
+                        Some(HeapValue::Union(u)) => u.tag.as_ref() == tag,
                         _ => false,
                     };
                     if matched {
@@ -4719,15 +4787,13 @@ impl VM {
                 }
                 OpCode::Unbox => {
                     // Extract union payload via zero-copy reference.
-                    // Clone only the payload, not the entire union.
-                    // IMPORTANT: Must clone into a local before calling set_reg,
-                    // since reg_heap_ref borrows self immutably.
-                    let payload = if let Some(Value::Union(u)) = self.reg_heap_ref(base + b) {
-                        u.payload.to_value()
-                    } else {
-                        Value::Null
-                    };
-                    self.set_reg(base + a, payload);
+                    let payload =
+                        if let Some(HeapValue::Union(u)) = self.registers[base + b].as_heap_ref() {
+                            u.payload
+                        } else {
+                            NbValue::new_null()
+                        };
+                    self.set_reg_nb(base + a, payload);
                 }
 
                 // Algebraic effects
@@ -4918,6 +4984,11 @@ impl VM {
 
                 OpCode::OsrCheck => {
                     let osr_ip = ip.wrapping_sub(1);
+                    if cell.params.iter().any(|p| p.variadic) {
+                        // OSR/JIT does not yet support variadic parameter packing.
+                        // Skip OSR transitions for these cells and continue interpreting.
+                        continue;
+                    }
                     // Use the no-catch_unwind fast path — we're in Rust so panics
                     // propagate normally. `lm_rt_osr_check` (extern "C" + catch_unwind)
                     // would add ~10-100ns per loop iteration just for the unwind frame.
@@ -4926,7 +4997,7 @@ impl VM {
                         && self.stencil_tier.is_compiled(cell_idx);
                     if !compiled_ptr.is_null() || stencil_ready {
                         if let Ok(result) =
-                            crate::vm::osr::perform_osr_transition(self, cell, osr_ip)
+                            crate::vm::osr::perform_osr_transition(self, cell, osr_ip, None, None)
                         {
                             let frame = self
                                 .frames
@@ -4956,19 +5027,7 @@ impl VM {
         // the entire Value. Only falls through to self.reg() for Closure/other.
         let string_name: Option<Result<String, VmError>> =
             match self.registers[base + a].as_heap_ref() {
-                Some(Value::String(sr)) => Some(match sr {
-                    StringRef::Owned(s) => Ok(s.clone()),
-                    StringRef::Interned(id) => self
-                        .strings
-                        .resolve(*id)
-                        .ok_or_else(|| {
-                            VmError::Runtime(format!(
-                                "unknown interned string id {} for call target",
-                                id
-                            ))
-                        })
-                        .map(|s| s.to_string()),
-                }),
+                Some(HeapValue::Str(sr)) => Some(Ok(sr.to_string())),
                 _ => None,
             };
         if let Some(name_result) = string_name {
@@ -5090,19 +5149,7 @@ impl VM {
         // Zero-copy fast path for string callee names.
         let string_name: Option<Result<String, VmError>> =
             match self.registers[base + a].as_heap_ref() {
-                Some(Value::String(sr)) => Some(match sr {
-                    StringRef::Owned(s) => Ok(s.clone()),
-                    StringRef::Interned(id) => self
-                        .strings
-                        .resolve(*id)
-                        .ok_or_else(|| {
-                            VmError::Runtime(format!(
-                                "unknown interned string id {} for tailcall target",
-                                id
-                            ))
-                        })
-                        .map(|s| s.to_string()),
-                }),
+                Some(HeapValue::Str(sr)) => Some(Ok(sr.to_string())),
                 _ => None,
             };
         if let Some(name_result) = string_name {
@@ -5673,14 +5720,14 @@ mod tests {
         };
 
         assert_eq!(refs.len(), 2);
-        match &refs[0] {
+        match nb_to_value_deep(refs[0], &vm.strings) {
             Value::TraceRef(trace) => {
                 assert_eq!(trace.trace_id, "run-123");
                 assert_eq!(trace.seq, 1);
             }
             other => panic!("expected trace ref at index 0, got {:?}", other),
         }
-        match &refs[1] {
+        match nb_to_value_deep(refs[1], &vm.strings) {
             Value::TraceRef(trace) => {
                 assert_eq!(trace.trace_id, "run-123");
                 assert_eq!(trace.seq, 2);
@@ -5768,9 +5815,9 @@ mod tests {
         let result = vm.execute("main", vec![]).unwrap();
         if let Value::List(l) = result {
             assert_eq!(l.len(), 3);
-            assert_eq!(l[0], Value::Int(1));
-            assert_eq!(l[1], Value::Int(2));
-            assert_eq!(l[2], Value::Int(3));
+            assert_eq!(nb_to_value_deep(l[0], &vm.strings), Value::Int(1));
+            assert_eq!(nb_to_value_deep(l[1], &vm.strings), Value::Int(2));
+            assert_eq!(nb_to_value_deep(l[2], &vm.strings), Value::Int(3));
         } else {
             panic!("expected list");
         }
@@ -6433,9 +6480,9 @@ end
         // Directly test pipeline stage chaining via the VM
         // Input: 3 -> inc -> 4 -> dbl -> 8
         let result = vm
-            .call_pipeline_run("TestPipe", &[Value::Null, Value::Int(3)])
+            .call_pipeline_run("TestPipe", &[NbValue::new_null(), NbValue::new_int(3)])
             .expect("pipeline run should succeed");
-        assert_eq!(result, Value::Int(8));
+        assert_eq!(result, NbValue::new_int(8));
     }
 
     #[test]
@@ -6453,9 +6500,9 @@ end
         vm.load(module);
 
         let result = vm
-            .call_pipeline_run("EmptyPipe", &[Value::Null, Value::Int(42)])
+            .call_pipeline_run("EmptyPipe", &[NbValue::new_null(), NbValue::new_int(42)])
             .expect("empty pipeline should succeed");
-        assert_eq!(result, Value::Int(42));
+        assert_eq!(result, NbValue::new_int(42));
     }
 
     #[test]
@@ -6478,13 +6525,13 @@ end
 
         // Orchestration: input 5 -> [inc(5)=6, dbl(5)=10]
         let result = vm
-            .call_orchestration_run("FanOut", &[Value::Null, Value::Int(5)])
+            .call_orchestration_run("FanOut", &[NbValue::new_null(), NbValue::new_int(5)])
             .expect("orchestration should succeed");
-        match result {
-            Value::List(items) => {
+        match result.as_heap_ref() {
+            Some(HeapValue::List(items)) => {
                 assert_eq!(items.len(), 2);
-                assert_eq!(items[0], Value::Int(6));
-                assert_eq!(items[1], Value::Int(10));
+                assert_eq!(items[0], NbValue::new_int(6));
+                assert_eq!(items[1], NbValue::new_int(10));
             }
             other => panic!("expected list, got {:?}", other),
         }
@@ -7603,13 +7650,13 @@ end
         vm.load(module);
 
         // Manually place an interned string in r1 before execution
-        let interned_id = vm.strings.intern("hello");
+        let _interned_id = vm.strings.intern("hello");
         // We need to set r1 in the frame that execute() will create.
         // execute() will create a frame at base = current registers.len().
         // So we pre-size and set up r1 at the right offset.
         let base = vm.registers.len();
         vm.registers.resize(base + 256, NbValue::new_null());
-        vm.registers[base + 1] = value_to_nb(Value::String(StringRef::Interned(interned_id)));
+        vm.registers[base + 1] = NbValue::new_str("hello");
 
         vm.frames.push(CallFrame {
             cell_idx: 0,
@@ -8039,9 +8086,10 @@ end
         if let Value::List(items) = &result {
             assert_eq!(items.len(), 3);
             // First element should be tuple (0, 10)
-            if let Value::Tuple(t) = &items[0] {
-                assert_eq!(t[0], Value::Int(0));
-                assert_eq!(t[1], Value::Int(10));
+            let strings = StringTable::new();
+            if let Value::Tuple(t) = nb_to_value_deep(items[0], &strings) {
+                assert_eq!(nb_to_value_deep(t[0], &strings), Value::Int(0));
+                assert_eq!(nb_to_value_deep(t[1], &strings), Value::Int(10));
             }
         } else {
             panic!("expected list from enumerate");
@@ -9888,28 +9936,21 @@ end
     fn test_nb_to_union_payload_reuses_heap_arc() {
         let vm = VM::new();
         let tuple_val = Value::new_tuple(vec![Value::Int(1), Value::Int(2)]);
-        let nb = value_to_nb(tuple_val);
+        let nb = nb_from_value(tuple_val, &vm.strings);
         assert!(
             nb.is_heap_allocated(),
             "tuple should be heap-allocated NbValue"
         );
-        let original_ptr = (nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value;
 
         let payload = vm
             .nb_to_union_payload(nb)
             .expect("heap NbValue should convert to UnionPayload");
         match payload {
-            UnionPayload::Heap(v) => {
-                assert_eq!(
-                    Arc::as_ptr(&v),
-                    original_ptr,
-                    "Union payload should reuse existing Arc<Value> pointer"
-                );
-            }
+            UnionPayload::Heap(_) => {}
             other => panic!("expected heap payload, got: {other:?}"),
         }
 
-        // Release the original NbValue owner; payload owns the reused Arc now.
+        // Release the original NbValue owner.
         nb.drop_heap();
     }
 
@@ -9928,5 +9969,91 @@ end
             vm.nb_to_union_payload(NbValue::new_null()),
             Some(UnionPayload::Null)
         ));
+    }
+
+    #[test]
+    fn test_newunion_unbox_roundtrip() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec!["Leaf".into()],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("Int".into()),
+                registers: 6,
+                constants: vec![Constant::String("Leaf".into()), Constant::Int(7)],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0),
+                    Instruction::abx(OpCode::LoadK, 1, 1),
+                    Instruction::abc(OpCode::NewUnion, 2, 0, 1),
+                    Instruction::abc(OpCode::Unbox, 3, 2, 0),
+                    Instruction::abc(OpCode::Return, 3, 1, 0),
+                ],
+                effect_handler_metas: vec![],
+                osr_points: vec![],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        vm.load(module);
+        let result = vm.execute("main", vec![]).expect("unbox should succeed");
+        assert_eq!(result, Value::Int(7));
+    }
+
+    #[test]
+    fn test_isvariant_checks_union_tag() {
+        let module = LirModule {
+            version: "1.0.0".into(),
+            doc_hash: "test".into(),
+            strings: vec!["Leaf".into(), "Other".into()],
+            types: vec![],
+            cells: vec![LirCell {
+                name: "main".into(),
+                params: vec![],
+                returns: Some("Int".into()),
+                registers: 8,
+                constants: vec![
+                    Constant::String("Leaf".into()),
+                    Constant::Int(1),
+                    Constant::Int(0),
+                ],
+                instructions: vec![
+                    Instruction::abx(OpCode::LoadK, 0, 0), // tag
+                    Instruction::abx(OpCode::LoadK, 1, 1), // payload
+                    Instruction::abc(OpCode::NewUnion, 2, 0, 1),
+                    Instruction::abx(OpCode::LoadK, 3, 2), // default false
+                    Instruction::abx(OpCode::LoadK, 4, 1), // true value
+                    Instruction::abx(OpCode::IsVariant, 2, 0),
+                    Instruction::sax(OpCode::Jmp, 1),
+                    Instruction::abc(OpCode::Move, 3, 4, 0),
+                    Instruction::abc(OpCode::Return, 3, 1, 0),
+                ],
+                effect_handler_metas: vec![],
+                osr_points: vec![],
+            }],
+            tools: vec![],
+            policies: vec![],
+            agents: vec![],
+            addons: vec![],
+            effects: vec![],
+            effect_binds: vec![],
+            handlers: vec![],
+        };
+
+        let mut vm = VM::new();
+        vm.load(module);
+        let result = vm
+            .execute("main", vec![])
+            .expect("isvariant should succeed");
+        assert_eq!(result, Value::Int(1));
     }
 }

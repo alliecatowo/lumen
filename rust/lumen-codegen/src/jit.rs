@@ -15,7 +15,8 @@ use cranelift_codegen::Context;
 use cranelift_frontend::FunctionBuilderContext;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use lumen_core::lir::{LirCell, LirModule, OpCode};
 
@@ -23,8 +24,10 @@ use crate::emit::CodegenError;
 use crate::ir::{nan_box_int, nan_unbox_int, NAN_BOX_FALSE, NAN_BOX_NULL, NAN_BOX_TRUE};
 use crate::types::lir_type_str_to_cl_type;
 use crate::vm_context::VmContext;
+use lumen_core::heap_value::{HeapValue, RecordData};
 use lumen_core::nb_value::NbValue;
 
+#[allow(improper_ctypes)]
 extern "C" {
     fn lm_rt_perform(ctx: *mut VmContext, effect_id: u32, op_id: u32, arg: u64) -> u64;
     fn lm_rt_handle_push(
@@ -222,7 +225,7 @@ pub fn is_cell_fully_jit_compilable(_cell: &LirCell) -> bool {
 /// - **Str**: pass-through — raw `*mut JitString` pointer as i64
 #[allow(dead_code)]
 /// Public wrapper for NaN-unboxing a raw JIT result based on its return type.
-/// `execute_jit` returns NaN-boxed values; callers that convert to `Value`
+/// `execute_jit` returns NaN-boxed values; callers that convert to legacy values
 /// must unbox first.
 pub fn nan_unbox_typed_pub(raw: i64, ret_type: JitVarType) -> i64 {
     nan_unbox_typed(raw, ret_type)
@@ -240,7 +243,7 @@ fn nan_unbox_typed(raw: i64, ret_type: JitVarType) -> i64 {
             }
         }
         JitVarType::Str => raw,    // raw pointer
-        JitVarType::Ptr => raw,    // raw *mut Value heap pointer
+        JitVarType::Ptr => raw,    // raw *mut HeapValue pointer
         JitVarType::RawInt => raw, // already a raw i64
     }
 }
@@ -275,7 +278,7 @@ pub const EXECUTE_JIT_MAX_ARITY: usize = 12;
 /// When refcount drops to 0, both the data buffer and the JitString struct
 /// are freed.
 #[repr(C)]
-struct JitString {
+pub struct JitString {
     refcount: i64,
     len: i64,
     char_count: i64,
@@ -285,7 +288,7 @@ struct JitString {
 
 impl JitString {
     /// Allocate a new JitString from raw UTF-8 bytes.
-    fn from_bytes(data: &[u8]) -> *mut JitString {
+    pub fn from_bytes(data: &[u8]) -> *mut JitString {
         let len = data.len();
         // Compute character count once at creation (O(N) here, O(1) for all future queries)
         let char_count = if len > 0 {
@@ -319,7 +322,7 @@ impl JitString {
     }
 
     /// Allocate a new empty JitString with a given capacity.
-    fn with_capacity(cap: usize) -> *mut JitString {
+    pub fn with_capacity(cap: usize) -> *mut JitString {
         let data_ptr = if cap > 0 {
             let buf = Vec::<u8>::with_capacity(cap);
             let ptr = buf.as_ptr() as *mut u8;
@@ -343,7 +346,7 @@ impl JitString {
     ///
     /// # Safety
     /// The JitString must be valid (non-null ptr if len > 0).
-    unsafe fn as_bytes(&self) -> &[u8] {
+    pub unsafe fn as_bytes(&self) -> &[u8] {
         if self.len == 0 {
             &[]
         } else {
@@ -355,12 +358,12 @@ impl JitString {
     ///
     /// # Safety
     /// The data must be valid UTF-8.
-    unsafe fn as_str(&self) -> &str {
+    pub unsafe fn as_str(&self) -> &str {
         std::str::from_utf8_unchecked(self.as_bytes())
     }
 
     /// Increment refcount and return the same pointer.
-    unsafe fn clone_ref(ptr: *mut JitString) -> *mut JitString {
+    pub unsafe fn clone_ref(ptr: *mut JitString) -> *mut JitString {
         let addr = ptr as usize;
         if ptr.is_null() || addr < 4096 || (addr & 7) != 0 {
             return ptr;
@@ -370,7 +373,7 @@ impl JitString {
     }
 
     /// Decrement refcount. If it reaches 0, free data buffer and struct.
-    unsafe fn drop_ref(ptr: *mut JitString) {
+    pub unsafe fn drop_ref(ptr: *mut JitString) {
         if ptr.is_null() {
             return;
         }
@@ -705,7 +708,7 @@ pub unsafe fn jit_take_string(ptr: i64) -> String {
     }
 }
 
-/// Convert a JitString pointer to a NaN-boxed TAG_PTR pointing to Arc<Value::String>.
+/// Convert a JitString pointer to a NaN-boxed TAG_PTR pointing to Arc<HeapValue::Str>.
 /// This is needed when passing JIT strings to collection helpers (NewMap, etc.)
 /// which expect NaN-boxed values, not raw JitString pointers.
 ///
@@ -719,9 +722,7 @@ pub extern "C" fn jit_rt_str_to_nb(_ctx: *mut VmContext, str_ptr: i64) -> i64 {
         let js = unsafe { &*(str_ptr as *const JitString) };
         unsafe { js.as_str() }.to_string()
     };
-    let val = Value::String(lumen_core::values::StringRef::Owned(s));
-    let ptr = Arc::into_raw(Arc::new(val)) as u64;
-    (NBVAL_NAN_MASK | (ptr & NBVAL_PAYLOAD_MASK)) as i64
+    NbValue::new_str(&s).to_bits() as i64
 }
 
 /// Create a new Map from an array of raw JitString pointer pairs (key, value, key, value, ...).
@@ -730,7 +731,7 @@ pub extern "C" fn jit_rt_str_to_nb(_ctx: *mut VmContext, str_ptr: i64) -> i64 {
 ///
 /// `pairs_ptr` points to `count * 2` i64 values: [key_ptr, val_ptr, key_ptr, val_ptr, ...]
 /// where each element is a raw `*mut JitString` (or 0 for empty string).
-/// Returns a NaN-boxed `Arc<Value::Map>` pointer.
+/// Returns a NaN-boxed `Arc<HeapValue::Map>` pointer.
 ///
 /// # Safety
 /// All non-null pointers must be valid `*mut JitString` pointers.
@@ -740,10 +741,9 @@ pub extern "C" fn jit_rt_new_map_strs(
     pairs_ptr: *const i64,
     count: i64,
 ) -> i64 {
-    use lumen_core::values::StringRef;
     use std::collections::BTreeMap;
     let count = count as usize;
-    let mut map: BTreeMap<String, Value> = BTreeMap::new();
+    let mut map: BTreeMap<String, NbValue> = BTreeMap::new();
     for i in 0..count {
         let key_ptr = unsafe { *pairs_ptr.add(i * 2) };
         let val_ptr = unsafe { *pairs_ptr.add(i * 2 + 1) };
@@ -759,9 +759,9 @@ pub extern "C" fn jit_rt_new_map_strs(
             let js = unsafe { &*(val_ptr as *const JitString) };
             unsafe { js.as_str() }.to_string()
         };
-        map.insert(key_str, Value::String(StringRef::Owned(val_str)));
+        map.insert(key_str, NbValue::new_str(&val_str));
     }
-    let map_value = Value::new_map(map);
+    let map_value = HeapValue::Map(Arc::new(map));
     let ptr = Arc::into_raw(Arc::new(map_value)) as u64;
     (NBVAL_NAN_MASK | (ptr & NBVAL_PAYLOAD_MASK)) as i64
 }
@@ -791,21 +791,12 @@ fn register_string_helpers(builder: &mut JITBuilder) {
 // Record runtime helpers (extern "C" functions callable from JIT code)
 // ---------------------------------------------------------------------------
 
-use lumen_core::values::{RecordValue, Value};
-use std::sync::Arc;
-
 // NbValue decoding constants (must match NbValue in lumen-core and ir.rs).
 const NBVAL_NAN_MASK: u64 = 0x7FF8_0000_0000_0000;
 const NBVAL_PAYLOAD_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 
-/// Decode a NbValue-encoded i64 to a `Value` for use as a collection index.
-///
-/// NbValue integers are encoded as `NAN_MASK | (TAG_INT=1 << 48) | (payload & PAYLOAD_MASK)`.
-/// All other NaN-boxed or raw-pointer values are treated as heap pointers to `Value`.
-///
-/// # Safety
-/// If `val` is not a NbValue integer, it must be a valid `*const Value` pointer.
-fn decode_nbvalue_index(val: i64) -> Value {
+/// Decode a NbValue-encoded i64 to a simple index NbValue.
+fn decode_nbvalue_index(val: i64) -> NbValue {
     let u = val as u64;
     // NbValue uses 3-bit tags at bits 48-50 (bit 51 is the quiet-NaN bit, not part of tag).
     // Must mask with 0x7 (not 0xF) to extract the 3-bit tag correctly.
@@ -817,10 +808,9 @@ fn decode_nbvalue_index(val: i64) -> Value {
         } else {
             payload as i64
         };
-        Value::Int(signed)
+        NbValue::new_int(signed)
     } else {
-        // Heap pointer to a Value.
-        unsafe { (*(val as *const Value)).clone() }
+        NbValue::from_bits(u)
     }
 }
 
@@ -833,14 +823,14 @@ const NANBOX_MASK: u64 = 0x7FF8_0000_0000_0000;
 /// 48-bit payload mask.
 const NANBOX_PAYLOAD: u64 = 0x0000_FFFF_FFFF_FFFF;
 
-/// Extract a `*const Value` from either a NaN-boxed TAG_PTR i64 or a raw
+/// Extract a `*const HeapValue` from either a NaN-boxed TAG_PTR i64 or a raw
 /// pointer i64.  Returns `None` for null / NaN-sentinel / zero.
 ///
 /// A NaN-boxed TAG_PTR has the form `NAN_MASK | ptr48` with tag bits (50:48)
 /// == 0.  We also accept plain raw pointers (payload > 1, no NAN_MASK) for
 /// values produced inside a JIT function that haven't been re-boxed yet.
 #[inline]
-fn unwrap_value_ptr(v: i64) -> Option<*const Value> {
+fn unwrap_value_ptr(v: i64) -> Option<*const HeapValue> {
     let u = v as u64;
     if u == 0 || u == NAN_BOX_NULL as u64 {
         return None;
@@ -849,21 +839,31 @@ fn unwrap_value_ptr(v: i64) -> Option<*const Value> {
     if (u & NANBOX_MASK) == NANBOX_MASK && ((u >> 48) & 0x7) == 0 {
         let payload = u & NANBOX_PAYLOAD;
         if payload > 1 {
-            return Some((payload & !NbValue::PTR_ARENA_FLAG) as *const Value);
+            return Some((payload & !NbValue::PTR_ARENA_FLAG) as *const HeapValue);
         }
         return None;
     }
     // Raw pointer (not NaN-boxed) — accept as-is if reasonable address.
     if u > 1 && u < (1u64 << 48) {
-        return Some(u as *const Value);
+        return Some(u as *const HeapValue);
     }
     None
 }
 
-/// Wrap a raw `*const Value` (or Box pointer) into a NaN-boxed TAG_PTR i64,
+#[inline]
+fn nb_is_arena_ptr(v: i64) -> bool {
+    let u = v as u64;
+    if (u & NANBOX_MASK) == NANBOX_MASK && ((u >> 48) & 0x7) == 0 {
+        let payload = u & NANBOX_PAYLOAD;
+        return payload > 1 && (payload & NbValue::PTR_ARENA_FLAG) != 0;
+    }
+    false
+}
+
+/// Wrap a raw `*const HeapValue` (or Box pointer) into a NaN-boxed TAG_PTR i64,
 /// compatible with NbValue.  Returns NAN_BOX_NULL for null pointers.
 #[inline]
-fn wrap_nanbox_ptr(ptr: *const Value) -> i64 {
+fn wrap_nanbox_ptr(ptr: *const HeapValue) -> i64 {
     let addr = ptr as u64;
     if addr == 0 {
         return NAN_BOX_NULL;
@@ -871,29 +871,42 @@ fn wrap_nanbox_ptr(ptr: *const Value) -> i64 {
     (NANBOX_MASK | (addr & NANBOX_PAYLOAD)) as i64
 }
 
+#[inline]
+fn wrap_nanbox_ptr_arena(ptr: *const HeapValue) -> i64 {
+    let addr = ptr as u64;
+    if addr == 0 {
+        return NAN_BOX_NULL;
+    }
+    (NANBOX_MASK | ((addr & NANBOX_PAYLOAD) | NbValue::PTR_ARENA_FLAG)) as i64
+}
+
 /// Get a field from a Record by field name.
-/// Returns a NaN-boxed TAG_PTR i64 (heap-allocated Value).
+/// Returns a NaN-boxed TAG_PTR i64 (heap-allocated HeapValue).
 /// If the record is null or the field doesn't exist, returns NAN_BOX_NULL.
 ///
 /// # Safety
-/// `record_ptr` must be a valid NaN-boxed TAG_PTR or raw `*mut Value` pointer.
+/// `record_ptr` must be a valid NaN-boxed TAG_PTR or raw `*mut HeapValue` pointer.
 /// `field_name_ptr` must be a valid `*const u8` pointer to UTF-8 bytes.
 extern "C" fn jit_rt_record_get_field(
-    ctx: *mut VmContext,
+    _ctx: *mut VmContext,
     record_nb: i64,
     field_name_ptr: *const u8,
     field_name_len: usize,
 ) -> i64 {
     // record_nb is a NaN-boxed NbValue — decode it safely via Arc clone.
-    let record_val = unsafe { crate::collection_helpers::nb_decode_pub(record_nb) };
+    let record_val = NbValue::from_bits(record_nb as u64);
     let field_name = unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(field_name_ptr, field_name_len))
     };
-    let result = match record_val {
-        Value::Record(r) => r.fields.get(field_name).cloned().unwrap_or(Value::Null),
-        _ => Value::Null,
+    let result = match record_val.as_heap_ref() {
+        Some(HeapValue::Record(r)) => r
+            .fields
+            .get(field_name)
+            .copied()
+            .unwrap_or(NbValue::new_null()),
+        _ => NbValue::new_null(),
     };
-    crate::collection_helpers::wrap_nanbox_value_with_ctx_pub(ctx, result)
+    result.to_bits() as i64
 }
 
 /// Set a field in a Record by field name.
@@ -901,29 +914,33 @@ extern "C" fn jit_rt_record_get_field(
 /// `value_nb` is a NaN-boxed NbValue for the new field value.
 /// Returns a new NaN-boxed NbValue for the updated record (COW).
 extern "C" fn jit_rt_record_set_field(
-    ctx: *mut VmContext,
+    _ctx: *mut VmContext,
     record_nb: i64,
     field_name_ptr: *const u8,
     field_name_len: usize,
     value_nb: i64,
 ) -> i64 {
-    let record_val = unsafe { crate::collection_helpers::nb_decode_pub(record_nb) };
-    let new_value = unsafe { crate::collection_helpers::nb_decode_pub(value_nb) };
+    let record_val = NbValue::from_bits(record_nb as u64);
+    let new_value = NbValue::from_bits(value_nb as u64);
     let field_name = unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(field_name_ptr, field_name_len))
     };
-    let result = match record_val {
-        Value::Record(r) => {
+    let result = match record_val.as_heap_ref() {
+        Some(HeapValue::Record(r)) => {
             let mut new_fields = r.fields.clone();
             new_fields.insert(field_name.to_string(), new_value);
-            Value::new_record(RecordValue {
+            HeapValue::Record(Arc::new(RecordData {
                 type_name: r.type_name.clone(),
                 fields: new_fields,
-            })
+            }))
         }
-        _ => Value::Null,
+        _ => HeapValue::Record(Arc::new(RecordData {
+            type_name: Arc::from("Unknown"),
+            fields: BTreeMap::new(),
+        })),
     };
-    crate::collection_helpers::wrap_nanbox_value_with_ctx_pub(ctx, result)
+    let ptr = Arc::into_raw(Arc::new(result)) as u64;
+    (NBVAL_NAN_MASK | (ptr & NBVAL_PAYLOAD_MASK)) as i64
 }
 
 /// Get an element from a List, Tuple, or Map by index/key.
@@ -933,145 +950,67 @@ extern "C" fn jit_rt_record_set_field(
 ///   Int    → NAN_MASK | TAG_INT<<48 | payload
 ///   Bool   → NAN_MASK | TAG_BOOL<<48 | (0 or 1)
 ///   Null   → NAN_BOX_NULL
-///   Heap   → raw *mut Value pointer (List, Map, Record, etc.)
+///   Heap   → raw *mut HeapValue pointer (List, Map, Record, etc.)
 ///
 /// The `index_ptr` is NbValue-encoded (TAG_INT for integers).
 ///
 /// # Safety
-/// `collection_ptr` must be a valid raw `*const Value` pointer to a `Value::List`,
-/// `Value::Tuple`, or `Value::Map`.
+/// `collection_ptr` must be a valid raw `*const HeapValue` pointer to a List,
+/// Tuple, or Map.
 extern "C" fn jit_rt_get_index(_ctx: *mut VmContext, collection_ptr: i64, index_ptr: i64) -> i64 {
-    let cu = collection_ptr as u64;
-    let iu = index_ptr as u64;
-    // Fast path: list[int] with positive index → avoids Value intermediaries.
-    // Checks: collection is TAG_PTR (heap), index is TAG_INT.
-    if (cu & NBVAL_NAN_MASK) == NBVAL_NAN_MASK
-        && ((cu >> 48) & 0x7) == 0
-        && (cu & NBVAL_PAYLOAD_MASK) > 1
-        && (iu & NBVAL_NAN_MASK) == NBVAL_NAN_MASK
-        && ((iu >> 48) & 0x7) == 1
-    {
-        let coll_raw = (cu & NBVAL_PAYLOAD_MASK) as *const Value;
-        let collection = unsafe { &*coll_raw };
-        if let Value::List(l) = collection {
-            let payload = iu & NBVAL_PAYLOAD_MASK;
-            let idx = if payload & (1 << 47) != 0 {
-                (payload | !NBVAL_PAYLOAD_MASK) as i64
-            } else {
-                payload as i64
-            };
-            let len = l.len() as i64;
-            let effective = if idx < 0 { idx + len } else { idx };
-            if effective < 0 || effective >= len {
-                return NAN_BOX_NULL;
-            }
-            // Inline result encoding for Value::Int (most common for sorted int lists)
-            return match &l[effective as usize] {
-                Value::Int(n) => {
-                    (NBVAL_NAN_MASK | (1u64 << 48) | ((*n as u64) & NBVAL_PAYLOAD_MASK)) as i64
+    let coll = NbValue::from_bits(collection_ptr as u64);
+    let idx = NbValue::from_bits(index_ptr as u64);
+    match coll.as_heap_ref() {
+        Some(HeapValue::List(l)) => {
+            if let Some(i) = idx.as_int() {
+                let len = l.len() as i64;
+                let effective = if i < 0 { i + len } else { i };
+                if effective >= 0 && effective < len {
+                    l[effective as usize].to_bits() as i64
+                } else {
+                    NAN_BOX_NULL
                 }
-                other => value_to_nbval(other.clone()),
-            };
-        }
-    }
-
-    // General path
-    let Some(coll_raw) = unwrap_value_ptr(collection_ptr) else {
-        return NAN_BOX_NULL;
-    };
-    if index_ptr == 0 || index_ptr == NAN_BOX_NULL {
-        return NAN_BOX_NULL;
-    }
-
-    let collection = unsafe { &*coll_raw };
-    let index_val = decode_nbvalue_index(index_ptr);
-
-    let element = match (collection, &index_val) {
-        (Value::List(l), Value::Int(i)) => {
-            let ii = *i;
-            let len = l.len() as i64;
-            let effective = if ii < 0 { ii + len } else { ii };
-            if effective < 0 || effective >= len {
-                return NAN_BOX_NULL;
+            } else {
+                NAN_BOX_NULL
             }
-            l[effective as usize].clone()
         }
-        (Value::Tuple(t), Value::Int(i)) => {
-            let ii = *i;
-            let len = t.len() as i64;
-            let effective = if ii < 0 { ii + len } else { ii };
-            if effective < 0 || effective >= len {
-                return NAN_BOX_NULL;
+        Some(HeapValue::Tuple(t)) => {
+            if let Some(i) = idx.as_int() {
+                let len = t.len() as i64;
+                let effective = if i < 0 { i + len } else { i };
+                if effective >= 0 && effective < len {
+                    t[effective as usize].to_bits() as i64
+                } else {
+                    NAN_BOX_NULL
+                }
+            } else {
+                NAN_BOX_NULL
             }
-            t[effective as usize].clone()
         }
-        (Value::Map(m), _) => {
-            let key = index_val.as_string();
-            m.get(&key).cloned().unwrap_or(Value::Null)
+        Some(HeapValue::Map(m)) => {
+            let key = idx.display();
+            m.get(&key)
+                .copied()
+                .unwrap_or(NbValue::new_null())
+                .to_bits() as i64
         }
-        _ => return NAN_BOX_NULL,
-    };
-
-    value_to_nbval(element)
+        _ => NAN_BOX_NULL,
+    }
 }
 
-/// Encode a `Value` as an NbValue i64 suitable for JIT register use.
+/// Encode an NbValue as i64 suitable for JIT register use.
 /// Scalars are inlined (no heap allocation).
 /// Heap values are boxed and encoded as NbValue TAG_PTR (NAN_MASK | ptr).
-fn value_to_nbval(v: Value) -> i64 {
-    match v {
-        Value::Float(f) => f.to_bits() as i64,
-        Value::Int(i) => (NBVAL_NAN_MASK | (1u64 << 48) | ((i as u64) & NBVAL_PAYLOAD_MASK)) as i64,
-        Value::Bool(b) => (NBVAL_NAN_MASK | (3u64 << 48) | (b as u64)) as i64,
-        Value::Null => NAN_BOX_NULL,
-        other => {
-            // NbValue TAG_PTR encoding: NAN_MASK | (0<<48) | ptr_low48bits.
-            // Must use Arc to match NbValue's heap convention.
-            let ptr = Arc::into_raw(Arc::new(other)) as u64;
-            (NBVAL_NAN_MASK | (ptr & NBVAL_PAYLOAD_MASK)) as i64
-        }
-    }
+#[inline(always)]
+#[allow(dead_code)]
+fn nb_from_bits(bits: i64) -> NbValue {
+    NbValue::from_bits(bits as u64)
 }
 
-/// Decode an NbValue-encoded i64 to a `Value`.
-/// This is the inverse of `value_to_nbval`.
-/// Float bit patterns (no NaN mask): decoded as f64.
-/// NbValue-tagged integers, bools, nulls: decoded directly.
-/// Heap pointer (TAG_PTR=0 with non-null non-sentinel payload): cloned from *const Value.
-fn nbval_to_value(v: i64) -> Value {
-    let u = v as u64;
-    if (u & NBVAL_NAN_MASK) != NBVAL_NAN_MASK {
-        // Raw float bits (non-NaN double).
-        return Value::Float(f64::from_bits(u));
-    }
-    // NbValue uses 3-bit tags at bits 48-50 (bit 51 is the quiet-NaN bit).
-    // Mask with 0x7 to extract only the 3 tag bits, matching NbValue::tag().
-    let tag = (u >> 48) & 0x7;
-    let payload = u & NBVAL_PAYLOAD_MASK;
-    match tag {
-        0 => {
-            // TAG_PTR: heap *const Value, or null/NaN sentinels.
-            if payload == 0 {
-                Value::Null
-            } else if payload == 1 {
-                Value::Float(f64::NAN)
-            } else {
-                unsafe { (*((payload & !NbValue::PTR_ARENA_FLAG) as *const Value)).clone() }
-            }
-        }
-        1 => {
-            // TAG_INT: 48-bit two's-complement.
-            let signed = if payload & (1 << 47) != 0 {
-                (payload | !NBVAL_PAYLOAD_MASK) as i64
-            } else {
-                payload as i64
-            };
-            Value::Int(signed)
-        }
-        3 => Value::Bool(payload != 0),
-        4 => Value::Null,
-        _ => Value::Null,
-    }
+#[inline(always)]
+#[allow(dead_code)]
+fn nb_to_bits(nb: NbValue) -> i64 {
+    nb.to_bits() as i64
 }
 
 /// Set an element in a List or Map by index/key.
@@ -1079,11 +1018,11 @@ fn nbval_to_value(v: i64) -> Value {
 /// Both `index_ptr` and `value_ptr` are NbValue-encoded i64.
 ///
 /// # Safety
-/// `collection_ptr` must be a valid `*mut Value` produced by a JIT collection helper.
+/// `collection_ptr` must be a valid `*mut HeapValue` produced by a JIT collection helper.
 /// `index_ptr` is NbValue-encoded (TAG_INT for integers).
-/// `value_ptr` is NbValue-encoded (float bits, tagged int, or heap *const Value).
+/// `value_ptr` is NbValue-encoded (float bits, tagged int, or heap *const HeapValue).
 extern "C" fn jit_rt_set_index(
-    _ctx: *mut VmContext,
+    ctx: *mut VmContext,
     collection_ptr: i64,
     index_ptr: i64,
     value_ptr: i64,
@@ -1092,29 +1031,62 @@ extern "C" fn jit_rt_set_index(
         return NAN_BOX_NULL;
     };
 
+    let arena_flagged = nb_is_arena_ptr(collection_ptr);
+    let is_arena_ptr = arena_flagged
+        || if !ctx.is_null() {
+            let arena = unsafe { (*ctx).arena };
+            if arena.is_null() {
+                false
+            } else {
+                unsafe { (*arena).contains_ptr(raw_ptr) }
+            }
+        } else {
+            false
+        };
+
+    if is_arena_ptr {
+        let index_decoded = decode_nbvalue_index(index_ptr);
+        let new_nbval = NbValue::from_bits(value_ptr as u64);
+        unsafe {
+            match &mut *(raw_ptr as *mut HeapValue) {
+                HeapValue::List(arc) => {
+                    if let Some(i) = index_decoded.as_int() {
+                        let len = arc.len() as i64;
+                        let effective = if i < 0 { i + len } else { i };
+                        if effective >= 0 && effective < len {
+                            Arc::make_mut(arc)[effective as usize] = new_nbval;
+                        }
+                    }
+                }
+                HeapValue::Map(arc) => {
+                    let key = index_decoded.display();
+                    Arc::make_mut(arc).insert(key, new_nbval);
+                }
+                _ => {}
+            }
+        }
+        return wrap_nanbox_ptr_arena(raw_ptr);
+    }
+
     // Take ownership via Arc — the JIT register no longer holds a
     // reference to the old pointer after this call.
     let mut arc_collection = unsafe { Arc::from_raw(raw_ptr) };
     let index_decoded = decode_nbvalue_index(index_ptr);
-    let index = &index_decoded;
-    // Decode the new value from NbValue encoding — same format returned by
-    // jit_rt_get_index and float/int arithmetic (raw f64 bits or NAN-tagged).
-    let new_value = nbval_to_value(value_ptr);
+    let new_nbval = NbValue::from_bits(value_ptr as u64);
 
     match Arc::make_mut(&mut arc_collection) {
-        Value::List(arc) => {
-            if let Value::Int(i) = index {
-                let ii = *i;
+        HeapValue::List(arc) => {
+            if let Some(i) = index_decoded.as_int() {
                 let len = arc.len() as i64;
-                let effective = if ii < 0 { ii + len } else { ii };
+                let effective = if i < 0 { i + len } else { i };
                 if effective >= 0 && effective < len {
-                    Arc::make_mut(arc)[effective as usize] = new_value;
+                    Arc::make_mut(arc)[effective as usize] = new_nbval;
                 }
             }
         }
-        Value::Map(arc) => {
-            let key = index.as_string();
-            Arc::make_mut(arc).insert(key, new_value);
+        HeapValue::Map(arc) => {
+            let key = index_decoded.display();
+            Arc::make_mut(arc).insert(key, new_nbval);
         }
         _ => {}
     }
@@ -1122,42 +1094,42 @@ extern "C" fn jit_rt_set_index(
     wrap_nanbox_ptr(Arc::into_raw(arc_collection))
 }
 
-/// Clone a Value (for record field access results).
-/// Returns a new `*mut Value` as i64.
-///
-/// # Safety
-/// `value_ptr` must be a valid `*mut Value` pointer.
-extern "C" fn jit_rt_value_clone(ctx: *mut VmContext, value_ptr: i64) -> i64 {
+/// Clone a HeapValue (for record field access results).
+/// Returns a new `*mut HeapValue` as i64.
+extern "C" fn jit_rt_value_clone(_ctx: *mut VmContext, value_ptr: i64) -> i64 {
     let Some(ptr) = unwrap_value_ptr(value_ptr) else {
         return NAN_BOX_NULL;
     };
     let value = unsafe { &*ptr };
-    crate::collection_helpers::wrap_nanbox_value_with_ctx_pub(ctx, value.clone())
+    let ptr = Arc::into_raw(Arc::new(value.clone()));
+    wrap_nanbox_ptr(ptr)
 }
 
-/// Free an Arc-allocated Value.
+/// Free an Arc-allocated HeapValue.
 ///
 /// # Safety
 /// `value_ptr` must be a valid NaN-boxed TAG_PTR pointing to an Arc-allocated
-/// Value created by one of the JIT runtime functions. Must not be called twice
+/// HeapValue created by one of the JIT runtime functions. Must not be called twice
 /// on the same pointer.
 extern "C" fn jit_rt_value_drop(ctx: *mut VmContext, value_ptr: i64) {
     let Some(ptr) = unwrap_value_ptr(value_ptr) else {
         return;
     };
-    let is_arena_ptr = if !ctx.is_null() {
-        let arena = unsafe { (*ctx).arena };
-        if arena.is_null() {
-            false
+    let arena_flagged = nb_is_arena_ptr(value_ptr);
+    let is_arena_ptr = arena_flagged
+        || if !ctx.is_null() {
+            let arena = unsafe { (*ctx).arena };
+            if arena.is_null() {
+                false
+            } else {
+                unsafe { (*arena).contains_ptr(ptr) }
+            }
         } else {
-            unsafe { (*arena).contains_ptr(ptr) }
-        }
-    } else {
-        false
-    };
+            false
+        };
     if is_arena_ptr {
         unsafe {
-            (ptr as *mut Value).drop_in_place();
+            (ptr as *mut HeapValue).drop_in_place();
         }
     } else {
         unsafe {
@@ -1438,21 +1410,20 @@ extern "C" fn jit_rt_emit(_ctx: *mut VmContext, value: i64) -> i64 {
 /// # Parameters
 /// - `vm_ctx`: Opaque VM context pointer. Uses `registry` to dispatch tool calls.
 /// - `tool_id`: Index into the module tool table (matches compiler ordering).
-/// - `args_map_ptr`: NaN-boxed pointer to a `Value::Map` containing args.
+/// - `args_map_ptr`: NaN-boxed pointer to a `HeapValue::Map` containing args.
 ///
 /// # Returns
 /// NaN-boxed result value, or `NAN_BOX_NULL` on failure.
 ///
 /// # Implementation Note
-/// Full implementation requires accessing the tool registry via VmContext.registry.
-extern "C" fn jit_rt_tool_call(_vm_ctx: *mut VmContext, _tool_id: i32, _args_map_ptr: i64) -> i64 {
-    // TODO: Full implementation requires:
-    // 1. Access registry via vm_ctx.registry
-    // 2. Decode args_map_ptr to Value::Map
-    // 3. Build ToolRequest from tool_id and args
-    // 4. Call registry.dispatch(request)
-    // 5. Return NaN-boxed ToolResponse as Value
-    NAN_BOX_NULL
+/// UNIMPLEMENTED: requires accessing the tool registry via VmContext.registry.
+extern "C" fn jit_rt_tool_call(vm_ctx: *mut VmContext, tool_id: i32, args_map_ptr: i64) -> i64 {
+    let ctx = unsafe { vm_ctx.as_ref() };
+    if let Some(cb) = ctx.and_then(|ctx| ctx.tool_call_cb) {
+        cb(vm_ctx, tool_id, args_map_ptr)
+    } else {
+        NAN_BOX_NULL
+    }
 }
 
 /// Validate a value against a schema by name.
@@ -1469,12 +1440,16 @@ extern "C" fn jit_rt_tool_call(_vm_ctx: *mut VmContext, _tool_id: i32, _args_map
 /// `value_ptr` must be a valid NaN-boxed value. `schema_id` must be a valid
 /// string table index.
 extern "C" fn jit_rt_schema_validate(
-    _vm_ctx: *mut VmContext,
-    _value_ptr: i64,
-    _schema_id: i32,
+    vm_ctx: *mut VmContext,
+    value_ptr: i64,
+    schema_id: i32,
 ) -> i64 {
-    // TODO: Implement once VmContext exposes the module string table.
-    NAN_BOX_FALSE
+    let ctx = unsafe { vm_ctx.as_ref() };
+    if let Some(cb) = ctx.and_then(|ctx| ctx.schema_validate_cb) {
+        cb(vm_ctx, value_ptr, schema_id)
+    } else {
+        NAN_BOX_FALSE
+    }
 }
 
 /// Create a new trace reference value.
@@ -1487,9 +1462,13 @@ extern "C" fn jit_rt_schema_validate(
 ///
 /// # Safety
 /// `vm_ctx` must be a valid `*mut VmContext`.
-extern "C" fn jit_rt_trace_ref(_vm_ctx: *mut VmContext) -> i64 {
-    // TODO: Implement once VmContext exposes trace context.
-    NAN_BOX_NULL
+extern "C" fn jit_rt_trace_ref(vm_ctx: *mut VmContext) -> i64 {
+    let ctx = unsafe { vm_ctx.as_ref() };
+    if let Some(cb) = ctx.and_then(|ctx| ctx.trace_ref_cb) {
+        cb(vm_ctx)
+    } else {
+        NAN_BOX_NULL
+    }
 }
 
 /// Get the length of a JitString (intrinsic #0: LENGTH)
@@ -1615,6 +1594,13 @@ extern "C" fn jit_rt_to_string_float(_ctx: *mut VmContext, value: f64) -> i64 {
     } else {
         format!("{}", value)
     };
+    JitString::from_bytes(s.as_bytes()) as i64
+}
+
+/// Convert a NaN-boxed NbValue to a JitString using display formatting.
+extern "C" fn jit_rt_to_string_nb(_ctx: *mut VmContext, value: i64) -> i64 {
+    let nb = NbValue::from_bits(value as u64);
+    let s = nb.display();
     JitString::from_bytes(s.as_bytes()) as i64
 }
 
@@ -1834,6 +1820,37 @@ extern "C" fn jit_rt_string_pad_right(_ctx: *mut VmContext, s: i64, width: i64) 
     JitString::from_bytes(result.as_bytes()) as i64
 }
 
+// ---------------------------------------------------------------------------
+// JSON runtime helpers
+// ---------------------------------------------------------------------------
+
+extern "C" fn jit_rt_json_parse(vm_ctx: *mut VmContext, str_ptr: i64) -> i64 {
+    let ctx = unsafe { vm_ctx.as_ref() };
+    if let Some(cb) = ctx.and_then(|ctx| ctx.json_parse_cb) {
+        cb(vm_ctx, str_ptr)
+    } else {
+        0
+    }
+}
+
+extern "C" fn jit_rt_json_encode(vm_ctx: *mut VmContext, value_ptr: i64) -> i64 {
+    let ctx = unsafe { vm_ctx.as_ref() };
+    if let Some(cb) = ctx.and_then(|ctx| ctx.json_encode_cb) {
+        cb(vm_ctx, value_ptr)
+    } else {
+        NAN_BOX_NULL
+    }
+}
+
+extern "C" fn jit_rt_json_pretty(vm_ctx: *mut VmContext, value_ptr: i64) -> i64 {
+    let ctx = unsafe { vm_ctx.as_ref() };
+    if let Some(cb) = ctx.and_then(|ctx| ctx.json_pretty_cb) {
+        cb(vm_ctx, value_ptr)
+    } else {
+        NAN_BOX_NULL
+    }
+}
+
 /// High-resolution timer returning nanoseconds since UNIX epoch.
 extern "C" fn jit_rt_hrtime(_ctx: *mut VmContext) -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1879,7 +1896,7 @@ extern "C" fn jit_rt_string_split(_ctx: *mut VmContext, s: i64, sep: i64) -> i64
     JitString::from_bytes(result.as_bytes()) as i64
 }
 
-/// Join strings (stub — the JIT doesn't support lists yet).
+/// Join strings (UNIMPLEMENTED — the JIT doesn't support lists yet).
 /// Returns the separator string as a placeholder.
 extern "C" fn jit_rt_string_join(_ctx: *mut VmContext, list_placeholder: i64, sep: i64) -> i64 {
     // Without list support, just return the first argument
@@ -1972,6 +1989,10 @@ fn register_intrinsic_helpers(builder: &mut JITBuilder) {
         "jit_rt_string_pad_right",
         jit_rt_string_pad_right as *const u8,
     );
+    builder.symbol("jit_rt_to_string_nb", jit_rt_to_string_nb as *const u8);
+    builder.symbol("jit_rt_json_parse", jit_rt_json_parse as *const u8);
+    builder.symbol("jit_rt_json_encode", jit_rt_json_encode as *const u8);
+    builder.symbol("jit_rt_json_pretty", jit_rt_json_pretty as *const u8);
 
     // Timer and hash helpers
     builder.symbol("jit_rt_hrtime", jit_rt_hrtime as *const u8);
@@ -2127,7 +2148,7 @@ fn register_effect_helpers(builder: &mut JITBuilder) {
 ///
 /// # Implementation Note
 /// Full implementation requires accessing the scheduler via VmContext.scheduler
-/// and calling the spawn logic. Currently returns null since the scheduler
+/// and calling the spawn logic. UNIMPLEMENTED: currently returns null since the scheduler
 /// pointer needs initialization.
 extern "C" fn jit_rt_spawn(
     _vm_ctx: *mut VmContext,
@@ -2135,11 +2156,8 @@ extern "C" fn jit_rt_spawn(
     _args_ptr: *const i64,
     _arg_count: i32,
 ) -> i64 {
-    // TODO: Full implementation requires:
-    // 1. Access scheduler via vm_ctx.scheduler
-    // 2. Decode args from NaN-boxed pointers to Values
-    // 3. Call scheduler.spawn_future(FutureTarget::Cell(cell_idx), args)
-    // 4. Return NaN-boxed FutureValue
+    // UNIMPLEMENTED: Requires access to VM scheduler via VmContext, decoding
+    // NaN-boxed args into Values, and returning a NaN-boxed FutureValue.
     NAN_BOX_NULL
 }
 
@@ -2154,13 +2172,10 @@ extern "C" fn jit_rt_spawn(
 ///
 /// # Implementation Note
 /// Full implementation requires accessing the VM's future state and scheduler.
-/// Currently returns null since we don't have direct access to the VM.
+/// UNIMPLEMENTED: currently returns null since we don't have direct access to the VM.
 extern "C" fn jit_rt_await(_vm_ctx: *mut VmContext, _future_handle: i64) -> i64 {
-    // TODO: Full implementation requires:
-    // 1. Decode future_handle to FutureValue
-    // 2. Access VM's future_states and scheduler
-    // 3. Call VM.await_value_recursive(future)
-    // 4. Return NaN-boxed resolved Value
+    // UNIMPLEMENTED: Requires decoding FutureValue, accessing VM future state,
+    // and running await_value_recursive with scheduler integration.
     NAN_BOX_NULL
 }
 
@@ -2189,7 +2204,7 @@ fn register_async_helpers(builder: &mut JITBuilder) {
 ///
 /// # Implementation Status
 /// **STUB**: Unboxes counter, subtracts decrement, re-boxes result.
-/// Full implementation requires:
+/// UNIMPLEMENTED: full implementation requires:
 /// - VmContext struct definition with loop state tracking
 /// - Stack frame integration for proper register persistence
 extern "C" fn jit_rt_loop(_ctx: *mut VmContext, counter: i64, decrement: i64) -> i64 {
@@ -2213,9 +2228,9 @@ extern "C" fn jit_rt_loop(_ctx: *mut VmContext, counter: i64, decrement: i64) ->
 /// Initial counter value (init). If step == 0, returns limit to skip the loop.
 ///
 /// # Implementation Status
-/// **STUB**: Returns init directly. Full implementation requires:
-/// - VmContext struct definition with loop state tracking
-/// - Validation that step != 0 (error sentinel if invalid)
+/// **STUB**: Returns init directly. UNIMPLEMENTED: full implementation requires:
+/// - VmContext loop state tracking and range termination semantics
+/// - Proper step validation and error signalling
 /// - Potential pre-computation of iteration count
 extern "C" fn jit_rt_for_prep(_ctx: *mut VmContext, init: i64, _limit: i64, step: i64) -> i64 {
     // Guard against zero step (would loop forever)
@@ -2242,7 +2257,7 @@ extern "C" fn jit_rt_for_prep(_ctx: *mut VmContext, init: i64, _limit: i64, step
 /// or NAN_BOX_NULL sentinel if loop is exhausted.
 ///
 /// # Implementation Status
-/// **STUB**: Implements simple signed comparison. Full implementation requires:
+/// **STUB**: Implements simple signed comparison. UNIMPLEMENTED: full implementation requires:
 /// - VmContext struct definition with loop state tracking
 /// - Proper handling of overflow/underflow edge cases
 extern "C" fn jit_rt_for_loop(_ctx: *mut VmContext, counter: i64, limit: i64, step: i64) -> i64 {
@@ -2280,25 +2295,22 @@ extern "C" fn jit_rt_for_loop(_ctx: *mut VmContext, counter: i64, limit: i64, st
 /// NaN-boxed next value if available, or NAN_BOX_NULL sentinel if exhausted.
 ///
 /// # Safety
-/// `iterator_ptr` must be a valid `*mut Value` pointer to a collection type
+/// `iterator_ptr` must be a valid `*mut HeapValue` pointer to a collection type
 /// (List, Tuple, Map, Set). If not, returns NAN_BOX_NULL.
 ///
 /// # Implementation Status
-/// **STUB**: Returns NAN_BOX_NULL. Full implementation requires:
+/// **STUB**: Returns NAN_BOX_NULL. UNIMPLEMENTED: full implementation requires:
 /// - VmContext struct definition with iterator state tracking
-/// - Value decoding from NaN-boxed pointer
+/// - HeapValue decoding from NaN-boxed pointer
 /// - Per-collection-type iteration logic (List uses direct indexing,
 ///   Map/Set use iterator state, etc.)
-extern "C" fn jit_rt_for_in(_ctx: *mut VmContext, _iterator_ptr: i64, _index: i64) -> i64 {
-    // TODO: Implement once VmContext and Value access are defined
-    // 1. Decode iterator_ptr to *mut Value
-    // 2. Match on Value type:
-    //    - List(l): if index < l.len(), return NaN-boxed l[index], else sentinel
-    //    - Tuple(t): if index < t.len(), return NaN-boxed t[index], else sentinel
-    //    - Map(m): requires stateful iterator (keys in insertion order), stub for now
-    //    - Set(s): requires stateful iterator, stub for now
-    // 3. Return NAN_BOX_NULL if iterator exhausted or unsupported type
-    NAN_BOX_NULL
+extern "C" fn jit_rt_for_in(ctx: *mut VmContext, iterator_ptr: i64, index: i64) -> i64 {
+    let ctx_ref = unsafe { ctx.as_ref() };
+    if let Some(cb) = ctx_ref.and_then(|ctx_ref| ctx_ref.for_in_cb) {
+        cb(ctx, iterator_ptr, index)
+    } else {
+        NAN_BOX_NULL
+    }
 }
 
 /// Register all JIT iteration runtime helper symbols with a JITBuilder.
@@ -2330,26 +2342,20 @@ fn register_iteration_helpers(builder: &mut JITBuilder) {
 /// `NAN_BOX_TRUE` if value is in collection, `NAN_BOX_FALSE` otherwise
 ///
 /// # Safety
-/// Both `value_ptr` and `collection_ptr` must be valid NaN-boxed Value pointers.
+/// Both `value_ptr` and `collection_ptr` must be valid NaN-boxed HeapValue pointers.
 ///
 /// # Implementation Status
-/// **STUB**: Returns `NAN_BOX_FALSE`. Full implementation requires:
-/// - Value decoding from NaN-boxed pointers
+/// **STUB**: Returns `NAN_BOX_FALSE`. UNIMPLEMENTED: full implementation requires:
+/// - HeapValue decoding from NaN-boxed pointers
 /// - Type-specific membership checks (List uses linear search, Set uses BTreeSet::contains, etc.)
 /// - String substring matching
-extern "C" fn jit_rt_in(_ctx: *mut VmContext, _value_ptr: i64, _collection_ptr: i64) -> i64 {
-    // TODO: Implement once VmContext and Value access are defined
-    // 1. Decode value_ptr to *const Value
-    // 2. Decode collection_ptr to *const Value
-    // 3. Match on collection type:
-    //    - List(l): l.iter().any(|v| v == value)
-    //    - Tuple(t): t.iter().any(|v| v == value)
-    //    - Set(s): s.contains(value)
-    //    - Map(m): m.contains_key(value.as_string())
-    //    - String(s): if value is String, s.contains(value_str)
-    //    - Other: return NAN_BOX_FALSE
-    // 4. Return NAN_BOX_TRUE if found, NAN_BOX_FALSE otherwise
-    NAN_BOX_FALSE
+extern "C" fn jit_rt_in(ctx: *mut VmContext, value_ptr: i64, collection_ptr: i64) -> i64 {
+    let ctx_ref = unsafe { ctx.as_ref() };
+    if let Some(cb) = ctx_ref.and_then(|ctx_ref| ctx_ref.in_cb) {
+        cb(ctx, value_ptr, collection_ptr)
+    } else {
+        NAN_BOX_FALSE
+    }
 }
 
 /// Type test helper (Is opcode).
@@ -2366,22 +2372,21 @@ extern "C" fn jit_rt_in(_ctx: *mut VmContext, _value_ptr: i64, _collection_ptr: 
 /// `NAN_BOX_TRUE` if value matches the type, `NAN_BOX_FALSE` otherwise
 ///
 /// # Safety
-/// `value_ptr` must be a valid NaN-boxed Value pointer.
+/// `value_ptr` must be a valid NaN-boxed HeapValue pointer.
 /// `type_id` must be a valid string table index.
 ///
 /// # Implementation Status
-/// **STUB**: Returns `NAN_BOX_FALSE`. Full implementation requires:
-/// - Value decoding from NaN-boxed pointer
+/// **STUB**: Returns `NAN_BOX_FALSE`. UNIMPLEMENTED: full implementation requires:
+/// - HeapValue decoding from NaN-boxed pointer
 /// - String table lookup for type_id
-/// - Value::type_name_resolved() comparison
-extern "C" fn jit_rt_is(_ctx: *mut VmContext, _value_ptr: i64, _type_id: i64) -> i64 {
-    // TODO: Implement once VmContext and Value access are defined
-    // 1. Decode value_ptr to *const Value
-    // 2. Look up type_id in string table via ctx
-    // 3. Call value.type_name_resolved()
-    // 4. Compare resolved type name with target type name
-    // 5. Return NAN_BOX_TRUE if match, NAN_BOX_FALSE otherwise
-    NAN_BOX_FALSE
+/// - HeapValue::type_name() comparison
+extern "C" fn jit_rt_is(ctx: *mut VmContext, value_ptr: i64, type_id: i64) -> i64 {
+    let ctx_ref = unsafe { ctx.as_ref() };
+    if let Some(cb) = ctx_ref.and_then(|ctx_ref| ctx_ref.is_cb) {
+        cb(ctx, value_ptr, type_id)
+    } else {
+        NAN_BOX_FALSE
+    }
 }
 
 /// Fast `Is` type check with a compile-time-constant type name (raw bytes).
@@ -2419,21 +2424,9 @@ extern "C" fn jit_rt_is_type_name(
                 } else if payload == 1 {
                     "Float" // NaN sentinel
                 } else {
-                    let value = unsafe { &*((payload & !NbValue::PTR_ARENA_FLAG) as *const Value) };
-                    match value {
-                        Value::List(_) => "List",
-                        Value::Tuple(_) => "Tuple",
-                        Value::Map(_) => "Map",
-                        Value::Set(_) => "Set",
-                        Value::Record(_) => "Record",
-                        Value::Union(_) => "Union",
-                        Value::String(_) => "String",
-                        Value::Int(_) => "Int",
-                        Value::Float(_) => "Float",
-                        Value::Bool(_) => "Bool",
-                        Value::Null => "Null",
-                        _ => "Unknown",
-                    }
+                    let value =
+                        unsafe { &*((payload & !NbValue::PTR_ARENA_FLAG) as *const HeapValue) };
+                    value.type_name()
                 }
             }
             1 => "Int",
@@ -4513,8 +4506,8 @@ mod tests {
     #[test]
     fn jit_compile_record_field_access() {
         // Test that cells with GetField/SetField compile and execute without errors.
-        // GetField on a null record returns a boxed Value::Null (non-zero pointer).
-        // SetField on a null record returns a boxed Value::Null (non-zero pointer).
+        // GetField on a null record returns a boxed null (non-zero pointer).
+        // SetField on a null record returns a boxed null (non-zero pointer).
         let lir = make_module_with_cells(vec![
             LirCell {
                 name: "access_field".to_string(),
@@ -4566,14 +4559,11 @@ mod tests {
         );
 
         // Execute to ensure no runtime traps
-        // GetField on null record returns a boxed Value::Null (non-zero pointer)
+        // GetField on null record returns a boxed null (non-zero pointer)
         let result = engine
             .execute_jit_nullary(&test_ctx(), "access_field")
             .expect("GetField should execute");
-        assert_ne!(
-            result, 0,
-            "GetField on null returns boxed Value::Null pointer"
-        );
+        assert_ne!(result, 0, "GetField on null returns boxed null pointer");
 
         let result2 = engine
             .execute_jit_nullary(&test_ctx(), "set_field")
@@ -6887,6 +6877,74 @@ mod tests {
         assert_ne!(raw, 0);
         let s = unsafe { jit_take_string(raw) };
         assert_eq!(s, "HELLO WORLD");
+    }
+
+    #[test]
+    fn jit_intrinsic_parse_json() {
+        // cell main() -> Any
+        //   r0 = "{\"a\":1}"
+        //   r1 = parse_json(r0)    # Intrinsic(1, 140, 0)
+        //   return r1
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "main".to_string(),
+            params: Vec::new(),
+            returns: Some("Any".to_string()),
+            registers: 2,
+            constants: vec![Constant::String("{\"a\":1}".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 140, 0),
+                Instruction::abc(OpCode::Return, 1, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine
+            .execute_jit_nullary(&test_ctx(), "main")
+            .expect("execute");
+        let nb = NbValue::from_bits(raw as u64);
+        let map = nb.as_map_ref().expect("json should parse to map");
+        assert_eq!(map.get("a").and_then(|v| v.as_int()), Some(1));
+    }
+
+    #[test]
+    fn jit_intrinsic_json_encode() {
+        // cell main() -> Json
+        //   r0 = "{\"a\":1}"
+        //   r1 = parse_json(r0)
+        //   r2 = json_encode(r1)   # Intrinsic(2, 141, 1)
+        //   return r2
+        let lir = make_module_with_cells(vec![LirCell {
+            name: "main".to_string(),
+            params: Vec::new(),
+            returns: Some("Json".to_string()),
+            registers: 3,
+            constants: vec![Constant::String("{\"a\":1}".to_string())],
+            instructions: vec![
+                Instruction::abx(OpCode::LoadK, 0, 0),
+                Instruction::abc(OpCode::Intrinsic, 1, 140, 0),
+                Instruction::abc(OpCode::Intrinsic, 2, 141, 1),
+                Instruction::abc(OpCode::Return, 2, 1, 0),
+            ],
+            effect_handler_metas: Vec::new(),
+            osr_points: Vec::new(),
+        }]);
+
+        let settings = CodegenSettings::default();
+        let mut engine = JitEngine::new(settings, 0);
+        engine.compile_module(&lir).expect("compile");
+
+        let raw = engine
+            .execute_jit_nullary(&test_ctx(), "main")
+            .expect("execute");
+        let nb = NbValue::from_bits(raw as u64);
+        let map = nb.as_map_ref().expect("json encode should return map");
+        assert_eq!(map.get("a").and_then(|v| v.as_int()), Some(1));
     }
 
     #[test]

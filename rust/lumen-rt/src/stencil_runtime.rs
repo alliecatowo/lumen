@@ -1,18 +1,16 @@
 //! Runtime helpers for stencil (Tier 1) execution.
 
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use lumen_core::heap_value::{ClosureData, HeapValue};
 use lumen_core::lir::Instruction;
 use lumen_core::nb_value::NbValue;
-use lumen_core::values::{ClosureValue, RecordValue, StringRef, UnionPayload, UnionValue, Value};
 use lumen_core::vm_context::VmContext;
 
 use crate::services::tools::ToolRequest;
-use crate::vm::helpers::{
-    json_to_value, merged_policy_for_tool, validate_tool_policy, value_to_json,
-};
+use crate::vm::helpers::{merged_policy_for_tool, validate_tool_policy};
 use crate::vm::VM;
 
 // ---------------------------------------------------------------------------
@@ -32,6 +30,24 @@ thread_local! {
 /// ABI-stable sentinel returned by `lm_rt_stencil_runtime` to request
 /// "skip next instruction" in stitched code.
 const STENCIL_SKIP_NEXT_SENTINEL: u64 = 1;
+
+#[inline]
+fn stencil_moveown(vm: &mut VM, base: usize, a: usize, b: usize) {
+    // Destructive move for heap values only. For inline values, a plain copy
+    // avoids unnecessary zeroing and prevents accidental loss if the compiler
+    // mis-emits MoveOwn for non-heap temporaries.
+    let src = base + b;
+    let dst = base + a;
+    let nb = vm.reg_nb(src);
+    if nb.is_heap_allocated() {
+        // Take ownership: clear source to avoid double-drop.
+        let val = vm.reg_take(src);
+        vm.set_reg(dst, val);
+    } else {
+        // Inline value: copy without zeroing source.
+        vm.set_reg_nb(dst, nb);
+    }
+}
 
 /// Returns whether the most recent `IsVariant` stencil matched, consuming the flag.
 ///
@@ -75,41 +91,41 @@ fn stencil_arith_numeric(
     c: usize,
     op: StencilArithOp,
 ) {
-    let lhs = vm.reg(base + b);
-    let rhs = vm.reg(base + c);
+    let lhs = vm.reg_nb(base + b);
+    let rhs = vm.reg_nb(base + c);
 
-    if let (Value::Int(x), Value::Int(y)) = (&lhs, &rhs) {
+    if let (Some(x), Some(y)) = (lhs.as_int(), rhs.as_int()) {
         let out = match op {
-            StencilArithOp::Add => x.checked_add(*y),
-            StencilArithOp::Sub => x.checked_sub(*y),
-            StencilArithOp::Mul => x.checked_mul(*y),
+            StencilArithOp::Add => x.checked_add(y),
+            StencilArithOp::Sub => x.checked_sub(y),
+            StencilArithOp::Mul => x.checked_mul(y),
             StencilArithOp::Div => {
-                if *y == 0 {
+                if y == 0 {
                     None
                 } else {
-                    x.checked_div(*y)
+                    x.checked_div(y)
                 }
             }
             StencilArithOp::Mod => {
-                if *y == 0 {
+                if y == 0 {
                     None
                 } else {
-                    Some(x.rem_euclid(*y))
+                    Some(x.rem_euclid(y))
                 }
             }
             StencilArithOp::FloorDiv => {
-                if *y == 0 {
+                if y == 0 {
                     None
                 } else {
-                    Some(x.div_euclid(*y))
+                    Some(x.div_euclid(y))
                 }
             }
         };
 
         if let Some(n) = out {
-            vm.set_reg(base + a, Value::Int(n));
+            vm.set_reg_nb(base + a, NbValue::new_int(n));
         } else {
-            vm.set_reg(base + a, Value::Null);
+            vm.set_reg_nb(base + a, NbValue::new_null());
         }
         return;
     }
@@ -127,29 +143,59 @@ fn stencil_arith_numeric(
         return;
     }
 
-    // The stencil runtime ABI cannot propagate VM errors; keep register state valid.
-    vm.set_reg(base + a, Value::Null);
-}
-
-fn stencil_add(vm: &mut VM, base: usize, a: usize, b: usize, c: usize) {
-    let lhs = vm.reg(base + b);
-    let rhs = vm.reg(base + c);
-
-    if matches!(lhs, Value::String(_)) || matches!(rhs, Value::String(_)) {
-        let lhs_str = lhs.as_string_resolved(&vm.strings);
-        let rhs_str = rhs.as_string_resolved(&vm.strings);
-        let mut s = String::with_capacity(lhs_str.len() + rhs_str.len());
-        s.push_str(&lhs_str);
-        s.push_str(&rhs_str);
-        vm.set_reg(base + a, Value::String(StringRef::Owned(s)));
+    if let (Some(x), Some(y)) = (lhs.as_int(), rhs.as_float()) {
+        let xf = x as f64;
+        let out = match op {
+            StencilArithOp::Add => xf + y,
+            StencilArithOp::Sub => xf - y,
+            StencilArithOp::Mul => xf * y,
+            StencilArithOp::Div => xf / y,
+            StencilArithOp::Mod => xf.rem_euclid(y),
+            StencilArithOp::FloorDiv => (xf / y).floor(),
+        };
+        vm.set_reg_nb(base + a, NbValue::new_float(out));
         return;
     }
 
-    if let (Value::List(la), Value::List(lb)) = (&lhs, &rhs) {
+    if let (Some(x), Some(y)) = (lhs.as_float(), rhs.as_int()) {
+        let yf = y as f64;
+        let out = match op {
+            StencilArithOp::Add => x + yf,
+            StencilArithOp::Sub => x - yf,
+            StencilArithOp::Mul => x * yf,
+            StencilArithOp::Div => x / yf,
+            StencilArithOp::Mod => x.rem_euclid(yf),
+            StencilArithOp::FloorDiv => (x / yf).floor(),
+        };
+        vm.set_reg_nb(base + a, NbValue::new_float(out));
+        return;
+    }
+
+    // The stencil runtime ABI cannot propagate VM errors; keep register state valid.
+    vm.set_reg_nb(base + a, NbValue::new_null());
+}
+
+fn stencil_add(vm: &mut VM, base: usize, a: usize, b: usize, c: usize) {
+    let lhs = vm.reg_nb(base + b);
+    let rhs = vm.reg_nb(base + c);
+
+    if let (Some(HeapValue::Str(l)), Some(HeapValue::Str(r))) =
+        (lhs.as_heap_ref(), rhs.as_heap_ref())
+    {
+        let mut s = String::with_capacity(l.len() + r.len());
+        s.push_str(l);
+        s.push_str(r);
+        vm.set_reg_nb(base + a, NbValue::new_str(&s));
+        return;
+    }
+
+    if let (Some(HeapValue::List(la)), Some(HeapValue::List(lb))) =
+        (lhs.as_heap_ref(), rhs.as_heap_ref())
+    {
         let mut combined = Vec::with_capacity(la.len() + lb.len());
-        combined.extend(la.iter().cloned());
-        combined.extend(lb.iter().cloned());
-        vm.set_reg(base + a, Value::new_list(combined));
+        combined.extend(la.iter().copied());
+        combined.extend(lb.iter().copied());
+        vm.set_reg_nb(base + a, NbValue::new_list(combined));
         return;
     }
 
@@ -222,6 +268,12 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
     let c = instr.c as usize;
 
     match instr.op {
+        lumen_core::lir::OpCode::Move => {
+            vm.reg_copy(base + a, base + b);
+        }
+        lumen_core::lir::OpCode::MoveOwn => {
+            stencil_moveown(vm, base, a, b);
+        }
         lumen_core::lir::OpCode::Add => {
             stencil_add(vm, base, a, b, c);
         }
@@ -243,181 +295,212 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
         lumen_core::lir::OpCode::NewList | lumen_core::lir::OpCode::NewListStack => {
             let mut list = Vec::with_capacity(b);
             for i in 1..=b {
-                list.push(vm.reg(base + a + i));
+                list.push(vm.reg_nb(base + a + i));
             }
-            vm.set_reg(base + a, Value::new_list(list));
+            vm.set_reg_nb(base + a, NbValue::new_list(list));
         }
         lumen_core::lir::OpCode::NewMap => {
             let mut map = BTreeMap::new();
             for i in 0..b {
-                let k = vm.reg(base + a + 1 + i * 2).as_string_resolved(&vm.strings);
-                let v = vm.reg(base + a + 2 + i * 2);
-                map.insert(k, v);
+                let k = vm.reg_nb(base + a + 1 + i * 2);
+                let v = vm.reg_nb(base + a + 2 + i * 2);
+                map.insert(k.display(), v);
             }
-            vm.set_reg(base + a, Value::new_map(map));
+            vm.set_reg_nb(base + a, NbValue::new_map(map));
         }
         lumen_core::lir::OpCode::NewRecord => {
             let module = vm.module().expect("stencil runtime: no module");
-            let type_name = if (instr.bx() as usize) < module.strings.len() {
-                module.strings[instr.bx() as usize].clone()
+            let type_idx = instr.bx() as usize;
+            let type_name = if type_idx < module.strings.len() {
+                &module.strings[type_idx]
             } else {
-                "Unknown".to_string()
+                "Unknown"
             };
-            let fields = BTreeMap::new();
-            vm.set_reg(
-                base + a,
-                Value::new_record(RecordValue { type_name, fields }),
-            );
+            let mut fields = BTreeMap::new();
+            let field_names_start = type_idx + 1;
+            for i in 0..b {
+                let field_name = if field_names_start + i < module.strings.len() {
+                    &module.strings[field_names_start + i]
+                } else {
+                    ""
+                };
+                let val = vm.reg_nb(base + a + i + 1);
+                fields.insert(field_name.to_string(), val);
+            }
+            vm.set_reg_nb(base + a, NbValue::new_record(type_name, fields));
         }
         lumen_core::lir::OpCode::NewTuple | lumen_core::lir::OpCode::NewTupleStack => {
             let mut elems = Vec::with_capacity(b);
             for i in 1..=b {
-                elems.push(vm.reg(base + a + i));
+                elems.push(vm.reg_nb(base + a + i));
             }
-            vm.set_reg(base + a, Value::new_tuple(elems));
+            vm.set_reg_nb(base + a, NbValue::new_tuple(elems));
         }
         lumen_core::lir::OpCode::NewSet => {
-            let mut elems = Vec::with_capacity(b);
+            let mut set = BTreeSet::new();
             for i in 1..=b {
-                let v = vm.reg(base + a + i);
-                if !elems.contains(&v) {
-                    elems.push(v);
-                }
+                set.insert(vm.reg_nb(base + a + i));
             }
-            vm.set_reg(base + a, Value::new_set_from_vec(elems));
+            vm.set_reg_nb(base + a, NbValue::new_heap(HeapValue::Set(Arc::new(set))));
         }
         lumen_core::lir::OpCode::GetField => {
             let module = vm.module().expect("stencil runtime: no module");
-            let obj = vm.reg(base + b);
+            let obj = vm.reg_nb(base + b);
             let field_name = if c < module.strings.len() {
                 &module.strings[c]
             } else {
                 ""
             };
-            let val = match &obj {
-                Value::Record(r) => r.fields.get(field_name).cloned().unwrap_or(Value::Null),
-                Value::Map(m) => m.get(field_name).cloned().unwrap_or(Value::Null),
-                _ => Value::Null,
+            let val = match obj.as_heap_ref() {
+                Some(HeapValue::Record(r)) => r
+                    .fields
+                    .get(field_name)
+                    .copied()
+                    .unwrap_or(NbValue::new_null()),
+                Some(HeapValue::Map(m)) => {
+                    m.get(field_name).copied().unwrap_or(NbValue::new_null())
+                }
+                _ => NbValue::new_null(),
             };
-            vm.set_reg(base + a, val);
+            vm.set_reg_nb(base + a, val);
         }
         lumen_core::lir::OpCode::SetField => {
             let module = vm.module().expect("stencil runtime: no module");
-            let val = vm.reg(base + c);
+            let val = vm.reg_nb(base + c);
             let field_name = if b < module.strings.len() {
                 module.strings[b].clone()
             } else {
                 String::new()
             };
-            let mut target = vm.reg_take(base + a);
-            if let Value::Record(ref mut r) = target {
-                std::sync::Arc::make_mut(r).fields.insert(field_name, val);
+            let mut target = vm.reg_nb(base + a);
+            if let Some(HeapValue::Record(r)) = target.as_heap_ref() {
+                let mut updated = (**r).clone();
+                updated.fields.insert(field_name, val);
+                target = NbValue::new_heap(HeapValue::Record(Arc::new(updated)));
             }
-            vm.set_reg(base + a, target);
+            vm.set_reg_nb(base + a, target);
         }
         lumen_core::lir::OpCode::GetIndex => {
-            let obj = vm.reg(base + b);
-            let idx = vm.reg(base + c);
-            let val = match (&obj, &idx) {
-                (Value::List(l), Value::Int(i)) => {
-                    let ii = *i;
+            let obj = vm.reg_nb(base + b);
+            let idx = vm.reg_nb(base + c);
+            let val = match (obj.as_heap_ref(), idx.as_int()) {
+                (Some(HeapValue::List(l)), Some(i)) => {
                     let len = l.len() as i64;
-                    let effective = if ii < 0 { ii + len } else { ii };
+                    let effective = if i < 0 { i + len } else { i };
                     if effective < 0 || effective >= len {
                         return 0;
                     }
-                    l[effective as usize].clone()
+                    l[effective as usize]
                 }
-                (Value::Tuple(t), Value::Int(i)) => {
-                    let ii = *i;
+                (Some(HeapValue::Tuple(t)), Some(i)) => {
                     let len = t.len() as i64;
-                    let effective = if ii < 0 { ii + len } else { ii };
+                    let effective = if i < 0 { i + len } else { i };
                     if effective < 0 || effective >= len {
                         return 0;
                     }
-                    t[effective as usize].clone()
+                    t[effective as usize]
                 }
-                (Value::Map(m), _) => m
-                    .get(&idx.as_string_resolved(&vm.strings))
-                    .cloned()
-                    .unwrap_or(Value::Null),
-                (Value::Record(r), _) => r
+                (Some(HeapValue::Map(m)), _) => m
+                    .get(&idx.display())
+                    .copied()
+                    .unwrap_or(NbValue::new_null()),
+                (Some(HeapValue::Record(r)), _) => r
                     .fields
-                    .get(&idx.as_string_resolved(&vm.strings))
-                    .cloned()
-                    .unwrap_or(Value::Null),
-                (Value::Set(s), Value::Int(i)) => {
-                    let ii = *i;
+                    .get(&idx.display())
+                    .copied()
+                    .unwrap_or(NbValue::new_null()),
+                (Some(HeapValue::Set(s)), Some(i)) => {
                     let len = s.len() as i64;
-                    let effective = if ii < 0 { ii + len } else { ii };
+                    let effective = if i < 0 { i + len } else { i };
                     if effective < 0 || effective >= len {
                         return 0;
                     }
                     s.iter()
                         .nth(effective as usize)
-                        .cloned()
-                        .unwrap_or(Value::Null)
+                        .copied()
+                        .unwrap_or(NbValue::new_null())
                 }
-                _ => Value::Null,
+                _ => NbValue::new_null(),
             };
-            vm.set_reg(base + a, val);
+            vm.set_reg_nb(base + a, val);
         }
         lumen_core::lir::OpCode::SetIndex => {
-            let val = vm.reg(base + c);
-            let key = vm.reg(base + b);
-            let mut target = vm.reg_take(base + a);
-            match &mut target {
-                Value::List(l) => {
+            let val = vm.reg_nb(base + c);
+            let key = vm.reg_nb(base + b);
+            let mut target = vm.reg_nb(base + a);
+            match target.as_heap_ref() {
+                Some(HeapValue::List(l)) => {
                     if let Some(i) = key.as_int() {
                         let len = l.len() as i64;
                         let effective = if i < 0 { i + len } else { i };
                         if effective < 0 || effective >= len {
                             return 0;
                         }
-                        Arc::make_mut(l)[effective as usize] = val;
+                        let mut new_list = (**l).clone();
+                        new_list[effective as usize] = val;
+                        target = NbValue::new_list(new_list);
                     }
                 }
-                Value::Tuple(t) => {
+                Some(HeapValue::Tuple(t)) => {
                     if let Some(i) = key.as_int() {
                         let len = t.len() as i64;
                         let effective = if i < 0 { i + len } else { i };
                         if effective < 0 || effective >= len {
                             return 0;
                         }
-                        Arc::make_mut(t)[effective as usize] = val;
+                        let mut new_tuple = (**t).clone();
+                        new_tuple[effective as usize] = val;
+                        target = NbValue::new_tuple(new_tuple);
                     }
                 }
-                Value::Map(m) => {
-                    let k = key.as_string_resolved(&vm.strings);
-                    Arc::make_mut(m).insert(k, val);
+                Some(HeapValue::Map(m)) => {
+                    let k = key.display();
+                    let mut new_map = (**m).clone();
+                    new_map.insert(k, val);
+                    target = NbValue::new_map(new_map);
                 }
-                Value::Record(r) => {
-                    let k = key.as_string_resolved(&vm.strings);
-                    Arc::make_mut(r).fields.insert(k, val);
+                Some(HeapValue::Record(r)) => {
+                    let k = key.display();
+                    let mut updated = (**r).clone();
+                    updated.fields.insert(k, val);
+                    target = NbValue::new_heap(HeapValue::Record(Arc::new(updated)));
                 }
                 _ => {}
             }
-            vm.set_reg(base + a, target);
+            vm.set_reg_nb(base + a, target);
         }
 
         // Tuple element access by constant index.
         lumen_core::lir::OpCode::GetTuple => {
-            let obj = vm.reg(base + b);
-            let val = match &obj {
-                Value::Tuple(t) => t.get(c).cloned().unwrap_or(Value::Null),
-                Value::List(l) => l.get(c).cloned().unwrap_or(Value::Null),
-                _ => Value::Null,
+            let obj = vm.reg_nb(base + b);
+            let val = match obj.as_heap_ref() {
+                Some(HeapValue::Tuple(t)) => t.get(c).copied().unwrap_or(NbValue::new_null()),
+                Some(HeapValue::List(l)) => l.get(c).copied().unwrap_or(NbValue::new_null()),
+                _ => NbValue::new_null(),
             };
-            vm.set_reg(base + a, val);
+            vm.set_reg_nb(base + a, val);
         }
 
         // Union construction.
         lumen_core::lir::OpCode::NewUnion => {
-            let tag_val = vm.reg(base + b);
-            let tag_str = tag_val.as_string_resolved(&vm.strings);
-            let tag = vm.strings.intern(&tag_str);
-            let payload = UnionPayload::from_value(vm.reg(base + c));
-            vm.set_reg(base + a, Value::Union(UnionValue { tag, payload }));
+            let tag_val = vm.reg_nb(base + b);
+            let payload = vm.reg_nb(base + c);
+            let tag = match tag_val.as_heap_ref() {
+                Some(HeapValue::Str(s)) => Arc::clone(s),
+                _ => match vm.reg(base + b) {
+                    lumen_core::values::Value::String(lumen_core::values::StringRef::Interned(
+                        id,
+                    )) => vm.strings.get_arc(id).unwrap_or_else(|| Arc::from("")),
+                    lumen_core::values::Value::String(lumen_core::values::StringRef::Owned(s)) => {
+                        vm.strings.get_or_intern_arc(&s)
+                    }
+                    _ => {
+                        let tag_display = tag_val.display();
+                        vm.strings.get_or_intern_arc(tag_display.as_str())
+                    }
+                },
+            };
+            vm.set_reg_nb(base + a, NbValue::new_union_arc(tag, payload));
         }
 
         // Type variant check (skip next if matched).
@@ -427,18 +510,17 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
             // into an ABI-stable integer sentinel for stitched branching.
             let tag_idx = instr.bx() as usize;
             // Clone the tag string to avoid borrow conflict between module and vm.strings.
-            let tag_str = {
+            let tag = {
                 let module = vm.module().expect("stencil runtime: no module");
                 if tag_idx < module.strings.len() {
-                    Some(module.strings[tag_idx].clone())
+                    module.strings[tag_idx].as_str()
                 } else {
-                    None
+                    ""
                 }
             };
-            let tag_id = tag_str.map(|s| vm.strings.intern(&s)).unwrap_or(u32::MAX);
-            let val = vm.reg(base + a);
-            let matched = match &val {
-                Value::Union(u) => u.tag == tag_id,
+            let val = vm.reg_nb(base + a);
+            let matched = match val.as_heap_ref() {
+                Some(HeapValue::Union(u)) => u.tag.as_ref() == tag,
                 _ => false,
             };
             IS_VARIANT_SKIP.with(|f| f.set(matched));
@@ -446,148 +528,136 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
 
         // Union payload extraction.
         lumen_core::lir::OpCode::Unbox => {
-            let val = vm.reg(base + b);
-            let result = if let Value::Union(u) = &val {
-                u.payload.to_value()
+            let val = vm.reg_nb(base + b);
+            let result = if let Some(HeapValue::Union(u)) = val.as_heap_ref() {
+                u.payload
             } else {
-                Value::Null
+                NbValue::new_null()
             };
-            vm.set_reg(base + a, result);
+            vm.set_reg_nb(base + a, result);
         }
 
         // List append.
         lumen_core::lir::OpCode::Append => {
-            let val = vm.reg(base + b);
-            let mut target = vm.reg_take(base + a);
-            if let Value::List(ref mut l) = target {
-                Arc::make_mut(l).push(val);
+            let val = vm.reg_nb(base + b);
+            let mut target = vm.reg_nb(base + a);
+            if let Some(HeapValue::List(l)) = target.as_heap_ref() {
+                let mut new_list = (**l).clone();
+                new_list.push(val);
+                target = NbValue::new_list(new_list);
             }
-            vm.set_reg(base + a, target);
+            vm.set_reg_nb(base + a, target);
         }
 
         // String / list concatenation.
         lumen_core::lir::OpCode::Concat => {
-            let lhs = vm.reg(base + b);
-            let rhs = vm.reg(base + c);
-            let result = match (&lhs, &rhs) {
-                (Value::List(la), Value::List(lb)) => {
-                    let mut combined = Vec::with_capacity(la.len() + lb.len());
-                    combined.extend(la.iter().cloned());
-                    combined.extend(lb.iter().cloned());
-                    Value::new_list(combined)
+            let lhs = vm.reg_nb(base + b);
+            let rhs = vm.reg_nb(base + c);
+            let result = match (lhs.as_heap_ref(), rhs.as_heap_ref()) {
+                (Some(HeapValue::Str(l)), Some(HeapValue::Str(r))) => {
+                    NbValue::new_str(&format!("{}{}", l, r))
                 }
-                _ => {
-                    let lhs_str = lhs.as_string_resolved(&vm.strings);
-                    let rhs_str = rhs.as_string_resolved(&vm.strings);
-                    let mut s = String::with_capacity(lhs_str.len() + rhs_str.len());
-                    s.push_str(&lhs_str);
-                    s.push_str(&rhs_str);
-                    Value::String(StringRef::Owned(s))
+                (Some(HeapValue::List(l)), Some(HeapValue::List(r))) => {
+                    let mut v = (**l).clone();
+                    v.extend_from_slice(r);
+                    NbValue::new_list(v)
                 }
+                _ => NbValue::new_str(&format!("{}{}", lhs.display(), rhs.display())),
             };
-            vm.set_reg(base + a, result);
+            vm.set_reg_nb(base + a, result);
         }
 
         // Membership test.
         lumen_core::lir::OpCode::In => {
-            let needle = vm.reg(base + b);
-            let haystack = vm.reg(base + c);
-            let result = match &haystack {
-                Value::List(l) => l.contains(&needle),
-                Value::Set(s) => s.contains(&needle),
-                Value::Map(m) => {
-                    let key = needle.as_string_resolved(&vm.strings);
-                    m.contains_key(&key)
-                }
-                Value::String(StringRef::Owned(s)) => {
-                    let n = needle.as_string_resolved(&vm.strings);
-                    s.contains(n.as_str())
-                }
-                Value::String(StringRef::Interned(id)) => {
-                    let s = vm.strings.resolve(*id).unwrap_or("").to_string();
-                    let n = needle.as_string_resolved(&vm.strings);
-                    s.contains(n.as_str())
-                }
+            let needle = vm.reg_nb(base + b);
+            let haystack = vm.reg_nb(base + c);
+            let result = match haystack.as_heap_ref() {
+                Some(HeapValue::List(l)) => l.iter().any(|v| *v == needle),
+                Some(HeapValue::Set(s)) => s.contains(&needle),
+                Some(HeapValue::Map(m)) => m.contains_key(&needle.display()),
+                Some(HeapValue::Str(s)) => s.contains(needle.display().as_str()),
                 _ => false,
             };
-            vm.set_reg(base + a, Value::Bool(result));
+            vm.set_reg_nb(base + a, NbValue::new_bool(result));
         }
 
         // Type check.
         lumen_core::lir::OpCode::Is => {
-            let val = vm.reg(base + b);
-            let type_val = vm.reg(base + c);
-            let type_str = type_val.as_string_resolved(&vm.strings);
-            let matches = val.type_name_resolved(&vm.strings) == type_str;
-            vm.set_reg(base + a, Value::Bool(matches));
+            let val = vm.reg_nb(base + b);
+            let type_val = vm.reg_nb(base + c);
+            let type_str = type_val.display();
+            let matches = val.type_name() == type_str;
+            vm.set_reg_nb(base + a, NbValue::new_bool(matches));
         }
 
         // Closure creation.
         lumen_core::lir::OpCode::Closure => {
             let bx = instr.bx() as usize;
-            vm.set_reg(
+            vm.set_reg_nb(
                 base + a,
-                Value::Closure(ClosureValue {
+                NbValue::new_heap(HeapValue::Closure(Arc::new(ClosureData {
                     cell_idx: bx,
                     captures: Vec::new(),
-                }),
+                }))),
             );
         }
 
         // Upvalue load (treat as register read — captures are stored in low registers).
         lumen_core::lir::OpCode::GetUpval => {
-            let val = vm.reg(base + b);
-            vm.set_reg(base + a, val);
+            let val = vm.reg_nb(base + b);
+            vm.set_reg_nb(base + a, val);
         }
 
         // Upvalue store (inject into closure's capture vector).
         lumen_core::lir::OpCode::SetUpval => {
-            let val = vm.reg(base + a);
-            let mut closure = vm.reg_take(base + c);
-            if let Value::Closure(ref mut cv) = closure {
-                while cv.captures.len() <= b {
-                    cv.captures.push(Value::Null);
+            let val = vm.reg_nb(base + a);
+            let mut closure = vm.reg_nb(base + c);
+            if let Some(HeapValue::Closure(c)) = closure.as_heap_ref() {
+                let mut updated = (**c).clone();
+                while updated.captures.len() <= b {
+                    updated.captures.push(NbValue::new_null());
                 }
-                cv.captures[b] = val;
+                updated.captures[b] = val;
+                closure = NbValue::new_heap(HeapValue::Closure(Arc::new(updated)));
             }
-            vm.set_reg(base + c, closure);
+            vm.set_reg_nb(base + c, closure);
         }
 
         // Trace reference.
         lumen_core::lir::OpCode::TraceRef => {
             let trace_ref = vm.next_trace_ref();
-            vm.set_reg(base + a, Value::TraceRef(trace_ref));
+            vm.set_reg_nb(
+                base + a,
+                NbValue::new_heap(HeapValue::TraceRef(trace_ref.seq)),
+            );
         }
 
         // Emit output.
         lumen_core::lir::OpCode::Emit => {
-            let emit_val = vm.reg(base + a);
-            let s = emit_val.display_pretty();
+            let emit_val = vm.reg_nb(base + a);
+            let s = emit_val.display();
             println!("{}", s);
             vm.output.push(s);
         }
 
         // Exponentiation — inline integer power (fast path for positive exponents).
         lumen_core::lir::OpCode::Pow => {
-            let lhs = vm.reg(base + b);
-            let rhs = vm.reg(base + c);
-            let result = match (&lhs, &rhs) {
-                (Value::Int(base_v), Value::Int(exp)) => {
-                    if *exp >= 0 {
-                        Value::Int(base_v.wrapping_pow(*exp as u32))
+            let lhs = vm.reg_nb(base + b);
+            let rhs = vm.reg_nb(base + c);
+            let result = match (lhs.as_int(), lhs.as_float(), rhs.as_int(), rhs.as_float()) {
+                (Some(base_v), _, Some(exp), _) => {
+                    if exp >= 0 {
+                        NbValue::new_int(base_v.wrapping_pow(exp as u32))
                     } else {
-                        // Negative exponent → float result
-                        Value::Float((*base_v as f64).powi(*exp as i32))
+                        NbValue::new_float((base_v as f64).powi(exp as i32))
                     }
                 }
-                (Value::Float(base_v), Value::Int(exp)) => Value::Float(base_v.powi(*exp as i32)),
-                (Value::Int(base_v), Value::Float(exp)) => {
-                    Value::Float((*base_v as f64).powf(*exp))
-                }
-                (Value::Float(base_v), Value::Float(exp)) => Value::Float(base_v.powf(*exp)),
-                _ => Value::Null,
+                (_, Some(base_v), Some(exp), _) => NbValue::new_float(base_v.powi(exp as i32)),
+                (Some(base_v), _, _, Some(exp)) => NbValue::new_float((base_v as f64).powf(exp)),
+                (_, Some(base_v), _, Some(exp)) => NbValue::new_float(base_v.powf(exp)),
+                _ => NbValue::new_null(),
             };
-            vm.set_reg(base + a, result);
+            vm.set_reg_nb(base + a, result);
         }
 
         // Loop / iteration — these opcodes require IP manipulation and cannot
@@ -598,81 +668,85 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
         // effects only (counter decrement for Loop; index advance for ForLoop/ForIn).
         lumen_core::lir::OpCode::Loop => {
             // Decrement counter in R[A]; jump semantics handled by interpreter.
-            let mut counter = vm.reg_take(base + a);
-            if let Value::Int(ref mut n) = counter {
-                *n -= 1;
+            let counter = vm.reg_nb(base + a);
+            if let Some(n) = counter.as_int() {
+                vm.set_reg_nb(base + a, NbValue::new_int(n - 1));
             }
-            vm.set_reg(base + a, counter);
         }
         lumen_core::lir::OpCode::ForPrep => {
             // Initialize loop: set index=0, len=collection_length in R[A+1], R[A+2].
-            let iter_val = vm.reg(base + a);
-            let len = match &iter_val {
-                Value::List(l) => l.len(),
-                Value::Set(s) => s.len(),
-                Value::Tuple(t) => t.len(),
+            let iter_val = vm.reg_nb(base + a);
+            let len = match iter_val.as_heap_ref() {
+                Some(HeapValue::List(l)) => l.len(),
+                Some(HeapValue::Set(s)) => s.len(),
+                Some(HeapValue::Tuple(t)) => t.len(),
                 _ => 0,
             } as i64;
-            vm.set_reg(base + a + 1, Value::Int(0));
-            vm.set_reg(base + a + 2, Value::Int(len));
+            vm.set_reg_nb(base + a + 1, NbValue::new_int(0));
+            vm.set_reg_nb(base + a + 2, NbValue::new_int(len));
         }
         lumen_core::lir::OpCode::ForLoop => {
             // Advance loop: load element into R[A+3], increment index in R[A+1].
-            let idx = vm.reg(base + a + 1).as_int().unwrap_or(0);
-            let len = vm.reg(base + a + 2).as_int().unwrap_or(0);
+            let idx = vm.reg_nb(base + a + 1).as_int().unwrap_or(0);
+            let len = vm.reg_nb(base + a + 2).as_int().unwrap_or(0);
             if idx < len {
-                let iter = vm.reg(base + a);
-                let elem = match &iter {
-                    Value::List(l) => l.get(idx as usize).cloned().unwrap_or(Value::Null),
-                    Value::Set(s) => s.iter().nth(idx as usize).cloned().unwrap_or(Value::Null),
-                    Value::Tuple(t) => t.get(idx as usize).cloned().unwrap_or(Value::Null),
-                    _ => Value::Null,
+                let iter = vm.reg_nb(base + a);
+                let elem = match iter.as_heap_ref() {
+                    Some(HeapValue::List(l)) => {
+                        l.get(idx as usize).copied().unwrap_or(NbValue::new_null())
+                    }
+                    Some(HeapValue::Set(s)) => s
+                        .iter()
+                        .nth(idx as usize)
+                        .copied()
+                        .unwrap_or(NbValue::new_null()),
+                    Some(HeapValue::Tuple(t)) => {
+                        t.get(idx as usize).copied().unwrap_or(NbValue::new_null())
+                    }
+                    _ => NbValue::new_null(),
                 };
-                vm.set_reg(base + a + 3, elem);
-                vm.set_reg(base + a + 1, Value::Int(idx + 1));
+                vm.set_reg_nb(base + a + 3, elem);
+                vm.set_reg_nb(base + a + 1, NbValue::new_int(idx + 1));
             }
         }
         lumen_core::lir::OpCode::ForIn => {
             // for-in step: elem → R[C], index advance in R[A+1], bool in R[A].
-            let idx = vm.reg(base + a + 1).as_int().unwrap_or(0);
-            let iter = vm.reg(base + b);
-            let (elem, has_more) = match &iter {
-                Value::List(l) => {
+            let idx = vm.reg_nb(base + a + 1).as_int().unwrap_or(0);
+            let iter = vm.reg_nb(base + b);
+            let (elem, has_more) = match iter.as_heap_ref() {
+                Some(HeapValue::List(l)) => {
                     let i = idx as usize;
                     if i < l.len() {
-                        (l[i].clone(), true)
+                        (l[i], true)
                     } else {
-                        (Value::Null, false)
+                        (NbValue::new_null(), false)
                     }
                 }
-                Value::Map(m) => {
+                Some(HeapValue::Map(m)) => {
                     let keys: Vec<_> = m.keys().cloned().collect();
                     let i = idx as usize;
                     if i < keys.len() {
                         let key = keys[i].clone();
-                        let val = m.get(&key).cloned().unwrap_or(Value::Null);
-                        (
-                            Value::new_tuple(vec![Value::String(StringRef::Owned(key)), val]),
-                            true,
-                        )
+                        let val = m.get(&key).copied().unwrap_or(NbValue::new_null());
+                        (NbValue::new_tuple(vec![NbValue::new_str(&key), val]), true)
                     } else {
-                        (Value::Null, false)
+                        (NbValue::new_null(), false)
                     }
                 }
-                Value::Set(s) => {
-                    let items: Vec<_> = s.iter().cloned().collect();
+                Some(HeapValue::Set(s)) => {
+                    let items: Vec<_> = s.iter().copied().collect();
                     let i = idx as usize;
                     if i < items.len() {
-                        (items[i].clone(), true)
+                        (items[i], true)
                     } else {
-                        (Value::Null, false)
+                        (NbValue::new_null(), false)
                     }
                 }
-                _ => (Value::Null, false),
+                _ => (NbValue::new_null(), false),
             };
-            vm.set_reg(base + c, elem);
-            vm.set_reg(base + a + 1, Value::Int(idx + 1));
-            vm.set_reg(base + a, Value::Bool(has_more));
+            vm.set_reg_nb(base + c, elem);
+            vm.set_reg_nb(base + a + 1, NbValue::new_int(idx + 1));
+            vm.set_reg_nb(base + a, NbValue::new_bool(has_more));
         }
 
         // Schema validation — best-effort in stencil tier (no error propagation).
@@ -699,20 +773,19 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
         lumen_core::lir::OpCode::Await => {
             // In stencil tier, attempt a simple resolved-future check.
             // If the future is already in completed state in future_states, extract it.
-            let awaited_val = vm.reg(base + b);
-            let result = match &awaited_val {
-                Value::Future(f) => {
+            let awaited_val = vm.reg_nb(base + b);
+            let result = match awaited_val.as_heap_ref() {
+                Some(HeapValue::Future(f)) => {
                     let fid = f.id;
                     if let Some(crate::vm::FutureState::Completed(v)) = vm.future_states.get(&fid) {
-                        v.clone()
+                        NbValue::new_str(&v.display_pretty())
                     } else {
-                        // Future not yet resolved — leave Null; interpreter will handle.
-                        Value::Null
+                        NbValue::new_null()
                     }
                 }
-                other => other.clone(),
+                _ => awaited_val,
             };
-            vm.set_reg(base + a, result);
+            vm.set_reg_nb(base + a, result);
         }
         lumen_core::lir::OpCode::Spawn => {
             // In stencil tier, Spawn creates a placeholder future value.
@@ -724,12 +797,15 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
             vm.future_states
                 .insert(future_id, crate::vm::FutureState::Pending);
             let _ = bx; // cell_idx tracked via FutureTask, not needed here directly
-            vm.set_reg(
+            vm.set_reg_nb(
                 base + a,
-                Value::Future(lumen_core::values::FutureValue {
-                    id: future_id,
-                    state: lumen_core::values::FutureStatus::Pending,
-                }),
+                NbValue::new_heap(HeapValue::Future(Arc::new(
+                    lumen_core::heap_value::FutureData {
+                        id: future_id,
+                        status: lumen_core::heap_value::FutureStatus::Pending,
+                        schedule: lumen_core::heap_value::FutureSchedule::Eager,
+                    },
+                ))),
             );
         }
 
@@ -747,7 +823,7 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
                     )
                 } else {
                     // Tool index out of bounds — store Null and return.
-                    vm.set_reg(base + a, Value::Null);
+                    vm.set_reg_nb(base + a, NbValue::new_null());
                     return 0;
                 }
             };
@@ -757,21 +833,21 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
             let mut args_map = serde_json::Map::new();
             let primary = base + a;
             let primary_val = if primary < vm.registers.len() {
-                Some(vm.reg(primary))
+                Some(vm.reg_nb(primary))
             } else {
                 None
             };
-            let arg_map_reg = match &primary_val {
-                Some(Value::Map(_)) => Some(primary),
+            let arg_map_reg = match primary_val.as_ref().and_then(|v| v.as_heap_ref()) {
+                Some(HeapValue::Map(_)) => Some(primary),
                 Some(_) => primary.checked_add(1),
                 None => None,
             };
             if let Some(arg_map_reg) = arg_map_reg {
                 if arg_map_reg < vm.registers.len() {
-                    let map_val = vm.reg(arg_map_reg);
-                    if let Value::Map(m) = &map_val {
+                    let map_val = vm.reg_nb(arg_map_reg);
+                    if let Some(HeapValue::Map(m)) = map_val.as_heap_ref() {
                         for (k, v) in m.iter() {
-                            args_map.insert(k.clone(), value_to_json(v, &vm.strings));
+                            args_map.insert(k.clone(), serde_json::Value::String(v.display()));
                         }
                     }
                 }
@@ -785,7 +861,7 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
             };
             if let Err(msg) = validate_tool_policy(&policy, &args_json) {
                 let err_msg = format!("policy violation for '{}': {}", tool_alias, msg);
-                vm.set_reg(base + a, Value::String(StringRef::Owned(err_msg)));
+                vm.set_reg_nb(base + a, NbValue::new_str(&err_msg));
                 return 0;
             }
 
@@ -798,7 +874,7 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
                             "effect budget exceeded for '{}': limit {} reached",
                             budget_key, limit
                         );
-                        vm.set_reg(base + a, Value::String(StringRef::Owned(err_msg)));
+                        vm.set_reg_nb(base + a, NbValue::new_str(&err_msg));
                         return 0;
                     }
                     *remaining -= 1;
@@ -815,18 +891,15 @@ pub unsafe extern "C" fn lm_rt_stencil_runtime(ctx: *mut VmContext, instr_word: 
             if let Some(dispatcher) = vm.tool_dispatcher.as_ref() {
                 match dispatcher.dispatch(&request) {
                     Ok(response) => {
-                        vm.set_reg(base + a, json_to_value(&response.outputs));
+                        vm.set_reg_nb(base + a, NbValue::new_str(&response.outputs.to_string()));
                     }
                     Err(e) => {
-                        vm.set_reg(base + a, Value::String(StringRef::Owned(e.to_string())));
+                        vm.set_reg_nb(base + a, NbValue::new_str(&e.to_string()));
                     }
                 }
             } else {
                 // No dispatcher configured — store a pending placeholder string.
-                vm.set_reg(
-                    base + a,
-                    Value::String(StringRef::Owned("<<tool call pending>>".to_string())),
-                );
+                vm.set_reg_nb(base + a, NbValue::new_str("<<tool call pending>>"));
             }
         }
 
@@ -848,9 +921,8 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    use lumen_core::lir::{Instruction, LirCell, LirModule, LirTool, OpCode};
-
     use crate::services::tools::{ToolDispatcher, ToolError, ToolResponse};
+    use lumen_core::lir::{Instruction, LirCell, LirModule, LirTool, OpCode};
 
     struct EchoArgsDispatcher;
 
@@ -914,15 +986,15 @@ mod tests {
         vm.registers.resize(8, NbValue::new_null());
 
         let mut args = BTreeMap::new();
-        args.insert("x".to_string(), Value::Int(7));
-        vm.set_reg(0, Value::new_map(args));
+        args.insert("x".to_string(), lumen_core::values::Value::Int(7));
+        vm.set_reg(0, lumen_core::values::Value::new_map(args));
 
         let sentinel = run_toolcall(&mut vm, 0);
         assert_eq!(sentinel, 0);
 
         match vm.reg(0) {
-            Value::Map(m) => {
-                assert_eq!(m.get("x"), Some(&Value::Int(7)));
+            lumen_core::values::Value::Map(m) => {
+                assert_eq!(m.get("x"), Some(&lumen_core::values::Value::Int(7)));
             }
             other => panic!("expected map output from dispatcher, got {other:?}"),
         }
@@ -936,12 +1008,12 @@ mod tests {
         vm.load(module_with_tool("Echo", "echo.call"));
         vm.registers.resize(8, NbValue::new_null());
 
-        vm.set_reg(0, Value::new_map(BTreeMap::new()));
+        vm.set_reg(0, lumen_core::values::Value::new_map(BTreeMap::new()));
         let sentinel = run_toolcall(&mut vm, 0);
         assert_eq!(sentinel, 0);
 
         match vm.reg(0) {
-            Value::String(StringRef::Owned(msg)) => {
+            lumen_core::values::Value::String(lumen_core::values::StringRef::Owned(msg)) => {
                 assert!(msg.contains("effect budget exceeded"));
                 assert!(msg.contains("Echo"));
             }

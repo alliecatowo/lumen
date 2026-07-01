@@ -51,6 +51,8 @@ FILTER_LANG=""
 NO_CROSS=false
 ONLY_LUMEN=false
 STRICT_ORACLE=false
+BENCH_FILTER=""
+PIN_CPU=""
 
 is_truthy() {
   case "${1,,}" in
@@ -69,6 +71,8 @@ while [[ $# -gt 0 ]]; do
     --csv)        CSV_FILE="$2"; shift 2 ;;
     --runs)       RUNS="$2"; shift 2 ;;
     --lang)       FILTER_LANG="$2"; shift 2 ;;
+    --bench|--benches) BENCH_FILTER="$2"; shift 2 ;;
+    --pin-cpu)    PIN_CPU="$2"; shift 2 ;;
     --no-cross)   NO_CROSS=true; shift ;;
     --only-lumen) ONLY_LUMEN=true; shift ;;
     --strict-oracle|--strict-output) STRICT_ORACLE=true; shift ;;
@@ -111,6 +115,8 @@ echo "  Filter by language: ${FILTER_LANG:-all}"
 echo "  Skip cross-language: $NO_CROSS"
 echo "  Only Lumen: $ONLY_LUMEN"
 echo "  Strict output oracles: $STRICT_ORACLE"
+echo "  Benchmark filter: ${BENCH_FILTER:-all}"
+echo "  Pin CPU: ${PIN_CPU:-none}"
 echo ""
 echo "Available compilers/interpreters:"
 printf "  %-12s %s\n" "gcc:" "$([[ $HAS_GCC = true ]] && echo '✓' || echo '✗')"
@@ -240,7 +246,11 @@ ORACLE_FLOAT_TOL=0.000001
 time_ms() {
   local start end elapsed
   start=$(date +%s%N 2>/dev/null || python3 -c 'import time; print(int(time.time()*1e9))' 2>/dev/null || echo "0")
-  "$@" > /dev/null 2>&1
+  if [ -n "$PIN_CPU" ] && command -v taskset &>/dev/null; then
+    taskset -c "$PIN_CPU" "$@" > /dev/null 2>&1
+  else
+    "$@" > /dev/null 2>&1
+  fi
   local exit_code=$?
   end=$(date +%s%N 2>/dev/null || python3 -c 'import time; print(int(time.time()*1e9))' 2>/dev/null || echo "0")
   
@@ -388,6 +398,12 @@ if [ "$ONLY_LUMEN" = false ] && [ "$NO_CROSS" = false ]; then
   
   for bench_spec in "${CROSS_BENCHMARKS[@]}"; do
     IFS=':' read -r bench_name prefix <<< "$bench_spec"
+    if [ -n "$BENCH_FILTER" ]; then
+      case ",${BENCH_FILTER}," in
+        *",${bench_name},"*) ;;
+        *) continue ;;
+      esac
+    fi
     echo "▶ $bench_name"
     
     # Validate benchmark sizes across languages
@@ -479,6 +495,12 @@ if { [ "$ONLY_LUMEN" = true ] || ([ "$NO_CROSS" = false ] && [ "$ONLY_LUMEN" = f
   else
     for bench_spec in "${LUMEN_BENCHMARKS[@]}"; do
       IFS=':' read -r filename bench_name <<< "$bench_spec"
+      if [ -n "$BENCH_FILTER" ]; then
+        case ",${BENCH_FILTER}," in
+          *",${bench_name},"*) ;;
+          *) continue ;;
+        esac
+      fi
       echo "▶ $bench_name ($filename)"
       
       run_benchmark "$bench_name" "lumen" "$LUMEN_BIN run $SCRIPT_DIR/$filename"

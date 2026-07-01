@@ -128,6 +128,40 @@ pub struct VmContext {
     /// Per-frame value arena for JIT allocations.
     /// When null, runtime helpers fall back to Arc allocations.
     pub arena: *mut ValueArena,
+
+    /// Latest runtime error recorded from JIT helpers.
+    ///
+    /// Stored as an owned string so the interpreter can surface the error
+    /// after JIT execution returns. This is optional to avoid allocating on
+    /// the fast path when no errors occur.
+    pub last_error: Option<String>,
+
+    /// Optional callback for tool calls from JIT.
+    pub tool_call_cb: Option<extern "C" fn(*mut VmContext, i32, i64) -> i64>,
+
+    /// Optional callback for schema validation from JIT.
+    pub schema_validate_cb: Option<extern "C" fn(*mut VmContext, i64, i32) -> i64>,
+
+    /// Optional callback for trace reference creation from JIT.
+    pub trace_ref_cb: Option<extern "C" fn(*mut VmContext) -> i64>,
+
+    /// Optional callback for ForIn iterator stepping from JIT.
+    pub for_in_cb: Option<extern "C" fn(*mut VmContext, i64, i64) -> i64>,
+
+    /// Optional callback for `in` membership tests from JIT.
+    pub in_cb: Option<extern "C" fn(*mut VmContext, i64, i64) -> i64>,
+
+    /// Optional callback for `is` type tests from JIT.
+    pub is_cb: Option<extern "C" fn(*mut VmContext, i64, i64) -> i64>,
+
+    /// Optional callback for JSON parse (returns NbValue bits).
+    pub json_parse_cb: Option<extern "C" fn(*mut VmContext, i64) -> i64>,
+
+    /// Optional callback for JSON encode (returns JitString pointer).
+    pub json_encode_cb: Option<extern "C" fn(*mut VmContext, i64) -> i64>,
+
+    /// Optional callback for JSON pretty encode (returns JitString pointer).
+    pub json_pretty_cb: Option<extern "C" fn(*mut VmContext, i64) -> i64>,
 }
 
 impl VmContext {
@@ -146,17 +180,40 @@ impl VmContext {
             jit_fn_ptrs_len: 0,
             call_closure: None,
             arena: std::ptr::null_mut(),
+            last_error: None,
+            tool_call_cb: None,
+            schema_validate_cb: None,
+            trace_ref_cb: None,
+            for_in_cb: None,
+            in_cb: None,
+            is_cb: None,
+            json_parse_cb: None,
+            json_encode_cb: None,
+            json_pretty_cb: None,
         }
     }
 
     /// Record a runtime error from JIT-compiled code.
     ///
-    /// Currently a no-op stub — the VM checks for errors after JIT dispatch
-    /// via other mechanisms. This method exists so that JIT runtime helpers
-    /// (e.g. `jit_rt_trap_divzero`) can compile without feature-gating.
-    pub fn set_error(&mut self, _msg: String) {
-        // TODO: store the error message so the VM can convert it into a
-        // proper runtime error after JIT returns.
+    /// Records errors from JIT runtime helpers so the VM can surface them
+    /// after JIT dispatch returns (instead of panicking in native code).
+    pub fn set_error(&mut self, msg: String) {
+        self.last_error = Some(msg);
+    }
+
+    /// Borrow the most recent runtime error, if any.
+    pub fn get_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+
+    /// Take the most recent runtime error, clearing it in the context.
+    pub fn take_error(&mut self) -> Option<String> {
+        self.last_error.take()
+    }
+
+    /// Clear any recorded runtime error.
+    pub fn clear_error(&mut self) {
+        self.last_error = None;
     }
 }
 
@@ -190,6 +247,13 @@ mod tests {
         assert_eq!(ctx.jit_fn_ptrs_len, 0);
         assert!(ctx.call_closure.is_none());
         assert!(ctx.arena.is_null());
+        assert!(ctx.last_error.is_none());
+        assert!(ctx.tool_call_cb.is_none());
+        assert!(ctx.schema_validate_cb.is_none());
+        assert!(ctx.trace_ref_cb.is_none());
+        assert!(ctx.for_in_cb.is_none());
+        assert!(ctx.in_cb.is_none());
+        assert!(ctx.is_cb.is_none());
     }
 
     #[test]
@@ -198,8 +262,10 @@ mod tests {
         use std::mem;
         assert_eq!(
             mem::size_of::<VmContext>(),
-            mem::size_of::<*mut u8>() * 11 + mem::size_of::<usize>(),
-            "VmContext should be exactly 11 pointers + usize"
+            mem::size_of::<*mut u8>() * 17
+                + mem::size_of::<usize>()
+                + mem::size_of::<Option<String>>(),
+            "VmContext should be exactly 17 pointers + usize + Option<String>"
         );
     }
 }

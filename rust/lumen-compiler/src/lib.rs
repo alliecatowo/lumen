@@ -137,7 +137,7 @@ fn run_optional_analyses(
         if !ownership_errors.is_empty() && options.ownership_mode == OwnershipCheckMode::Error {
             errors.push(CompileError::Ownership(ownership_errors));
         }
-        // In Warn mode, errors are detected but silently discarded.
+        // UNIMPLEMENTED: Warn mode discards ownership errors; no diagnostics emitted yet.
     }
 
     // 2. Typestate checking (opt-in: only if declarations are provided)

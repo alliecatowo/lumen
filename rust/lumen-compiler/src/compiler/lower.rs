@@ -127,6 +127,9 @@ fn get_intrinsic_id(name: &str) -> Option<IntrinsicId> {
         "regex_find_all" => Some(IntrinsicId::RegexFindAll),
         "read_line" => Some(IntrinsicId::ReadLine),
         "string_concat" => Some(IntrinsicId::StringConcat),
+        "parse_json" => Some(IntrinsicId::JsonParse),
+        "to_json" | "json_encode" => Some(IntrinsicId::JsonEncode),
+        "json_pretty" => Some(IntrinsicId::JsonPretty),
         // HTTP client builtins
         "http_get" => Some(IntrinsicId::HttpGet),
         "http_post" => Some(IntrinsicId::HttpPost),
@@ -378,6 +381,46 @@ fn optimize_move_own(instrs: &mut [Instruction]) {
         if src == dst {
             continue;
         }
+        // Avoid converting argument moves into MoveOwn. Call arguments are
+        // copied into a freshly allocated contiguous block that is then
+        // consumed by Call/TailCall. Moving ownership out of the original
+        // arg registers can clobber values that are still needed.
+        let mut is_arg_move = false;
+        // Check if this Move feeds a subsequent Call/TailCall within the same
+        // block by inspecting call argument ranges.
+        for j in (i + 1)..len {
+            let op = instrs[j].op;
+            if is_block_boundary(op) {
+                break;
+            }
+            if matches!(op, OpCode::Call | OpCode::TailCall) {
+                let call_base = instrs[j].a;
+                let call_nargs = instrs[j].b;
+                if dst >= call_base && dst <= call_base.saturating_add(call_nargs) {
+                    is_arg_move = true;
+                }
+                break;
+            }
+            // Stop early if this instruction writes over the destination.
+            if instr_writes_to_a(op) && instrs[j].a == dst {
+                break;
+            }
+        }
+        if is_arg_move {
+            continue;
+        }
+        // Fast path: if `src` is never read at all in the instructions
+        // after this Move, it is globally dead — always safe to MoveOwn.
+        // But if we're inside a loop body, the Move at `i` will re-execute on
+        // the next iteration and read `src` again, so it isn't globally dead.
+        let inside_loop = is_inside_loop_body(instrs, i);
+        let globally_dead =
+            !inside_loop && instrs[i + 1..].iter().all(|k| !instr_reads_reg(k, src));
+        if globally_dead {
+            instrs[i].op = OpCode::MoveOwn;
+            continue;
+        }
+
         // Scan forward within the same basic block to determine if `src` is
         // written before it is read.
         let mut can_convert = false;
@@ -427,6 +470,31 @@ fn optimize_move_own(instrs: &mut [Instruction]) {
                                 }
                             }
                             if loop_safe {
+                                can_convert = true;
+                            }
+                        } else {
+                            // target > i: the Move is *before* the loop body
+                            // (e.g. pre-loop initialiser). src is dead if it is
+                            // never read anywhere in the rest of the program
+                            // (instructions i+1..len). We already scanned
+                            // i+1..j without finding a read; now also verify
+                            // the loop body (target..len) doesn't read src.
+                            let mut read_in_loop = false;
+                            for kinstr in &instrs[target..] {
+                                if instr_reads_reg(kinstr, src) {
+                                    read_in_loop = true;
+                                    break;
+                                }
+                                // If src is written before being read in the
+                                // loop, it is effectively dead at the Move.
+                                if instr_writes_to_a(kinstr.op) && kinstr.a == src {
+                                    break;
+                                }
+                                if kinstr.op == OpCode::Call && kinstr.a == src {
+                                    break;
+                                }
+                            }
+                            if !read_in_loop {
                                 can_convert = true;
                             }
                         }
@@ -480,6 +548,23 @@ fn optimize_move_own(instrs: &mut [Instruction]) {
             instrs[i].op = OpCode::MoveOwn;
         }
     }
+}
+
+/// Returns true if instruction `i` is inside a loop body (there is a backward
+/// jump after `i` that targets at or before `i`).
+fn is_inside_loop_body(instrs: &[Instruction], i: usize) -> bool {
+    instrs[i + 1..].iter().enumerate().any(|(j_off, instr)| {
+        if instr.op != OpCode::Jmp {
+            return false;
+        }
+        let offset = instr.sax_val();
+        if offset >= 0 {
+            return false;
+        }
+        let j = i + 1 + j_off;
+        let target = (j as i64 + 1 + offset) as i64;
+        target <= i as i64
+    })
 }
 
 /// Returns true if the opcode marks a basic-block boundary (control flow).
@@ -1658,11 +1743,21 @@ impl<'a> Lowerer<'a> {
         }
 
         // Move arguments in reverse order to avoid overwriting source registers
-        // that might also be destinations (e.g., moving r3->r5 then r5->r6)
+        // that might also be destinations (e.g., moving r3->r5 then r5->r6).
+        // If a source register overlaps a destination register, stage through
+        // a temp to avoid clobbering.
+        let mut temp_reg: Option<u16> = None;
         for (i, &reg) in arg_regs.iter().enumerate().rev() {
             let target = base + 1 + i as u16;
             if reg != target {
-                instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
+                let overlaps = arg_regs.iter().any(|&r| r == target);
+                if overlaps {
+                    let tmp = *temp_reg.get_or_insert_with(|| ra.alloc_temp());
+                    instrs.push(Instruction::abc(OpCode::Move, tmp, reg, 0));
+                    instrs.push(Instruction::abc(OpCode::Move, target, tmp, 0));
+                } else {
+                    instrs.push(Instruction::abc(OpCode::Move, target, reg, 0));
+                }
             }
         }
 
@@ -1738,8 +1833,10 @@ impl<'a> Lowerer<'a> {
     ) -> Vec<u16> {
         if let Some(cell_info) = self.symbols.cells.get(callee_name) {
             let has_variadic = cell_info.params.last().is_some_and(|(_, _, v)| *v);
-            if has_variadic && !cell_info.params.is_empty() {
-                let fixed_count = cell_info.params.len() - 1;
+            let extra_args =
+                arg_regs.len() > cell_info.params.len() && !cell_info.params.is_empty();
+            if (has_variadic || extra_args) && !cell_info.params.is_empty() {
+                let fixed_count = cell_info.params.len().saturating_sub(1);
                 if arg_regs.len() >= fixed_count {
                     let mut result = arg_regs[..fixed_count].to_vec();
                     let variadic_regs = &arg_regs[fixed_count..];
@@ -1952,7 +2049,7 @@ impl<'a> Lowerer<'a> {
             name: p.name.clone(),
             params: vec![],
             returns: Some(p.name.clone()),
-            registers: ra.max_regs(),
+            registers: ra.register_file_size(),
             constants,
             instructions,
             effect_handler_metas: vec![],
@@ -1991,7 +2088,7 @@ impl<'a> Lowerer<'a> {
             name: a.name.clone(),
             params: vec![],
             returns: Some(a.name.clone()),
-            registers: ra.max_regs(),
+            registers: ra.register_file_size(),
             constants,
             instructions,
             effect_handler_metas: vec![],
@@ -2000,6 +2097,8 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_cell(&mut self, cell: &CellDef) -> LirCell {
+        // UNIMPLEMENTED: extern cells are currently lowered like normal cells;
+        // runtime FFI dispatch is not wired for `extern cell` declarations.
         self.intern_string(&cell.name);
         let mut ra = RegAlloc::new(&cell.name);
         let mut constants: Vec<Constant> = Vec::new();
@@ -2117,7 +2216,7 @@ impl<'a> Lowerer<'a> {
             name: cell.name.clone(),
             params,
             returns: cell.return_type.as_ref().map(format_type_expr),
-            registers: ra.max_regs(),
+            registers: ra.register_file_size(),
             constants,
             instructions,
             effect_handler_metas,
@@ -2365,7 +2464,77 @@ impl<'a> Lowerer<'a> {
                                 ));
                                 let arg_regs =
                                     self.lower_call_arg_regs(args, None, ra, consts, instrs);
-                                self.emit_tail_call_with_regs(callee_reg, &arg_regs, ra, instrs);
+                                let arg_regs =
+                                    self.pack_variadic_args(name, arg_regs, ra, consts, instrs);
+                                // Tail calls require arguments to be placed in consecutive
+                                // registers. When we materialize a variadic list, its register
+                                // may not be contiguous, so fall back to Call+Return.
+                                let contiguous = arg_regs
+                                    .iter()
+                                    .enumerate()
+                                    .all(|(i, r)| *r == arg_regs[0] + i as u16);
+                                let has_variadic = self
+                                    .symbols
+                                    .cells
+                                    .get(name)
+                                    .map(|cell| cell.params.last().is_some_and(|(_, _, v)| *v))
+                                    .unwrap_or(false);
+                                if contiguous && !has_variadic {
+                                    self.emit_tail_call_with_regs(
+                                        callee_reg, &arg_regs, ra, instrs,
+                                    );
+                                } else {
+                                    // Avoid MoveOwn semantics when building a non-contiguous
+                                    // call. Manually place args in a fresh block using Move.
+                                    let base = ra.alloc_block(1 + arg_regs.len() as u16);
+                                    if callee_reg != base {
+                                        instrs.push(Instruction::abc(
+                                            OpCode::Move,
+                                            base,
+                                            callee_reg,
+                                            0,
+                                        ));
+                                    }
+                                    // Move args in reverse order to avoid clobbering
+                                    // when sources overlap later destinations.
+                                    let mut temp_reg: Option<u16> = None;
+                                    for (i, &reg) in arg_regs.iter().enumerate().rev() {
+                                        let target = base + 1 + i as u16;
+                                        if reg != target {
+                                            let overlaps = arg_regs.iter().any(|&r| r == target);
+                                            if overlaps {
+                                                let tmp = *temp_reg
+                                                    .get_or_insert_with(|| ra.alloc_temp());
+                                                instrs.push(Instruction::abc(
+                                                    OpCode::Move,
+                                                    tmp,
+                                                    reg,
+                                                    0,
+                                                ));
+                                                instrs.push(Instruction::abc(
+                                                    OpCode::Move,
+                                                    target,
+                                                    tmp,
+                                                    0,
+                                                ));
+                                            } else {
+                                                instrs.push(Instruction::abc(
+                                                    OpCode::Move,
+                                                    target,
+                                                    reg,
+                                                    0,
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    instrs.push(Instruction::abc(
+                                        OpCode::Call,
+                                        base,
+                                        arg_regs.len() as u16,
+                                        1,
+                                    ));
+                                    instrs.push(Instruction::abc(OpCode::Return, base, 1, 0));
+                                }
                                 return;
                             }
                         }

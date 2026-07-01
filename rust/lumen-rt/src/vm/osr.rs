@@ -12,7 +12,6 @@
 //! 5. The stencil code jumps to the optimized code with captured state
 
 use crate::vm::VM;
-use lumen_codegen::collection_helpers::value_to_nanbox;
 use lumen_core::lir::LirModule;
 use lumen_core::nb_value::NbValue;
 use lumen_core::values::Value;
@@ -25,6 +24,23 @@ use lumen_codegen::jit::JitEngine;
 use lumen_core::lir::{Instruction, LirCell, LirOsrPoint, LirParam, OpCode};
 #[cfg(feature = "jit")]
 use std::collections::HashMap;
+
+/// Convert a legacy Value to NbValue at the OSR tier boundary.
+/// This is only called for JIT return values — scalars are the common case.
+fn osr_value_to_nb(val: Value) -> NbValue {
+    use lumen_core::heap_value::HeapValue;
+    use lumen_core::values::StringRef;
+    match val {
+        Value::Null => NbValue::new_null(),
+        Value::Bool(b) => NbValue::new_bool(b),
+        Value::Int(i) => NbValue::new_int(i),
+        Value::Float(f) => NbValue::new_float(f),
+        Value::String(StringRef::Owned(s)) => NbValue::new_str(&s),
+        Value::String(StringRef::Interned(_)) => NbValue::new_null(),
+        Value::BigInt(n) => NbValue::new_heap(HeapValue::BigInt(std::sync::Arc::new(n))),
+        _ => NbValue::new_null(),
+    }
+}
 
 pub mod osr_check {
     use super::*;
@@ -319,7 +335,7 @@ pub mod osr_check {
     pub unsafe extern "C" fn lm_rt_osr_check(
         ctx: *mut VmContext,
         cell_idx: usize,
-        current_ip: usize,
+        _current_ip: usize,
     ) -> *const () {
         debug_assert!(!ctx.is_null(), "lm_rt_osr_check: null VmContext");
         let vm: &mut VM = {
@@ -327,6 +343,14 @@ pub mod osr_check {
             debug_assert!(!ptr.is_null(), "lm_rt_osr_check: null VM pointer");
             &mut *ptr
         };
+        // If this cell is already stencil-compiled (i.e., we're executing inside the
+        // stencil tier), OsrCheck is a no-op: the stencil runs the entire function
+        // from start to finish, so there's no benefit from OSR tier-up mid-loop.
+        // Attempting OSR from within a stencil frame would use the wrong register base
+        // (interpreter frame base vs stencil_base), producing incorrect results.
+        if vm.stencil_tier.is_compiled(cell_idx) {
+            return std::ptr::null();
+        }
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let ptr = osr_check_interp(vm, cell_idx);
             if !ptr.is_null() {
@@ -339,13 +363,28 @@ pub mod osr_check {
                     .as_ref()
                     .and_then(|m| m.cells.get(cell_idx).cloned());
                 if let Some(cell) = cell_opt {
-                    let result_val = perform_osr_transition(vm, &cell, current_ip);
+                    // When called from stencil context, the stencil tier does not
+                    // push a CallFrame for the executing cell. Pass explicit hints
+                    // so perform_osr_transition uses the correct frame base.
+                    let stencil_base = vm.stencil_base;
+                    let hint_base = if stencil_base != 0 {
+                        Some(stencil_base)
+                    } else {
+                        None
+                    };
+                    let hint_ci = if stencil_base != 0 {
+                        Some(cell_idx)
+                    } else {
+                        None
+                    };
+                    let result_val =
+                        perform_osr_transition(vm, &cell, _current_ip, hint_ci, hint_base);
 
                     if let Ok(val) = result_val {
                         // Stencil OSR expects the result in r0 of the stencil frame.
                         let base = vm.stencil_base;
                         if base < vm.registers.len() {
-                            let nb = NbValue(value_to_nanbox(&val) as u64);
+                            let nb = osr_value_to_nb(val);
                             let old = vm.registers[base];
                             old.drop_heap();
                             vm.registers[base] = nb;
@@ -665,22 +704,31 @@ pub fn transplant_registers(regs: &[NbValue], frame_pointer: *mut u8) {
 /// Prefers one-way transfer into a synthetic OSR entry cell keyed by
 /// `(cell_idx, osr_ip)`. If no valid entry is available, falls back to
 /// re-executing the compiled full cell from its declared parameters.
+///
+/// `hint_cell_idx` and `hint_base` are used when called from stencil context
+/// (where no interpreter frame has been pushed for the currently-executing cell).
+/// Pass `None` to derive the cell_idx and base from the interpreter's last frame.
 pub fn perform_osr_transition(
     vm: &mut VM,
     cell: &lumen_core::lir::LirCell,
     ip: usize,
+    hint_cell_idx: Option<usize>,
+    hint_base: Option<usize>,
 ) -> Result<Value, OsrError> {
     #[cfg(feature = "jit")]
     {
         use lumen_codegen::jit::EXECUTE_JIT_MAX_ARITY;
 
-        let (cell_idx, base) = vm
-            .frames
-            .last()
-            .map(|f| (f.cell_idx, f.base_register))
-            .ok_or_else(|| {
-                OsrError::Unavailable("OSR transition requested with no frame".into())
-            })?;
+        let (cell_idx, base) = match (hint_cell_idx, hint_base) {
+            (Some(ci), Some(b)) => (ci, b),
+            _ => vm
+                .frames
+                .last()
+                .map(|f| (f.cell_idx, f.base_register))
+                .ok_or_else(|| {
+                    OsrError::Unavailable("OSR transition requested with no frame".into())
+                })?,
+        };
 
         // Fast path: Tier 1 stencil OSR entry at exact IP (or IP+1 if OsrCheck
         // metadata points to the first post-check instruction).
@@ -729,28 +777,36 @@ pub fn perform_osr_transition(
                     let nb = vm.registers[base + reg];
                     if nb.is_heap_allocated() {
                         unsafe {
-                            let ptr = (nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value;
+                            let ptr = (nb.payload() & !NbValue::PTR_ARENA_FLAG)
+                                as *const lumen_core::heap_value::HeapValue;
                             std::sync::Arc::increment_strong_count(ptr);
                         }
                     }
                     args.push(nb.0 as i64);
                 }
 
-                let result = execute_compiled_cell(vm, &entry.cell_name, &args)?;
+                // Update stencil_base so that JIT runtime callbacks (lm_rt_intrinsic,
+                // lm_rt_stencil_runtime, etc.) use the correct frame base for this JIT
+                // cell, not the outer stencil caller's frame base.
+                let prev_stencil_base = vm.stencil_base;
+                vm.stencil_base = base;
+                let result = execute_compiled_cell(vm, &entry.cell_name, &args);
+                vm.stencil_base = prev_stencil_base;
 
                 // Drop extra refs added for the OSR entry call.
                 for reg in 0..entry.arg_count {
                     let nb = vm.registers[base + reg];
                     if nb.is_heap_allocated() {
                         unsafe {
-                            let ptr = (nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value;
+                            let ptr = (nb.payload() & !NbValue::PTR_ARENA_FLAG)
+                                as *const lumen_core::heap_value::HeapValue;
                             std::sync::Arc::decrement_strong_count(ptr);
                         }
                     }
                 }
 
                 vm.osr_runtime.record_entry_transition();
-                return Ok(result);
+                return result;
             }
         }
 
@@ -760,24 +816,32 @@ pub fn perform_osr_transition(
             let nb = vm.registers[base + i];
             if nb.is_heap_allocated() {
                 unsafe {
-                    let ptr = (nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value;
+                    let ptr = (nb.payload() & !NbValue::PTR_ARENA_FLAG)
+                        as *const lumen_core::heap_value::HeapValue;
                     std::sync::Arc::increment_strong_count(ptr);
                 }
             }
             args.push(nb.0 as i64);
         }
-        let result = execute_compiled_cell(vm, &cell.name, &args)?;
+        // Update stencil_base so that JIT runtime callbacks (lm_rt_intrinsic,
+        // lm_rt_stencil_runtime, etc.) use the correct frame base for this JIT
+        // cell, not the outer stencil caller's frame base.
+        let prev_stencil_base = vm.stencil_base;
+        vm.stencil_base = base;
+        let result = execute_compiled_cell(vm, &cell.name, &args);
+        vm.stencil_base = prev_stencil_base;
         for i in 0..cell.params.len() {
             let nb = vm.registers[base + i];
             if nb.is_heap_allocated() {
                 unsafe {
-                    let ptr = (nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value;
+                    let ptr = (nb.payload() & !NbValue::PTR_ARENA_FLAG)
+                        as *const lumen_core::heap_value::HeapValue;
                     std::sync::Arc::decrement_strong_count(ptr);
                 }
             }
         }
         vm.osr_runtime.record_restart_fallback_transition();
-        Ok(result)
+        result
     }
 
     #[cfg(not(feature = "jit"))]

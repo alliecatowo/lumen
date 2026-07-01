@@ -248,7 +248,7 @@ fn main() {
             target,
             registry: _,
         } => {
-            // TODO: expose a cleaner API for info or support registry arg
+            // UNIMPLEMENTED: expose a cleaner API for info or support registry arg
             wares::ops::info(&target, None);
         }
         Commands::TrustCheck {

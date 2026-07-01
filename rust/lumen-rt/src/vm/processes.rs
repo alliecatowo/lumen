@@ -2,12 +2,13 @@
 
 use super::*;
 use lumen_compiler::compile_raw;
+use lumen_core::heap_value::HeapValue;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct MemoryRuntime {
-    pub(crate) entries: Vec<Value>,
-    pub(crate) kv: BTreeMap<String, Value>,
+    pub(crate) entries: Vec<NbValue>,
+    pub(crate) kv: BTreeMap<String, NbValue>,
 }
 
 #[derive(Debug, Clone)]
@@ -16,7 +17,7 @@ pub(crate) struct MachineRuntime {
     pub(crate) terminal: bool,
     pub(crate) steps: u64,
     pub(crate) current_state: String,
-    pub(crate) payload: BTreeMap<String, Value>,
+    pub(crate) payload: BTreeMap<String, NbValue>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -78,21 +79,21 @@ impl VM {
         base: usize,
         a: usize,
         nargs: usize,
-    ) -> Option<Result<Value, VmError>> {
+    ) -> Option<Result<NbValue, VmError>> {
         let (owner, method) = name.split_once('.')?;
         let kind = self.process_kinds.get(owner)?.clone();
         match kind.as_str() {
             "memory" => Some(self.call_memory_method(owner, method, base, a, nargs)),
             "machine" => Some(self.call_machine_method(owner, method, base, a, nargs)),
             "pipeline" if method == "run" => {
-                let args: Vec<Value> = (0..nargs)
-                    .map(|i| nb_to_value(self.registers[base + a + 1 + i]))
+                let args: Vec<NbValue> = (0..nargs)
+                    .map(|i| self.registers[base + a + 1 + i])
                     .collect();
                 Some(self.call_pipeline_run(owner, &args))
             }
             "orchestration" if method == "run" => {
-                let args: Vec<Value> = (0..nargs)
-                    .map(|i| nb_to_value(self.registers[base + a + 1 + i]))
+                let args: Vec<NbValue> = (0..nargs)
+                    .map(|i| self.registers[base + a + 1 + i])
                     .collect();
                 Some(self.call_orchestration_run(owner, &args))
             }
@@ -112,7 +113,7 @@ impl VM {
                         Ok(new_module) => {
                             if let Some(current_mod) = self.module.as_mut() {
                                 current_mod.merge(&new_module);
-                                let input_val = nb_to_value(self.registers[base + a + 2]);
+                                let input_val = self.registers[base + a + 2];
                                 Some(self.call_cell_sync(&cell_name, vec![input_val]))
                             } else {
                                 Some(Err(VmError::Runtime(
@@ -127,8 +128,8 @@ impl VM {
                     }
                 } else {
                     // Argument-based eval: run specific cell by name
-                    let cell_name_val = nb_to_value(self.registers[base + a + 2]);
-                    let cell_name = cell_name_val.display_pretty();
+                    let cell_name_val = self.registers[base + a + 2];
+                    let cell_name = cell_name_val.display();
                     if cell_name.is_empty() {
                         return Some(Err(VmError::Runtime(
                             "eval requires a cell name argument or 'source' config".to_string(),
@@ -138,9 +139,8 @@ impl VM {
                     // Collect remaining arguments
                     let start_arg = base + a + 3;
                     let end_arg = base + a + 1 + nargs;
-                    let call_args: Vec<Value> = (start_arg..end_arg)
-                        .map(|i| nb_to_value(self.registers[i]))
-                        .collect();
+                    let call_args: Vec<NbValue> =
+                        (start_arg..end_arg).map(|i| self.registers[i]).collect();
 
                     Some(self.call_cell_sync(&cell_name, call_args))
                 }
@@ -153,7 +153,7 @@ impl VM {
                 {
                     // Perform schema validation
                     if self.validate_schema(&value, &schema_name) {
-                        Some(Ok(nb_to_value(value)))
+                        Some(Ok(value))
                     } else {
                         Some(Err(VmError::Runtime(format!(
                             "Guardrail violation: value does not match schema '{}'",
@@ -162,23 +162,27 @@ impl VM {
                     }
                 } else {
                     // Passthrough if no schema configured
-                    Some(Ok(nb_to_value(value)))
+                    Some(Ok(value))
                 }
             }
             "pattern" if method == "run" => {
-                let value = nb_to_value(self.registers[base + a + 2]).display_pretty();
+                let value = self.registers[base + a + 2].display();
                 let config = self.process_configs.get(owner);
                 if let Some(pattern_def) =
                     config.and_then(|c| c.get("pattern")).map(|v| v.as_string())
                 {
                     // Extract captures if pattern matches
                     if let Some(captures) = self.extract_pattern_captures(&pattern_def, &value) {
-                        Some(Ok(Value::new_map(captures)))
+                        let nb_map: BTreeMap<String, NbValue> = captures
+                            .into_iter()
+                            .map(|(k, v)| (k, NbValue::new_str(&v.as_string())))
+                            .collect();
+                        Some(Ok(NbValue::new_map(nb_map)))
                     } else {
-                        Some(Ok(Value::Null))
+                        Some(Ok(NbValue::new_null()))
                     }
                 } else {
-                    Some(Ok(Value::Null))
+                    Some(Ok(NbValue::new_null()))
                 }
             }
             _ => None,
@@ -191,8 +195,8 @@ impl VM {
     pub(crate) fn call_cell_sync(
         &mut self,
         cell_name: &str,
-        args: Vec<Value>,
-    ) -> Result<Value, VmError> {
+        args: Vec<NbValue>,
+    ) -> Result<NbValue, VmError> {
         let module = self.module.as_ref().ok_or(VmError::NoModule)?;
         let cell_idx = module
             .cells
@@ -214,7 +218,7 @@ impl VM {
             if i < params.len() {
                 let dst = params[i].register as usize;
                 if dst < self.registers.len() {
-                    self.registers[dst] = value_to_nb(arg);
+                    self.registers[dst] = arg;
                 }
             }
         }
@@ -228,12 +232,17 @@ impl VM {
         });
 
         let result = self.run_until(0);
+        let ret_nb = self
+            .registers
+            .get(0)
+            .copied()
+            .unwrap_or(NbValue::new_null());
 
         // Restore execution state
         self.frames = saved_frames;
         self.registers = saved_registers;
 
-        result
+        result.map(|_| ret_nb)
     }
 
     /// Execute a pipeline's `run` method by chaining stage calls.
@@ -242,9 +251,9 @@ impl VM {
     pub(crate) fn call_pipeline_run(
         &mut self,
         owner: &str,
-        args: &[Value],
-    ) -> Result<Value, VmError> {
-        let input = args.get(1).cloned().unwrap_or(Value::Null);
+        args: &[NbValue],
+    ) -> Result<NbValue, VmError> {
+        let input = args.get(1).copied().unwrap_or(NbValue::new_null());
         let stages = self.pipeline_stages.get(owner).cloned().unwrap_or_default();
         if stages.is_empty() {
             return Ok(input);
@@ -261,9 +270,9 @@ impl VM {
     pub(crate) fn call_orchestration_run(
         &mut self,
         owner: &str,
-        args: &[Value],
-    ) -> Result<Value, VmError> {
-        let input = args.get(1).cloned().unwrap_or(Value::Null);
+        args: &[NbValue],
+    ) -> Result<NbValue, VmError> {
+        let input = args.get(1).copied().unwrap_or(NbValue::new_null());
         let stages = self.pipeline_stages.get(owner).cloned().unwrap_or_default();
         if stages.is_empty() {
             return Ok(input);
@@ -273,7 +282,7 @@ impl VM {
             let result = self.call_cell_sync(stage, vec![input.clone()])?;
             results.push(result);
         }
-        Ok(Value::new_list(results))
+        Ok(NbValue::new_list(results))
     }
 
     fn call_memory_method(
@@ -283,9 +292,9 @@ impl VM {
         base: usize,
         a: usize,
         nargs: usize,
-    ) -> Result<Value, VmError> {
-        let args: Vec<Value> = (0..nargs)
-            .map(|i| nb_to_value(self.registers[base + a + 1 + i]))
+    ) -> Result<NbValue, VmError> {
+        let args: Vec<NbValue> = (0..nargs)
+            .map(|i| self.registers[base + a + 1 + i])
             .collect();
 
         let instance_id = helpers::process_instance_id(args.first()).ok_or_else(|| {
@@ -301,13 +310,13 @@ impl VM {
                 if let Some(val) = args.get(1) {
                     store.entries.push(val.clone());
                 }
-                Ok(Value::Null)
+                Ok(NbValue::new_null())
             }
             "recent" => {
                 let n = args.get(1).and_then(|v| v.as_int()).unwrap_or(10).max(0) as usize;
                 let len = store.entries.len();
                 let start = len.saturating_sub(n);
-                Ok(Value::new_list(store.entries[start..].to_vec()))
+                Ok(NbValue::new_list(store.entries[start..].to_vec()))
             }
             "recall" => {
                 let n = args
@@ -318,25 +327,21 @@ impl VM {
                     .max(0) as usize;
                 let len = store.entries.len();
                 let start = len.saturating_sub(n);
-                Ok(Value::new_list(store.entries[start..].to_vec()))
+                Ok(NbValue::new_list(store.entries[start..].to_vec()))
             }
             "upsert" | "store" => {
                 if let (Some(key), Some(value)) = (args.get(1), args.get(2)) {
-                    let key_str = key.as_string_resolved(&self.strings);
-
+                    let key_str = key.display();
                     store.kv.insert(key_str, value.clone());
                 }
-                Ok(Value::Null)
+                Ok(NbValue::new_null())
             }
             "get" => {
-                let key = args
-                    .get(1)
-                    .map(|v| v.as_string_resolved(&self.strings))
-                    .unwrap_or_default();
-                Ok(store.kv.get(&key).cloned().unwrap_or(Value::Null))
+                let key = args.get(1).map(|v| v.display()).unwrap_or_default();
+                Ok(store.kv.get(&key).copied().unwrap_or(NbValue::new_null()))
             }
             "query" => {
-                let filter = args.get(1).map(|v| v.as_string_resolved(&self.strings));
+                let filter = args.get(1).map(|v| v.display());
                 let mut out = Vec::new();
                 for (k, v) in &store.kv {
                     if let Some(ref f) = filter {
@@ -346,46 +351,49 @@ impl VM {
                     }
                     out.push(v.clone());
                 }
-                Ok(Value::new_list(out))
+                Ok(NbValue::new_list(out))
             }
             _ => Err(VmError::UndefinedCell(format!("{}.{}", owner, method))),
         }
     }
 
-    fn machine_state_value(owner: &str, state: &MachineRuntime) -> Value {
+    fn machine_state_value(owner: &str, state: &MachineRuntime) -> NbValue {
         let mut fields = BTreeMap::new();
+        fields.insert("name".to_string(), NbValue::new_str(&state.current_state));
+        fields.insert("steps".to_string(), NbValue::new_int(state.steps as i64));
+        fields.insert("terminal".to_string(), NbValue::new_bool(state.terminal));
         fields.insert(
-            "name".to_string(),
-            Value::String(StringRef::Owned(state.current_state.clone())),
+            "payload".to_string(),
+            NbValue::new_map(state.payload.clone()),
         );
-        fields.insert("steps".to_string(), Value::Int(state.steps as i64));
-        fields.insert("terminal".to_string(), Value::Bool(state.terminal));
-        fields.insert("payload".to_string(), Value::new_map(state.payload.clone()));
-        Value::new_record(RecordValue {
-            type_name: format!("{}.State", owner),
-            fields,
-        })
+        NbValue::new_record(&format!("{}.State", owner), fields)
     }
 
     fn bind_machine_payload(
         params: &[MachineParamDef],
-        values: &[Value],
-    ) -> BTreeMap<String, Value> {
+        values: &[NbValue],
+    ) -> BTreeMap<String, NbValue> {
         let mut payload = BTreeMap::new();
         for (idx, param) in params.iter().enumerate() {
-            let value = values.get(idx).cloned().unwrap_or(Value::Null);
+            let value = values.get(idx).copied().unwrap_or(NbValue::new_null());
             let value = match param.ty.as_str() {
-                "Int" => value.as_int().map(Value::Int).unwrap_or(Value::Null),
-                "Float" => value.as_float().map(Value::Float).unwrap_or(Value::Null),
-                "Bool" => match value {
-                    Value::Bool(b) => Value::Bool(b),
-                    _ => Value::Null,
+                "Int" => value
+                    .as_int()
+                    .map(NbValue::new_int)
+                    .unwrap_or(NbValue::new_null()),
+                "Float" => value
+                    .as_float()
+                    .map(NbValue::new_float)
+                    .unwrap_or(NbValue::new_null()),
+                "Bool" => value
+                    .as_bool()
+                    .map(NbValue::new_bool)
+                    .unwrap_or(NbValue::new_null()),
+                "String" => match value.as_heap_ref() {
+                    Some(HeapValue::Str(_)) => value,
+                    _ => NbValue::new_null(),
                 },
-                "String" => match value {
-                    Value::String(_) => value,
-                    _ => Value::Null,
-                },
-                "Null" => Value::Null,
+                "Null" => NbValue::new_null(),
                 _ => value,
             };
             payload.insert(param.name.clone(), value);
@@ -395,96 +403,118 @@ impl VM {
 
     fn eval_machine_expr(
         expr: &MachineExpr,
-        payload: &BTreeMap<String, Value>,
-    ) -> Result<Value, VmError> {
+        payload: &BTreeMap<String, NbValue>,
+    ) -> Result<NbValue, VmError> {
         match expr {
-            MachineExpr::Int(n) => Ok(Value::Int(*n)),
-            MachineExpr::Float(f) => Ok(Value::Float(*f)),
-            MachineExpr::String(s) => Ok(Value::String(StringRef::Owned(s.clone()))),
-            MachineExpr::Bool(b) => Ok(Value::Bool(*b)),
-            MachineExpr::Null => Ok(Value::Null),
-            MachineExpr::Ident(name) => Ok(payload.get(name).cloned().unwrap_or(Value::Null)),
+            MachineExpr::Int(n) => Ok(NbValue::new_int(*n)),
+            MachineExpr::Float(f) => Ok(NbValue::new_float(*f)),
+            MachineExpr::String(s) => Ok(NbValue::new_str(s)),
+            MachineExpr::Bool(b) => Ok(NbValue::new_bool(*b)),
+            MachineExpr::Null => Ok(NbValue::new_null()),
+            MachineExpr::Ident(name) => {
+                Ok(payload.get(name).copied().unwrap_or(NbValue::new_null()))
+            }
             MachineExpr::Unary { op, expr } => {
                 let value = Self::eval_machine_expr(expr, payload)?;
                 match op.as_str() {
-                    "-" => match value {
-                        Value::Int(n) => Ok(Value::Int(
+                    "-" => match (value.as_int(), value.as_float()) {
+                        (Some(n), _) => Ok(NbValue::new_int(
                             n.checked_neg()
                                 .ok_or(VmError::ArithmeticOverflow("negation".to_string()))?,
                         )),
-                        Value::Float(f) => Ok(Value::Float(-f)),
-                        _ => Ok(Value::Null),
+                        (_, Some(f)) => Ok(NbValue::new_float(-f)),
+                        _ => Ok(NbValue::new_null()),
                     },
-                    "not" => Ok(Value::Bool(!value.is_truthy())),
-                    "~" => match value {
-                        Value::Int(n) => Ok(Value::Int(!n)),
-                        _ => Ok(Value::Null),
+                    "not" => Ok(NbValue::new_bool(!value.is_truthy())),
+                    "~" => match value.as_int() {
+                        Some(n) => Ok(NbValue::new_int(!n)),
+                        None => Ok(NbValue::new_null()),
                     },
-                    _ => Ok(Value::Null),
+                    _ => Ok(NbValue::new_null()),
                 }
             }
             MachineExpr::Bin { op, lhs, rhs } => {
                 let left = Self::eval_machine_expr(lhs, payload)?;
                 let right = Self::eval_machine_expr(rhs, payload)?;
                 match op.as_str() {
-                    "+" => match (left, right) {
-                        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(
+                    "+" => match (
+                        left.as_int(),
+                        left.as_float(),
+                        right.as_int(),
+                        right.as_float(),
+                    ) {
+                        (Some(a), _, Some(b), _) => Ok(NbValue::new_int(
                             a.checked_add(b)
                                 .ok_or(VmError::ArithmeticOverflow("addition".to_string()))?,
                         )),
-                        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
-                        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 + b)),
-                        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a + b as f64)),
-                        _ => Ok(Value::Null),
+                        (_, Some(a), _, Some(b)) => Ok(NbValue::new_float(a + b)),
+                        (Some(a), _, _, Some(b)) => Ok(NbValue::new_float(a as f64 + b)),
+                        (_, Some(a), Some(b), _) => Ok(NbValue::new_float(a + b as f64)),
+                        _ => Ok(NbValue::new_null()),
                     },
-                    "-" => match (left, right) {
-                        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(
+                    "-" => match (
+                        left.as_int(),
+                        left.as_float(),
+                        right.as_int(),
+                        right.as_float(),
+                    ) {
+                        (Some(a), _, Some(b), _) => Ok(NbValue::new_int(
                             a.checked_sub(b)
                                 .ok_or(VmError::ArithmeticOverflow("subtraction".to_string()))?,
                         )),
-                        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
-                        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 - b)),
-                        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a - b as f64)),
-                        _ => Ok(Value::Null),
+                        (_, Some(a), _, Some(b)) => Ok(NbValue::new_float(a - b)),
+                        (Some(a), _, _, Some(b)) => Ok(NbValue::new_float(a as f64 - b)),
+                        (_, Some(a), Some(b), _) => Ok(NbValue::new_float(a - b as f64)),
+                        _ => Ok(NbValue::new_null()),
                     },
-                    "*" => match (left, right) {
-                        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(
+                    "*" => match (
+                        left.as_int(),
+                        left.as_float(),
+                        right.as_int(),
+                        right.as_float(),
+                    ) {
+                        (Some(a), _, Some(b), _) => Ok(NbValue::new_int(
                             a.checked_mul(b)
                                 .ok_or(VmError::ArithmeticOverflow("multiplication".to_string()))?,
                         )),
-                        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
-                        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 * b)),
-                        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a * b as f64)),
-                        _ => Ok(Value::Null),
+                        (_, Some(a), _, Some(b)) => Ok(NbValue::new_float(a * b)),
+                        (Some(a), _, _, Some(b)) => Ok(NbValue::new_float(a as f64 * b)),
+                        (_, Some(a), Some(b), _) => Ok(NbValue::new_float(a * b as f64)),
+                        _ => Ok(NbValue::new_null()),
                     },
-                    "/" => match (left, right) {
-                        (Value::Int(_), Value::Int(0)) => Err(VmError::DivisionByZero),
-                        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(
+                    "/" => match (
+                        left.as_int(),
+                        left.as_float(),
+                        right.as_int(),
+                        right.as_float(),
+                    ) {
+                        (Some(_), _, Some(0), _) => Err(VmError::DivisionByZero),
+                        (Some(a), _, Some(b), _) => Ok(NbValue::new_int(
                             a.checked_div(b)
                                 .ok_or(VmError::ArithmeticOverflow("division".to_string()))?,
                         )),
-                        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
-                        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 / b)),
-                        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a / b as f64)),
-                        _ => Ok(Value::Null),
+                        (_, Some(a), _, Some(b)) => Ok(NbValue::new_float(a / b)),
+                        (Some(a), _, _, Some(b)) => Ok(NbValue::new_float(a as f64 / b)),
+                        (_, Some(a), Some(b), _) => Ok(NbValue::new_float(a / b as f64)),
+                        _ => Ok(NbValue::new_null()),
                     },
-                    "%" => match (left, right) {
-                        (Value::Int(_), Value::Int(0)) => Err(VmError::DivisionByZero),
-                        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(
+                    "%" => match (left.as_int(), right.as_int()) {
+                        (Some(_), Some(0)) => Err(VmError::DivisionByZero),
+                        (Some(a), Some(b)) => Ok(NbValue::new_int(
                             a.checked_rem(b)
                                 .ok_or(VmError::ArithmeticOverflow("remainder".to_string()))?,
                         )),
-                        _ => Ok(Value::Null),
+                        _ => Ok(NbValue::new_null()),
                     },
-                    "==" => Ok(Value::Bool(left == right)),
-                    "!=" => Ok(Value::Bool(left != right)),
-                    "<" => Ok(Value::Bool(left < right)),
-                    "<=" => Ok(Value::Bool(left <= right)),
-                    ">" => Ok(Value::Bool(left > right)),
-                    ">=" => Ok(Value::Bool(left >= right)),
-                    "and" => Ok(Value::Bool(left.is_truthy() && right.is_truthy())),
-                    "or" => Ok(Value::Bool(left.is_truthy() || right.is_truthy())),
-                    _ => Ok(Value::Null),
+                    "==" => Ok(NbValue::new_bool(left == right)),
+                    "!=" => Ok(NbValue::new_bool(left != right)),
+                    "<" => Ok(NbValue::new_bool(left < right)),
+                    "<=" => Ok(NbValue::new_bool(left <= right)),
+                    ">" => Ok(NbValue::new_bool(left > right)),
+                    ">=" => Ok(NbValue::new_bool(left >= right)),
+                    "and" => Ok(NbValue::new_bool(left.is_truthy() && right.is_truthy())),
+                    "or" => Ok(NbValue::new_bool(left.is_truthy() || right.is_truthy())),
+                    _ => Ok(NbValue::new_null()),
                 }
             }
         }
@@ -497,9 +527,9 @@ impl VM {
         base: usize,
         a: usize,
         nargs: usize,
-    ) -> Result<Value, VmError> {
-        let args: Vec<Value> = (0..nargs)
-            .map(|i| nb_to_value(self.registers[base + a + 1 + i]))
+    ) -> Result<NbValue, VmError> {
+        let args: Vec<NbValue> = (0..nargs)
+            .map(|i| self.registers[base + a + 1 + i])
             .collect();
         let instance_id = helpers::process_instance_id(args.first()).ok_or_else(|| {
             VmError::TypeError(format!(
@@ -534,7 +564,7 @@ impl VM {
                     state.current_state = "started".to_string();
                     state.payload.clear();
                 }
-                Ok(Value::Null)
+                Ok(NbValue::new_null())
             }
             "step" => {
                 if !state.started {
@@ -568,7 +598,7 @@ impl VM {
                         if guard_ok {
                             if let Some(next) = &def.transition_to {
                                 if let Some(next_def) = graph.states.get(next) {
-                                    let evaluated: Vec<Value> = def
+                                    let evaluated: Vec<NbValue> = def
                                         .transition_args
                                         .iter()
                                         .map(|expr| Self::eval_machine_expr(expr, &state.payload))
@@ -598,7 +628,7 @@ impl VM {
                 }
                 Ok(Self::machine_state_value(owner, state))
             }
-            "is_terminal" => Ok(Value::Bool(state.terminal)),
+            "is_terminal" => Ok(NbValue::new_bool(state.terminal)),
             "current_state" => Ok(Self::machine_state_value(owner, state)),
             "run" => {
                 state.started = true;
@@ -641,7 +671,7 @@ impl VM {
                         }
                         if let Some(next) = def.transition_to {
                             if let Some(next_def) = graph.states.get(&next) {
-                                let evaluated: Vec<Value> = def
+                                let evaluated: Vec<NbValue> = def
                                     .transition_args
                                     .iter()
                                     .map(|expr| Self::eval_machine_expr(expr, &state.payload))
@@ -671,7 +701,7 @@ impl VM {
                 state.steps = 0;
                 let target = args
                     .get(1)
-                    .map(|v| v.as_string())
+                    .map(|v| v.display())
                     .filter(|s| !s.is_empty())
                     .or_else(|| graph.as_ref().map(|g| g.initial.clone()))
                     .unwrap_or_else(|| "resumed".to_string());
@@ -696,16 +726,16 @@ impl VM {
         }
     }
 
-    pub(crate) fn orchestration_args(&self, base: usize, a: usize, nargs: usize) -> Vec<Value> {
+    pub(crate) fn orchestration_args(&self, base: usize, a: usize, nargs: usize) -> Vec<NbValue> {
         if nargs == 1 {
-            let first = nb_to_value(self.registers[base + a + 1]);
-            if let Value::List(items) = first {
-                return (*items).clone();
+            let first = self.registers[base + a + 1];
+            if let Some(HeapValue::List(items)) = first.as_heap_ref() {
+                return (**items).clone();
             }
             return vec![first];
         }
         (0..nargs)
-            .map(|i| nb_to_value(self.registers[base + a + 1 + i]))
+            .map(|i| self.registers[base + a + 1 + i])
             .collect()
     }
 }

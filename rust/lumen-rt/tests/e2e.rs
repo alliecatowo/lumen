@@ -1,6 +1,7 @@
 //! End-to-end tests: compile Lumen source and execute it in the VM.
 
 use lumen_compiler::compile;
+use lumen_core::nb_value::NbValue;
 use lumen_rt::values::{StringRef, Value};
 use lumen_rt::vm::VM;
 
@@ -311,9 +312,9 @@ end
     );
     if let Value::List(items) = &result {
         assert_eq!(items.len(), 3);
-        assert_eq!(items[0], Value::Int(1));
-        assert_eq!(items[1], Value::Int(2));
-        assert_eq!(items[2], Value::Int(3));
+        assert_eq!(items[0], NbValue::new_int(1));
+        assert_eq!(items[1], NbValue::new_int(2));
+        assert_eq!(items[2], NbValue::new_int(3));
     } else {
         panic!("expected list, got {:?}", result);
     }
@@ -1197,9 +1198,9 @@ end
     );
     if let Value::List(items) = &result {
         assert_eq!(items.len(), 3);
-        assert_eq!(items[0], Value::Int(2));
-        assert_eq!(items[1], Value::Int(4));
-        assert_eq!(items[2], Value::Int(6));
+        assert_eq!(items[0], NbValue::new_int(2));
+        assert_eq!(items[1], NbValue::new_int(4));
+        assert_eq!(items[2], NbValue::new_int(6));
     } else {
         panic!("expected list, got {:?}", result);
     }
@@ -1230,9 +1231,9 @@ end
     );
     if let Value::List(items) = &result {
         assert_eq!(items.len(), 3);
-        assert_eq!(items[0], Value::Int(2));
-        assert_eq!(items[1], Value::Int(4));
-        assert_eq!(items[2], Value::Int(6));
+        assert_eq!(items[0], NbValue::new_int(2));
+        assert_eq!(items[1], NbValue::new_int(4));
+        assert_eq!(items[2], NbValue::new_int(6));
     } else {
         panic!("expected list, got {:?}", result);
     }
@@ -1667,10 +1668,10 @@ end
 "#,
     );
     if let Value::List(items) = &result {
-        assert_eq!(items[0], Value::Int(1));
-        assert_eq!(items[1], Value::Int(1));
-        assert_eq!(items[2], Value::Int(2));
-        assert_eq!(items[3], Value::Int(3));
+        assert_eq!(items[0], NbValue::new_int(1));
+        assert_eq!(items[1], NbValue::new_int(1));
+        assert_eq!(items[2], NbValue::new_int(2));
+        assert_eq!(items[3], NbValue::new_int(3));
     } else {
         panic!("expected list, got {:?}", result);
     }
@@ -1687,9 +1688,9 @@ end
     );
     if let Value::List(items) = &result {
         assert_eq!(items.len(), 5);
-        assert_eq!(items[0], Value::Int(5));
-        assert_eq!(items[1], Value::Int(4));
-        assert_eq!(items[2], Value::Int(3));
+        assert_eq!(items[0], NbValue::new_int(5));
+        assert_eq!(items[1], NbValue::new_int(4));
+        assert_eq!(items[2], NbValue::new_int(3));
     } else {
         panic!("expected list, got {:?}", result);
     }
@@ -1707,8 +1708,8 @@ end
     );
     if let Value::List(items) = &result {
         assert_eq!(items.len(), 5);
-        assert_eq!(items[0], Value::Int(1));
-        assert_eq!(items[4], Value::Int(5));
+        assert_eq!(items[0], NbValue::new_int(1));
+        assert_eq!(items[4], NbValue::new_int(5));
     } else {
         panic!("expected list, got {:?}", result);
     }
@@ -1725,8 +1726,8 @@ end
     );
     if let Value::List(items) = &result {
         assert_eq!(items.len(), 4);
-        assert_eq!(items[0], Value::Int(1));
-        assert_eq!(items[3], Value::Int(4));
+        assert_eq!(items[0], NbValue::new_int(1));
+        assert_eq!(items[3], NbValue::new_int(4));
     } else {
         panic!("expected list, got {:?}", result);
     }
@@ -2273,11 +2274,11 @@ end
     );
     if let Value::List(items) = &result {
         assert_eq!(items.len(), 5);
-        assert_eq!(items[0], Value::Int(15));
-        assert_eq!(items[1], Value::Int(336)); // 6 * 7 * 8
-        assert_eq!(items[2], Value::Int(3));
-        assert_eq!(items[3], Value::Int(1));
-        assert_eq!(items[4], Value::Int(21)); // (1+2) * (3+4)
+        assert_eq!(items[0], NbValue::new_int(15));
+        assert_eq!(items[1], NbValue::new_int(336)); // 6 * 7 * 8
+        assert_eq!(items[2], NbValue::new_int(3));
+        assert_eq!(items[3], NbValue::new_int(1));
+        assert_eq!(items[4], NbValue::new_int(21)); // (1+2) * (3+4)
     } else {
         panic!("expected list, got {:?}", result);
     }
@@ -2714,9 +2715,9 @@ end
     match &result {
         Value::List(l) => {
             assert_eq!(l.len(), 3);
-            assert_eq!(l[0], Value::Int(1));
-            assert_eq!(l[1], Value::Int(2));
-            assert_eq!(l[2], Value::Int(3));
+            assert_eq!(l[0], NbValue::new_int(1));
+            assert_eq!(l[1], NbValue::new_int(2));
+            assert_eq!(l[2], NbValue::new_int(3));
         }
         other => panic!("expected list, got {:?}", other),
     }
@@ -2736,9 +2737,9 @@ end
     match &result {
         Value::List(l) => {
             assert_eq!(l.len(), 3);
-            assert_eq!(l[0], Value::Int(1));
-            assert_eq!(l[1], Value::Int(2));
-            assert_eq!(l[2], Value::Int(3));
+            assert_eq!(l[0], NbValue::new_int(1));
+            assert_eq!(l[1], NbValue::new_int(2));
+            assert_eq!(l[2], NbValue::new_int(3));
         }
         other => panic!("expected list, got {:?}", other),
     }
@@ -2757,9 +2758,9 @@ end
     match &result {
         Value::List(l) => {
             assert_eq!(l.len(), 3);
-            assert_eq!(l[0], Value::Int(10));
-            assert_eq!(l[1], Value::Int(20));
-            assert_eq!(l[2], Value::Int(30));
+            assert_eq!(l[0], NbValue::new_int(10));
+            assert_eq!(l[1], NbValue::new_int(20));
+            assert_eq!(l[2], NbValue::new_int(30));
         }
         other => panic!("expected list, got {:?}", other),
     }

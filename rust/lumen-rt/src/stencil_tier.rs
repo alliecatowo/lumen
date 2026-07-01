@@ -178,6 +178,26 @@ impl StencilTier {
             return jit_tier.try_compile(cell_idx, module);
         }
 
+        // Stencil tier does not currently support effect opcodes or certain
+        // opcode variants with extra control-flow semantics.
+        // - Perform/HandlePush/HandlePop/Resume: ABI mismatch with effect stencils
+        //   (needs dedicated runtime wrappers) — refuse for now.
+        // - LoadBool with C != 0 (skip-next semantics) is not implemented in the
+        //   LoadBool stencil.
+        // - LoadNil with B != 0 (set A..A+B) is not implemented in the LoadNil
+        //   stencil (single-register only).
+        let has_unsupported = cell.instructions.iter().any(|i| {
+            matches!(
+                i.op,
+                OpCode::Perform | OpCode::HandlePush | OpCode::HandlePop | OpCode::Resume
+            ) || (i.op == OpCode::LoadBool && i.c != 0)
+                || (i.op == OpCode::LoadNil && i.b != 0)
+        });
+        if has_unsupported {
+            self.stats.compile_failures += 1;
+            return jit_tier.try_compile(cell_idx, module);
+        }
+
         let code_len = {
             let stitcher = match self.stitcher.as_mut() {
                 Some(stitcher) => stitcher,
@@ -253,14 +273,16 @@ impl StencilTier {
                                 let abs_offset =
                                     cell_start_buf_offset + byte_offset + hole.offset as usize;
                                 stitcher.patch_u64_at(abs_offset, addr);
+                            } else {
+                                self.stats.compile_failures += 1;
+                                return false;
                             }
                         }
                     }
                     byte_offset += stencil.code.len();
                 }
-                if matches!(instr.op, OpCode::Return | OpCode::Halt) {
-                    break;
-                }
+                // Do not early-exit on Return/Halt: later stencils may still
+                // contain RuntimeFuncAddr holes (e.g., in conditional branches).
             }
 
             let _ = code_len; // suppress unused warning
@@ -396,6 +418,8 @@ fn intrinsic_runtime_helper(func_id: u8) -> Option<&'static str> {
     match func_id {
         // Append
         24 => Some("jit_rt_list_append"),
+        // Merge
+        71 => Some("jit_rt_merge"),
         // Range
         25 => Some("jit_rt_range"),
         // Sort / SortAsc
@@ -405,6 +429,10 @@ fn intrinsic_runtime_helper(func_id: u8) -> Option<&'static str> {
         // Keys / Values
         14 => Some("jit_rt_map_keys"),
         15 => Some("jit_rt_map_values"),
+        // JSON
+        140 => Some("jit_rt_json_parse"),
+        141 => Some("jit_rt_json_encode"),
+        142 => Some("jit_rt_json_pretty"),
         _ => None,
     }
 }
@@ -424,6 +452,7 @@ fn opcode_to_runtime_func(op: OpCode) -> &'static str {
         OpCode::HandlePop => "lm_rt_handle_pop",
         OpCode::Resume => "lm_rt_resume",
         OpCode::OsrCheck => "lm_rt_osr_check",
+        OpCode::Append => "jit_rt_list_append",
         OpCode::NewList
         | OpCode::NewListStack
         | OpCode::NewMap
@@ -462,6 +491,7 @@ fn resolve_runtime_helper(name: &str) -> Option<u64> {
         "lm_rt_stencil_runtime" => fn_addr!(crate::stencil_runtime::lm_rt_stencil_runtime),
         "lm_rt_osr_check" => fn_addr!(crate::vm::osr::osr_check::lm_rt_osr_check),
         "jit_rt_list_append" => fn_addr!(lumen_codegen::collection_helpers::jit_rt_list_append),
+        "jit_rt_merge" => fn_addr!(lumen_codegen::collection_helpers::jit_rt_merge),
         "jit_rt_range" => fn_addr!(lumen_codegen::collection_helpers::jit_rt_range),
         "jit_rt_sort" => fn_addr!(lumen_codegen::collection_helpers::jit_rt_sort),
         "jit_rt_collection_len" => {
@@ -469,6 +499,9 @@ fn resolve_runtime_helper(name: &str) -> Option<u64> {
         }
         "jit_rt_map_keys" => fn_addr!(lumen_codegen::collection_helpers::jit_rt_map_keys),
         "jit_rt_map_values" => fn_addr!(lumen_codegen::collection_helpers::jit_rt_map_values),
+        "jit_rt_json_parse" => fn_addr!(crate::jit_helpers::jit_rt_json_parse),
+        "jit_rt_json_encode" => fn_addr!(crate::jit_helpers::jit_rt_json_encode),
+        "jit_rt_json_pretty" => fn_addr!(crate::jit_helpers::jit_rt_json_pretty),
         _ => None,
     }
 }

@@ -277,7 +277,7 @@ impl Stitcher {
                     HoleType::RegB => {
                         let disp = if instr.op == OpCode::Intrinsic {
                             match instr.b as u8 {
-                                24 | 25 => (instr.c as i32 + 1) * 8,
+                                24 | 25 | 71 => (instr.c as i32 + 1) * 8,
                                 _ => (instr.b as i32) * 8,
                             }
                         } else {
@@ -343,7 +343,7 @@ impl Stitcher {
                         // Runtime function addresses are resolved at integration time.
                         // For now, patch with a placeholder (0) — the integrator in
                         // jit_tier.rs will fill these in.
-                        // TODO: Wire up lm_rt_* function lookup table.
+                        // UNIMPLEMENTED: wire up lm_rt_* function lookup table.
                         self.patch_u64(patch_addr, 0);
                     }
                     HoleType::VmContextAddr => {
@@ -359,6 +359,18 @@ impl Stitcher {
                         // to an Instruction to decode op/a/b/c fields.
                         let word: u64 = unsafe { std::mem::transmute(*instr) };
                         self.patch_u64(patch_addr, word);
+                    }
+                    HoleType::CellIdx32 => {
+                        // Patch the actual cell index (passed to compile()) as a
+                        // 32-bit little-endian immediate. Used by OsrCheck so the
+                        // runtime knows which cell is executing regardless of the
+                        // LIR instruction's `a` field (which is always 0 for OsrCheck).
+                        self.patch_u32(patch_addr, cell_index as u32);
+                    }
+                    HoleType::Ip32 => {
+                        // Patch the current instruction's program counter index as a
+                        // 32-bit immediate. Used by OsrCheck to report the exact IP.
+                        self.patch_u32(patch_addr, pc as u32);
                     }
                 }
             }
@@ -519,23 +531,21 @@ fn constant_to_nb(
                 NbValue::new_int(*n)
             } else {
                 // Large int: box on the heap. For the stitcher this is a cold path.
-                NbValue::new_ptr(std::sync::Arc::into_raw(std::sync::Arc::new(
-                    lumen_core::values::Value::BigInt(num_bigint::BigInt::from(*n)),
-                )))
+                NbValue::new_heap(lumen_core::heap_value::HeapValue::BigInt(
+                    std::sync::Arc::new(num_bigint::BigInt::from(*n)),
+                ))
             }
         }
         Constant::BigInt(n) => {
             // Always heap-boxed.
-            NbValue::new_ptr(std::sync::Arc::into_raw(std::sync::Arc::new(
-                lumen_core::values::Value::BigInt(n.clone()),
-            )))
+            NbValue::new_heap(lumen_core::heap_value::HeapValue::BigInt(
+                std::sync::Arc::new(n.clone()),
+            ))
         }
         Constant::Float(f) => NbValue::new_float(*f),
         Constant::String(s) => {
             // Strings are heap-boxed.
-            NbValue::new_ptr(std::sync::Arc::into_raw(std::sync::Arc::new(
-                lumen_core::values::Value::String(lumen_core::values::StringRef::Owned(s.clone())),
-            )))
+            NbValue::new_str(s)
         }
         Constant::NbValue(bits) => NbValue(*bits),
     };

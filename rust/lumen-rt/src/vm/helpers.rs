@@ -1,19 +1,23 @@
 //! Free helper functions used by the VM (not methods on VM).
 
 use super::*;
+use lumen_core::heap_value::HeapValue;
+use lumen_core::nb_value::NbValue;
+use num_bigint::BigInt;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-pub(crate) fn process_instance_id(value: Option<&Value>) -> Option<u64> {
-    let Value::Record(r) = value? else {
-        return None;
+pub(crate) fn process_instance_id(value: Option<&NbValue>) -> Option<u64> {
+    let value = value?;
+    let r = match value.as_heap_ref()? {
+        HeapValue::Record(r) => r,
+        _ => return None,
     };
-    let Value::Int(id) = r.fields.get("__instance_id")? else {
-        return None;
-    };
-    if *id < 0 {
+    let id = r.fields.get("__instance_id")?.as_int()?;
+    if id < 0 {
         return None;
     }
-    Some(*id as u64)
+    Some(id as u64)
 }
 
 pub(crate) fn merged_policy_for_tool(module: &LirModule, alias: &str) -> serde_json::Value {
@@ -231,10 +235,10 @@ pub(crate) fn value_to_json(
         Value::String(StringRef::Owned(s)) => serde_json::Value::String(s.clone()),
         Value::String(StringRef::Interned(_)) => serde_json::Value::String(val.as_string()),
         Value::List(l) => {
-            serde_json::Value::Array(l.iter().map(|v| value_to_json(v, strings)).collect())
+            serde_json::Value::Array(l.iter().map(|v| nb_value_to_json(*v, strings)).collect())
         }
         Value::Tuple(t) => {
-            serde_json::Value::Array(t.iter().map(|v| value_to_json(v, strings)).collect())
+            serde_json::Value::Array(t.iter().map(|v| nb_value_to_json(*v, strings)).collect())
         }
         Value::Set(s) => {
             serde_json::Value::Array(s.iter().map(|v| value_to_json(v, strings)).collect())
@@ -272,6 +276,74 @@ pub(crate) fn value_to_json(
     }
 }
 
+pub(crate) fn nb_value_to_json(
+    nb: NbValue,
+    strings: &lumen_core::strings::StringTable,
+) -> serde_json::Value {
+    if nb.is_null() || (nb.is_ptr() && nb.payload() <= 1) {
+        return serde_json::Value::Null;
+    }
+    if let Some(b) = nb.as_bool() {
+        return serde_json::Value::Bool(b);
+    }
+    if let Some(i) = nb.as_int() {
+        return serde_json::json!(i);
+    }
+    if let Some(f) = nb.as_float() {
+        return serde_json::json!(f);
+    }
+    let Some(hv) = nb.as_heap_ref() else {
+        return serde_json::Value::Null;
+    };
+    match hv {
+        HeapValue::Str(s) => serde_json::Value::String(s.to_string()),
+        HeapValue::BigInt(n) => serde_json::json!(n.to_string()),
+        HeapValue::List(l) => {
+            serde_json::Value::Array(l.iter().map(|v| nb_value_to_json(*v, strings)).collect())
+        }
+        HeapValue::Tuple(t) => {
+            serde_json::Value::Array(t.iter().map(|v| nb_value_to_json(*v, strings)).collect())
+        }
+        HeapValue::Set(s) => {
+            serde_json::Value::Array(s.iter().map(|v| nb_value_to_json(*v, strings)).collect())
+        }
+        HeapValue::Map(m) => {
+            let obj: serde_json::Map<String, serde_json::Value> = m
+                .iter()
+                .map(|(k, v)| (k.clone(), nb_value_to_json(*v, strings)))
+                .collect();
+            serde_json::Value::Object(obj)
+        }
+        HeapValue::Record(r) => {
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "__type".to_string(),
+                serde_json::Value::String(r.type_name.to_string()),
+            );
+            for (k, v) in &r.fields {
+                obj.insert(k.clone(), nb_value_to_json(*v, strings));
+            }
+            serde_json::Value::Object(obj)
+        }
+        HeapValue::Union(u) => {
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "__tag".to_string(),
+                serde_json::Value::String(u.tag.to_string()),
+            );
+            obj.insert(
+                "__payload".to_string(),
+                nb_value_to_json(u.payload, strings),
+            );
+            serde_json::Value::Object(obj)
+        }
+        HeapValue::Bytes(_)
+        | HeapValue::Closure(_)
+        | HeapValue::Future(_)
+        | HeapValue::TraceRef(_) => serde_json::Value::Null,
+    }
+}
+
 /// Convert a serde_json Value to a Lumen Value.
 pub(crate) fn json_to_value(val: &serde_json::Value) -> Value {
     match val {
@@ -287,7 +359,9 @@ pub(crate) fn json_to_value(val: &serde_json::Value) -> Value {
             }
         }
         serde_json::Value::String(s) => Value::String(StringRef::Owned(s.clone())),
-        serde_json::Value::Array(arr) => Value::new_list(arr.iter().map(json_to_value).collect()),
+        serde_json::Value::Array(arr) => Value::List(Arc::new(
+            arr.iter().map(|v| nb_value_from_json(v)).collect(),
+        )),
         serde_json::Value::Object(obj) => {
             let map: BTreeMap<String, Value> = obj
                 .iter()
@@ -296,6 +370,47 @@ pub(crate) fn json_to_value(val: &serde_json::Value) -> Value {
             Value::new_map(map)
         }
     }
+}
+
+pub(crate) fn nb_value_from_json(val: &serde_json::Value) -> NbValue {
+    match val {
+        serde_json::Value::Null => NbValue::new_null(),
+        serde_json::Value::Bool(b) => NbValue::new_bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                if i >= NbValue::MIN_INT48 && i <= NbValue::MAX_INT48 {
+                    NbValue::new_int(i)
+                } else {
+                    NbValue::new_bigint(BigInt::from(i))
+                }
+            } else if let Some(f) = n.as_f64() {
+                NbValue::new_float(f)
+            } else {
+                NbValue::new_null()
+            }
+        }
+        serde_json::Value::String(s) => NbValue::new_str(s),
+        serde_json::Value::Array(arr) => {
+            NbValue::new_list(arr.iter().map(nb_value_from_json).collect())
+        }
+        serde_json::Value::Object(obj) => {
+            let map: BTreeMap<String, NbValue> = obj
+                .iter()
+                .map(|(k, v)| (k.clone(), nb_value_from_json(v)))
+                .collect();
+            NbValue::new_map(map)
+        }
+    }
+}
+
+/// Encode an NbValue to compact JSON.
+pub(crate) fn nb_value_to_json_string(value: NbValue) -> Result<String, String> {
+    crate::vm::intrinsics::json_encode::encode_json_compact(value).map_err(|e| e.to_string())
+}
+
+/// Encode an NbValue to pretty JSON.
+pub(crate) fn nb_value_to_json_pretty_string(value: NbValue) -> Result<String, String> {
+    crate::vm::intrinsics::json_encode::encode_json_pretty(value).map_err(|e| e.to_string())
 }
 
 /// Borrow a `&str` from a `Value` when possible, or produce an owned

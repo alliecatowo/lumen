@@ -9,6 +9,8 @@ pub mod gc;
 pub mod immix;
 pub mod interpreter;
 pub mod intrinsics;
+#[cfg(feature = "jit")]
+pub mod jit_helpers;
 pub mod jit_tier;
 pub mod json_parser;
 pub mod parity_concurrency;

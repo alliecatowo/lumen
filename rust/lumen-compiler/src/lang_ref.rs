@@ -446,6 +446,9 @@ fn intrinsic_description(id: &IntrinsicId) -> &str {
         EnvVars => "Return all environment variables as a map",
         Tan => "Tangent (radians)",
         Trunc => "Truncate float toward zero",
+        JsonParse => "Parse a JSON string into a Json value",
+        JsonEncode => "Encode a Json value to a string",
+        JsonPretty => "Pretty-print a Json value as a string",
     }
 }
 

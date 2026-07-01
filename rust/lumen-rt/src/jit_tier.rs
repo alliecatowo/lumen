@@ -309,8 +309,16 @@ impl JitTier {
         #[cfg(feature = "jit")]
         {
             if let Some(ref mut engine) = self.engine {
+                let ctx_mut = vm_ctx as *const lumen_codegen::vm_context::VmContext
+                    as *mut lumen_codegen::vm_context::VmContext;
+                unsafe {
+                    (*ctx_mut).clear_error();
+                }
                 match engine.execute_jit(vm_ctx, cell_name, args) {
                     Ok(result) => {
+                        if unsafe { (*ctx_mut).get_error().is_some() } {
+                            return None;
+                        }
                         self.stats.jit_executions += 1;
                         Some(result)
                     }
@@ -345,6 +353,9 @@ impl JitTier {
                 let fn_ptr = *ptr;
                 let ctx_mut = vm_ctx as *const lumen_codegen::vm_context::VmContext
                     as *mut lumen_codegen::vm_context::VmContext;
+                unsafe {
+                    (*ctx_mut).clear_error();
+                }
                 let raw = unsafe {
                     match args.len() {
                         0 => {
@@ -410,6 +421,9 @@ impl JitTier {
                     }
                 };
                 if lumen_codegen::jit::jit_check_divzero_trap() {
+                    return None;
+                }
+                if unsafe { (*ctx_mut).get_error().is_some() } {
                     return None;
                 }
                 self.stats.jit_executions += 1;

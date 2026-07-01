@@ -135,7 +135,8 @@ impl GeminiProvider {
 
         match status {
             429 => ToolError::RateLimit {
-                retry_after_ms: None, // TODO: Extract from Retry-After header
+                // UNIMPLEMENTED: extract Retry-After header to populate retry_after_ms
+                retry_after_ms: None,
                 message,
             },
             401 | 403 => ToolError::AuthError { message },

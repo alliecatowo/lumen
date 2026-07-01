@@ -4,7 +4,7 @@ use super::*;
 use std::collections::BTreeMap;
 
 use crate::vm::VM;
-use lumen_core::values::Value;
+use lumen_core::heap_value::HeapValue;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
@@ -123,28 +123,46 @@ fn bigint_op(op: BinaryOp, x: &BigInt, y: &BigInt) -> Result<BigInt, VmError> {
 /// Separated out so the compiler doesn't pollute the hot path's code layout.
 #[cold]
 #[inline(never)]
-fn arith_op_slow(op: BinaryOp, lhs: &Value, rhs: &Value) -> Result<Value, VmError> {
-    match (lhs, rhs) {
-        (Value::BigInt(x), Value::BigInt(y)) => Ok(Value::BigInt(bigint_op(op, x, y)?)),
-        (Value::Int(x), Value::BigInt(y)) => {
-            Ok(Value::BigInt(bigint_op(op, &BigInt::from(*x), y)?))
+fn arith_op_slow(op: BinaryOp, lhs: NbValue, rhs: NbValue) -> Result<NbValue, VmError> {
+    match (lhs.as_heap_ref(), rhs.as_heap_ref()) {
+        (Some(HeapValue::BigInt(x)), Some(HeapValue::BigInt(y))) => {
+            Ok(NbValue::new_bigint(bigint_op(op, x, y)?))
         }
-        (Value::BigInt(x), Value::Int(y)) => {
-            Ok(Value::BigInt(bigint_op(op, x, &BigInt::from(*y))?))
-        }
-        (Value::BigInt(x), Value::Float(y)) => {
-            let xf = x.to_f64().unwrap_or(f64::NAN);
-            Ok(Value::Float(float_op(op, xf, *y)))
-        }
-        (Value::Float(x), Value::BigInt(y)) => {
-            let yf = y.to_f64().unwrap_or(f64::NAN);
-            Ok(Value::Float(float_op(op, *x, yf)))
-        }
+        (Some(HeapValue::BigInt(x)), _) => match (rhs.as_int(), rhs.as_float()) {
+            (Some(i), _) => Ok(NbValue::new_bigint(bigint_op(op, x, &BigInt::from(i))?)),
+            (_, Some(f)) => Ok(NbValue::new_float(float_op(
+                op,
+                x.to_f64().unwrap_or(f64::NAN),
+                f,
+            ))),
+            _ => Err(VmError::TypeError(format!(
+                "arithmetic on non-numeric types: {} ({}) and {} ({})",
+                lhs.display(),
+                lhs.type_name(),
+                rhs.display(),
+                rhs.type_name()
+            ))),
+        },
+        (_, Some(HeapValue::BigInt(y))) => match (lhs.as_int(), lhs.as_float()) {
+            (Some(i), _) => Ok(NbValue::new_bigint(bigint_op(op, &BigInt::from(i), y)?)),
+            (_, Some(f)) => Ok(NbValue::new_float(float_op(
+                op,
+                f,
+                y.to_f64().unwrap_or(f64::NAN),
+            ))),
+            _ => Err(VmError::TypeError(format!(
+                "arithmetic on non-numeric types: {} ({}) and {} ({})",
+                lhs.display(),
+                lhs.type_name(),
+                rhs.display(),
+                rhs.type_name()
+            ))),
+        },
         _ => Err(VmError::TypeError(format!(
             "arithmetic on non-numeric types: {} ({}) and {} ({})",
-            lhs.display_pretty(),
+            lhs.display(),
             lhs.type_name(),
-            rhs.display_pretty(),
+            rhs.display(),
             rhs.type_name()
         ))),
     }
@@ -245,73 +263,75 @@ impl VM {
     }
 
     /// Apply patches to a value.
-    pub(crate) fn patch_value(&self, val: &Value, patches: &Value) -> Value {
-        match (val, patches) {
-            (Value::Record(r), Value::List(patch_list)) => {
-                let mut result: RecordValue = (**r).clone();
-                for patch in patch_list.iter() {
-                    if let Value::Map(m) = patch {
-                        if let Some(Value::String(StringRef::Owned(field))) = m.get("field") {
-                            if let Some(to) = m.get("to") {
-                                result.fields.insert(field.clone(), to.clone());
+    pub(crate) fn patch_value(&self, val: NbValue, patches: NbValue) -> NbValue {
+        match (val.as_heap_ref(), patches.as_heap_ref()) {
+            (Some(HeapValue::Record(r)), Some(HeapValue::List(patch_list))) => {
+                let mut result = (**r).clone();
+                for patch_nb in patch_list.iter() {
+                    if let Some(HeapValue::Map(m)) = patch_nb.as_heap_ref() {
+                        if let Some(field_nb) = m.get("field") {
+                            let field = field_nb.display();
+                            if let Some(to_nb) = m.get("to") {
+                                result.fields.insert(field, *to_nb);
                             } else if m.contains_key("removed") {
-                                result.fields.remove(field);
+                                result.fields.remove(&field);
                             } else if let Some(added) = m.get("added") {
-                                result.fields.insert(field.clone(), added.clone());
+                                result.fields.insert(field, *added);
                             }
                         }
                     }
                 }
-                Value::new_record(result)
+                NbValue::new_record(&result.type_name, result.fields)
             }
-            (Value::Map(map), Value::List(patch_list)) => {
-                let mut result: BTreeMap<String, Value> = (**map).clone();
-                for patch in patch_list.iter() {
-                    if let Value::Map(m) = patch {
-                        if let Some(Value::String(StringRef::Owned(key))) = m.get("key") {
-                            if let Some(to) = m.get("to") {
-                                result.insert(key.clone(), to.clone());
+            (Some(HeapValue::Map(map)), Some(HeapValue::List(patch_list))) => {
+                let mut result = (**map).clone();
+                for patch_nb in patch_list.iter() {
+                    if let Some(HeapValue::Map(m)) = patch_nb.as_heap_ref() {
+                        if let Some(key_nb) = m.get("key") {
+                            let key = key_nb.display();
+                            if let Some(to_nb) = m.get("to") {
+                                result.insert(key, *to_nb);
                             } else if m.contains_key("removed") {
-                                result.remove(key);
+                                result.remove(&key);
                             } else if let Some(added) = m.get("added") {
-                                result.insert(key.clone(), added.clone());
+                                result.insert(key, *added);
                             }
                         }
                     }
                 }
-                Value::new_map(result)
+                NbValue::new_map(result)
             }
-            _ => val.clone(),
+            _ => val,
         }
     }
 
     /// Redact specified fields from a value (set to null).
-    pub(crate) fn redact_value(&self, val: &Value, field_list: &Value) -> Value {
-        let fields_to_redact: Vec<String> = match field_list {
-            Value::List(l) => l.iter().map(|v| v.as_string()).collect(),
-            Value::String(StringRef::Owned(s)) => vec![s.clone()],
-            _ => return val.clone(),
+    pub(crate) fn redact_value(&self, val: NbValue, field_list: NbValue) -> NbValue {
+        let fields: Vec<String> = match field_list.as_heap_ref() {
+            Some(HeapValue::List(l)) => l.iter().map(|v| v.display()).collect(),
+            Some(HeapValue::Str(s)) => vec![s.to_string()],
+            _ => return val,
         };
-        match val {
-            Value::Record(r) => {
-                let mut result: RecordValue = (**r).clone();
-                for field in &fields_to_redact {
-                    if result.fields.contains_key(field) {
-                        result.fields.insert(field.clone(), Value::Null);
+        match val.as_heap_ref() {
+            Some(HeapValue::Record(r)) => {
+                let mut result = (**r).clone();
+                for field in &fields {
+                    if result.fields.contains_key(field.as_str()) {
+                        result.fields.insert(field.clone(), NbValue::new_null());
                     }
                 }
-                Value::new_record(result)
+                NbValue::new_record(&result.type_name, result.fields)
             }
-            Value::Map(m) => {
-                let mut result: BTreeMap<String, Value> = (**m).clone();
-                for field in &fields_to_redact {
-                    if result.contains_key(field) {
-                        result.insert(field.clone(), Value::Null);
+            Some(HeapValue::Map(m)) => {
+                let mut result = (**m).clone();
+                for field in &fields {
+                    if result.contains_key(field.as_str()) {
+                        result.insert(field.clone(), NbValue::new_null());
                     }
                 }
-                Value::new_map(result)
+                NbValue::new_map(result)
             }
-            _ => val.clone(),
+            _ => val,
         }
     }
 
@@ -332,17 +352,10 @@ impl VM {
         let lhs_val = self.registers[base + b];
         let rhs_val = self.registers[base + c];
 
-        // Convert to legacy Value for pattern matching (temporary until full NbValue migration)
-        let lhs_ref = nb_to_value(lhs_val);
-        let rhs_ref = nb_to_value(rhs_val);
-
         // HOT PATH: Int op Int — the vast majority of arithmetic in numeric code.
-        // Using if-let instead of nested match to give the compiler the best branch layout.
-        if let (Value::Int(x), Value::Int(y)) = (&lhs_ref, &rhs_ref) {
-            let x = *x;
-            let y = *y;
+        if let (Some(x), Some(y)) = (lhs_val.as_int(), rhs_val.as_int()) {
             if let Some(res) = int_op(op, x, y) {
-                self.set_reg(base + a, Value::Int(res));
+                self.set_reg_nb(base + a, NbValue::new_int(res));
                 return Ok(());
             } else {
                 return Err(VmError::ArithmeticOverflow(op_name(op).to_string()));
@@ -350,24 +363,38 @@ impl VM {
         }
 
         // WARM PATH: Float op Float
-        if let (Value::Float(x), Value::Float(y)) = (&lhs_ref, &rhs_ref) {
-            self.set_reg(base + a, Value::Float(float_op(op, *x, *y)));
+        if let (Some(x), Some(y)) = (lhs_val.as_float(), rhs_val.as_float()) {
+            self.set_reg_nb(base + a, NbValue::new_float(float_op(op, x, y)));
             return Ok(());
         }
 
         // WARM PATH: Mixed Int/Float promotion
-        if let (Value::Int(x), Value::Float(y)) = (&lhs_ref, &rhs_ref) {
-            self.set_reg(base + a, Value::Float(float_op(op, *x as f64, *y)));
+        if let (Some(x), Some(y)) = (lhs_val.as_int(), rhs_val.as_float()) {
+            self.set_reg_nb(base + a, NbValue::new_float(float_op(op, x as f64, y)));
             return Ok(());
         }
-        if let (Value::Float(x), Value::Int(y)) = (&lhs_ref, &rhs_ref) {
-            self.set_reg(base + a, Value::Float(float_op(op, *x, *y as f64)));
+        if let (Some(x), Some(y)) = (lhs_val.as_float(), rhs_val.as_int()) {
+            self.set_reg_nb(base + a, NbValue::new_float(float_op(op, x, y as f64)));
             return Ok(());
+        }
+
+        // String concatenation for Add
+        if op == BinaryOp::Add {
+            if let (Some(HeapValue::Str(l)), Some(HeapValue::Str(r))) =
+                (lhs_val.as_heap_ref(), rhs_val.as_heap_ref())
+            {
+                let mut s = String::with_capacity(l.len() + r.len());
+                s.push_str(l);
+                s.push_str(r);
+                self.set_reg_nb(base + a, NbValue::new_str(&s));
+                return Ok(());
+            }
         }
 
         // COLD PATH: BigInt and error cases — delegated to a separate non-inlined function
         // so the compiler doesn't bloat the hot path's instruction cache footprint.
-        self.set_reg(base + a, arith_op_slow(op, &lhs_ref, &rhs_ref)?);
+        let result = arith_op_slow(op, lhs_val, rhs_val)?;
+        self.set_reg_nb(base + a, result);
         Ok(())
     }
 }

@@ -1165,7 +1165,7 @@ fn format_value_short(value: &Value) -> String {
         Value::List(items) => {
             let items = items.as_ref();
             if items.len() <= 5 {
-                let parts: Vec<String> = items.iter().map(|v| format_value_short(v)).collect();
+                let parts: Vec<String> = items.iter().map(|v| v.display()).collect();
                 format!("[{}]", parts.join(", "))
             } else {
                 format!("[...{} items]", items.len())
@@ -1173,7 +1173,7 @@ fn format_value_short(value: &Value) -> String {
         }
         Value::Tuple(items) => {
             let items = items.as_ref();
-            let parts: Vec<String> = items.iter().map(|v| format_value_short(v)).collect();
+            let parts: Vec<String> = items.iter().map(|v| v.display()).collect();
             format!("({})", parts.join(", "))
         }
         Value::Map(m) => {

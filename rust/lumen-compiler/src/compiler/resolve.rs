@@ -597,7 +597,14 @@ fn register_local_defs_in_body(
                             params: c
                                 .params
                                 .iter()
-                                .map(|p| (p.name.clone(), p.ty.clone(), p.variadic))
+                                .map(|p| {
+                                    let ty = if p.variadic {
+                                        TypeExpr::List(Box::new(p.ty.clone()), p.span)
+                                    } else {
+                                        p.ty.clone()
+                                    };
+                                    (p.name.clone(), ty, p.variadic)
+                                })
                                 .collect(),
                             return_type: c.return_type.clone(),
                             effects: c.effects.clone(),

@@ -2,73 +2,20 @@
 
 use super::*;
 use crate::json_parser::parse_json_optimized;
+use lumen_core::heap_value::HeapValue;
 use lumen_core::values::UnionPayload;
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
-use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 impl VM {
-    /// Convert NbValue to Value without using peek_legacy/to_legacy.
-    #[inline]
-    fn nb_to_value(nb: NbValue) -> Value {
-        if nb.is_int() {
-            return Value::Int(nb.as_int().unwrap_or(0));
-        }
-        if !nb.is_nan_boxed() {
-            return Value::Float(f64::from_bits(nb.0));
-        }
-        if nb.is_bool() {
-            return Value::Bool(nb.as_bool().unwrap_or(false));
-        }
-        if nb.is_null() {
-            return Value::Null;
-        }
-        if let Some(v) = nb.as_heap_ref() {
-            return v.clone();
-        }
-        Value::Null
-    }
-
-    /// Borrow-through helper for TAG_PTR values (payload > 1).
-    #[inline]
-    fn nb_borrow_value(&self, nb: NbValue) -> Option<&Value> {
-        if !nb.is_ptr() {
-            return None;
-        }
-        let payload = nb.payload();
-        if payload <= 1 {
-            return None;
-        }
-        Some(unsafe { &*(payload as *const Value) })
-    }
-
     /// Display formatting that matches Value::display_pretty without forcing
     /// a full NbValue -> Value bridge on common scalar paths.
     #[inline]
     fn nb_display_pretty(&self, nb: NbValue) -> String {
-        if nb.is_int() {
-            return nb.as_int().unwrap_or(0).to_string();
-        }
-        if nb.is_float() {
-            let f = f64::from_bits(nb.0);
-            if f == f.floor() && f.abs() < 1e15 {
-                return format!("{:.1}", f);
-            }
-            return format!("{}", f);
-        }
-        if nb.is_bool() {
-            return nb.as_bool().unwrap_or(false).to_string();
-        }
-        if nb.is_null() {
-            return "null".to_string();
-        }
-        if let Some(val_ref) = self.nb_borrow_value(nb) {
-            return val_ref.display_pretty();
-        }
-        "null".to_string()
+        nb.display()
     }
 
     /// String conversion that mirrors Value::as_string_resolved semantics:
@@ -76,24 +23,8 @@ impl VM {
     /// decimal when they are integral.
     #[inline]
     fn nb_to_string_as_resolved_value(&self, nb: NbValue) -> String {
-        if let Some(val_ref) = self.nb_borrow_value(nb) {
-            return match val_ref {
-                Value::String(StringRef::Owned(s)) => s.clone(),
-                Value::String(StringRef::Interned(id)) => {
-                    self.strings.resolve(*id).unwrap_or("").to_string()
-                }
-                Value::Int(i) => i.to_string(),
-                Value::Float(f) => {
-                    if *f == f.floor() && f.abs() < 1e15 {
-                        format!("{:.1}", f)
-                    } else {
-                        format!("{}", f)
-                    }
-                }
-                Value::Bool(b) => b.to_string(),
-                Value::Null => "null".to_string(),
-                other => other.as_string_resolved(&self.strings),
-            };
+        if let Some(hv) = nb.as_heap_ref() {
+            return hv.display();
         }
         if nb.is_int() {
             return nb.as_int().unwrap_or(0).to_string();
@@ -118,18 +49,8 @@ impl VM {
     /// Avoids deep-cloning the Value just to get at the string inside.
     #[inline]
     fn nb_to_string_resolved(&self, nb: NbValue) -> String {
-        if let Some(val_ref) = self.nb_borrow_value(nb) {
-            return match val_ref {
-                Value::String(StringRef::Owned(s)) => s.clone(),
-                Value::String(StringRef::Interned(id)) => {
-                    self.strings.resolve(*id).unwrap_or("").to_string()
-                }
-                Value::Int(i) => i.to_string(),
-                Value::Float(f) => format!("{}", f),
-                Value::Bool(b) => b.to_string(),
-                Value::Null => "null".to_string(),
-                other => other.display_pretty(),
-            };
+        if let Some(hv) = nb.as_heap_ref() {
+            return hv.display();
         }
         if nb.is_int() {
             return nb.as_int().unwrap_or(0).to_string();
@@ -155,12 +76,176 @@ impl VM {
         if nb.is_float() || nb.is_bool() || nb.is_null() {
             return None;
         }
-        if let Some(val_ref) = self.nb_borrow_value(nb) {
-            if let Value::Int(i) = val_ref {
-                return Some(*i);
-            }
+        if let Some(HeapValue::BigInt(n)) = nb.as_heap_ref() {
+            return n.to_i64();
         }
         None
+    }
+
+    /// Convert an NbValue into a legacy Value by walking HeapValue recursively.
+    /// This is a compatibility shim for builtins that still return Value.
+    fn nb_to_value_deep(&mut self, nb: NbValue) -> Value {
+        if let Some(i) = nb.as_int() {
+            return Value::Int(i);
+        }
+        if let Some(f) = nb.as_float() {
+            return Value::Float(f);
+        }
+        if let Some(b) = nb.as_bool() {
+            return Value::Bool(b);
+        }
+        if nb.is_null() {
+            return Value::Null;
+        }
+        if let Some(hv) = nb.as_heap_ref() {
+            return match hv {
+                HeapValue::Str(s) => Value::String(StringRef::Owned(s.to_string())),
+                HeapValue::Bytes(b) => Value::Bytes(b.as_ref().to_vec()),
+                HeapValue::BigInt(n) => Value::BigInt((**n).clone()),
+                HeapValue::List(l) => Value::List(Arc::clone(l)),
+                HeapValue::Tuple(t) => Value::Tuple(Arc::clone(t)),
+                HeapValue::Set(s) => {
+                    let converted: BTreeSet<Value> =
+                        s.iter().map(|v| self.nb_to_value_deep(*v)).collect();
+                    Value::Set(Arc::new(converted))
+                }
+                HeapValue::Map(m) => {
+                    let converted: BTreeMap<String, Value> = m
+                        .iter()
+                        .map(|(k, v)| (k.clone(), self.nb_to_value_deep(*v)))
+                        .collect();
+                    Value::Map(Arc::new(converted))
+                }
+                HeapValue::Record(r) => {
+                    let fields = r
+                        .fields
+                        .iter()
+                        .map(|(k, v)| (k.clone(), self.nb_to_value_deep(*v)))
+                        .collect();
+                    Value::Record(Arc::new(RecordValue {
+                        type_name: r.type_name.to_string(),
+                        fields,
+                    }))
+                }
+                HeapValue::Union(u) => {
+                    let tag_id = self.strings.intern(&u.tag);
+                    Value::Union(UnionValue {
+                        tag: tag_id,
+                        payload: UnionPayload::from_value(self.nb_to_value_deep(u.payload)),
+                    })
+                }
+                HeapValue::Closure(c) => Value::Closure(ClosureValue {
+                    cell_idx: c.cell_idx,
+                    captures: c
+                        .captures
+                        .iter()
+                        .map(|v| self.nb_to_value_deep(*v))
+                        .collect(),
+                }),
+                HeapValue::Future(f) => Value::Future(FutureValue {
+                    id: f.id,
+                    state: match &f.status {
+                        lumen_core::heap_value::FutureStatus::Pending => FutureStatus::Pending,
+                        lumen_core::heap_value::FutureStatus::Completed(_) => {
+                            FutureStatus::Completed
+                        }
+                        lumen_core::heap_value::FutureStatus::Error(_) => FutureStatus::Error,
+                    },
+                }),
+                HeapValue::TraceRef(id) => Value::TraceRef(TraceRefValue {
+                    trace_id: self.resolve_trace_id(),
+                    seq: *id,
+                }),
+            };
+        }
+        Value::Null
+    }
+
+    /// Convert a legacy Value into an NbValue without using removed bridges.
+    fn nb_from_value(&mut self, value: Value) -> NbValue {
+        match value {
+            Value::Null => NbValue::new_null(),
+            Value::Bool(b) => NbValue::new_bool(b),
+            Value::Int(n) => {
+                if (NbValue::MIN_INT48..=NbValue::MAX_INT48).contains(&n) {
+                    NbValue::new_int(n)
+                } else {
+                    NbValue::new_bigint(BigInt::from(n))
+                }
+            }
+            Value::BigInt(n) => NbValue::new_bigint(n),
+            Value::Float(f) => NbValue::new_float(f),
+            Value::String(sr) => {
+                let s = match sr {
+                    StringRef::Owned(s) => s,
+                    StringRef::Interned(id) => self.strings.resolve(id).unwrap_or("").to_string(),
+                };
+                NbValue::new_str(&s)
+            }
+            Value::Bytes(b) => NbValue::new_bytes(Arc::from(b.into_boxed_slice())),
+            Value::List(l) => NbValue::new_heap(HeapValue::List(l)),
+            Value::Tuple(t) => NbValue::new_heap(HeapValue::Tuple(t)),
+            Value::Set(s) => {
+                let converted: BTreeSet<NbValue> =
+                    s.iter().cloned().map(|v| self.nb_from_value(v)).collect();
+                NbValue::new_set(converted)
+            }
+            Value::Map(m) => {
+                let converted: BTreeMap<String, NbValue> = m
+                    .iter()
+                    .map(|(k, v)| (k.clone(), self.nb_from_value(v.clone())))
+                    .collect();
+                NbValue::new_map(converted)
+            }
+            Value::Record(r) => {
+                let fields = r
+                    .fields
+                    .iter()
+                    .map(|(k, v)| (k.clone(), self.nb_from_value(v.clone())))
+                    .collect();
+                NbValue::new_record(&r.type_name, fields)
+            }
+            Value::Union(u) => {
+                let tag = self.strings.resolve(u.tag).unwrap_or("").to_string();
+                let payload = match &u.payload {
+                    UnionPayload::Null => NbValue::new_null(),
+                    UnionPayload::Bool(b) => NbValue::new_bool(*b),
+                    UnionPayload::Int(n) => {
+                        if (NbValue::MIN_INT48..=NbValue::MAX_INT48).contains(n) {
+                            NbValue::new_int(*n)
+                        } else {
+                            NbValue::new_bigint(BigInt::from(*n))
+                        }
+                    }
+                    UnionPayload::Float(f) => NbValue::new_float(*f),
+                    UnionPayload::Heap(v) => self.nb_from_value((**v).clone()),
+                };
+                NbValue::new_union(&tag, payload)
+            }
+            Value::Closure(c) => NbValue::new_closure(
+                c.cell_idx,
+                c.captures
+                    .into_iter()
+                    .map(|v| self.nb_from_value(v))
+                    .collect(),
+            ),
+            Value::Future(f) => NbValue::new_heap(HeapValue::Future(Arc::new(
+                lumen_core::heap_value::FutureData {
+                    id: f.id,
+                    status: match f.state {
+                        FutureStatus::Pending => lumen_core::heap_value::FutureStatus::Pending,
+                        FutureStatus::Completed => {
+                            lumen_core::heap_value::FutureStatus::Completed(NbValue::new_null())
+                        }
+                        FutureStatus::Error => {
+                            lumen_core::heap_value::FutureStatus::Error("error".to_string())
+                        }
+                    },
+                    schedule: lumen_core::heap_value::FutureSchedule::Eager,
+                },
+            ))),
+            Value::TraceRef(t) => NbValue::new_heap(HeapValue::TraceRef(t.seq)),
+        }
     }
 
     /// Execute a built-in function by name.
@@ -172,7 +257,7 @@ impl VM {
         nargs: usize,
     ) -> Result<Value, VmError> {
         if let Some(result) = self.try_call_process_builtin(name, base, a, nargs) {
-            return result;
+            return result.map(|nb| self.nb_to_value_deep(nb));
         }
         match name {
             "print" => {
@@ -194,25 +279,18 @@ impl VM {
                 if nb.is_int() || nb.is_float() || nb.is_bool() || nb.is_null() {
                     return Ok(Value::Int(0));
                 }
-                // TAG_PTR borrow-through: read len without cloning the collection
-                if nb.is_ptr() {
-                    let payload = nb.payload();
-                    if payload > 1 {
-                        let val_ref = unsafe { &*(payload as *const Value) };
-                        let len = match val_ref {
-                            Value::String(StringRef::Owned(s)) => s.len() as i64,
-                            Value::String(StringRef::Interned(id)) => {
-                                self.strings.resolve(*id).map(|s| s.len()).unwrap_or(0) as i64
-                            }
-                            Value::List(l) => l.len() as i64,
-                            Value::Map(m) => m.len() as i64,
-                            Value::Tuple(t) => t.len() as i64,
-                            Value::Set(s) => s.len() as i64,
-                            Value::Bytes(b) => b.len() as i64,
-                            _ => 0,
-                        };
-                        return Ok(Value::Int(len));
-                    }
+                // HeapValue borrow-through: read len without cloning the collection
+                if let Some(hv) = nb.as_heap_ref() {
+                    let len = match hv {
+                        HeapValue::Str(s) => s.len() as i64,
+                        HeapValue::List(l) => l.len() as i64,
+                        HeapValue::Map(m) => m.len() as i64,
+                        HeapValue::Tuple(t) => t.len() as i64,
+                        HeapValue::Set(s) => s.len() as i64,
+                        HeapValue::Bytes(b) => b.len() as i64,
+                        _ => 0,
+                    };
+                    return Ok(Value::Int(len));
                 }
                 Ok(Value::Int(0))
             }
@@ -220,10 +298,10 @@ impl VM {
                 let list = self.reg_take(base + a + 1);
                 let elem = self.reg_take(base + a + 2);
                 if let Value::List(mut l) = list {
-                    Arc::make_mut(&mut l).push(elem);
+                    Arc::make_mut(&mut l).push(self.nb_from_value(elem));
                     Ok(Value::List(l))
                 } else {
-                    Ok(Value::new_list(vec![elem]))
+                    Ok(Value::List(Arc::new(vec![self.nb_from_value(elem)])))
                 }
             }
             "to_string" | "str" | "string" => {
@@ -249,16 +327,10 @@ impl VM {
                 if nb.is_null() {
                     return Ok(Value::Null);
                 }
-                if let Some(val_ref) = self.nb_borrow_value(nb) {
-                    return Ok(match val_ref {
-                        Value::BigInt(n) => Value::BigInt(n.clone()),
-                        Value::String(sr) => {
-                            let s = match sr {
-                                StringRef::Owned(s) => s.clone(),
-                                StringRef::Interned(id) => {
-                                    self.strings.resolve(*id).unwrap_or("").to_string()
-                                }
-                            };
+                if let Some(hv) = nb.as_heap_ref() {
+                    return Ok(match hv {
+                        HeapValue::BigInt(n) => Value::BigInt((**n).clone()),
+                        HeapValue::Str(s) => {
                             if let Ok(i) = s.parse::<i64>() {
                                 Value::Int(i)
                             } else if let Ok(bi) = s.parse::<BigInt>() {
@@ -270,7 +342,20 @@ impl VM {
                         _ => Value::Null,
                     });
                 }
-                Ok(Value::Null)
+                let arg = self.nb_to_value_deep(nb);
+                if let Value::List(l) = arg {
+                    let mut result = Vec::new();
+                    for item in l.iter() {
+                        if let Some(HeapValue::List(inner)) = item.as_heap_ref() {
+                            result.extend(inner.iter().cloned());
+                        } else {
+                            result.push(*item);
+                        }
+                    }
+                    Ok(Value::List(Arc::new(result)))
+                } else {
+                    Ok(arg)
+                }
             }
             "to_float" | "float" => {
                 let nb = self.registers[base + a + 1];
@@ -284,22 +369,27 @@ impl VM {
                 if nb.is_null() {
                     return Ok(Value::Null);
                 }
-                if let Some(val_ref) = self.nb_borrow_value(nb) {
-                    return Ok(match val_ref {
-                        Value::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::NAN)),
-                        Value::String(sr) => {
-                            let s = match sr {
-                                StringRef::Owned(s) => s.clone(),
-                                StringRef::Interned(id) => {
-                                    self.strings.resolve(*id).unwrap_or("").to_string()
-                                }
-                            };
+                if let Some(hv) = nb.as_heap_ref() {
+                    return Ok(match hv {
+                        HeapValue::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::NAN)),
+                        HeapValue::Str(s) => {
                             s.parse::<f64>().map(Value::Float).unwrap_or(Value::Null)
                         }
                         _ => Value::Null,
                     });
                 }
-                Ok(Value::Null)
+                let arg = self.nb_to_value_deep(nb);
+                if let Value::List(l) = arg {
+                    let mut result = Vec::new();
+                    for item in l.iter() {
+                        if !result.contains(item) {
+                            result.push(*item);
+                        }
+                    }
+                    Ok(Value::List(Arc::new(result)))
+                } else {
+                    Ok(arg)
+                }
             }
             "type_of" | "type" => {
                 let nb = self.registers[base + a + 1];
@@ -311,100 +401,73 @@ impl VM {
                     "Bool"
                 } else if nb.is_null() {
                     "Null"
-                } else if nb.is_ptr() {
-                    let payload = nb.payload();
-                    if payload > 1 {
-                        let val_ref = unsafe { &*(payload as *const Value) };
-                        val_ref.type_name()
-                    } else {
-                        "Null"
-                    }
+                } else if let Some(hv) = nb.as_heap_ref() {
+                    hv.type_name()
                 } else {
-                    let arg = Self::nb_to_value(nb);
-                    return Ok(Value::String(StringRef::Owned(arg.type_name().to_string())));
+                    return Ok(Value::String(StringRef::Owned(nb.type_name().to_string())));
                 };
                 Ok(Value::String(StringRef::Owned(name.to_string())))
             }
             "keys" => {
                 let nb = self.registers[base + a + 1];
-                if nb.is_ptr() {
-                    let payload = nb.payload();
-                    if payload > 1 {
-                        let val_ref = unsafe { &*(payload as *const Value) };
-                        return Ok(match val_ref {
-                            Value::Map(m) => Value::new_list(
-                                m.keys()
-                                    .map(|k| Value::String(StringRef::Owned(k.clone())))
-                                    .collect(),
-                            ),
-                            Value::Record(r) => Value::new_list(
-                                r.fields
-                                    .keys()
-                                    .map(|k| Value::String(StringRef::Owned(k.clone())))
-                                    .collect(),
-                            ),
-                            _ => Value::new_list(vec![]),
-                        });
-                    }
+                if let Some(hv) = nb.as_heap_ref() {
+                    return Ok(match hv {
+                        HeapValue::Map(m) => {
+                            Value::List(Arc::new(m.keys().map(|k| NbValue::new_str(k)).collect()))
+                        }
+                        HeapValue::Record(r) => Value::List(Arc::new(
+                            r.fields.keys().map(|k| NbValue::new_str(k)).collect(),
+                        )),
+                        _ => Value::List(Arc::new(Vec::new())),
+                    });
                 }
-                Ok(Value::new_list(vec![]))
+                Ok(Value::List(Arc::new(Vec::new())))
             }
             "values" => {
                 let nb = self.registers[base + a + 1];
-                if nb.is_ptr() {
-                    let payload = nb.payload();
-                    if payload > 1 {
-                        let val_ref = unsafe { &*(payload as *const Value) };
-                        return Ok(match val_ref {
-                            Value::Map(m) => Value::new_list(m.values().cloned().collect()),
-                            Value::Record(r) => {
-                                Value::new_list(r.fields.values().cloned().collect())
-                            }
-                            _ => Value::new_list(vec![]),
-                        });
-                    }
+                if let Some(hv) = nb.as_heap_ref() {
+                    return Ok(match hv {
+                        HeapValue::Map(m) => Value::List(Arc::new(m.values().cloned().collect())),
+                        HeapValue::Record(r) => {
+                            Value::List(Arc::new(r.fields.values().cloned().collect()))
+                        }
+                        _ => Value::List(Arc::new(Vec::new())),
+                    });
                 }
-                Ok(Value::new_list(vec![]))
+                Ok(Value::List(Arc::new(Vec::new())))
             }
             "contains" | "has" => {
                 // TAG_PTR borrow-through fast-path: avoid cloning the collection
                 let coll_nb = self.registers[base + a + 1];
                 let needle_nb = self.registers[base + a + 2];
-                if coll_nb.is_ptr() && coll_nb.payload() > 1 {
-                    let coll_ref = unsafe {
-                        &*((coll_nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value)
-                    };
+                if let Some(coll_ref) = coll_nb.as_heap_ref() {
                     // Fast-path: int needle in list (primes sieve pattern)
                     if needle_nb.is_int() {
-                        let needle_val = Value::Int(needle_nb.as_int().unwrap_or(0));
+                        let needle_val = needle_nb.as_int().unwrap_or(0);
                         let result = match coll_ref {
-                            Value::List(l) => l.iter().any(|v| v == &needle_val),
-                            Value::Set(s) => s.iter().any(|v| v == &needle_val),
+                            HeapValue::List(l) => l.iter().any(|v| v.as_int() == Some(needle_val)),
+                            HeapValue::Set(s) => s.iter().any(|v| v.as_int() == Some(needle_val)),
                             _ => false,
                         };
                         return Ok(Value::Bool(result));
                     }
                 }
-                let collection = Self::nb_to_value(coll_nb);
-                let needle = Self::nb_to_value(needle_nb);
-                let result = match collection {
-                    Value::List(l) => l.iter().any(|v| v == &needle),
-                    Value::Set(s) => s.iter().any(|v| v == &needle),
-                    Value::Map(m) => {
-                        let needle_str = needle.as_string_resolved(&self.strings);
-                        m.contains_key(&needle_str)
+                let result = if let Some(coll_ref) = coll_nb.as_heap_ref() {
+                    match coll_ref {
+                        HeapValue::List(l) => l.iter().any(|v| *v == needle_nb),
+                        HeapValue::Set(s) => s.contains(&needle_nb),
+                        HeapValue::Map(m) => {
+                            let needle_str = self.nb_to_string_resolved(needle_nb);
+                            m.contains_key(&needle_str)
+                        }
+                        HeapValue::Str(s) => {
+                            let needle_str = self.nb_to_string_resolved(needle_nb);
+                            s.contains(&needle_str)
+                        }
+                        _ => false,
                     }
-                    Value::String(sr) => {
-                        let s = match sr {
-                            StringRef::Owned(s) => s,
-                            StringRef::Interned(id) => {
-                                self.strings.resolve(id).unwrap_or("").to_string()
-                            }
-                        };
-                        let needle_str = needle.as_string_resolved(&self.strings);
-                        s.contains(&needle_str)
-                    }
-                    _ => false,
+                } else {
+                    false
                 };
                 Ok(Value::Bool(result))
             }
@@ -415,31 +478,17 @@ impl VM {
                 } else {
                     ", ".to_string()
                 };
-                // TAG_PTR borrow-through for the list
-                if list_nb.is_ptr() && list_nb.payload() > 1 {
-                    let val_ref = unsafe {
-                        &*((list_nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value)
-                    };
-                    if let Value::List(l) = val_ref {
-                        let joined = l
-                            .iter()
-                            .map(|v| v.display_pretty())
-                            .collect::<Vec<_>>()
-                            .join(&sep);
+                // HeapValue borrow-through for the list
+                if let Some(hv) = list_nb.as_heap_ref() {
+                    if let HeapValue::List(l) = hv {
+                        let joined = l.iter().map(|v| v.display()).collect::<Vec<_>>().join(&sep);
                         return Ok(Value::String(StringRef::Owned(joined)));
                     }
+                    return Ok(Value::String(StringRef::Owned(hv.display())));
                 }
-                let list = Self::nb_to_value(list_nb);
-                if let Value::List(l) = list {
-                    let joined = l
-                        .iter()
-                        .map(|v| v.display_pretty())
-                        .collect::<Vec<_>>()
-                        .join(&sep);
-                    Ok(Value::String(StringRef::Owned(joined)))
-                } else {
-                    Ok(Value::String(StringRef::Owned(list.display_pretty())))
-                }
+                Ok(Value::String(StringRef::Owned(
+                    self.nb_display_pretty(list_nb),
+                )))
             }
             "split" => {
                 let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
@@ -448,11 +497,8 @@ impl VM {
                 } else {
                     " ".to_string()
                 };
-                let parts: Vec<Value> = s
-                    .split(&sep)
-                    .map(|p| Value::String(StringRef::Owned(p.to_string())))
-                    .collect();
-                Ok(Value::new_list(parts))
+                let parts: Vec<NbValue> = s.split(&sep).map(NbValue::new_str).collect();
+                Ok(Value::List(Arc::new(parts)))
             }
             "trim" => {
                 let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
@@ -481,13 +527,7 @@ impl VM {
                 if nb.is_float() {
                     return Ok(Value::Float(f64::from_bits(nb.0).abs()));
                 }
-                if let Some(val_ref) = self.nb_borrow_value(nb) {
-                    return Ok(match val_ref {
-                        Value::BigInt(n) => Value::BigInt(n.abs()),
-                        _ => val_ref.clone(),
-                    });
-                }
-                Ok(Value::Null)
+                Ok(self.nb_to_value_deep(nb))
             }
             "min" => {
                 let lhs_nb = self.registers[base + a + 1];
@@ -514,7 +554,7 @@ impl VM {
                     return Ok(Value::Float(x.min(y)));
                 }
                 // Cold path: strings etc. — return the smaller of the two.
-                Ok(Self::nb_to_value(lhs_nb))
+                Ok(self.nb_to_value_deep(lhs_nb))
             }
             "max" => {
                 let lhs_nb = self.registers[base + a + 1];
@@ -541,7 +581,7 @@ impl VM {
                     return Ok(Value::Float(x.max(y)));
                 }
                 // Cold path: strings etc. — return the larger of the two.
-                Ok(Self::nb_to_value(lhs_nb))
+                Ok(self.nb_to_value_deep(lhs_nb))
             }
             "range" => {
                 // NbValue fast-path: extract ints without peek_legacy.
@@ -549,8 +589,8 @@ impl VM {
                 let end_nb = self.registers[base + a + 2];
                 let start = self.nb_to_int(start_nb).unwrap_or(0);
                 let end = self.nb_to_int(end_nb).unwrap_or(0);
-                let list: Vec<Value> = (start..end).map(Value::Int).collect();
-                Ok(Value::new_list(list))
+                let list: Vec<NbValue> = (start..end).map(NbValue::new_int).collect();
+                Ok(Value::List(Arc::new(list)))
             }
             "spawn" => {
                 if nargs == 0 {
@@ -558,9 +598,13 @@ impl VM {
                         "spawn requires a callable argument".to_string(),
                     ));
                 }
-                let callee = Self::nb_to_value(self.registers[base + a + 1]);
+                let callee_nb = self.registers[base + a + 1];
+                let callee = self.nb_to_value_deep(callee_nb);
                 let args: Vec<Value> = (1..nargs)
-                    .map(|i| Self::nb_to_value(self.registers[base + a + 1 + i]))
+                    .map(|i| {
+                        let arg_nb = self.registers[base + a + 1 + i];
+                        self.nb_to_value_deep(arg_nb)
+                    })
                     .collect();
                 match callee {
                     Value::Closure(cv) => self.spawn_future(FutureTarget::Closure(cv), args),
@@ -599,131 +643,124 @@ impl VM {
             }
             "parallel" => {
                 let args = self.orchestration_args(base, a, nargs);
-                let mut out = Vec::with_capacity(args.len());
+                let mut out: Vec<NbValue> = Vec::with_capacity(args.len());
                 for arg in args {
-                    match arg {
-                        Value::Future(ref f) => match self.future_states.get(&f.id) {
-                            Some(FutureState::Completed(v)) => out.push(v.clone()),
-                            Some(FutureState::Pending) => out.push(arg.clone()),
-                            Some(FutureState::Error(_)) | None => {
-                                out.push(Value::Future(FutureValue {
-                                    id: f.id,
-                                    state: FutureStatus::Error,
-                                }));
+                    if let Some(lumen_core::heap_value::HeapValue::Future(f)) = arg.as_heap_ref() {
+                        match self.future_states.get(&f.id) {
+                            Some(FutureState::Completed(v)) => {
+                                out.push(self.nb_from_value(v.clone()))
                             }
-                        },
-                        other => out.push(other),
+                            Some(FutureState::Pending) => out.push(arg),
+                            Some(FutureState::Error(_)) | None => out.push(NbValue::new_null()),
+                        }
+                    } else {
+                        out.push(arg);
                     }
                 }
-                Ok(Value::new_list(out))
+                Ok(Value::List(Arc::new(out)))
             }
             "race" => {
-                let mut first_pending: Option<Value> = None;
+                let mut first_pending: Option<NbValue> = None;
                 for arg in self.orchestration_args(base, a, nargs) {
-                    match arg {
-                        Value::Future(ref f) => match self.future_states.get(&f.id) {
+                    if let Some(lumen_core::heap_value::HeapValue::Future(f)) = arg.as_heap_ref() {
+                        match self.future_states.get(&f.id) {
                             Some(FutureState::Completed(v)) => return Ok(v.clone()),
                             Some(FutureState::Pending) => {
                                 if first_pending.is_none() {
-                                    first_pending = Some(arg.clone());
+                                    first_pending = Some(arg);
                                 }
                             }
                             Some(FutureState::Error(_)) | None => {}
-                        },
-                        other => return Ok(other),
+                        }
+                    } else {
+                        return Ok(self.nb_to_value_deep(arg));
                     }
                 }
-                Ok(first_pending.unwrap_or(Value::Null))
+                Ok(first_pending
+                    .map(|nb| self.nb_to_value_deep(nb))
+                    .unwrap_or(Value::Null))
             }
             "select" => {
-                let mut first_pending: Option<Value> = None;
+                let mut first_pending: Option<NbValue> = None;
                 for arg in self.orchestration_args(base, a, nargs) {
-                    let candidate = match arg {
-                        Value::Future(ref f) => match self.future_states.get(&f.id) {
+                    if let Some(lumen_core::heap_value::HeapValue::Future(f)) = arg.as_heap_ref() {
+                        let candidate = match self.future_states.get(&f.id) {
                             Some(FutureState::Completed(v)) => Some(v.clone()),
                             Some(FutureState::Pending) => {
                                 if first_pending.is_none() {
-                                    first_pending = Some(Value::Future(FutureValue {
-                                        id: f.id,
-                                        state: FutureStatus::Pending,
-                                    }));
+                                    first_pending = Some(arg);
                                 }
                                 None
                             }
                             _ => None,
-                        },
-                        other => Some(other),
-                    };
-                    if let Some(value) = candidate {
-                        if !matches!(value, Value::Null) {
-                            return Ok(value);
+                        };
+                        if let Some(value) = candidate {
+                            if !matches!(value, Value::Null) {
+                                return Ok(value);
+                            }
                         }
+                    } else if !arg.is_null() {
+                        return Ok(self.nb_to_value_deep(arg));
                     }
                 }
-                Ok(first_pending.unwrap_or(Value::Null))
+                Ok(first_pending
+                    .map(|nb| self.nb_to_value_deep(nb))
+                    .unwrap_or(Value::Null))
             }
             "vote" => {
-                let mut counts: BTreeMap<Value, (usize, usize)> = BTreeMap::new();
-                let mut first_pending: Option<Value> = None;
-                for (i, arg) in self
-                    .orchestration_args(base, a, nargs)
-                    .into_iter()
-                    .enumerate()
-                {
-                    let value = match arg {
-                        Value::Future(ref f) => match self.future_states.get(&f.id) {
-                            Some(FutureState::Completed(v)) => Some(v.clone()),
+                let mut candidates: Vec<Value> = Vec::new();
+                let mut first_pending: Option<NbValue> = None;
+                for arg in self.orchestration_args(base, a, nargs) {
+                    if let Some(lumen_core::heap_value::HeapValue::Future(f)) = arg.as_heap_ref() {
+                        match self.future_states.get(&f.id) {
+                            Some(FutureState::Completed(v)) => candidates.push(v.clone()),
                             Some(FutureState::Pending) => {
                                 if first_pending.is_none() {
-                                    first_pending = Some(Value::Future(FutureValue {
-                                        id: f.id,
-                                        state: FutureStatus::Pending,
-                                    }));
+                                    first_pending = Some(arg);
                                 }
-                                None
                             }
-                            _ => None,
-                        },
-                        other => Some(other),
-                    };
-                    if let Some(value) = value {
-                        let entry = counts.entry(value).or_insert((0, i));
-                        entry.0 += 1;
-                    }
-                }
-                if counts.is_empty() {
-                    return Ok(first_pending.unwrap_or(Value::Null));
-                }
-                let mut best: Option<(Value, usize, usize)> = None;
-                for (value, (count, first_idx)) in counts {
-                    match &best {
-                        None => best = Some((value, count, first_idx)),
-                        Some((_, best_count, best_idx)) => {
-                            if count > *best_count
-                                || (count == *best_count && first_idx < *best_idx)
-                            {
-                                best = Some((value, count, first_idx));
-                            }
+                            _ => {}
                         }
+                    } else {
+                        candidates.push(self.nb_to_value_deep(arg));
                     }
                 }
-                Ok(best.map(|(value, _, _)| value).unwrap_or(Value::Null))
+                if candidates.is_empty() {
+                    return Ok(first_pending
+                        .map(|nb| self.nb_to_value_deep(nb))
+                        .unwrap_or(Value::Null));
+                }
+                // Find mode: value with highest frequency (earliest on tie)
+                let mut best: Option<Value> = None;
+                let mut best_count = 0usize;
+                for candidate in &candidates {
+                    let count = candidates.iter().filter(|v| *v == candidate).count();
+                    if count > best_count {
+                        best_count = count;
+                        best = Some(candidate.clone());
+                    }
+                }
+                Ok(best.unwrap_or(Value::Null))
             }
             "timeout" => {
                 if nargs == 0 {
                     return Ok(Value::Null);
                 }
-                let arg = Self::nb_to_value(self.registers[base + a + 1]);
-                match arg {
-                    Value::Future(f) => match self.future_states.get(&f.id) {
-                        Some(FutureState::Completed(v)) => Ok(v.clone()),
-                        Some(FutureState::Pending) => Ok(Value::Null),
-                        Some(FutureState::Error(msg)) => {
-                            Err(VmError::Runtime(format!("timeout target failed: {}", msg)))
-                        }
-                        None => Ok(Value::Null),
-                    },
-                    other => Ok(other),
+                let arg_nb = self.registers[base + a + 1];
+                if let Some(hv) = arg_nb.as_heap_ref() {
+                    match hv {
+                        HeapValue::Future(f) => match self.future_states.get(&f.id) {
+                            Some(FutureState::Completed(v)) => Ok(v.clone()),
+                            Some(FutureState::Pending) => Ok(Value::Null),
+                            Some(FutureState::Error(msg)) => {
+                                Err(VmError::Runtime(format!("timeout target failed: {}", msg)))
+                            }
+                            None => Ok(Value::Null),
+                        },
+                        _ => Ok(self.nb_to_value_deep(arg_nb)),
+                    }
+                } else {
+                    Ok(self.nb_to_value_deep(arg_nb))
                 }
             }
             "hash" | "sha256" => {
@@ -752,77 +789,42 @@ impl VM {
             }
             "flatten" => {
                 let nb = self.registers[base + a + 1];
-                if nb.is_ptr() && nb.payload() > 1 {
-                    let val_ref =
-                        unsafe { &*((nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
-                    if let Value::List(l) = val_ref {
-                        let mut result = Vec::new();
-                        for item in l.iter() {
-                            if let Value::List(inner) = item {
-                                result.extend(inner.iter().cloned());
-                            } else {
-                                result.push(item.clone());
-                            }
-                        }
-                        return Ok(Value::new_list(result));
-                    }
-                }
-                let arg = Self::nb_to_value(nb);
-                if let Value::List(l) = arg {
+                if let Some(HeapValue::List(l)) = nb.as_heap_ref() {
                     let mut result = Vec::new();
                     for item in l.iter() {
-                        if let Value::List(inner) = item {
+                        let value = item;
+                        if let Some(HeapValue::List(inner)) = value.as_heap_ref() {
                             result.extend(inner.iter().cloned());
                         } else {
-                            result.push(item.clone());
+                            result.push(*value);
                         }
                     }
-                    Ok(Value::new_list(result))
-                } else {
-                    Ok(arg)
+                    return Ok(Value::List(Arc::new(result)));
                 }
+                Ok(Value::Null)
             }
             "unique" => {
                 let nb = self.registers[base + a + 1];
-                if nb.is_ptr() && nb.payload() > 1 {
-                    let val_ref =
-                        unsafe { &*((nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
-                    if let Value::List(l) = val_ref {
-                        let mut result = Vec::new();
-                        for item in l.iter() {
-                            if !result.contains(item) {
-                                result.push(item.clone());
-                            }
-                        }
-                        return Ok(Value::new_list(result));
-                    }
-                }
-                let arg = Self::nb_to_value(nb);
-                if let Value::List(l) = arg {
+                if let Some(HeapValue::List(l)) = nb.as_heap_ref() {
                     let mut result = Vec::new();
                     for item in l.iter() {
                         if !result.contains(item) {
-                            result.push(item.clone());
+                            result.push(*item);
                         }
                     }
-                    Ok(Value::new_list(result))
-                } else {
-                    Ok(arg)
+                    return Ok(Value::List(Arc::new(result)));
                 }
+                Ok(Value::Null)
             }
             "take" => {
                 let nb = self.registers[base + a + 1];
                 let n = self.nb_to_int(self.registers[base + a + 2]).unwrap_or(0) as usize;
-                if nb.is_ptr() && nb.payload() > 1 {
-                    let val_ref =
-                        unsafe { &*((nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
-                    if let Value::List(l) = val_ref {
-                        return Ok(Value::new_list(l.iter().take(n).cloned().collect()));
-                    }
+                if let Some(HeapValue::List(l)) = nb.as_heap_ref() {
+                    return Ok(Value::List(Arc::new(l.iter().take(n).cloned().collect())));
                 }
-                let arg = Self::nb_to_value(nb);
+                let arg = self.nb_to_value_deep(nb);
                 if let Value::List(l) = arg {
-                    Ok(Value::new_list(l.iter().take(n).cloned().collect()))
+                    Ok(Value::List(Arc::new(l.iter().take(n).cloned().collect())))
                 } else {
                     Ok(arg)
                 }
@@ -830,47 +832,47 @@ impl VM {
             "drop" => {
                 let nb = self.registers[base + a + 1];
                 let n = self.nb_to_int(self.registers[base + a + 2]).unwrap_or(0) as usize;
-                if nb.is_ptr() && nb.payload() > 1 {
-                    let val_ref =
-                        unsafe { &*((nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
-                    if let Value::List(l) = val_ref {
-                        return Ok(Value::new_list(l.iter().skip(n).cloned().collect()));
-                    }
+                if let Some(HeapValue::List(l)) = nb.as_heap_ref() {
+                    return Ok(Value::List(Arc::new(l.iter().skip(n).cloned().collect())));
                 }
-                let arg = Self::nb_to_value(nb);
+                let arg = self.nb_to_value_deep(nb);
                 if let Value::List(l) = arg {
-                    Ok(Value::new_list(l.iter().skip(n).cloned().collect()))
+                    Ok(Value::List(Arc::new(l.iter().skip(n).cloned().collect())))
                 } else {
                     Ok(arg)
                 }
             }
             "first" | "head" => {
                 let nb = self.registers[base + a + 1];
-                if nb.is_ptr() {
-                    let payload = nb.payload();
-                    if payload > 1 {
-                        let val_ref = unsafe { &*(payload as *const Value) };
-                        return Ok(match val_ref {
-                            Value::List(l) => l.first().cloned().unwrap_or(Value::Null),
-                            Value::Tuple(t) => t.first().cloned().unwrap_or(Value::Null),
-                            _ => Value::Null,
-                        });
-                    }
+                if let Some(hv) = nb.as_heap_ref() {
+                    return Ok(match hv {
+                        HeapValue::List(l) => l
+                            .first()
+                            .map(|v| self.nb_to_value_deep(*v))
+                            .unwrap_or(Value::Null),
+                        HeapValue::Tuple(t) => t
+                            .first()
+                            .map(|v| self.nb_to_value_deep(*v))
+                            .unwrap_or(Value::Null),
+                        _ => Value::Null,
+                    });
                 }
                 Ok(Value::Null)
             }
             "last" | "tail" => {
                 let nb = self.registers[base + a + 1];
-                if nb.is_ptr() {
-                    let payload = nb.payload();
-                    if payload > 1 {
-                        let val_ref = unsafe { &*(payload as *const Value) };
-                        return Ok(match val_ref {
-                            Value::List(l) => l.last().cloned().unwrap_or(Value::Null),
-                            Value::Tuple(t) => t.last().cloned().unwrap_or(Value::Null),
-                            _ => Value::Null,
-                        });
-                    }
+                if let Some(hv) = nb.as_heap_ref() {
+                    return Ok(match hv {
+                        HeapValue::List(l) => l
+                            .last()
+                            .map(|v| self.nb_to_value_deep(*v))
+                            .unwrap_or(Value::Null),
+                        HeapValue::Tuple(t) => t
+                            .last()
+                            .map(|v| self.nb_to_value_deep(*v))
+                            .unwrap_or(Value::Null),
+                        _ => Value::Null,
+                    });
                 }
                 Ok(Value::Null)
             }
@@ -882,28 +884,18 @@ impl VM {
                 if nb.is_int() || nb.is_float() || nb.is_bool() {
                     return Ok(Value::Bool(false));
                 }
-                if nb.is_ptr() {
-                    let payload = nb.payload();
-                    if payload > 1 {
-                        let val_ref = unsafe { &*(payload as *const Value) };
-                        let empty = match val_ref {
-                            Value::List(l) => l.is_empty(),
-                            Value::Map(m) => m.is_empty(),
-                            Value::Set(s) => s.is_empty(),
-                            Value::Tuple(t) => t.is_empty(),
-                            Value::String(StringRef::Owned(s)) => s.is_empty(),
-                            Value::String(StringRef::Interned(id)) => self
-                                .strings
-                                .resolve(*id)
-                                .map(|s| s.is_empty())
-                                .unwrap_or(true),
-                            Value::Null => true,
-                            _ => false,
-                        };
-                        return Ok(Value::Bool(empty));
-                    }
+                if let Some(hv) = nb.as_heap_ref() {
+                    let empty = match hv {
+                        HeapValue::List(l) => l.is_empty(),
+                        HeapValue::Map(m) => m.is_empty(),
+                        HeapValue::Set(s) => s.is_empty(),
+                        HeapValue::Tuple(t) => t.is_empty(),
+                        HeapValue::Str(s) => s.is_empty(),
+                        _ => false,
+                    };
+                    return Ok(Value::Bool(empty));
                 }
-                let arg = Self::nb_to_value(nb);
+                let arg = self.nb_to_value_deep(nb);
                 let empty = match &arg {
                     Value::List(l) => l.is_empty(),
                     Value::Map(m) => m.is_empty(),
@@ -916,11 +908,11 @@ impl VM {
             }
             "chars" => {
                 let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
-                Ok(Value::new_list(
-                    s.chars()
-                        .map(|c| Value::String(StringRef::Owned(c.to_string())))
-                        .collect(),
-                ))
+                let chars: Vec<NbValue> = s
+                    .chars()
+                    .map(|c| NbValue::new_str(&c.to_string()))
+                    .collect();
+                Ok(Value::List(Arc::new(chars)))
             }
             "starts_with" => {
                 let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
@@ -1004,9 +996,9 @@ impl VM {
                 if nb.is_int() {
                     return Ok(Value::Float((nb.as_int().unwrap_or(0) as f64).sqrt()));
                 }
-                if let Some(val_ref) = self.nb_borrow_value(nb) {
-                    return Ok(match val_ref {
-                        Value::BigInt(n) => {
+                if let Some(hv) = nb.as_heap_ref() {
+                    return Ok(match hv {
+                        HeapValue::BigInt(n) => {
                             Value::Float(n.to_f64().unwrap_or(f64::INFINITY).sqrt())
                         }
                         _ => Value::Null,
@@ -1113,46 +1105,7 @@ impl VM {
                     return Ok(Value::Float(v.max(l).min(h)));
                 }
                 // Cold path: return val unchanged (no clamp for non-numeric types).
-                if let Some(val_ref) = self.nb_borrow_value(val_nb) {
-                    Ok(val_ref.clone())
-                } else {
-                    Ok(Value::Null)
-                }
-            }
-            "json_parse" | "parse_json" => {
-                let s = self.nb_to_string_resolved(self.registers[base + a + 1]);
-                match parse_json_optimized(&s) {
-                    Ok(v) => Ok(v),
-                    Err(_) => Ok(Value::Null),
-                }
-            }
-            "json_encode" | "to_json" => {
-                let nb = self.registers[base + a + 1];
-                if nb.is_ptr() && nb.payload() > 1 {
-                    let val_ref =
-                        unsafe { &*((nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
-                    let j = helpers::value_to_json(val_ref, &self.strings);
-                    return Ok(Value::String(StringRef::Owned(j.to_string())));
-                }
-                let val = Self::nb_to_value(nb);
-                let j = helpers::value_to_json(&val, &self.strings);
-                Ok(Value::String(StringRef::Owned(j.to_string())))
-            }
-            "json_pretty" => {
-                let nb = self.registers[base + a + 1];
-                if nb.is_ptr() && nb.payload() > 1 {
-                    let val_ref =
-                        unsafe { &*((nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
-                    let j = helpers::value_to_json(val_ref, &self.strings);
-                    let pretty = serde_json::to_string_pretty(&j)
-                        .map_err(|e| VmError::Runtime(format!("json_pretty failed: {}", e)))?;
-                    return Ok(Value::String(StringRef::Owned(pretty)));
-                }
-                let val = Self::nb_to_value(nb);
-                let j = helpers::value_to_json(&val, &self.strings);
-                let pretty = serde_json::to_string_pretty(&j)
-                    .map_err(|e| VmError::Runtime(format!("json_pretty failed: {}", e)))?;
-                Ok(Value::String(StringRef::Owned(pretty)))
+                Ok(self.nb_to_value_deep(val_nb))
             }
             "read_file" => {
                 let path = self.nb_to_string_resolved(self.registers[base + a + 1]);
@@ -1269,15 +1222,10 @@ impl VM {
                 // bytes_to_ascii(b: Bytes) -> String
                 // Convert a Bytes value back to a String. Returns Null on non-Bytes input.
                 let nb = self.registers[base + a + 1];
-                if nb.is_ptr() && nb.payload() > 1 {
-                    let val_ref =
-                        unsafe { &*((nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
-                    return Ok(match val_ref {
-                        Value::Bytes(b) => {
-                            Value::String(StringRef::Owned(String::from_utf8_lossy(b).to_string()))
-                        }
-                        _ => Value::Null,
-                    });
+                if let Some(HeapValue::Bytes(b)) = nb.as_heap_ref() {
+                    return Ok(Value::String(StringRef::Owned(
+                        String::from_utf8_lossy(b).to_string(),
+                    )));
                 }
                 Ok(Value::Null)
             }
@@ -1285,13 +1233,8 @@ impl VM {
                 // bytes_len(b: Bytes) -> Int
                 // Return the number of bytes in a Bytes value. Returns 0 for non-Bytes.
                 let nb = self.registers[base + a + 1];
-                if nb.is_ptr() && nb.payload() > 1 {
-                    let val_ref =
-                        unsafe { &*((nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
-                    return Ok(match val_ref {
-                        Value::Bytes(b) => Value::Int(b.len() as i64),
-                        _ => Value::Int(0),
-                    });
+                if let Some(HeapValue::Bytes(b)) = nb.as_heap_ref() {
+                    return Ok(Value::Int(b.len() as i64));
                 }
                 Ok(Value::Int(0))
             }
@@ -1305,7 +1248,7 @@ impl VM {
                 let end_nb = self.registers[base + a + 3];
                 let start = self.nb_to_int(start_nb).unwrap_or(0) as usize;
                 let end_raw = self.nb_to_int(end_nb).unwrap_or(0);
-                let get_slice = |b: &Vec<u8>| -> Value {
+                let get_slice = |b: &[u8]| -> Value {
                     let len = b.len();
                     let end = if end_raw <= 0 {
                         len
@@ -1316,50 +1259,31 @@ impl VM {
                     let end = end.max(start);
                     Value::Bytes(b[start..end].to_vec())
                 };
-                if nb.is_ptr() && nb.payload() > 1 {
-                    let val_ref =
-                        unsafe { &*((nb.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
-                    return Ok(match val_ref {
-                        Value::Bytes(b) => get_slice(b),
-                        _ => Value::Null,
-                    });
+                if let Some(HeapValue::Bytes(b)) = nb.as_heap_ref() {
+                    return Ok(get_slice(b));
                 }
-                let arg = Self::nb_to_value(nb);
-                Ok(match arg {
-                    Value::Bytes(ref b) => get_slice(b),
-                    _ => Value::Null,
-                })
+                Ok(Value::Null)
             }
             "bytes_concat" => {
                 // bytes_concat(a: Bytes, b: Bytes) -> Bytes
                 // Concatenate two Bytes values. Returns Null if either argument is not Bytes.
                 let nb_a = self.registers[base + a + 1];
                 let nb_b = self.registers[base + a + 2];
-                let bytes_a = if nb_a.is_ptr() && nb_a.payload() > 1 {
-                    let val_ref =
-                        unsafe { &*((nb_a.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
-                    match val_ref {
-                        Value::Bytes(b) => Some(b.clone()),
+                let bytes_a = if let Some(hv) = nb_a.as_heap_ref() {
+                    match hv {
+                        HeapValue::Bytes(b) => Some(b.as_ref().to_vec()),
                         _ => None,
                     }
                 } else {
-                    match Self::nb_to_value(nb_a) {
-                        Value::Bytes(b) => Some(b.clone()),
-                        _ => None,
-                    }
+                    None
                 };
-                let bytes_b = if nb_b.is_ptr() && nb_b.payload() > 1 {
-                    let val_ref =
-                        unsafe { &*((nb_b.payload() & !NbValue::PTR_ARENA_FLAG) as *const Value) };
-                    match val_ref {
-                        Value::Bytes(b) => Some(b.clone()),
+                let bytes_b = if let Some(hv) = nb_b.as_heap_ref() {
+                    match hv {
+                        HeapValue::Bytes(b) => Some(b.as_ref().to_vec()),
                         _ => None,
                     }
                 } else {
-                    match Self::nb_to_value(nb_b) {
-                        Value::Bytes(b) => Some(b.clone()),
-                        _ => None,
-                    }
+                    None
                 };
                 Ok(match (bytes_a, bytes_b) {
                     (Some(mut a_vec), Some(b_vec)) => {
@@ -1377,36 +1301,54 @@ impl VM {
     pub(crate) fn exec_intrinsic(
         &mut self,
         base: usize,
-        _a: usize,
+        a: usize,
         func_id: usize,
         arg_reg: usize,
     ) -> Result<Value, VmError> {
-        let arg_nb = self.registers[base + arg_reg];
+        let arg_nb = self.reg_take_nb(base + arg_reg);
+        let arg = self.nb_to_value_deep(arg_nb);
         match func_id {
+            140 => {
+                // JSON_PARSE
+                let s = self.nb_to_string_resolved(arg_nb);
+                let parsed = match parse_json_optimized(&s) {
+                    Ok(v) => v,
+                    Err(_) => NbValue::new_null(),
+                };
+                self.set_reg_nb(base + a, parsed);
+                return Ok(Value::Null);
+            }
+            141 => {
+                // JSON_ENCODE
+                let encoded = nb_value_to_json_string(arg_nb)
+                    .map_err(|e| VmError::Runtime(format!("json_encode failed: {e}")))?;
+                self.set_reg_nb(base + a, NbValue::new_str(&encoded));
+                return Ok(Value::Null);
+            }
+            142 => {
+                // JSON_PRETTY
+                let encoded = nb_value_to_json_pretty_string(arg_nb)
+                    .map_err(|e| VmError::Runtime(format!("json_pretty failed: {e}")))?;
+                self.set_reg_nb(base + a, NbValue::new_str(&encoded));
+                return Ok(Value::Null);
+            }
             0 => {
                 // LENGTH
                 if arg_nb.is_int() || arg_nb.is_float() || arg_nb.is_bool() || arg_nb.is_null() {
                     return Ok(Value::Int(0));
                 }
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    let len = match val_ref {
-                        Value::String(StringRef::Owned(s)) => s.chars().count() as i64,
-                        Value::String(StringRef::Interned(id)) => {
-                            self.strings
-                                .resolve(*id)
-                                .map(|s| s.chars().count())
-                                .unwrap_or(0) as i64
-                        }
-                        Value::List(l) => l.len() as i64,
-                        Value::Map(m) => m.len() as i64,
-                        Value::Tuple(t) => t.len() as i64,
-                        Value::Set(s) => s.len() as i64,
-                        Value::Bytes(b) => b.len() as i64,
+                if let Some(hv) = arg_nb.as_heap_ref() {
+                    let len = match hv {
+                        HeapValue::Str(s) => s.chars().count() as i64,
+                        HeapValue::List(l) => l.len() as i64,
+                        HeapValue::Map(m) => m.len() as i64,
+                        HeapValue::Tuple(t) => t.len() as i64,
+                        HeapValue::Set(s) => s.len() as i64,
+                        HeapValue::Bytes(b) => b.len() as i64,
                         _ => 0,
                     };
                     return Ok(Value::Int(len));
                 }
-                let arg = Self::nb_to_value(arg_nb);
                 let out = match arg {
                     Value::String(StringRef::Owned(s)) => Value::Int(s.chars().count() as i64),
                     Value::String(StringRef::Interned(id)) => {
@@ -1427,11 +1369,11 @@ impl VM {
                 if arg_nb.is_int() || arg_nb.is_float() || arg_nb.is_bool() || arg_nb.is_null() {
                     return Ok(Value::Int(0));
                 }
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    let count = match val_ref {
-                        Value::List(l) => l.len() as i64,
-                        Value::Map(m) => m.len() as i64,
-                        Value::String(StringRef::Owned(s)) => s.chars().count() as i64,
+                if let Some(hv) = arg_nb.as_heap_ref() {
+                    let count = match hv {
+                        HeapValue::List(l) => l.len() as i64,
+                        HeapValue::Map(m) => m.len() as i64,
+                        HeapValue::Str(s) => s.chars().count() as i64,
                         _ => 0,
                     };
                     return Ok(Value::Int(count));
@@ -1452,10 +1394,10 @@ impl VM {
                 if arg_nb.is_float() {
                     return Ok(Value::Bool(f64::from_bits(arg_nb.0) != 0.0));
                 }
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    return Ok(Value::Bool(val_ref.is_truthy()));
+                if let Some(hv) = arg_nb.as_heap_ref() {
+                    return Ok(Value::Bool(hv.is_truthy()));
                 }
-                return Ok(Value::Bool(Self::nb_to_value(arg_nb).is_truthy()));
+                return Ok(Value::Bool(self.nb_to_value_deep(arg_nb).is_truthy()));
             }
             3 => {
                 // HASH
@@ -1463,6 +1405,51 @@ impl VM {
                 let s = self.nb_display_pretty(arg_nb);
                 let hash = format!("{:x}", Sha256::digest(s.as_bytes()));
                 return Ok(Value::String(StringRef::Owned(format!("sha256:{}", hash))));
+            }
+            67 => {
+                // SIZEOF
+                if arg_nb.is_int() || arg_nb.is_float() || arg_nb.is_bool() || arg_nb.is_null() {
+                    return Ok(Value::Int(8));
+                }
+                if let Some(hv) = arg_nb.as_heap_ref() {
+                    let size_bytes = match hv {
+                        HeapValue::BigInt(_) => 8,
+                        HeapValue::Str(s) => s.len() as i64,
+                        HeapValue::Bytes(b) => b.len() as i64,
+                        HeapValue::List(l) | HeapValue::Tuple(l) => (l.len() as i64) * 8,
+                        HeapValue::Set(s) => (s.len() as i64) * 8,
+                        HeapValue::Map(m) => (m.len() as i64) * 16,
+                        HeapValue::Record(r) => (r.fields.len() as i64) * 16,
+                        HeapValue::Union(_) => 16,
+                        HeapValue::Closure(c) => (c.captures.len() as i64) * 8 + 16,
+                        HeapValue::TraceRef(_) => 16,
+                        HeapValue::Future(_) => 16,
+                    };
+                    return Ok(Value::Int(size_bytes));
+                }
+                let size_bytes = match arg {
+                    Value::Null
+                    | Value::Bool(_)
+                    | Value::Int(_)
+                    | Value::BigInt(_)
+                    | Value::Float(_) => 8,
+                    Value::String(StringRef::Owned(s)) => s.len() as i64,
+                    Value::String(StringRef::Interned(id)) => self
+                        .strings
+                        .resolve(id)
+                        .map(|s| s.len() as i64)
+                        .unwrap_or(0),
+                    Value::Bytes(b) => b.len() as i64,
+                    Value::List(l) | Value::Tuple(l) => (l.len() as i64) * 8,
+                    Value::Set(s) => (s.len() as i64) * 8,
+                    Value::Map(m) => (m.len() as i64) * 16,
+                    Value::Record(r) => (r.fields.len() as i64) * 16,
+                    Value::Union(_) => 16,
+                    Value::Closure(c) => (c.captures.len() as i64) * 8 + 16,
+                    Value::TraceRef(_) => 16,
+                    Value::Future(_) => 16,
+                };
+                return Ok(Value::Int(size_bytes));
             }
             9 => {
                 // PRINT
@@ -1495,23 +1482,16 @@ impl VM {
                 if arg_nb.is_null() {
                     return Ok(Value::Null);
                 }
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    let out = match val_ref {
-                        Value::Int(n) => Value::Int(*n),
-                        Value::Float(f) => Value::Int(*f as i64),
-                        Value::String(sr) => {
-                            let s = match sr {
-                                StringRef::Owned(s) => s.as_str(),
-                                StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
-                            };
+                if let Some(hv) = arg_nb.as_heap_ref() {
+                    let out = match hv {
+                        HeapValue::BigInt(n) => Value::Int(n.to_i64().unwrap_or(0)),
+                        HeapValue::Str(s) => {
                             s.parse::<i64>().map(Value::Int).unwrap_or(Value::Null)
                         }
-                        Value::Bool(b) => Value::Int(if *b { 1 } else { 0 }),
                         _ => Value::Null,
                     };
                     return Ok(out);
                 }
-                let arg = Self::nb_to_value(arg_nb);
                 return Ok(match arg {
                     Value::Int(n) => Value::Int(n),
                     Value::Float(f) => Value::Int(f as i64),
@@ -1539,22 +1519,16 @@ impl VM {
                 if arg_nb.is_null() || arg_nb.is_bool() {
                     return Ok(Value::Null);
                 }
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    let out = match val_ref {
-                        Value::Float(f) => Value::Float(*f),
-                        Value::Int(n) => Value::Float(*n as f64),
-                        Value::String(sr) => {
-                            let s = match sr {
-                                StringRef::Owned(s) => s.as_str(),
-                                StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
-                            };
+                if let Some(hv) = arg_nb.as_heap_ref() {
+                    let out = match hv {
+                        HeapValue::BigInt(n) => Value::Float(n.to_f64().unwrap_or(f64::NAN)),
+                        HeapValue::Str(s) => {
                             s.parse::<f64>().map(Value::Float).unwrap_or(Value::Null)
                         }
                         _ => Value::Null,
                     };
                     return Ok(out);
                 }
-                let arg = Self::nb_to_value(arg_nb);
                 return Ok(match arg {
                     Value::Float(f) => Value::Float(f),
                     Value::Int(n) => Value::Float(n as f64),
@@ -1584,43 +1558,27 @@ impl VM {
                 if arg_nb.is_null() {
                     return Ok(Value::String(StringRef::Owned("Null".to_string())));
                 }
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    return Ok(Value::String(StringRef::Owned(
-                        val_ref.type_name().to_string(),
-                    )));
+                if let Some(hv) = arg_nb.as_heap_ref() {
+                    return Ok(Value::String(StringRef::Owned(hv.type_name().to_string())));
                 }
                 return Ok(Value::String(StringRef::Owned(
-                    Self::nb_to_value(arg_nb).type_name().to_string(),
+                    arg_nb.type_name().to_string(),
                 )));
             }
             16 => {
                 // CONTAINS
                 let needle_nb = self.registers[base + arg_reg + 1];
-                let needle = if needle_nb.is_int() {
-                    Value::Int(needle_nb.as_int().unwrap_or(0))
-                } else if needle_nb.is_float() {
-                    Value::Float(f64::from_bits(needle_nb.0))
-                } else if needle_nb.is_bool() {
-                    Value::Bool(needle_nb.as_bool().unwrap_or(false))
-                } else if needle_nb.is_null() {
-                    Value::Null
-                } else {
-                    Self::nb_to_value(needle_nb)
-                };
-                if let Some(collection) = self.nb_borrow_value(arg_nb) {
+                let needle = needle_nb;
+                if let Some(collection) = arg_nb.as_heap_ref() {
                     let result = match collection {
-                        Value::List(l) => l.iter().any(|v| v == &needle),
-                        Value::Set(s) => s.iter().any(|v| v == &needle),
-                        Value::Map(m) => {
-                            let needle_str = needle.as_string_resolved(&self.strings);
+                        HeapValue::List(l) => l.iter().any(|v| v == &needle),
+                        HeapValue::Set(s) => s.contains(&needle),
+                        HeapValue::Map(m) => {
+                            let needle_str = self.nb_to_string_resolved(needle);
                             m.contains_key(&needle_str)
                         }
-                        Value::String(sr) => {
-                            let s = match sr {
-                                StringRef::Owned(s) => s.as_str(),
-                                StringRef::Interned(id) => self.strings.resolve(*id).unwrap_or(""),
-                            };
-                            let needle_str = needle.as_string_resolved(&self.strings);
+                        HeapValue::Str(s) => {
+                            let needle_str = self.nb_to_string_resolved(needle);
                             s.contains(&needle_str)
                         }
                         _ => false,
@@ -1630,37 +1588,13 @@ impl VM {
                 if arg_nb.is_int() || arg_nb.is_float() || arg_nb.is_bool() || arg_nb.is_null() {
                     return Ok(Value::Bool(false));
                 }
-                let collection = Self::nb_to_value(arg_nb);
-                let result = match collection {
-                    Value::List(l) => l.iter().any(|v| v == &needle),
-                    Value::Set(s) => s.iter().any(|v| v == &needle),
-                    Value::Map(m) => {
-                        let needle_str = needle.as_string_resolved(&self.strings);
-                        m.contains_key(&needle_str)
-                    }
-                    Value::String(sr) => {
-                        let s = match sr {
-                            StringRef::Owned(s) => s,
-                            StringRef::Interned(id) => {
-                                self.strings.resolve(id).unwrap_or("").to_string()
-                            }
-                        };
-                        let needle_str = needle.as_string_resolved(&self.strings);
-                        s.contains(&needle_str)
-                    }
-                    _ => false,
-                };
-                return Ok(Value::Bool(result));
+                return Ok(Value::Bool(false));
             }
             17 => {
                 // JOIN
                 let sep = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
-                if let Some(Value::List(l)) = self.nb_borrow_value(arg_nb) {
-                    let joined = l
-                        .iter()
-                        .map(|v| v.display_pretty())
-                        .collect::<Vec<_>>()
-                        .join(&sep);
+                if let Some(HeapValue::List(l)) = arg_nb.as_heap_ref() {
+                    let joined = l.iter().map(|v| v.display()).collect::<Vec<_>>().join(&sep);
                     return Ok(Value::String(StringRef::Owned(joined)));
                 }
                 return Ok(Value::String(StringRef::Owned(String::new())));
@@ -1669,11 +1603,8 @@ impl VM {
                 // SPLIT
                 let sep = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
                 let s = self.nb_to_string_as_resolved_value(arg_nb);
-                let parts: Vec<Value> = s
-                    .split(&sep)
-                    .map(|p| Value::String(StringRef::Owned(p.to_string())))
-                    .collect();
-                return Ok(Value::new_list(parts));
+                let parts: Vec<NbValue> = s.split(&sep).map(NbValue::new_str).collect();
+                return Ok(Value::List(Arc::new(parts)));
             }
             19 => {
                 // TRIM
@@ -1705,20 +1636,14 @@ impl VM {
                 let end = self
                     .nb_to_int(self.registers[base + arg_reg + 2])
                     .unwrap_or(0) as usize;
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    let out = match val_ref {
-                        Value::List(l) => {
+                if let Some(hv) = arg_nb.as_heap_ref() {
+                    let out = match hv {
+                        HeapValue::List(l) => {
                             let end = end.min(l.len());
                             let start = start.min(end);
-                            Value::new_list(l[start..end].to_vec())
+                            Value::List(Arc::new(l[start..end].to_vec()))
                         }
-                        Value::String(sr) => {
-                            let s = match sr {
-                                StringRef::Owned(s) => s.clone(),
-                                StringRef::Interned(id) => {
-                                    self.strings.resolve(*id).unwrap_or("").to_string()
-                                }
-                            };
+                        HeapValue::Str(s) => {
                             let chars: Vec<char> = s.chars().collect();
                             let end = end.min(chars.len());
                             let start = start.min(end);
@@ -1731,12 +1656,11 @@ impl VM {
                 if arg_nb.is_int() || arg_nb.is_float() || arg_nb.is_bool() || arg_nb.is_null() {
                     return Ok(Value::Null);
                 }
-                let arg = Self::nb_to_value(arg_nb);
                 return Ok(match arg {
                     Value::List(l) => {
                         let end = end.min(l.len());
                         let start = start.min(end);
-                        Value::new_list(l[start..end].to_vec())
+                        Value::List(Arc::new(l[start..end].to_vec()))
                     }
                     Value::String(sr) => {
                         let s = match sr {
@@ -1759,8 +1683,8 @@ impl VM {
                 let end = self
                     .nb_to_int(self.registers[base + arg_reg + 1])
                     .unwrap_or(0);
-                let list: Vec<Value> = (start..end).map(Value::Int).collect();
-                return Ok(Value::new_list(list));
+                let list: Vec<NbValue> = (start..end).map(NbValue::new_int).collect();
+                return Ok(Value::List(Arc::new(list)));
             }
             26 => {
                 // ABS
@@ -1773,15 +1697,12 @@ impl VM {
                 if arg_nb.is_bool() || arg_nb.is_null() {
                     return Ok(Value::Null);
                 }
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    return Ok(match val_ref {
-                        Value::Int(n) => Value::Int(n.abs()),
-                        Value::Float(f) => Value::Float(f.abs()),
-                        Value::BigInt(n) => Value::BigInt(n.abs()),
+                if let Some(hv) = arg_nb.as_heap_ref() {
+                    return Ok(match hv {
+                        HeapValue::BigInt(n) => Value::BigInt(n.abs()),
                         _ => Value::Null,
                     });
                 }
-                let arg = Self::nb_to_value(arg_nb);
                 return Ok(match arg {
                     Value::Int(n) => Value::Int(n.abs()),
                     Value::Float(f) => Value::Float(f.abs()),
@@ -1818,30 +1739,7 @@ impl VM {
                 if arg_nb.is_null() {
                     return Ok(Value::Null);
                 }
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    return match val_ref {
-                        Value::Int(a) => {
-                            if other_nb.is_int() {
-                                Ok(Value::Int((*a).min(other_nb.as_int().unwrap_or(0))))
-                            } else if other_nb.is_float() {
-                                Ok(Value::Float((*a as f64).min(f64::from_bits(other_nb.0))))
-                            } else {
-                                Ok(Value::Int(*a))
-                            }
-                        }
-                        Value::Float(a) => {
-                            if other_nb.is_float() {
-                                Ok(Value::Float(a.min(f64::from_bits(other_nb.0))))
-                            } else if other_nb.is_int() {
-                                Ok(Value::Float(a.min(other_nb.as_int().unwrap_or(0) as f64)))
-                            } else {
-                                Ok(Value::Float(*a))
-                            }
-                        }
-                        _ => Ok(val_ref.clone()),
-                    };
-                }
-                let arg = Self::nb_to_value(arg_nb);
+                let arg = self.nb_to_value_deep(arg_nb);
                 if let Value::Int(a) = &arg {
                     if other_nb.is_int() {
                         return Ok(Value::Int((*a).min(other_nb.as_int().unwrap_or(0))));
@@ -1889,30 +1787,7 @@ impl VM {
                 if arg_nb.is_null() {
                     return Ok(Value::Null);
                 }
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    return match val_ref {
-                        Value::Int(a) => {
-                            if other_nb.is_int() {
-                                Ok(Value::Int((*a).max(other_nb.as_int().unwrap_or(0))))
-                            } else if other_nb.is_float() {
-                                Ok(Value::Float((*a as f64).max(f64::from_bits(other_nb.0))))
-                            } else {
-                                Ok(Value::Int(*a))
-                            }
-                        }
-                        Value::Float(a) => {
-                            if other_nb.is_float() {
-                                Ok(Value::Float(a.max(f64::from_bits(other_nb.0))))
-                            } else if other_nb.is_int() {
-                                Ok(Value::Float(a.max(other_nb.as_int().unwrap_or(0) as f64)))
-                            } else {
-                                Ok(Value::Float(*a))
-                            }
-                        }
-                        _ => Ok(val_ref.clone()),
-                    };
-                }
-                let arg = Self::nb_to_value(arg_nb);
+                let arg = self.nb_to_value_deep(arg_nb);
                 if let Value::Int(a) = &arg {
                     if other_nb.is_int() {
                         return Ok(Value::Int((*a).max(other_nb.as_int().unwrap_or(0))));
@@ -1939,16 +1814,12 @@ impl VM {
                 if arg_nb.is_int() || arg_nb.is_float() || arg_nb.is_bool() {
                     return Ok(Value::Bool(false));
                 }
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    let empty = match val_ref {
-                        Value::List(l) => l.is_empty(),
-                        Value::Map(m) => m.is_empty(),
-                        Value::String(StringRef::Owned(s)) => s.is_empty(),
-                        Value::String(StringRef::Interned(id)) => {
-                            self.strings.resolve(*id).unwrap_or("").is_empty()
-                        }
-                        Value::Set(s) => s.is_empty(),
-                        Value::Null => true,
+                if let Some(hv) = arg_nb.as_heap_ref() {
+                    let empty = match hv {
+                        HeapValue::List(l) => l.is_empty(),
+                        HeapValue::Map(m) => m.is_empty(),
+                        HeapValue::Str(s) => s.is_empty(),
+                        HeapValue::Set(s) => s.is_empty(),
                         _ => false,
                     };
                     return Ok(Value::Bool(empty));
@@ -1958,11 +1829,11 @@ impl VM {
             51 => {
                 // CHARS
                 let s = self.nb_to_string_as_resolved_value(arg_nb);
-                return Ok(Value::new_list(
-                    s.chars()
-                        .map(|c| Value::String(StringRef::Owned(c.to_string())))
-                        .collect(),
-                ));
+                let chars: Vec<NbValue> = s
+                    .chars()
+                    .map(|c| NbValue::new_str(&c.to_string()))
+                    .collect();
+                return Ok(Value::List(Arc::new(chars)));
             }
             52 => {
                 // STARTS_WITH
@@ -2025,14 +1896,9 @@ impl VM {
                 if arg_nb.is_bool() || arg_nb.is_null() {
                     return Ok(Value::Null);
                 }
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    return Ok(match val_ref {
-                        Value::Float(f) => Value::Float(f.round()),
-                        Value::Int(n) => Value::Int(*n),
-                        _ => Value::Null,
-                    });
+                if arg_nb.as_heap_ref().is_some() {
+                    return Ok(Value::Null);
                 }
-                let arg = Self::nb_to_value(arg_nb);
                 return Ok(match arg {
                     Value::Float(f) => Value::Float(f.round()),
                     Value::Int(n) => Value::Int(n),
@@ -2050,14 +1916,9 @@ impl VM {
                 if arg_nb.is_bool() || arg_nb.is_null() {
                     return Ok(Value::Null);
                 }
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    return Ok(match val_ref {
-                        Value::Float(f) => Value::Float(f.ceil()),
-                        Value::Int(n) => Value::Int(*n),
-                        _ => Value::Null,
-                    });
+                if arg_nb.as_heap_ref().is_some() {
+                    return Ok(Value::Null);
                 }
-                let arg = Self::nb_to_value(arg_nb);
                 return Ok(match arg {
                     Value::Float(f) => Value::Float(f.ceil()),
                     Value::Int(n) => Value::Int(n),
@@ -2075,14 +1936,9 @@ impl VM {
                 if arg_nb.is_bool() || arg_nb.is_null() {
                     return Ok(Value::Null);
                 }
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    return Ok(match val_ref {
-                        Value::Float(f) => Value::Float(f.floor()),
-                        Value::Int(n) => Value::Int(*n),
-                        _ => Value::Null,
-                    });
+                if arg_nb.as_heap_ref().is_some() {
+                    return Ok(Value::Null);
                 }
-                let arg = Self::nb_to_value(arg_nb);
                 return Ok(match arg {
                     Value::Float(f) => Value::Float(f.floor()),
                     Value::Int(n) => Value::Int(n),
@@ -2100,14 +1956,14 @@ impl VM {
                 if arg_nb.is_bool() || arg_nb.is_null() {
                     return Ok(Value::Null);
                 }
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    return Ok(match val_ref {
-                        Value::Float(f) => Value::Float(f.sqrt()),
-                        Value::Int(n) => Value::Float((*n as f64).sqrt()),
+                if let Some(hv) = arg_nb.as_heap_ref() {
+                    return Ok(match hv {
+                        HeapValue::BigInt(n) => {
+                            Value::Float(n.to_f64().unwrap_or(f64::INFINITY).sqrt())
+                        }
                         _ => Value::Null,
                     });
                 }
-                let arg = Self::nb_to_value(arg_nb);
                 return Ok(match arg {
                     Value::Float(f) => Value::Float(f.sqrt()),
                     Value::Int(n) => Value::Float((n as f64).sqrt()),
@@ -2149,32 +2005,13 @@ impl VM {
                     }
                     return Ok(Value::Null);
                 }
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    return Ok(match val_ref {
-                        Value::Int(x) => {
-                            if exp_nb.is_int() {
-                                int_pow(*x, exp_nb.as_int().unwrap_or(0))
-                            } else {
-                                Value::Null
-                            }
-                        }
-                        Value::Float(x) => {
-                            if exp_nb.is_float() {
-                                Value::Float(x.powf(f64::from_bits(exp_nb.0)))
-                            } else {
-                                Value::Null
-                            }
-                        }
-                        _ => Value::Null,
-                    });
-                }
-                let arg = Self::nb_to_value(arg_nb);
+                let arg = self.nb_to_value_deep(arg_nb);
                 let exp = if exp_nb.is_int() {
                     Value::Int(exp_nb.as_int().unwrap_or(0))
                 } else if exp_nb.is_float() {
                     Value::Float(f64::from_bits(exp_nb.0))
                 } else {
-                    Self::nb_to_value(exp_nb)
+                    self.nb_to_value_deep(exp_nb)
                 };
                 return Ok(match (arg, exp) {
                     (Value::Int(x), Value::Int(y)) => int_pow(x, y),
@@ -2193,14 +2030,6 @@ impl VM {
                 if arg_nb.is_bool() || arg_nb.is_null() {
                     return Ok(Value::Null);
                 }
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    return Ok(match val_ref {
-                        Value::Float(f) => Value::Float(f.ln()),
-                        Value::Int(n) => Value::Float((*n as f64).ln()),
-                        _ => Value::Null,
-                    });
-                }
-                let arg = Self::nb_to_value(arg_nb);
                 return Ok(match arg {
                     Value::Float(f) => Value::Float(f.ln()),
                     Value::Int(n) => Value::Float((n as f64).ln()),
@@ -2218,14 +2047,7 @@ impl VM {
                 if arg_nb.is_bool() || arg_nb.is_null() {
                     return Ok(Value::Null);
                 }
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    return Ok(match val_ref {
-                        Value::Float(f) => Value::Float(f.sin()),
-                        Value::Int(n) => Value::Float((*n as f64).sin()),
-                        _ => Value::Null,
-                    });
-                }
-                let arg = Self::nb_to_value(arg_nb);
+                let arg = self.nb_to_value_deep(arg_nb);
                 return Ok(match arg {
                     Value::Float(f) => Value::Float(f.sin()),
                     Value::Int(n) => Value::Float((n as f64).sin()),
@@ -2243,14 +2065,7 @@ impl VM {
                 if arg_nb.is_bool() || arg_nb.is_null() {
                     return Ok(Value::Null);
                 }
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    return Ok(match val_ref {
-                        Value::Float(f) => Value::Float(f.cos()),
-                        Value::Int(n) => Value::Float((*n as f64).cos()),
-                        _ => Value::Null,
-                    });
-                }
-                let arg = Self::nb_to_value(arg_nb);
+                let arg = self.nb_to_value_deep(arg_nb);
                 return Ok(match arg {
                     Value::Float(f) => Value::Float(f.cos()),
                     Value::Int(n) => Value::Float((n as f64).cos()),
@@ -2277,7 +2092,7 @@ impl VM {
                     } else if lo_nb.is_null() {
                         Value::Null
                     } else {
-                        Self::nb_to_value(lo_nb)
+                        self.nb_to_value_deep(lo_nb)
                     };
                     let hi = if hi_nb.is_int() {
                         Value::Int(hi_nb.as_int().unwrap_or(0))
@@ -2288,7 +2103,7 @@ impl VM {
                     } else if hi_nb.is_null() {
                         Value::Null
                     } else {
-                        Self::nb_to_value(hi_nb)
+                        self.nb_to_value_deep(hi_nb)
                     };
                     return Ok(match (lo, hi) {
                         (Value::Int(l), Value::Int(h)) => Value::Int(v.max(l).min(h)),
@@ -2311,7 +2126,7 @@ impl VM {
                     } else if lo_nb.is_null() {
                         Value::Null
                     } else {
-                        Self::nb_to_value(lo_nb)
+                        self.nb_to_value_deep(lo_nb)
                     };
                     let hi = if hi_nb.is_float() {
                         Value::Float(f64::from_bits(hi_nb.0))
@@ -2322,7 +2137,7 @@ impl VM {
                     } else if hi_nb.is_null() {
                         Value::Null
                     } else {
-                        Self::nb_to_value(hi_nb)
+                        self.nb_to_value_deep(hi_nb)
                     };
                     return Ok(match (lo, hi) {
                         (Value::Float(l), Value::Float(h)) => Value::Float(v.max(l).min(h)),
@@ -2335,32 +2150,9 @@ impl VM {
                 if arg_nb.is_null() {
                     return Ok(Value::Null);
                 }
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    return Ok(match val_ref {
-                        Value::Int(v) => {
-                            let lo = Self::nb_to_value(lo_nb);
-                            let hi = Self::nb_to_value(hi_nb);
-                            match (lo, hi) {
-                                (Value::Int(l), Value::Int(h)) => Value::Int((*v).max(l).min(h)),
-                                _ => Value::Int(*v),
-                            }
-                        }
-                        Value::Float(v) => {
-                            let lo = Self::nb_to_value(lo_nb);
-                            let hi = Self::nb_to_value(hi_nb);
-                            match (lo, hi) {
-                                (Value::Float(l), Value::Float(h)) => {
-                                    Value::Float((*v).max(l).min(h))
-                                }
-                                _ => Value::Float(*v),
-                            }
-                        }
-                        _ => val_ref.clone(),
-                    });
-                }
-                let arg = Self::nb_to_value(arg_nb);
-                let lo = Self::nb_to_value(lo_nb);
-                let hi = Self::nb_to_value(hi_nb);
+                let arg = self.nb_to_value_deep(arg_nb);
+                let lo = self.nb_to_value_deep(lo_nb);
+                let hi = self.nb_to_value_deep(hi_nb);
                 return Ok(match (arg, lo, hi) {
                     (Value::Int(v), Value::Int(l), Value::Int(h)) => Value::Int(v.max(l).min(h)),
                     (Value::Float(v), Value::Float(l), Value::Float(h)) => {
@@ -2380,14 +2172,7 @@ impl VM {
                 if arg_nb.is_bool() || arg_nb.is_null() {
                     return Ok(Value::Null);
                 }
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    return Ok(match val_ref {
-                        Value::Float(f) => Value::Float(f.tan()),
-                        Value::Int(n) => Value::Float((*n as f64).tan()),
-                        _ => Value::Null,
-                    });
-                }
-                let arg = Self::nb_to_value(arg_nb);
+                let arg = self.nb_to_value_deep(arg_nb);
                 return Ok(match arg {
                     Value::Float(f) => Value::Float(f.tan()),
                     Value::Int(n) => Value::Float((n as f64).tan()),
@@ -2405,14 +2190,7 @@ impl VM {
                 if arg_nb.is_bool() || arg_nb.is_null() {
                     return Ok(Value::Null);
                 }
-                if let Some(val_ref) = self.nb_borrow_value(arg_nb) {
-                    return Ok(match val_ref {
-                        Value::Float(f) => Value::Float(f.trunc()),
-                        Value::Int(n) => Value::Int(*n),
-                        _ => Value::Null,
-                    });
-                }
-                let arg = Self::nb_to_value(arg_nb);
+                let arg = self.nb_to_value_deep(arg_nb);
                 return Ok(match arg {
                     Value::Float(f) => Value::Float(f.trunc()),
                     Value::Int(n) => Value::Int(n),
@@ -2421,22 +2199,27 @@ impl VM {
             }
             _ => {}
         }
-        if let Some(arg_ref) = self.nb_borrow_value(arg_nb) {
+        if arg_nb.as_heap_ref().is_some() {
+            let arg_ref = self.nb_to_value_deep(arg_nb);
             match func_id {
                 4 => {
                     // DIFF
-                    let other = Self::nb_to_value(self.registers[base + arg_reg + 1]);
-                    return Ok(self.diff_values(arg_ref, &other));
+                    let other = self.nb_to_value_deep(self.registers[base + arg_reg + 1]);
+                    return Ok(self.diff_values(&arg_ref, &other));
                 }
                 5 => {
                     // PATCH
-                    let patches = Self::nb_to_value(self.registers[base + arg_reg + 1]);
-                    return Ok(self.patch_value(arg_ref, &patches));
+                    let patches = self.registers[base + arg_reg + 1];
+                    let arg_nb = self.nb_from_value(arg_ref.clone());
+                    let patched = self.patch_value(arg_nb, patches);
+                    return Ok(self.nb_to_value_deep(patched));
                 }
                 6 => {
                     // REDACT
-                    let fields = Self::nb_to_value(self.registers[base + arg_reg + 1]);
-                    return Ok(self.redact_value(arg_ref, &fields));
+                    let fields = self.registers[base + arg_reg + 1];
+                    let arg_nb = self.nb_from_value(arg_ref.clone());
+                    let redacted = self.redact_value(arg_nb, fields);
+                    return Ok(self.nb_to_value_deep(redacted));
                 }
                 7 => {
                     // VALIDATE
@@ -2444,51 +2227,51 @@ impl VM {
                     if nargs < 1 {
                         return Ok(Value::Bool(!matches!(arg_ref, Value::Null)));
                     }
-                    let schema_val = Self::nb_to_value(self.registers[base + arg_reg + 1]);
+                    let schema_val = self.nb_to_value_deep(self.registers[base + arg_reg + 1]);
                     return Ok(Value::Bool(validate_value_against_schema(
-                        arg_ref,
+                        &arg_ref,
                         &schema_val,
                         &self.strings,
                     )));
                 }
                 35 => {
                     // ZIP
-                    let b_list = Self::nb_to_value(self.registers[base + arg_reg + 1]);
-                    if let (Value::List(la), Value::List(lb)) = (arg_ref, &b_list) {
-                        let result: Vec<Value> = la
+                    let b_list = self.nb_to_value_deep(self.registers[base + arg_reg + 1]);
+                    if let (Value::List(la), Value::List(lb)) = (&arg_ref, &b_list) {
+                        let result: Vec<NbValue> = la
                             .iter()
                             .zip(lb.iter())
-                            .map(|(x, y)| Value::new_tuple(vec![x.clone(), y.clone()]))
+                            .map(|(x, y)| NbValue::new_tuple(vec![*x, *y]))
                             .collect();
-                        return Ok(Value::new_list(result));
+                        return Ok(Value::List(Arc::new(result)));
                     }
-                    return Ok(Value::new_list(vec![]));
+                    return Ok(Value::List(Arc::new(Vec::new())));
                 }
                 36 => {
                     // ENUMERATE
-                    if let Value::List(l) = arg_ref {
-                        let result: Vec<Value> = l
+                    if let Value::List(l) = &arg_ref {
+                        let result: Vec<NbValue> = l
                             .iter()
                             .enumerate()
-                            .map(|(i, v)| Value::new_tuple(vec![Value::Int(i as i64), v.clone()]))
+                            .map(|(i, v)| NbValue::new_tuple(vec![NbValue::new_int(i as i64), *v]))
                             .collect();
-                        return Ok(Value::new_list(result));
+                        return Ok(Value::List(Arc::new(result)));
                     }
-                    return Ok(Value::new_list(vec![]));
+                    return Ok(Value::List(Arc::new(Vec::new())));
                 }
                 42 => {
                     // CHUNK
                     let size = self
                         .nb_to_int(self.registers[base + arg_reg + 1])
                         .unwrap_or(1) as usize;
-                    if let Value::List(l) = arg_ref {
-                        let result: Vec<Value> = l
+                    if let Value::List(l) = &arg_ref {
+                        let result: Vec<NbValue> = l
                             .chunks(size.max(1))
-                            .map(|chunk| Value::new_list(chunk.to_vec()))
+                            .map(|chunk| NbValue::new_list(chunk.to_vec()))
                             .collect();
-                        return Ok(Value::new_list(result));
+                        return Ok(Value::List(Arc::new(result)));
                     }
-                    return Ok(Value::new_list(vec![]));
+                    return Ok(Value::List(Arc::new(Vec::new())));
                 }
                 43 => {
                     // WINDOW
@@ -2497,31 +2280,39 @@ impl VM {
                         .unwrap_or(1) as usize;
                     if let Value::List(l) = arg_ref {
                         if n == 0 || n > l.len() {
-                            return Ok(Value::new_list(vec![]));
+                            return Ok(Value::List(Arc::new(Vec::new())));
                         }
-                        let result: Vec<Value> =
-                            l.windows(n).map(|w| Value::new_list(w.to_vec())).collect();
-                        return Ok(Value::new_list(result));
+                        let result: Vec<NbValue> = l
+                            .windows(n)
+                            .map(|w| NbValue::new_list(w.to_vec()))
+                            .collect();
+                        return Ok(Value::List(Arc::new(result)));
                     }
-                    return Ok(Value::new_list(vec![]));
+                    return Ok(Value::List(Arc::new(Vec::new())));
                 }
                 48 => {
                     // FIRST
-                    return Ok(match arg_ref {
-                        Value::List(l) => l.first().cloned().unwrap_or(Value::Null),
+                    return Ok(match &arg_ref {
+                        Value::List(l) => l
+                            .first()
+                            .map(|v| self.nb_to_value_deep(*v))
+                            .unwrap_or(Value::Null),
                         _ => Value::Null,
                     });
                 }
                 49 => {
                     // LAST
-                    return Ok(match arg_ref {
-                        Value::List(l) => l.last().cloned().unwrap_or(Value::Null),
+                    return Ok(match &arg_ref {
+                        Value::List(l) => l
+                            .last()
+                            .map(|v| self.nb_to_value_deep(*v))
+                            .unwrap_or(Value::Null),
                         _ => Value::Null,
                     });
                 }
                 50 => {
                     // IS_EMPTY
-                    let empty = match arg_ref {
+                    let empty = match &arg_ref {
                         Value::List(l) => l.is_empty(),
                         Value::Map(m) => m.is_empty(),
                         Value::String(StringRef::Owned(s)) => s.is_empty(),
@@ -2563,7 +2354,7 @@ impl VM {
                 70 => {
                     // HAS_KEY
                     let key = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
-                    return Ok(Value::Bool(match arg_ref {
+                    return Ok(Value::Bool(match &arg_ref {
                         Value::Map(m) => m.contains_key(&key),
                         Value::Record(r) => r.fields.contains_key(&key),
                         _ => false,
@@ -2572,11 +2363,7 @@ impl VM {
                 106 => {
                     // STRING_CONCAT
                     let other_nb = self.registers[base + arg_reg + 1];
-                    let other = if let Some(val_ref) = self.nb_borrow_value(other_nb) {
-                        val_ref.clone()
-                    } else {
-                        Self::nb_to_value(other_nb)
-                    };
+                    let other = self.nb_to_value_deep(other_nb);
                     return Ok(match (arg_ref, other) {
                         (Value::String(StringRef::Owned(left)), rhs) => {
                             let rhs_str = rhs.as_string_resolved(&self.strings);
@@ -2619,7 +2406,7 @@ impl VM {
                     let url = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
                     let body = self.nb_to_string_resolved(self.registers[base + arg_reg + 2]);
                     let headers = {
-                        let headers_val = Self::nb_to_value(self.registers[base + arg_reg + 3]);
+                        let headers_val = self.nb_to_value_deep(self.registers[base + arg_reg + 3]);
                         extract_headers_map(&headers_val)
                     };
                     return Ok(http_builtin_request(&method, &url, &body, &headers));
@@ -2627,7 +2414,7 @@ impl VM {
                 _ => {}
             }
         }
-        let arg = Self::nb_to_value(arg_nb);
+        let arg = self.nb_to_value_deep(arg_nb);
         match func_id {
             0 => {
                 // LENGTH
@@ -2667,18 +2454,20 @@ impl VM {
             }
             4 => {
                 // DIFF
-                let other = Self::nb_to_value(self.registers[base + arg_reg + 1]);
+                let other = self.nb_to_value_deep(self.registers[base + arg_reg + 1]);
                 Ok(self.diff_values(&arg, &other))
             }
             5 => {
                 // PATCH
-                let patches = Self::nb_to_value(self.registers[base + arg_reg + 1]);
-                Ok(self.patch_value(&arg, &patches))
+                let patches = self.registers[base + arg_reg + 1];
+                let arg_nb = self.nb_from_value(arg);
+                Ok(self.nb_to_value_deep(self.patch_value(arg_nb, patches)))
             }
             6 => {
                 // REDACT
-                let fields = Self::nb_to_value(self.registers[base + arg_reg + 1]);
-                Ok(self.redact_value(&arg, &fields))
+                let fields = self.registers[base + arg_reg + 1];
+                let arg_nb = self.nb_from_value(arg);
+                Ok(self.nb_to_value_deep(self.redact_value(arg_nb, fields)))
             }
             7 => {
                 // VALIDATE
@@ -2686,7 +2475,7 @@ impl VM {
                 if nargs < 1 {
                     Ok(Value::Bool(!matches!(arg, Value::Null)))
                 } else {
-                    let schema_val = Self::nb_to_value(self.registers[base + arg_reg + 1]);
+                    let schema_val = self.nb_to_value_deep(self.registers[base + arg_reg + 1]);
                     Ok(Value::Bool(validate_value_against_schema(
                         &arg,
                         &schema_val,
@@ -2700,29 +2489,29 @@ impl VM {
             }
             35 => {
                 // ZIP
-                let b_list = Self::nb_to_value(self.registers[base + arg_reg + 1]);
+                let b_list = self.nb_to_value_deep(self.registers[base + arg_reg + 1]);
                 if let (Value::List(la), Value::List(lb)) = (&arg, &b_list) {
-                    let result: Vec<Value> = la
+                    let result: Vec<NbValue> = la
                         .iter()
                         .zip(lb.iter())
-                        .map(|(x, y)| Value::new_tuple(vec![x.clone(), y.clone()]))
+                        .map(|(x, y)| NbValue::new_tuple(vec![*x, *y]))
                         .collect();
-                    Ok(Value::new_list(result))
+                    Ok(Value::List(Arc::new(result)))
                 } else {
-                    Ok(Value::new_list(vec![]))
+                    Ok(Value::List(Arc::new(Vec::new())))
                 }
             }
             36 => {
                 // ENUMERATE
                 if let Value::List(l) = &arg {
-                    let result: Vec<Value> = l
+                    let result: Vec<NbValue> = l
                         .iter()
                         .enumerate()
-                        .map(|(i, v)| Value::new_tuple(vec![Value::Int(i as i64), v.clone()]))
+                        .map(|(i, v)| NbValue::new_tuple(vec![NbValue::new_int(i as i64), *v]))
                         .collect();
-                    Ok(Value::new_list(result))
+                    Ok(Value::List(Arc::new(result)))
                 } else {
-                    Ok(Value::new_list(vec![]))
+                    Ok(Value::List(Arc::new(Vec::new())))
                 }
             }
             42 => {
@@ -2731,13 +2520,13 @@ impl VM {
                     .nb_to_int(self.registers[base + arg_reg + 1])
                     .unwrap_or(1) as usize;
                 if let Value::List(l) = &arg {
-                    let result: Vec<Value> = l
+                    let result: Vec<NbValue> = l
                         .chunks(size.max(1))
-                        .map(|chunk| Value::new_list(chunk.to_vec()))
+                        .map(|chunk| NbValue::new_list(chunk.to_vec()))
                         .collect();
-                    Ok(Value::new_list(result))
+                    Ok(Value::List(Arc::new(result)))
                 } else {
-                    Ok(Value::new_list(vec![]))
+                    Ok(Value::List(Arc::new(Vec::new())))
                 }
             }
             43 => {
@@ -2747,14 +2536,16 @@ impl VM {
                     .unwrap_or(1) as usize;
                 if let Value::List(l) = &arg {
                     if n == 0 || n > l.len() {
-                        Ok(Value::new_list(vec![]))
+                        Ok(Value::List(Arc::new(Vec::new())))
                     } else {
-                        let result: Vec<Value> =
-                            l.windows(n).map(|w| Value::new_list(w.to_vec())).collect();
-                        Ok(Value::new_list(result))
+                        let result: Vec<NbValue> = l
+                            .windows(n)
+                            .map(|w| NbValue::new_list(w.to_vec()))
+                            .collect();
+                        Ok(Value::List(Arc::new(result)))
                     }
                 } else {
-                    Ok(Value::new_list(vec![]))
+                    Ok(Value::List(Arc::new(Vec::new())))
                 }
             }
             46 => {
@@ -2763,7 +2554,7 @@ impl VM {
                     .nb_to_int(self.registers[base + arg_reg + 1])
                     .unwrap_or(0) as usize;
                 if let Value::List(l) = &arg {
-                    Ok(Value::new_list(l.iter().take(n).cloned().collect()))
+                    Ok(Value::List(Arc::new(l.iter().take(n).cloned().collect())))
                 } else {
                     Ok(arg)
                 }
@@ -2774,7 +2565,7 @@ impl VM {
                     .nb_to_int(self.registers[base + arg_reg + 1])
                     .unwrap_or(0) as usize;
                 if let Value::List(l) = &arg {
-                    Ok(Value::new_list(l.iter().skip(n).cloned().collect()))
+                    Ok(Value::List(Arc::new(l.iter().skip(n).cloned().collect())))
                 } else {
                     Ok(arg)
                 }
@@ -2782,11 +2573,11 @@ impl VM {
             51 => {
                 // CHARS
                 let s = arg.as_string_resolved(&self.strings);
-                Ok(Value::new_list(
-                    s.chars()
-                        .map(|c| Value::String(StringRef::Owned(c.to_string())))
-                        .collect(),
-                ))
+                let chars: Vec<NbValue> = s
+                    .chars()
+                    .map(|c| NbValue::new_str(&c.to_string()))
+                    .collect();
+                Ok(Value::List(Arc::new(chars)))
             }
             52 => {
                 // STARTS_WITH
@@ -2819,7 +2610,10 @@ impl VM {
             69 => {
                 // TO_SET
                 if let Value::List(l) = arg {
-                    Ok(Value::new_set_from_vec(l.to_vec()))
+                    // SHIM: delete when P2 complete
+                    Ok(Value::new_set_from_vec(
+                        l.iter().map(|v| self.nb_to_value_deep(*v)).collect(),
+                    ))
                 } else {
                     Ok(Value::new_set_from_vec(vec![]))
                 }
@@ -2899,7 +2693,7 @@ impl VM {
                 } else if exp_nb.is_float() {
                     Value::Float(f64::from_bits(exp_nb.0))
                 } else {
-                    Self::nb_to_value(exp_nb)
+                    self.nb_to_value_deep(exp_nb)
                 };
                 Ok(match (arg, exp) {
                     (Value::Int(x), Value::Int(y)) => {
@@ -2955,8 +2749,8 @@ impl VM {
                     let h = hi_nb.as_int().unwrap_or(0);
                     return Ok(Value::Int((*v).max(l).min(h)));
                 }
-                let lo = Self::nb_to_value(lo_nb);
-                let hi = Self::nb_to_value(hi_nb);
+                let lo = self.nb_to_value_deep(lo_nb);
+                let hi = self.nb_to_value_deep(hi_nb);
                 Ok(match (arg, lo, hi) {
                     (Value::Int(v), Value::Int(l), Value::Int(h)) => Value::Int(v.max(l).min(h)),
                     (Value::Float(v), Value::Float(l), Value::Float(h)) => {
@@ -2967,7 +2761,7 @@ impl VM {
             }
             106 => {
                 // STRING_CONCAT
-                let other = Self::nb_to_value(self.registers[base + arg_reg + 1]);
+                let other = self.nb_to_value_deep(self.registers[base + arg_reg + 1]);
                 return Ok(match (arg, other) {
                     (Value::String(StringRef::Owned(mut left)), rhs) => {
                         let rhs_str = rhs.as_string_resolved(&self.strings);
@@ -3009,7 +2803,7 @@ impl VM {
                 let url = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
                 let body = self.nb_to_string_resolved(self.registers[base + arg_reg + 2]);
                 let headers = {
-                    let headers_val = Self::nb_to_value(self.registers[base + arg_reg + 3]);
+                    let headers_val = self.nb_to_value_deep(self.registers[base + arg_reg + 3]);
                     extract_headers_map(&headers_val)
                 };
                 return Ok(http_builtin_request(&method, &url, &body, &headers));
@@ -3087,47 +2881,46 @@ impl VM {
             14 => {
                 // KEYS
                 Ok(match arg {
-                    Value::Map(m) => Value::new_list(
-                        m.keys()
-                            .map(|k| Value::String(StringRef::Owned(k.clone())))
-                            .collect(),
-                    ),
-                    Value::Record(r) => Value::new_list(
-                        r.fields
-                            .keys()
-                            .map(|k| Value::String(StringRef::Owned(k.clone())))
-                            .collect(),
-                    ),
-                    _ => Value::new_list(vec![]),
+                    Value::Map(m) => {
+                        Value::List(Arc::new(m.keys().map(|k| NbValue::new_str(k)).collect()))
+                    }
+                    Value::Record(r) => Value::List(Arc::new(
+                        r.fields.keys().map(|k| NbValue::new_str(k)).collect(),
+                    )),
+                    _ => Value::List(Arc::new(Vec::new())),
                 })
             }
             15 => {
                 // VALUES
                 Ok(match arg {
-                    Value::Map(m) => Value::new_list(m.values().cloned().collect()),
-                    Value::Record(r) => Value::new_list(r.fields.values().cloned().collect()),
-                    _ => Value::new_list(vec![]),
+                    Value::Map(m) => Value::List(Arc::new(
+                        m.values()
+                            .cloned()
+                            .map(|v| NbValue::new_heap(HeapValue::from(v)))
+                            .collect(),
+                    )),
+                    Value::Record(r) => Value::List(Arc::new(
+                        r.fields
+                            .values()
+                            .cloned()
+                            .map(|v| NbValue::new_heap(HeapValue::from(v)))
+                            .collect(),
+                    )),
+                    _ => Value::List(Arc::new(Vec::new())),
                 })
             }
             16 => {
                 // CONTAINS
                 let needle_nb = self.registers[base + arg_reg + 1];
                 // Fast-path: int needle (common in numeric code)
-                if needle_nb.is_int() {
-                    let needle_val = Value::Int(needle_nb.as_int().unwrap_or(0));
-                    let result = match &arg {
-                        Value::List(l) => l.iter().any(|v| v == &needle_val),
-                        Value::Set(s) => s.iter().any(|v| v == &needle_val),
-                        _ => false,
-                    };
-                    return Ok(Value::Bool(result));
-                }
-                let needle = Self::nb_to_value(needle_nb);
                 let result = match arg {
-                    Value::List(l) => l.iter().any(|v| v == &needle),
-                    Value::Set(s) => s.iter().any(|v| v == &needle),
+                    Value::List(l) => l.iter().any(|v| *v == needle_nb),
+                    Value::Set(s) => {
+                        let needle_value = self.nb_to_value_deep(needle_nb);
+                        s.iter().any(|v| v == &needle_value)
+                    }
                     Value::Map(m) => {
-                        let needle_str = needle.as_string_resolved(&self.strings);
+                        let needle_str = self.nb_to_string_resolved(needle_nb);
                         m.contains_key(&needle_str)
                     }
                     Value::String(sr) => {
@@ -3137,7 +2930,7 @@ impl VM {
                                 self.strings.resolve(id).unwrap_or("").to_string()
                             }
                         };
-                        let needle_str = needle.as_string_resolved(&self.strings);
+                        let needle_str = self.nb_to_string_resolved(needle_nb);
                         s.contains(&needle_str)
                     }
                     _ => false,
@@ -3149,11 +2942,7 @@ impl VM {
                 let sep = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
                 Ok(match arg {
                     Value::List(l) => {
-                        let joined = l
-                            .iter()
-                            .map(|v| v.display_pretty())
-                            .collect::<Vec<_>>()
-                            .join(&sep);
+                        let joined = l.iter().map(|v| v.display()).collect::<Vec<_>>().join(&sep);
                         Value::String(StringRef::Owned(joined))
                     }
                     _ => Value::String(StringRef::Owned(String::new())),
@@ -3163,11 +2952,8 @@ impl VM {
                 // SPLIT
                 let sep = self.nb_to_string_resolved(self.registers[base + arg_reg + 1]);
                 let s = arg.as_string_resolved(&self.strings);
-                let parts: Vec<Value> = s
-                    .split(&sep)
-                    .map(|p| Value::String(StringRef::Owned(p.to_string())))
-                    .collect();
-                Ok(Value::new_list(parts))
+                let parts: Vec<NbValue> = s.split(&sep).map(NbValue::new_str).collect();
+                Ok(Value::List(Arc::new(parts)))
             }
             19 => {
                 // TRIM
@@ -3203,7 +2989,7 @@ impl VM {
                     Value::List(l) => {
                         let end = end.min(l.len());
                         let start = start.min(end);
-                        Value::new_list(l[start..end].to_vec())
+                        Value::List(Arc::new(l[start..end].to_vec()))
                     }
                     Value::String(sr) => {
                         let s = match sr {
@@ -3225,10 +3011,10 @@ impl VM {
                 let list = self.reg_take(base + arg_reg);
                 let elem = self.reg_take(base + arg_reg + 1);
                 if let Value::List(mut l) = list {
-                    Arc::make_mut(&mut l).push(elem);
+                    Arc::make_mut(&mut l).push(self.nb_from_value(elem));
                     Ok(Value::List(l))
                 } else {
-                    Ok(Value::new_list(vec![elem]))
+                    Ok(Value::List(Arc::new(vec![self.nb_from_value(elem)])))
                 }
             }
             25 => {
@@ -3237,8 +3023,8 @@ impl VM {
                 let end = self
                     .nb_to_int(self.registers[base + arg_reg + 1])
                     .unwrap_or(0);
-                let list: Vec<Value> = (start..end).map(Value::Int).collect();
-                Ok(Value::new_list(list))
+                let list: Vec<NbValue> = (start..end).map(NbValue::new_int).collect();
+                Ok(Value::List(Arc::new(list)))
             }
             26 => {
                 // ABS
@@ -3320,13 +3106,13 @@ impl VM {
                 if let Value::List(l) = arg {
                     let mut flat = Vec::new();
                     for item in l.iter() {
-                        if let Value::List(inner) = item {
+                        if let Some(HeapValue::List(inner)) = item.as_heap_ref() {
                             flat.extend(inner.iter().cloned());
                         } else {
-                            flat.push(item.clone());
+                            flat.push(*item);
                         }
                     }
-                    Ok(Value::new_list(flat))
+                    Ok(Value::List(Arc::new(flat)))
                 } else {
                     Ok(arg)
                 }
@@ -3338,10 +3124,10 @@ impl VM {
                     let mut seen = Vec::new();
                     for item in l.iter() {
                         if !seen.contains(item) {
-                            seen.push(item.clone());
+                            seen.push(*item);
                         }
                     }
-                    Ok(Value::new_list(seen))
+                    Ok(Value::List(Arc::new(seen)))
                 } else {
                     Ok(arg)
                 }
@@ -3349,14 +3135,20 @@ impl VM {
             48 => {
                 // FIRST
                 Ok(match arg {
-                    Value::List(l) => l.first().cloned().unwrap_or(Value::Null),
+                    Value::List(l) => l
+                        .first()
+                        .map(|v| self.nb_to_value_deep(*v))
+                        .unwrap_or(Value::Null),
                     _ => Value::Null,
                 })
             }
             49 => {
                 // LAST
                 Ok(match arg {
-                    Value::List(l) => l.last().cloned().unwrap_or(Value::Null),
+                    Value::List(l) => l
+                        .last()
+                        .map(|v| self.nb_to_value_deep(*v))
+                        .unwrap_or(Value::Null),
                     _ => Value::Null,
                 })
             }
@@ -3376,7 +3168,35 @@ impl VM {
             }
             71 => {
                 // MERGE: merge(map1, map2) → map
-                let other = Self::nb_to_value(self.registers[base + arg_reg + 1]);
+                let other_nb = self.registers[base + arg_reg + 1];
+
+                if let (Some(HeapValue::Map(map_a)), Some(HeapValue::Map(map_b))) =
+                    (arg_nb.as_heap_ref(), other_nb.as_heap_ref())
+                {
+                    let mut merged = map_a.clone();
+                    Arc::make_mut(&mut merged).extend(map_b.iter().map(|(k, v)| (k.clone(), *v)));
+                    let converted: BTreeMap<String, Value> = merged
+                        .iter()
+                        .map(|(k, v)| (k.clone(), self.nb_to_value_deep(*v)))
+                        .collect();
+                    return Ok(Value::Map(Arc::new(converted)));
+                }
+
+                if let (Some(HeapValue::Record(rec_a)), Some(HeapValue::Record(rec_b))) =
+                    (arg_nb.as_heap_ref(), other_nb.as_heap_ref())
+                {
+                    let mut fields = rec_a.fields.clone();
+                    fields.extend(rec_b.fields.iter().map(|(k, v)| (k.clone(), *v)));
+                    return Ok(Value::Record(Arc::new(lumen_core::values::RecordValue {
+                        type_name: rec_a.type_name.to_string(),
+                        fields: fields
+                            .into_iter()
+                            .map(|(k, v)| (k, self.nb_to_value_deep(v)))
+                            .collect(),
+                    })));
+                }
+
+                let other = self.nb_to_value_deep(other_nb);
                 Ok(match (arg, other) {
                     (Value::Map(mut m1), Value::Map(m2)) => {
                         let merged = Arc::make_mut(&mut m1);
@@ -3478,7 +3298,7 @@ impl VM {
             return NbValue::NAN_BOX_NULL as i64;
         }
         let vm = unsafe { &mut *vm_ptr };
-        let closure_value = Self::nb_to_value(NbValue(closure_nb as u64));
+        let closure_value = vm.nb_to_value_deep(NbValue(closure_nb as u64));
         let closure = match closure_value {
             Value::Closure(closure) => closure,
             _ => return NbValue::NAN_BOX_NULL as i64,
@@ -3489,18 +3309,222 @@ impl VM {
             let nb_raw = unsafe { *args_ptr.add(i) };
             let nb = NbValue(nb_raw as u64);
             nb.inc_ref();
-            args.push(Self::nb_to_value(nb));
+            args.push(vm.nb_to_value_deep(nb));
             nb.drop_heap();
         }
         match vm.call_closure_sync(&closure, &args) {
             Ok(result) => {
-                let nb = value_to_nb(result);
+                let nb = vm.nb_from_value(result);
                 nb.0 as i64
             }
             Err(_) => NbValue::NAN_BOX_NULL as i64,
         }
     }
 }
+
+pub(crate) mod json_encode {
+    use super::JsonEncodeError;
+    use lumen_core::heap_value::HeapValue;
+    use lumen_core::nb_value::NbValue;
+
+    pub(crate) fn encode_json_compact(value: NbValue) -> Result<String, JsonEncodeError> {
+        let mut out = String::new();
+        write_value(&mut out, value, 0, false)?;
+        Ok(out)
+    }
+
+    pub(crate) fn encode_json_pretty(value: NbValue) -> Result<String, JsonEncodeError> {
+        let mut out = String::new();
+        write_value(&mut out, value, 0, true)?;
+        Ok(out)
+    }
+
+    fn write_value(
+        out: &mut String,
+        value: NbValue,
+        indent: usize,
+        pretty: bool,
+    ) -> Result<(), JsonEncodeError> {
+        if value.is_null() {
+            out.push_str("null");
+            return Ok(());
+        }
+        if let Some(b) = value.as_bool() {
+            if b {
+                out.push_str("true");
+            } else {
+                out.push_str("false");
+            }
+            return Ok(());
+        }
+        if let Some(i) = value.as_int() {
+            out.push_str(&i.to_string());
+            return Ok(());
+        }
+        if let Some(f) = value.as_float() {
+            if !f.is_finite() {
+                return Err(JsonEncodeError::InvalidType("Float"));
+            }
+            out.push_str(&format_float(f));
+            return Ok(());
+        }
+        let Some(hv) = value.as_heap_ref() else {
+            return Err(JsonEncodeError::InvalidType("Unknown"));
+        };
+        match hv {
+            HeapValue::Str(s) => {
+                write_string(out, s);
+                Ok(())
+            }
+            HeapValue::BigInt(n) => {
+                out.push_str(&n.to_string());
+                Ok(())
+            }
+            HeapValue::List(list) => write_list(out, list, indent, pretty),
+            HeapValue::Tuple(tuple) => write_list(out, tuple, indent, pretty),
+            HeapValue::Set(set) => {
+                out.push('[');
+                if !set.is_empty() {
+                    let mut first = true;
+                    for item in set.iter() {
+                        if !first {
+                            out.push(',');
+                        }
+                        if pretty {
+                            out.push('\n');
+                            indent_to(out, indent + 2);
+                        }
+                        write_value(out, *item, indent + 2, pretty)?;
+                        first = false;
+                    }
+                    if pretty {
+                        out.push('\n');
+                        indent_to(out, indent);
+                    }
+                }
+                out.push(']');
+                Ok(())
+            }
+            HeapValue::Map(map) => write_map(out, map, indent, pretty),
+            _ => Err(JsonEncodeError::InvalidType(hv.type_name())),
+        }
+    }
+
+    fn write_list(
+        out: &mut String,
+        list: &[NbValue],
+        indent: usize,
+        pretty: bool,
+    ) -> Result<(), JsonEncodeError> {
+        out.push('[');
+        if !list.is_empty() {
+            let mut first = true;
+            for item in list.iter() {
+                if !first {
+                    out.push(',');
+                }
+                if pretty {
+                    out.push('\n');
+                    indent_to(out, indent + 2);
+                }
+                write_value(out, *item, indent + 2, pretty)?;
+                first = false;
+            }
+            if pretty {
+                out.push('\n');
+                indent_to(out, indent);
+            }
+        }
+        out.push(']');
+        Ok(())
+    }
+
+    fn write_map(
+        out: &mut String,
+        map: &std::collections::BTreeMap<String, NbValue>,
+        indent: usize,
+        pretty: bool,
+    ) -> Result<(), JsonEncodeError> {
+        out.push('{');
+        if !map.is_empty() {
+            let mut first = true;
+            for (key, value) in map.iter() {
+                if !first {
+                    out.push(',');
+                }
+                if pretty {
+                    out.push('\n');
+                    indent_to(out, indent + 2);
+                }
+                write_string(out, key);
+                out.push(':');
+                if pretty {
+                    out.push(' ');
+                }
+                write_value(out, *value, indent + 2, pretty)?;
+                first = false;
+            }
+            if pretty {
+                out.push('\n');
+                indent_to(out, indent);
+            }
+        }
+        out.push('}');
+        Ok(())
+    }
+
+    fn indent_to(out: &mut String, indent: usize) {
+        for _ in 0..indent {
+            out.push(' ');
+        }
+    }
+
+    fn format_float(value: f64) -> String {
+        if value == value.floor() && value.abs() < 1e15 {
+            format!("{:.1}", value)
+        } else {
+            format!("{}", value)
+        }
+    }
+
+    fn write_string(out: &mut String, value: &str) {
+        out.push('"');
+        for ch in value.chars() {
+            match ch {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                '\u{08}' => out.push_str("\\b"),
+                '\u{0C}' => out.push_str("\\f"),
+                c if (c as u32) <= 0x1F => {
+                    use std::fmt::Write;
+                    let _ = write!(out, "\\u{:04X}", c as u32);
+                }
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum JsonEncodeError {
+    InvalidType(&'static str),
+}
+
+impl std::fmt::Display for JsonEncodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JsonEncodeError::InvalidType(ty) => {
+                write!(f, "invalid JSON value of type '{ty}'")
+            }
+        }
+    }
+}
+
+impl std::error::Error for JsonEncodeError {}
 
 // ── Helper functions for intrinsics ──
 
@@ -3636,201 +3660,23 @@ fn extract_headers_map(val: &Value) -> Vec<(String, String)> {
     }
 }
 
-fn sort_list_homogeneous(items: &mut Vec<Value>) {
+fn sort_list_homogeneous(items: &mut Vec<NbValue>) {
     if items.len() <= 1 {
         return;
     }
-    match &items[0] {
-        Value::Int(_) => {
-            if items.iter().all(|v| matches!(v, Value::Int(_))) {
-                items.sort_unstable_by(|lhs, rhs| match (lhs, rhs) {
-                    (Value::Int(a), Value::Int(b)) => a.cmp(b),
-                    _ => unreachable!(),
-                });
-                return;
-            }
-        }
-        Value::Float(_) => {
-            if items.iter().all(|v| matches!(v, Value::Float(_))) {
-                items.sort_unstable_by(|lhs, rhs| match (lhs, rhs) {
-                    (Value::Float(a), Value::Float(b)) => a.total_cmp(b),
-                    _ => unreachable!(),
-                });
-                return;
-            }
-        }
-        Value::Union(_) => {
-            if let Some((tag, payload_kind)) = homogeneous_union_scalar_shape(items) {
-                items.sort_by(|lhs, rhs| match (lhs, rhs) {
-                    (Value::Union(a), Value::Union(b)) => {
-                        debug_assert_eq!(a.tag, tag);
-                        debug_assert_eq!(b.tag, tag);
-                        cmp_union_payload_scalar(&a.payload, &b.payload, payload_kind)
-                    }
-                    _ => unreachable!(),
-                });
-                return;
-            }
-        }
-        Value::Record(_) => {
-            if let Some(field_kinds) = homogeneous_record_scalar_shape(items) {
-                items.sort_by(|lhs, rhs| match (lhs, rhs) {
-                    (Value::Record(a), Value::Record(b)) => {
-                        cmp_record_scalar_fields(a, b, &field_kinds)
-                    }
-                    _ => unreachable!(),
-                });
-                return;
-            }
-        }
-        _ => {}
+    if items.iter().all(|v| v.is_int()) {
+        items
+            .sort_unstable_by(|lhs, rhs| lhs.as_int().unwrap_or(0).cmp(&rhs.as_int().unwrap_or(0)));
+        return;
     }
-    items.sort();
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ScalarSortKind {
-    Null,
-    Bool,
-    Int,
-    Float,
+    if items.iter().all(|v| v.is_float()) {
+        items.sort_unstable_by(|lhs, rhs| f64::from_bits(lhs.0).total_cmp(&f64::from_bits(rhs.0)));
+        return;
+    }
+    items.sort_by(|lhs, rhs| lhs.cmp(rhs));
 }
 
 #[inline]
-fn scalar_sort_kind(value: &Value) -> Option<ScalarSortKind> {
-    match value {
-        Value::Null => Some(ScalarSortKind::Null),
-        Value::Bool(_) => Some(ScalarSortKind::Bool),
-        Value::Int(_) => Some(ScalarSortKind::Int),
-        Value::Float(_) => Some(ScalarSortKind::Float),
-        _ => None,
-    }
-}
-
-#[inline]
-fn cmp_scalar_value(lhs: &Value, rhs: &Value, kind: ScalarSortKind) -> Ordering {
-    match kind {
-        ScalarSortKind::Null => Ordering::Equal,
-        ScalarSortKind::Bool => match (lhs, rhs) {
-            (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
-            _ => unreachable!(),
-        },
-        ScalarSortKind::Int => match (lhs, rhs) {
-            (Value::Int(a), Value::Int(b)) => a.cmp(b),
-            _ => unreachable!(),
-        },
-        ScalarSortKind::Float => match (lhs, rhs) {
-            (Value::Float(a), Value::Float(b)) => a.total_cmp(b),
-            _ => unreachable!(),
-        },
-    }
-}
-
-#[inline]
-fn union_payload_sort_kind(payload: &UnionPayload) -> Option<ScalarSortKind> {
-    match payload {
-        UnionPayload::Null => Some(ScalarSortKind::Null),
-        UnionPayload::Bool(_) => Some(ScalarSortKind::Bool),
-        UnionPayload::Int(_) => Some(ScalarSortKind::Int),
-        UnionPayload::Float(_) => Some(ScalarSortKind::Float),
-        UnionPayload::Heap(_) => None,
-    }
-}
-
-#[inline]
-fn cmp_union_payload_scalar(
-    lhs: &UnionPayload,
-    rhs: &UnionPayload,
-    payload_kind: ScalarSortKind,
-) -> Ordering {
-    match payload_kind {
-        ScalarSortKind::Null => Ordering::Equal,
-        ScalarSortKind::Bool => match (lhs, rhs) {
-            (UnionPayload::Bool(a), UnionPayload::Bool(b)) => a.cmp(b),
-            _ => unreachable!(),
-        },
-        ScalarSortKind::Int => match (lhs, rhs) {
-            (UnionPayload::Int(a), UnionPayload::Int(b)) => a.cmp(b),
-            _ => unreachable!(),
-        },
-        ScalarSortKind::Float => match (lhs, rhs) {
-            (UnionPayload::Float(a), UnionPayload::Float(b)) => a.total_cmp(b),
-            _ => unreachable!(),
-        },
-    }
-}
-
-fn homogeneous_union_scalar_shape(items: &[Value]) -> Option<(u32, ScalarSortKind)> {
-    let first = match items.first()? {
-        Value::Union(u) => u,
-        _ => return None,
-    };
-    let payload_kind = union_payload_sort_kind(&first.payload)?;
-    for item in items.iter().skip(1) {
-        let union = match item {
-            Value::Union(u) => u,
-            _ => return None,
-        };
-        if union.tag != first.tag || union_payload_sort_kind(&union.payload) != Some(payload_kind) {
-            return None;
-        }
-    }
-    Some((first.tag, payload_kind))
-}
-
-fn homogeneous_record_scalar_shape(items: &[Value]) -> Option<Vec<ScalarSortKind>> {
-    let first = match items.first()? {
-        Value::Record(record) => record,
-        _ => return None,
-    };
-    let mut field_kinds = Vec::with_capacity(first.fields.len());
-    for value in first.fields.values() {
-        field_kinds.push(scalar_sort_kind(value)?);
-    }
-    for item in items.iter().skip(1) {
-        let record = match item {
-            Value::Record(record) => record,
-            _ => return None,
-        };
-        if record.type_name != first.type_name || record.fields.len() != field_kinds.len() {
-            return None;
-        }
-        for (((first_key, _), (record_key, record_val)), expected_kind) in first
-            .fields
-            .iter()
-            .zip(record.fields.iter())
-            .zip(field_kinds.iter())
-        {
-            if first_key != record_key || scalar_sort_kind(record_val) != Some(*expected_kind) {
-                return None;
-            }
-        }
-    }
-    Some(field_kinds)
-}
-
-#[inline]
-fn cmp_record_scalar_fields(
-    lhs: &lumen_core::values::RecordValue,
-    rhs: &lumen_core::values::RecordValue,
-    field_kinds: &[ScalarSortKind],
-) -> Ordering {
-    debug_assert_eq!(lhs.type_name, rhs.type_name);
-    debug_assert_eq!(lhs.fields.len(), field_kinds.len());
-    debug_assert_eq!(rhs.fields.len(), field_kinds.len());
-    for ((lhs_val, rhs_val), field_kind) in lhs
-        .fields
-        .values()
-        .zip(rhs.fields.values())
-        .zip(field_kinds.iter())
-    {
-        let ord = cmp_scalar_value(lhs_val, rhs_val, *field_kind);
-        if ord != Ordering::Equal {
-            return ord;
-        }
-    }
-    Ordering::Equal
-}
 
 fn validate_value_against_schema(
     val: &Value,
@@ -3842,7 +3688,7 @@ fn validate_value_against_schema(
             let type_name = schema.as_string_resolved(strings);
             match type_name.as_str() {
                 "Any" => true,
-                "Int" => matches!(val, Value::Int(_)),
+                "Int" => matches!(val, Value::Int(_) | Value::BigInt(_)),
                 "Float" => matches!(val, Value::Float(_)),
                 "String" => matches!(val, Value::String(_)),
                 "Bool" => matches!(val, Value::Bool(_)),
@@ -3857,23 +3703,13 @@ fn validate_value_against_schema(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lumen_core::values::{RecordValue, UnionValue};
 
     #[test]
     fn sort_union_scalar_payload_matches_value_ord() {
-        let mut actual = vec![
-            Value::Union(UnionValue {
-                tag: 42,
-                payload: UnionPayload::Int(4),
-            }),
-            Value::Union(UnionValue {
-                tag: 42,
-                payload: UnionPayload::Int(-7),
-            }),
-            Value::Union(UnionValue {
-                tag: 42,
-                payload: UnionPayload::Int(0),
-            }),
+        let mut actual: Vec<NbValue> = vec![
+            NbValue::new_union("tag42", NbValue::new_int(4)),
+            NbValue::new_union("tag42", NbValue::new_int(-7)),
+            NbValue::new_union("tag42", NbValue::new_int(0)),
         ];
         let mut expected = actual.clone();
         expected.sort();
@@ -3885,21 +3721,31 @@ mod tests {
 
     #[test]
     fn sort_record_scalar_shape_matches_value_ord() {
-        fn mk_record(age: i64, alive: bool, score: f64) -> Value {
-            let mut fields = BTreeMap::new();
-            fields.insert("age".to_string(), Value::Int(age));
-            fields.insert("alive".to_string(), Value::Bool(alive));
-            fields.insert("score".to_string(), Value::Float(score));
-            Value::Record(Arc::new(RecordValue {
-                type_name: "Node".to_string(),
-                fields,
-            }))
-        }
-
-        let mut actual = vec![
-            mk_record(3, true, 8.0),
-            mk_record(3, false, 9.0),
-            mk_record(1, true, 7.5),
+        let mut actual: Vec<NbValue> = vec![
+            NbValue::new_record(
+                "Node",
+                BTreeMap::from([
+                    ("age".to_string(), NbValue::new_int(3)),
+                    ("alive".to_string(), NbValue::new_bool(true)),
+                    ("score".to_string(), NbValue::new_float(8.0)),
+                ]),
+            ),
+            NbValue::new_record(
+                "Node",
+                BTreeMap::from([
+                    ("age".to_string(), NbValue::new_int(3)),
+                    ("alive".to_string(), NbValue::new_bool(false)),
+                    ("score".to_string(), NbValue::new_float(9.0)),
+                ]),
+            ),
+            NbValue::new_record(
+                "Node",
+                BTreeMap::from([
+                    ("age".to_string(), NbValue::new_int(1)),
+                    ("alive".to_string(), NbValue::new_bool(true)),
+                    ("score".to_string(), NbValue::new_float(7.5)),
+                ]),
+            ),
         ];
         let mut expected = actual.clone();
         expected.sort();
@@ -3911,19 +3757,19 @@ mod tests {
 
     #[test]
     fn sort_record_shape_mismatch_falls_back_to_value_ord() {
-        fn mk_record(type_name: &str, key: &str, value: Value) -> Value {
-            let mut fields = BTreeMap::new();
-            fields.insert(key.to_string(), value);
-            Value::Record(Arc::new(RecordValue {
-                type_name: type_name.to_string(),
-                fields,
-            }))
-        }
-
-        let mut actual = vec![
-            mk_record("Node", "left", Value::Int(1)),
-            mk_record("Node", "right", Value::Int(0)),
-            mk_record("Other", "left", Value::Int(2)),
+        let mut actual: Vec<NbValue> = vec![
+            NbValue::new_record(
+                "Node",
+                BTreeMap::from([("left".to_string(), NbValue::new_int(1))]),
+            ),
+            NbValue::new_record(
+                "Node",
+                BTreeMap::from([("right".to_string(), NbValue::new_int(0))]),
+            ),
+            NbValue::new_record(
+                "Other",
+                BTreeMap::from([("left".to_string(), NbValue::new_int(2))]),
+            ),
         ];
         let mut expected = actual.clone();
         expected.sort();
@@ -3931,5 +3777,34 @@ mod tests {
         sort_list_homogeneous(&mut actual);
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn json_parse_encode_roundtrip_nbvalue() {
+        let mut vm = VM::new();
+        vm.registers.resize(4, NbValue::new_null());
+        let json_str = "{\"name\":\"Alice\",\"age\":30}";
+        vm.set_reg_nb(1, NbValue::new_str(json_str));
+        let result = vm.exec_intrinsic(0, 0, 140, 1);
+        assert!(result.is_ok());
+
+        let parsed = vm.reg_nb(0);
+        if let Some(HeapValue::Map(m)) = parsed.as_heap_ref() {
+            assert_eq!(m.get("name"), Some(&NbValue::new_str("Alice")));
+            assert_eq!(m.get("age"), Some(&NbValue::new_int(30)));
+        } else {
+            panic!("expected map from json parse");
+        }
+
+        vm.set_reg_nb(1, parsed);
+        let result = vm.exec_intrinsic(0, 0, 141, 1);
+        assert!(result.is_ok());
+        let encoded = vm.reg_nb(0);
+        if let Some(HeapValue::Str(s)) = encoded.as_heap_ref() {
+            assert!(s.contains("\"name\""));
+            assert!(s.contains("\"Alice\""));
+        } else {
+            panic!("expected json string output");
+        }
     }
 }

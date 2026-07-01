@@ -251,28 +251,52 @@ pub fn stencil_loadint() -> StencilDef {
 /// mov [r14+A*8], rax   →  49 89 86 [hole: RegA, 4]
 /// ```
 pub fn stencil_move() -> StencilDef {
+    // Move must increment heap refcounts. Delegate to runtime to avoid
+    // duplicating NbValue refcount logic in stencil assembly.
+    effect_stencil(OpCode::Move as u8, "Move")
+}
+
+/// **MoveOwn** — destructive move: copy B→A then zero B with NaN-boxed Null.
+///
+/// This prevents a double-free: if both A and B hold the same Arc pointer after
+/// a plain bit-copy (like `stencil_move`), then a later `set_reg` on A would
+/// call `drop_heap` on the old value, freeing the Arc while B still holds the
+/// same raw pointer. By writing NaN-boxed Null into B immediately after the
+/// copy we ensure the Arc is only owned by one register slot.
+///
+/// ```text
+/// mov rax, [r14+B*8]           ; 49 8B 86 <RegB:4>   — hole RegB  @3
+/// mov [r14+A*8], rax           ; 49 89 86 <RegA:4>   — hole RegA  @10
+/// movabs rax, NULL_VALUE       ; 48 B8 <NULL_VALUE_LE:8>          @17
+/// mov [r14+B*8], rax           ; 49 89 86 <RegB:4>   — hole RegB  @27
+/// ```
+///
+/// Byte offsets:
+///   0: 49 8B 86 [4]  — load r[B]            (7 bytes)
+///   7: 49 89 86 [4]  — store to r[A]        (7 bytes)
+///  14: 48 B8 [8]     — movabs rax, NULL      (10 bytes)
+///  24: 49 89 86 [4]  — store null to r[B]   (7 bytes)
+///  Total: 31 bytes
+pub fn stencil_moveown() -> StencilDef {
     StencilDef::new(
-        OpCode::Move as u8,
-        "Move",
+        OpCode::MoveOwn as u8,
+        "MoveOwn",
         code!(
             [0x49u8, 0x8B, 0x86],
-            [0x00u8; 4], // hole: RegB (load source)
+            [0x00u8; 4], // hole: RegB at 3 (load source)
             [0x49u8, 0x89, 0x86],
-            [0x00u8; 4], // hole: RegA (store dest)
+            [0x00u8; 4], // hole: RegA at 10 (store dest)
+            [0x48u8, 0xB8],
+            NULL_VALUE_LE, // movabs rax, 0x7FFC_0000_0000_0000
+            [0x49u8, 0x89, 0x86],
+            [0x00u8; 4], // hole: RegB at 27 (zero source)
         ),
         vec![
             HoleDef::new(3, HoleType::RegB, 4),
             HoleDef::new(10, HoleType::RegA, 4),
+            HoleDef::new(27, HoleType::RegB, 4),
         ],
     )
-}
-
-/// **MoveOwn** — same encoding as Move (semantics differ only for GC).
-pub fn stencil_moveown() -> StencilDef {
-    let mut s = stencil_move();
-    s.opcode = OpCode::MoveOwn as u8;
-    s.name = "MoveOwn".into();
-    s
 }
 
 // ---------------------------------------------------------------------------
@@ -578,7 +602,7 @@ fn arith_stencil_abc(opcode: u8, name: &str, compute_bytes: &[u8]) -> StencilDef
 ///
 /// Fast path: both operands are TAG_INT, extract 48-bit signed payloads,
 /// add, re-box.  The `jne` holes jump to a slow-path stencil (patched by
-/// stitcher; currently a TODO stub).
+/// stitcher; currently UNIMPLEMENTED).
 ///
 /// ```text
 /// add rax, rcx  →  48 03 C1
@@ -1073,7 +1097,8 @@ pub fn stencil_tailcall() -> StencilDef {
 /// **Intrinsic** — dispatch to a built-in function.
 ///
 /// `lm_rt_intrinsic(ctx, instr_word)` looks up the intrinsic ID from
-/// the instruction and dispatches.
+/// the instruction and dispatches. Reloads `R[A]` from memory after the
+/// call because runtime helpers update the register file directly.
 pub fn stencil_intrinsic() -> StencilDef {
     StencilDef::new(
         OpCode::Intrinsic as u8,
@@ -1088,10 +1113,13 @@ pub fn stencil_intrinsic() -> StencilDef {
             [0x48u8, 0x83, 0xEC, 0x08], // sub rsp, 8  (align RSP)
             [0xFFu8, 0xD0],             // call rax
             [0x48u8, 0x83, 0xC4, 0x08], // add rsp, 8  (restore RSP)
+            [0x49u8, 0x8B, 0x86],
+            [0x00u8; 4], // mov rax, [r14+A*8]  hole RegA at 36
         ),
         vec![
             HoleDef::new(5, HoleType::InstructionWord, 8),
             HoleDef::new(18, HoleType::RuntimeFuncAddr, 8),
+            HoleDef::new(36, HoleType::RegA, 4),
         ],
     )
 }
@@ -1262,6 +1290,122 @@ pub fn stencil_intrinsic_values() -> StencilDef {
             [0x48u8, 0x89, 0xC6], // mov rsi, rax
             [0x48u8, 0xB8],
             [0x00u8; 8],                // movabs rax, <jit_rt_map_values>
+            [0x48u8, 0x83, 0xEC, 0x08], // sub rsp, 8
+            [0xFFu8, 0xD0],             // call rax
+            [0x48u8, 0x83, 0xC4, 0x08], // add rsp, 8
+            [0x49u8, 0x89, 0x86],
+            [0x00u8; 4], // mov [r14+A*8], rax  hole RegA at 36
+        ),
+        vec![
+            HoleDef::new(6, HoleType::RegC, 4),
+            HoleDef::new(15, HoleType::RuntimeFuncAddr, 8),
+            HoleDef::new(36, HoleType::RegA, 4),
+        ],
+    )
+}
+
+/// **IntrinsicMerge** — `R[A] = merge(R[C], R[C+1])` fast path.
+///
+/// Calls `jit_rt_merge(ctx, map_a, map_b)` and stores the returned map pointer.
+pub fn stencil_intrinsic_merge() -> StencilDef {
+    StencilDef::new(
+        OpCode::Intrinsic as u8,
+        "IntrinsicMerge",
+        code!(
+            [0x4Cu8, 0x89, 0xFF], // mov rdi, r15
+            [0x49u8, 0x8B, 0x86],
+            [0x00u8; 4],          // mov rax, [r14+C*8]  hole RegC at 6
+            [0x48u8, 0x89, 0xC6], // mov rsi, rax
+            [0x49u8, 0x8B, 0x86],
+            [0x00u8; 4],          // mov rax, [r14+B*8]  hole RegB at 17 (patched to C+1)
+            [0x48u8, 0x89, 0xC2], // mov rdx, rax
+            [0x48u8, 0xB8],
+            [0x00u8; 8],                // movabs rax, <jit_rt_merge>
+            [0x48u8, 0x83, 0xEC, 0x08], // sub rsp, 8
+            [0xFFu8, 0xD0],             // call rax
+            [0x48u8, 0x83, 0xC4, 0x08], // add rsp, 8
+            [0x49u8, 0x89, 0x86],
+            [0x00u8; 4], // mov [r14+A*8], rax  hole RegA at 46
+        ),
+        vec![
+            HoleDef::new(6, HoleType::RegC, 4),
+            HoleDef::new(16, HoleType::RegB, 4),
+            HoleDef::new(25, HoleType::RuntimeFuncAddr, 8),
+            HoleDef::new(46, HoleType::RegA, 4),
+        ],
+    )
+}
+
+/// **IntrinsicJsonParse** — `R[A] = parse_json(R[C])` fast path.
+///
+/// Calls `jit_rt_json_parse(ctx, json_str)` and stores the returned NbValue.
+pub fn stencil_intrinsic_json_parse() -> StencilDef {
+    StencilDef::new(
+        OpCode::Intrinsic as u8,
+        "IntrinsicJsonParse",
+        code!(
+            [0x4Cu8, 0x89, 0xFF], // mov rdi, r15
+            [0x49u8, 0x8B, 0x86],
+            [0x00u8; 4],          // mov rax, [r14+C*8]  hole RegC at 6
+            [0x48u8, 0x89, 0xC6], // mov rsi, rax
+            [0x48u8, 0xB8],
+            [0x00u8; 8],                // movabs rax, <jit_rt_json_parse>
+            [0x48u8, 0x83, 0xEC, 0x08], // sub rsp, 8
+            [0xFFu8, 0xD0],             // call rax
+            [0x48u8, 0x83, 0xC4, 0x08], // add rsp, 8
+            [0x49u8, 0x89, 0x86],
+            [0x00u8; 4], // mov [r14+A*8], rax  hole RegA at 36
+        ),
+        vec![
+            HoleDef::new(6, HoleType::RegC, 4),
+            HoleDef::new(15, HoleType::RuntimeFuncAddr, 8),
+            HoleDef::new(36, HoleType::RegA, 4),
+        ],
+    )
+}
+
+/// **IntrinsicJsonEncode** — `R[A] = json_encode(R[C])` fast path.
+///
+/// Calls `jit_rt_json_encode(ctx, value)` and stores the returned NbValue.
+pub fn stencil_intrinsic_json_encode() -> StencilDef {
+    StencilDef::new(
+        OpCode::Intrinsic as u8,
+        "IntrinsicJsonEncode",
+        code!(
+            [0x4Cu8, 0x89, 0xFF], // mov rdi, r15
+            [0x49u8, 0x8B, 0x86],
+            [0x00u8; 4],          // mov rax, [r14+C*8]  hole RegC at 6
+            [0x48u8, 0x89, 0xC6], // mov rsi, rax
+            [0x48u8, 0xB8],
+            [0x00u8; 8],                // movabs rax, <jit_rt_json_encode>
+            [0x48u8, 0x83, 0xEC, 0x08], // sub rsp, 8
+            [0xFFu8, 0xD0],             // call rax
+            [0x48u8, 0x83, 0xC4, 0x08], // add rsp, 8
+            [0x49u8, 0x89, 0x86],
+            [0x00u8; 4], // mov [r14+A*8], rax  hole RegA at 36
+        ),
+        vec![
+            HoleDef::new(6, HoleType::RegC, 4),
+            HoleDef::new(15, HoleType::RuntimeFuncAddr, 8),
+            HoleDef::new(36, HoleType::RegA, 4),
+        ],
+    )
+}
+
+/// **IntrinsicJsonPretty** — `R[A] = json_pretty(R[C])` fast path.
+///
+/// Calls `jit_rt_json_pretty(ctx, value)` and stores the returned NbValue.
+pub fn stencil_intrinsic_json_pretty() -> StencilDef {
+    StencilDef::new(
+        OpCode::Intrinsic as u8,
+        "IntrinsicJsonPretty",
+        code!(
+            [0x4Cu8, 0x89, 0xFF], // mov rdi, r15
+            [0x49u8, 0x8B, 0x86],
+            [0x00u8; 4],          // mov rax, [r14+C*8]  hole RegC at 6
+            [0x48u8, 0x89, 0xC6], // mov rsi, rax
+            [0x48u8, 0xB8],
+            [0x00u8; 8],                // movabs rax, <jit_rt_json_pretty>
             [0x48u8, 0x83, 0xEC, 0x08], // sub rsp, 8
             [0xFFu8, 0xD0],             // call rax
             [0x48u8, 0x83, 0xC4, 0x08], // add rsp, 8
@@ -1746,9 +1890,50 @@ pub fn stencil_spawn() -> StencilDef {
     effect_stencil(OpCode::Spawn as u8, "Spawn")
 }
 
-/// **Append** — append R[B] to list R[A].
+/// **Append** — `R[A] = append(R[A], R[B])` fast path.
+///
+/// Calls `jit_rt_list_append(ctx, r[a], r[b])` directly at the NbValue
+/// level, bypassing the vm.reg_take Value-abstraction overhead.
+/// Layout: rdi=ctx, rsi=r[a] (list), rdx=r[b] (element), result→r[a].
+///
+/// Byte layout (50 bytes total):
+///   0:  4C 89 FF              mov rdi, r15          (ctx)
+///   3:  49 8B 86 [4]          mov rax, [r14+A*8]    hole RegA  @6
+///  10:  48 89 C6              mov rsi, rax
+///  13:  49 8B 86 [4]          mov rax, [r14+B*8]    hole RegB  @16
+///  20:  48 89 C2              mov rdx, rax
+///  23:  48 B8 [8]             movabs rax, <func>    hole RuntimeFuncAddr @25
+///  33:  48 83 EC 08           sub rsp, 8
+///  37:  FF D0                 call rax
+///  39:  48 83 C4 08           add rsp, 8
+///  43:  49 89 86 [4]          mov [r14+A*8], rax    hole RegA  @46
 pub fn stencil_append() -> StencilDef {
-    effect_stencil(OpCode::Append as u8, "Append")
+    StencilDef::new(
+        OpCode::Append as u8,
+        "Append",
+        code!(
+            [0x4Cu8, 0x89, 0xFF], // 0:  mov rdi, r15
+            [0x49u8, 0x8B, 0x86],
+            [0x00u8; 4],          // 3:  mov rax, [r14+A*8]  hole RegA @6
+            [0x48u8, 0x89, 0xC6], // 10: mov rsi, rax
+            [0x49u8, 0x8B, 0x86],
+            [0x00u8; 4],          // 13: mov rax, [r14+B*8]  hole RegB @16
+            [0x48u8, 0x89, 0xC2], // 20: mov rdx, rax
+            [0x48u8, 0xB8],
+            [0x00u8; 8], // 23: movabs rax, <fn>    hole RuntimeFuncAddr @25
+            [0x48u8, 0x83, 0xEC, 0x08], // 33: sub rsp, 8
+            [0xFFu8, 0xD0], // 37: call rax
+            [0x48u8, 0x83, 0xC4, 0x08], // 39: add rsp, 8
+            [0x49u8, 0x89, 0x86],
+            [0x00u8; 4], // 43: mov [r14+A*8], rax  hole RegA @46
+        ),
+        vec![
+            HoleDef::new(6, HoleType::RegA, 4),
+            HoleDef::new(16, HoleType::RegB, 4),
+            HoleDef::new(25, HoleType::RuntimeFuncAddr, 8),
+            HoleDef::new(46, HoleType::RegA, 4),
+        ],
+    )
 }
 
 /// **IsVariant** — if R[A] is variant with tag Bx, skip next instruction.
@@ -1832,8 +2017,8 @@ pub fn stencil_osrcheck() -> StencilDef {
                                   // .skip: (continue to next instruction)
         ),
         vec![
-            HoleDef::new(4, HoleType::RegAIndex, 1), // cell_idx in esi
-            HoleDef::new(9, HoleType::RegBIndex, 1), // current_ip in edx
+            HoleDef::new(4, HoleType::CellIdx32, 4), // cell_idx in esi (full 32-bit)
+            HoleDef::new(9, HoleType::Ip32, 4),      // current_ip in edx (full 32-bit)
             HoleDef::new(15, HoleType::RuntimeFuncAddr, 8), // function address
         ],
     )
@@ -1901,6 +2086,10 @@ pub fn build_stencil_library() -> StencilLibrary {
     lib.insert_intrinsic(72, stencil_intrinsic_length());
     lib.insert_intrinsic(14, stencil_intrinsic_keys());
     lib.insert_intrinsic(15, stencil_intrinsic_values());
+    lib.insert_intrinsic(71, stencil_intrinsic_merge());
+    lib.insert_intrinsic(140, stencil_intrinsic_json_parse());
+    lib.insert_intrinsic(141, stencil_intrinsic_json_encode());
+    lib.insert_intrinsic(142, stencil_intrinsic_json_pretty());
 
     // Effects
     lib.insert(stencil_perform());
@@ -2100,6 +2289,17 @@ mod tests {
         );
         // At least 30 stencils
         assert!(lib.len() >= 30, "expected ≥30 stencils, got {}", lib.len());
+    }
+
+    #[test]
+    fn test_intrinsic_stencil_reloads_result() {
+        let s = stencil_intrinsic();
+        assert!(s.code.len() > 32);
+        assert_eq!(
+            s.code[s.code.len() - 7..s.code.len() - 4],
+            [0x49, 0x8B, 0x86]
+        );
+        assert!(s.holes.iter().any(|h| h.hole_type == HoleType::RegA));
     }
 
     #[test]

@@ -251,7 +251,7 @@ fn cmd_add(package: &str, path: Option<&str>, _dev: bool) {
     // Checking pkg.rs, cmd_pkg_add takes slightly different args?
     // Based on main.rs: cmd_pkg_add_with_kind(&package, path.as_deref(), kind)
     // I should adapt or call appropriate function.
-    // For now I'll stub it to match main.rs usage style if needed, or assume existing pkg module has been updated.
+    // UNIMPLEMENTED: confirm pkg API and wire appropriate add-with-kind entrypoint.
 
     // Actually, I'll check pkg.rs in main.rs again.
     // pkg::cmd_pkg_add_with_kind(&package, path.as_deref(), kind)
@@ -895,7 +895,7 @@ async fn cmd_publish(dry_run: bool, provenance: bool, no_log: bool, registry_url
                 }
 
                 // Upload to registry (this would use the existing publish logic)
-                // TODO: Integrate with actual registry upload
+                // UNIMPLEMENTED: integrate with actual registry upload
                 println!(
                     "{} Published {}@{}",
                     colors::green("✓"),

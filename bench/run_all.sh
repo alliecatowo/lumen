@@ -15,16 +15,22 @@ BUILD_DIR="$SCRIPT_DIR/.build"
 
 RUNS=3
 CSV_FILE=""
+BENCH_FILTER=""
+PIN_CPU=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --csv)    CSV_FILE="$2"; shift 2 ;;
     --runs)   RUNS="$2"; shift 2 ;;
+    --bench|--benches) BENCH_FILTER="$2"; shift 2 ;;
+    --pin-cpu) PIN_CPU="$2"; shift 2 ;;
     -h|--help)
-      echo "Usage: $0 [--csv output.csv] [--runs N]"
+      echo "Usage: $0 [--csv output.csv] [--runs N] [--bench json_parse,tree] [--pin-cpu N]"
       echo "  --csv FILE   Write results to CSV file"
       echo "  --runs N     Number of runs per benchmark (default: 3)"
+      echo "  --bench LIST Comma-separated benchmark filter"
+      echo "  --pin-cpu N  Pin benchmark runs to CPU core N (requires taskset)"
       exit 0
       ;;
     *) echo "Unknown option: $1"; exit 1 ;;
@@ -54,6 +60,10 @@ echo ""
 
 BENCHMARKS=("fibonacci" "json_parse" "string_ops" "tree" "sort")
 
+if [ -n "$BENCH_FILTER" ]; then
+  IFS=',' read -r -a BENCHMARKS <<< "$BENCH_FILTER"
+fi
+
 # File mapping: benchmark -> filename prefix
 declare -A FILE_MAP=(
   [fibonacci]="fib"
@@ -70,7 +80,11 @@ RESULTS=()
 time_ms() {
   local start end elapsed
   start=$(date +%s%N 2>/dev/null || python3 -c 'import time; print(int(time.time()*1e9))')
-  "$@" > /dev/null 2>&1
+  if [ -n "$PIN_CPU" ] && command -v taskset &>/dev/null; then
+    taskset -c "$PIN_CPU" "$@" > /dev/null 2>&1
+  else
+    "$@" > /dev/null 2>&1
+  fi
   local exit_code=$?
   end=$(date +%s%N 2>/dev/null || python3 -c 'import time; print(int(time.time()*1e9))')
   elapsed=$(( (end - start) / 1000000 ))

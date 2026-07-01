@@ -343,6 +343,33 @@ end
 }
 
 #[test]
+#[cfg(feature = "jit")]
+fn parity_merge_loop_len_output() {
+    let source = r#"
+cell main() -> Null
+  let mut m = {}
+  let mut i = 0
+  while i < 60
+    m = merge(m, {"k": "v"})
+    i = i + 1
+  end
+  print(len(m))
+  return null
+end
+"#;
+
+    let module = compile(source);
+    let mut vm = VM::new();
+    vm.enable_jit_with_config(JitTierConfig::from_threshold(0));
+    vm.enable_stencil_tier();
+    vm.load(module);
+    vm.enable_osr_jit();
+    let result = vm.execute("main", vec![]).expect("execution failed");
+    assert_eq!(result, Value::Null);
+    assert_eq!(vm.output, vec!["1"]);
+}
+
+#[test]
 fn parity_match_int() {
     assert_parity(
         r#"

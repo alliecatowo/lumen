@@ -563,11 +563,11 @@ fn unify_for_inference_inner(
                 unify_for_inference_inner(expr, ty, _symbols, inferred, generic_param_names);
             }
         }
-        (TypeExpr::Generic(name, type_args, _), Type::TypeRef(ref_name, ref_args)) => {
-            if name == ref_name && type_args.len() == ref_args.len() {
-                for (texpr, ty) in type_args.iter().zip(ref_args.iter()) {
-                    unify_for_inference_inner(texpr, ty, _symbols, inferred, generic_param_names);
-                }
+        (TypeExpr::Generic(name, type_args, _), Type::TypeRef(ref_name, ref_args))
+            if name == ref_name && type_args.len() == ref_args.len() =>
+        {
+            for (texpr, ty) in type_args.iter().zip(ref_args.iter()) {
+                unify_for_inference_inner(texpr, ty, _symbols, inferred, generic_param_names);
             }
         }
         _ => {
@@ -1423,10 +1423,7 @@ impl<'a> TypeChecker<'a> {
                 }
             },
             Pattern::RecordDestructure {
-                type_name,
-                fields,
-                open: _,
-                ..
+                type_name, fields, ..
             } => {
                 if let Type::Record(actual_name) = subject_type {
                     if actual_name != type_name {

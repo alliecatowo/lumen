@@ -1306,13 +1306,11 @@ impl Parser {
                     let e = self.parse_enum()?;
                     return Ok(Stmt::LocalEnum(e));
                 }
-                TokenKind::Cell => {
-                    // Look ahead to see if this is `cell name(` — a local cell definition
-                    // vs `cell` used as a type name in an expression
-                    if self.looks_like_cell_def() {
-                        let c = self.parse_cell(true)?;
-                        return Ok(Stmt::LocalCell(c));
-                    }
+                // Look ahead to see if this is `cell name(` — a local cell definition
+                // vs `cell` used as a type name in an expression
+                TokenKind::Cell if self.looks_like_cell_def() => {
+                    let c = self.parse_cell(true)?;
+                    return Ok(Stmt::LocalCell(c));
                 }
                 _ => {}
             }

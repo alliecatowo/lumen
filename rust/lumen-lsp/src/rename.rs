@@ -640,11 +640,7 @@ fn stmts_contain_name(stmts: &[Stmt], name: &str) -> bool {
                     }
                 }
             }
-            Stmt::Expr(expr_stmt) => {
-                if expr_contains_name(&expr_stmt.expr, name) {
-                    return true;
-                }
-            }
+            Stmt::Expr(expr_stmt) if expr_contains_name(&expr_stmt.expr, name) => return true,
             _ => {}
         }
     }

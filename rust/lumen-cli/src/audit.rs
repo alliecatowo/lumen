@@ -463,7 +463,7 @@ pub fn run_audit(dependencies: &[ParsedDependency], database: &AdvisoryDatabase)
     }
 
     // Sort findings by severity (critical first)
-    vulnerabilities.sort_by(|a, b| b.severity.cmp(&a.severity));
+    vulnerabilities.sort_by_key(|v| std::cmp::Reverse(v.severity));
 
     AuditResult {
         dependencies_scanned: dependencies.len(),

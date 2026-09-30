@@ -372,21 +372,21 @@ impl Linter {
                     self.check_unreachable(&arm.body);
                 }
             }
-            Stmt::Let(let_stmt) => {
-                // Check for missing type annotation when value can't be inferred
-                if let_stmt.ty.is_none() && self.needs_type_annotation(&let_stmt.value) {
-                    self.warn(LintWarning::new(
-                        "missing-type-annotation",
-                        Severity::Warning,
-                        format!(
-                            "variable '{}' may benefit from an explicit type annotation",
-                            let_stmt.name
-                        ),
-                        &self.filename,
-                        let_stmt.span.line,
-                        Some(format!("add type: let {}: Type = ...", let_stmt.name)),
-                    ));
-                }
+            // Check for missing type annotation when value can't be inferred
+            Stmt::Let(let_stmt)
+                if let_stmt.ty.is_none() && self.needs_type_annotation(&let_stmt.value) =>
+            {
+                self.warn(LintWarning::new(
+                    "missing-type-annotation",
+                    Severity::Warning,
+                    format!(
+                        "variable '{}' may benefit from an explicit type annotation",
+                        let_stmt.name
+                    ),
+                    &self.filename,
+                    let_stmt.span.line,
+                    Some(format!("add type: let {}: Type = ...", let_stmt.name)),
+                ));
             }
             _ => {}
         }

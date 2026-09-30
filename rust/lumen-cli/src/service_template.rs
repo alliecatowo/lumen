@@ -1076,10 +1076,8 @@ impl ServiceTemplateGenerator {
                         effects.push("trace".to_string());
                     }
                 }
-                MiddlewareKind::Auth => {
-                    if !effects.contains(&"auth".to_string()) {
-                        effects.push("auth".to_string());
-                    }
+                MiddlewareKind::Auth if !effects.contains(&"auth".to_string()) => {
+                    effects.push("auth".to_string());
                 }
                 _ => {}
             }

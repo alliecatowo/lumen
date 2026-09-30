@@ -775,10 +775,8 @@ fn collect_block_starts(instructions: &[Instruction]) -> BTreeSet<usize> {
                     targets.insert(pc + 1);
                 }
             }
-            OpCode::Return | OpCode::Halt | OpCode::TailCall => {
-                if pc + 1 < instructions.len() {
-                    targets.insert(pc + 1);
-                }
+            OpCode::Return | OpCode::Halt | OpCode::TailCall if pc + 1 < instructions.len() => {
+                targets.insert(pc + 1);
             }
             _ => {}
         }
@@ -869,7 +867,7 @@ fn lower_cell_jit(
     );
 
     let mut callee_refs: HashMap<FuncId, cranelift_codegen::ir::FuncRef> = HashMap::new();
-    for (_name, &callee_id) in func_ids.iter() {
+    for &callee_id in func_ids.values() {
         let func_ref = module.declare_func_in_func(callee_id, &mut func);
         callee_refs.insert(callee_id, func_ref);
     }

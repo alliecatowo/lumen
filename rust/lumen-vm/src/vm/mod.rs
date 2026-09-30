@@ -494,39 +494,33 @@ impl VM {
             current_input = &current_input[prefix.len()..];
             current_pattern = &current_pattern[placeholder_start + 1..];
 
-            if let Some(placeholder_end) = current_pattern.find('}') {
-                let key = &current_pattern[..placeholder_end];
-                current_pattern = &current_pattern[placeholder_end + 1..];
+            let placeholder_end = current_pattern.find('}')?;
+            let key = &current_pattern[..placeholder_end];
+            current_pattern = &current_pattern[placeholder_end + 1..];
 
-                if let Some(next_prefix_start) = current_pattern.find('{') {
-                    let next_prefix = &current_pattern[..next_prefix_start];
-                    if let Some(match_pos) = current_input.find(next_prefix) {
-                        let val = &current_input[..match_pos];
-                        captures.insert(
-                            key.to_string(),
-                            Value::String(StringRef::Owned(val.to_string())),
-                        );
-                        current_input = &current_input[match_pos..];
-                    } else {
-                        return None;
-                    }
-                } else if current_pattern.is_empty() {
-                    captures.insert(
-                        key.to_string(),
-                        Value::String(StringRef::Owned(current_input.to_string())),
-                    );
-                    current_input = "";
-                } else if current_input.ends_with(current_pattern) {
-                    let val = &current_input[..current_input.len() - current_pattern.len()];
-                    captures.insert(
-                        key.to_string(),
-                        Value::String(StringRef::Owned(val.to_string())),
-                    );
-                    current_input = "";
-                    current_pattern = "";
-                } else {
-                    return None;
-                }
+            if let Some(next_prefix_start) = current_pattern.find('{') {
+                let next_prefix = &current_pattern[..next_prefix_start];
+                let match_pos = current_input.find(next_prefix)?;
+                let val = &current_input[..match_pos];
+                captures.insert(
+                    key.to_string(),
+                    Value::String(StringRef::Owned(val.to_string())),
+                );
+                current_input = &current_input[match_pos..];
+            } else if current_pattern.is_empty() {
+                captures.insert(
+                    key.to_string(),
+                    Value::String(StringRef::Owned(current_input.to_string())),
+                );
+                current_input = "";
+            } else if current_input.ends_with(current_pattern) {
+                let val = &current_input[..current_input.len() - current_pattern.len()];
+                captures.insert(
+                    key.to_string(),
+                    Value::String(StringRef::Owned(val.to_string())),
+                );
+                current_input = "";
+                current_pattern = "";
             } else {
                 return None;
             }

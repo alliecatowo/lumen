@@ -40,7 +40,7 @@ impl TraceStore {
         self.seq = 0;
         self.prev_hash = TRACE_GENESIS_HASH.to_string();
 
-        let path = self.trace_dir.join(format!("{}.jsonl", &run_id));
+        let path = self.trace_dir.join(format!("{}.jsonl", run_id));
         self.current_file = OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -204,10 +204,9 @@ pub fn compute_event_hash(event: &TraceEvent) -> String {
 }
 
 pub fn verify_event_chain(events: &[TraceEvent]) -> Result<(), String> {
-    let mut expected_seq = 1_u64;
     let mut expected_prev = TRACE_GENESIS_HASH.to_string();
 
-    for event in events {
+    for (event, expected_seq) in events.iter().zip(1_u64..) {
         if event.seq != expected_seq {
             return Err(format!(
                 "trace sequence mismatch at seq {} (expected {})",
@@ -227,7 +226,6 @@ pub fn verify_event_chain(events: &[TraceEvent]) -> Result<(), String> {
                 event.seq, expected_hash, event.hash
             ));
         }
-        expected_seq += 1;
         expected_prev = event.hash.clone();
     }
 

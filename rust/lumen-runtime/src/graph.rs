@@ -378,13 +378,9 @@ impl<N, E> Graph<N, E> {
     fn cycle_dfs(&self, node: NodeId, colour: &mut HashMap<NodeId, u8>) -> bool {
         colour.insert(node, 1); // grey
         for neighbor in self.neighbors(node) {
-            match colour.get(&neighbor).unwrap_or(&0) {
+            match colour.get(&neighbor).copied().unwrap_or(0) {
                 1 => return true, // back-edge → cycle
-                0 => {
-                    if self.cycle_dfs(neighbor, colour) {
-                        return true;
-                    }
-                }
+                0 if self.cycle_dfs(neighbor, colour) => return true,
                 _ => {} // black — already fully explored
             }
         }

@@ -439,25 +439,16 @@ fn detect_drift_inner(
         }
 
         // ---- Concrete expected vs union actual ----
-        (_, SchemaType::Union(variants)) => {
-            if variants.iter().any(|v| v == expected) {
-                // Expected is a member — type widened.
-                drifts.push(Drift {
-                    path: path.to_string(),
-                    kind: DriftKind::TypeWidened,
-                    expected: expected.to_string(),
-                    actual: actual.to_string(),
-                    severity: DriftSeverity::Warning,
-                });
-            } else {
-                drifts.push(Drift {
-                    path: path.to_string(),
-                    kind: DriftKind::TypeMismatch,
-                    expected: expected.to_string(),
-                    actual: actual.to_string(),
-                    severity: DriftSeverity::Breaking,
-                });
-            }
+        // Expected is a member — type widened. Otherwise falls through to
+        // the catch-all type-mismatch arm below.
+        (_, SchemaType::Union(variants)) if variants.iter().any(|v| v == expected) => {
+            drifts.push(Drift {
+                path: path.to_string(),
+                kind: DriftKind::TypeWidened,
+                expected: expected.to_string(),
+                actual: actual.to_string(),
+                severity: DriftSeverity::Warning,
+            });
         }
 
         // ---- Catch-all: type mismatch ----

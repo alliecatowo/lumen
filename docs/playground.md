@@ -109,7 +109,7 @@ To run Lumen on your machine:
 
 ```bash
 # Install
-cargo install lumen-lang
+cargo install lumen-cli
 
 # Create a file
 cat > hello.lm.md << 'EOF'

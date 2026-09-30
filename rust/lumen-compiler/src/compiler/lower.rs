@@ -657,7 +657,7 @@ fn hoist_loop_invariants(instrs: &mut Vec<Instruction>) {
 
     // Process loops from last to first so that insertions for later loops
     // don't shift the indices of earlier loops.
-    loops.sort_by(|a, b| b.header.cmp(&a.header));
+    loops.sort_by_key(|l| std::cmp::Reverse(l.header));
 
     for region in &loops {
         let header = region.header;
@@ -3222,10 +3222,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Pattern::RecordDestructure {
-                type_name,
-                fields,
-                open: _,
-                ..
+                type_name, fields, ..
             } => {
                 let ty_reg = self.push_const_string(type_name, ra, consts, instrs);
                 let is_ty = ra.alloc_temp();

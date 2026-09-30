@@ -479,7 +479,7 @@ fn cmd_token_add(registry: String, token: String, name: Option<String>) {
     }
 
     println!("{} added token for {}", green("✓"), cyan(&registry));
-    println!("  {} {}", gray("Name:"), &name);
+    println!("  {} {}", gray("Name:"), name);
 }
 
 /// Remove a token.

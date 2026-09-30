@@ -1212,9 +1212,7 @@ impl Formatter {
                 result.push_str(bracket.1);
                 result
             }
-            Expr::MatchExpr {
-                subject, arms: _, ..
-            } => {
+            Expr::MatchExpr { subject, .. } => {
                 format!("match {} ... end", self.fmt_expr(subject))
             }
             Expr::BlockExpr(_, _) => "block ... end".to_string(),

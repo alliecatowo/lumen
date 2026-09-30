@@ -225,9 +225,7 @@ impl StepHistory {
 
     /// Clear all history entries.
     pub fn clear(&mut self) {
-        for slot in &mut self.buffer {
-            *slot = None;
-        }
+        self.buffer.fill(None);
         self.write_pos = 0;
         self.count = 0;
     }

@@ -15,7 +15,7 @@ curl -fsSL https://raw.githubusercontent.com/alliecatowo/lumen/main/scripts/inst
 Requires [Rust](https://rustup.rs/):
 
 ```bash
-cargo install lumen-lang
+cargo install lumen-cli
 ```
 
 ## Global Options

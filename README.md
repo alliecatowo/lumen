@@ -22,8 +22,8 @@
 <p align="center">
   <img src="https://img.shields.io/github/actions/workflow/status/alliecatowo/lumen/ci.yml?branch=main&label=CI&style=flat-square" alt="CI Status" />
   <img src="https://img.shields.io/github/actions/workflow/status/alliecatowo/lumen/pages.yml?branch=main&label=Docs&style=flat-square" alt="Docs Status" />
-  <a href="https://open-vsx.org/extension/alliecatowo/lumen-lang"><img src="https://img.shields.io/open-vsx/v/alliecatowo/lumen-lang?style=flat-square&label=Open%20VSX" alt="Open VSX" /></a>
-  <img src="https://img.shields.io/crates/v/lumen-lang?style=flat-square" alt="Crates.io" />
+  <a href="https://open-vsx.org/extension/lumen-lang/lumen-lang"><img src="https://img.shields.io/open-vsx/v/lumen-lang/lumen-lang?style=flat-square&label=Open%20VSX" alt="Open VSX" /></a>
+  <a href="https://crates.io/crates/lumen-cli"><img src="https://img.shields.io/crates/v/lumen-cli?style=flat-square" alt="Crates.io" /></a>
   <img src="https://img.shields.io/github/license/alliecatowo/lumen?style=flat-square" alt="License" />
   <img src="https://img.shields.io/github/stars/alliecatowo/lumen?style=flat-square" alt="Stars" />
 </p>
@@ -50,7 +50,7 @@ Building AI systems today means juggling Python notebooks, API clients, prompt t
 curl -fsSL https://raw.githubusercontent.com/alliecatowo/lumen/main/scripts/install.sh | sh
 
 # Or via Cargo
-cargo install lumen-lang
+cargo install lumen-cli
 
 # Create your first program
 cat > hello.lm.md << 'EOF'

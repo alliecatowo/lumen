@@ -8,7 +8,15 @@
 ## Install from Crates.io
 
 ```bash
-cargo install lumen-lang
+cargo install lumen-cli
+```
+
+The crate is `lumen-cli`; it installs the `lumen` binary. (The unrelated `lumen-lang` crate on
+crates.io belongs to a different project.) The crates.io release lags the source tree, so for the
+latest version install from git:
+
+```bash
+cargo install --git https://github.com/alliecatowo/lumen lumen-cli
 ```
 
 ## Build from Source

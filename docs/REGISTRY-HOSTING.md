@@ -173,7 +173,7 @@ aws s3api put-bucket-cors --bucket lumen-registry --cors-configuration file://co
 1. Create a `gh-pages` branch
 2. Push registry files
 3. Enable GitHub Pages in repo settings
-4. URL becomes: `https://your-org.github.io/lumen-registry`
+4. URL becomes: `https://alliecatowo.github.io/lumen-registry`
 
 ## Step 4: Configure Lumen to Use Your Registry
 

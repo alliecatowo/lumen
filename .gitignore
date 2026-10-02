@@ -55,3 +55,6 @@ test-ware/
 
 # Reproduction scripts
 repro_*
+
+# Benchmark build output
+bench/.build/

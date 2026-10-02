@@ -8,7 +8,7 @@ This roadmap reflects implementation status as of February 2026. **Current statu
 
 ### Phase 1: Core Language [Complete]
 
-**Status:** Implemented and tested. Core language is production-ready.
+**Status:** Implemented and tested. Core language is implemented and tested (alpha; not yet production-ready).
 
 - **Compiler:** Lexer, parser, resolver, typechecker, constraint validator, LIR lowerer. Register-based VM with 74+ opcodes (32-bit fixed-width). Multi-file compilation with import resolution and circular dependency detection.
 - **Types:** Int, Float, String, Bool, Bytes, Json, Null; List, Map, Set, Tuple (Rc copy-on-write); records with where-clause constraints; enums with payloads; pattern matching with exhaustiveness; union types, `T?`, `result[T, E]`.

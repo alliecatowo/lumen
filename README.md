@@ -15,8 +15,7 @@
 <p align="center">
   <a href="https://alliecatowo.github.io/lumen/"><strong>📚 Documentation</strong></a> ·
   <a href="https://alliecatowo.github.io/lumen/playground"><strong>🎮 Playground</strong></a> ·
-  <a href="https://github.com/alliecatowo/lumen/issues"><strong>🐛 Issues</strong></a> ·
-  <a href="https://github.com/alliecatowo/lumen/discussions"><strong>💬 Discussions</strong></a>
+  <a href="https://github.com/alliecatowo/lumen/issues"><strong>🐛 Issues</strong></a>
 </p>
 
 <p align="center">

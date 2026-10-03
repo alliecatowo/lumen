@@ -17,7 +17,7 @@
   "license": "MIT",
   "devDependencies": {
     "vitest": "^3.2.6",
-    "wrangler": "^3.0.0"
+    "wrangler": "^4.147.0"
   },
   "overrides": {
     "ws": "^8.21.0",

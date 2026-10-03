@@ -774,8 +774,7 @@ fn runs_every_iteration(
     back_edge: usize,
     pc: usize,
 ) -> bool {
-    for s in header..pc {
-        let inst = instrs[s];
+    for (s, &inst) in instrs.iter().enumerate().take(pc).skip(header) {
         let target = match inst.op {
             OpCode::Jmp | OpCode::Break | OpCode::Continue => {
                 let t = s as i64 + 1 + inst.sax_val() as i64;

@@ -15,14 +15,13 @@
 <p align="center">
   <a href="https://alliecatowo.github.io/lumen/"><strong>📚 Documentation</strong></a> ·
   <a href="https://alliecatowo.github.io/lumen/playground"><strong>🎮 Playground</strong></a> ·
-  <a href="https://github.com/alliecatowo/lumen/issues"><strong>🐛 Issues</strong></a> ·
-  <a href="https://github.com/alliecatowo/lumen/discussions"><strong>💬 Discussions</strong></a>
+  <a href="https://github.com/alliecatowo/lumen/issues"><strong>🐛 Issues</strong></a>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/github/actions/workflow/status/alliecatowo/lumen/ci.yml?branch=main&label=CI&style=flat-square" alt="CI Status" />
   <img src="https://img.shields.io/github/actions/workflow/status/alliecatowo/lumen/pages.yml?branch=main&label=Docs&style=flat-square" alt="Docs Status" />
-  <a href="https://open-vsx.org/extension/lumen-lang/lumen-lang"><img src="https://img.shields.io/open-vsx/v/lumen-lang/lumen-lang?style=flat-square&label=Open%20VSX" alt="Open VSX" /></a>
+  <a href="https://open-vsx.org/extension/alliecatowo/lumen"><img src="https://img.shields.io/open-vsx/v/alliecatowo/lumen?style=flat-square&label=Open%20VSX" alt="Open VSX" /></a>
   <a href="https://crates.io/crates/lumen-cli"><img src="https://img.shields.io/crates/v/lumen-cli?style=flat-square" alt="Crates.io" /></a>
   <img src="https://img.shields.io/github/license/alliecatowo/lumen?style=flat-square" alt="License" />
   <img src="https://img.shields.io/github/stars/alliecatowo/lumen?style=flat-square" alt="Stars" />

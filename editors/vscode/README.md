@@ -77,7 +77,7 @@ For `.lm.md` files, the extension provides syntax-highlighted previews of Lumen 
 3. Install the `.vsix` file in VS Code: Extensions → `...` → Install from VSIX
 
 ### From Source
-1. Copy the `editors/vscode` directory to `~/.vscode/extensions/lumen-lang-0.1.0`
+1. Copy the `editors/vscode` directory to `~/.vscode/extensions/alliecatowo.lumen-0.4.0`
 2. Restart VS Code
 
 ### Development

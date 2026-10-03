@@ -22,28 +22,91 @@ pub struct CacheStore {
     memory: HashMap<String, CacheEntry>,
 }
 
+/// Write `bytes` to `path` atomically: write a sibling temp file, fsync it, then
+/// rename over the destination so readers (and a crash mid-write) never observe a
+/// truncated file.
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "cache".to_string());
+    let tmp = dir.join(format!(".{file_name}.{}.tmp", std::process::id()));
+    let result = (|| {
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// File-name stem for a cache key: the part after any `algo:` prefix with every
+/// character that is not `[A-Za-z0-9_-]` dropped, capped at 64 characters. Keys
+/// that sanitize to nothing (or collide) fall back to a hash of the whole key.
+fn cache_file_stem(key: &str) -> String {
+    let tail = key.rsplit(':').next().unwrap_or(key);
+    let cleaned: String = tail
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(64)
+        .collect();
+    if cleaned.is_empty() || cleaned.len() < 8 || tail.len() != cleaned.len() {
+        // Too short or altered by sanitising: make the name unambiguous.
+        let digest = canonical_hash(&serde_json::Value::String(key.to_string()));
+        let digest: String = digest
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .take(32)
+            .collect();
+        return format!("k-{digest}");
+    }
+    cleaned
+}
+
 impl CacheStore {
+    /// Open (creating if needed) the cache under `base_dir/cache` and load every
+    /// valid entry already on disk. Malformed files are skipped, never deleted.
     pub fn new(base_dir: &Path) -> Self {
         let cache_dir = base_dir.join("cache");
         fs::create_dir_all(&cache_dir).ok();
-        Self {
-            cache_dir,
-            memory: HashMap::new(),
+        let mut memory = HashMap::new();
+        if let Ok(rd) = fs::read_dir(&cache_dir) {
+            for entry in rd.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                    continue;
+                }
+                if let Ok(text) = fs::read_to_string(&path) {
+                    if let Ok(e) = serde_json::from_str::<CacheEntry>(&text) {
+                        memory.insert(e.key.clone(), e);
+                    }
+                }
+            }
         }
+        Self { cache_dir, memory }
     }
 
     pub fn get(&self, key: &str) -> Option<&CacheEntry> {
         self.memory.get(key)
     }
 
-    pub fn put(&mut self, entry: CacheEntry) {
+    /// Store an entry in memory and on disk (atomically). The in-memory entry is
+    /// kept even if the disk write fails; the error is returned so callers can
+    /// surface it.
+    pub fn put(&mut self, entry: CacheEntry) -> std::io::Result<()> {
         let path = self
             .cache_dir
-            .join(format!("{}.json", &entry.key[7..71.min(entry.key.len())]));
-        if let Ok(json) = serde_json::to_string_pretty(&entry) {
-            fs::write(&path, json).ok();
-        }
+            .join(format!("{}.json", cache_file_stem(&entry.key)));
+        let written = serde_json::to_vec_pretty(&entry)
+            .map_err(std::io::Error::other)
+            .and_then(|json| atomic_write(&path, &json));
         self.memory.insert(entry.key.clone(), entry);
+        written
     }
 
     pub fn lookup(
@@ -82,11 +145,50 @@ impl PersistentCache {
     /// Create or load a persistent cache at `path`.
     ///
     /// If the file exists and contains valid JSON, the cache is pre-populated.
-    /// If the file does not exist or is malformed, the cache starts empty (the
-    /// file will be created/overwritten on the next write).
+    /// If the file does not exist the cache starts empty. A malformed file is
+    /// moved aside to `<path>.corrupt` (see [`open`](Self::open)) rather than
+    /// being overwritten, and the cache starts empty.
     pub fn new(path: PathBuf) -> Self {
-        let data = Self::load_from_disk(&path).unwrap_or_default();
-        Self { path, data }
+        match Self::open(path.clone()) {
+            Ok(cache) => cache,
+            Err(_) => Self {
+                path,
+                data: HashMap::new(),
+            },
+        }
+    }
+
+    /// Like [`new`](Self::new) but reports problems. A missing file is an empty
+    /// cache. A file that exists but cannot be parsed is moved aside to
+    /// `<path>.corrupt` (never overwritten by later writes) and an error is
+    /// returned.
+    pub fn open(path: PathBuf) -> Result<Self, std::io::Error> {
+        let contents = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self {
+                    path,
+                    data: HashMap::new(),
+                })
+            }
+            Err(e) => return Err(e),
+        };
+        match serde_json::from_str::<HashMap<String, String>>(&contents) {
+            Ok(data) => Ok(Self { path, data }),
+            Err(e) => {
+                let mut quarantine = path.clone().into_os_string();
+                quarantine.push(".corrupt");
+                let _ = fs::rename(&path, PathBuf::from(&quarantine));
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "cache file {} is malformed ({e}); moved to {}",
+                        path.display(),
+                        PathBuf::from(quarantine).display()
+                    ),
+                ))
+            }
+        }
     }
 
     /// Get a value by key. Returns `None` if the key is not present.
@@ -141,21 +243,14 @@ impl PersistentCache {
 
     // -- internal ---------------------------------------------------------
 
-    /// Load cache data from a JSON file. Returns `None` if the file doesn't
-    /// exist or is malformed.
-    fn load_from_disk(path: &Path) -> Option<HashMap<String, String>> {
-        let contents = fs::read_to_string(path).ok()?;
-        serde_json::from_str(&contents).ok()
-    }
-
     /// Flush current in-memory data to disk as pretty-printed JSON.
     fn flush(&self) -> Result<(), std::io::Error> {
         // Ensure parent directory exists.
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let json = serde_json::to_string_pretty(&self.data).map_err(std::io::Error::other)?;
-        fs::write(&self.path, json)
+        let json = serde_json::to_vec_pretty(&self.data).map_err(std::io::Error::other)?;
+        atomic_write(&self.path, &json)
     }
 }
 
@@ -402,5 +497,118 @@ mod tests {
         let dir = std::env::temp_dir().join("lumen_cache_tests_store");
         let store = CacheStore::new(&dir);
         assert!(store.get("nonexistent").is_none());
+    }
+
+    // =====================================================================
+    // Durability: CacheStore
+    // =====================================================================
+    fn entry(key: &str) -> CacheEntry {
+        CacheEntry {
+            key: key.to_string(),
+            tool_id: "t".into(),
+            version: "1".into(),
+            policy_hash: "p".into(),
+            inputs_hash: "i".into(),
+            outputs: serde_json::json!({"ok": true}),
+        }
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("lumen_cache_store_{}_{}", name, std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn cache_store_accepts_short_and_odd_keys() {
+        let dir = temp_dir("short");
+        let mut store = CacheStore::new(&dir);
+        for key in [
+            "",
+            "a",
+            "abc",
+            "sha256:ab",
+            "../../escape",
+            "with space/and:colons",
+        ] {
+            store
+                .put(entry(key))
+                .unwrap_or_else(|e| panic!("key {key:?}: {e}"));
+            assert_eq!(store.get(key).unwrap().key, key);
+        }
+        // Nothing escaped the cache directory.
+        assert!(!dir.join("escape.json").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_store_reloads_entries_from_disk() {
+        let dir = temp_dir("reload");
+        let key = format!("sha256:{}", "a1b2c3d4".repeat(8));
+        {
+            let mut store = CacheStore::new(&dir);
+            store.put(entry(&key)).unwrap();
+            store.put(entry("short")).unwrap();
+        }
+        // A malformed sibling must not prevent loading the rest.
+        fs::write(dir.join("cache").join("garbage.json"), "{not json").unwrap();
+        let store = CacheStore::new(&dir);
+        assert!(store.get(&key).is_some());
+        assert!(store.get("short").is_some());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_store_surfaces_write_errors() {
+        let dir = temp_dir("err");
+        let mut store = CacheStore::new(&dir);
+        // Replace the cache directory with a file so writes must fail.
+        fs::remove_dir_all(dir.join("cache")).unwrap();
+        fs::write(dir.join("cache"), "not a dir").unwrap();
+        assert!(store.put(entry("sha256:deadbeefdeadbeef")).is_err());
+        // The in-memory entry is still served.
+        assert!(store.get("sha256:deadbeefdeadbeef").is_some());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // =====================================================================
+    // Durability: PersistentCache
+    // =====================================================================
+    #[test]
+    fn persistent_cache_flush_leaves_no_temp_files() {
+        let dir = temp_dir("atomic");
+        let path = dir.join("c.json");
+        let mut cache = PersistentCache::new(path.clone());
+        for i in 0..20 {
+            cache.set(&format!("k{i}"), "v".repeat(i)).unwrap();
+        }
+        let names: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["c.json".to_string()], "stray files: {names:?}");
+        assert_eq!(PersistentCache::new(path).len(), 20);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn malformed_cache_file_is_quarantined_not_overwritten() {
+        let dir = temp_dir("corrupt");
+        let path = dir.join("c.json");
+        fs::write(&path, "{\"half\": \"writ").unwrap();
+        let err = PersistentCache::open(path.clone()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        // The damaged bytes are preserved for inspection...
+        let kept = fs::read_to_string(dir.join("c.json.corrupt")).unwrap();
+        assert!(kept.contains("half"));
+        // ...and a fresh cache can be created and written afterwards.
+        let mut cache = PersistentCache::new(path.clone());
+        cache.set("a", "b".into()).unwrap();
+        assert_eq!(PersistentCache::new(path).get("a"), Some(&"b".to_string()));
+        assert!(dir.join("c.json.corrupt").exists());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

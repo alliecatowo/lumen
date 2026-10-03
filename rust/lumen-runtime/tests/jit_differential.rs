@@ -39,15 +39,15 @@ fn repo_root() -> PathBuf {
         .expect("repo root")
 }
 
-fn compile_file(path: &Path) -> Option<lumen_compiler::compiler::lir::LirModule> {
-    let src = std::fs::read_to_string(path).ok()?;
+fn compile_file(path: &Path) -> Result<lumen_compiler::compiler::lir::LirModule, String> {
+    let src = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let name = path.to_string_lossy();
     let r = if name.ends_with(".lm.md") || name.ends_with(".lumen") {
         lumen_compiler::compile(&src)
     } else {
         lumen_compiler::compile_raw(&src)
     };
-    r.ok()
+    r.map_err(|e| format!("{e:?}"))
 }
 
 fn run_module(module: &lumen_compiler::compiler::lir::LirModule, jit: bool) -> Run {
@@ -83,9 +83,15 @@ fn run_module(module: &lumen_compiler::compiler::lir::LirModule, jit: bool) -> R
 }
 
 /// Returns `Some(true)` if compared, `Some(false)` if skipped as too heavy,
-/// `None` if the file does not compile or has no `main`.
-fn check_file(path: &Path) -> Option<bool> {
-    let module = compile_file(path)?;
+/// `None` if the file has no `main` (or, when `strict` is false, does not
+/// compile: examples may need imports or tools). With `strict`, a compile
+/// failure fails the test.
+fn check_file(path: &Path, strict: bool) -> Option<bool> {
+    let module = match compile_file(path) {
+        Ok(m) => m,
+        Err(e) if strict => panic!("{}: does not compile: {e}", path.display()),
+        Err(_) => return None,
+    };
     if !module.cells.iter().any(|c| c.name == "main") {
         return None;
     }
@@ -129,13 +135,13 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>, recursive: bool) {
     }
 }
 
-fn run_dir(label: &str, dir: PathBuf, recursive: bool, min_compared: usize) {
+fn run_dir(label: &str, dir: PathBuf, recursive: bool, strict: bool, min_compared: usize) {
     let mut files = Vec::new();
     collect(&dir, &mut files, recursive);
     let mut compared = 0;
     let mut skipped_heavy = Vec::new();
     for f in &files {
-        match check_file(f) {
+        match check_file(f, strict) {
             Some(true) => compared += 1,
             Some(false) => skipped_heavy.push(f.display().to_string()),
             None => {}
@@ -160,24 +166,30 @@ fn run_dir(label: &str, dir: PathBuf, recursive: bool, min_compared: usize) {
 #[test]
 fn differential_fixtures() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/jit_diff");
-    run_dir("fixtures", dir, false, 15);
+    run_dir("fixtures", dir, false, true, 15);
 }
 
 #[test]
 fn differential_bench_programs() {
     let root = repo_root().join("bench");
-    run_dir("bench", root.clone(), false, 9);
-    run_dir("bench/cross-language", root.join("cross-language"), true, 9);
+    run_dir("bench", root.clone(), false, true, 9);
+    run_dir(
+        "bench/cross-language",
+        root.join("cross-language"),
+        true,
+        true,
+        9,
+    );
 }
 
 #[test]
 fn differential_examples() {
-    run_dir("examples", repo_root().join("examples"), false, 10);
+    run_dir("examples", repo_root().join("examples"), false, false, 10);
 }
 
 #[test]
 fn differential_repo_tests_dir() {
-    run_dir("tests", repo_root().join("tests"), true, 1);
+    run_dir("tests", repo_root().join("tests"), true, false, 1);
 }
 
 /// The semantic spot checks below pin the exact answers (not just agreement

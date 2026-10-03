@@ -8,9 +8,9 @@ Uses a simple longest-common-subsequence approach for better diff quality.
 cell diff_lines(lines_a: list[String], lines_b: list[String]) -> list[String]
   # Simple line-by-line comparison
   # Walk both lists and report differences
-  let result = []
-  let ia = 0
-  let ib = 0
+  let mut result = []
+  let mut ia = 0
+  let mut ib = 0
   let na = len(lines_a)
   let nb = len(lines_b)
 
@@ -23,8 +23,8 @@ cell diff_lines(lines_a: list[String], lines_b: list[String]) -> list[String]
       ib = ib + 1
     else
       # Check if line a appears later in b (was something added before it)
-      let found_a_in_b = false
-      let scan = ib + 1
+      let mut found_a_in_b = false
+      let mut scan = ib + 1
       while scan < nb and scan < ib + 5
         if lines_b[scan] == a
           found_a_in_b = true
@@ -41,8 +41,8 @@ cell diff_lines(lines_a: list[String], lines_b: list[String]) -> list[String]
         end
       else
         # Check if line b appears later in a (was something removed)
-        let found_b_in_a = false
-        let scan2 = ia + 1
+        let mut found_b_in_a = false
+        let mut scan2 = ia + 1
         while scan2 < na and scan2 < ia + 5
           if lines_a[scan2] == b
             found_b_in_a = true
@@ -103,7 +103,7 @@ cell main() -> Null
     else
       print("Found {len(diffs)} difference(s):")
       print("")
-      let i = 0
+      let mut i = 0
       while i < len(diffs)
         print(diffs[i])
         i = i + 1
@@ -123,7 +123,7 @@ cell main() -> Null
     else
       print("Found {len(diffs)} difference(s):")
       print("")
-      let i = 0
+      let mut i = 0
       while i < len(diffs)
         print(diffs[i])
         i = i + 1

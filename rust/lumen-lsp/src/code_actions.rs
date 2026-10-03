@@ -400,7 +400,7 @@ fn insert_at_end(text: &str, to_insert: &str) -> Option<TextEdit> {
     let lines: Vec<&str> = text.split('\n').collect();
     let line_count = lines.len().saturating_sub(1) as u32;
     let last_line = lines.last().unwrap_or(&"");
-    let character = last_line.len() as u32;
+    let character = crate::position::utf16_len(last_line);
 
     Some(TextEdit {
         range: Range {

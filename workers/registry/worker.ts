@@ -1,28 +1,47 @@
 /**
  * Wares Registry Worker
- * 
- * Full-featured registry with:
- * - OIDC authentication (GitHub)
- * - Package publishing
- * - Transparency log integration
+ *
+ * - GitHub OAuth login (device-style confirmation, one-shot token hand-off)
+ * - Authenticated, ownership-checked, immutable package publishing
+ * - Ephemeral signing certificates
  * - Transparency log integration
  * - R2 storage
+ *
+ * Auth model: every credential is a GitHub OAuth access token that was issued
+ * to THIS OAuth app (verified via the applications/{client_id}/token API).
  */
 
 import { CertificateAuthority, IdentityClaims } from './src/ca';
+import { compareVersions, parseSemver, pickLatest } from './src/semver';
+import {
+  MAX_DESCRIPTION_LEN,
+  MAX_PROOF_BYTES,
+  MAX_PUBLISH_BODY_BYTES,
+  MAX_TARBALL_BYTES,
+  decodeBase64,
+  isValidPublishName,
+  isValidReadName,
+  sha256Hex,
+  timingSafeEqual,
+} from './src/validate';
 
 export interface Env {
   REGISTRY_BUCKET: R2Bucket;
-  TRANSPARENCY_LOG_URL: string;
-  TRANSPARENCY_LOG_API_KEY: string;
+  TRANSPARENCY_LOG_URL?: string;
+  TRANSPARENCY_LOG_API_KEY?: string;
+  /** Set to "false" to let publishes succeed (marked unlogged) when the log rejects them. */
+  TRANSPARENCY_LOG_REQUIRED?: string;
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;
-  CA_PRIVATE_KEY: string;
+  CA_PRIVATE_KEY?: string;
   CA_CERTIFICATE?: string;
+  LOG_WORKER?: { fetch: (input: string, init?: RequestInit) => Promise<Response> };
 }
 
-// In-memory session storage (use KV in production)
-const sessions = new Map<string, OAuthSession>();
+type Headers_ = Record<string, string>;
+
+const SESSION_TTL_MS = 10 * 60 * 1000;
+const USER_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 interface OAuthSession {
   sessionId: string;
@@ -30,8 +49,12 @@ interface OAuthSession {
   state: string;
   pkceVerifier: string;
   redirectUri: string;
+  /** base64url(sha256(client_verifier)); the CLI proves knowledge at /token. */
+  clientChallenge: string;
+  /** Short code the CLI shows; the browser user must type it to confirm. */
+  userCode: string;
   createdAt: number;
-  status: 'pending' | 'completed' | 'failed';
+  status: 'pending' | 'awaiting_confirmation' | 'completed' | 'failed';
   result?: OAuthResult;
 }
 
@@ -41,709 +64,875 @@ interface OAuthResult {
   expiresIn: number;
 }
 
+interface User {
+  identity: string;
+  name?: string;
+  avatar?: string;
+}
+
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(request.url);
-    let path = url.pathname;
-    const method = request.method;
-
-    // CORS headers
-    const corsHeaders = {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-API-Key',
-    };
-
-    // Handle CORS preflight
-    if (method === 'OPTIONS') {
-      return new Response(null, { headers: corsHeaders });
-    }
-
-    // Normalize path to handle both /v1 and /api/v1 prefixes
-    if (path.startsWith('/api/v1')) {
-      path = path.replace('/api/v1', '/v1');
-    }
-
-    try {
-      // Health check (always available)
-      if (path === '/health') {
-        return json({ status: 'ok', service: 'wares-registry' }, corsHeaders);
-      }
-
-      // OIDC Authentication endpoints
-      if (path === '/v1/auth/oidc/login' && method === 'POST') {
-        return handleLogin(request, env, corsHeaders);
-      }
-
-      if (path === '/v1/auth/oidc/callback' && method === 'GET') {
-        // Extract session ID from state parameter (format: sessionId:randomState)
-        const stateParam = url.searchParams.get('state');
-        if (!stateParam) {
-          return json({ error: 'Missing state parameter' }, corsHeaders, 400);
-        }
-        const sessionId = stateParam.split(':')[0];
-        return handleCallback(sessionId, url, env, corsHeaders);
-      }
-
-      if (path.match(/^\/v1\/auth\/oidc\/token/) && (method === 'POST' || method === 'GET')) {
-        // Support both /token/:sessionId and /token?session_id=:sessionId
-        let sessionId = path.split('/').pop()!;
-        if (!sessionId || sessionId === 'token') {
-          sessionId = url.searchParams.get('session_id') || '';
-        }
-        if (!sessionId) {
-          return json({ error: 'Missing session_id' }, corsHeaders, 400);
-        }
-        return handleToken(sessionId, corsHeaders);
-      }
-
-      // Ephemeral certificate endpoint (Sigstore-style)
-      if (path === '/v1/auth/cert' && method === 'POST') {
-        return handleCert(request, env, corsHeaders);
-      }
-
-      // User profile
-      if (path === '/v1/auth/user' && method === 'GET') {
-        const user = await validateUser(request, env);
-        if (!user) return json({ error: 'Unauthorized' }, corsHeaders, 401);
-
-        // Fetch user's packages
-        const list = await env.REGISTRY_BUCKET.list({ prefix: 'wares/' });
-        const userPackages: any[] = [];
-        for (const obj of list.objects) {
-          if (obj.key?.endsWith('/index.json')) {
-            const indexObj = await env.REGISTRY_BUCKET.get(obj.key);
-            if (indexObj) {
-              const data = await indexObj.json() as any;
-              if (data.owner === user.identity) {
-                userPackages.push(data);
-              }
-            }
-          }
-        }
-
-        return json({ ...user, packages: userPackages }, corsHeaders);
-      }
-
-      // Package endpoints
-      if (path === '/v1/index' && method === 'GET') {
-        return listPackages(env, corsHeaders);
-      }
-
-      if (path === '/v1/search' && method === 'GET') {
-        return searchPackages(url, env, corsHeaders);
-      }
-
-      // Package audit logs
-      const auditMatch = path.match(/^\/v1\/wares\/([^/]+)\/audit$/);
-      if (auditMatch && method === 'GET') {
-        const name = auditMatch[1];
-        if (env.TRANSPARENCY_LOG_URL || (env as any).LOG_WORKER) {
-          try {
-            const logBinding = (env as any).LOG_WORKER;
-            const baseUrl = logBinding ? 'http://log.internal' : env.TRANSPARENCY_LOG_URL;
-            console.log(`[DEBUG] Fetching audit for ${name} using ${logBinding ? 'Service Binding' : 'URL'}`);
-
-            const [queryRes, logRes] = await Promise.all([
-              (logBinding || { fetch }).fetch(`${baseUrl}/api/v1/log/query?package=${name}`),
-              (logBinding || { fetch }).fetch(`${baseUrl}/api/v1/log`)
-            ]);
-
-            console.log(`[DEBUG] Query Status: ${queryRes.status}, Log Status: ${logRes.status}`);
-
-            if (!queryRes.ok || !logRes.ok) {
-              const errorText = await (!queryRes.ok ? queryRes.text() : logRes.text());
-              console.error(`[DEBUG] Upstream error: ${errorText}`);
-              throw new Error(`Upstream error: ${queryRes.status}/${logRes.status}`);
-            }
-
-            const queryData = await queryRes.json() as any;
-            const logInfo = await logRes.json() as any;
-
-            return json({
-              entries: queryData.entries || [],
-              total: queryData.total || 0,
-              logInfo
-            }, corsHeaders);
-          } catch (e: any) {
-            console.error('[DEBUG] Audit fetch error:', e.message);
-            return json({ error: `Audit fetch failed: ${e.message}` }, corsHeaders, 500);
-          }
-        }
-        return json({ error: 'Audit system unavailable' }, corsHeaders, 503);
-      }
-
-      // Resolution proof
-      const proofMatch = path.match(/^\/v1\/wares\/([^/]+)\/resolve-proof$/);
-      const versionedProofMatch = path.match(/^\/v1\/wares\/([^/]+)\/([^/]+)\/resolve-proof$/);
-
-      if ((proofMatch || versionedProofMatch) && method === 'GET') {
-        const name = proofMatch ? proofMatch[1] : versionedProofMatch![1];
-        let version = versionedProofMatch ? versionedProofMatch[2] : null;
-
-        if (!version) {
-          const indexKey = `wares/${name}/index.json`;
-          const indexObj = await env.REGISTRY_BUCKET.get(indexKey);
-          if (indexObj) {
-            const index = await indexObj.json() as any;
-            version = index.latest;
-          }
-        }
-
-        if (!version) {
-          return json({ error: 'Package or version not found' }, corsHeaders, 404);
-        }
-
-        const proofKey = `wares/${name}/${version}.proof.json`;
-        const proofObj = await env.REGISTRY_BUCKET.get(proofKey);
-
-        if (!proofObj) {
-          return json({
-            error: 'Proof not found',
-            hint: 'Proofs are generated during publication. Older packages may not have proofs.'
-          }, corsHeaders, 404);
-        }
-
-        return new Response(proofObj.body, {
-          headers: { 'Content-Type': 'application/json', ...corsHeaders }
-        });
-      }
-
-      const waresMatch = path.match(/^\/v1\/wares\/([^/]+)$/);
-      if (waresMatch && method === 'GET') {
-        return getPackage(waresMatch[1], env, corsHeaders);
-      }
-
-      const downloadMatch = path.match(/^\/v1\/wares\/([^/]+)\/([^/]+)$/);
-      if (downloadMatch && method === 'GET') {
-        return downloadPackage(downloadMatch[1], downloadMatch[2], env, corsHeaders);
-      }
-
-      if (path === '/v1/wares' && method === 'PUT') {
-        return publishPackage(request, env, corsHeaders);
-      }
-
-      return json({
-        error: 'Not found',
-        path,
-        hint: 'Use /health, /v1/auth/oidc/*, /v1/index, /v1/wares/*, /v1/search'
-      }, corsHeaders, 404);
-
-    } catch (e) {
-      console.error('Error:', e);
-      return json({ error: 'Internal error', details: String(e) }, corsHeaders, 500);
-    }
-  }
+  async fetch(request: Request, env: Env, _ctx?: ExecutionContext): Promise<Response> {
+    return handleRequest(request, env);
+  },
 };
 
-// OIDC Login
-async function handleLogin(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
-  const body = await request.json() as { provider: string; redirect_uri?: string };
-  const provider = body.provider || 'github';
+export async function handleRequest(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  let path = url.pathname;
+  const method = request.method;
 
-  const sessionId = generateId();
-  const state = generateId();
-  const pkceVerifier = generatePKCE();
-
-  const baseUrl = getBaseUrl(request);
-  // Use client's redirect_uri if provided (for CLI localhost callback), otherwise use registry callback
-  const redirectUri = body.redirect_uri || `${baseUrl}/api/v1/auth/oidc/callback`;
-
-  const session: OAuthSession = {
-    sessionId,
-    provider,
-    state,
-    pkceVerifier,
-    redirectUri,
-    createdAt: Date.now(),
-    status: 'pending'
+  const corsHeaders: Headers_ = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Client-Verifier',
   };
 
-  sessions.set(sessionId, session);
-
-  // Build GitHub OAuth URL
-  const clientId = env.GITHUB_CLIENT_ID;
-  if (!clientId) {
-    return json({ error: 'GitHub OAuth not configured' }, corsHeaders, 500);
+  if (method === 'OPTIONS') {
+    return new Response(null, { headers: corsHeaders });
   }
 
-  const pkceChallenge = await pkceChallengeFromVerifier(pkceVerifier);
-  // Encode session_id in state parameter (format: sessionId:randomState)
-  const stateParam = `${sessionId}:${state}`;
-  const authUrl = `https://github.com/login/oauth/authorize?` +
-    `client_id=${clientId}&` +
+  // Normalize path to handle both /v1 and /api/v1 prefixes
+  if (path.startsWith('/api/v1')) {
+    path = path.replace('/api/v1', '/v1');
+  }
+
+  try {
+    if (path === '/health') {
+      return json({ status: 'ok', service: 'wares-registry' }, corsHeaders);
+    }
+
+    // ---- OAuth endpoints -------------------------------------------------
+    if (path === '/v1/auth/oidc/login' && method === 'POST') {
+      return handleLogin(request, env, corsHeaders);
+    }
+
+    if (path === '/v1/auth/oidc/callback' && method === 'GET') {
+      const stateParam = url.searchParams.get('state');
+      if (!stateParam) {
+        return json({ error: 'Missing state parameter' }, corsHeaders, 400);
+      }
+      return handleCallback(stateParam.split(':')[0], url, env, corsHeaders);
+    }
+
+    if (path === '/v1/auth/oidc/confirm' && method === 'POST') {
+      return handleConfirm(request, env, corsHeaders);
+    }
+
+    if (/^\/v1\/auth\/oidc\/token/.test(path) && (method === 'POST' || method === 'GET')) {
+      let sessionId = path.split('/').pop() ?? '';
+      if (!sessionId || sessionId === 'token') {
+        sessionId = url.searchParams.get('session_id') || '';
+      }
+      if (!sessionId) {
+        return json({ error: 'Missing session_id' }, corsHeaders, 400);
+      }
+      let verifier = request.headers.get('X-Client-Verifier') || '';
+      if (!verifier && method === 'POST') {
+        try {
+          verifier = ((await request.json()) as any)?.client_verifier || '';
+        } catch {
+          /* no body */
+        }
+      }
+      return handleToken(sessionId, verifier, env, corsHeaders);
+    }
+
+    if (path === '/v1/auth/cert' && method === 'POST') {
+      return handleCert(request, env, corsHeaders);
+    }
+
+    if (path === '/v1/auth/user' && method === 'GET') {
+      const user = await validateUser(request, env);
+      if (!user) return json({ error: 'Unauthorized' }, corsHeaders, 401);
+
+      const userPackages: any[] = [];
+      for (const key of await listIndexKeys(env)) {
+        const indexObj = await env.REGISTRY_BUCKET.get(key);
+        if (indexObj) {
+          const data = (await indexObj.json()) as any;
+          if (data.owner === user.identity) userPackages.push(data);
+        }
+      }
+      return json({ ...user, packages: userPackages }, corsHeaders);
+    }
+
+    // ---- Package endpoints ----------------------------------------------
+    if (path === '/v1/index' && method === 'GET') {
+      return listPackages(env, corsHeaders);
+    }
+
+    if (path === '/v1/search' && method === 'GET') {
+      return searchPackages(url, env, corsHeaders);
+    }
+
+    if (path === '/v1/wares' && method === 'PUT') {
+      return publishPackage(request, env, corsHeaders);
+    }
+
+    if (path.startsWith('/v1/wares/') && method === 'GET') {
+      const route = parseWaresPath(path.slice('/v1/wares/'.length));
+      if (!route) return json({ error: 'Invalid package path' }, corsHeaders, 400);
+      switch (route.kind) {
+        case 'package':
+          return getPackage(route.name, env, corsHeaders);
+        case 'download':
+          return downloadPackage(route.name, route.version, env, corsHeaders);
+        case 'audit':
+          return auditPackage(route.name, env, corsHeaders);
+        case 'proof':
+          return resolveProof(route.name, route.version, env, corsHeaders);
+      }
+    }
+
+    return json(
+      { error: 'Not found', path, hint: 'Use /health, /v1/auth/oidc/*, /v1/index, /v1/wares/*, /v1/search' },
+      corsHeaders,
+      404,
+    );
+  } catch (e) {
+    console.error('Error:', e);
+    return json({ error: 'Internal error' }, corsHeaders, 500);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Routing helpers
+// ---------------------------------------------------------------------------
+
+export type WaresRoute =
+  | { kind: 'package'; name: string }
+  | { kind: 'download'; name: string; version: string }
+  | { kind: 'audit'; name: string }
+  | { kind: 'proof'; name: string; version: string | null };
+
+/**
+ * Parse the part of the path after `/v1/wares/`. Scoped names (`@ns/name`)
+ * span two segments; `%2F`-encoded slashes are also accepted.
+ */
+export function parseWaresPath(rest: string): WaresRoute | null {
+  let segs: string[];
+  try {
+    segs = rest.split('/').filter((s) => s.length > 0).map(decodeURIComponent);
+  } catch {
+    return null;
+  }
+  // Re-split segments that contained an encoded slash (e.g. "@ns%2Fname").
+  segs = segs.flatMap((s) => (s.startsWith('@') && s.includes('/') ? s.split('/') : [s]));
+  if (segs.length === 0) return null;
+
+  let name: string;
+  let tail: string[];
+  if (segs[0].startsWith('@')) {
+    if (segs.length < 2) return null;
+    name = `${segs[0]}/${segs[1]}`;
+    tail = segs.slice(2);
+  } else {
+    name = segs[0];
+    tail = segs.slice(1);
+  }
+  if (!isValidReadName(name)) return null;
+
+  if (tail.length === 0) return { kind: 'package', name };
+  if (tail.length === 1) {
+    if (tail[0] === 'audit') return { kind: 'audit', name };
+    if (tail[0] === 'resolve-proof') return { kind: 'proof', name, version: null };
+    return parseSemver(tail[0]) ? { kind: 'download', name, version: tail[0] } : null;
+  }
+  if (tail.length === 2 && tail[1] === 'resolve-proof' && parseSemver(tail[0])) {
+    return { kind: 'proof', name, version: tail[0] };
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// OAuth session storage (R2, strongly consistent, shared across isolates)
+// ---------------------------------------------------------------------------
+
+const sessionKey = (id: string) => `sessions/${id}.json`;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+async function loadSession(env: Env, id: string): Promise<OAuthSession | null> {
+  if (!UUID_RE.test(id)) return null;
+  const obj = await env.REGISTRY_BUCKET.get(sessionKey(id));
+  if (!obj) return null;
+  const session = (await obj.json()) as OAuthSession;
+  if (Date.now() - session.createdAt > SESSION_TTL_MS) {
+    await env.REGISTRY_BUCKET.delete(sessionKey(id));
+    return null;
+  }
+  return session;
+}
+
+async function saveSession(env: Env, session: OAuthSession): Promise<void> {
+  await env.REGISTRY_BUCKET.put(sessionKey(session.sessionId), JSON.stringify(session), {
+    httpMetadata: { contentType: 'application/json' },
+  });
+}
+
+function isAllowedRedirect(uri: string, baseUrl: string): boolean {
+  if (uri === `${baseUrl}/api/v1/auth/oidc/callback`) return true;
+  try {
+    const u = new URL(uri);
+    return u.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function generateUserCode(): string {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  const chars = Array.from(bytes, (b) => USER_CODE_ALPHABET[b % USER_CODE_ALPHABET.length]);
+  return `${chars.slice(0, 4).join('')}-${chars.slice(4).join('')}`;
+}
+
+// ---------------------------------------------------------------------------
+// OAuth login flow
+// ---------------------------------------------------------------------------
+
+async function handleLogin(request: Request, env: Env, corsHeaders: Headers_): Promise<Response> {
+  let body: { provider?: string; redirect_uri?: string; client_challenge?: string };
+  try {
+    body = (await request.json()) as any;
+  } catch {
+    return json({ error: 'Invalid JSON body' }, corsHeaders, 400);
+  }
+  const provider = body.provider || 'github';
+  if (provider !== 'github') {
+    return json({ error: 'Unsupported provider' }, corsHeaders, 400);
+  }
+  const clientId = env.GITHUB_CLIENT_ID;
+  if (!clientId || !env.GITHUB_CLIENT_SECRET) {
+    return json({ error: 'GitHub OAuth not configured' }, corsHeaders, 500);
+  }
+  if (!body.client_challenge || !/^[A-Za-z0-9_-]{43}$/.test(body.client_challenge)) {
+    return json(
+      { error: 'client_challenge (base64url SHA-256 of a CLI-held secret) is required' },
+      corsHeaders,
+      400,
+    );
+  }
+
+  const baseUrl = getBaseUrl(request);
+  const redirectUri = body.redirect_uri || `${baseUrl}/api/v1/auth/oidc/callback`;
+  if (!isAllowedRedirect(redirectUri, baseUrl)) {
+    return json({ error: 'redirect_uri must be the registry callback or a loopback address' }, corsHeaders, 400);
+  }
+
+  const session: OAuthSession = {
+    sessionId: generateId(),
+    provider,
+    state: generateId(),
+    pkceVerifier: generatePKCE(),
+    redirectUri,
+    clientChallenge: body.client_challenge,
+    userCode: generateUserCode(),
+    createdAt: Date.now(),
+    status: 'pending',
+  };
+  await saveSession(env, session);
+
+  const pkceChallenge = await pkceChallengeFromVerifier(session.pkceVerifier);
+  const authUrl =
+    `https://github.com/login/oauth/authorize?` +
+    `client_id=${encodeURIComponent(clientId)}&` +
     `redirect_uri=${encodeURIComponent(redirectUri)}&` +
-    `state=${stateParam}&` +
+    `state=${encodeURIComponent(`${session.sessionId}:${session.state}`)}&` +
     `scope=read:user%20user:email&` +
     `response_type=code&` +
     `code_challenge=${pkceChallenge}&` +
     `code_challenge_method=S256`;
 
-  return json({ session_id: sessionId, auth_url: authUrl }, corsHeaders);
+  return json(
+    { session_id: session.sessionId, auth_url: authUrl, user_code: session.userCode, expires_in: SESSION_TTL_MS / 1000 },
+    corsHeaders,
+  );
 }
 
-// OAuth Callback
-async function handleCallback(
-  sessionId: string,
-  url: URL,
-  env: Env,
-  corsHeaders: Record<string, string>
-): Promise<Response> {
-  const session = sessions.get(sessionId);
+async function handleCallback(sessionId: string, url: URL, env: Env, corsHeaders: Headers_): Promise<Response> {
+  const session = await loadSession(env, sessionId);
   if (!session) {
-    return json({ error: 'Session not found' }, corsHeaders, 404);
+    return json({ error: 'Session not found or expired' }, corsHeaders, 404);
+  }
+  if (session.status !== 'pending') {
+    return json({ error: 'Session already used' }, corsHeaders, 409);
   }
 
   const code = url.searchParams.get('code');
-  const stateParam = url.searchParams.get('state');
   const error = url.searchParams.get('error');
-
-  // Extract original random state from state parameter (format: sessionId:randomState)
-  const state = stateParam?.split(':')[1];
+  const state = url.searchParams.get('state')?.split(':')[1];
 
   if (error) {
     session.status = 'failed';
-    return json({ error: `OAuth error: ${error}` }, corsHeaders, 400);
+    await saveSession(env, session);
+    return json({ error: 'OAuth authorization was denied' }, corsHeaders, 400);
   }
-
-  if (!code || !state || state !== session.state) {
+  if (!code || !state || !timingSafeEqual(state, session.state)) {
     return json({ error: 'Invalid code or state' }, corsHeaders, 400);
   }
 
-  // Exchange code for token
   const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
     method: 'POST',
-    headers: {
-      'Accept': 'application/json',
-      'Content-Type': 'application/json'
-    },
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
     body: JSON.stringify({
       client_id: env.GITHUB_CLIENT_ID,
       client_secret: env.GITHUB_CLIENT_SECRET,
       code,
       redirect_uri: session.redirectUri,
-      grant_type: 'authorization_code',
-      code_verifier: session.pkceVerifier
-    })
+      code_verifier: session.pkceVerifier,
+    }),
   });
-
-  const tokenData = await tokenRes.json() as any;
-
-  if (tokenData.error) {
+  const tokenData = (await tokenRes.json()) as any;
+  if (tokenData.error || !tokenData.access_token) {
     session.status = 'failed';
-    return json({ error: tokenData.error_description || tokenData.error }, corsHeaders, 400);
+    await saveSession(env, session);
+    return json({ error: 'OAuth token exchange failed' }, corsHeaders, 400);
   }
 
-  // Fetch user info
   const userRes = await fetch('https://api.github.com/user', {
-    headers: {
-      'Authorization': `Bearer ${tokenData.access_token}`,
-      'User-Agent': 'wares-registry/1.0'
-    }
+    headers: { Authorization: `Bearer ${tokenData.access_token}`, 'User-Agent': 'wares-registry/1.0' },
   });
-
-  const userData = await userRes.json() as any;
-  const identity = userData.login
-    ? `github.com/${userData.login}`
-    : `github.com/user/${userData.id}`;
+  if (!userRes.ok) {
+    return json({ error: 'Could not read GitHub user' }, corsHeaders, 502);
+  }
+  const userData = (await userRes.json()) as any;
+  const identity = identityFromGithub(userData);
 
   session.result = {
     accessToken: tokenData.access_token,
     identity,
-    expiresIn: tokenData.expires_in || 3600
+    expiresIn: tokenData.expires_in || 3600,
   };
-  session.status = 'completed';
+  session.status = 'awaiting_confirmation';
+  await saveSession(env, session);
 
-  // Return HTML for browser
-  return new Response(`
-    <html>
-      <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; text-align: center;">
-        <h1 style="color: #22c55e;">✓ Authentication Successful</h1>
-        <p>Identity: <code>${identity}</code></p>
-        <p>You can close this window and return to the CLI.</p>
-      </body>
-    </html>
-  `, {
-    headers: { 'Content-Type': 'text/html', ...corsHeaders }
-  });
+  return new Response(
+    `<html><body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; text-align: center;">
+      <h1>Confirm login</h1>
+      <p>Signed in as <code>${escapeHtml(identity)}</code>.</p>
+      <p>Type the code shown in your terminal. If you did not start a login with <code>wares login</code>, close this tab.</p>
+      <form method="POST" action="/api/v1/auth/oidc/confirm">
+        <input type="hidden" name="session_id" value="${escapeHtml(session.sessionId)}">
+        <input name="user_code" autocomplete="off" autofocus placeholder="XXXX-XXXX" style="font-size: 1.4em; text-align: center;">
+        <button type="submit" style="font-size: 1.4em;">Confirm</button>
+      </form>
+    </body></html>`,
+    { headers: { 'Content-Type': 'text/html; charset=utf-8', ...corsHeaders } },
+  );
 }
 
-// Get Token
+async function handleConfirm(request: Request, env: Env, corsHeaders: Headers_): Promise<Response> {
+  let sessionId = '';
+  let userCode = '';
+  const ctype = request.headers.get('Content-Type') || '';
+  try {
+    if (ctype.includes('application/json')) {
+      const b = (await request.json()) as any;
+      sessionId = b.session_id || '';
+      userCode = b.user_code || '';
+    } else {
+      const form = await request.formData();
+      sessionId = String(form.get('session_id') || '');
+      userCode = String(form.get('user_code') || '');
+    }
+  } catch {
+    return json({ error: 'Invalid request body' }, corsHeaders, 400);
+  }
+  const session = await loadSession(env, sessionId);
+  if (!session || session.status !== 'awaiting_confirmation') {
+    return json({ error: 'Session not found, expired, or not awaiting confirmation' }, corsHeaders, 404);
+  }
+  if (!timingSafeEqual(userCode.trim().toUpperCase(), session.userCode)) {
+    // A wrong code burns the session: the code space is small.
+    session.status = 'failed';
+    session.result = undefined;
+    await saveSession(env, session);
+    return json({ error: 'Incorrect code; start the login again' }, corsHeaders, 403);
+  }
+  session.status = 'completed';
+  await saveSession(env, session);
+  return new Response(
+    `<html><body style="font-family: sans-serif; text-align: center; margin-top: 50px;">
+       <h1>Authentication successful</h1><p>You can close this window and return to the CLI.</p></body></html>`,
+    { headers: { 'Content-Type': 'text/html; charset=utf-8', ...corsHeaders } },
+  );
+}
+
 async function handleToken(
   sessionId: string,
-  corsHeaders: Record<string, string>
+  clientVerifier: string,
+  env: Env,
+  corsHeaders: Headers_,
 ): Promise<Response> {
-  const session = sessions.get(sessionId);
+  const session = await loadSession(env, sessionId);
   if (!session) {
-    return json({ error: 'Session not found' }, corsHeaders, 404);
+    return json({ error: 'Session not found or expired' }, corsHeaders, 404);
   }
-
-  if (session.status === 'pending') {
+  // Prove the caller is the CLI that started the login.
+  const challenge = clientVerifier ? await pkceChallengeFromVerifier(clientVerifier) : '';
+  if (!challenge || !timingSafeEqual(challenge, session.clientChallenge)) {
+    return json({ error: 'Invalid client_verifier' }, corsHeaders, 403);
+  }
+  if (session.status === 'pending' || session.status === 'awaiting_confirmation') {
     return json({ error: 'Authentication pending' }, corsHeaders, 202);
   }
-
-  if (session.status === 'failed') {
+  if (session.status === 'failed' || !session.result) {
     return json({ error: 'Authentication failed' }, corsHeaders, 400);
   }
 
-  if (!session.result) {
-    return json({ error: 'No result found' }, corsHeaders, 500);
-  }
-
-  return json({
-    access_token: session.result.accessToken,
-    identity: session.result.identity,
-    expires_in: session.result.expiresIn
-  }, corsHeaders);
+  // One-shot: the token can be collected exactly once.
+  await env.REGISTRY_BUCKET.delete(sessionKey(session.sessionId));
+  return json(
+    {
+      access_token: session.result.accessToken,
+      identity: session.result.identity,
+      expires_in: session.result.expiresIn,
+    },
+    corsHeaders,
+  );
 }
 
-// Ephemeral Certificate issuance (Sigstore-style)
-async function handleCert(
-  request: Request,
-  env: Env,
-  corsHeaders: Record<string, string>
-): Promise<Response> {
-  const body = await request.json() as { oidc_token: string; public_key: string };
+// ---------------------------------------------------------------------------
+// Ephemeral certificates
+// ---------------------------------------------------------------------------
 
+async function handleCert(request: Request, env: Env, corsHeaders: Headers_): Promise<Response> {
+  let body: { oidc_token?: string; public_key?: string };
+  try {
+    body = (await request.json()) as any;
+  } catch {
+    return json({ error: 'Invalid JSON body' }, corsHeaders, 400);
+  }
   if (!body.oidc_token || !body.public_key) {
     return json({ error: 'Missing oidc_token or public_key' }, corsHeaders, 400);
   }
 
-  // Verify the OIDC token with GitHub
-  const userRes = await fetch('https://api.github.com/user', {
-    headers: {
-      'Authorization': `Bearer ${body.oidc_token}`,
-      'User-Agent': 'wares-registry/1.0'
-    }
-  });
-
-  if (!userRes.ok) {
-    return json({ error: 'Invalid OIDC token' }, corsHeaders, 401);
+  const user = await verifyAccessToken(body.oidc_token, env);
+  if (!user) {
+    return json({ error: 'Invalid token' }, corsHeaders, 401);
   }
 
-  const userData = await userRes.json() as any;
-  const identity = userData.login
-    ? `github.com/${userData.login}`
-    : `github.com/user/${userData.id}`;
-
+  // The public key must be a P-256 SPKI key.
+  const spki = decodeBase64(body.public_key);
+  if (!spki || spki.length > 200) {
+    return json({ error: 'public_key must be base64 SPKI' }, corsHeaders, 400);
+  }
   try {
-    if (!env.CA_PRIVATE_KEY) {
-      console.error('CA_PRIVATE_KEY not configured');
-      return json({ error: 'Server misconfiguration: CA key missing' }, corsHeaders, 500);
-    }
+    await crypto.subtle.importKey('spki', spki as any, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+  } catch {
+    return json({ error: 'public_key is not a valid P-256 SPKI key' }, corsHeaders, 400);
+  }
 
+  if (!env.CA_PRIVATE_KEY) {
+    console.error('CA_PRIVATE_KEY not configured');
+    return json({ error: 'Server misconfiguration: CA key missing' }, corsHeaders, 500);
+  }
+  try {
     const ca = new CertificateAuthority(env.CA_PRIVATE_KEY);
-
     const nowSec = Math.floor(Date.now() / 1000);
-    const identityClaims: IdentityClaims = {
-      sub: identity,
+    const claims: IdentityClaims = {
+      sub: user.identity,
       iss: 'https://github.com',
       aud: 'wares.lumen-lang.com',
       iat: nowSec,
-      exp: nowSec + 600, // 10 minutes
-      name: userData.name || userData.login,
+      exp: nowSec + 600,
+      name: user.name,
     };
-
-    const cert = await ca.issueCertificate(
-      body.public_key,
-      identityClaims
-    );
-
-    return json(cert, corsHeaders);
-
+    return json(await ca.issueCertificate(body.public_key, claims), corsHeaders);
   } catch (e) {
     console.error('Certificate issuance failed:', e);
-    return json({ error: 'Certificate issuance failed', details: String(e) }, corsHeaders, 500);
+    return json({ error: 'Certificate issuance failed' }, corsHeaders, 500);
   }
 }
 
-// Package management functions
-async function listPackages(env: Env, corsHeaders: Record<string, string>): Promise<Response> {
-  const list = await env.REGISTRY_BUCKET.list({ prefix: 'wares/' });
+// ---------------------------------------------------------------------------
+// Package reads
+// ---------------------------------------------------------------------------
+
+/** List every `wares/<name>/index.json` key, following R2 pagination cursors. */
+async function listIndexKeys(env: Env): Promise<string[]> {
+  const keys: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await env.REGISTRY_BUCKET.list({ prefix: 'wares/', cursor });
+    for (const obj of page.objects) {
+      if (obj.key.endsWith('/index.json')) keys.push(obj.key);
+    }
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return keys;
+}
+
+function summarize(name: string, data: any) {
+  return {
+    name,
+    version: data.latest || '0.1.0',
+    description: data.description || 'A Lumen package.',
+    author: data.author || 'Anonymous',
+    downloads: data.downloads || 0,
+    keywords: data.keywords || [],
+    isVerified: data.isVerified || false,
+    owner: data.owner || null,
+    updatedAt: data.updatedAt || new Date().toISOString(),
+  };
+}
+
+const nameFromKey = (key: string) => key.slice('wares/'.length, -'/index.json'.length);
+
+async function listPackages(env: Env, corsHeaders: Headers_): Promise<Response> {
   const packages: any[] = [];
-  const seenNames = new Set<string>();
-
-  for (const obj of list.objects) {
-    if (obj.key?.endsWith('/index.json')) {
-      const name = obj.key.replace('wares/', '').replace('/index.json', '');
-
-      if (seenNames.has(name)) continue;
-      seenNames.add(name);
-
-      const indexObj = await env.REGISTRY_BUCKET.get(obj.key);
-      if (indexObj) {
-        const data = await indexObj.json() as any;
-        packages.push({
-          name,
-          version: data.latest || '0.1.0',
-          description: data.description || 'A Lumen package.',
-          author: data.author || 'Anonymous',
-          downloads: data.downloads || 0,
-          keywords: data.keywords || [],
-          isVerified: data.isVerified || false,
-          owner: data.owner || null,
-          updatedAt: data.updatedAt || new Date().toISOString()
-        });
-      }
-    }
+  for (const key of await listIndexKeys(env)) {
+    const indexObj = await env.REGISTRY_BUCKET.get(key);
+    if (indexObj) packages.push(summarize(nameFromKey(key), await indexObj.json()));
   }
-
-  // Frontend expects this structure in index.vue
-  return json({
-    packages: packages.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
-    totalPackages: seenNames.size,
-    totalDownloads: packages.reduce((acc, p) => acc + (p.downloads || 0), 0),
-    categories: ['CLI', 'Utils', 'AI', 'HTTP', 'Database', 'Logic'],
-    contributors: Array.from(new Set(packages.map(p => p.author))).length
-  }, corsHeaders);
+  return json(
+    {
+      packages: packages.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
+      totalPackages: packages.length,
+      totalDownloads: packages.reduce((acc, p) => acc + (p.downloads || 0), 0),
+      categories: ['CLI', 'Utils', 'AI', 'HTTP', 'Database', 'Logic'],
+      contributors: new Set(packages.map((p) => p.author)).size,
+    },
+    corsHeaders,
+  );
 }
 
-async function searchPackages(
-  url: URL,
-  env: Env,
-  corsHeaders: Record<string, string>
-): Promise<Response> {
-  const query = url.searchParams.get('q') || '';
-  const limit = parseInt(url.searchParams.get('limit') || '20');
+async function searchPackages(url: URL, env: Env, corsHeaders: Headers_): Promise<Response> {
+  const query = (url.searchParams.get('q') || '').toLowerCase();
+  const parsed = parseInt(url.searchParams.get('limit') || '20', 10);
+  const limit = Number.isFinite(parsed) ? Math.min(Math.max(parsed, 1), 100) : 20;
 
-  const list = await env.REGISTRY_BUCKET.list({ prefix: 'wares/' });
   const results: any[] = [];
-  const seenNames = new Set<string>();
-
-  for (const obj of list.objects) {
-    if (obj.key?.endsWith('/index.json')) {
-      const name = obj.key.replace('wares/', '').replace('/index.json', '');
-
-      if (seenNames.has(name)) continue;
-
-      if (!query || name.toLowerCase().includes(query.toLowerCase())) {
-        const index = await env.REGISTRY_BUCKET.get(obj.key);
-        if (index) {
-          const data = await index.json() as any;
-          seenNames.add(name);
-          results.push({
-            name,
-            version: data.latest || '0.1.0',
-            description: data.description || 'A Lumen package.',
-            author: data.author || 'Anonymous',
-            downloads: data.downloads || 0,
-            keywords: data.keywords || [],
-            isVerified: data.isVerified || false,
-            owner: data.owner || null,
-            updatedAt: data.updatedAt || new Date().toISOString()
-          });
-        }
-      }
-      if (results.length >= limit) break;
-    }
+  for (const key of await listIndexKeys(env)) {
+    const name = nameFromKey(key);
+    if (query && !name.toLowerCase().includes(query)) continue;
+    const index = await env.REGISTRY_BUCKET.get(key);
+    if (index) results.push(summarize(name, await index.json()));
+    if (results.length >= limit) break;
   }
-
-  // search.vue line 120: results.value = res?.results || []
-  return json({ results: results, total: results.length }, corsHeaders);
+  return json({ results, total: results.length }, corsHeaders);
 }
 
-async function getPackage(
-  name: string,
-  env: Env,
-  corsHeaders: Record<string, string>
-): Promise<Response> {
-  const indexKey = `wares/${name}/index.json`;
-  const index = await env.REGISTRY_BUCKET.get(indexKey);
-
+async function getPackage(name: string, env: Env, corsHeaders: Headers_): Promise<Response> {
+  const index = await env.REGISTRY_BUCKET.get(`wares/${name}/index.json`);
   if (!index) {
     return json({ error: 'Package not found' }, corsHeaders, 404);
   }
-
-  return new Response(index.body, {
-    headers: { 'Content-Type': 'application/json', ...corsHeaders }
-  });
+  return new Response(index.body, { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
 }
 
-async function downloadPackage(
-  name: string,
-  version: string,
-  env: Env,
-  corsHeaders: Record<string, string>
-): Promise<Response> {
-  const tarballKey = `wares/${name}/${version}.tarball`;
-  const tarball = await env.REGISTRY_BUCKET.get(tarballKey);
-
+async function downloadPackage(name: string, version: string, env: Env, corsHeaders: Headers_): Promise<Response> {
+  const tarball = await env.REGISTRY_BUCKET.get(`wares/${name}/${version}.tarball`);
   if (!tarball) {
     return json({ error: 'Version not found' }, corsHeaders, 404);
   }
-
   return new Response(tarball.body, {
     headers: {
       'Content-Type': 'application/gzip',
-      'Content-Disposition': `attachment; filename="${name}-${version}.tgz"`,
-      ...corsHeaders
-    }
+      'Content-Disposition': `attachment; filename="${name.replace('/', '-').replace('@', '')}-${version}.tgz"`,
+      ...corsHeaders,
+    },
   });
 }
 
-async function publishPackage(
-  request: Request,
-  env: Env,
-  corsHeaders: Record<string, string>
-): Promise<Response> {
-  const user = await validateUser(request, env);
-  const body = await request.json() as any;
-  const { name, version, tarball, shasum, signature, description, author } = body;
+async function resolveProof(name: string, version: string | null, env: Env, corsHeaders: Headers_): Promise<Response> {
+  if (!version) {
+    const indexObj = await env.REGISTRY_BUCKET.get(`wares/${name}/index.json`);
+    if (indexObj) version = ((await indexObj.json()) as any).latest ?? null;
+  }
+  if (!version) {
+    return json({ error: 'Package or version not found' }, corsHeaders, 404);
+  }
+  const proofObj = await env.REGISTRY_BUCKET.get(`wares/${name}/${version}.proof.json`);
+  if (!proofObj) {
+    return json(
+      { error: 'Proof not found', hint: 'Proofs are generated during publication. Older packages may not have proofs.' },
+      corsHeaders,
+      404,
+    );
+  }
+  return new Response(proofObj.body, { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+}
 
+async function auditPackage(name: string, env: Env, corsHeaders: Headers_): Promise<Response> {
+  const logBinding = env.LOG_WORKER;
+  if (!logBinding && !env.TRANSPARENCY_LOG_URL) {
+    return json({ error: 'Audit system unavailable' }, corsHeaders, 503);
+  }
+  try {
+    const baseUrl = logBinding ? 'http://log.internal' : env.TRANSPARENCY_LOG_URL!;
+    const f = (u: string) => (logBinding ? logBinding.fetch(u) : fetch(u));
+    const [queryRes, logRes] = await Promise.all([
+      f(`${baseUrl}/api/v1/log/query?package=${encodeURIComponent(name)}`),
+      f(`${baseUrl}/api/v1/log`),
+    ]);
+    if (!queryRes.ok || !logRes.ok) {
+      throw new Error(`Upstream error: ${queryRes.status}/${logRes.status}`);
+    }
+    const queryData = (await queryRes.json()) as any;
+    const logInfo = await logRes.json();
+    return json({ entries: queryData.entries || [], total: queryData.total || 0, logInfo }, corsHeaders);
+  } catch (e) {
+    console.error('Audit fetch error:', e);
+    return json({ error: 'Audit fetch failed' }, corsHeaders, 502);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Publish
+// ---------------------------------------------------------------------------
+
+async function publishPackage(request: Request, env: Env, corsHeaders: Headers_): Promise<Response> {
+  const user = await validateUser(request, env);
+  if (!user) {
+    return json({ error: 'Authentication required to publish' }, corsHeaders, 401);
+  }
+
+  const declared = parseInt(request.headers.get('Content-Length') || '0', 10);
+  if (declared > MAX_PUBLISH_BODY_BYTES) {
+    return json({ error: 'Request body too large' }, corsHeaders, 413);
+  }
+  const raw = await request.text();
+  if (raw.length > MAX_PUBLISH_BODY_BYTES) {
+    return json({ error: 'Request body too large' }, corsHeaders, 413);
+  }
+  let body: any;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    return json({ error: 'Invalid JSON body' }, corsHeaders, 400);
+  }
+  if (!body || typeof body !== 'object') {
+    return json({ error: 'Invalid JSON body' }, corsHeaders, 400);
+  }
+
+  const { name, version, tarball, shasum, signature, description } = body;
   if (!name || !version || !tarball) {
     return json({ error: 'Missing required fields' }, corsHeaders, 400);
   }
-
-  // Check ownership
-  const indexKey = `wares/${name}/index.json`;
-  const existing = await env.REGISTRY_BUCKET.get(indexKey);
-  let index: any = { name, versions: [], latest: null, owner: user?.identity || null };
-
-  if (existing) {
-    index = await existing.json();
-    if (index.owner && user && index.owner !== user.identity) {
-      return json({ error: 'Package owned by another user' }, corsHeaders, 403);
+  if (!isValidPublishName(name)) {
+    return json({ error: 'Invalid package name; expected @namespace/name (lowercase, digits, dashes)' }, corsHeaders, 400);
+  }
+  if (!parseSemver(version)) {
+    return json({ error: 'Invalid version; expected semver' }, corsHeaders, 400);
+  }
+  if (description !== undefined && (typeof description !== 'string' || description.length > MAX_DESCRIPTION_LEN)) {
+    return json({ error: `description must be a string of at most ${MAX_DESCRIPTION_LEN} characters` }, corsHeaders, 400);
+  }
+  let proofJson: string | null = null;
+  if (body.proof !== undefined) {
+    proofJson = JSON.stringify(body.proof);
+    if (typeof body.proof !== 'object' || body.proof === null || proofJson.length > MAX_PROOF_BYTES) {
+      return json({ error: 'proof must be a JSON object under 64 KiB' }, corsHeaders, 400);
     }
   }
 
-  // Update index metadata
-  index.description = description || index.description;
-  index.author = author || (user ? user.identity.split('/').pop() : 'Anonymous');
-  if (user) {
-    index.authorAvatar = user.avatar;
-    index.authorIdentity = user.identity;
+  const data = decodeBase64(tarball);
+  if (!data) {
+    return json({ error: 'tarball must be valid base64' }, corsHeaders, 400);
   }
-  index.isVerified = !!user;
-  index.updatedAt = new Date().toISOString();
+  if (data.length > MAX_TARBALL_BYTES) {
+    return json({ error: 'Tarball too large' }, corsHeaders, 413);
+  }
 
-  // Upload tarball
+  const digest = await sha256Hex(data);
+  if (shasum !== undefined) {
+    const claimed = String(shasum).replace(/^sha256:/i, '').toLowerCase();
+    if (claimed !== digest) {
+      return json({ error: 'shasum does not match the uploaded tarball' }, corsHeaders, 400);
+    }
+  }
+
+  const indexKey = `wares/${name}/index.json`;
   const tarballKey = `wares/${name}/${version}.tarball`;
-  const tarballData = Uint8Array.from(atob(tarball), c => c.charCodeAt(0));
-  await env.REGISTRY_BUCKET.put(tarballKey, tarballData, {
-    httpMetadata: { contentType: 'application/gzip' },
-  });
 
-  // Save resolution proof if provided (Phase 2 hardening)
-  if (body.proof) {
-    const proofKey = `wares/${name}/${version}.proof.json`;
-    await env.REGISTRY_BUCKET.put(proofKey, JSON.stringify(body.proof), {
+  // Authorization + immutability checks before any side effect.
+  const existing = await env.REGISTRY_BUCKET.get(indexKey);
+  if (existing) {
+    const current = (await existing.json()) as any;
+    if (!current.owner) {
+      return json({ error: 'Package has no owner; contact the registry administrators to claim it' }, corsHeaders, 403);
+    }
+    if (current.owner !== user.identity) {
+      return json({ error: 'Package owned by another user' }, corsHeaders, 403);
+    }
+    if ((current.versions || []).includes(version)) {
+      return json({ error: `Version ${version} already exists and is immutable` }, corsHeaders, 409);
+    }
+  }
+
+  // Transparency log: fail the publish if the log rejects it (unless opted out).
+  let logIndex: number | null = null;
+  const logBinding = env.LOG_WORKER;
+  if (logBinding || env.TRANSPARENCY_LOG_URL) {
+    const required = env.TRANSPARENCY_LOG_REQUIRED !== 'false';
+    let failure: string | null = null;
+    try {
+      const baseUrl = logBinding ? 'http://log.internal' : env.TRANSPARENCY_LOG_URL!;
+      const init: RequestInit = {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': env.TRANSPARENCY_LOG_API_KEY || '' },
+        body: JSON.stringify({
+          package_name: name,
+          version,
+          content_hash: `sha256:${digest}`,
+          identity: user.identity,
+          signature: signature?.signature,
+          certificate: signature?.certificate,
+        }),
+      };
+      const target = `${baseUrl}/api/v1/log/entries`;
+      const res = await (logBinding ? logBinding.fetch(target, init) : fetch(target, init));
+      if (res.ok) {
+        logIndex = ((await res.json()) as any)?.index ?? null;
+      } else {
+        failure = `transparency log responded ${res.status}`;
+      }
+    } catch (e) {
+      console.error('Transparency log error:', e);
+      failure = 'transparency log unreachable';
+    }
+    if (failure && required) {
+      return json({ error: `Publish rejected: ${failure}`, hint: 'Packages must be signed and logged' }, corsHeaders, 502);
+    }
+  }
+
+  // Store the tarball; R2 refuses to overwrite an existing key.
+  const stored = await env.REGISTRY_BUCKET.put(tarballKey, data, {
+    httpMetadata: { contentType: 'application/gzip' },
+    onlyIf: { etagDoesNotMatch: '*' },
+  });
+  if (!stored) {
+    return json({ error: `Version ${version} already exists and is immutable` }, corsHeaders, 409);
+  }
+  if (proofJson) {
+    await env.REGISTRY_BUCKET.put(`wares/${name}/${version}.proof.json`, proofJson, {
       httpMetadata: { contentType: 'application/json' },
     });
   }
 
-  // Submit to transparency log
-  if (env.TRANSPARENCY_LOG_URL || (env as any).LOG_WORKER) {
-    try {
-      const logBinding = (env as any).LOG_WORKER;
-      const baseUrl = logBinding ? 'http://log.internal' : env.TRANSPARENCY_LOG_URL;
-
-      await (logBinding || { fetch }).fetch(`${baseUrl}/api/v1/log/entries`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': env.TRANSPARENCY_LOG_API_KEY
-        },
-        body: JSON.stringify({
-          package_name: name,
-          version,
-          content_hash: `sha256:${shasum}`,
-          identity: user?.identity || signature?.identity || 'unknown',
-          signature: signature?.signature || 'none',
-          certificate: signature?.certificate || 'none'
-        })
-      });
-    } catch (e) {
-      console.error('Transparency log error:', e);
+  // Update the index with compare-and-swap so concurrent publishes cannot drop versions.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const cur = await env.REGISTRY_BUCKET.get(indexKey);
+    const index: any = cur
+      ? await cur.json()
+      : { name, versions: [], latest: null, owner: user.identity, versionInfo: {} };
+    if (index.owner !== user.identity) {
+      await env.REGISTRY_BUCKET.delete(tarballKey);
+      return json({ error: 'Package owned by another user' }, corsHeaders, 403);
+    }
+    if (description) index.description = description;
+    index.author = user.identity.split('/').pop();
+    index.authorAvatar = user.avatar;
+    index.authorIdentity = user.identity;
+    index.isVerified = true;
+    index.updatedAt = new Date().toISOString();
+    index.versions = [...new Set([...(index.versions || []), version])].sort((a: string, b: string) =>
+      compareVersions(b, a),
+    );
+    index.latest = pickLatest(index.versions);
+    index.versionInfo = {
+      ...(index.versionInfo || {}),
+      [version]: {
+        shasum: digest,
+        size: data.length,
+        publishedAt: index.updatedAt,
+        publisher: user.identity,
+        logged: logIndex !== null,
+        logIndex,
+      },
+    };
+    const ok = await env.REGISTRY_BUCKET.put(indexKey, JSON.stringify(index), {
+      httpMetadata: { contentType: 'application/json' },
+      onlyIf: cur ? { etagMatches: cur.etag } : { etagDoesNotMatch: '*' },
+    });
+    if (ok) {
+      return json({ success: true, name, version, shasum: digest, logIndex, logged: logIndex !== null }, corsHeaders, 201);
     }
   }
-
-  // Finalize index
-  if (!index.versions.includes(version)) {
-    index.versions.push(version);
-  }
-
-  // Ensure uniqueness and correct sorting
-  index.versions = [...new Set(index.versions)].sort((a: any, b: any) => compareVersions(b, a));
-  index.latest = index.versions[0];
-
-  await env.REGISTRY_BUCKET.put(indexKey, JSON.stringify(index), {
-    httpMetadata: { contentType: 'application/json' },
-  });
-
-  return json({ success: true, name, version }, corsHeaders, 201);
+  await env.REGISTRY_BUCKET.delete(tarballKey);
+  return json({ error: 'Concurrent publish conflict; retry' }, corsHeaders, 409);
 }
 
-// User Validation
-async function validateUser(request: Request, env: Env): Promise<{ identity: string; name?: string; avatar?: string } | null> {
-  const auth = request.headers.get('Authorization');
-  if (!auth || !auth.startsWith('Bearer ')) return null;
-  const token = auth.split(' ')[1];
+// ---------------------------------------------------------------------------
+// Authentication
+// ---------------------------------------------------------------------------
 
-  // In a real system, we'd verify the token with GitHub
-  // For this implementation, we fetch user info from GitHub to validate
+function identityFromGithub(data: any): string {
+  return data.login ? `github.com/${data.login}` : `github.com/user/${data.id}`;
+}
+
+/**
+ * Verify `token` was issued to THIS OAuth app and return its user. Fails
+ * closed when the OAuth app credentials are not configured.
+ */
+export async function verifyAccessToken(token: string, env: Env): Promise<User | null> {
+  if (!token || !env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET) return null;
   try {
-    const res = await fetch('https://api.github.com/user', {
+    const res = await fetch(`https://api.github.com/applications/${encodeURIComponent(env.GITHUB_CLIENT_ID)}/token`, {
+      method: 'POST',
       headers: {
-        'Authorization': `Bearer ${token}`,
-        'User-Agent': 'wares-registry/1.0'
-      }
+        Authorization: `Basic ${btoa(`${env.GITHUB_CLIENT_ID}:${env.GITHUB_CLIENT_SECRET}`)}`,
+        Accept: 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+        'User-Agent': 'wares-registry/1.0',
+      },
+      body: JSON.stringify({ access_token: token }),
     });
-
     if (!res.ok) return null;
-    const data = await res.json() as any;
+    const data = (await res.json()) as any;
+    if (!data?.user?.login) return null;
     return {
-      identity: `github.com/${data.login}`,
-      name: data.name || data.login,
-      avatar: data.avatar_url
+      identity: identityFromGithub(data.user),
+      name: data.user.name || data.user.login,
+      avatar: data.user.avatar_url,
     };
-  } catch (e) {
+  } catch {
     return null;
   }
 }
 
+async function validateUser(request: Request, env: Env): Promise<User | null> {
+  const auth = request.headers.get('Authorization');
+  if (!auth || !auth.startsWith('Bearer ')) return null;
+  return verifyAccessToken(auth.slice('Bearer '.length).trim(), env);
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
-function json(data: any, headers: Record<string, string>, status = 200): Response {
+// ---------------------------------------------------------------------------
+
+function json(data: any, headers: Headers_, status = 200): Response {
   return new Response(JSON.stringify(data, null, 2), {
     status,
-    headers: { 'Content-Type': 'application/json', ...headers }
+    headers: { 'Content-Type': 'application/json', ...headers },
   });
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 }
 
 function generateId(): string {
   return crypto.randomUUID();
 }
 
+function b64url(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
 function generatePKCE(): string {
   const array = new Uint8Array(32);
   crypto.getRandomValues(array);
-  return btoa(String.fromCharCode(...array))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=/g, '');
+  return b64url(array);
 }
 
 async function pkceChallengeFromVerifier(verifier: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(verifier);
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  return btoa(String.fromCharCode(...new Uint8Array(digest)))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=/g, '');
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  return b64url(new Uint8Array(digest));
 }
 
 function getBaseUrl(request: Request): string {
   const url = new URL(request.url);
   return `${url.protocol}//${url.host}`;
-}
-
-function compareVersions(a: string, b: string): number {
-  const partsA = a.split('.').map(Number);
-  const partsB = b.split('.').map(Number);
-  for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
-    const partA = partsA[i] || 0;
-    const partB = partsB[i] || 0;
-    if (partA !== partB) return partA - partB;
-  }
-  return 0;
 }

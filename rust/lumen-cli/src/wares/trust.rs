@@ -365,9 +365,9 @@ impl TrustClient {
     fn generate_ephemeral_key(&self) -> Result<String, TrustError> {
         // In production, generate actual ECDSA P-256 key pair
         // For now, return a placeholder
-        use rand::RngCore;
+        use rand::Rng;
         let mut key = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut key);
+        rand::rng().fill_bytes(&mut key);
         Ok(STANDARD.encode(key))
     }
 
@@ -564,7 +564,7 @@ impl TrustClient {
 
         // Use transparency log URL from env or default
         let log_url = std::env::var("WARES_LOG_URL")
-            .unwrap_or_else(|_| "https://wares.lumen-lang.com/log".to_string());
+            .unwrap_or_else(|_| crate::config::DEFAULT_LOG_URL.to_string());
         let verify_url = format!(
             "{}/api/v1/log/verify/{}",
             log_url.trim_end_matches('/'),
@@ -602,7 +602,7 @@ impl TrustClient {
         package_name: &str,
     ) -> Result<Vec<LogEntry>, TrustError> {
         let log_url = std::env::var("WARES_LOG_URL")
-            .unwrap_or_else(|_| "https://wares.lumen-lang.com/log".to_string());
+            .unwrap_or_else(|_| crate::config::DEFAULT_LOG_URL.to_string());
         let url = format!(
             "{}/api/v1/log/query?package={}",
             log_url.trim_end_matches('/'),

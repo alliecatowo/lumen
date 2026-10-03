@@ -13,8 +13,8 @@ cell stat_min(values: list[Float]) -> Float
   if n == 0
     return 0.0
   end
-  let result = values[0]
-  let i = 1
+  let mut result = values[0]
+  let mut i = 1
   while i < n
     if values[i] < result
       result = values[i]
@@ -29,8 +29,8 @@ cell stat_max(values: list[Float]) -> Float
   if n == 0
     return 0.0
   end
-  let result = values[0]
-  let i = 1
+  let mut result = values[0]
+  let mut i = 1
   while i < n
     if values[i] > result
       result = values[i]
@@ -45,7 +45,7 @@ cell stat_mean(values: list[Float]) -> Float
   if n == 0
     return 0.0
   end
-  let total = 0.0
+  let mut total = 0.0
   for v in values
     total = total + v
   end
@@ -71,7 +71,7 @@ cell stat_stdev(values: list[Float]) -> Float
     return 0.0
   end
   let m = stat_mean(values)
-  let sum_sq = 0.0
+  let mut sum_sq = 0.0
   for v in values
     let diff = v - m
     sum_sq = sum_sq + diff * diff
@@ -115,7 +115,7 @@ cell load_measurements(csv_path: String) -> list[Measurement]
   end
 
   # Find column indices from header row
-  let header = rows[0]
+  let mut header = rows[0]
   let bench_col = find_col(header, "benchmark")
   let lang_col = find_col(header, "language")
   let time_col = find_col(header, "time_ms")
@@ -125,10 +125,10 @@ cell load_measurements(csv_path: String) -> list[Measurement]
     return []
   end
 
-  let measurements = []
-  let ri = 1
+  let mut measurements = []
+  let mut ri = 1
   while ri < len(rows)
-    let row = rows[ri]
+    let mut row = rows[ri]
     if len(row) > time_col
       let time_str = trim(row[time_col])
       if time_str != "ERROR" and time_str != ""
@@ -146,7 +146,7 @@ cell load_measurements(csv_path: String) -> list[Measurement]
 end
 
 cell collect_times(measurements: list[Measurement], bench: String, lang: String) -> list[Float]
-  let times = []
+  let mut times = []
   for m in measurements
     if m.benchmark == bench and m.language == lang
       times = append(times, m.time_ms)
@@ -157,7 +157,7 @@ end
 
 cell aggregate(measurements: list[Measurement]) -> list[BenchStats]
   # Find unique benchmark|language pairs
-  let keys = []
+  let mut keys = []
   for m in measurements
     let key = m.benchmark + "|" + m.language
     if not list_contains(keys, key)
@@ -165,7 +165,7 @@ cell aggregate(measurements: list[Measurement]) -> list[BenchStats]
     end
   end
 
-  let stats = []
+  let mut stats = []
   for key in keys
     let parts = split(key, "|")
     let bench = parts[0]
@@ -188,7 +188,7 @@ cell aggregate(measurements: list[Measurement]) -> list[BenchStats]
 end
 
 cell find_col(header: list[String], name: String) -> Int
-  let i = 0
+  let mut i = 0
   while i < len(header)
     if trim(header[i]) == name
       return i
@@ -203,7 +203,7 @@ end
 
 ```lumen
 cell unique_benchmarks(stats: list[BenchStats]) -> list[String]
-  let result = []
+  let mut result = []
   for s in stats
     if not list_contains(result, s.benchmark)
       result = append(result, s.benchmark)
@@ -213,7 +213,7 @@ cell unique_benchmarks(stats: list[BenchStats]) -> list[String]
 end
 
 cell unique_languages(stats: list[BenchStats]) -> list[String]
-  let result = []
+  let mut result = []
   for s in stats
     if not list_contains(result, s.language)
       result = append(result, s.language)
@@ -260,8 +260,8 @@ cell get_stat(stats: list[BenchStats], bench: String, lang: String) -> BenchStat
 end
 
 cell fastest_language(stats: list[BenchStats], bench: String) -> String
-  let best_lang = ""
-  let best_time = 999999999.0
+  let mut best_lang = ""
+  let mut best_time = 999999999.0
   for s in stats
     if s.benchmark == bench
       if s.median < best_time
@@ -303,7 +303,7 @@ end
 ```lumen
 cell summary_row(stats: list[BenchStats], bench: String, languages: list[String]) -> String
   let fastest = fastest_language(stats, bench)
-  let row = "| " + bench + " |"
+  let mut row = "| " + bench + " |"
   for lang in languages
     if has_stat(stats, bench, lang)
       let s = get_stat(stats, bench, lang)
@@ -321,18 +321,18 @@ cell summary_row(stats: list[BenchStats], bench: String, languages: list[String]
 end
 
 cell gen_summary(stats: list[BenchStats], benchmarks: list[String], languages: list[String]) -> list[String]
-  let lines = []
+  let mut lines = []
   lines = append(lines, "## Summary (median time in ms)")
   lines = append(lines, "")
 
-  let header = "| Benchmark |"
+  let mut header = "| Benchmark |"
   for lang in languages
     header = header + " " + lang + " |"
   end
   header = header + " Fastest |"
   lines = append(lines, header)
 
-  let sep = "|-----------|"
+  let mut sep = "|-----------|"
   for lang in languages
     sep = sep + "------:|"
   end
@@ -351,13 +351,13 @@ end
 
 ```lumen
 cell relative_row(stats: list[BenchStats], bench: String, languages: list[String]) -> String
-  let c_median = 0.0
+  let mut c_median = 0.0
   if has_stat(stats, bench, "c")
     let c_stat = get_stat(stats, bench, "c")
     c_median = c_stat.median
   end
 
-  let row = "| " + bench + " |"
+  let mut row = "| " + bench + " |"
   for lang in languages
     if has_stat(stats, bench, lang)
       let s = get_stat(stats, bench, lang)
@@ -375,19 +375,19 @@ cell relative_row(stats: list[BenchStats], bench: String, languages: list[String
 end
 
 cell gen_relative(stats: list[BenchStats], benchmarks: list[String], languages: list[String]) -> list[String]
-  let lines = []
+  let mut lines = []
   lines = append(lines, "## Relative Performance (vs C baseline)")
   lines = append(lines, "")
   lines = append(lines, "Values show how many times slower than C (1.0x = same speed).")
   lines = append(lines, "")
 
-  let header = "| Benchmark |"
+  let mut header = "| Benchmark |"
   for lang in languages
     header = header + " " + lang + " |"
   end
   lines = append(lines, header)
 
-  let sep = "|-----------|"
+  let mut sep = "|-----------|"
   for lang in languages
     sep = sep + "------:|"
   end
@@ -416,7 +416,7 @@ cell detail_row(s: BenchStats) -> String
 end
 
 cell gen_details(stats: list[BenchStats], benchmarks: list[String], languages: list[String]) -> list[String]
-  let lines = []
+  let mut lines = []
   lines = append(lines, "## Detailed Results")
   lines = append(lines, "")
 
@@ -442,10 +442,10 @@ end
 
 ```lumen
 cell lumen_analysis_row(stats: list[BenchStats], bench: String, lumen_stat: BenchStats) -> String
-  let rank = 1
-  let total_langs = 0
-  let fastest_name = ""
-  let fastest_median = 999999999.0
+  let mut rank = 1
+  let mut total_langs = 0
+  let mut fastest_name = ""
+  let mut fastest_median = 999999999.0
 
   for s in stats
     if s.benchmark == bench
@@ -460,7 +460,7 @@ cell lumen_analysis_row(stats: list[BenchStats], bench: String, lumen_stat: Benc
     end
   end
 
-  let ratio = 0.0
+  let mut ratio = 0.0
   if fastest_median > 0.0
     ratio = lumen_stat.median / fastest_median
   end
@@ -473,20 +473,20 @@ cell lumen_analysis_row(stats: list[BenchStats], bench: String, lumen_stat: Benc
 end
 
 cell gen_lumen_analysis(stats: list[BenchStats], benchmarks: list[String]) -> list[String]
-  let lines = []
+  let mut lines = []
   lines = append(lines, "## Lumen Performance Analysis")
   lines = append(lines, "")
 
-  let lumen_rows = []
-  let ratio_sum = 0.0
-  let ratio_count = 0
+  let mut lumen_rows = []
+  let mut ratio_sum = 0.0
+  let mut ratio_count = 0
 
   for bench in benchmarks
     if has_stat(stats, bench, "lumen")
       let lumen_stat = get_stat(stats, bench, "lumen")
       lumen_rows = append(lumen_rows, lumen_analysis_row(stats, bench, lumen_stat))
 
-      let fastest_median = 999999999.0
+      let mut fastest_median = 999999999.0
       for s in stats
         if s.benchmark == bench and s.median < fastest_median
           fastest_median = s.median
@@ -527,7 +527,7 @@ cell generate_report(stats: list[BenchStats], csv_path: String) -> String
   let benchmarks = unique_benchmarks(stats)
   let languages = unique_languages(stats)
 
-  let lines = []
+  let mut lines = []
   lines = append(lines, "# Lumen Cross-Language Benchmark Report")
   lines = append(lines, "")
   lines = append(lines, "Source: `" + csv_path + "`")
@@ -562,7 +562,7 @@ end
 ```lumen
 cell find_csv_files(dir: String) -> list[String]
   let entries = read_dir(dir)
-  let csv_files = []
+  let mut csv_files = []
   for entry in entries
     if ends_with(entry, ".csv")
       csv_files = append(csv_files, dir + "/" + entry)
@@ -593,7 +593,7 @@ cell main() -> Int
   end
 
   # Use first CSV file found, or results.csv if it exists
-  let target = files[0]
+  let mut target = files[0]
   for f in files
     if contains(f, "results.csv")
       target = f

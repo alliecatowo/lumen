@@ -1,6 +1,6 @@
 cell main() -> Int
   let items = [10, 20, 30]
-  let total = 0
+  let mut total = 0
   for item in items
     total = total + item
   end

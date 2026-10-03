@@ -33,7 +33,7 @@ cell priority_label(p: String) -> String
 end
 
 cell format_task(task: Task) -> String
-  let status = "[x]"
+  let mut status = "[x]"
   if not task.done
     status = "[ ]"
   end
@@ -42,7 +42,7 @@ cell format_task(task: Task) -> String
 end
 
 cell count_done(tasks: list[Task]) -> Int
-  let count = 0
+  let mut count = 0
   for task in tasks
     if task.done
       count = count + 1
@@ -52,7 +52,7 @@ cell count_done(tasks: list[Task]) -> Int
 end
 
 cell count_by_priority(tasks: list[Task], priority: String) -> Int
-  let count = 0
+  let mut count = 0
   for task in tasks
     if task.priority == priority
       count = count + 1
@@ -62,7 +62,7 @@ cell count_by_priority(tasks: list[Task], priority: String) -> Int
 end
 
 cell filter_pending(tasks: list[Task]) -> list[Task]
-  let items = []
+  let mut items = []
   for task in tasks
     if not task.done
       items = append(items, task)

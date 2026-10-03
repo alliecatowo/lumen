@@ -19,9 +19,9 @@ pub mod ed25519;
 pub use ed25519::Ed25519Provider;
 
 use crate::tools::{ToolError, ToolProvider, ToolSchema};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use md5::Md5;
-use rand::Rng;
+use rand::RngExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256, Sha512};
@@ -328,8 +328,8 @@ impl CryptoProvider {
                         "min must be less than or equal to max".into(),
                     ));
                 }
-                let mut rng = rand::thread_rng();
-                let value = rng.gen_range(input.min..=input.max);
+                let mut rng = rand::rng();
+                let value = rng.random_range(input.min..=input.max);
                 Ok(json!(value))
             }
             CryptoTool::HmacSha256 => {

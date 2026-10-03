@@ -1,6 +1,6 @@
 cell main() -> Int
-  let count = 0
-  let i = 1
+  let mut count = 0
+  let mut i = 1
   while i <= 10
     count = count + i
     i = i + 1

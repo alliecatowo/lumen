@@ -81,8 +81,8 @@ cell pow(base: float, exp: int) -> float
     return 1.0 / pow(base, 0 - exp)
   end
 
-  let result = 1.0
-  let i = 0
+  let mut result = 1.0
+  let mut i = 0
   while i < exp
     result = result * base
     i = i + 1
@@ -99,9 +99,9 @@ cell sqrt(x: float) -> float
     return 0.0
   end
 
-  let guess = x / 2.0
+  let mut guess = x / 2.0
   let epsilon = 0.00001
-  let iterations = 0
+  let mut iterations = 0
   let max_iterations = 100
 
   while iterations < max_iterations
@@ -127,8 +127,8 @@ cell log(x: float) -> float
   end
 
   # Transform to range (0.5, 1.5) for better convergence
-  let exp_adjust = 0
-  let y = x
+  let mut exp_adjust = 0
+  let mut y = x
   while y > 1.5
     y = y / E()
     exp_adjust = exp_adjust + 1
@@ -140,9 +140,9 @@ cell log(x: float) -> float
 
   # Taylor series: ln(1+z) = z - z^2/2 + z^3/3 - z^4/4 + ...
   let z = y - 1.0
-  let result = 0.0
-  let term = z
-  let n = 1
+  let mut result = 0.0
+  let mut term = z
+  let mut n = 1
 
   while n <= 20
     result = result + term / float(n)

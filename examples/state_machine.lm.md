@@ -106,7 +106,7 @@ cell main() -> Null
 
   print("Traffic flow simulation:")
   let light1 = Red
-  let car_state = Moving(30)
+  let mut car_state = Moving(30)
   print("  Light: " + light_name(light1) + ", Car: " + describe_state(car_state))
 
   car_state = update_state(car_state, light1)

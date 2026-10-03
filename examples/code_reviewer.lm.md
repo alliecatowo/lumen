@@ -59,7 +59,7 @@ cell make_issue(file: String, line: Int, severity: String, message: String) -> C
 end
 
 cell count_by_severity(issues: list[CodeIssue], sev: String) -> Int
-  let count = 0
+  let mut count = 0
   for issue in issues
     if issue.severity == sev
       count = count + 1
@@ -85,7 +85,7 @@ cell compute_grade(issues: list[CodeIssue]) -> String
 end
 
 cell compute_score(issues: list[CodeIssue]) -> Int
-  let score = 100
+  let mut score = 100
   for issue in issues
     if issue.severity == "Critical"
       score = score - 25
@@ -148,7 +148,7 @@ cell main() -> Null
   print("Changes: +" + to_string(pr.additions) + " / -" + to_string(pr.deletions))
   print("")
 
-  let issues = []
+  let mut issues = []
   let i1 = make_issue("src/parser.rs", 42, "Warning", "Complex function exceeds 50 lines")
   issues = append(issues, i1)
   let i2 = make_issue("src/lexer.rs", 15, "Info", "Consider extracting helper function")

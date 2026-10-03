@@ -345,6 +345,14 @@ pub struct CellInfo {
     /// Generic type parameter names (e.g. ["T", "U"])
     pub generic_params: Vec<String>,
     pub must_use: bool,
+    /// `true` for each parameter (aligned with `params`) that has a default
+    /// value. May be shorter than `params`; missing entries mean "no default".
+    pub param_defaults: Vec<bool>,
+}
+
+/// Which of `params` have a default value.
+pub fn param_default_mask(params: &[crate::compiler::ast::Param]) -> Vec<bool> {
+    params.iter().map(|p| p.default_value.is_some()).collect()
 }
 
 #[derive(Debug, Clone)]
@@ -607,6 +615,7 @@ fn register_local_defs_in_body(
                                 .map(|gp| gp.name.clone())
                                 .collect(),
                             must_use: c.must_use,
+                            param_defaults: param_default_mask(&c.params),
                         });
                     }
                 }
@@ -721,6 +730,7 @@ fn resolve_with_base_inner(
                         effects: c.effects.clone(),
                         generic_params: c.generic_params.iter().map(|gp| gp.name.clone()).collect(),
                         must_use: c.must_use,
+                        param_defaults: param_default_mask(&c.params),
                     });
                 }
             },
@@ -789,6 +799,7 @@ fn resolve_with_base_inner(
                             effects: vec![],
                             generic_params: vec![],
                             must_use: false,
+                            param_defaults: vec![],
                         },
                     );
                 }
@@ -817,6 +828,7 @@ fn resolve_with_base_inner(
                                     .map(|gp| gp.name.clone())
                                     .collect(),
                                 must_use: cell.must_use,
+                                param_defaults: param_default_mask(&cell.params),
                             });
                         }
                     }
@@ -918,6 +930,7 @@ fn resolve_with_base_inner(
                             effects: vec![],
                             generic_params: vec![],
                             must_use: false,
+                            param_defaults: vec![],
                         },
                     );
                 }
@@ -937,6 +950,7 @@ fn resolve_with_base_inner(
                             .map(|gp| gp.name.clone())
                             .collect(),
                         must_use: cell.must_use,
+                        param_defaults: param_default_mask(&cell.params),
                     });
                 }
                 for g in &p.grants {
@@ -977,6 +991,7 @@ fn resolve_with_base_inner(
                             .map(|gp| gp.name.clone())
                             .collect(),
                         must_use: false,
+                        param_defaults: param_default_mask(&op.params),
                     });
                 }
             }
@@ -1021,6 +1036,7 @@ fn resolve_with_base_inner(
                             .map(|gp| gp.name.clone())
                             .collect(),
                         must_use: false,
+                        param_defaults: param_default_mask(&handle.params),
                     });
                 }
             }
@@ -1152,6 +1168,7 @@ fn resolve_with_base_inner(
                             effects: method.effects.clone(),
                             generic_params: method_generic_params,
                             must_use: method.must_use,
+                            param_defaults: param_default_mask(&method.params),
                         });
                     }
                 }

@@ -11,8 +11,8 @@ cell pad_left(s: string, width: int, pad_char: string) -> string
   end
 
   let pad_count = width - current_len
-  let padding = ""
-  let i = 0
+  let mut padding = ""
+  let mut i = 0
   while i < pad_count
     padding = padding + pad_char
     i = i + 1
@@ -28,8 +28,8 @@ cell pad_right(s: string, width: int, pad_char: string) -> string
   end
 
   let pad_count = width - current_len
-  let padding = ""
-  let i = 0
+  let mut padding = ""
+  let mut i = 0
   while i < pad_count
     padding = padding + pad_char
     i = i + 1
@@ -53,8 +53,8 @@ cell repeat(s: string, count: int) -> string
   if count <= 0
     return ""
   end
-  let result = ""
-  let i = 0
+  let mut result = ""
+  let mut i = 0
   while i < count
     result = result + s
     i = i + 1
@@ -103,7 +103,7 @@ end
 # Title case (capitalize each word)
 cell title_case(s: string) -> string
   let words = split(s, " ")
-  let result = []
+  let mut result = []
   for word in words
     result = append(result, capitalize(word))
   end
@@ -126,8 +126,8 @@ cell reverse(s: string) -> string
   if n <= 1
     return s
   end
-  let result = ""
-  let i = n - 1
+  let mut result = ""
+  let mut i = n - 1
   while i >= 0
     result = result + slice(s, i, i + 1)
     i = i - 1
@@ -169,8 +169,8 @@ cell count_occurrences(s: string, substring: string) -> int
     return 0
   end
 
-  let count = 0
-  let i = 0
+  let mut count = 0
+  let mut i = 0
   while i <= s_len - sub_len
     let part = slice(s, i, i + sub_len)
     if part == substring

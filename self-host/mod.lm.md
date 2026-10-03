@@ -11,6 +11,7 @@ import symbols: *
 import abi: *
 import serialize: *
 import intern: *
+import lexer: *
 ```
 
 ## Overview
@@ -22,6 +23,7 @@ import intern: *
 | `abi` | Opcode constants, intrinsic IDs, instruction encoding |
 | `serialize` | ByteWriter/ByteReader, LIR binary serialization |
 | `intern` | StringInterner with intern/resolve/batch operations |
+| `lexer` | Self-hosted Lumen lexer — full tokenizer (Phase 1, S051–S090) |
 | `main` | Compiler pipeline entry point and phase stubs |
 | `hybrid` | Design doc for `--use-lumen-frontend` CLI flag |
 

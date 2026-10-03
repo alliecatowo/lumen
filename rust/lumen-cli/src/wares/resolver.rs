@@ -557,6 +557,20 @@ fn make_absolute(base: &std::path::Path, path: &str) -> String {
     canonical.to_string_lossy().to_string()
 }
 
+/// Whether two path spellings (relative, `\\?\` verbatim, symlinked) name the same directory.
+fn same_path(a: &str, b: &str) -> bool {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    make_absolute(&cwd, a) == make_absolute(&cwd, b)
+}
+
+/// Whether two pinned (path/git/workspace) requirements point at the same source.
+fn same_source(a: &DependencySpec, b: &DependencySpec) -> bool {
+    match (a, b) {
+        (DependencySpec::Path { path: x }, DependencySpec::Path { path: y }) => same_path(x, y),
+        _ => a == b,
+    }
+}
+
 /// Read the normal dependencies of a path/git package, making nested path
 /// dependencies absolute relative to that package's directory.
 fn manifest_deps(
@@ -1081,7 +1095,7 @@ impl Resolver {
             .collect();
 
         if let Some(first) = pinned.first() {
-            if pinned.iter().any(|s| s != first) {
+            if pinned.iter().any(|s| !same_source(s, first)) {
                 return Err(SearchError::Conflict(conflict_for(pkg, reqs)));
             }
             let candidate = self.source_candidate(pkg, first, ctx)?;
@@ -1176,7 +1190,7 @@ impl Resolver {
                 }
             }
             DependencySpec::Path { path } => {
-                matches!(&candidate.source, ResolvedSource::Path { path: p } if p == path)
+                matches!(&candidate.source, ResolvedSource::Path { path: p } if same_path(p, path))
             }
             DependencySpec::Git { git, .. } => {
                 matches!(&candidate.source, ResolvedSource::Git { url, .. } if url == git)

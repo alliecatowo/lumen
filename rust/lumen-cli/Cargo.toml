@@ -38,14 +38,14 @@ rustyline = "18"
 
 # Authentication dependencies
 keyring = { version = "3", optional = true }
-ed25519-dalek = { version = "2", features = ["rand_core"], optional = true }
-rand = { version = "0.8", optional = true }
+ed25519-dalek = { version = "3", features = ["rand_core"], optional = true }
+rand = { version = "0.10", optional = true }
 base64 = "0.23"
 rpassword = "7"
 thiserror = { workspace = true }
 glob = "0.3"
 shell-words = "1.1"
-hmac = "0.12"
+hmac = "0.13"
 hex = "0.4"
 
 # Trust/Sigstore dependencies

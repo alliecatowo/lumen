@@ -365,9 +365,9 @@ impl TrustClient {
     fn generate_ephemeral_key(&self) -> Result<String, TrustError> {
         // In production, generate actual ECDSA P-256 key pair
         // For now, return a placeholder
-        use rand::RngCore;
+        use rand::Rng;
         let mut key = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut key);
+        rand::rng().fill_bytes(&mut key);
         Ok(STANDARD.encode(key))
     }
 

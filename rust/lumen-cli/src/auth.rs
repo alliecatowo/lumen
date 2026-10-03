@@ -251,9 +251,10 @@ impl SigningKeypair {
         #[cfg(feature = "ed25519")]
         {
             use ed25519_dalek::SigningKey as DalekSigningKey;
-            use rand::rngs::OsRng;
+            use rand::rand_core::UnwrapErr;
+            use rand::rngs::SysRng;
 
-            let signing_key = DalekSigningKey::generate(&mut OsRng);
+            let signing_key = DalekSigningKey::generate(&mut UnwrapErr(SysRng));
             let verifying_key = signing_key.verifying_key();
 
             let secret_bytes = signing_key.to_bytes();

@@ -962,7 +962,13 @@ fn lift_local_defs(body: &[Stmt], module: &mut LirModule, lowerer: &mut Lowerer)
 
 /// Lower an entire program to a LIR module.
 pub fn lower(program: &Program, symbols: &SymbolTable, source: &str) -> LirModule {
-    let doc_hash = format!("sha256:{:x}", Sha256::digest(source.as_bytes()));
+    let doc_hash = format!(
+        "sha256:{}",
+        Sha256::digest(source.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    );
     let mut module = LirModule::new(doc_hash);
     let mut lowerer = Lowerer::new(
         symbols,

@@ -48,7 +48,7 @@ rustyline = "15"
 keyring = { version = "3", optional = true }
 ed25519-dalek = { version = "2", features = ["rand_core"], optional = true }
 rand = { version = "0.8", optional = true }
-base64 = "0.22"
+base64 = "0.23"
 rpassword = "7"
 thiserror = { workspace = true }
 glob = "0.3"

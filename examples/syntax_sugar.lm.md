@@ -72,7 +72,7 @@ Concise syntax for creating numeric ranges.
 
 ```lumen
 cell test_ranges() -> Int
-  let sum = 0
+  let mut sum = 0
 
   # Exclusive range: 1..5 means [1, 2, 3, 4]
   for i in 1..5
@@ -81,7 +81,7 @@ cell test_ranges() -> Int
   # sum is now 10 (1+2+3+4)
 
   # Inclusive range: 1..=5 means [1, 2, 3, 4, 5]
-  let sum2 = 0
+  let mut sum2 = 0
   for i in 1..=5
     sum2 = sum2 + i
   end

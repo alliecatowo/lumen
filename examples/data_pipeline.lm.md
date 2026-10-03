@@ -20,8 +20,8 @@ record Summary
 end
 
 cell process_transactions(txs: list[Transaction]) -> Summary
-  let total = 0.0
-  let count = 0
+  let mut total = 0.0
+  let mut count = 0
   let breakdown = {"_init": 0.0} # Map literal with type hint via inference
   
   for tx in txs
@@ -42,7 +42,7 @@ cell process_transactions(txs: list[Transaction]) -> Summary
     end
   end
   
-  let avg = 0.0
+  let mut avg = 0.0
   if count > 0
     avg = total / to_float(count)
   end

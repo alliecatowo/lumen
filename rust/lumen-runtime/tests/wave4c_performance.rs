@@ -217,7 +217,7 @@ cell add_ten(x: Int) -> Int
 end
 
 cell main() -> Int
-  let sum = 0
+  let mut sum = 0
   for i in [1, 2, 3]
     sum = sum + add_ten(i)
   end
@@ -380,7 +380,7 @@ fn t393_large_function_50_locals() {
     }
 
     // Create a sum using some of them
-    source.push_str("  let total = v0 + v1 + v2 + v3 + v4 + v5 + v6 + v7 + v8 + v9\n");
+    source.push_str("  let mut total = v0 + v1 + v2 + v3 + v4 + v5 + v6 + v7 + v8 + v9\n");
     source
         .push_str("  total = total + v10 + v11 + v12 + v13 + v14 + v15 + v16 + v17 + v18 + v19\n");
 
@@ -403,7 +403,7 @@ fn t393_deeply_nested_function() {
     let result = run_main(
         r#"
 cell main() -> Int
-  let x = 0
+  let mut x = 0
   if true
     if true
       if true
@@ -447,7 +447,7 @@ fn t393_large_function_with_helper_cells() {
 
     // Main cell calls all helpers
     source.push_str("cell main() -> Int\n");
-    source.push_str("  let total = 0\n");
+    source.push_str("  let mut total = 0\n");
     for i in 0..30 {
         source.push_str(&format!("  total = total + helper_{}(1)\n", i));
     }
@@ -468,7 +468,7 @@ fn t393_large_function_with_helper_cells() {
 fn t393_register_limit_exceeded_is_reported() {
     // Verify that exceeding 255 registers produces a clear error
     let mut source = String::from("cell main() -> Int\n");
-    source.push_str("  let total = 0\n");
+    source.push_str("  let mut total = 0\n");
 
     // Generate enough statements to exceed 255 registers
     for i in 0..100 {

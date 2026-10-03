@@ -47,7 +47,7 @@ end
 
 cell test_if_elseif_else() -> Bool
   let score = 75
-  let grade = ""
+  let mut grade = ""
   if score >= 90
     grade = "A"
   else

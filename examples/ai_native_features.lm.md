@@ -31,7 +31,7 @@ cell classify_sentiment(text: String) -> ScoredString / {llm}
 end
 
 cell get_best_answer(candidates: list[ScoredString]) -> String
-  let best = candidates[0]
+  let mut best = candidates[0]
   for candidate in candidates
     if candidate.confidence > best.confidence
       best = candidate

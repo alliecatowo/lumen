@@ -679,11 +679,17 @@ fn resolve_type_expr_with_subst(ty: &TypeExpr, symbols: &SymbolTable, subst: &Ty
     }
 }
 
+/// A name declared in a block, with the type and mutability it shadows.
+type ScopeEntry = (String, Option<Type>, Option<bool>);
+
 struct TypeChecker<'a> {
     symbols: &'a SymbolTable,
     allow_placeholders: bool,
     locals: HashMap<String, Type>,
     mutables: HashMap<String, bool>,
+    /// One entry per open block: each name declared in the block together with
+    /// the binding it shadows (restored when the block closes).
+    scopes: Vec<Vec<ScopeEntry>>,
     errors: Vec<TypeError>,
 }
 
@@ -700,13 +706,67 @@ impl<'a> TypeChecker<'a> {
             allow_placeholders,
             locals: HashMap::new(),
             mutables: HashMap::new(),
+            scopes: Vec::new(),
             errors: Vec::new(),
         }
+    }
+
+    /// Open a lexical block. Names bound inside it (via [`Self::bind`]) stop
+    /// being visible when [`Self::pop_scope`] runs.
+    fn push_scope(&mut self) {
+        self.scopes.push(Vec::new());
+    }
+
+    fn pop_scope(&mut self) {
+        if let Some(entries) = self.scopes.pop() {
+            for (name, prev_ty, prev_mut) in entries.into_iter().rev() {
+                match prev_ty {
+                    Some(t) => {
+                        self.locals.insert(name.clone(), t);
+                    }
+                    None => {
+                        self.locals.remove(&name);
+                    }
+                }
+                match prev_mut {
+                    Some(m) => {
+                        self.mutables.insert(name, m);
+                    }
+                    None => {
+                        self.mutables.remove(&name);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Bind a new local in the innermost open block, remembering what it
+    /// shadows so the previous binding returns when the block closes.
+    fn bind(&mut self, name: String, ty: Type, mutable: bool) {
+        if let Some(top) = self.scopes.last_mut() {
+            top.push((
+                name.clone(),
+                self.locals.get(&name).cloned(),
+                self.mutables.get(&name).copied(),
+            ));
+        }
+        self.locals.insert(name.clone(), ty);
+        self.mutables.insert(name, mutable);
+    }
+
+    /// Check a block of statements in its own lexical scope.
+    fn check_block(&mut self, body: &[Stmt], expected_return: Option<&Type>) {
+        self.push_scope();
+        for s in body {
+            self.check_stmt(s, expected_return, false);
+        }
+        self.pop_scope();
     }
 
     fn check_cell(&mut self, cell: &CellDef) {
         self.locals.clear();
         self.mutables.clear();
+        self.scopes.clear();
         for p in &cell.params {
             let ty = resolve_type_expr(&p.ty, self.symbols);
             // Variadic params are seen as List[T] inside the function body
@@ -734,6 +794,7 @@ impl<'a> TypeChecker<'a> {
     fn check_agent_cell(&mut self, cell: &CellDef) {
         self.locals.clear();
         self.mutables.clear();
+        self.scopes.clear();
         self.locals.insert("self".into(), Type::Any);
         self.mutables.insert("self".into(), true);
         for p in &cell.params {
@@ -759,12 +820,50 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_call_against_signature(
+    /// Report required (non-variadic, no default) parameters that the call
+    /// supplies neither positionally nor by name.
+    fn check_missing_args(
         &mut self,
         params: &[(String, TypeExpr, bool)],
+        defaults: &[bool],
         args: &[CheckedCallArg],
         line: usize,
     ) {
+        let positional = args
+            .iter()
+            .filter(|a| matches!(a, CheckedCallArg::Positional(..)))
+            .count();
+        let mut required = 0usize;
+        let mut missing = false;
+        for (i, (pname, _, variadic)) in params.iter().enumerate() {
+            if *variadic || defaults.get(i).copied().unwrap_or(false) {
+                continue;
+            }
+            required += 1;
+            let named = args
+                .iter()
+                .any(|a| matches!(a, CheckedCallArg::Named(n, _, _) if n == pname));
+            if i >= positional && !named {
+                missing = true;
+            }
+        }
+        if missing {
+            self.errors.push(TypeError::ArgCount {
+                expected: required,
+                actual: args.len(),
+                line,
+            });
+        }
+    }
+
+    fn check_call_against_signature(
+        &mut self,
+        params: &[(String, TypeExpr, bool)],
+        defaults: &[bool],
+        args: &[CheckedCallArg],
+        line: usize,
+    ) {
+        self.check_missing_args(params, defaults, args, line);
         // Check if the last parameter is variadic
         let has_variadic = params.last().is_some_and(|(_, _, v)| *v);
         let fixed_count = if has_variadic {
@@ -818,10 +917,12 @@ impl<'a> TypeChecker<'a> {
     fn check_call_against_signature_with_subst(
         &mut self,
         params: &[(String, TypeExpr, bool)],
+        defaults: &[bool],
         args: &[CheckedCallArg],
         line: usize,
         subst: &TypeSubst,
     ) {
+        self.check_missing_args(params, defaults, args, line);
         let has_variadic = params.last().is_some_and(|(_, _, v)| *v);
         let fixed_count = if has_variadic {
             params.len() - 1
@@ -884,10 +985,8 @@ impl<'a> TypeChecker<'a> {
                     // Destructuring let — register all bound names from the pattern
                     self.bind_let_pattern(pattern, &val_type, ls.span.line);
                 } else {
-                    self.locals.insert(ls.name.clone(), val_type);
-                    // In Lumen, all let bindings are reassignable by default
-                    // `let mut` is just documentation; `const` is immutable
-                    self.mutables.insert(ls.name.clone(), true);
+                    // `let` bindings are immutable; only `let mut` may be reassigned.
+                    self.bind(ls.name.clone(), val_type, ls.mutable);
                 }
             }
             Stmt::If(ifs) => {
@@ -917,9 +1016,7 @@ impl<'a> TypeChecker<'a> {
                     None
                 };
 
-                for s in &ifs.then_body {
-                    self.check_stmt(s, expected_return, false);
-                }
+                self.check_block(&ifs.then_body, expected_return);
 
                 // Restore original type after then-branch
                 if let Some((ref var_name, ref original)) = narrowed {
@@ -931,9 +1028,7 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 if let Some(ref eb) = ifs.else_body {
-                    for s in eb {
-                        self.check_stmt(s, expected_return, false);
-                    }
+                    self.check_block(eb, expected_return);
                 }
             }
             Stmt::For(fs) => {
@@ -952,13 +1047,15 @@ impl<'a> TypeChecker<'a> {
                         Type::Any
                     }
                 };
-                self.locals.insert(fs.var.clone(), elem_type);
+                self.push_scope();
+                self.bind(fs.var.clone(), elem_type, true);
                 if let Some(filter) = &fs.filter {
                     self.infer_expr(filter);
                 }
                 for s in &fs.body {
                     self.check_stmt(s, expected_return, false);
                 }
+                self.pop_scope();
             }
             Stmt::Match(ms) => {
                 let subject_type = self.infer_expr(&ms.subject);
@@ -966,6 +1063,7 @@ impl<'a> TypeChecker<'a> {
                 let mut has_catchall = false;
 
                 for arm in &ms.arms {
+                    self.push_scope();
                     self.bind_match_pattern(
                         &arm.pattern,
                         &subject_type,
@@ -976,6 +1074,7 @@ impl<'a> TypeChecker<'a> {
                     for s in &arm.body {
                         self.check_stmt(s, expected_return, false);
                     }
+                    self.pop_scope();
                 }
 
                 // Exhaustiveness Check for Enums
@@ -1083,20 +1182,14 @@ impl<'a> TypeChecker<'a> {
             Stmt::While(ws) => {
                 let ct = self.infer_expr(&ws.condition);
                 self.check_compat(&Type::Bool, &ct, ws.span.line);
-                for s in &ws.body {
-                    self.check_stmt(s, expected_return, false);
-                }
+                self.check_block(&ws.body, expected_return);
             }
             Stmt::Loop(ls) => {
-                for s in &ls.body {
-                    self.check_stmt(s, expected_return, false);
-                }
+                self.check_block(&ls.body, expected_return);
             }
             Stmt::Break(_) | Stmt::Continue(_) => {}
             Stmt::Defer(ds) => {
-                for s in &ds.body {
-                    self.check_stmt(s, expected_return, false);
-                }
+                self.check_block(&ds.body, expected_return);
             }
             Stmt::Emit(es) => {
                 self.infer_expr(&es.value);
@@ -1188,8 +1281,7 @@ impl<'a> TypeChecker<'a> {
     fn bind_let_pattern(&mut self, pattern: &Pattern, subject_type: &Type, line: usize) {
         match pattern {
             Pattern::Ident(name, _) => {
-                self.locals.insert(name.clone(), subject_type.clone());
-                self.mutables.insert(name.clone(), true);
+                self.bind(name.clone(), subject_type.clone(), true);
             }
             Pattern::Wildcard(_) => {}
             Pattern::TupleDestructure { elements, .. } => {
@@ -1223,8 +1315,7 @@ impl<'a> TypeChecker<'a> {
                         self.bind_let_pattern(p, &field_ty, line);
                     } else {
                         // Shorthand `field_name:` — bind to same name
-                        self.locals.insert(field_name.clone(), field_ty);
-                        self.mutables.insert(field_name.clone(), true);
+                        self.bind(field_name.clone(), field_ty, true);
                     }
                 }
             }
@@ -1237,9 +1328,7 @@ impl<'a> TypeChecker<'a> {
                     self.bind_let_pattern(p, &elem_type, line);
                 }
                 if let Some(rest_name) = rest {
-                    self.locals
-                        .insert(rest_name.clone(), Type::List(Box::new(elem_type)));
-                    self.mutables.insert(rest_name.clone(), true);
+                    self.bind(rest_name.clone(), Type::List(Box::new(elem_type)), true);
                 }
             }
             Pattern::TypeCheck {
@@ -1247,8 +1336,7 @@ impl<'a> TypeChecker<'a> {
             } => {
                 let expected = resolve_type_expr(type_expr, self.symbols);
                 self.check_compat(&expected, subject_type, line);
-                self.locals.insert(name.clone(), expected);
-                self.mutables.insert(name.clone(), true);
+                self.bind(name.clone(), expected, true);
             }
             _ => {
                 // Other patterns (Guard, Or, Variant, etc.) not valid in let position
@@ -1345,7 +1433,7 @@ impl<'a> TypeChecker<'a> {
 
                 if !is_variant {
                     // Regular identifier pattern - binds the value
-                    self.locals.insert(name.clone(), subject_type.clone());
+                    self.bind(name.clone(), subject_type.clone(), true);
                     *has_catchall = true;
                 }
             }
@@ -1392,8 +1480,7 @@ impl<'a> TypeChecker<'a> {
                     self.bind_match_pattern(p, &elem_type, covered_variants, has_catchall, line);
                 }
                 if let Some(rest_name) = rest {
-                    self.locals
-                        .insert(rest_name.clone(), Type::List(Box::new(elem_type)));
+                    self.bind(rest_name.clone(), Type::List(Box::new(elem_type)), true);
                 }
             }
             Pattern::TupleDestructure { elements, .. } => match subject_type {
@@ -1451,7 +1538,7 @@ impl<'a> TypeChecker<'a> {
                     if let Some(p) = field_pat {
                         self.bind_match_pattern(p, &field_ty, covered_variants, has_catchall, line);
                     } else {
-                        self.locals.insert(field_name.clone(), field_ty);
+                        self.bind(field_name.clone(), field_ty, true);
                     }
                 }
             }
@@ -1460,7 +1547,7 @@ impl<'a> TypeChecker<'a> {
             } => {
                 let expected = resolve_type_expr(type_expr, self.symbols);
                 self.check_compat(&expected, subject_type, line);
-                self.locals.insert(name.clone(), expected);
+                self.bind(name.clone(), expected, true);
             }
             Pattern::Literal(_) => {}
             Pattern::Range { start, end, .. } => {
@@ -1859,6 +1946,7 @@ impl<'a> TypeChecker<'a> {
                                 ci.params.clone();
                             self.check_call_against_signature_with_subst(
                                 &substituted_params,
+                                &ci.param_defaults,
                                 &checked_args,
                                 span.line,
                                 &subst,
@@ -1869,7 +1957,12 @@ impl<'a> TypeChecker<'a> {
                             }
                         } else {
                             // Non-generic cell: use standard checking
-                            self.check_call_against_signature(&ci.params, &checked_args, span.line);
+                            self.check_call_against_signature(
+                                &ci.params,
+                                &ci.param_defaults,
+                                &checked_args,
+                                span.line,
+                            );
                             if let Some(ref rt) = ci.return_type {
                                 return resolve_type_expr(rt, self.symbols);
                             }
@@ -1931,6 +2024,27 @@ impl<'a> TypeChecker<'a> {
                                             suggestions,
                                         });
                                     }
+                                }
+                            }
+
+                            // Required fields (no default) must be supplied, by name
+                            // or positionally.
+                            let positional = checked_args
+                                .iter()
+                                .filter(|a| matches!(a, CheckedCallArg::Positional(..)))
+                                .count();
+                            for (i, field_def) in def.fields.iter().enumerate() {
+                                if field_def.default_value.is_none()
+                                    && i >= positional
+                                    && !checked_args.iter().any(|a| {
+                                        matches!(a, CheckedCallArg::Named(n, _, _) if *n == field_def.name)
+                                    })
+                                {
+                                    self.errors.push(TypeError::Mismatch {
+                                        expected: format!("field '{}'", field_def.name),
+                                        actual: "missing".into(),
+                                        line: span.line,
+                                    });
                                 }
                             }
 
@@ -2109,8 +2223,10 @@ impl<'a> TypeChecker<'a> {
                 // If expr is Result[Ok, Err], bind error and evaluate handler
                 if let Type::Result(ok, err) = t {
                     // Temporarily register error binding type for handler inference
-                    self.locals.insert(error_binding.clone(), *err);
+                    self.push_scope();
+                    self.bind(error_binding.clone(), *err, true);
                     let handler_ty = self.infer_expr(handler);
+                    self.pop_scope();
                     // The result type is the Ok type (both branches should produce T)
                     // If handler type matches ok type, return ok type; otherwise use handler
                     if handler_ty == *ok || handler_ty == Type::Any || *ok == Type::Any {
@@ -2436,63 +2552,69 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_compat(&mut self, expected: &Type, actual: &Type, line: usize) {
+        if !Self::compat(expected, actual) {
+            self.errors.push(TypeError::Mismatch {
+                expected: format!("{}", expected),
+                actual: format!("{}", actual),
+                line,
+            });
+        }
+    }
+
+    /// Is a value of type `actual` assignable where `expected` is required?
+    ///
+    /// * a union `actual` is assignable only if **every** member is assignable
+    ///   (a `Null` member is tolerated while `?`-narrowing is not tracked);
+    /// * a union `expected` accepts `actual` if **some** member accepts it.
+    fn compat(expected: &Type, actual: &Type) -> bool {
         if *expected == Type::Any || *actual == Type::Any {
-            return;
+            return true;
         }
         if type_contains_any(expected) || type_contains_any(actual) {
-            return;
+            return true;
         }
         if expected == actual {
-            return;
+            return true;
         }
 
-        // Union compatibility: actual is compatible if it matches any member of expected union
-        if let Type::Union(ref types) = expected {
-            if types.iter().any(|t| t == actual || *t == Type::Any) {
-                return;
-            }
+        if let Type::Union(types) = actual {
+            // Subset rule. `Null` members are skipped: optional values flow
+            // into non-optional slots until flow-sensitive narrowing exists.
+            return types
+                .iter()
+                .filter(|t| **t != Type::Null || matches!(expected, Type::Union(_)))
+                .all(|t| Self::compat(expected, t));
         }
-        // actual is union: compatible if all members are compatible with expected
-        if let Type::Union(ref types) = actual {
-            if types.iter().any(|t| t == expected || *t == Type::Any) {
-                return;
-            }
-        }
-
-        // Null is compatible with T | Null unions
-        if *actual == Type::Null {
-            if let Type::Union(ref types) = expected {
-                if types.contains(&Type::Null) {
-                    return;
-                }
+        if let Type::Union(types) = expected {
+            if types.iter().any(|t| Self::compat(t, actual)) {
+                return true;
             }
         }
 
         if *expected == Type::Float && *actual == Type::Int {
-            return;
+            return true;
         }
 
-        // Result compatibility: Result[A, B] is compatible with Result[C, D] if A compat C, B compat D
-        // Allow implicit wrapping into `ok(...)` when a plain value is returned for a Result type.
+        // Allow implicit wrapping into `ok(...)` when a plain value is returned
+        // for a Result type.
         if let Type::Result(ok, _) = expected {
             if **ok == *actual || **ok == Type::Any || *actual == Type::Any {
-                return;
+                return true;
             }
         }
         // Generic type refs are compatible if the base name matches and args are compatible
         if let (Type::TypeRef(n1, args1), Type::TypeRef(n2, args2)) = (expected, actual) {
             if n1 == n2 {
-                // Check that all type arguments are compatible
                 if args1.len() == args2.len() {
                     let all_compat = args1
                         .iter()
                         .zip(args2.iter())
                         .all(|(a1, a2)| a1 == a2 || *a1 == Type::Any || *a2 == Type::Any);
                     if all_compat {
-                        return;
+                        return true;
                     }
                 } else {
-                    return; // Arity mismatch, but already reported in resolve
+                    return true; // Arity mismatch, but already reported in resolve
                 }
             }
         }
@@ -2500,20 +2622,16 @@ impl<'a> TypeChecker<'a> {
         // Allow TypeRef to be compatible with its base Record type
         if let (Type::Record(name1), Type::TypeRef(name2, _)) = (expected, actual) {
             if name1 == name2 {
-                return;
+                return true;
             }
         }
         if let (Type::TypeRef(name1, _), Type::Record(name2)) = (expected, actual) {
             if name1 == name2 {
-                return;
+                return true;
             }
         }
 
-        self.errors.push(TypeError::Mismatch {
-            expected: format!("{}", expected),
-            actual: format!("{}", actual),
-            line,
-        });
+        false
     }
 }
 
@@ -2884,7 +3002,7 @@ mod tests {
     #[test]
     fn test_compound_assign_add_is_valid() {
         // Basic compound assignment should work
-        typecheck_src("cell inc() -> Int\n  let x = 1\n  x += 2\n  return x\nend").unwrap();
+        typecheck_src("cell inc() -> Int\n  let mut x = 1\n  x += 2\n  return x\nend").unwrap();
     }
 
     #[test]

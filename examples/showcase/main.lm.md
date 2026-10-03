@@ -26,7 +26,7 @@ cell find_task(board: Board, id: TaskId) -> String
 end
 
 cell count_done(tasks: list[Task]) -> Int
-  let done = 0
+  let mut done = 0
   for task in tasks
     if task.done
       done = done + 1
@@ -36,7 +36,7 @@ cell count_done(tasks: list[Task]) -> Int
 end
 
 cell sum_done_points(tasks: list[Task]) -> Int
-  let points = 0
+  let mut points = 0
   for task in tasks
     if task.done
       points = points + task.points
@@ -62,7 +62,7 @@ cell headline(title: SectionTitle, stats: BoardStats) -> DisplayLine
 end
 
 cell task_line(task: Task, options: RenderOptions) -> String
-  let prefix = options.prefix_open
+  let mut prefix = options.prefix_open
   if task.done
     prefix = options.prefix_done
   end
@@ -74,7 +74,7 @@ cell task_line(task: Task, options: RenderOptions) -> String
 end
 
 cell render_board(board: Board, options: RenderOptions) -> String
-  let out = ""
+  let mut out = ""
   for task in board.tasks
     out = out + task_line(task, options) + "\n"
   end

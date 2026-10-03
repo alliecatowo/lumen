@@ -25,8 +25,8 @@ cell compute_mean(vals: list[Float]) -> Float
   if n == 0
     return 0.0
   end
-  let total = 0.0
-  let i = 0
+  let mut total = 0.0
+  let mut i = 0
   while i < n
     total = total + vals[i]
     i = i + 1
@@ -40,13 +40,13 @@ cell compute_median(vals: list[Float]) -> Float
     return 0.0
   end
   # Manual insertion sort for floats
-  let sorted = []
-  let i = 0
+  let mut sorted = []
+  let mut i = 0
   while i < n
     let v = vals[i]
-    let inserted = false
-    let new_sorted = []
-    let j = 0
+    let mut inserted = false
+    let mut new_sorted = []
+    let mut j = 0
     while j < len(sorted)
       if not inserted and v <= sorted[j]
         new_sorted = append(new_sorted, v)
@@ -75,8 +75,8 @@ cell compute_min_val(vals: list[Float]) -> Float
   if n == 0
     return 0.0
   end
-  let result = vals[0]
-  let i = 1
+  let mut result = vals[0]
+  let mut i = 1
   while i < n
     result = float_min(result, vals[i])
     i = i + 1
@@ -89,8 +89,8 @@ cell compute_max_val(vals: list[Float]) -> Float
   if n == 0
     return 0.0
   end
-  let result = vals[0]
-  let i = 1
+  let mut result = vals[0]
+  let mut i = 1
   while i < n
     result = float_max(result, vals[i])
     i = i + 1
@@ -99,7 +99,7 @@ cell compute_max_val(vals: list[Float]) -> Float
 end
 
 cell rpad(s: String, width: Int) -> String
-  let result = s
+  let mut result = s
   while len(result) < width
     result = result + " "
   end
@@ -121,8 +121,8 @@ cell format_f(val: Float) -> String
   end
   if decimals > 2
     # Truncate to 2 decimal places
-    let result = ""
-    let i = 0
+    let mut result = ""
+    let mut i = 0
     while i < dot_pos + 3
       result = result + s[i]
       i = i + 1
@@ -133,15 +133,15 @@ cell format_f(val: Float) -> String
 end
 
 cell collect_unique_names(rows: list[list[String]]) -> list[String]
-  let names = []
-  let r = 1
+  let mut names = []
+  let mut r = 1
   while r < len(rows)
     let row = rows[r]
     if len(row) >= 2
       let name = trim(row[0])
       # Check if name is already in the list
-      let found = false
-      let i = 0
+      let mut found = false
+      let mut i = 0
       while i < len(names)
         if names[i] == name
           found = true
@@ -159,8 +159,8 @@ cell collect_unique_names(rows: list[list[String]]) -> list[String]
 end
 
 cell collect_values_for(rows: list[list[String]], target_name: String) -> list[Float]
-  let vals = []
-  let r = 1
+  let mut vals = []
+  let mut r = 1
   while r < len(rows)
     let row = rows[r]
     if len(row) >= 2
@@ -188,7 +188,7 @@ cell process_csv_data(csv_text: String) -> Null
   print("| " + rpad("Benchmark", 20) + " | " + rpad("Mean", 10) + " | " + rpad("Median", 10) + " | " + rpad("Min", 10) + " | " + rpad("Max", 10) + " | " + rpad("Runs", 5) + " |")
   print("| " + rpad("--------------------", 20) + " | " + rpad("----------", 10) + " | " + rpad("----------", 10) + " | " + rpad("----------", 10) + " | " + rpad("----------", 10) + " | " + rpad("-----", 5) + " |")
 
-  let i = 0
+  let mut i = 0
   while i < len(names)
     let name = names[i]
     let floats = collect_values_for(rows, name)
@@ -212,7 +212,7 @@ cell main() -> Null
   # Look for benchmark CSV files
   let csv_files = glob("bench*.csv")
   if len(csv_files) > 0
-    let i = 0
+    let mut i = 0
     while i < len(csv_files)
       print("Processing: {csv_files[i]}")
       print("")

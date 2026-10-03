@@ -65,7 +65,7 @@ Entry points:
 - `compile_with_imports(source, resolver)` -> multi-file with import resolution
 - `compile_with_options(source, CompileOptions)` -> full options (ownership mode, typestate, session types, edition)
 
-## VM Architecture (`rust/lumen-vm/src/`)
+## VM Architecture (`rust/lumen-runtime/src/vm/`)
 - 32-bit fixed-width LIR instructions (Lua-style encoding): `op` (8-bit), `a`/`b`/`c` (8-bit registers), `Bx` (16-bit const), `Ax` (24-bit jump)
 - ~100 opcodes: load/move, data construction, field/index access, arithmetic, comparison, control flow, intrinsics, closures, effects
 - Register-based interpreter with call-frame stack (max 256 depth)

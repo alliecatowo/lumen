@@ -11,14 +11,23 @@ jobs:
   deploy-registry:
     name: Deploy Registry Worker
     runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - name: Skip when the Cloudflare token is not configured
+        if: ${{ env.CLOUDFLARE_API_TOKEN == '' }}
+        run: echo "::warning::CLOUDFLARE_API_TOKEN is not set; skipping deploy"
+      - if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
+        uses: actions/checkout@v7
+      - if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
+        uses: actions/setup-node@v7
         with:
           node-version: 20
       - name: Install wrangler
+        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
         run: npm install -g wrangler
       - name: Deploy registry
+        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
         working-directory: workers/registry
         run: wrangler deploy
         env:
@@ -27,14 +36,23 @@ jobs:
   deploy-transparency:
     name: Deploy Transparency Log Worker
     runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - name: Skip when the Cloudflare token is not configured
+        if: ${{ env.CLOUDFLARE_API_TOKEN == '' }}
+        run: echo "::warning::CLOUDFLARE_API_TOKEN is not set; skipping deploy"
+      - if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
+        uses: actions/checkout@v7
+      - if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
+        uses: actions/setup-node@v7
         with:
           node-version: 20
       - name: Install wrangler
+        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
         run: npm install -g wrangler
       - name: Deploy transparency log
+        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
         working-directory: workers/transparency-log
         run: wrangler deploy
         env:

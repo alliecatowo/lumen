@@ -46,12 +46,12 @@ You maintain and evolve the competitive analysis in `docs/research/COMPETITIVE_A
 ### Memory (beaten by Rust, Swift, Zig, C++)
 - **Gap**: Rc only (D01), no cycle collection (D02), no linear/affine types (D03)
 - **Surpass strategy**: Linear types + effects = *proven* single-consumption for agent handoff without Rust-style lifetime syntax
-- **Files**: `rust/lumen-vm/src/values.rs`, `rust/lumen-vm/src/gc.rs`, `rust/lumen-vm/src/immix.rs`, `rust/lumen-vm/src/arena.rs`, `rust/lumen-vm/src/tlab.rs`
+- **Files**: `rust/lumen-runtime/src/vm/values.rs`, `rust/lumen-runtime/src/vm/gc.rs`, `rust/lumen-runtime/src/vm/immix.rs`, `rust/lumen-runtime/src/vm/arena.rs`, `rust/lumen-runtime/src/vm/tlab.rs`
 
 ### Performance (beaten by Rust, C, Go, Julia, LuaJIT, Mojo)
 - **Gap**: Interpreter only (D04)
 - **Surpass strategy**: Deterministic replay + AOT gives reproducible, auditable performance; PGO persistence for agent loops
-- **Files**: `rust/lumen-vm/src/vm/mod.rs`, `rust/lumen-codegen/src/lib.rs`, `rust/lumen-vm/src/jit_tier.rs`
+- **Files**: `rust/lumen-runtime/src/vm/vm/mod.rs`, `rust/lumen-compiler/src/codegen/`, `rust/lumen-runtime/src/vm/jit_tier.rs`
 
 ### Type System (beaten by Rust, Liquid Haskell, F*, TypeScript strict)
 - **Gap**: Constraints runtime-only (D05), no SMT refinement (D06)
@@ -61,12 +61,12 @@ You maintain and evolve the competitive analysis in `docs/research/COMPETITIVE_A
 ### Concurrency (beaten by Go, Erlang/OTP, Rust/Tokio, Swift)
 - **Gap**: Single-threaded (D07), no typed channels (D08), no supervision (D09)
 - **Surpass strategy**: Supervision + grants = "this agent tree can only use these tools with these limits" -- OTP resilience + capability security
-- **Files**: `rust/lumen-vm/src/vm/processes.rs`, `rust/lumen-runtime/src/tools.rs`
+- **Files**: `rust/lumen-runtime/src/vm/vm/processes.rs`, `rust/lumen-runtime/src/tools.rs`
 
 ### Durability (beaten by Temporal, Erlang, Azure Durable Functions)
 - **Gap**: No checkpoint/resume (D13)
 - **Surpass strategy**: Durability in the language/VM -- checkpoint intrinsic, deterministic replay, workflow versioning -- no separate service
-- **Files**: `rust/lumen-vm/src/vm/mod.rs`, `rust/lumen-runtime/src/trace/`
+- **Files**: `rust/lumen-runtime/src/vm/vm/mod.rs`, `rust/lumen-runtime/src/trace/`
 
 ### Ecosystem (beaten by Cargo, npm, pip, Go modules)
 - **Gap**: No zero-cost FFI (D10), no WASM component model (D11), registry stubs
@@ -105,7 +105,7 @@ For every competitive dimension, you must answer:
 
 # Parity Checklists (items remaining for production readiness)
 - Memory safety: 50 items (`rust/lumen-compiler/src/compiler/parity_memory.rs`)
-- Concurrency: 38 items (`rust/lumen-vm/src/parity_concurrency.rs`)
+- Concurrency: 38 items (`rust/lumen-runtime/src/vm/parity_concurrency.rs`)
 - Durability: 36 items (`rust/lumen-runtime/src/parity_durability.rs`)
 - Verification: 42 items (`rust/lumen-compiler/src/compiler/verification/parity_verification.rs`)
 

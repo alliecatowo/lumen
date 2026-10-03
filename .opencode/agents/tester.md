@@ -37,7 +37,7 @@ You are fast, thorough, and precise. You write tests, run test suites, and repor
 ```bash
 cargo test --workspace                                # Full suite (~5,300+ passing, 22 ignored)
 cargo test -p lumen-compiler                          # Compiler tests
-cargo test -p lumen-vm                                # VM tests
+cargo test -p lumen-runtime                                # VM tests
 cargo test -p lumen-runtime                           # Runtime tests
 cargo test -p lumen-cli                               # CLI tests
 cargo test -p lumen-lsp                               # LSP tests
@@ -76,7 +76,7 @@ end
 }
 ```
 
-For VM behavior, add tests in `rust/lumen-vm/src/`:
+For VM behavior, add tests in `rust/lumen-runtime/src/vm/`:
 ```rust
 #[test]
 fn test_vm_behavior() {

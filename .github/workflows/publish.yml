@@ -60,14 +60,16 @@ jobs:
   # tree-sitter-lumen ships a native Node addon. Build the parser and a
   # prebuilt binary per platform (prebuildify, N-API so one binary covers every
   # Node version), then publish them together in one tarball. node-gyp-build
-  # loads the prebuild at require() time.
+  # loads the prebuild at require() time. No Windows prebuild: the hosted image
+  # ships Visual Studio 18, which node-gyp 10 (bundled with Node 22) cannot
+  # detect; Windows installs compile from src/ instead.
   build-grammar:
     name: Prebuild tree-sitter-lumen (${{ matrix.os }})
     if: github.event_name == 'push' || inputs.target == 'all' || inputs.target == 'npm'
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, ubuntu-22.04-arm, macos-15-intel, macos-latest, windows-latest]
+        os: [ubuntu-22.04, ubuntu-22.04-arm, macos-15-intel, macos-latest]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -86,10 +88,6 @@ jobs:
         run: npx tree-sitter generate
       - name: Build the prebuilt addon
         run: npx prebuildify --napi --strip
-        env:
-          # node-gyp's Visual Studio probe overflows its output buffer on the
-          # hosted Windows image; naming the toolset skips the probe.
-          GYP_MSVS_VERSION: '2022'
       - name: Smoke test the prebuild
         run: |
           node -e "

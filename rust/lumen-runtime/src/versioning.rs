@@ -467,8 +467,11 @@ mod tests {
     fn versioned_snapshot_serde_round_trip() {
         let heap = make_snapshot(vec![make_object(1, b"data", "Blob")]);
         let vs = VersionedSnapshot::new(SchemaVersion::new(2, 1, 0), heap);
-        let bytes = bincode::serialize(&vs).unwrap();
-        let restored: VersionedSnapshot = bincode::deserialize(&bytes).unwrap();
+        let bytes = bincode::serde::encode_to_vec(&vs, bincode::config::legacy()).unwrap();
+        let restored: VersionedSnapshot =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .unwrap();
         assert_eq!(vs, restored);
     }
 

@@ -187,13 +187,15 @@ impl Snapshot {
 
     /// Serialize this snapshot to a byte vector (bincode).
     pub fn serialize(&self) -> Result<Vec<u8>, SnapshotError> {
-        bincode::serialize(self).map_err(|e| SnapshotError::Serialize(e.to_string()))
+        bincode::serde::encode_to_vec(self, bincode::config::legacy())
+            .map_err(|e| SnapshotError::Serialize(e.to_string()))
     }
 
     /// Deserialize a snapshot from bytes, checking the version tag.
     pub fn deserialize(bytes: &[u8]) -> Result<Self, SnapshotError> {
-        let snap: Snapshot =
-            bincode::deserialize(bytes).map_err(|e| SnapshotError::Deserialize(e.to_string()))?;
+        let snap: Snapshot = bincode::serde::decode_from_slice(bytes, bincode::config::legacy())
+            .map(|(v, _)| v)
+            .map_err(|e| SnapshotError::Deserialize(e.to_string()))?;
         if snap.version != SNAPSHOT_VERSION {
             return Err(SnapshotError::VersionMismatch {
                 expected: SNAPSHOT_VERSION,
@@ -375,7 +377,7 @@ mod tests {
     fn snapshot_version_check() {
         let mut snap = sample_snapshot();
         snap.version = 999;
-        let bytes = bincode::serialize(&snap).unwrap();
+        let bytes = bincode::serde::encode_to_vec(&snap, bincode::config::legacy()).unwrap();
         let err = Snapshot::deserialize(&bytes).unwrap_err();
         match err {
             SnapshotError::VersionMismatch {
@@ -428,8 +430,11 @@ mod tests {
             },
         };
 
-        let bytes = bincode::serialize(&val).unwrap();
-        let restored: SerializedValue = bincode::deserialize(&bytes).unwrap();
+        let bytes = bincode::serde::encode_to_vec(&val, bincode::config::legacy()).unwrap();
+        let restored: SerializedValue =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .unwrap();
         assert_eq!(val, restored);
     }
 
@@ -439,8 +444,11 @@ mod tests {
             tag: "Some".into(),
             payload: Box::new(SerializedValue::String("data".into())),
         };
-        let bytes = bincode::serialize(&val).unwrap();
-        let restored: SerializedValue = bincode::deserialize(&bytes).unwrap();
+        let bytes = bincode::serde::encode_to_vec(&val, bincode::config::legacy()).unwrap();
+        let restored: SerializedValue =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .unwrap();
         assert_eq!(val, restored);
     }
 
@@ -451,16 +459,22 @@ mod tests {
             SerializedValue::Int(1),
             SerializedValue::Int(2),
         ]);
-        let bytes = bincode::serialize(&val).unwrap();
-        let restored: SerializedValue = bincode::deserialize(&bytes).unwrap();
+        let bytes = bincode::serde::encode_to_vec(&val, bincode::config::legacy()).unwrap();
+        let restored: SerializedValue =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .unwrap();
         assert_eq!(val, restored);
     }
 
     #[test]
     fn serialized_value_bytes_round_trip() {
         let val = SerializedValue::Bytes(vec![0x00, 0xFF, 0x42]);
-        let bytes = bincode::serialize(&val).unwrap();
-        let restored: SerializedValue = bincode::deserialize(&bytes).unwrap();
+        let bytes = bincode::serde::encode_to_vec(&val, bincode::config::legacy()).unwrap();
+        let restored: SerializedValue =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .unwrap();
         assert_eq!(val, restored);
     }
 
@@ -585,7 +599,7 @@ mod tests {
         snap.version = 999;
         // We bypass `serialize_compressed` for the write side so we can produce
         // a compressed blob that really does contain version=999.
-        let raw = bincode::serialize(&snap).unwrap();
+        let raw = bincode::serde::encode_to_vec(&snap, bincode::config::legacy()).unwrap();
         let compressed = compress(&raw).unwrap();
         match Snapshot::deserialize_compressed(&compressed).unwrap_err() {
             SnapshotError::VersionMismatch {

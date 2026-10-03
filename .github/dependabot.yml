@@ -34,3 +34,9 @@ updates:
       update-types:
       - minor
       - patch
+  ignore:
+  # bincode 3.0.0 is an upstream tombstone release (lib.rs is just
+  # compile_error!("https://xkcd.com/2347/")); we use bincode 2 (legacy config).
+  - dependency-name: bincode
+    versions:
+    - ">=3"

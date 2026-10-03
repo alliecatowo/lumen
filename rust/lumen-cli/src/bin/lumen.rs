@@ -281,94 +281,121 @@ fn register_providers(
 
     #[cfg(feature = "fs")]
     {
-        registry.register("fs.read", Box::new(lumen_provider_fs::FsProvider::read()));
-        registry.register("fs.write", Box::new(lumen_provider_fs::FsProvider::write()));
+        registry.register(
+            "fs.read",
+            Box::new(lumen_runtime::providers::fs::FsProvider::read()),
+        );
+        registry.register(
+            "fs.write",
+            Box::new(lumen_runtime::providers::fs::FsProvider::write()),
+        );
         registry.register(
             "fs.exists",
-            Box::new(lumen_provider_fs::FsProvider::exists()),
+            Box::new(lumen_runtime::providers::fs::FsProvider::exists()),
         );
-        registry.register("fs.list", Box::new(lumen_provider_fs::FsProvider::list()));
-        registry.register("fs.mkdir", Box::new(lumen_provider_fs::FsProvider::mkdir()));
+        registry.register(
+            "fs.list",
+            Box::new(lumen_runtime::providers::fs::FsProvider::list()),
+        );
+        registry.register(
+            "fs.mkdir",
+            Box::new(lumen_runtime::providers::fs::FsProvider::mkdir()),
+        );
         registry.register(
             "fs.remove",
-            Box::new(lumen_provider_fs::FsProvider::remove()),
+            Box::new(lumen_runtime::providers::fs::FsProvider::remove()),
         );
     }
 
     #[cfg(feature = "env")]
     {
-        registry.register("env.get", Box::new(lumen_provider_env::EnvProvider::get()));
-        registry.register("env.set", Box::new(lumen_provider_env::EnvProvider::set()));
+        registry.register(
+            "env.get",
+            Box::new(lumen_runtime::providers::env::EnvProvider::get()),
+        );
+        registry.register(
+            "env.set",
+            Box::new(lumen_runtime::providers::env::EnvProvider::set()),
+        );
         registry.register(
             "env.list",
-            Box::new(lumen_provider_env::EnvProvider::list()),
+            Box::new(lumen_runtime::providers::env::EnvProvider::list()),
         );
-        registry.register("env.has", Box::new(lumen_provider_env::EnvProvider::has()));
-        registry.register("env.cwd", Box::new(lumen_provider_env::EnvProvider::cwd()));
+        registry.register(
+            "env.has",
+            Box::new(lumen_runtime::providers::env::EnvProvider::has()),
+        );
+        registry.register(
+            "env.cwd",
+            Box::new(lumen_runtime::providers::env::EnvProvider::cwd()),
+        );
         registry.register(
             "env.home",
-            Box::new(lumen_provider_env::EnvProvider::home()),
+            Box::new(lumen_runtime::providers::env::EnvProvider::home()),
         );
         registry.register(
             "env.platform",
-            Box::new(lumen_provider_env::EnvProvider::platform()),
+            Box::new(lumen_runtime::providers::env::EnvProvider::platform()),
         );
         registry.register(
             "env.args",
-            Box::new(lumen_provider_env::EnvProvider::args()),
+            Box::new(lumen_runtime::providers::env::EnvProvider::args()),
         );
     }
 
     #[cfg(feature = "json")]
     {
-        registry.register("json", Box::new(lumen_provider_json::JsonProvider::new()));
+        registry.register(
+            "json",
+            Box::new(lumen_runtime::providers::json::JsonProvider::new()),
+        );
     }
 
     #[cfg(feature = "crypto")]
     {
         registry.register(
             "crypto.sha256",
-            Box::new(lumen_provider_crypto::CryptoProvider::sha256()),
+            Box::new(lumen_runtime::providers::crypto::CryptoProvider::sha256()),
         );
         registry.register(
             "crypto.sha512",
-            Box::new(lumen_provider_crypto::CryptoProvider::sha512()),
+            Box::new(lumen_runtime::providers::crypto::CryptoProvider::sha512()),
         );
         registry.register(
             "crypto.md5",
-            Box::new(lumen_provider_crypto::CryptoProvider::md5()),
+            Box::new(lumen_runtime::providers::crypto::CryptoProvider::md5()),
         );
         registry.register(
             "crypto.base64_encode",
-            Box::new(lumen_provider_crypto::CryptoProvider::base64_encode()),
+            Box::new(lumen_runtime::providers::crypto::CryptoProvider::base64_encode()),
         );
         registry.register(
             "crypto.base64_decode",
-            Box::new(lumen_provider_crypto::CryptoProvider::base64_decode()),
+            Box::new(lumen_runtime::providers::crypto::CryptoProvider::base64_decode()),
         );
         registry.register(
             "crypto.uuid",
-            Box::new(lumen_provider_crypto::CryptoProvider::uuid()),
+            Box::new(lumen_runtime::providers::crypto::CryptoProvider::uuid()),
         );
         registry.register(
             "crypto.random_int",
-            Box::new(lumen_provider_crypto::CryptoProvider::random_int()),
+            Box::new(lumen_runtime::providers::crypto::CryptoProvider::random_int()),
         );
         registry.register(
             "crypto.hmac_sha256",
-            Box::new(lumen_provider_crypto::CryptoProvider::hmac_sha256()),
+            Box::new(lumen_runtime::providers::crypto::CryptoProvider::hmac_sha256()),
         );
         registry.register(
             "crypto.ed25519_keygen",
-            Box::new(lumen_provider_crypto::Ed25519Provider::keygen()),
+            Box::new(lumen_runtime::providers::crypto::Ed25519Provider::keygen()),
         );
         registry.register(
             "crypto.ed25519_sign",
-            Box::new(lumen_provider_crypto::Ed25519Provider::sign()),
+            Box::new(lumen_runtime::providers::crypto::Ed25519Provider::sign()),
         );
         registry.register(
             "crypto.ed25519_verify",
-            Box::new(lumen_provider_crypto::Ed25519Provider::verify()),
+            Box::new(lumen_runtime::providers::crypto::Ed25519Provider::verify()),
         );
     }
 
@@ -376,19 +403,19 @@ fn register_providers(
     {
         registry.register(
             "http.get",
-            Box::new(lumen_provider_http::HttpProvider::get()),
+            Box::new(lumen_runtime::providers::http::HttpProvider::get()),
         );
         registry.register(
             "http.post",
-            Box::new(lumen_provider_http::HttpProvider::post()),
+            Box::new(lumen_runtime::providers::http::HttpProvider::post()),
         );
         registry.register(
             "http.put",
-            Box::new(lumen_provider_http::HttpProvider::put()),
+            Box::new(lumen_runtime::providers::http::HttpProvider::put()),
         );
         registry.register(
             "http.delete",
-            Box::new(lumen_provider_http::HttpProvider::delete()),
+            Box::new(lumen_runtime::providers::http::HttpProvider::delete()),
         );
     }
 
@@ -407,15 +434,19 @@ fn register_providers(
         if let Some(key) = api_key {
             registry.register(
                 "gemini.generate",
-                Box::new(lumen_provider_gemini::GeminiProvider::generate(key.clone())),
+                Box::new(lumen_runtime::providers::gemini::GeminiProvider::generate(
+                    key.clone(),
+                )),
             );
             registry.register(
                 "gemini.chat",
-                Box::new(lumen_provider_gemini::GeminiProvider::chat(key.clone())),
+                Box::new(lumen_runtime::providers::gemini::GeminiProvider::chat(
+                    key.clone(),
+                )),
             );
             registry.register(
                 "gemini.embed",
-                Box::new(lumen_provider_gemini::GeminiProvider::embed(key)),
+                Box::new(lumen_runtime::providers::gemini::GeminiProvider::embed(key)),
             );
         }
     }
@@ -1198,7 +1229,7 @@ fn cmd_run(
     }
 
     println!("{} {}", status_label("Running"), cyan(cell));
-    let mut vm = lumen_vm::vm::VM::new();
+    let mut vm = lumen_runtime::vm::vm::VM::new();
     // Enable tiered JIT: with --jit-threshold=0 (default), eligible cells are
     // compiled to native code on their very first call. Use a higher value to
     // defer compilation to only hot cells.
@@ -1214,16 +1245,18 @@ fn cmd_run(
                 return;
             };
             match event {
-                lumen_vm::vm::DebugEvent::Step {
+                lumen_runtime::vm::vm::DebugEvent::Step {
                     cell_name,
                     ip,
                     opcode,
                 } => ts.vm_step(cell_name, *ip, opcode),
-                lumen_vm::vm::DebugEvent::CallEnter { cell_name } => ts.call_enter(cell_name),
-                lumen_vm::vm::DebugEvent::CallExit { cell_name, result } => {
+                lumen_runtime::vm::vm::DebugEvent::CallEnter { cell_name } => {
+                    ts.call_enter(cell_name)
+                }
+                lumen_runtime::vm::vm::DebugEvent::CallExit { cell_name, result } => {
                     ts.call_exit(cell_name, result.type_name())
                 }
-                lumen_vm::vm::DebugEvent::ToolCall {
+                lumen_runtime::vm::vm::DebugEvent::ToolCall {
                     cell_name,
                     tool_id,
                     tool_version,
@@ -1239,7 +1272,7 @@ fn cmd_run(
                     *success,
                     message.as_deref(),
                 ),
-                lumen_vm::vm::DebugEvent::SchemaValidate {
+                lumen_runtime::vm::vm::DebugEvent::SchemaValidate {
                     cell_name,
                     schema,
                     valid,

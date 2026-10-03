@@ -2,23 +2,15 @@
 resolver = "2"
 members = [
     "rust/lumen-compiler",
-    "rust/lumen-vm",
     "rust/lumen-runtime",
     "rust/lumen-cli",
     "rust/lumen-lsp",
-    "rust/lumen-provider-http",
-    "rust/lumen-provider-json",
-    "rust/lumen-provider-fs",
-    "rust/lumen-provider-mcp",
-    "rust/lumen-provider-gemini",
-    "rust/lumen-codegen",
-    "rust/lumen-tensor",
 ]
 # lumen-wasm excluded - built separately via wasm-pack
 exclude = ["rust/lumen-wasm"]
 
 [workspace.package]
-version = "0.5.2"
+version = "0.6.0"
 edition = "2021"
 license = "MIT"
 description = "The AI-Native Programming Language"

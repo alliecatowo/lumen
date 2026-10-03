@@ -2,6 +2,8 @@
 //!
 //! Transforms Lumen source files (`.lm`, `.lumen`, `.lm.md`, `.lumen.md`) into LIR modules.
 
+#[cfg(feature = "jit")]
+pub mod codegen;
 pub mod compiler;
 pub mod diagnostics;
 pub mod lang_ref;

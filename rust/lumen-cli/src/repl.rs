@@ -6,7 +6,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use lumen_vm::values::Value;
+use lumen_runtime::vm::values::Value;
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
@@ -811,7 +811,7 @@ fn eval_input(input: &str, session_state: &mut SessionState) {
     };
 
     let registry = lumen_runtime::tools::ProviderRegistry::new();
-    let mut vm = lumen_vm::vm::VM::new();
+    let mut vm = lumen_runtime::vm::vm::VM::new();
     vm.set_provider_registry(registry);
     vm.load(module);
 
@@ -843,7 +843,7 @@ fn cmd_type(expr: &str, session_state: &SessionState) {
     };
 
     let registry = lumen_runtime::tools::ProviderRegistry::new();
-    let mut vm = lumen_vm::vm::VM::new();
+    let mut vm = lumen_runtime::vm::vm::VM::new();
     vm.set_provider_registry(registry);
     vm.load(module);
 
@@ -882,7 +882,7 @@ fn cmd_load(path: &str) {
     };
 
     let registry = lumen_runtime::tools::ProviderRegistry::new();
-    let mut vm = lumen_vm::vm::VM::new();
+    let mut vm = lumen_runtime::vm::vm::VM::new();
     vm.set_provider_registry(registry);
     vm.load(module);
 
@@ -1158,7 +1158,7 @@ fn cmd_time(expr: &str, session_state: &SessionState) {
     let compile_time = compile_start.elapsed();
 
     let registry = lumen_runtime::tools::ProviderRegistry::new();
-    let mut vm = lumen_vm::vm::VM::new();
+    let mut vm = lumen_runtime::vm::vm::VM::new();
     vm.set_provider_registry(registry);
     vm.load(module);
 

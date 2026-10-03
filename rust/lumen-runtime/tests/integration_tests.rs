@@ -5,7 +5,7 @@ use serde_json::json;
 #[test]
 #[ignore] // Run with: cargo test -p lumen-runtime --test integration_tests -- --ignored
 fn test_provider_registry_with_crypto_providers() {
-    use lumen_provider_crypto::CryptoProvider;
+    use lumen_runtime::providers::crypto::CryptoProvider;
 
     let mut registry = ProviderRegistry::new();
 
@@ -68,7 +68,7 @@ fn test_provider_registry_with_crypto_providers() {
 #[test]
 #[ignore]
 fn test_provider_registry_with_env_providers() {
-    use lumen_provider_env::EnvProvider;
+    use lumen_runtime::providers::env::EnvProvider;
 
     let mut registry = ProviderRegistry::new();
 
@@ -106,7 +106,7 @@ fn test_provider_registry_with_env_providers() {
 #[test]
 #[ignore]
 fn test_provider_registry_with_fs_providers() {
-    use lumen_provider_fs::FsProvider;
+    use lumen_runtime::providers::fs::FsProvider;
     use std::fs;
 
     let mut registry = ProviderRegistry::new();
@@ -153,8 +153,8 @@ fn test_provider_registry_with_fs_providers() {
 #[test]
 #[ignore]
 fn test_mixed_provider_dispatch() {
-    use lumen_provider_crypto::CryptoProvider;
-    use lumen_provider_env::EnvProvider;
+    use lumen_runtime::providers::crypto::CryptoProvider;
+    use lumen_runtime::providers::env::EnvProvider;
 
     let mut registry = ProviderRegistry::new();
 
@@ -203,7 +203,7 @@ fn test_mixed_provider_dispatch() {
 #[test]
 #[ignore]
 fn test_registry_error_handling() {
-    use lumen_provider_crypto::CryptoProvider;
+    use lumen_runtime::providers::crypto::CryptoProvider;
 
     let mut registry = ProviderRegistry::new();
     registry.register("crypto.sha256", Box::new(CryptoProvider::sha256()));
@@ -248,8 +248,8 @@ fn test_registry_error_handling() {
 #[test]
 #[ignore]
 fn test_provider_effects_metadata() {
-    use lumen_provider_crypto::CryptoProvider;
-    use lumen_provider_env::EnvProvider;
+    use lumen_runtime::providers::crypto::CryptoProvider;
+    use lumen_runtime::providers::env::EnvProvider;
 
     let mut registry = ProviderRegistry::new();
     registry.register("crypto.uuid", Box::new(CryptoProvider::uuid()));
@@ -273,7 +273,7 @@ fn test_provider_effects_metadata() {
 #[test]
 #[ignore]
 fn test_latency_measurement() {
-    use lumen_provider_crypto::CryptoProvider;
+    use lumen_runtime::providers::crypto::CryptoProvider;
 
     let mut registry = ProviderRegistry::new();
     registry.register("crypto.sha256", Box::new(CryptoProvider::sha256()));

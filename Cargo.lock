@@ -1432,7 +1432,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-cli"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1447,16 +1447,8 @@ dependencies = [
  "hmac",
  "humantime",
  "keyring",
- "lumen-codegen",
  "lumen-compiler",
- "lumen-provider-crypto",
- "lumen-provider-env",
- "lumen-provider-fs",
- "lumen-provider-gemini",
- "lumen-provider-http",
- "lumen-provider-json",
  "lumen-runtime",
- "lumen-vm",
  "open",
  "rand 0.8.8",
  "regex",
@@ -1475,8 +1467,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "lumen-codegen"
-version = "0.5.2"
+name = "lumen-compiler"
+version = "0.6.0"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -1484,16 +1476,7 @@ dependencies = [
  "cranelift-module",
  "cranelift-native",
  "cranelift-object",
- "lumen-compiler",
- "target-lexicon",
- "thiserror",
-]
-
-[[package]]
-name = "lumen-compiler"
-version = "0.5.2"
-dependencies = [
- "lumen-vm",
+ "lumen-runtime",
  "num-bigint",
  "num-traits",
  "serde",
@@ -1501,12 +1484,13 @@ dependencies = [
  "sha2",
  "strum",
  "strum_macros 0.28.0",
+ "target-lexicon",
  "thiserror",
 ]
 
 [[package]]
 name = "lumen-lsp"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "lsp-server",
  "lsp-types",
@@ -1517,122 +1501,27 @@ dependencies = [
 ]
 
 [[package]]
-name = "lumen-provider-crypto"
-version = "0.5.2"
+name = "lumen-runtime"
+version = "0.6.0"
 dependencies = [
  "base64 0.22.1",
- "ed25519-dalek",
- "hex",
- "hmac",
- "lumen-runtime",
- "md-5",
- "rand 0.8.8",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
- "uuid",
-]
-
-[[package]]
-name = "lumen-provider-env"
-version = "0.5.2"
-dependencies = [
- "lumen-runtime",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "lumen-provider-fs"
-version = "0.5.2"
-dependencies = [
- "lumen-runtime",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "lumen-provider-gemini"
-version = "0.5.2"
-dependencies = [
- "lumen-runtime",
- "reqwest",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "lumen-provider-http"
-version = "0.5.2"
-dependencies = [
- "lumen-runtime",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "lumen-provider-json"
-version = "0.5.2"
-dependencies = [
- "lumen-runtime",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "lumen-provider-mcp"
-version = "0.5.2"
-dependencies = [
- "lumen-runtime",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "lumen-runtime"
-version = "0.5.2"
-dependencies = [
  "bincode",
  "chrono",
  "crossbeam-channel",
  "crossbeam-deque",
+ "ed25519-dalek",
  "flate2",
- "lumen-provider-crypto",
- "lumen-provider-env",
- "lumen-provider-fs",
- "num_cpus",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
- "uuid",
-]
-
-[[package]]
-name = "lumen-tensor"
-version = "0.5.2"
-dependencies = [
- "num-traits",
- "serde",
-]
-
-[[package]]
-name = "lumen-vm"
-version = "0.5.2"
-dependencies = [
- "chrono",
- "lumen-codegen",
+ "hex",
+ "hmac",
  "lumen-compiler",
- "lumen-runtime",
+ "md-5",
  "num-bigint",
  "num-traits",
+ "num_cpus",
  "once_cell",
+ "rand 0.8.8",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
@@ -3063,7 +2952,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

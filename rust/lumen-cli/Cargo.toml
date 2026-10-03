@@ -22,16 +22,8 @@ path = "src/bin/wares.rs"
 
 
 [dependencies]
-lumen-compiler = { path = "../lumen-compiler", version = "0.5.0" }
-lumen-vm = { path = "../lumen-vm", version = "0.5.0" }
-lumen-runtime = { path = "../lumen-runtime", version = "0.5.0" }
-lumen-provider-http = { path = "../lumen-provider-http", version = "0.5.0", optional = true }
-lumen-provider-json = { path = "../lumen-provider-json", version = "0.5.0", optional = true }
-lumen-provider-fs = { path = "../lumen-provider-fs", version = "0.5.0", optional = true }
-lumen-provider-env = { path = "../lumen-provider-env", version = "0.5.0", optional = true }
-lumen-provider-crypto = { path = "../lumen-provider-crypto", version = "0.5.0", optional = true }
-lumen-provider-gemini = { path = "../lumen-provider-gemini", version = "0.5.0", optional = true }
-lumen-codegen = { path = "../lumen-codegen", version = "0.5.0", optional = true }
+lumen-compiler = { path = "../lumen-compiler", version = "0.6.0" }
+lumen-runtime = { path = "../lumen-runtime", version = "0.6.0", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
@@ -66,13 +58,14 @@ ctrlc = "3"
 
 [features]
 default = ["http", "json", "fs", "env", "crypto", "keyring", "ed25519", "jit"]
-jit = ["lumen-codegen"]
-http = ["lumen-provider-http"]
-json = ["lumen-provider-json"]
-fs = ["lumen-provider-fs"]
-env = ["lumen-provider-env"]
-crypto = ["lumen-provider-crypto"]
-gemini = ["lumen-provider-gemini"]
+jit = ["lumen-compiler/jit", "lumen-runtime/jit"]
+http = ["lumen-runtime/provider-http"]
+json = ["lumen-runtime/provider-json"]
+fs = ["lumen-runtime/provider-fs"]
+env = ["lumen-runtime/provider-env"]
+crypto = ["lumen-runtime/provider-crypto"]
+gemini = ["lumen-runtime/provider-gemini"]
+mcp = ["lumen-runtime/provider-mcp"]
 keyring = ["dep:keyring"]
 ed25519 = ["dep:ed25519-dalek", "dep:rand"]
 

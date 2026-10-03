@@ -1,7 +1,8 @@
 name: Publish Ecosystem
 
 # Registry auth is OIDC only (trusted publishing), no long-lived tokens:
-#   - crates.io: trusted publisher (repo alliecatowo/lumen, workflow publish.yml,
+#   - crates.io: trusted publisher on each of lumen-compiler, lumen-runtime,
+#     lumen-cli, lumen-lsp (repo alliecatowo/lumen, workflow publish.yml,
 #     environment `crates-io`), exchanged for a short-lived token by
 #     rust-lang/crates-io-auth-action.
 #   - npm: trusted publisher (workflow publish.yml, environment `npm`) for
@@ -50,7 +51,9 @@ jobs:
         id: auth
         uses: rust-lang/crates-io-auth-action@v1
 
-      # Publishes every non-private workspace crate in dependency order and
+      # Publishes the four published crates (lumen-compiler, lumen-runtime,
+      # lumen-cli, lumen-lsp); everything else is publish = false. Publishes
+      # every non-private workspace crate in dependency order and
       # waits for the index between crates. Already-published versions are an
       # error, so re-runs after a partial failure need the failed crate only.
       - name: Publish workspace crates to crates.io

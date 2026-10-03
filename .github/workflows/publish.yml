@@ -86,6 +86,10 @@ jobs:
         run: npx tree-sitter generate
       - name: Build the prebuilt addon
         run: npx prebuildify --napi --strip
+        env:
+          # node-gyp's Visual Studio probe overflows its output buffer on the
+          # hosted Windows image; naming the toolset skips the probe.
+          GYP_MSVS_VERSION: '2022'
       - name: Smoke test the prebuild
         run: |
           node -e "

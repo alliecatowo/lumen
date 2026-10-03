@@ -1,0 +1,18 @@
+{
+  "name": "@t/dep",
+  "version": "1.0.0",
+  "deps": {
+    "@t/leaf": "^1.0.0"
+  },
+  "artifacts": [
+    {
+      "kind": "tgz",
+      "url": "wares/@t/dep/1.0.0",
+      "hash": "sha256:<sha256>",
+      "size": 13
+    }
+  ],
+  "yanked": false,
+  "published_at": "<timestamp>",
+  "description": "A test package"
+}

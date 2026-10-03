@@ -862,13 +862,26 @@ async fn cmd_publish(dry_run: bool, provenance: bool, no_log: bool, registry_url
         None
     };
 
+    // Dependencies are published with the version so installers can resolve without
+    // downloading the archive.
+    let deps = match read_package_deps() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("{} {}", colors::red("✗"), e);
+            std::process::exit(1);
+        }
+    };
+
     // Build and pack the package
     println!("  {} Building package archive...", colors::cyan("→"));
     crate::wares::ops::build();
     crate::wares::ops::pack();
 
     // Read the package archive (packed as .tgz by cmd_pkg_pack)
-    let archive_path = format!("dist/{}-{}.tgz", package_name, version);
+    let archive_path = format!(
+        "dist/{}",
+        crate::wares::ops::tarball_file_name(&package_name, &version)
+    );
     let content = match std::fs::read(&archive_path) {
         Ok(c) => c,
         Err(e) => {
@@ -880,7 +893,7 @@ async fn cmd_publish(dry_run: bool, provenance: bool, no_log: bool, registry_url
     // Sign and publish
     if !dry_run {
         match client
-            .publish_package(&package_name, &version, &content, slsa_provenance)
+            .publish_package(&package_name, &version, &content, &deps, slsa_provenance)
             .await
         {
             Ok(sig) => {
@@ -1516,6 +1529,42 @@ async fn cmd_policy_set(registry_url: &str, policy: TrustPolicy) {
 // =============================================================================
 // Helper Functions
 // =============================================================================
+
+/// `[dependencies]` of the package as `name -> version constraint`. Path and git
+/// dependencies cannot be published: other machines would not be able to resolve them.
+fn read_package_deps() -> Result<std::collections::BTreeMap<String, String>, String> {
+    let content = std::fs::read_to_string("lumen.toml")
+        .map_err(|_| "No lumen.toml found. Run 'wares init' first.".to_string())?;
+    let doc: toml::Value = content
+        .parse()
+        .map_err(|e| format!("Failed to parse lumen.toml: {}", e))?;
+
+    let mut deps = std::collections::BTreeMap::new();
+    let Some(table) = doc.get("dependencies").and_then(|d| d.as_table()) else {
+        return Ok(deps);
+    };
+    for (name, spec) in table {
+        let version = match spec {
+            toml::Value::String(v) => Some(v.clone()),
+            toml::Value::Table(t) if !t.contains_key("path") && !t.contains_key("git") => {
+                t.get("version").and_then(|v| v.as_str()).map(String::from)
+            }
+            _ => None,
+        };
+        match version {
+            Some(v) => {
+                deps.insert(name.clone(), v);
+            }
+            None => {
+                return Err(format!(
+                    "dependency '{}' is a path/git dependency and cannot be published; depend on a registry version instead",
+                    name
+                ))
+            }
+        }
+    }
+    Ok(deps)
+}
 
 fn read_package_info() -> Result<(String, String), String> {
     // Read lumen.toml

@@ -5,6 +5,8 @@ export const MAX_TARBALL_BYTES = 10 * 1024 * 1024;
 /** Maximum request body accepted by publish (base64 overhead included). */
 export const MAX_PUBLISH_BODY_BYTES = 15 * 1024 * 1024;
 export const MAX_DESCRIPTION_LEN = 1000;
+/** Maximum number of dependencies a published version may declare. */
+export const MAX_DEPS = 100;
 export const MAX_PROOF_BYTES = 64 * 1024;
 
 const NAME_PART = '[a-z0-9]+(?:-[a-z0-9]+)*';

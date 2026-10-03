@@ -12,7 +12,7 @@ export async function sign(privateKey, data) {
 }
 
 /** Build a certificate in the same format the registry CA issues. */
-export async function issueCert(caKey, userKey, { subject, notBefore = Date.now() - 1000, notAfter = Date.now() + 600000 }) {
+export async function issueCert(caKey, userKey, { subject, notBefore = Date.now() - 1000, notAfter = Date.now() + 600000, publicKey }) {
   const certJson = JSON.stringify(
     {
       cert_id: 'cert-test',
@@ -20,7 +20,7 @@ export async function issueCert(caKey, userKey, { subject, notBefore = Date.now(
       issuer: 'wares.lumen-lang.com',
       not_before: new Date(notBefore).toISOString(),
       not_after: new Date(notAfter).toISOString(),
-      public_key: await spki(userKey),
+      public_key: publicKey ?? (await spki(userKey)),
       key_algorithm: 'ECDSA P-256',
     },
     null,

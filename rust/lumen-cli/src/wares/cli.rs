@@ -893,7 +893,7 @@ async fn cmd_publish(dry_run: bool, provenance: bool, no_log: bool, registry_url
     // Sign and publish
     if !dry_run {
         match client
-            .publish_package(&package_name, &version, &content, &deps, slsa_provenance)
+            .publish_package(&package_name, &version, &content, &deps, slsa_provenance, None)
             .await
         {
             Ok(sig) => {

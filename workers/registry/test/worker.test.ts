@@ -157,6 +157,11 @@ describe('publish validation', () => {
     expect(bucket.store.size).toBe(0);
   });
 
+  it('treats a null proof like an absent one (the CLI sends null)', async () => {
+    const { res } = await publish('tok-alice', { proof: null });
+    expect(res.status).toBe(201);
+  });
+
   it('rejects oversized tarballs', async () => {
     const big = new Uint8Array(10 * 1024 * 1024 + 1);
     const { res } = await publish('tok-alice', { tarball: b64(big), shasum: undefined });

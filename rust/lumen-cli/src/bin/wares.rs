@@ -310,3 +310,34 @@ fn main() {
         },
     }
 }
+
+/// Interactive login through the registry (GitHub OAuth in the browser, confirmed with a
+/// code shown here). Credentials are stored per registry URL.
+fn browser_login(registry: Option<String>) {
+    let registry_url = registry
+        .or_else(|| std::env::var("LUMEN_REGISTRY").ok().filter(|u| !u.trim().is_empty()))
+        .or_else(|| std::env::var("WARES_REGISTRY").ok().filter(|u| !u.trim().is_empty()))
+        .or_else(|| {
+            lumen_cli::config::LumenConfig::load_with_path().map(|(_, c)| c.registry_url())
+        })
+        .unwrap_or_else(|| lumen_cli::config::DEFAULT_REGISTRY_URL.to_string());
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap_or_else(|e| {
+            eprintln!("error: cannot start async runtime: {e}");
+            std::process::exit(1);
+        });
+    let result = runtime.block_on(async {
+        let mut client = wares::TrustClient::new(registry_url).map_err(|e| e.to_string())?;
+        client
+            .login(wares::IdentityProvider::GitHub)
+            .await
+            .map_err(|e| e.to_string())
+    });
+    if let Err(e) = result {
+        eprintln!("error: login failed: {e}");
+        std::process::exit(1);
+    }
+}

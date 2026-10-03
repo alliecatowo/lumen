@@ -5,6 +5,16 @@ All notable changes to the Lumen project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0]
+
+### Changed
+
+- Collapsed the 14 published crates into 4: `lumen-cli`, `lumen-compiler`, `lumen-runtime`, `lumen-lsp`.
+- `lumen-codegen` is now `lumen_compiler::codegen` (cargo feature `jit`).
+- `lumen-vm`, `lumen-tensor` and the `lumen-provider-*` crates are now modules of `lumen-runtime`
+  (`lumen_runtime::vm`, `::tensor`, `::providers::{fs,env,json,crypto,http,gemini,mcp}`); providers are
+  `provider-*` cargo features (default: fs, env, json, crypto + `jit`; `full` enables all).
+
 ## [0.4.0] - 2026-02-16
 
 ### Added

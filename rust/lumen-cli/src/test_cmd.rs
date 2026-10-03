@@ -1,7 +1,7 @@
 //! Lumen test runner — discovers and executes test_* cells.
 
-use lumen_vm::values::Value;
-use lumen_vm::vm::VM;
+use lumen_runtime::vm::values::Value;
+use lumen_runtime::vm::vm::VM;
 use std::fs;
 use std::path::{Path, PathBuf};
 

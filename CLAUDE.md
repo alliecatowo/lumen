@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 cargo build --release                    # Build all crates
 cargo test --workspace                   # Run all tests (~5,300+ passing)
 cargo test -p lumen-compiler             # Tests for compiler only
-cargo test -p lumen-vm                   # Tests for VM only
+cargo test -p lumen-runtime              # Tests for runtime + VM
 cargo test -p lumen-runtime              # Tests for runtime only
 cargo test -p lumen-compiler -- spec_suite::test_name  # Single test by name
 ```
@@ -46,17 +46,11 @@ Lumen is a statically typed programming language for AI-native systems. Source c
 
 The Cargo workspace root is `/Cargo.toml` with members under `rust/`:
 
-- **lumen-compiler** — Front-end pipeline: markdown extraction → lexer → parser → resolver → typechecker → constraint validation → LIR lowering
-- **lumen-vm** — Register VM that executes LIR bytecode (values, string interning, type tables, process runtimes)
-- **lumen-runtime** — Infrastructure: tool dispatch trait, result caching, trace event storage
+- **lumen-compiler** — (`jit` feature adds the Cranelift `codegen` module) Front-end pipeline: markdown extraction → lexer → parser → resolver → typechecker → constraint validation → LIR lowering
+- **lumen-runtime** — Register VM (`vm` module), tensors (`tensor`), tool dispatch, caching, tracing, and the built-in tool providers (`providers::{fs,env,json,crypto,http,gemini,mcp}`, each a `provider-*` cargo feature; `full` enables all)
 - **lumen-cli** — Clap-based CLI (`main.rs`) orchestrating compiler → VM; includes package manager, OIDC auth, TUF metadata verification, audit logging
 - **lumen-lsp** — Language Server Protocol implementation
 - **lumen-wasm** — WebAssembly bindings (excluded from workspace, built via wasm-pack)
-- **lumen-provider-http** — HTTP provider for tool calls
-- **lumen-provider-json** — JSON provider for tool calls
-- **lumen-provider-fs** — Filesystem provider for tool calls
-- **lumen-provider-mcp** — MCP (Model Context Protocol) provider bridge
-- **lumen-codegen** — Code generation backends (ORC JIT)
 
 ### Notable New Modules (Waves 19–26)
 
@@ -85,7 +79,7 @@ The Cargo workspace root is `/Cargo.toml` with members under `rust/`:
 - `net.rs` — IP/Socket addresses, TCP/UDP config, DNS resolution
 - `parity_durability.rs` — Durability parity checklist (36 items)
 
-**lumen-vm** new modules:
+**lumen-runtime `vm`** new modules:
 - `continuations.rs` — Multi-shot continuations with ContinuationSnapshot
 - `parity_concurrency.rs` — Concurrency parity checklist (38 items)
 

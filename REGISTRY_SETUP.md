@@ -30,7 +30,7 @@ export BASE_URL=https://wares.lumen-lang.com
 
 # Transparency Log (already set up)
 export TRANSPARENCY_LOG_URL=https://wares-transparency-log.alliecatowo.workers.dev
-export TRANSPARENCY_LOG_API_KEY=***REDACTED***
+export TRANSPARENCY_LOG_API_KEY=<set via `wrangler secret put` — never commit>
 
 # R2/S3 Storage (for package storage)
 export R2_ACCESS_KEY=your_r2_access_key

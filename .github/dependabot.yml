@@ -26,7 +26,7 @@ updates:
       - minor
       - patch
   ignore:
-  # @types/vscode must not exceed engines.vscode (^1.75.0) in editors/vscode,
+  # @types/vscode must not exceed engines.vscode (^1.91.0) in editors/vscode,
   # or `vsce package` refuses to build the extension.
   - dependency-name: "@types/vscode"
 - package-ecosystem: cargo

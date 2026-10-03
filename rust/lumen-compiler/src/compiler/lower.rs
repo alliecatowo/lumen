@@ -606,29 +606,223 @@ fn instr_reads_reg(instr: &Instruction, reg: u8) -> bool {
     }
 }
 
+/// Opcodes whose only register effects are: write `a`, read `b` and `c`.
+fn is_plain_abc_op(op: OpCode) -> bool {
+    matches!(
+        op,
+        OpCode::Move
+            | OpCode::MoveOwn
+            | OpCode::Add
+            | OpCode::Sub
+            | OpCode::Mul
+            | OpCode::Div
+            | OpCode::Mod
+            | OpCode::Pow
+            | OpCode::Neg
+            | OpCode::FloorDiv
+            | OpCode::BitOr
+            | OpCode::BitAnd
+            | OpCode::BitXor
+            | OpCode::BitNot
+            | OpCode::Shl
+            | OpCode::Shr
+            | OpCode::Not
+            | OpCode::And
+            | OpCode::Or
+            | OpCode::Eq
+            | OpCode::Lt
+            | OpCode::Le
+    )
+}
+
+/// Opcodes that have no register effects (their `a`/`b`/`c` bits are offsets).
+fn has_no_register_effects(op: OpCode) -> bool {
+    matches!(
+        op,
+        OpCode::Jmp | OpCode::Break | OpCode::Continue | OpCode::Nop | OpCode::Loop
+    )
+}
+
+/// Conservative over-approximation: may `instr` read register `r`?
+/// Unknown opcodes answer `true`.
+fn hoist_may_read(instr: &Instruction, r: u8) -> bool {
+    let (a, b, c) = (instr.a, instr.b, instr.c);
+    match instr.op {
+        op if has_no_register_effects(op) => false,
+        OpCode::LoadK | OpCode::LoadBool | OpCode::LoadInt | OpCode::LoadNil => false,
+        op if is_plain_abc_op(op) => b == r || c == r,
+        OpCode::Test | OpCode::Return => a == r,
+        OpCode::GetField | OpCode::GetIndex | OpCode::GetTuple => b == r || c == r,
+        OpCode::SetField | OpCode::SetIndex => a == r || b == r || c == r,
+        OpCode::Append => a == r || b == r,
+        OpCode::Call | OpCode::TailCall => r >= a && r <= a.saturating_add(b),
+        OpCode::NewList | OpCode::NewTuple | OpCode::NewSet => r > a && r <= a.saturating_add(b),
+        OpCode::NewMap => r > a && r <= a.saturating_add(b.saturating_mul(2)),
+        OpCode::NewRecord | OpCode::NewUnion => r > a || b == r || c == r,
+        OpCode::Intrinsic => r >= c,
+        _ => true,
+    }
+}
+
+/// Conservative over-approximation: may `instr` write register `r`?
+/// Unknown opcodes answer `true`.
+fn hoist_may_write(instr: &Instruction, r: u8) -> bool {
+    let (a, b) = (instr.a, instr.b);
+    match instr.op {
+        op if has_no_register_effects(op) => false,
+        OpCode::LoadK | OpCode::LoadBool | OpCode::LoadInt => a == r,
+        OpCode::LoadNil => r >= a && r <= a.saturating_add(b),
+        op if is_plain_abc_op(op) => a == r,
+        OpCode::Test | OpCode::Return => false,
+        OpCode::GetField | OpCode::GetIndex | OpCode::GetTuple => a == r,
+        // The container is mutated in place (copy-on-write) through `a`.
+        OpCode::SetField | OpCode::SetIndex | OpCode::Append => a == r,
+        OpCode::Call | OpCode::TailCall => r >= a && r <= a.saturating_add(b),
+        OpCode::NewList
+        | OpCode::NewTuple
+        | OpCode::NewSet
+        | OpCode::NewMap
+        | OpCode::NewRecord
+        | OpCode::NewUnion
+        | OpCode::Intrinsic => a == r,
+        _ => true,
+    }
+}
+
+/// Is `instr` a pure overwrite of `r` that does not read it (so any path
+/// reaching it no longer depends on the old value of `r`)?
+fn hoist_kills(instr: &Instruction, r: u8) -> bool {
+    match instr.op {
+        OpCode::LoadK | OpCode::LoadBool | OpCode::LoadInt => instr.a == r,
+        op if is_plain_abc_op(op) => instr.a == r && instr.b != r && instr.c != r,
+        _ => false,
+    }
+}
+
+/// Control-flow successors of `pc`, or `None` if the instruction makes control
+/// flow too hard to follow (the caller then gives up conservatively).
+fn hoist_successors(instrs: &[Instruction], pc: usize) -> Option<Vec<usize>> {
+    let inst = instrs[pc];
+    Some(match inst.op {
+        OpCode::Jmp | OpCode::Break | OpCode::Continue => {
+            let t = pc as i64 + 1 + inst.sax_val() as i64;
+            if t < 0 {
+                return None;
+            }
+            vec![t as usize]
+        }
+        OpCode::Test => vec![pc + 1, pc + 2],
+        OpCode::LoadBool if inst.c != 0 => vec![pc + 2],
+        OpCode::Return | OpCode::TailCall | OpCode::Halt => vec![],
+        OpCode::HandlePush
+        | OpCode::HandlePop
+        | OpCode::Perform
+        | OpCode::Resume
+        | OpCode::ForPrep
+        | OpCode::ForLoop
+        | OpCode::ForIn => return None,
+        _ => vec![pc + 1],
+    })
+}
+
+/// Can the value of `r` at a loop exit still be observed? True if any path out
+/// of the loop reads `r` before overwriting it (or we cannot tell).
+fn live_after_loop(instrs: &[Instruction], header: usize, back_edge: usize, r: u8) -> bool {
+    let n = instrs.len();
+    let mut stack: Vec<usize> = vec![back_edge + 1];
+    for pc in header..=back_edge {
+        if let Some(succs) = hoist_successors(instrs, pc) {
+            for s in succs {
+                if s > back_edge || s < header {
+                    stack.push(s);
+                }
+            }
+        } else {
+            return true;
+        }
+    }
+    let mut seen = vec![false; n + 3];
+    while let Some(pc) = stack.pop() {
+        if pc >= n {
+            continue;
+        }
+        if seen[pc] {
+            continue;
+        }
+        seen[pc] = true;
+        let inst = &instrs[pc];
+        if hoist_may_read(inst, r) {
+            return true;
+        }
+        if hoist_kills(inst, r) {
+            continue;
+        }
+        match hoist_successors(instrs, pc) {
+            Some(succs) => stack.extend(succs),
+            None => return true,
+        }
+    }
+    false
+}
+
+/// Does every iteration that reaches `pc` execute it unconditionally, i.e. is
+/// there no forward branch inside the loop that can jump over `pc` and still
+/// stay in the loop?
+fn runs_every_iteration(
+    instrs: &[Instruction],
+    header: usize,
+    back_edge: usize,
+    pc: usize,
+) -> bool {
+    for (s, &inst) in instrs.iter().enumerate().take(pc).skip(header) {
+        let target = match inst.op {
+            OpCode::Jmp | OpCode::Break | OpCode::Continue => {
+                let t = s as i64 + 1 + inst.sax_val() as i64;
+                if t < 0 {
+                    return false;
+                }
+                t as usize
+            }
+            OpCode::Test => s + 2,
+            OpCode::LoadBool if inst.c != 0 => s + 2,
+            OpCode::HandlePush | OpCode::Perform | OpCode::Resume => return false,
+            _ => continue,
+        };
+        if target > pc && target <= back_edge {
+            return false;
+        }
+    }
+    true
+}
+
 /// Post-lowering pass: hoist loop-invariant `LoadK`, `LoadBool`, and `LoadInt`
 /// instructions out of loops.
 ///
 /// A "loop" is identified by a backward `Jmp` (negative offset) whose target
-/// is the loop header.  An instruction is loop-invariant when:
+/// is the loop header. A constant load `r = K` at `pc` is hoisted only when
+/// all of the following hold, so that moving it before the header cannot
+/// change what any instruction observes:
 ///
-///  1. It is a `LoadK`, `LoadBool`, or `LoadInt` (deterministic constant loads).
-///  2. No *other* instruction in the loop writes to the same destination
-///     register (field `a`).
+///  1. No other instruction in the loop may write `r`.
+///  2. `pc` runs on every iteration that stays in the loop (no forward branch
+///     in the loop skips it).
+///  3. Nothing earlier in the loop body may read `r` (it would see the old value
+///     on the first iteration).
+///  4. `r` is dead at every loop exit (a zero-iteration loop must not leave the
+///     constant in `r` where the original program would have left the old value).
 ///
-/// Invariant instructions are **moved** — they are inserted immediately before
-/// the loop header and the original slot is replaced with `Nop`.  All jump
-/// offsets referencing instructions at or after the insertion point are adjusted
-/// to account for the newly inserted instructions.
+/// Hoisted instructions are inserted immediately before the loop header and the
+/// original slot becomes `Nop`. Jumps are re-targeted: back edges (from inside
+/// the loop) keep pointing at the header instruction, while jumps from outside
+/// the loop that targeted the header now enter at the hoisted instructions.
+/// All remembered loop boundaries are shifted after every insertion so nested
+/// loops are analysed against their true extents.
 fn hoist_loop_invariants(instrs: &mut Vec<Instruction>) {
     if instrs.len() < 3 {
         return;
     }
 
-    // Collect loops: each backward Jmp defines a loop [header .. back_edge].
-    // Process from innermost (latest) first so offset adjustments don't
-    // cascade across earlier loops. We sort by header descending so earlier
-    // insertions don't invalidate later loop boundaries.
+    #[derive(Clone, Copy)]
     struct LoopRegion {
         header: usize,
         back_edge: usize,
@@ -649,115 +843,95 @@ fn hoist_loop_invariants(instrs: &mut Vec<Instruction>) {
         }
     }
 
-    // Deduplicate: multiple backward jumps can target the same header (e.g. a
-    // `continue` and the actual back-edge). Keep only the outermost loop
-    // (largest back_edge) for each header so we don't double-process.
+    // Several backward jumps can share a header (`continue` plus the real back
+    // edge): keep the outermost extent per header.
     loops.sort_by(|a, b| a.header.cmp(&b.header).then(b.back_edge.cmp(&a.back_edge)));
     loops.dedup_by_key(|l| l.header);
-
-    // Process loops from last to first so that insertions for later loops
-    // don't shift the indices of earlier loops.
+    // Innermost loops first: process by header descending.
     loops.sort_by_key(|l| std::cmp::Reverse(l.header));
 
-    for region in &loops {
-        let header = region.header;
-        let back_edge = region.back_edge;
+    let mut i = 0;
+    while i < loops.len() {
+        let LoopRegion { header, back_edge } = loops[i];
+        i += 1;
 
-        // Find hoistable instructions.
-        let mut hoistable: Vec<(usize, Instruction)> = Vec::new();
+        let mut hoistable: Vec<usize> = Vec::new();
         for pc in header..=back_edge {
             let inst = instrs[pc];
             if !matches!(inst.op, OpCode::LoadK | OpCode::LoadBool | OpCode::LoadInt) {
                 continue;
             }
-            let dest = inst.a;
-            // Check that no *other* instruction in the loop writes to `dest`.
-            let mut other_writes = false;
-            for (pc2, i2) in instrs[header..=back_edge]
-                .iter()
-                .enumerate()
-                .map(|(idx, i)| (header + idx, i))
-            {
-                if pc2 == pc {
-                    continue;
-                }
-                if instr_writes_to_a(i2.op) && i2.a == dest {
-                    other_writes = true;
-                    break;
-                }
-                // Call writes to base register `a`
-                if matches!(i2.op, OpCode::Call | OpCode::TailCall) && i2.a == dest {
-                    other_writes = true;
-                    break;
-                }
+            // LoadBool with c != 0 also skips the next instruction: not a pure load.
+            if inst.op == OpCode::LoadBool && inst.c != 0 {
+                continue;
             }
-            if !other_writes {
-                hoistable.push((pc, inst));
+            let r = inst.a;
+            let other_writer =
+                (header..=back_edge).any(|p2| p2 != pc && hoist_may_write(&instrs[p2], r));
+            if other_writer {
+                continue;
             }
+            if (header..pc).any(|p2| hoist_may_read(&instrs[p2], r)) {
+                continue;
+            }
+            if !runs_every_iteration(instrs, header, back_edge, pc) {
+                continue;
+            }
+            if live_after_loop(instrs, header, back_edge, r) {
+                continue;
+            }
+            hoistable.push(pc);
         }
 
         if hoistable.is_empty() {
             continue;
         }
-
         let n = hoistable.len();
-
-        // Replace originals with Nop.
-        for &(pc, _) in &hoistable {
+        let to_insert: Vec<Instruction> = hoistable.iter().map(|&pc| instrs[pc]).collect();
+        for &pc in &hoistable {
             instrs[pc] = Instruction::abc(OpCode::Nop, 0, 0, 0);
         }
 
-        // Insert copies before the header.
+        // Re-target jumps for an insertion of `n` instructions at `header`.
         let insert_point = header;
-        let mut to_insert: Vec<Instruction> = hoistable.iter().map(|&(_, inst)| inst).collect();
-        // Reverse so the first hoistable instruction ends up at the earliest position.
-        to_insert.reverse();
-        // Actually, we want them in original order, so don't reverse.
-        to_insert.reverse();
-
-        // Adjust all existing jump offsets before inserting.
-        // After insertion of `n` instructions at `insert_point`, any instruction
-        // originally at index `i >= insert_point` moves to `i + n`.
-        // A jump at original index `src` with target `tgt`:
-        //   new_src = src + (src >= insert_point ? n : 0)
-        //   new_tgt = tgt + (tgt >= insert_point ? n : 0)
-        //   new_offset = (new_tgt - new_src - 1)
-        for (i, slot) in instrs.iter_mut().enumerate() {
+        for (src, slot) in instrs.iter_mut().enumerate() {
             let inst = *slot;
-            if matches!(inst.op, OpCode::Jmp | OpCode::Break | OpCode::Continue) {
-                let old_offset = inst.sax_val();
-                let old_tgt = (i as i32 + 1 + old_offset) as usize;
-                let new_src = if i >= insert_point { i + n } else { i };
-                let new_tgt = if old_tgt >= insert_point {
-                    old_tgt + n
-                } else {
-                    old_tgt
-                };
-                let new_offset = new_tgt as i32 - new_src as i32 - 1;
-                if new_offset != old_offset {
-                    *slot = Instruction::sax(inst.op, new_offset);
-                }
+            if !matches!(
+                inst.op,
+                OpCode::Jmp | OpCode::Break | OpCode::Continue | OpCode::HandlePush
+            ) {
+                continue;
             }
-            // HandlePush also uses Ax as a forward offset.
-            if inst.op == OpCode::HandlePush {
-                let old_offset = inst.sax_val();
-                let old_tgt = (i as i32 + 1 + old_offset) as usize;
-                let new_src = if i >= insert_point { i + n } else { i };
-                let new_tgt = if old_tgt >= insert_point {
-                    old_tgt + n
-                } else {
-                    old_tgt
-                };
-                let new_offset = new_tgt as i32 - new_src as i32 - 1;
-                if new_offset != old_offset {
-                    *slot = Instruction::sax(inst.op, new_offset);
-                }
+            let old_offset = inst.sax_val();
+            let old_tgt = (src as i32 + 1 + old_offset) as usize;
+            let new_src = if src >= insert_point { src + n } else { src };
+            let from_inside = (header..=back_edge).contains(&src);
+            let new_tgt = if old_tgt > insert_point || (old_tgt == insert_point && from_inside) {
+                // Targets after the header, and back edges to the header
+                // itself, keep pointing at the same original instruction.
+                old_tgt + n
+            } else {
+                // Targets before the header, and jumps from outside the loop
+                // that landed on the header, enter at the hoisted loads.
+                old_tgt
+            };
+            let new_offset = new_tgt as i32 - new_src as i32 - 1;
+            if new_offset != old_offset {
+                *slot = Instruction::sax(inst.op, new_offset);
             }
         }
-
-        // Now insert the hoisted instructions.
         for (idx, inst) in to_insert.into_iter().enumerate() {
             instrs.insert(insert_point + idx, inst);
+        }
+
+        // Shift the remembered extents of loops processed later.
+        for l in loops.iter_mut().skip(i) {
+            if l.header >= insert_point {
+                l.header += n;
+            }
+            if l.back_edge >= insert_point {
+                l.back_edge += n;
+            }
         }
     }
 }
@@ -1504,6 +1678,8 @@ fn try_const_eval(expr: &Expr) -> Option<ConstValue> {
 /// Tracks a loop for break/continue patching
 struct LoopContext {
     label: Option<String>,
+    /// Register that receives the value of `break <expr>` (`loop` used as an expression).
+    result_reg: Option<u8>,
     break_jumps: Vec<usize>,
     /// Indices of continue Jmp instructions that need forward-patching.
     /// For for-loops, these jump to the iterator-advance (idx += 1) section
@@ -1520,8 +1696,16 @@ struct Lowerer<'a> {
     strings: Vec<String>,
     loop_stack: Vec<LoopContext>,
     lambda_cells: Vec<LirCell>,
-    /// Accumulated defer blocks for the current function scope (emitted in LIFO order before returns)
-    defer_stack: Vec<Vec<Stmt>>,
+    /// Defer blocks registered so far in the current function scope, each with the
+    /// register of its "has been registered at runtime" flag. Blocks are emitted in
+    /// LIFO order before returns, guarded by the flag, so a `defer` inside a branch
+    /// that was not taken does not run.
+    defer_stack: Vec<(u8, Vec<Stmt>)>,
+    /// Flag registers allocated for the current function scope (zeroed at entry).
+    defer_flags: Vec<u8>,
+    /// Result register for the next `loop` statement (set when a `loop` is used as
+    /// an expression so that `break value` has somewhere to put its value).
+    pending_loop_result: Option<u8>,
     /// Accumulated effect handler metadata for the current cell being lowered.
     /// Each entry corresponds to one HandlePush instruction emitted.
     effect_handler_metas: Vec<LirEffectHandlerMeta>,
@@ -1549,6 +1733,8 @@ impl<'a> Lowerer<'a> {
             loop_stack: Vec::new(),
             lambda_cells: Vec::new(),
             defer_stack: Vec::new(),
+            defer_flags: Vec::new(),
+            pending_loop_result: None,
             effect_handler_metas: Vec::new(),
         }
     }
@@ -1974,6 +2160,7 @@ impl<'a> Lowerer<'a> {
 
         // Save and reset defer stack for this cell scope
         let saved_defers = std::mem::take(&mut self.defer_stack);
+        let saved_defer_flags = std::mem::take(&mut self.defer_flags);
         // Save and reset effect handler metas for this cell scope
         let saved_metas = std::mem::take(&mut self.effect_handler_metas);
 
@@ -2067,8 +2254,12 @@ impl<'a> Lowerer<'a> {
             instructions.push(Instruction::abc(OpCode::Return, r, 1, 0));
         }
 
+        // Zero the defer flags on entry so returns on paths that never reached a
+        // `defer` statement skip it.
+        Self::prepend_defer_flag_init(&self.defer_flags, &mut instructions);
         // Restore defer stack and collect effect handler metas
         self.defer_stack = saved_defers;
+        self.defer_flags = saved_defer_flags;
         let effect_handler_metas = std::mem::replace(&mut self.effect_handler_metas, saved_metas);
 
         // Peephole optimizations
@@ -2199,6 +2390,7 @@ impl<'a> Lowerer<'a> {
 
                 self.loop_stack.push(LoopContext {
                     label: fs.label.clone(),
+                    result_reg: None,
                     break_jumps: Vec::new(),
                     continue_jumps: Vec::new(),
                 });
@@ -2415,13 +2607,9 @@ impl<'a> Lowerer<'a> {
                     }
                     AssignTarget::Field(base_expr, field_name) => {
                         let base_reg = self.lower_expr(base_expr, ra, consts, instrs);
-                        let field_idx = self.intern_string(field_name);
-                        instrs.push(Instruction::abc(
-                            OpCode::SetField,
-                            base_reg,
-                            field_idx as u8,
-                            val_reg,
-                        ));
+                        // Key by constant string: a string-table index would not fit
+                        // the 8-bit operand once a module has more than 255 strings.
+                        self.emit_set_field(base_reg, field_name, val_reg, ra, consts, instrs);
                     }
                 }
             }
@@ -2435,6 +2623,7 @@ impl<'a> Lowerer<'a> {
                 let loop_start = instrs.len();
                 self.loop_stack.push(LoopContext {
                     label: ws.label.clone(),
+                    result_reg: None,
                     break_jumps: Vec::new(),
                     continue_jumps: Vec::new(),
                 });
@@ -2472,8 +2661,10 @@ impl<'a> Lowerer<'a> {
             }
             Stmt::Loop(ls) => {
                 let loop_start = instrs.len();
+                let result_reg = self.pending_loop_result.take();
                 self.loop_stack.push(LoopContext {
                     label: ls.label.clone(),
+                    result_reg,
                     break_jumps: Vec::new(),
                     continue_jumps: Vec::new(),
                 });
@@ -2495,18 +2686,25 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Stmt::Break(bs) => {
-                let jmp_idx = instrs.len();
-                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
-                let target = if let Some(label) = &bs.label {
+                // `break <value>`: evaluate it and store it in the target loop's
+                // result register before jumping out.
+                let target_idx = if let Some(label) = &bs.label {
                     self.loop_stack
-                        .iter_mut()
-                        .rev()
-                        .find(|ctx| ctx.label.as_deref() == Some(label))
+                        .iter()
+                        .rposition(|ctx| ctx.label.as_deref() == Some(label))
                 } else {
-                    self.loop_stack.last_mut()
+                    self.loop_stack.len().checked_sub(1)
                 };
-                if let Some(ctx) = target {
-                    ctx.break_jumps.push(jmp_idx);
+                if let Some(value) = &bs.value {
+                    let v = self.lower_expr(value, ra, consts, instrs);
+                    if let Some(dest) = target_idx.and_then(|i| self.loop_stack[i].result_reg) {
+                        instrs.push(Instruction::abc(OpCode::Move, dest, v, 0));
+                    }
+                }
+                let jmp_idx = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // patched when the loop ends
+                if let Some(i) = target_idx {
+                    self.loop_stack[i].break_jumps.push(jmp_idx);
                 }
             }
             Stmt::Continue(cs) => {
@@ -2572,28 +2770,21 @@ impl<'a> Lowerer<'a> {
                     }
                     AssignTarget::Field(base_expr, field_name) => {
                         let base_reg = self.lower_expr(base_expr, ra, consts, instrs);
-                        let field_idx = self.intern_string(field_name);
                         // Load current value, apply op, store back
                         let cur_reg = ra.alloc_temp();
-                        instrs.push(Instruction::abc(
-                            OpCode::GetField,
-                            cur_reg,
-                            base_reg,
-                            field_idx as u8,
-                        ));
+                        self.emit_get_field(cur_reg, base_reg, field_name, ra, consts, instrs);
                         instrs.push(Instruction::abc(opcode, cur_reg, cur_reg, val_reg));
-                        instrs.push(Instruction::abc(
-                            OpCode::SetField,
-                            base_reg,
-                            field_idx as u8,
-                            cur_reg,
-                        ));
+                        self.emit_set_field(base_reg, field_name, cur_reg, ra, consts, instrs);
                     }
                 }
             }
             Stmt::Defer(ds) => {
-                // Collect defer block body for emission before returns (LIFO order)
-                self.defer_stack.push(ds.body.clone());
+                // Register the block at runtime: set its flag here; every return
+                // point runs the block only if the flag is set (LIFO order).
+                let flag = ra.alloc_named(&format!("__defer_{}", self.defer_flags.len()));
+                self.defer_flags.push(flag);
+                instrs.push(Instruction::abc(OpCode::LoadBool, flag, 1, 0));
+                self.defer_stack.push((flag, ds.body.clone()));
             }
             Stmt::Yield(ys) => {
                 let val_reg = self.lower_expr(&ys.value, ra, consts, instrs);
@@ -2756,6 +2947,7 @@ impl<'a> Lowerer<'a> {
 
         self.loop_stack.push(LoopContext {
             label: fs.label.clone(),
+            result_reg: None,
             break_jumps: Vec::new(),
             continue_jumps: Vec::new(),
         });
@@ -2833,12 +3025,31 @@ impl<'a> Lowerer<'a> {
         instrs: &mut Vec<Instruction>,
     ) {
         // Clone the defer stack so we can iterate in reverse without borrowing issues
-        let defers: Vec<Vec<Stmt>> = self.defer_stack.clone();
-        for defer_body in defers.iter().rev() {
+        let defers: Vec<(u8, Vec<Stmt>)> = self.defer_stack.clone();
+        for (flag, defer_body) in defers.iter().rev() {
+            // if !flag { skip body }   (Test with c = 0 skips the Jmp when truthy)
+            instrs.push(Instruction::abc(OpCode::Test, *flag, 0, 0));
+            let skip = instrs.len();
+            instrs.push(Instruction::sax(OpCode::Jmp, 0));
             for s in defer_body {
                 self.lower_stmt(s, ra, consts, instrs);
             }
+            let end = instrs.len();
+            instrs[skip] = Instruction::sax(OpCode::Jmp, (end - skip - 1) as i32);
         }
+    }
+
+    /// Insert `LoadBool flag, false` for each defer flag at the start of a
+    /// function body. All jumps are relative, so shifting the body is safe.
+    fn prepend_defer_flag_init(flags: &[u8], instrs: &mut Vec<Instruction>) {
+        if flags.is_empty() {
+            return;
+        }
+        let init: Vec<Instruction> = flags
+            .iter()
+            .map(|f| Instruction::abc(OpCode::LoadBool, *f, 0, 0))
+            .collect();
+        instrs.splice(0..0, init);
     }
 
     fn push_const_int(
@@ -4008,7 +4219,11 @@ impl<'a> Lowerer<'a> {
                     }
 
                     // Only treat as intrinsic if it's not a defined cell
-                    let intrinsic = if !self.symbols.cells.contains_key(name) {
+                    // `pad_left`/`pad_right` with a pad character go through the by-name
+                    // builtin; the id form only carries (string, width).
+                    let takes_pad_char =
+                        matches!(name.as_str(), "pad_left" | "pad_right") && args.len() > 2;
+                    let intrinsic = if !self.symbols.cells.contains_key(name) && !takes_pad_char {
                         get_intrinsic_id(name)
                     } else {
                         None
@@ -4437,6 +4652,7 @@ impl<'a> Lowerer<'a> {
 
                 // Save and reset defer stack for lambda scope
                 let saved_defers = std::mem::take(&mut self.defer_stack);
+                let saved_defer_flags = std::mem::take(&mut self.defer_flags);
 
                 match body {
                     LambdaBody::Expr(e) => {
@@ -4462,8 +4678,10 @@ impl<'a> Lowerer<'a> {
                     }
                 }
 
-                // Restore defer stack
+                // Zero this lambda's defer flags on entry, then restore the outer scope
+                Self::prepend_defer_flag_init(&self.defer_flags, &mut linstrs);
                 self.defer_stack = saved_defers;
+                self.defer_flags = saved_defer_flags;
 
                 let proto_idx = self.lambda_cells.len() as u16;
                 self.lambda_cells.push(LirCell {
@@ -5192,6 +5410,16 @@ impl<'a> Lowerer<'a> {
                             // For-as-expression: collect body results into a list
                             instrs.push(Instruction::abc(OpCode::NewList, dest, 0, 0));
                             self.lower_for_as_expr(fs, dest, ra, consts, instrs);
+                        } else if let Stmt::Loop(_) = s {
+                            // `loop` as an expression yields the value of `break <expr>`
+                            // (null if it exits otherwise). The result lives in a named
+                            // register so per-statement temp recycling cannot reuse it.
+                            let result = ra.alloc_named(&format!("__loop_result_{}", dest));
+                            instrs.push(Instruction::abc(OpCode::LoadNil, result, 0, 0));
+                            self.pending_loop_result = Some(result);
+                            self.lower_stmt(s, ra, consts, instrs);
+                            self.pending_loop_result = None;
+                            instrs.push(Instruction::abc(OpCode::Move, dest, result, 0));
                         } else {
                             self.lower_stmt(s, ra, consts, instrs);
                             instrs.push(Instruction::abc(OpCode::LoadNil, dest, 0, 0));

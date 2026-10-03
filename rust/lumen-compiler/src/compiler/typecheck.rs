@@ -690,6 +690,8 @@ struct TypeChecker<'a> {
     /// One entry per open block: each name declared in the block together with
     /// the binding it shadows (restored when the block closes).
     scopes: Vec<Vec<ScopeEntry>>,
+    /// Enclosing loops of the statement being checked: (label, is `loop`).
+    loop_frames: Vec<(Option<String>, bool)>,
     errors: Vec<TypeError>,
 }
 
@@ -707,6 +709,7 @@ impl<'a> TypeChecker<'a> {
             locals: HashMap::new(),
             mutables: HashMap::new(),
             scopes: Vec::new(),
+            loop_frames: Vec::new(),
             errors: Vec::new(),
         }
     }
@@ -754,6 +757,51 @@ impl<'a> TypeChecker<'a> {
         self.mutables.insert(name, mutable);
     }
 
+    /// Validate a `break`/`continue`: it must sit inside a loop of this function,
+    /// name an existing label if it has one, and only `loop` may break with a value.
+    fn check_loop_exit(&mut self, label: Option<&str>, kw: &str, has_value: bool, line: usize) {
+        let target = match label {
+            Some(l) => self
+                .loop_frames
+                .iter()
+                .rposition(|(name, _)| name.as_deref() == Some(l)),
+            None => self.loop_frames.len().checked_sub(1),
+        };
+        match target {
+            None if label.is_some() => self.errors.push(TypeError::Mismatch {
+                expected: format!("a loop labeled '@{}'", label.unwrap_or_default()),
+                actual: format!("`{kw}` with an unknown loop label"),
+                line,
+            }),
+            None => self.errors.push(TypeError::Mismatch {
+                expected: "an enclosing loop".to_string(),
+                actual: format!("`{kw}` outside of a loop"),
+                line,
+            }),
+            Some(i) if has_value && !self.loop_frames[i].1 => {
+                self.errors.push(TypeError::Mismatch {
+                    expected: "`break` without a value (only `loop` can produce one)".to_string(),
+                    actual: "`break` with a value in a `while`/`for` loop".to_string(),
+                    line,
+                })
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// Check a loop body with the loop registered for `break`/`continue`.
+    fn check_loop_block(
+        &mut self,
+        label: &Option<String>,
+        is_loop: bool,
+        body: &[Stmt],
+        expected_return: Option<&Type>,
+    ) {
+        self.loop_frames.push((label.clone(), is_loop));
+        self.check_block(body, expected_return);
+        self.loop_frames.pop();
+    }
+
     /// Check a block of statements in its own lexical scope.
     fn check_block(&mut self, body: &[Stmt], expected_return: Option<&Type>) {
         self.push_scope();
@@ -767,6 +815,7 @@ impl<'a> TypeChecker<'a> {
         self.locals.clear();
         self.mutables.clear();
         self.scopes.clear();
+        self.loop_frames.clear();
         for p in &cell.params {
             let ty = resolve_type_expr(&p.ty, self.symbols);
             // Variadic params are seen as List[T] inside the function body
@@ -795,6 +844,7 @@ impl<'a> TypeChecker<'a> {
         self.locals.clear();
         self.mutables.clear();
         self.scopes.clear();
+        self.loop_frames.clear();
         self.locals.insert("self".into(), Type::Any);
         self.mutables.insert("self".into(), true);
         for p in &cell.params {
@@ -1052,9 +1102,11 @@ impl<'a> TypeChecker<'a> {
                 if let Some(filter) = &fs.filter {
                     self.infer_expr(filter);
                 }
+                self.loop_frames.push((fs.label.clone(), false));
                 for s in &fs.body {
                     self.check_stmt(s, expected_return, false);
                 }
+                self.loop_frames.pop();
                 self.pop_scope();
             }
             Stmt::Match(ms) => {
@@ -1182,12 +1234,25 @@ impl<'a> TypeChecker<'a> {
             Stmt::While(ws) => {
                 let ct = self.infer_expr(&ws.condition);
                 self.check_compat(&Type::Bool, &ct, ws.span.line);
-                self.check_block(&ws.body, expected_return);
+                self.check_loop_block(&ws.label, false, &ws.body, expected_return);
             }
             Stmt::Loop(ls) => {
-                self.check_block(&ls.body, expected_return);
+                self.check_loop_block(&ls.label, true, &ls.body, expected_return);
             }
-            Stmt::Break(_) | Stmt::Continue(_) => {}
+            Stmt::Break(bs) => {
+                if let Some(v) = &bs.value {
+                    self.infer_expr(v);
+                }
+                self.check_loop_exit(
+                    bs.label.as_deref(),
+                    "break",
+                    bs.value.is_some(),
+                    bs.span.line,
+                );
+            }
+            Stmt::Continue(cs) => {
+                self.check_loop_exit(cs.label.as_deref(), "continue", false, cs.span.line);
+            }
             Stmt::Defer(ds) => {
                 self.check_block(&ds.body, expected_return);
             }
@@ -2148,6 +2213,9 @@ impl<'a> TypeChecker<'a> {
             } => {
                 let saved_locals = self.locals.clone();
                 let saved_mutables = self.mutables.clone();
+                // `break`/`continue` cannot reach loops outside the lambda.
+                let saved_loops = std::mem::take(&mut self.loop_frames);
+                self.push_scope();
                 let mut param_types = Vec::new();
                 for p in params {
                     let pt = resolve_type_expr(&p.ty, self.symbols);
@@ -2171,6 +2239,8 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 };
+                self.pop_scope();
+                self.loop_frames = saved_loops;
                 self.locals = saved_locals;
                 self.mutables = saved_mutables;
                 Type::Fn(param_types, Box::new(ret))

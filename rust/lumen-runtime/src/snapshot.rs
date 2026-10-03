@@ -143,6 +143,9 @@ pub enum SnapshotError {
 /// Current snapshot format version.
 pub const SNAPSHOT_VERSION: u32 = 1;
 
+/// Largest snapshot (raw or decompressed) that will be decoded: 256 MiB.
+pub const MAX_SNAPSHOT_BYTES: usize = 256 * 1024 * 1024;
+
 /// A snapshot captures enough state to resume a suspended computation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -193,7 +196,15 @@ impl Snapshot {
 
     /// Deserialize a snapshot from bytes, checking the version tag.
     pub fn deserialize(bytes: &[u8]) -> Result<Self, SnapshotError> {
-        let snap: Snapshot = bincode::serde::decode_from_slice(bytes, bincode::config::legacy())
+        if bytes.len() > MAX_SNAPSHOT_BYTES {
+            return Err(SnapshotError::Deserialize(format!(
+                "snapshot is {} bytes, over the {MAX_SNAPSHOT_BYTES}-byte limit",
+                bytes.len()
+            )));
+        }
+        // The limit bounds allocations driven by length prefixes in untrusted input.
+        let config = bincode::config::legacy().with_limit::<MAX_SNAPSHOT_BYTES>();
+        let snap: Snapshot = bincode::serde::decode_from_slice(bytes, config)
             .map(|(v, _)| v)
             .map_err(|e| SnapshotError::Deserialize(e.to_string()))?;
         if snap.version != SNAPSHOT_VERSION {
@@ -236,11 +247,23 @@ pub fn compress(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
     encoder.finish()
 }
 
-/// Decompress gzip-compressed data.
+/// Decompress gzip-compressed data, refusing to expand past
+/// [`MAX_SNAPSHOT_BYTES`] (a corrupt or hostile file could otherwise request
+/// gigabytes).
 pub fn decompress(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
-    let mut decoder = flate2::read::GzDecoder::new(data);
+    decompress_with_limit(data, MAX_SNAPSHOT_BYTES)
+}
+
+fn decompress_with_limit(data: &[u8], limit: usize) -> Result<Vec<u8>, std::io::Error> {
+    let decoder = flate2::read::GzDecoder::new(data);
     let mut out = Vec::new();
-    decoder.read_to_end(&mut out)?;
+    decoder.take(limit as u64 + 1).read_to_end(&mut out)?;
+    if out.len() > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("decompressed snapshot exceeds the {limit}-byte limit"),
+        ));
+    }
     Ok(out)
 }
 
@@ -707,5 +730,26 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn decompress_refuses_oversized_output() {
+        // A tiny gzip stream that expands past the limit.
+        let packed = compress(&vec![0u8; 100_000]).unwrap();
+        assert!(packed.len() < 1_000, "zeros compress well");
+        let err = decompress_with_limit(&packed, 50_000).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(
+            decompress_with_limit(&packed, 100_000).unwrap().len(),
+            100_000
+        );
+    }
+
+    #[test]
+    fn deserialize_rejects_hostile_length_prefix() {
+        // A "Vec" length prefix of ~2^62 must be an error, not an allocation.
+        let mut bytes = vec![0xFFu8; 64];
+        bytes[0] = 1;
+        assert!(Snapshot::deserialize(&bytes).is_err());
     }
 }

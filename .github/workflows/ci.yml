@@ -191,6 +191,7 @@ jobs:
           cache-dependency-path: editors/vscode/package-lock.json
       - run: npm ci
       - run: npx tsc --noEmit -p .
+      - run: node --test "test/*.test.js"
 
   # ---------------------------------------------------------------------------
   # Cloudflare worker unit tests (run before deploy-workers.yml can ship them)
@@ -230,3 +231,26 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: shellcheck --severity=warning scripts/install.sh scripts/tests/install_test.sh scripts/bump-version.sh
       - run: sh scripts/tests/install_test.sh
+
+  # ---------------------------------------------------------------------------
+  # lumen-wasm is excluded from the workspace, so it needs its own test and
+  # audit run (and a committed Cargo.lock)
+  # ---------------------------------------------------------------------------
+  wasm:
+    name: lumen-wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: rust/lumen-wasm
+      - run: cargo test --locked --manifest-path rust/lumen-wasm/Cargo.toml
+      - run: cargo check --locked --manifest-path rust/lumen-wasm/Cargo.toml --target wasm32-unknown-unknown
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit --file rust/lumen-wasm/Cargo.lock

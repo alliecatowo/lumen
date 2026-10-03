@@ -454,7 +454,7 @@ impl VM {
             }
             "take" => {
                 let arg = &self.registers[base + a + 1];
-                let n = self.registers[base + a + 2].as_int().unwrap_or(0) as usize;
+                let n = non_negative(self.registers[base + a + 2].as_int().unwrap_or(0));
                 if let Value::List(l) = arg {
                     Ok(Value::new_list(l.iter().take(n).cloned().collect()))
                 } else {
@@ -463,7 +463,7 @@ impl VM {
             }
             "drop" => {
                 let arg = &self.registers[base + a + 1];
-                let n = self.registers[base + a + 2].as_int().unwrap_or(0) as usize;
+                let n = non_negative(self.registers[base + a + 2].as_int().unwrap_or(0));
                 if let Value::List(l) = arg {
                     Ok(Value::new_list(l.iter().skip(n).cloned().collect()))
                 } else {
@@ -523,37 +523,19 @@ impl VM {
                     None => Value::Int(-1),
                 })
             }
-            "pad_left" => {
+            "pad_left" | "pad_right" => {
+                let left = name == "pad_left";
                 let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
-                let width = self.registers[base + a + 2].as_int().unwrap_or(0) as usize;
+                let width = self.registers[base + a + 2].as_int().unwrap_or(0);
                 let pad = if nargs > 2 {
-                    value_to_str_cow(&self.registers[base + a + 3], &self.strings)
+                    Some(value_to_str_cow(
+                        &self.registers[base + a + 3],
+                        &self.strings,
+                    ))
                 } else {
-                    std::borrow::Cow::Borrowed(" ")
+                    None
                 };
-                let pad_char = pad.chars().next().unwrap_or(' ');
-                if s.len() < width {
-                    let padding: String = std::iter::repeat_n(pad_char, width - s.len()).collect();
-                    Ok(Value::String(StringRef::Owned(format!("{}{}", padding, s))))
-                } else {
-                    Ok(Value::String(StringRef::Owned(s.into_owned())))
-                }
-            }
-            "pad_right" => {
-                let s = value_to_str_cow(&self.registers[base + a + 1], &self.strings);
-                let width = self.registers[base + a + 2].as_int().unwrap_or(0) as usize;
-                let pad = if nargs > 2 {
-                    value_to_str_cow(&self.registers[base + a + 3], &self.strings)
-                } else {
-                    std::borrow::Cow::Borrowed(" ")
-                };
-                let pad_char = pad.chars().next().unwrap_or(' ');
-                if s.len() < width {
-                    let padding: String = std::iter::repeat_n(pad_char, width - s.len()).collect();
-                    Ok(Value::String(StringRef::Owned(format!("{}{}", s, padding))))
-                } else {
-                    Ok(Value::String(StringRef::Owned(s.into_owned())))
-                }
+                pad_string(&s, width, pad.as_deref(), left)
             }
             // Math
             "round" => {
@@ -1002,7 +984,7 @@ impl VM {
             }
             "chunk" => {
                 let arg = &self.registers[base + a + 1];
-                let size = self.registers[base + a + 2].as_int().unwrap_or(1) as usize;
+                let size = non_negative(self.registers[base + a + 2].as_int().unwrap_or(1));
                 if let Value::List(l) = arg {
                     let result: Vec<Value> = l
                         .chunks(size.max(1))
@@ -1015,7 +997,7 @@ impl VM {
             }
             "window" => {
                 let arg = &self.registers[base + a + 1];
-                let n = self.registers[base + a + 2].as_int().unwrap_or(1) as usize;
+                let n = non_negative(self.registers[base + a + 2].as_int().unwrap_or(1));
                 if let Value::List(l) = arg {
                     if n == 0 || n > l.len() {
                         Ok(Value::new_list(vec![]))
@@ -1593,7 +1575,7 @@ impl VM {
                 let end = &self.registers[base + a + 3];
                 Ok(match (arg, start, end) {
                     (Value::Bytes(b), Value::Int(s), Value::Int(e)) => {
-                        let s = *s as usize;
+                        let s = non_negative(*s);
                         let e = if *e <= 0 { b.len() } else { *e as usize };
                         if s <= e && e <= b.len() {
                             Value::Bytes(b[s..e].to_vec())
@@ -2740,7 +2722,7 @@ impl VM {
             }
             42 => {
                 // CHUNK: split list into chunks of size N
-                let n = self.registers[base + arg_reg + 1].as_int().unwrap_or(1) as usize;
+                let n = non_negative(self.registers[base + arg_reg + 1].as_int().unwrap_or(1));
                 if let Value::List(l) = arg {
                     let result: Vec<Value> = l
                         .chunks(n.max(1))
@@ -2753,7 +2735,7 @@ impl VM {
             }
             43 => {
                 // WINDOW: sliding window of size N
-                let n = self.registers[base + arg_reg + 1].as_int().unwrap_or(1) as usize;
+                let n = non_negative(self.registers[base + arg_reg + 1].as_int().unwrap_or(1));
                 if let Value::List(l) = arg {
                     if n == 0 || n > l.len() {
                         Ok(Value::new_list(vec![]))
@@ -2798,7 +2780,7 @@ impl VM {
             }
             46 => {
                 // TAKE
-                let n = self.registers[base + arg_reg + 1].as_int().unwrap_or(0) as usize;
+                let n = non_negative(self.registers[base + arg_reg + 1].as_int().unwrap_or(0));
                 if let Value::List(l) = arg {
                     Ok(Value::new_list(l.iter().take(n).cloned().collect()))
                 } else {
@@ -2807,7 +2789,7 @@ impl VM {
             }
             47 => {
                 // DROP
-                let n = self.registers[base + arg_reg + 1].as_int().unwrap_or(0) as usize;
+                let n = non_negative(self.registers[base + arg_reg + 1].as_int().unwrap_or(0));
                 if let Value::List(l) = arg {
                     Ok(Value::new_list(l.iter().skip(n).cloned().collect()))
                 } else {
@@ -2864,29 +2846,12 @@ impl VM {
                     None => Value::Int(-1),
                 })
             }
-            55 => {
-                // PADLEFT (Unicode-aware)
-                let width = self.registers[base + arg_reg + 1].as_int().unwrap_or(0) as usize;
+            55 | 56 => {
+                // PADLEFT / PADRIGHT (Unicode-aware). The compiler only emits these ids
+                // for the two-argument form, so the pad character is always a space.
+                let width = self.registers[base + arg_reg + 1].as_int().unwrap_or(0);
                 let s = value_to_str_cow(arg, &self.strings);
-                let char_count = s.chars().count();
-                if char_count < width {
-                    let padding = " ".repeat(width - char_count);
-                    Ok(Value::String(StringRef::Owned(format!("{}{}", padding, s))))
-                } else {
-                    Ok(Value::String(StringRef::Owned(s.into_owned())))
-                }
-            }
-            56 => {
-                // PADRIGHT (Unicode-aware)
-                let width = self.registers[base + arg_reg + 1].as_int().unwrap_or(0) as usize;
-                let s = value_to_str_cow(arg, &self.strings);
-                let char_count = s.chars().count();
-                if char_count < width {
-                    let padding = " ".repeat(width - char_count);
-                    Ok(Value::String(StringRef::Owned(format!("{}{}", s, padding))))
-                } else {
-                    Ok(Value::String(StringRef::Owned(s.into_owned())))
-                }
+                pad_string(&s, width, None, func_id == 55)
             }
             57 => Ok(match arg {
                 Value::Float(f) => Value::Float(f.round()),
@@ -4588,21 +4553,60 @@ type HttpResponse = ureq::http::Response<ureq::Body>;
 
 #[cfg(not(target_arch = "wasm32"))]
 /// Shared agent: HTTP error statuses (4xx/5xx) are returned as responses, not errors.
+///
+/// Requests have a connect timeout and an overall deadline so a stalled server
+/// cannot hang the VM forever. `LUMEN_HTTP_TIMEOUT_SECS` overrides the overall
+/// deadline (default 60 s).
 fn http_agent() -> ureq::Agent {
+    let total = std::env::var("LUMEN_HTTP_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .unwrap_or(60);
     ureq::Agent::config_builder()
         .http_status_as_error(false)
+        .timeout_connect(Some(std::time::Duration::from_secs(10.min(total))))
+        .timeout_global(Some(std::time::Duration::from_secs(total)))
         .build()
         .into()
 }
+
+/// Largest response body the HTTP builtins will read.
+#[cfg(not(target_arch = "wasm32"))]
+const HTTP_MAX_BODY_BYTES: u64 = 10 * 1024 * 1024;
 
 #[cfg(not(target_arch = "wasm32"))]
 /// Build a response map from a ureq response.
 fn http_response_to_value(resp: HttpResponse) -> Value {
     let status = resp.status().as_u16() as i64;
     let ok = (200..300).contains(&(status as u16));
-    let body = resp.into_body().read_to_string().unwrap_or_default();
-
     let mut map = BTreeMap::new();
+    // A body that is too large, not UTF-8 or cut off mid-transfer is an error,
+    // not an empty success.
+    let body = match resp
+        .into_body()
+        .with_config()
+        .limit(HTTP_MAX_BODY_BYTES)
+        .read_to_string()
+    {
+        Ok(b) => b,
+        Err(e) => {
+            map.insert("ok".to_string(), Value::Bool(false));
+            map.insert("status".to_string(), Value::Int(status));
+            map.insert(
+                "error".to_string(),
+                Value::String(StringRef::Owned(format!(
+                    "failed to read response body: {e}"
+                ))),
+            );
+            map.insert(
+                "body".to_string(),
+                Value::String(StringRef::Owned(String::new())),
+            );
+            return Value::new_map(map);
+        }
+    };
+
     map.insert("ok".to_string(), Value::Bool(ok));
     map.insert("status".to_string(), Value::Int(status));
     map.insert("body".to_string(), Value::String(StringRef::Owned(body)));
@@ -5061,4 +5065,36 @@ fn net_udp_recv(handle: i64, max_bytes: i64) -> Value {
 #[cfg(target_arch = "wasm32")]
 fn net_udp_recv(_handle: i64, _max_bytes: i64) -> Value {
     net_unsupported("udp_recv")
+}
+
+/// Clamp a user-supplied count/width/index to `>= 0` before casting to `usize`
+/// (a negative `i64` cast with `as` becomes a huge value).
+fn non_negative(v: i64) -> usize {
+    v.max(0) as usize
+}
+
+/// Largest padded width `pad_left`/`pad_right` will build.
+const MAX_PAD_WIDTH: usize = 1 << 28;
+
+/// Shared implementation of `pad_left` / `pad_right`: counts Unicode scalar
+/// values (not bytes), honours the optional pad string's first character, and
+/// treats a non-positive width as "no padding".
+fn pad_string(s: &str, width: i64, pad: Option<&str>, left: bool) -> Result<Value, VmError> {
+    let width = non_negative(width);
+    if width > MAX_PAD_WIDTH {
+        return Err(VmError::Runtime(format!(
+            "pad width {width} exceeds the maximum of {MAX_PAD_WIDTH}"
+        )));
+    }
+    let pad_char = pad.and_then(|p| p.chars().next()).unwrap_or(' ');
+    let len = s.chars().count();
+    if len >= width {
+        return Ok(Value::String(StringRef::Owned(s.to_string())));
+    }
+    let padding: String = std::iter::repeat_n(pad_char, width - len).collect();
+    Ok(Value::String(StringRef::Owned(if left {
+        format!("{padding}{s}")
+    } else {
+        format!("{s}{padding}")
+    })))
 }

@@ -674,7 +674,7 @@ pub fn checkout_git_commit(
 
 /// Update a git dependency by fetching latest changes.
 ///
-/// This is called during `lumen pkg update` for git dependencies.
+/// This is called during `wares update` for git dependencies.
 pub fn update_git_repo(url: &str, cache_dir: &Path) -> Result<(), GitError> {
     use sha2::{Digest, Sha256};
 

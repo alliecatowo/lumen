@@ -136,29 +136,13 @@ struct PackageInspectReport {
 
 /// Scaffold a new Lumen package in the current directory (or a named subdirectory).
 pub fn init(name: Option<String>) {
-    let base = match &name {
-        Some(n) => {
-            let p = PathBuf::from(n);
-            if p.exists() {
-                eprintln!("{} directory '{}' already exists", red("error:"), n);
-                std::process::exit(1);
-            }
-            std::fs::create_dir_all(p.join("src")).unwrap_or_else(|e| {
-                eprintln!("{} cannot create directory: {}", red("error:"), e);
-                std::process::exit(1);
-            });
-            p
-        }
-        None => PathBuf::from("."),
-    };
-
+    // Validate the name before touching the filesystem.
     let pkg_name = match &name {
-        Some(n) if n.contains('/') && n.starts_with('@') => n.clone(),
+        Some(n) if crate::config::is_valid_package_name(n) => n.clone(),
         Some(n) => {
             eprintln!(
-                "{} package name '{}' must be namespaced: @namespace/name (e.g., @yourname/{})",
+                "{} invalid package name '{}': expected @namespace/name using lowercase letters, digits and single dashes (e.g., @yourname/my-package)",
                 red("error:"),
-                n,
                 n
             );
             std::process::exit(1);
@@ -169,12 +153,30 @@ pub fn init(name: Option<String>) {
                 .and_then(|p| p.file_name().map(|f| f.to_string_lossy().to_string()))
                 .unwrap_or_else(|| "my-package".to_string());
             eprintln!(
-                "{} package name must be namespaced: @namespace/name\n  example: lumen pkg init @yourname/{}",
+                "{} package name must be namespaced: @namespace/name\n  example: wares init @yourname/{}",
                 red("error:"),
                 dir_name
             );
             std::process::exit(1);
         }
+    };
+
+    // `wares init @ns/name` creates `./name` (not a nested `@ns/name` tree).
+    let base = match &name {
+        Some(n) => {
+            let dir_name = n.rsplit('/').next().unwrap_or(n.as_str());
+            let p = PathBuf::from(dir_name);
+            if p.exists() {
+                eprintln!("{} directory '{}' already exists", red("error:"), dir_name);
+                std::process::exit(1);
+            }
+            std::fs::create_dir_all(p.join("src")).unwrap_or_else(|e| {
+                eprintln!("{} cannot create directory: {}", red("error:"), e);
+                std::process::exit(1);
+            });
+            p
+        }
+        None => PathBuf::from("."),
     };
 
     let toml_path = base.join("lumen.toml");
@@ -219,7 +221,7 @@ version = "0.1.0"
 
 ```lumen
 cell main() -> String
-  return "hello from {pkg_name}"
+  "hello from {pkg_name}"
 end
 ```
 "#
@@ -246,7 +248,7 @@ pub fn build() {
         Some(pair) => pair,
         None => {
             eprintln!(
-                "{} no lumen.toml found (run `lumen pkg init` first)",
+                "{} no lumen.toml found (run `wares init` first)",
                 red("error:")
             );
             std::process::exit(1);
@@ -323,7 +325,7 @@ pub fn check() {
         Some(pair) => pair,
         None => {
             eprintln!(
-                "{} no lumen.toml found (run `lumen pkg init` first)",
+                "{} no lumen.toml found (run `wares init` first)",
                 red("error:")
             );
             std::process::exit(1);
@@ -1097,12 +1099,12 @@ fn sync_lockfile(
     if frozen {
         if lock_path.exists() {
             return Err(
-                "lumen.lock is out of date and --frozen was passed; run `lpm install` to update it"
+                "lumen.lock is out of date and --frozen was passed; run `wares install` to update it"
                     .to_string(),
             );
         }
         return Err(
-            "lumen.lock is missing and --frozen was passed; run `lpm install` once to create it"
+            "lumen.lock is missing and --frozen was passed; run `wares install` once to create it"
                 .to_string(),
         );
     }
@@ -1122,7 +1124,7 @@ pub fn add(package: &str, path_opt: Option<&str>) {
         Some(pair) => pair,
         None => {
             eprintln!(
-                "{} no lumen.toml found (run `lumen pkg init` first)",
+                "{} no lumen.toml found (run `wares init` first)",
                 red("error:")
             );
             std::process::exit(1);
@@ -1322,7 +1324,7 @@ pub fn install_with_lock(frozen: bool) {
         Some(pair) => pair,
         None => {
             eprintln!(
-                "{} no lumen.toml found (run `lumen pkg init` first)",
+                "{} no lumen.toml found (run `wares init` first)",
                 red("error:")
             );
             std::process::exit(1);
@@ -1375,7 +1377,7 @@ pub fn update_with_lock(frozen: bool) {
         Some(pair) => pair,
         None => {
             eprintln!(
-                "{} no lumen.toml found (run `lumen pkg init` first)",
+                "{} no lumen.toml found (run `wares init` first)",
                 red("error:")
             );
             std::process::exit(1);
@@ -1718,7 +1720,7 @@ pub fn pack() {
         Some(pair) => pair,
         None => {
             eprintln!(
-                "{} no lumen.toml found (run `lumen pkg init` first)",
+                "{} no lumen.toml found (run `wares init` first)",
                 red("error:")
             );
             std::process::exit(1);
@@ -1944,7 +1946,7 @@ pub fn publish(dry_run: bool) {
         Some(pair) => pair,
         None => {
             eprintln!(
-                "{} no lumen.toml found (run `lumen pkg init` first)",
+                "{} no lumen.toml found (run `wares init` first)",
                 red("error:")
             );
             std::process::exit(1);
@@ -1981,7 +1983,7 @@ pub fn publish(dry_run: bool) {
             red("error:"),
             cyan(&registry_url)
         );
-        eprintln!("  Run {} to login", cyan("lumen registry login"));
+        eprintln!("  Run {} to login", cyan("wares login"));
         std::process::exit(1);
     }
 
@@ -2229,7 +2231,7 @@ pub fn add_with_kind(package: &str, path_opt: Option<&str>, kind: DependencyKind
         Some(pair) => pair,
         None => {
             eprintln!(
-                "{} no lumen.toml found (run `lumen pkg init` first)",
+                "{} no lumen.toml found (run `wares init` first)",
                 red("error:")
             );
             std::process::exit(1);
@@ -2389,7 +2391,7 @@ pub fn install_with_kind(kind: DependencyKind, frozen: bool) {
         Some(pair) => pair,
         None => {
             eprintln!(
-                "{} no lumen.toml found (run `lumen pkg init` first)",
+                "{} no lumen.toml found (run `wares init` first)",
                 red("error:")
             );
             std::process::exit(1);

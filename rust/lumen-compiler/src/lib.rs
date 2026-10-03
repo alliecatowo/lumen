@@ -349,6 +349,8 @@ fn compile_with_imports_internal(
     let mut base_symbols = SymbolTable::new();
     let mut import_errors = Vec::new();
     let mut imported_modules: Vec<LirModule> = Vec::new();
+    // (original cell name, local alias) for `import m: name as alias`
+    let mut cell_aliases: Vec<(String, String)> = Vec::new();
 
     // Collect all imports
     let imports: Vec<&ImportDecl> = program
@@ -472,6 +474,10 @@ fn compile_with_imports_internal(
 
                                 if let Some(cell_info) = imported_symbols.cells.get(symbol_name) {
                                     base_symbols.import_cell(local_name.clone(), cell_info.clone());
+                                    if local_name != symbol_name {
+                                        cell_aliases
+                                            .push((symbol_name.clone(), local_name.clone()));
+                                    }
                                     found = true;
                                 }
 
@@ -542,8 +548,26 @@ fn compile_with_imports_internal(
     for imported_module in imported_modules {
         module.merge(&imported_module);
     }
+    add_cell_aliases(&mut module, &cell_aliases);
 
     Ok(module)
+}
+
+/// Make `import m: name as alias` callable at runtime: the symbol table already
+/// resolves `alias`, but calls are dispatched by cell name, so add a cell named
+/// `alias` that is a copy of `name` (its internal calls still reach the
+/// original). An alias never replaces an existing cell.
+fn add_cell_aliases(module: &mut LirModule, aliases: &[(String, String)]) {
+    for (original, alias) in aliases {
+        if module.cells.iter().any(|c| &c.name == alias) {
+            continue;
+        }
+        if let Some(cell) = module.cells.iter().find(|c| &c.name == original).cloned() {
+            let mut copy = cell;
+            copy.name = alias.clone();
+            module.cells.push(copy);
+        }
+    }
 }
 
 /// Compile raw .lm source with access to external modules for import resolution.
@@ -586,6 +610,8 @@ fn compile_raw_with_imports_internal(
     let mut base_symbols = SymbolTable::new();
     let mut import_errors = Vec::new();
     let mut imported_modules: Vec<LirModule> = Vec::new();
+    // (original cell name, local alias) for `import m: name as alias`
+    let mut cell_aliases: Vec<(String, String)> = Vec::new();
 
     // Collect all imports
     let imports: Vec<&ImportDecl> = program
@@ -708,6 +734,10 @@ fn compile_raw_with_imports_internal(
 
                                 if let Some(cell_info) = imported_symbols.cells.get(symbol_name) {
                                     base_symbols.import_cell(local_name.clone(), cell_info.clone());
+                                    if local_name != symbol_name {
+                                        cell_aliases
+                                            .push((symbol_name.clone(), local_name.clone()));
+                                    }
                                     found = true;
                                 }
 
@@ -774,6 +804,7 @@ fn compile_raw_with_imports_internal(
     for imported_module in imported_modules {
         module.merge(&imported_module);
     }
+    add_cell_aliases(&mut module, &cell_aliases);
 
     Ok(module)
 }

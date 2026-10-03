@@ -1138,19 +1138,10 @@ fn nibble_to_hex(nibble: u8) -> char {
 }
 
 fn chrono_timestamp(secs: u64) -> String {
-    // Simple ISO 8601 timestamp without chrono dependency
-    // This is approximate - for production use chrono
-    let days = secs / 86400;
-    let year = 1970 + (days / 365);
-    let month = ((days % 365) / 30) + 1;
-    let day = ((days % 365) % 30) + 1;
-    let hour = (secs % 86400) / 3600;
-    let minute = (secs % 3600) / 60;
-    let second = secs % 60;
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
-        year, month, day, hour, minute, second
-    )
+    // Real calendar arithmetic via chrono (the old 365-day/30-day approximation was wrong).
+    chrono::DateTime::from_timestamp(secs as i64, 0)
+        .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S").to_string())
+        .unwrap_or_else(|| "1970-01-01T00:00:00".to_string())
 }
 
 // =============================================================================
@@ -1472,5 +1463,13 @@ source = "path+../test"
         assert_eq!(normalize_path_source("./mathlib"), "mathlib");
         assert_eq!(normalize_path_source("a/b/../c"), "a/c");
         assert_eq!(normalize_path_source("a/./b"), "a/b");
+    }
+
+    #[test]
+    fn timestamps_use_the_real_calendar() {
+        assert_eq!(chrono_timestamp(0), "1970-01-01T00:00:00");
+        // 2024-02-29T12:34:56Z (leap day)
+        assert_eq!(chrono_timestamp(1_709_210_096), "2024-02-29T12:34:56");
+        assert_eq!(chrono_timestamp(1_798_761_599), "2026-12-31T23:59:59");
     }
 }

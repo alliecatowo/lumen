@@ -22,6 +22,9 @@
     "vitepress": "^1.6.3"
   },
   "overrides": {
-    "koa": "^2.16.4"
+    "koa": "^2.16.4",
+    "vitepress": {
+      "vite": "^6.4.3"
+    }
   }
 }

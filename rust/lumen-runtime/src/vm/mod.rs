@@ -11,4 +11,5 @@ pub mod tagged;
 pub mod tlab;
 pub mod types;
 pub mod values;
+#[allow(clippy::module_inception)]
 pub mod vm;

@@ -11,7 +11,7 @@
   },
   "icon": "icon.png",
   "engines": {
-    "vscode": "^1.75.0"
+    "vscode": "^1.91.0"
   },
   "categories": [
     "Programming Languages"
@@ -116,29 +116,19 @@
       "properties": {
         "lumen.executablePath": {
           "type": "string",
-          "default": "lumen",
-          "description": "Path to the lumen CLI binary. Defaults to finding it on PATH."
+          "description": "Path to the lumen CLI binary. Leave empty to use `lumen` from PATH. Machine-scoped: workspace settings cannot change it.",
+          "scope": "machine"
         },
         "lumen.lspPath": {
           "type": "string",
-          "default": "lumen-lsp",
-          "description": "Path to the lumen-lsp binary. Defaults to finding it on PATH."
-        },
-        "lumen.formatOnSave": {
-          "type": "boolean",
-          "default": false,
-          "description": "Automatically format Lumen files on save."
-        },
-        "lumen.lintOnSave": {
-          "type": "boolean",
-          "default": true,
-          "description": "Automatically lint Lumen files on save."
+          "description": "Path to the lumen-lsp binary. Leave empty to use the server bundled with the extension, then `lumen-lsp` on PATH. Machine-scoped.",
+          "scope": "machine"
         },
         "lumen.binPath": {
           "type": "string",
-          "default": "lumen",
-          "description": "Deprecated: Use lumen.executablePath instead. Path to the lumen CLI binary.",
-          "deprecationMessage": "Use lumen.executablePath instead"
+          "description": "Deprecated: use lumen.executablePath instead.",
+          "deprecationMessage": "Use lumen.executablePath instead",
+          "scope": "machine"
         }
       }
     }
@@ -328,11 +318,26 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.3",
-    "@types/vscode": "~1.75.0",
+    "@types/vscode": "~1.91.0",
     "typescript": "^7.0.2"
   },
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Running, checking and the REPL execute Lumen code and are disabled in untrusted workspaces. Language features still work.",
+      "restrictedConfigurations": [
+        "lumen.executablePath",
+        "lumen.lspPath",
+        "lumen.binPath"
+      ]
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "The Lumen language server needs files on disk."
+    }
   }
 }

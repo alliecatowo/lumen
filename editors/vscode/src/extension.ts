@@ -1,4 +1,18 @@
-import { workspace, ExtensionContext, commands, window, Terminal } from "vscode";
+import * as fs from "fs";
+import {
+  workspace,
+  ExtensionContext,
+  commands,
+  window,
+  tasks,
+  Task,
+  TaskScope,
+  ProcessExecution,
+  TaskRevealKind,
+  TaskPanelKind,
+  TextDocument,
+  Terminal,
+} from "vscode";
 import {
   LanguageClient,
   LanguageClientOptions,
@@ -8,43 +22,89 @@ import {
 let client: LanguageClient | undefined;
 let terminal: Terminal | undefined;
 
-function getTerminal(): Terminal {
-  if (!terminal) {
-    terminal = window.createTerminal("Lumen");
-  }
-  return terminal;
+/** Non-empty trimmed string setting, or undefined when the user has not set it. */
+function stringSetting(name: string): string | undefined {
+  const value = workspace.getConfiguration("lumen").get<string>(name);
+  return value && value.trim() ? value.trim() : undefined;
 }
 
 function getLumenPath(): string {
-  const config = workspace.getConfiguration("lumen");
-  return config.get("executablePath") || config.get("binPath") || "lumen";
+  return stringSetting("executablePath") || stringSetting("binPath") || "lumen";
 }
 
+function isLumenDocument(document: TextDocument): boolean {
+  const path = document.uri.fsPath;
+  return (
+    document.languageId === "lumen" ||
+    path.endsWith(".lumen") ||
+    (document.languageId === "markdown" && path.endsWith(".lm.md"))
+  );
+}
+
+/**
+ * Run `lumen <args> <file>` as a task. The command and its arguments are passed
+ * to the process directly (no shell), so file names containing quotes, `$()` or
+ * backticks cannot inject commands.
+ */
 function runLumenCommand(args: string[]) {
   const editor = window.activeTextEditor;
   if (!editor) {
     window.showErrorMessage("No active file");
     return;
   }
-
-  const document = editor.document;
-  const isLumenMarkdown =
-    document.languageId === "markdown" &&
-    document.uri.fsPath.endsWith(".lm.md");
-  const isLumenExt = document.uri.fsPath.endsWith(".lumen");
-
-  if (document.languageId !== "lumen" && !isLumenMarkdown && !isLumenExt) {
+  if (!isLumenDocument(editor.document)) {
     window.showErrorMessage("Not a Lumen file");
     return;
   }
+  if (!workspace.isTrusted) {
+    window.showWarningMessage("Lumen commands run code and are disabled in untrusted workspaces.");
+    return;
+  }
 
-  const filePath = document.uri.fsPath;
-  const lumenPath = getLumenPath();
-  const command = `${lumenPath} ${args.join(" ")} "${filePath}"`;
+  const task = new Task(
+    { type: "lumen", command: args[0] },
+    TaskScope.Workspace,
+    `lumen ${args[0]}`,
+    "lumen",
+    new ProcessExecution(getLumenPath(), [...args, editor.document.uri.fsPath])
+  );
+  task.presentationOptions = {
+    reveal: TaskRevealKind.Always,
+    panel: TaskPanelKind.Shared,
+    clear: true,
+  };
+  tasks.executeTask(task);
+}
 
-  const term = getTerminal();
-  term.show();
-  term.sendText(command);
+function openRepl() {
+  if (!workspace.isTrusted) {
+    window.showWarningMessage("The Lumen REPL is disabled in untrusted workspaces.");
+    return;
+  }
+  terminal?.dispose();
+  terminal = window.createTerminal({
+    name: "Lumen REPL",
+    shellPath: getLumenPath(),
+    shellArgs: ["repl"],
+  });
+  terminal.show();
+}
+
+/**
+ * Language server: an explicitly configured `lumen.lspPath` wins, then the
+ * binary bundled in the platform VSIX, then `lumen-lsp` on PATH.
+ */
+function resolveServerPath(context: ExtensionContext): string {
+  const configured = stringSetting("lspPath");
+  if (configured) {
+    return configured;
+  }
+  const binaryName = process.platform === "win32" ? "lumen-lsp.exe" : "lumen-lsp";
+  const bundled = context.asAbsolutePath(`server/${binaryName}`);
+  if (fs.existsSync(bundled)) {
+    return bundled;
+  }
+  return "lumen-lsp";
 }
 
 // ── Lumen syntax highlighter for markdown preview ──
@@ -100,15 +160,6 @@ function highlightLumen(code: string): string {
     const roleMatch = line.match(/^(\s*)(role)\s+(system|user|assistant)\s*:\s*(.*)/);
     if (roleMatch) {
       const [, indent, keyword, roleName, content] = roleMatch;
-      // Highlight interpolations in content
-      const contentHtml = content.replace(/\{([^}]*)\}/g, (_m, inner) => {
-        return `<span class="lm-interp">{${escapeHtml(inner)}}</span>`;
-      }).replace(/([^{]*?)(?=\{|$)/g, (m) => {
-        if (m && !m.startsWith("{")) {
-          return `<span class="lm-role-text">${escapeHtml(m)}</span>`;
-        }
-        return m;
-      });
       result.push(
         `${escapeHtml(indent)}<span class="lm-ai">${keyword}</span> <span class="lm-role-name">${roleName}</span>: ${highlightRoleContent(content)}`
       );
@@ -427,118 +478,27 @@ function highlightLine(line: string): string {
 // ── Activate ──
 
 export function activate(context: ExtensionContext) {
-  // Register commands
   context.subscriptions.push(
-    commands.registerCommand("lumen.check", () => {
-      runLumenCommand(["check"]);
-    })
-  );
-
-  context.subscriptions.push(
-    commands.registerCommand("lumen.run", () => {
-      runLumenCommand(["run"]);
-    })
-  );
-
-  context.subscriptions.push(
+    commands.registerCommand("lumen.check", () => runLumenCommand(["check"])),
+    commands.registerCommand("lumen.run", () => runLumenCommand(["run"])),
+    commands.registerCommand("lumen.lint", () => runLumenCommand(["lint"])),
+    commands.registerCommand("lumen.repl", openRepl),
+    // Formatting and diagnostics come from the language server; format-on-save is
+    // the standard `editor.formatOnSave` setting.
     commands.registerCommand("lumen.fmt", () => {
-      runLumenCommand(["fmt"]);
-    })
-  );
-
-  context.subscriptions.push(
-    commands.registerCommand("lumen.lint", () => {
-      runLumenCommand(["check"]);
-    })
-  );
-
-  context.subscriptions.push(
-    commands.registerCommand("lumen.repl", () => {
-      const lumenPath = getLumenPath();
-      const term = getTerminal();
-      term.show();
-      term.sendText(`${lumenPath} repl`);
-    })
-  );
-
-  // Format on save
-  context.subscriptions.push(
-    workspace.onWillSaveTextDocument((event) => {
-      const config = workspace.getConfiguration("lumen");
-      const formatOnSave = config.get("formatOnSave", false);
-
-      if (!formatOnSave) {
+      const editor = window.activeTextEditor;
+      if (!editor || !isLumenDocument(editor.document)) {
+        window.showErrorMessage("Not a Lumen file");
         return;
       }
-
-      const document = event.document;
-      const isLumenMarkdown =
-        document.languageId === "markdown" &&
-        document.uri.fsPath.endsWith(".lm.md");
-      const isLumenExt = document.uri.fsPath.endsWith(".lumen");
-
-      if (document.languageId === "lumen" || isLumenMarkdown || isLumenExt) {
-        const lumenPath = getLumenPath();
-        const filePath = document.uri.fsPath;
-        const term = getTerminal();
-        term.sendText(`${lumenPath} fmt "${filePath}"`, false);
-      }
+      return commands.executeCommand("editor.action.formatDocument");
     })
   );
 
-  // Lint on save
-  context.subscriptions.push(
-    workspace.onDidSaveTextDocument((document) => {
-      const config = workspace.getConfiguration("lumen");
-      const lintOnSave = config.get("lintOnSave", true);
-
-      if (!lintOnSave) {
-        return;
-      }
-
-      const isLumenMarkdown =
-        document.languageId === "markdown" &&
-        document.uri.fsPath.endsWith(".lm.md");
-      const isLumenExt = document.uri.fsPath.endsWith(".lumen");
-
-      if (document.languageId === "lumen" || isLumenMarkdown || isLumenExt) {
-        const lumenPath = getLumenPath();
-        const filePath = document.uri.fsPath;
-        const term = getTerminal();
-        term.sendText(`${lumenPath} check "${filePath}"`, false);
-      }
-    })
-  );
-
-  // Look for `lumen-lsp` binary.
-  // 1. Check workspace configuration
-  // 2. Check bundled binary in `server/` directory
-  // 3. Fallback to PATH ("lumen-lsp")
-  const config = workspace.getConfiguration("lumen");
-  let serverPath = config.get("lspPath");
-
-  if (!serverPath) {
-    const platform = process.platform;
-    const isWindows = platform === "win32";
-    const binaryName = isWindows ? "lumen-lsp.exe" : "lumen-lsp";
-    const bundledPath = context.asAbsolutePath(`server/${binaryName}`);
-
-    try {
-      const fs = require("fs");
-      if (fs.existsSync(bundledPath)) {
-        serverPath = bundledPath;
-      }
-    } catch (e) {
-      // Ignore error, fall back to PATH
-    }
-  }
-
-  if (!serverPath) {
-    serverPath = "lumen-lsp";
-  }
+  const serverPath = resolveServerPath(context);
 
   const serverOptions: ServerOptions = {
-    command: serverPath as string,
+    command: serverPath,
     args: [],
   };
 

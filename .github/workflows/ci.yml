@@ -191,6 +191,7 @@ jobs:
           cache-dependency-path: editors/vscode/package-lock.json
       - run: npm ci
       - run: npx tsc --noEmit -p .
+      - run: node --test "test/*.test.js"
 
   # ---------------------------------------------------------------------------
   # Cloudflare worker unit tests (run before deploy-workers.yml can ship them)

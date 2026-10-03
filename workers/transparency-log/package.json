@@ -16,7 +16,7 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "vitest": "^3.2.6",
+    "vitest": "^4.1.11",
     "wrangler": "^3.0.0"
   }
 }

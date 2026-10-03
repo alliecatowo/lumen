@@ -1493,7 +1493,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-cli"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1537,7 +1537,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-codegen"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -1552,7 +1552,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-compiler"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "lumen-vm",
  "num-bigint",
@@ -1567,7 +1567,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-lsp"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "lsp-server",
  "lsp-types",
@@ -1579,7 +1579,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-provider-crypto"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -1597,7 +1597,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-provider-env"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "lumen-runtime",
  "serde",
@@ -1607,7 +1607,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-provider-fs"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "lumen-runtime",
  "serde",
@@ -1617,7 +1617,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-provider-gemini"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "lumen-runtime",
  "reqwest",
@@ -1627,7 +1627,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-provider-http"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "lumen-runtime",
  "reqwest",
@@ -1638,7 +1638,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-provider-json"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "lumen-runtime",
  "serde",
@@ -1647,7 +1647,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-provider-mcp"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "lumen-runtime",
  "serde",
@@ -1656,7 +1656,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-runtime"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "bincode",
  "chrono",
@@ -1676,7 +1676,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-tensor"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "num-traits",
  "serde",
@@ -1684,7 +1684,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-vm"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "chrono",
  "lumen-codegen",

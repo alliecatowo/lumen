@@ -2885,7 +2885,11 @@ impl<'a> Lowerer<'a> {
         consts: &mut Vec<Constant>,
         instrs: &mut Vec<Instruction>,
     ) {
-        let key_reg = self.push_const_string(field_name, ra, consts, instrs);
+        // `t.0` / `t.1.0`: a numeric field name is a tuple (positional) index.
+        let key_reg = match field_name.parse::<i64>() {
+            Ok(n) => self.push_const_int(n, ra, consts, instrs),
+            Err(_) => self.push_const_string(field_name, ra, consts, instrs),
+        };
         instrs.push(Instruction::abc(OpCode::GetIndex, dest, obj_reg, key_reg));
     }
 

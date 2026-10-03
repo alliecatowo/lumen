@@ -69,6 +69,11 @@ impl CompilationCache {
         );
     }
 
+    /// Forget a document (on `textDocument/didClose`).
+    pub fn remove(&mut self, uri: &Uri) {
+        self.entries.remove(uri);
+    }
+
     pub fn get_text(&self, uri: &Uri) -> Option<&String> {
         self.entries.get(uri).map(|e| &e.text)
     }

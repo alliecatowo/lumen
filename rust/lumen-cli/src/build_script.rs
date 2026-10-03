@@ -232,6 +232,33 @@ const CACHE_FILENAME: &str = ".build-cache.json";
 /// 3. Build steps from [[build.steps]]
 ///
 /// Returns Ok(()) if all scripts succeeded or if there are no scripts.
+/// Environment variables a build step inherits from the parent process.
+const PASSTHROUGH_ENV: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "LANG",
+    "LC_ALL",
+    "TERM",
+    "SystemRoot",
+    "SYSTEMROOT",
+    "ComSpec",
+    "PATHEXT",
+];
+
+/// True for a non-empty relative path with no `..` components.
+fn is_confined_relative(path: &str) -> bool {
+    use std::path::{Component, Path};
+    let p = Path::new(path);
+    !path.is_empty()
+        && !p.is_absolute()
+        && p.components()
+            .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+}
+
 pub fn run_build_scripts(package_dir: &Path, target_dir: &Path) -> Result<(), BuildScriptError> {
     let config_path = package_dir.join("lumen.toml");
 
@@ -482,14 +509,43 @@ fn run_build_step(
         crate::colors::cyan(step_name)
     );
 
+    // Paths in a manifest (which may come from a dependency) must stay inside the package.
+    if let Some(ref wd) = step.working_dir {
+        if !is_confined_relative(wd) {
+            return Err(BuildScriptError::ExecutionError {
+                step: step_name.to_string(),
+                message: format!(
+                    "working_dir '{}' must be a relative path inside the package",
+                    wd
+                ),
+            });
+        }
+    }
+    if let Some(bad) = step.outputs.iter().find(|o| !is_confined_relative(o)) {
+        return Err(BuildScriptError::ExecutionError {
+            step: step_name.to_string(),
+            message: format!(
+                "output '{}' must be a relative path inside the package",
+                bad
+            ),
+        });
+    }
+
     let working_dir = if let Some(ref wd) = step.working_dir {
         package_dir.join(wd)
     } else {
         package_dir.to_path_buf()
     };
 
+    // A clean environment: the build must not see the user's tokens and secrets.
+    // Only the variables needed to locate tools and a temp dir are passed through.
     let mut cmd = Command::new(&step.command);
-    cmd.args(&step.args).current_dir(&working_dir);
+    cmd.args(&step.args).current_dir(&working_dir).env_clear();
+    for key in PASSTHROUGH_ENV {
+        if let Some(value) = std::env::var_os(key) {
+            cmd.env(key, value);
+        }
+    }
 
     // Set up build environment
     build_env.apply_to(&mut cmd);
@@ -997,5 +1053,49 @@ script = "build.sh"
 "#;
         std::fs::write(temp3.join("lumen.toml"), toml_build_section).unwrap();
         assert!(has_build_scripts(&temp3));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_steps_run_in_a_clean_environment() {
+        let dir = create_temp_dir("lumen_build_env");
+        std::fs::write(
+            dir.join("lumen.toml"),
+            r#"[package]
+name = "@t/envcheck"
+version = "0.1.0"
+
+[build]
+[[build.steps]]
+name = "leak"
+command = "sh"
+args = ["-c", "echo \"secret=${LUMEN_BUILD_TEST_SECRET:-clean} path=${PATH:+set}\" > leak.txt"]
+outputs = ["leak.txt"]
+"#,
+        )
+        .unwrap();
+
+        std::env::set_var("LUMEN_BUILD_TEST_SECRET", "hunter2");
+        let result = run_build_scripts(&dir, &dir.join("target"));
+        std::env::remove_var("LUMEN_BUILD_TEST_SECRET");
+        result.expect("build step should run");
+
+        let leaked = std::fs::read_to_string(dir.join("leak.txt")).unwrap();
+        assert_eq!(leaked.trim(), "secret=clean path=set");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_step_paths_must_stay_inside_the_package() {
+        for ok in ["out.txt", "sub/dir/out.txt", "./out.txt"] {
+            assert!(is_confined_relative(ok), "{ok}");
+        }
+        for bad in ["", "/etc/passwd", "../x", "a/../../x", "..", "C:\\x"] {
+            // (the drive form is only absolute on Windows; the rest are rejected everywhere)
+            if bad.starts_with("C:") && !cfg!(windows) {
+                continue;
+            }
+            assert!(!is_confined_relative(bad), "{bad}");
+        }
     }
 }

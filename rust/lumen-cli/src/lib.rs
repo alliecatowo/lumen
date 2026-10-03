@@ -31,3 +31,8 @@ pub mod transparency;
 pub mod tuf;
 pub mod wares;
 pub mod workspace;
+
+// Package signing and TUF metadata verification have no safe fallback: without
+// ed25519 they would silently use non-cryptographic placeholder signatures.
+#[cfg(not(feature = "ed25519"))]
+compile_error!("lumen-cli requires the `ed25519` feature (enabled by default)");

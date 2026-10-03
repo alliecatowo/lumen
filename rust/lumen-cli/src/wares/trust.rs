@@ -537,9 +537,7 @@ impl TrustClient {
 
         // Verify identity against policy
         if let Some(pattern) = &policy.required_identity {
-            let regex = regex::Regex::new(pattern)
-                .map_err(|e| TrustError::Policy(format!("Invalid identity pattern: {}", e)))?;
-            if !regex.is_match(&sig.certificate.identity_str()) {
+            if !identity_matches(pattern, &sig.certificate.identity_str())? {
                 result.add_error(format!(
                     "Identity '{}' does not match required pattern '{}'",
                     sig.certificate.identity_str(),
@@ -574,9 +572,8 @@ impl TrustClient {
                     Ok(false) => {
                         result.add_error("Transparency log verification failed".to_string())
                     }
-                    Err(e) => {
-                        result.add_warning(format!("Could not verify transparency log: {}", e))
-                    }
+                    // The policy demands log inclusion, so a lookup failure is a failure.
+                    Err(e) => result.add_error(format!("Could not verify transparency log: {}", e)),
                 }
             }
         }
@@ -1005,5 +1002,30 @@ mod signing_tests {
             client.sign_content_hash(HASH).unwrap(),
             "Py/XmCqnUGb3F/wUH8yGNBQkdScEcwWumugFxXVpg+k3XfLz+/485M5dd0t9XwXTVmYgJRvHQsyG6QBFfzmn9Q=="
         );
+    }
+}
+
+/// Whether `identity` matches the policy `pattern`. The pattern is anchored at both
+/// ends: `github.com/alice` must not match `github.com/alice-evil` or
+/// `evil.example/github.com/alice`.
+pub(crate) fn identity_matches(pattern: &str, identity: &str) -> Result<bool, TrustError> {
+    let regex = regex::Regex::new(&format!("^(?:{})$", pattern))
+        .map_err(|e| TrustError::Policy(format!("Invalid identity pattern: {}", e)))?;
+    Ok(regex.is_match(identity))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::identity_matches;
+
+    #[test]
+    fn identity_patterns_are_anchored() {
+        assert!(identity_matches("github.com/alice", "github.com/alice").unwrap());
+        assert!(!identity_matches("github.com/alice", "github.com/alice-evil").unwrap());
+        assert!(!identity_matches("github.com/alice", "evil.example/github.com/alice").unwrap());
+        assert!(identity_matches("github.com/(alice|bob)", "github.com/bob").unwrap());
+        assert!(!identity_matches("github.com/(alice|bob)", "github.com/bobby").unwrap());
+        assert!(identity_matches("github.com/alice/.*", "github.com/alice/repo").unwrap());
+        assert!(identity_matches("(", "x").is_err());
     }
 }

@@ -1,13 +1,18 @@
-name: Release Extension
+name: Release VS Code Extension
 
+# Dedicated tag scheme: the extension is versioned independently of the Rust
+# workspace (which releases on `v*`), so it releases on `vscode-v<version>`.
 on:
   push:
     tags:
-      - "v*"
+      - "vscode-v*"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  publish:
+  package:
     strategy:
       fail-fast: false
       matrix:
@@ -29,7 +34,7 @@ jobs:
             rust_target: aarch64-apple-darwin
             binary_name: lumen-lsp
 
-    name: Publish ${{ matrix.target }}
+    name: Package ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -41,6 +46,16 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 20
+
+      - name: Verify tag matches extension version
+        if: startsWith(github.ref, 'refs/tags/vscode-v')
+        shell: bash
+        run: |
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "vscode-v${pkg}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match package.json version ${pkg}"
+            exit 1
+          fi
 
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -61,5 +76,57 @@ jobs:
       - run: npm ci
       - run: npm run compile
 
-      - name: Publish to Open VSX
-        run: npx ovsx publish --pat ${{ secrets.OVSX_PAT }} --target ${{ matrix.target }}
+      - name: Package VSIX
+        run: npx --yes @vscode/vsce package --target ${{ matrix.target }} -o lumen-${{ matrix.target }}.vsix
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vsix-${{ matrix.target }}
+          path: editors/vscode/lumen-${{ matrix.target }}.vsix
+          if-no-files-found: error
+
+  publish-open-vsx:
+    name: Publish to Open VSX
+    needs: package
+    runs-on: ubuntu-latest
+    # Open VSX trusted publishing is bound to this environment name.
+    environment: open-vsx
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: vsix-*
+          merge-multiple: true
+          path: vsix
+
+      - name: Publish all targets
+        run: |
+          ls -l vsix
+          npx --yes ovsx@1.2.0 publish --trusted-publishing --skip-duplicate -i vsix/*.vsix
+
+  publish-marketplace:
+    name: Publish to VS Code Marketplace
+    needs: package
+    runs-on: ubuntu-latest
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: vsix-*
+          merge-multiple: true
+          path: vsix
+
+      - name: Publish (skipped when VSCE_PAT is not set)
+        if: ${{ env.VSCE_PAT != '' }}
+        run: npx --yes @vscode/vsce publish --skip-duplicate --packagePath vsix/*.vsix

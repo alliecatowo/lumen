@@ -181,7 +181,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        worker: [registry]
+        worker: [registry, transparency-log]
     defaults:
       run:
         working-directory: workers/${{ matrix.worker }}

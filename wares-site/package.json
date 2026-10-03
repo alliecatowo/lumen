@@ -20,5 +20,9 @@
     "@nuxtjs/tailwindcss": "^6.12.0",
     "typescript": "^7.0.2",
     "vitepress": "^1.6.3"
+  },
+  "overrides": {
+    "vite": "^6.4.3",
+    "koa": "^2.16.4"
   }
 }

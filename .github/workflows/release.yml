@@ -140,7 +140,6 @@ jobs:
           class Lumen < Formula
             desc "Markdown-native, statically typed language for deterministic AI-native workflows"
             homepage "https://github.com/alliecatowo/lumen"
-            version "${VERSION}"
             license "MIT"
 
             on_macos do

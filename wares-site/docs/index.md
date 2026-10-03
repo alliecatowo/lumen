@@ -32,7 +32,7 @@ features:
 
 ```bash
 # Install via Cargo
-cargo install lumen-lang
+cargo install lumen-cli
 
 # Run a program
 lumen run hello.lm.md

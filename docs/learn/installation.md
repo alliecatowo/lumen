@@ -8,7 +8,15 @@
 ## Install from Crates.io
 
 ```bash
-cargo install lumen-lang
+cargo install lumen-cli
+```
+
+The crate is `lumen-cli`; it installs the `lumen` binary. (The unrelated `lumen-lang` crate on
+crates.io belongs to a different project.) The crates.io release lags the source tree, so for the
+latest version install from git:
+
+```bash
+cargo install --git https://github.com/alliecatowo/lumen lumen-cli
 ```
 
 ## Build from Source
@@ -35,11 +43,11 @@ lumen --version
 
 ### VS Code
 
-Install the Lumen extension from [Open VSX](https://open-vsx.org/extension/lumen-lang/lumen-lang):
+Install the Lumen extension from [Open VSX](https://open-vsx.org/extension/alliecatowo/lumen):
 
 ```bash
 # Via command line if you use code-server or compatible editors
-code --install-extension lumen-lang.lumen-lang
+code --install-extension alliecatowo.lumen
 ```
 
 Or search for "Lumen" in the Extensions view (ensure you are using a registry that includes Open VSX if not using official VS Code).

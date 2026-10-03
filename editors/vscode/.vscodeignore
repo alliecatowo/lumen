@@ -1,9 +1,12 @@
 .vscode/**
 .vscode-test/**
 src/**
+**/*.map
+**/*.ts
+tsconfig.json
+package-lock.json
+icon.svg
 .gitignore
 .env
-tsconfig.json
-node_modules/**
-!out/
+*.vsix
 !server/

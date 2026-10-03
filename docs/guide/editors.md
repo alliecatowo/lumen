@@ -16,7 +16,7 @@ The official Lumen extension is available on the **Open VSX Registry**.
 Alternatively, install it via the command line:
 
 ```bash
-code --install-extension lumen-lang.lumen-lang
+code --install-extension alliecatowo.lumen
 ```
 
 ### Features

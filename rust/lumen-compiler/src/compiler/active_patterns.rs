@@ -233,10 +233,8 @@ fn body_references_pattern(stmts: &[Stmt], pattern_name: &str) -> bool {
                     }
                 }
             }
-            Stmt::Assign(assign) => {
-                if expr_references_pattern(&assign.value, pattern_name) {
-                    return true;
-                }
+            Stmt::Assign(assign) if expr_references_pattern(&assign.value, pattern_name) => {
+                return true;
             }
             _ => {}
         }

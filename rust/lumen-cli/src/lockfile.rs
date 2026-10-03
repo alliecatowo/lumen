@@ -928,6 +928,12 @@ impl LockFile {
         diff
     }
 
+    /// True when both lockfiles pin the same packages, ignoring volatile metadata
+    /// (timestamp, content hash, resolution proof) that `save` rewrites every time.
+    pub fn is_equivalent(&self, other: &Self) -> bool {
+        self.normalized() == other.normalized()
+    }
+
     // Private helper methods
 
     fn normalized(&self) -> Self {

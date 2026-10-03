@@ -139,9 +139,16 @@ pub struct RegistryToken {
     pub scopes: Vec<String>,
 }
 
+/// Default registry API root. This is the registry worker itself (it answers
+/// `/api/v1/...`), not the wares website. Override with `LUMEN_REGISTRY`,
+/// `WARES_REGISTRY` or `[registry] default` in `lumen.toml`.
+pub const DEFAULT_REGISTRY_URL: &str = "https://wares-registry.alliecatowo.workers.dev/api/v1";
+
+/// Default transparency log base URL (the log worker; override with `WARES_LOG_URL`).
+pub const DEFAULT_LOG_URL: &str = "https://wares-transparency-log.alliecatowo.workers.dev";
+
 fn default_registry_url() -> String {
-    // Default production registry — canonical path-based URL under wares.lumen-lang.com
-    "https://wares.lumen-lang.com/api/v1".to_string()
+    DEFAULT_REGISTRY_URL.to_string()
 }
 
 fn default_true() -> bool {
@@ -896,8 +903,7 @@ impl LumenConfig {
                 return url;
             }
         }
-        // Default — canonical path-based URL
-        "https://wares.lumen-lang.com/api/v1".to_string()
+        DEFAULT_REGISTRY_URL.to_string()
     }
 
     /// Load config from `lumen.toml`, searching current dir then parents.

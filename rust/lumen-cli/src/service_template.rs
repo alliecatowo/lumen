@@ -817,7 +817,7 @@ impl ServiceTemplateGenerator {
         out.push_str("COPY lumen.toml .\n");
         out.push_str("COPY src/ ./src/\n");
         out.push_str("COPY tests/ ./tests/\n\n");
-        out.push_str("RUN lumen pkg build\n\n");
+        out.push_str("RUN wares build\n\n");
         out.push_str(&format!("EXPOSE {}\n\n", config.port));
         out.push_str("CMD [\"lumen\", \"run\", \"src/main.lm.md\"]\n");
         out

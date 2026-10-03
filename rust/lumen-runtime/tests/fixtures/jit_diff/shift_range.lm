@@ -1,0 +1,7 @@
+cell sl(a: Int, b: Int) -> Int
+  return a << b
+end
+cell main() -> Int
+  print(sl(1, 5))
+  return sl(1, 70)
+end

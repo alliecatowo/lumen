@@ -1,0 +1,19 @@
+cell noisy() -> Int
+  print("noisy called")
+  return 5
+end
+cell helper(n: Int) -> Int
+  let xs = [1, 2, 3, 4]
+  return len(xs) + n
+end
+cell via_noisy() -> Int
+  return noisy()
+end
+cell caller(n: Int) -> Int
+  return helper(n) + 1
+end
+cell main() -> Int
+  print(via_noisy())
+  print(caller(4))
+  return caller(10)
+end

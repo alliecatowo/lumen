@@ -1,0 +1,7 @@
+cell dbl(a: Int) -> Int
+  return a * 2
+end
+cell main() -> Int
+  print(dbl(21))
+  return dbl(4611686018427387904)
+end

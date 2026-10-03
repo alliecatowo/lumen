@@ -1,0 +1,12 @@
+cell down(n: Int) -> Int
+  if n == 0
+    return 0
+  end
+  return 1 + down(n - 1)
+end
+cell main() -> Int
+  print(down(100))
+  print(down(5000))
+  print(down(30000))
+  return down(60000)
+end

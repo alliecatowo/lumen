@@ -77,14 +77,15 @@ impl IdempotencyStore {
         R: Serialize + for<'de> Deserialize<'de>,
     {
         if let Some(cached) = self.entries.get(key) {
-            let result: R = bincode::deserialize(cached)
+            let result: R = bincode::serde::decode_from_slice(cached, bincode::config::legacy())
+                .map(|(v, _)| v)
                 .map_err(|e| IdempotencyError::Deserialize(e.to_string()))?;
             return Ok(result);
         }
 
         let result = f();
-        let bytes =
-            bincode::serialize(&result).map_err(|e| IdempotencyError::Serialize(e.to_string()))?;
+        let bytes = bincode::serde::encode_to_vec(&result, bincode::config::legacy())
+            .map_err(|e| IdempotencyError::Serialize(e.to_string()))?;
         self.entries.insert(key.to_string(), bytes);
         Ok(result)
     }
@@ -261,7 +262,7 @@ mod tests {
     fn insert_raw_and_retrieve() {
         let mut store = IdempotencyStore::new();
 
-        let data = bincode::serialize(&42i64).unwrap();
+        let data = bincode::serde::encode_to_vec(&42i64, bincode::config::legacy()).unwrap();
         store.insert_raw("preloaded".to_string(), data);
 
         assert!(store.contains("preloaded"));
@@ -275,7 +276,9 @@ mod tests {
         store.check_or_execute("k", || 123i32).unwrap();
 
         let raw = store.get_raw("k").unwrap();
-        let val: i32 = bincode::deserialize(raw).unwrap();
+        let val: i32 = bincode::serde::decode_from_slice(raw, bincode::config::legacy())
+            .map(|(v, _)| v)
+            .unwrap();
         assert_eq!(val, 123);
 
         assert!(store.get_raw("nonexistent").is_none());

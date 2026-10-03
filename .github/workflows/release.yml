@@ -8,11 +8,44 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  # Never ship binaries from a commit whose CI is red. Waits (up to 60 minutes)
+  # for the CI workflow on this exact commit and fails unless it succeeded.
+  gate:
+    name: CI must be green
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Wait for CI on ${{ github.sha }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 120); do
+            runs="$(gh api "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}&per_page=20" \
+              --jq '[.workflow_runs[] | select(.event == "push" or .event == "pull_request")] | sort_by(.created_at) | reverse')"
+            status="$(jq -r '.[0].status // "none"' <<<"$runs")"
+            conclusion="$(jq -r '.[0].conclusion // ""' <<<"$runs")"
+            echo "CI run for ${SHA}: status=${status} conclusion=${conclusion} (attempt ${attempt})"
+            if [ "$status" = "completed" ]; then
+              if [ "$conclusion" = "success" ]; then exit 0; fi
+              echo "::error::CI did not succeed for ${SHA} (${conclusion}); refusing to release"
+              exit 1
+            fi
+            sleep 30
+          done
+          echo "::error::timed out waiting for CI on ${SHA}"
+          exit 1
+
   build:
     name: Build ${{ matrix.target }}
+    needs: gate
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -38,11 +71,12 @@ jobs:
             target: x86_64-pc-windows-msvc
             name: lumen-windows-x64
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Install musl tools (Linux musl)
         if: matrix.target == 'x86_64-unknown-linux-musl'
@@ -50,7 +84,7 @@ jobs:
 
       - name: Install cross (for cross-compilation)
         if: matrix.cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        run: cargo install cross --locked --version 0.2.5
 
       - name: Build
         env:
@@ -58,9 +92,9 @@ jobs:
           PKG_CONFIG_ALLOW_CROSS: 1
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }} --bin lumen --bin lumen-lsp
+            cross build --locked --release --target ${{ matrix.target }} --bin lumen --bin lumen-lsp
           else
-            cargo build --release --target ${{ matrix.target }} --bin lumen --bin lumen-lsp
+            cargo build --locked --release --target ${{ matrix.target }} --bin lumen --bin lumen-lsp
           fi
         shell: bash
 
@@ -77,7 +111,7 @@ jobs:
           Compress-Archive -Path lumen.exe,lumen-lsp.exe -DestinationPath ../../../${{ matrix.name }}.zip
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.name }}
           path: ${{ matrix.name }}.*
@@ -86,16 +120,34 @@ jobs:
     name: Create Release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write # build provenance attestation
+      attestations: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Download all artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
-      - name: Create Release
-        uses: softprops/action-gh-release@v3
+      # install.sh verifies downloads against this file.
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd artifacts
+          sha256sum ./*/lumen-* | sed 's#  [^ ]*/#  #' | sort -k2 > SHA256SUMS
+          cat SHA256SUMS
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
-          files: artifacts/*/*
+          subject-path: |
+            artifacts/*/lumen-*
+      - name: Create Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        with:
+          files: |
+            artifacts/*/*
+            artifacts/SHA256SUMS
           draft: false
           prerelease: false
           generate_release_notes: true

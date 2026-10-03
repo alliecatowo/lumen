@@ -16,18 +16,19 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
 pub struct LumenResult {
     json: String,
+    ok: bool,
 }
 
 #[wasm_bindgen]
 impl LumenResult {
     /// Returns true if the operation succeeded.
     pub fn is_ok(&self) -> bool {
-        self.json.contains("\"ok\"")
+        self.ok
     }
 
     /// Returns true if the operation failed.
     pub fn is_err(&self) -> bool {
-        !self.is_ok()
+        !self.ok
     }
 
     /// Returns the result as a JSON string.
@@ -39,13 +40,34 @@ impl LumenResult {
 impl LumenResult {
     fn ok(value: String) -> Self {
         let json = serde_json::json!({ "ok": value }).to_string();
-        Self { json }
+        Self { json, ok: true }
     }
 
     fn err(error: String) -> Self {
         let json = serde_json::json!({ "error": error }).to_string();
-        Self { json }
+        Self { json, ok: false }
     }
+}
+
+/// Largest source text the entry points accept. The compiler and VM run
+/// synchronously on the caller's thread, so unbounded input would hang a page.
+pub const MAX_SOURCE_BYTES: usize = 1024 * 1024;
+
+fn too_large(source: &str) -> Option<LumenResult> {
+    (source.len() > MAX_SOURCE_BYTES).then(|| {
+        LumenResult::err(format!(
+            "source is too large ({} bytes; the limit is {})",
+            source.len(),
+            MAX_SOURCE_BYTES
+        ))
+    })
+}
+
+/// Run `f`, turning a panic into an error result. This only helps on targets built
+/// with `panic = "unwind"` (native, tests); wasm release builds abort instead.
+fn contained(f: impl FnOnce() -> LumenResult) -> LumenResult {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+        .unwrap_or_else(|_| LumenResult::err("internal error: the compiler panicked".to_string()))
 }
 
 /// Type-check a Lumen source file.
@@ -55,6 +77,13 @@ impl LumenResult {
 /// - On error: `{"error": "error message with diagnostics"}`
 #[wasm_bindgen]
 pub fn check(source: &str) -> LumenResult {
+    if let Some(e) = too_large(source) {
+        return e;
+    }
+    contained(|| check_inner(source))
+}
+
+fn check_inner(source: &str) -> LumenResult {
     match lumen_compiler::compile(source) {
         Ok(_) => LumenResult::ok("Type-checked successfully".to_string()),
         Err(err) => {
@@ -71,6 +100,13 @@ pub fn check(source: &str) -> LumenResult {
 /// - On error: `{"error": "error message with diagnostics"}`
 #[wasm_bindgen]
 pub fn compile(source: &str) -> LumenResult {
+    if let Some(e) = too_large(source) {
+        return e;
+    }
+    contained(|| compile_inner(source))
+}
+
+fn compile_inner(source: &str) -> LumenResult {
     match lumen_compiler::compile(source) {
         Ok(module) => match serde_json::to_string_pretty(&module) {
             Ok(json) => LumenResult::ok(json),
@@ -92,7 +128,13 @@ pub fn compile(source: &str) -> LumenResult {
 /// The `cell_name` parameter specifies which cell to execute (default: "main").
 #[wasm_bindgen]
 pub fn run(source: &str, cell_name: Option<String>) -> LumenResult {
-    let cell = cell_name.as_deref().unwrap_or("main");
+    if let Some(e) = too_large(source) {
+        return e;
+    }
+    contained(|| run_inner(source, cell_name.as_deref().unwrap_or("main")))
+}
+
+fn run_inner(source: &str, cell: &str) -> LumenResult {
 
     // Compile the source
     let module = match lumen_compiler::compile(source) {
@@ -168,6 +210,24 @@ mod tests {
             eprintln!("Run error: {}", result.to_json());
         }
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn oversized_source_is_rejected_before_compiling() {
+        let big = "x".repeat(MAX_SOURCE_BYTES + 1);
+        for r in [check(&big), compile(&big), run(&big, None)] {
+            assert!(r.is_err());
+            assert!(r.to_json().contains("too large"));
+        }
+    }
+
+    #[test]
+    fn ok_flag_does_not_depend_on_message_text() {
+        // An error message that itself mentions "ok" must not look like success.
+        let r = LumenResult::err("\"ok\" is not defined".to_string());
+        assert!(r.is_err());
+        assert!(!r.is_ok());
+        assert!(LumenResult::ok("fine".to_string()).is_ok());
     }
 
     #[test]

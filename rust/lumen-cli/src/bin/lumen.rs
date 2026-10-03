@@ -744,7 +744,17 @@ fn gate_check_sources(files: &[PathBuf]) -> bool {
 
 fn gate_lint_sources(files: &[PathBuf]) -> bool {
     match lint::cmd_lint(files, true) {
-        Ok(_summary) => {
+        // Strict lint: any finding (warnings count as errors) fails the gate, exactly
+        // like `lumen lint --strict` exits non-zero.
+        Ok(summary) if summary.total_warnings > 0 || summary.total_errors > 0 => {
+            eprintln!(
+                "{} lint failed ({} finding(s))",
+                red("error:"),
+                summary.total_warnings.max(summary.total_errors)
+            );
+            false
+        }
+        Ok(_) => {
             println!("{} lint passed", green("✓"));
             true
         }

@@ -939,6 +939,30 @@ fn tokenize_constraint(s: &str) -> Vec<String> {
 }
 
 /// Parse a single constraint (not compound).
+/// A version with missing trailing components: `1`, `1.2`.
+struct PartialVersion {
+    major: u64,
+    minor: Option<u64>,
+}
+
+/// Parse `1` or `1.2` (no patch, no prerelease/build); `None` for anything else.
+fn parse_partial(s: &str) -> Option<PartialVersion> {
+    let s = s.trim();
+    if s.is_empty() || s.contains(['-', '+']) {
+        return None;
+    }
+    let mut parts = s.split('.');
+    let major = parts.next()?.parse::<u64>().ok()?;
+    let minor = match parts.next() {
+        Some(m) => Some(m.parse::<u64>().ok()?),
+        None => None,
+    };
+    if parts.next().is_some() {
+        return None; // three components: a full version
+    }
+    Some(PartialVersion { major, minor })
+}
+
 fn parse_single_constraint(s: &str) -> Result<Constraint, SemverError> {
     let s = s.trim();
 
@@ -954,14 +978,33 @@ fn parse_single_constraint(s: &str) -> Result<Constraint, SemverError> {
         return Ok(wildcard);
     }
 
-    // Handle caret constraint
+    // Handle caret constraint (`^1`, `^1.2`, `^1.2.3`)
     if let Some(rest) = s.strip_prefix('^') {
+        if let Some(p) = parse_partial(rest) {
+            return Ok(match (p.major, p.minor) {
+                // ^0 means any 0.x.y (npm/cargo), not the ^0.0.0 patch-only range
+                (0, None) => Constraint::Wildcard {
+                    major: Some(0),
+                    minor: None,
+                },
+                (major, minor) => Constraint::Caret(Version::new(major, minor.unwrap_or(0), 0)),
+            });
+        }
         let version = Version::from_str(rest.trim())?;
         return Ok(Constraint::Caret(version));
     }
 
-    // Handle tilde constraint
+    // Handle tilde constraint (`~1` = 1.x, `~1.2` = 1.2.x)
     if let Some(rest) = s.strip_prefix('~') {
+        if let Some(p) = parse_partial(rest) {
+            return Ok(match p.minor {
+                None => Constraint::Wildcard {
+                    major: Some(p.major),
+                    minor: None,
+                },
+                Some(minor) => Constraint::Tilde(Version::new(p.major, minor, 0)),
+            });
+        }
         let version = Version::from_str(rest.trim())?;
         return Ok(Constraint::Tilde(version));
     }
@@ -974,31 +1017,56 @@ fn parse_single_constraint(s: &str) -> Result<Constraint, SemverError> {
 
     // Handle exact version with =
     if let Some(rest) = s.strip_prefix('=') {
+        if let Some(p) = parse_partial(rest) {
+            return Ok(Constraint::Wildcard {
+                major: Some(p.major),
+                minor: p.minor,
+            });
+        }
         let version = Version::from_str(rest.trim())?;
         return Ok(Constraint::Exact(version));
     }
 
-    // Handle >= and <=
-    if let Some(rest) = s.strip_prefix(">=") {
-        let version = Version::from_str(rest.trim())?;
-        return Ok(Constraint::GreaterThan(version, true));
-    }
-    if let Some(rest) = s.strip_prefix("<=") {
-        let version = Version::from_str(rest.trim())?;
-        return Ok(Constraint::LessThan(version, true));
+    // Comparison operators accept partial versions with npm semantics:
+    // `>=1.2` is >=1.2.0, `>1.2` is >=1.3.0, `<=1.2` is <1.3.0, `<1.2` is <1.2.0.
+    for (op, inclusive, greater) in [
+        (">=", true, true),
+        ("<=", true, false),
+        (">", false, true),
+        ("<", false, false),
+    ] {
+        if let Some(rest) = s.strip_prefix(op) {
+            if let Some(p) = parse_partial(rest) {
+                let low = Version::new(p.major, p.minor.unwrap_or(0), 0);
+                let next = match p.minor {
+                    Some(minor) => Version::new(p.major, minor + 1, 0),
+                    None => Version::new(p.major + 1, 0, 0),
+                };
+                return Ok(match (greater, inclusive) {
+                    (true, true) => Constraint::GreaterThan(low, true),
+                    (true, false) => Constraint::GreaterThan(next, true),
+                    (false, true) => Constraint::LessThan(next, false),
+                    (false, false) => Constraint::LessThan(low, false),
+                });
+            }
+            let version = Version::from_str(rest.trim())?;
+            return Ok(if greater {
+                Constraint::GreaterThan(version, inclusive)
+            } else {
+                Constraint::LessThan(version, inclusive)
+            });
+        }
     }
 
-    // Handle > and <
-    if let Some(rest) = s.strip_prefix('>') {
-        let version = Version::from_str(rest.trim())?;
-        return Ok(Constraint::GreaterThan(version, false));
-    }
-    if let Some(rest) = s.strip_prefix('<') {
-        let version = Version::from_str(rest.trim())?;
-        return Ok(Constraint::LessThan(version, false));
+    // A bare partial version (`1`, `1.2`) matches that line of releases
+    if let Some(p) = parse_partial(s) {
+        return Ok(Constraint::Wildcard {
+            major: Some(p.major),
+            minor: p.minor,
+        });
     }
 
-    // Plain version is treated as exact match
+    // A bare full version is treated as an exact match
     let version = Version::from_str(s)?;
     Ok(Constraint::Exact(version))
 }
@@ -2037,5 +2105,28 @@ mod tests {
         assert!(matches!(c, Constraint::NotEqual(_)));
         assert!(!c.matches(&"1.2.3".parse().unwrap()));
         assert!(c.matches(&"1.2.4".parse().unwrap()));
+    }
+
+    #[test]
+    fn partial_versions_in_constraints() {
+        let v = |s: &str| Version::from_str(s).unwrap();
+        let m = |c: &str, ver: &str| Constraint::parse(c).unwrap().matches(&v(ver));
+
+        assert!(m("^0.1", "0.1.9") && !m("^0.1", "0.2.0"));
+        assert!(m("^1", "1.9.9") && !m("^1", "2.0.0") && !m("^1", "0.9.0"));
+        assert!(m("^0", "0.9.9") && !m("^0", "1.0.0"));
+        assert!(m("~1.2", "1.2.9") && !m("~1.2", "1.3.0"));
+        assert!(m("~1", "1.9.0") && !m("~1", "2.0.0"));
+        assert!(m("1", "1.4.0") && !m("1", "2.0.0"));
+        assert!(m("1.2", "1.2.7") && !m("1.2", "1.3.0"));
+        assert!(m(">=1.2", "1.2.0") && !m(">=1.2", "1.1.9"));
+        assert!(m(">1.2", "1.3.0") && !m(">1.2", "1.2.9"));
+        assert!(m("<=1.2", "1.2.9") && !m("<=1.2", "1.3.0"));
+        assert!(m("<1.2", "1.1.9") && !m("<1.2", "1.2.0"));
+        assert!(m(">=1.2 <2", "1.9.0") && !m(">=1.2 <2", "2.0.0"));
+        // Full versions keep their meaning.
+        assert!(m("^1.2.3", "1.9.0") && !m("^1.2.3", "1.2.2"));
+        assert!(m("1.2.3", "1.2.3") && !m("1.2.3", "1.2.4"));
+        assert!(Constraint::parse("^").is_err());
     }
 }

@@ -2268,15 +2268,9 @@ impl Parser {
         if !matches!(self.tokens.get(i).map(|t| &t.kind), Some(k) if Self::is_identifier_like(k)) {
             return false;
         }
+        // Only a plain variable is handled here; `a.b += x` falls through to
+        // `parse_expr_stmt`, which builds a real field-assignment target.
         i += 1;
-        while matches!(self.tokens.get(i).map(|t| &t.kind), Some(TokenKind::Dot))
-            && matches!(
-                self.tokens.get(i + 1).map(|t| &t.kind),
-                Some(TokenKind::Ident(_))
-            )
-        {
-            i += 2;
-        }
         matches!(
             self.tokens.get(i).map(|t| &t.kind),
             Some(
@@ -4165,15 +4159,9 @@ impl Parser {
         if !matches!(self.tokens.get(i).map(|t| &t.kind), Some(k) if Self::is_identifier_like(k)) {
             return false;
         }
+        // Only a plain variable: `a.b = x` is parsed as an expression statement so
+        // that it becomes a field assignment rather than a variable named "a.b".
         i += 1;
-        while matches!(self.tokens.get(i).map(|t| &t.kind), Some(TokenKind::Dot))
-            && matches!(
-                self.tokens.get(i + 1).map(|t| &t.kind),
-                Some(TokenKind::Ident(_))
-            )
-        {
-            i += 2;
-        }
         matches!(self.tokens.get(i).map(|t| &t.kind), Some(TokenKind::Assign))
     }
 

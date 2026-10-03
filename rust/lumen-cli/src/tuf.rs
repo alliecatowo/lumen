@@ -307,9 +307,22 @@ pub fn verify_metadata<T: Serialize>(
     // 3. Compute canonical bytes
     let data = metadata.canonical_bytes();
 
-    // 4. Count valid signatures from authorized keys
+    // A threshold of zero would accept unsigned metadata.
+    if role_def.threshold == 0 {
+        return Err(TufError::SignatureInvalid(format!(
+            "role '{}' has a signature threshold of 0",
+            metadata.role
+        )));
+    }
+
+    // 4. Count valid signatures from authorized keys. Each key counts once: repeating
+    // one valid signature must not stand in for a second signer.
     let mut valid_count: u32 = 0;
+    let mut seen_keys = std::collections::HashSet::new();
     for sig in &metadata.signatures {
+        if !seen_keys.insert(sig.key_id.as_str()) {
+            continue;
+        }
         // Signature key must be in the role's authorized key list
         if !role_def.key_ids.contains(&sig.key_id) {
             continue;
@@ -384,6 +397,9 @@ impl TufRepository {
 
         // Verify against current trusted root
         verify_metadata(new_root, &self.trusted_root)?;
+        // A rotated root must also be signed by the keys it introduces (TUF spec 5.3.4),
+        // otherwise a compromised old key could install keys nobody holds.
+        verify_metadata(new_root, &new_root.body)?;
 
         // Accept the new root
         self.trusted_root = new_root.body.clone();
@@ -1084,5 +1100,98 @@ mod tests {
         ];
 
         assert!(verify_metadata(&metadata, &root).is_ok());
+    }
+
+    #[test]
+    fn duplicated_signature_does_not_meet_a_threshold_of_two() {
+        let kp1 = gen_test_keypair("k1");
+        let kp2 = gen_test_keypair("k2");
+        let mut keys = BTreeMap::new();
+        keys.insert("k1".to_string(), kp1.tuf_key.clone());
+        keys.insert("k2".to_string(), kp2.tuf_key.clone());
+        let mut roles = BTreeMap::new();
+        roles.insert(
+            "targets".to_string(),
+            RoleDefinition {
+                key_ids: vec!["k1".to_string(), "k2".to_string()],
+                threshold: 2,
+            },
+        );
+        let root = Root {
+            keys,
+            roles,
+            spec_version: "1.0.0".to_string(),
+        };
+        let mut metadata = TufMetadata {
+            role: TufRole::Targets,
+            version: 1,
+            expires: Utc::now() + Duration::days(1),
+            body: Targets {
+                targets: BTreeMap::new(),
+            },
+            signatures: vec![],
+        };
+        let sig = sign_with(&metadata, &kp1);
+        metadata.signatures = vec![sig.clone(), sig.clone(), sig];
+
+        let err = verify_metadata(&metadata, &root).unwrap_err();
+        assert!(matches!(
+            err,
+            TufError::ThresholdNotMet {
+                required: 2,
+                valid: 1
+            }
+        ));
+    }
+
+    #[test]
+    fn zero_threshold_is_rejected() {
+        let (mut root, kp) = test_root_and_key();
+        root.roles.get_mut("targets").unwrap().threshold = 0;
+        let metadata = TufMetadata {
+            role: TufRole::Targets,
+            version: 1,
+            expires: Utc::now() + Duration::days(1),
+            body: Targets {
+                targets: BTreeMap::new(),
+            },
+            signatures: vec![],
+        };
+        let _ = &kp;
+        assert!(verify_metadata(&metadata, &root).is_err());
+    }
+
+    #[test]
+    fn root_rotation_requires_a_signature_from_the_new_keys() {
+        let (old_root, old_kp) = test_root_and_key();
+        let mut repo = TufRepository::new(old_root);
+
+        // New root introduces key2, but is only signed by the old key.
+        let new_kp = gen_test_keypair("key2");
+        let new_root = build_root(&[&new_kp]);
+        let meta = sign_test(
+            TufMetadata {
+                role: TufRole::Root,
+                version: 2,
+                expires: Utc::now() + Duration::days(365),
+                body: new_root.clone(),
+                signatures: vec![],
+            },
+            &old_kp,
+        );
+        assert!(repo.update_root(&meta).is_err());
+        assert_eq!(repo.root_version(), 1);
+
+        // Signed by both old and new keys: accepted.
+        let mut both = TufMetadata {
+            role: TufRole::Root,
+            version: 2,
+            expires: Utc::now() + Duration::days(365),
+            body: new_root,
+            signatures: vec![],
+        };
+        both.signatures = vec![sign_with(&both, &old_kp), sign_with(&both, &new_kp)];
+        assert!(repo.update_root(&both).is_ok());
+        assert_eq!(repo.root_version(), 2);
     }
 }

@@ -16,20 +16,29 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       changed: ${{ steps.check.outputs.changed }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 2
 
-      - name: Get current version
+      # Compare the [workspace.package] version before and after this push, not any
+      # `+version =` line in the diff.
+      - name: Get current and previous version
         id: version
         run: |
-          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          read_version() { python3 -c 'import sys, tomllib; print(tomllib.load(sys.stdin.buffer)["workspace"]["package"]["version"])'; }
+          NEW="$(read_version < Cargo.toml)"
+          OLD="$(git show HEAD~1:Cargo.toml | read_version || echo none)"
+          echo "version=$NEW" >> "$GITHUB_OUTPUT"
+          echo "previous=$OLD" >> "$GITHUB_OUTPUT"
 
       - name: Check if version changed
         id: check
         run: |
-          git diff HEAD~1 HEAD -- Cargo.toml | grep '^+version = ' && echo "changed=true" >> "$GITHUB_OUTPUT" || echo "changed=false" >> "$GITHUB_OUTPUT"
+          if [ "${{ steps.version.outputs.version }}" != "${{ steps.version.outputs.previous }}" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
 
   create-tag:
     name: Create Release Tag
@@ -37,7 +46,7 @@ jobs:
     if: needs.check-version.outputs.changed == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Create and push tag
         env:
@@ -45,13 +54,15 @@ jobs:
         run: |
           VERSION="${{ needs.check-version.outputs.version }}"
           TAG="v${VERSION}"
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
             echo "Tag $TAG already exists, skipping"
           else
             git tag "$TAG"
             git push origin "$TAG"
             echo "Created and pushed tag $TAG"
             # Tags pushed with GITHUB_TOKEN do not trigger the tag-based Release
-            # workflow, so start it explicitly on the new tag.
+            # workflow, so start it explicitly on the new tag. release.yml waits for
+            # CI on this commit and refuses to ship if CI is red. Publishing to
+            # crates.io/npm stays a deliberate manual run of publish.yml.
             gh workflow run release.yml --ref "$TAG"
           fi

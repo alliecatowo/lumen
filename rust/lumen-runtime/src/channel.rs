@@ -7,6 +7,9 @@
 
 use crossbeam_channel::{self as cb};
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -69,12 +72,15 @@ impl std::error::Error for RecvError {}
 /// (or [`close`](Sender::close) is called on any of them).
 pub struct Sender<T> {
     inner: cb::Sender<T>,
+    /// Set by [`Sender::close`]; shared with every clone and with the receivers.
+    closed: Arc<AtomicBool>,
 }
 
 impl<T> Clone for Sender<T> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
+            closed: Arc::clone(&self.closed),
         }
     }
 }
@@ -91,6 +97,9 @@ impl<T> Sender<T> {
     /// For bounded channels this blocks if the channel is full.
     /// Returns [`SendError`] if all receivers have been dropped.
     pub fn send(&self, value: T) -> Result<(), SendError<T>> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(SendError(value));
+        }
         self.inner.send(value).map_err(|e| SendError(e.0))
     }
 
@@ -106,20 +115,19 @@ impl<T> Sender<T> {
 
     /// Close the channel.
     ///
-    /// Subsequent sends on any clone of this sender will fail. Receivers can
-    /// still drain messages that were already buffered.
+    /// Subsequent sends on any clone of this sender fail with [`SendError`].
+    /// Receivers can still drain messages that were already buffered; once the
+    /// buffer is empty `recv` returns [`RecvError`] and `try_recv` returns
+    /// [`TryRecvError::Disconnected`], even while other senders are alive.
     ///
-    /// Note: dropping all senders also implicitly closes the channel.
-    /// This method is provided for explicit control.
+    /// Dropping all senders also closes the channel implicitly.
     pub fn close(&self) {
-        // crossbeam channels don't expose an explicit close. We signal
-        // closure by dropping a clone — but since `&self` is a borrow we
-        // cannot drop our inner. Instead we document that dropping all
-        // Sender handles is the canonical close path.
-        //
-        // For an *explicit* close-from-borrow we'd need additional shared
-        // state. For now we keep the API surface and note that the
-        // idiomatic close is `drop(sender)`.
+        self.closed.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether [`close`](Sender::close) has been called on this channel.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
     }
 }
 
@@ -133,12 +141,14 @@ impl<T> Sender<T> {
 /// delivered to exactly one receiver (MPMC semantics from crossbeam).
 pub struct Receiver<T> {
     pub(crate) inner: cb::Receiver<T>,
+    closed: Arc<AtomicBool>,
 }
 
 impl<T> Clone for Receiver<T> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
+            closed: Arc::clone(&self.closed),
         }
     }
 }
@@ -152,15 +162,32 @@ impl<T> fmt::Debug for Receiver<T> {
 impl<T> Receiver<T> {
     /// Block until a message is available or the channel is closed.
     pub fn recv(&self) -> Result<T, RecvError> {
-        self.inner.recv().map_err(|_| RecvError)
+        // Wake periodically so an explicit `Sender::close` is noticed even
+        // though live senders keep the underlying channel connected.
+        loop {
+            match self.inner.recv_timeout(Duration::from_millis(10)) {
+                Ok(v) => return Ok(v),
+                Err(cb::RecvTimeoutError::Disconnected) => return Err(RecvError),
+                Err(cb::RecvTimeoutError::Timeout) => {
+                    if self.closed.load(Ordering::SeqCst) {
+                        // Drain anything that raced in before reporting closed.
+                        return self.inner.try_recv().map_err(|_| RecvError);
+                    }
+                }
+            }
+        }
     }
 
     /// Attempt to receive a message without blocking.
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
-        self.inner.try_recv().map_err(|e| match e {
-            cb::TryRecvError::Empty => TryRecvError::Empty,
-            cb::TryRecvError::Disconnected => TryRecvError::Disconnected,
-        })
+        match self.inner.try_recv() {
+            Ok(v) => Ok(v),
+            Err(cb::TryRecvError::Empty) if self.closed.load(Ordering::SeqCst) => {
+                Err(TryRecvError::Disconnected)
+            }
+            Err(cb::TryRecvError::Empty) => Err(TryRecvError::Empty),
+            Err(cb::TryRecvError::Disconnected) => Err(TryRecvError::Disconnected),
+        }
     }
 
     /// Returns the number of messages currently buffered.
@@ -183,7 +210,7 @@ impl<T> Receiver<T> {
 /// The sender will block when the buffer is full.
 pub fn bounded<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
     let (tx, rx) = cb::bounded(capacity);
-    (Sender { inner: tx }, Receiver { inner: rx })
+    pair(tx, rx)
 }
 
 /// Create an unbounded channel.
@@ -191,7 +218,18 @@ pub fn bounded<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
 /// The sender never blocks (memory is the only limit).
 pub fn unbounded<T>() -> (Sender<T>, Receiver<T>) {
     let (tx, rx) = cb::unbounded();
-    (Sender { inner: tx }, Receiver { inner: rx })
+    pair(tx, rx)
+}
+
+fn pair<T>(tx: cb::Sender<T>, rx: cb::Receiver<T>) -> (Sender<T>, Receiver<T>) {
+    let closed = Arc::new(AtomicBool::new(false));
+    (
+        Sender {
+            inner: tx,
+            closed: Arc::clone(&closed),
+        },
+        Receiver { inner: rx, closed },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -383,5 +421,35 @@ mod tests {
         for (idx, &val) in vals.iter().enumerate() {
             assert_eq!(idx, val);
         }
+    }
+
+    // -- explicit close ---------------------------------------------------
+
+    #[test]
+    fn close_fails_later_sends_but_receivers_drain() {
+        let (tx, rx) = unbounded::<i32>();
+        let tx2 = tx.clone();
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        tx2.close();
+        assert!(tx.is_closed() && tx2.is_closed());
+        // Any clone observes the close.
+        assert_eq!(tx.send(3).unwrap_err().0, 3);
+        // Buffered messages are still delivered...
+        assert_eq!(rx.recv().unwrap(), 1);
+        assert_eq!(rx.try_recv(), Ok(2));
+        // ...then the channel reports closed even though senders are alive.
+        assert!(rx.recv().is_err());
+        assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+    }
+
+    #[test]
+    fn close_wakes_a_blocked_receiver() {
+        let (tx, rx) = unbounded::<i32>();
+        let handle = thread::spawn(move || rx.recv());
+        thread::sleep(Duration::from_millis(30));
+        tx.close();
+        assert!(handle.join().unwrap().is_err());
+        drop(tx);
     }
 }

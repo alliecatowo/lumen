@@ -1678,6 +1678,8 @@ fn try_const_eval(expr: &Expr) -> Option<ConstValue> {
 /// Tracks a loop for break/continue patching
 struct LoopContext {
     label: Option<String>,
+    /// Register that receives the value of `break <expr>` (`loop` used as an expression).
+    result_reg: Option<u8>,
     break_jumps: Vec<usize>,
     /// Indices of continue Jmp instructions that need forward-patching.
     /// For for-loops, these jump to the iterator-advance (idx += 1) section
@@ -1694,8 +1696,16 @@ struct Lowerer<'a> {
     strings: Vec<String>,
     loop_stack: Vec<LoopContext>,
     lambda_cells: Vec<LirCell>,
-    /// Accumulated defer blocks for the current function scope (emitted in LIFO order before returns)
-    defer_stack: Vec<Vec<Stmt>>,
+    /// Defer blocks registered so far in the current function scope, each with the
+    /// register of its "has been registered at runtime" flag. Blocks are emitted in
+    /// LIFO order before returns, guarded by the flag, so a `defer` inside a branch
+    /// that was not taken does not run.
+    defer_stack: Vec<(u8, Vec<Stmt>)>,
+    /// Flag registers allocated for the current function scope (zeroed at entry).
+    defer_flags: Vec<u8>,
+    /// Result register for the next `loop` statement (set when a `loop` is used as
+    /// an expression so that `break value` has somewhere to put its value).
+    pending_loop_result: Option<u8>,
     /// Accumulated effect handler metadata for the current cell being lowered.
     /// Each entry corresponds to one HandlePush instruction emitted.
     effect_handler_metas: Vec<LirEffectHandlerMeta>,
@@ -1723,6 +1733,8 @@ impl<'a> Lowerer<'a> {
             loop_stack: Vec::new(),
             lambda_cells: Vec::new(),
             defer_stack: Vec::new(),
+            defer_flags: Vec::new(),
+            pending_loop_result: None,
             effect_handler_metas: Vec::new(),
         }
     }
@@ -2148,6 +2160,7 @@ impl<'a> Lowerer<'a> {
 
         // Save and reset defer stack for this cell scope
         let saved_defers = std::mem::take(&mut self.defer_stack);
+        let saved_defer_flags = std::mem::take(&mut self.defer_flags);
         // Save and reset effect handler metas for this cell scope
         let saved_metas = std::mem::take(&mut self.effect_handler_metas);
 
@@ -2241,8 +2254,12 @@ impl<'a> Lowerer<'a> {
             instructions.push(Instruction::abc(OpCode::Return, r, 1, 0));
         }
 
+        // Zero the defer flags on entry so returns on paths that never reached a
+        // `defer` statement skip it.
+        Self::prepend_defer_flag_init(&self.defer_flags, &mut instructions);
         // Restore defer stack and collect effect handler metas
         self.defer_stack = saved_defers;
+        self.defer_flags = saved_defer_flags;
         let effect_handler_metas = std::mem::replace(&mut self.effect_handler_metas, saved_metas);
 
         // Peephole optimizations
@@ -2373,6 +2390,7 @@ impl<'a> Lowerer<'a> {
 
                 self.loop_stack.push(LoopContext {
                     label: fs.label.clone(),
+                    result_reg: None,
                     break_jumps: Vec::new(),
                     continue_jumps: Vec::new(),
                 });
@@ -2589,13 +2607,9 @@ impl<'a> Lowerer<'a> {
                     }
                     AssignTarget::Field(base_expr, field_name) => {
                         let base_reg = self.lower_expr(base_expr, ra, consts, instrs);
-                        let field_idx = self.intern_string(field_name);
-                        instrs.push(Instruction::abc(
-                            OpCode::SetField,
-                            base_reg,
-                            field_idx as u8,
-                            val_reg,
-                        ));
+                        // Key by constant string: a string-table index would not fit
+                        // the 8-bit operand once a module has more than 255 strings.
+                        self.emit_set_field(base_reg, field_name, val_reg, ra, consts, instrs);
                     }
                 }
             }
@@ -2609,6 +2623,7 @@ impl<'a> Lowerer<'a> {
                 let loop_start = instrs.len();
                 self.loop_stack.push(LoopContext {
                     label: ws.label.clone(),
+                    result_reg: None,
                     break_jumps: Vec::new(),
                     continue_jumps: Vec::new(),
                 });
@@ -2646,8 +2661,10 @@ impl<'a> Lowerer<'a> {
             }
             Stmt::Loop(ls) => {
                 let loop_start = instrs.len();
+                let result_reg = self.pending_loop_result.take();
                 self.loop_stack.push(LoopContext {
                     label: ls.label.clone(),
+                    result_reg,
                     break_jumps: Vec::new(),
                     continue_jumps: Vec::new(),
                 });
@@ -2669,18 +2686,25 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Stmt::Break(bs) => {
-                let jmp_idx = instrs.len();
-                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // placeholder
-                let target = if let Some(label) = &bs.label {
+                // `break <value>`: evaluate it and store it in the target loop's
+                // result register before jumping out.
+                let target_idx = if let Some(label) = &bs.label {
                     self.loop_stack
-                        .iter_mut()
-                        .rev()
-                        .find(|ctx| ctx.label.as_deref() == Some(label))
+                        .iter()
+                        .rposition(|ctx| ctx.label.as_deref() == Some(label))
                 } else {
-                    self.loop_stack.last_mut()
+                    self.loop_stack.len().checked_sub(1)
                 };
-                if let Some(ctx) = target {
-                    ctx.break_jumps.push(jmp_idx);
+                if let Some(value) = &bs.value {
+                    let v = self.lower_expr(value, ra, consts, instrs);
+                    if let Some(dest) = target_idx.and_then(|i| self.loop_stack[i].result_reg) {
+                        instrs.push(Instruction::abc(OpCode::Move, dest, v, 0));
+                    }
+                }
+                let jmp_idx = instrs.len();
+                instrs.push(Instruction::sax(OpCode::Jmp, 0)); // patched when the loop ends
+                if let Some(i) = target_idx {
+                    self.loop_stack[i].break_jumps.push(jmp_idx);
                 }
             }
             Stmt::Continue(cs) => {
@@ -2746,28 +2770,21 @@ impl<'a> Lowerer<'a> {
                     }
                     AssignTarget::Field(base_expr, field_name) => {
                         let base_reg = self.lower_expr(base_expr, ra, consts, instrs);
-                        let field_idx = self.intern_string(field_name);
                         // Load current value, apply op, store back
                         let cur_reg = ra.alloc_temp();
-                        instrs.push(Instruction::abc(
-                            OpCode::GetField,
-                            cur_reg,
-                            base_reg,
-                            field_idx as u8,
-                        ));
+                        self.emit_get_field(cur_reg, base_reg, field_name, ra, consts, instrs);
                         instrs.push(Instruction::abc(opcode, cur_reg, cur_reg, val_reg));
-                        instrs.push(Instruction::abc(
-                            OpCode::SetField,
-                            base_reg,
-                            field_idx as u8,
-                            cur_reg,
-                        ));
+                        self.emit_set_field(base_reg, field_name, cur_reg, ra, consts, instrs);
                     }
                 }
             }
             Stmt::Defer(ds) => {
-                // Collect defer block body for emission before returns (LIFO order)
-                self.defer_stack.push(ds.body.clone());
+                // Register the block at runtime: set its flag here; every return
+                // point runs the block only if the flag is set (LIFO order).
+                let flag = ra.alloc_named(&format!("__defer_{}", self.defer_flags.len()));
+                self.defer_flags.push(flag);
+                instrs.push(Instruction::abc(OpCode::LoadBool, flag, 1, 0));
+                self.defer_stack.push((flag, ds.body.clone()));
             }
             Stmt::Yield(ys) => {
                 let val_reg = self.lower_expr(&ys.value, ra, consts, instrs);
@@ -2930,6 +2947,7 @@ impl<'a> Lowerer<'a> {
 
         self.loop_stack.push(LoopContext {
             label: fs.label.clone(),
+            result_reg: None,
             break_jumps: Vec::new(),
             continue_jumps: Vec::new(),
         });
@@ -3007,12 +3025,31 @@ impl<'a> Lowerer<'a> {
         instrs: &mut Vec<Instruction>,
     ) {
         // Clone the defer stack so we can iterate in reverse without borrowing issues
-        let defers: Vec<Vec<Stmt>> = self.defer_stack.clone();
-        for defer_body in defers.iter().rev() {
+        let defers: Vec<(u8, Vec<Stmt>)> = self.defer_stack.clone();
+        for (flag, defer_body) in defers.iter().rev() {
+            // if !flag { skip body }   (Test with c = 0 skips the Jmp when truthy)
+            instrs.push(Instruction::abc(OpCode::Test, *flag, 0, 0));
+            let skip = instrs.len();
+            instrs.push(Instruction::sax(OpCode::Jmp, 0));
             for s in defer_body {
                 self.lower_stmt(s, ra, consts, instrs);
             }
+            let end = instrs.len();
+            instrs[skip] = Instruction::sax(OpCode::Jmp, (end - skip - 1) as i32);
         }
+    }
+
+    /// Insert `LoadBool flag, false` for each defer flag at the start of a
+    /// function body. All jumps are relative, so shifting the body is safe.
+    fn prepend_defer_flag_init(flags: &[u8], instrs: &mut Vec<Instruction>) {
+        if flags.is_empty() {
+            return;
+        }
+        let init: Vec<Instruction> = flags
+            .iter()
+            .map(|f| Instruction::abc(OpCode::LoadBool, *f, 0, 0))
+            .collect();
+        instrs.splice(0..0, init);
     }
 
     fn push_const_int(
@@ -4607,6 +4644,7 @@ impl<'a> Lowerer<'a> {
 
                 // Save and reset defer stack for lambda scope
                 let saved_defers = std::mem::take(&mut self.defer_stack);
+                let saved_defer_flags = std::mem::take(&mut self.defer_flags);
 
                 match body {
                     LambdaBody::Expr(e) => {
@@ -4632,8 +4670,10 @@ impl<'a> Lowerer<'a> {
                     }
                 }
 
-                // Restore defer stack
+                // Zero this lambda's defer flags on entry, then restore the outer scope
+                Self::prepend_defer_flag_init(&self.defer_flags, &mut linstrs);
                 self.defer_stack = saved_defers;
+                self.defer_flags = saved_defer_flags;
 
                 let proto_idx = self.lambda_cells.len() as u16;
                 self.lambda_cells.push(LirCell {
@@ -5362,6 +5402,16 @@ impl<'a> Lowerer<'a> {
                             // For-as-expression: collect body results into a list
                             instrs.push(Instruction::abc(OpCode::NewList, dest, 0, 0));
                             self.lower_for_as_expr(fs, dest, ra, consts, instrs);
+                        } else if let Stmt::Loop(_) = s {
+                            // `loop` as an expression yields the value of `break <expr>`
+                            // (null if it exits otherwise). The result lives in a named
+                            // register so per-statement temp recycling cannot reuse it.
+                            let result = ra.alloc_named(&format!("__loop_result_{}", dest));
+                            instrs.push(Instruction::abc(OpCode::LoadNil, result, 0, 0));
+                            self.pending_loop_result = Some(result);
+                            self.lower_stmt(s, ra, consts, instrs);
+                            self.pending_loop_result = None;
+                            instrs.push(Instruction::abc(OpCode::Move, dest, result, 0));
                         } else {
                             self.lower_stmt(s, ra, consts, instrs);
                             instrs.push(Instruction::abc(OpCode::LoadNil, dest, 0, 0));

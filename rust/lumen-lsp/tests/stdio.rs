@@ -288,3 +288,70 @@ fn edits_beyond_the_line_end_are_applied_and_close_clears_the_document() {
     assert!(after["result"].is_null(), "{after}");
     c.assert_alive();
 }
+
+const MD_URI: &str = "file:///unicode.lm.md";
+const MD_DOC: &str = "# Café ☕ — notes\n\nSome prose with 😀 emoji before the code.\n\n```lumen\ncell greet(name: String) -> String\n  let s = \"héllo 😀 wörld\" + name\n  return s\nend\n\ncell main() -> String\n  let msg = \"é\" + greet(\"ü\")\n  return msg\nend\n```\n\nTrailing prose ñ.\n";
+
+#[test]
+fn every_feature_survives_non_ascii_markdown_and_code_documents() {
+    let mut c = Client::start();
+    for (uri, text) in [(URI, DOC), (MD_URI, MD_DOC)] {
+        c.notify(
+            "textDocument/didOpen",
+            json!({ "textDocument": { "uri": uri, "languageId": "lumen", "version": 1, "text": text } }),
+        );
+        loop {
+            let msg =
+                c.rx.recv_timeout(Duration::from_secs(20))
+                    .expect("diagnostics");
+            if msg["method"] == "textDocument/publishDiagnostics" && msg["params"]["uri"] == uri {
+                break;
+            }
+        }
+        let doc = json!({ "uri": uri });
+        for (method, params) in [
+            (
+                "textDocument/documentSymbol",
+                json!({ "textDocument": doc }),
+            ),
+            (
+                "textDocument/semanticTokens/full",
+                json!({ "textDocument": doc }),
+            ),
+            ("textDocument/foldingRange", json!({ "textDocument": doc })),
+            (
+                "textDocument/formatting",
+                json!({ "textDocument": doc, "options": { "tabSize": 2, "insertSpaces": true } }),
+            ),
+            (
+                "textDocument/inlayHint",
+                json!({ "textDocument": doc, "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 30, "character": 0 } } }),
+            ),
+            (
+                "textDocument/codeAction",
+                json!({ "textDocument": doc, "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 30, "character": 0 } }, "context": { "diagnostics": [] } }),
+            ),
+        ] {
+            let r = c.request(method, params);
+            assert!(r["error"].is_null(), "{method} on {uri}: {r}");
+        }
+        for line in 0..16u32 {
+            for character in 0..30u32 {
+                let p = json!({ "textDocument": doc, "position": { "line": line, "character": character } });
+                for method in [
+                    "textDocument/completion",
+                    "textDocument/hover",
+                    "textDocument/definition",
+                    "textDocument/implementation",
+                ] {
+                    let r = c.request(method, p.clone());
+                    assert!(
+                        r["error"].is_null(),
+                        "{method} {uri} {line}:{character}: {r}"
+                    );
+                }
+            }
+        }
+        c.assert_alive();
+    }
+}

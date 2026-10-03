@@ -542,7 +542,7 @@ export function activate(context: ExtensionContext) {
     args: [],
   };
 
-  const outputChannel = window.createOutputChannel("Lumen Language Server");
+  const outputChannel = window.createOutputChannel("Lumen Language Server", { log: true });
   outputChannel.appendLine("Lumen extension activating...");
 
   const clientOptions: LanguageClientOptions = {

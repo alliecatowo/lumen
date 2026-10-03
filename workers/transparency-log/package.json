@@ -1,12 +1,12 @@
 {
   "name": "wares-transparency-log",
   "version": "1.0.0",
-  "description": "Transparency Log Service for Wares Package Manager — Sigstore-style append-only log",
+  "description": "Transparency Log Service for Wares Package Manager \u2014 Sigstore-style append-only log",
   "main": "src/index.js",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "test": "vitest"
+    "test": "vitest run"
   },
   "keywords": [
     "sigstore",

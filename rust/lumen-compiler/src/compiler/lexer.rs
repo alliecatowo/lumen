@@ -125,7 +125,11 @@ impl Lexer {
                 _ => break,
             }
         }
-        if matches!(self.current(), None | Some('\n') | Some('#')) {
+        // A blank line may end in `\r\n` (Windows checkouts): the `\r` must not be
+        // mistaken for content that dedents to column 0.
+        if matches!(self.current(), None | Some('\n') | Some('#'))
+            || (self.current() == Some('\r') && self.peek() == Some('\n'))
+        {
             if self.current().is_none() {
                 while self.indent_stack.len() > 1 {
                     self.indent_stack.pop();
@@ -1442,9 +1446,14 @@ impl Lexer {
                 ']' => tokens.push(self.single(TokenKind::RBracket)),
                 '{' => tokens.push(self.single(TokenKind::LBrace)),
                 '}' => tokens.push(self.single(TokenKind::RBrace)),
-                '\\' if self.peek() == Some('\n') => {
-                    // Line continuation
+                '\\' if self.peek() == Some('\n')
+                    || (self.peek() == Some('\r') && self.peek2() == Some('\n')) =>
+                {
+                    // Line continuation (LF or CRLF)
                     self.advance(); // skip backslash
+                    if self.current() == Some('\r') {
+                        self.advance();
+                    }
                     self.advance(); // skip newline
                                     // Don't emit newline, don't set at_line_start
                     self.at_line_start = false;
@@ -1818,5 +1827,22 @@ mod tests {
         let mut lexer = Lexer::new(src, 1, 0);
         let tokens = lexer.tokenize().unwrap();
         assert!(matches!(&tokens[0].kind, TokenKind::MarkdownBlock(s) if s.is_empty()));
+    }
+
+    #[test]
+    fn test_lex_crlf_matches_lf() {
+        // Blank lines, comment lines and continuations in a CRLF file must lex
+        // exactly like their LF counterpart (Windows checkouts convert endings).
+        let lf = "cell f(a: Int) -> Int\n  let x = a +\\\n    1\n\n  # note\n  while x < 3\n    x = x + 1\n\n  end\n  return x\nend\n";
+        let crlf = lf.replace('\n', "\r\n");
+        let kinds = |src: &str| -> Vec<String> {
+            Lexer::new(src, 1, 0)
+                .tokenize()
+                .unwrap_or_else(|e| panic!("lex failed: {e:?}"))
+                .into_iter()
+                .map(|t| format!("{:?}", t.kind))
+                .collect()
+        };
+        assert_eq!(kinds(lf), kinds(&crlf));
     }
 }

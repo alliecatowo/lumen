@@ -4004,7 +4004,11 @@ impl<'a> Lowerer<'a> {
                     }
 
                     // Only treat as intrinsic if it's not a defined cell
-                    let intrinsic = if !self.symbols.cells.contains_key(name) {
+                    // `pad_left`/`pad_right` with a pad character go through the by-name
+                    // builtin; the id form only carries (string, width).
+                    let takes_pad_char =
+                        matches!(name.as_str(), "pad_left" | "pad_right") && args.len() > 2;
+                    let intrinsic = if !self.symbols.cells.contains_key(name) && !takes_pad_char {
                         get_intrinsic_id(name)
                     } else {
                         None

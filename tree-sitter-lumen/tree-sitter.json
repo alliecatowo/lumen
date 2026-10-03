@@ -1,0 +1,38 @@
+{
+  "grammars": [
+    {
+      "name": "lumen",
+      "camelcase": "Lumen",
+      "scope": "source.lumen",
+      "path": ".",
+      "file-types": [
+        "lm",
+        "lumen"
+      ],
+      "highlights": "queries/highlights.scm",
+      "locals": "queries/locals.scm",
+      "injection-regex": "^lumen$"
+    }
+  ],
+  "metadata": {
+    "version": "0.3.0",
+    "license": "MIT",
+    "description": "Tree-sitter grammar for the Lumen programming language",
+    "authors": [
+      {
+        "name": "Lumen Contributors"
+      }
+    ],
+    "links": {
+      "repository": "https://github.com/alliecatowo/lumen.git"
+    }
+  },
+  "bindings": {
+    "c": true,
+    "go": true,
+    "node": true,
+    "python": true,
+    "rust": true,
+    "swift": true
+  }
+}

@@ -155,27 +155,56 @@ pub fn build_goto_definition(
 }
 
 fn extract_word_at_position(text: &str, position: Position) -> Option<String> {
-    let lines: Vec<&str> = text.lines().collect();
-    let line = lines.get(position.line as usize)?;
-    let char_pos = position.character as usize;
+    crate::position::word_at(text, position)
+}
 
-    if char_pos > line.len() {
-        return None;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::position::testing::*;
+    use lsp_types::{TextDocumentIdentifier, TextDocumentPositionParams, WorkDoneProgressParams};
+
+    fn definition_at(
+        text: &str,
+        program: Option<&Program>,
+        line: u32,
+        character: u32,
+    ) -> Option<GotoDefinitionResponse> {
+        let uri: Uri = "file:///t.lm".parse().unwrap();
+        build_goto_definition(
+            GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    position: Position { line, character },
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: Default::default(),
+            },
+            text,
+            program,
+            &uri,
+        )
     }
 
-    let start = line[..char_pos]
-        .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-
-    let end = line[char_pos..]
-        .find(|c: char| !c.is_alphanumeric() && c != '_')
-        .map(|i| char_pos + i)
-        .unwrap_or(line.len());
-
-    if start >= end {
-        return None;
+    #[test]
+    fn definition_after_non_ascii_text_on_the_same_line() {
+        let program = parse_program(UNICODE_DOC).expect("parses");
+        let col = col_of(UNICODE_DOC, 6, "greet", 1);
+        let found =
+            definition_at(UNICODE_DOC, Some(&program), 6, col).expect("definition of greet");
+        let GotoDefinitionResponse::Scalar(loc) = found else {
+            panic!("expected a single location")
+        };
+        assert_eq!(loc.range.start.line, 0);
     }
 
-    Some(line[start..end].to_string())
+    #[test]
+    fn definition_never_panics_on_any_column_of_a_non_ascii_line() {
+        let program = parse_program(UNICODE_DOC).expect("parses");
+        for line in 0..UNICODE_DOC.lines().count() as u32 + 1 {
+            for col in 0..60 {
+                let _ = definition_at(UNICODE_DOC, Some(&program), line, col);
+            }
+        }
+    }
 }

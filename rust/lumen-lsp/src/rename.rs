@@ -42,20 +42,18 @@ pub fn prepare_rename(
         }
     }
 
-    // Return the range of the word under cursor
-    let lines: Vec<&str> = text.lines().collect();
-    let line = lines.get(position.line as usize)?;
-    let char_pos = position.character as usize;
-    let (start, end) = word_boundary(line, char_pos)?;
+    // Return the range of the word under cursor, in UTF-16 columns.
+    let line = crate::position::line_at(text, position.line)?;
+    let (start, end) = crate::position::word_range_in_line(line, position.character)?;
 
     Some(PrepareRenameResponse::Range(Range {
         start: Position {
             line: position.line,
-            character: start as u32,
+            character: crate::position::byte_to_utf16_col(line, start),
         },
         end: Position {
             line: position.line,
-            character: end as u32,
+            character: crate::position::byte_to_utf16_col(line, end),
         },
     }))
 }
@@ -117,9 +115,18 @@ fn find_all_occurrences(
         collect_occurrences_in_program(prog, name, &mut occurrences);
     }
 
-    // Deduplicate by (line, start_char)
-    occurrences.sort_by(|a, b| a.line.cmp(&b.line).then(a.start_char.cmp(&b.start_char)));
-    occurrences.dedup();
+    // AST spans only say which *lines* mention the symbol: they point at the start of
+    // a construct (the `cell` keyword, or the `(` of a call), count chars, and a line
+    // can mention the name several times. Take every whole-word occurrence on those
+    // lines instead, in UTF-16 columns.
+    let mut lines: Vec<u32> = occurrences.iter().map(|o| o.line).collect();
+    lines.sort_unstable();
+    lines.dedup();
+    occurrences = lines
+        .into_iter()
+        .filter_map(|l| crate::position::line_at(text, l).map(|t| (l, t)))
+        .flat_map(|(l, t)| occurrences_on_line(t, l, name))
+        .collect();
 
     // If AST-based search finds nothing, fall back to text-based search
     // for identifiers (whole-word matching)
@@ -545,32 +552,98 @@ fn push_span_occurrence(
     out.push(occ);
 }
 
-/// Text-based fallback: find all whole-word occurrences of `name`.
-fn find_text_occurrences(text: &str, name: &str) -> Vec<SymbolOccurrence> {
-    let mut occurrences = Vec::new();
-    for (line_idx, line) in text.lines().enumerate() {
-        let mut search_start = 0;
-        while let Some(pos) = line[search_start..].find(name) {
-            let abs_pos = search_start + pos;
-            let before_ok = abs_pos == 0
-                || !line.as_bytes()[abs_pos - 1].is_ascii_alphanumeric()
-                    && line.as_bytes()[abs_pos - 1] != b'_';
-            let after_pos = abs_pos + name.len();
-            let after_ok = after_pos >= line.len()
-                || !line.as_bytes()[after_pos].is_ascii_alphanumeric()
-                    && line.as_bytes()[after_pos] != b'_';
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
 
-            if before_ok && after_ok {
-                occurrences.push(SymbolOccurrence {
-                    line: line_idx as u32,
-                    start_char: abs_pos as u32,
-                    end_char: (abs_pos + name.len()) as u32,
-                });
+/// First whole-word occurrence of `name` in `line` at or after byte `from`.
+fn find_whole_word(line: &str, name: &str, from: usize) -> Option<(usize, usize)> {
+    if name.is_empty() {
+        return None;
+    }
+    let mut search = from;
+    while let Some(rest) = line.get(search..) {
+        let pos = rest.find(name)?;
+        let start = search + pos;
+        let end = start + name.len();
+        let before_ok = line[..start]
+            .chars()
+            .next_back()
+            .map(|c| !is_word_char(c))
+            .unwrap_or(true);
+        let after_ok = line[end..]
+            .chars()
+            .next()
+            .map(|c| !is_word_char(c))
+            .unwrap_or(true);
+        if before_ok && after_ok {
+            return Some((start, end));
+        }
+        search = start
+            + line[start..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+    }
+    None
+}
+
+/// Byte ranges of double-quoted string literals on a line (unterminated runs to the end).
+fn string_spans(line: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut open: Option<usize> = None;
+    let mut escaped = false;
+    for (i, c) in line.char_indices() {
+        match open {
+            Some(start) => {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == '"' {
+                    spans.push((start, i + 1));
+                    open = None;
+                }
             }
-            search_start = abs_pos + name.len();
+            None => {
+                if c == '"' {
+                    open = Some(i);
+                }
+            }
         }
     }
-    occurrences
+    if let Some(start) = open {
+        spans.push((start, line.len()));
+    }
+    spans
+}
+
+/// Every whole-word occurrence of `name` on one line, outside string literals,
+/// reported in UTF-16 columns.
+fn occurrences_on_line(line: &str, line_idx: u32, name: &str) -> Vec<SymbolOccurrence> {
+    let strings = string_spans(line);
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some((start, end)) = find_whole_word(line, name, from) {
+        if !strings.iter().any(|&(s, e)| start >= s && start < e) {
+            out.push(SymbolOccurrence {
+                line: line_idx,
+                start_char: crate::position::byte_to_utf16_col(line, start),
+                end_char: crate::position::byte_to_utf16_col(line, end),
+            });
+        }
+        from = end;
+    }
+    out
+}
+
+/// Text-based fallback: find all whole-word occurrences of `name`.
+fn find_text_occurrences(text: &str, name: &str) -> Vec<SymbolOccurrence> {
+    text.lines()
+        .enumerate()
+        .flat_map(|(i, line)| occurrences_on_line(line, i as u32, name))
+        .collect()
 }
 
 fn symbol_exists_in_program(prog: &Program, name: &str) -> bool {
@@ -665,36 +738,7 @@ fn expr_contains_name(expr: &Expr, name: &str) -> bool {
 }
 
 fn extract_word_at_position(text: &str, position: Position) -> Option<String> {
-    let lines: Vec<&str> = text.lines().collect();
-    let line = lines.get(position.line as usize)?;
-    let char_pos = position.character as usize;
-    let (start, end) = word_boundary(line, char_pos)?;
-    if start >= end {
-        return None;
-    }
-    Some(line[start..end].to_string())
-}
-
-fn word_boundary(line: &str, char_pos: usize) -> Option<(usize, usize)> {
-    if char_pos > line.len() {
-        return None;
-    }
-
-    let start = line[..char_pos]
-        .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-
-    let end = line[char_pos..]
-        .find(|c: char| !c.is_alphanumeric() && c != '_')
-        .map(|i| char_pos + i)
-        .unwrap_or(line.len());
-
-    if start >= end {
-        None
-    } else {
-        Some((start, end))
-    }
+    crate::position::word_at(text, position)
 }
 
 fn is_keyword(word: &str) -> bool {
@@ -910,6 +954,92 @@ mod tests {
                 3,
                 "Each occurrence should be exactly 3 chars"
             );
+        }
+    }
+    #[test]
+    fn prepare_rename_reports_utf16_columns_after_non_ascii_text() {
+        use crate::position::testing::*;
+        let program = parse_program(UNICODE_DOC);
+        let col = col_of(UNICODE_DOC, 6, "greet", 1);
+        let Some(PrepareRenameResponse::Range(range)) = prepare_rename(
+            UNICODE_DOC,
+            Position {
+                line: 6,
+                character: col,
+            },
+            program.as_ref(),
+        ) else {
+            panic!("expected a range")
+        };
+        let start = col_of(UNICODE_DOC, 6, "greet", 0);
+        assert_eq!(
+            range.start,
+            Position {
+                line: 6,
+                character: start
+            }
+        );
+        assert_eq!(
+            range.end,
+            Position {
+                line: 6,
+                character: start + 5
+            }
+        );
+    }
+
+    #[test]
+    fn rename_edits_apply_cleanly_on_non_ascii_lines() {
+        use crate::position::testing::*;
+        let program = parse_program(UNICODE_DOC);
+        let uri = make_uri();
+        let col = col_of(UNICODE_DOC, 6, "greet", 2);
+        let edit = rename_symbol(
+            &uri,
+            UNICODE_DOC,
+            Position {
+                line: 6,
+                character: col,
+            },
+            "hello",
+            program.as_ref(),
+        )
+        .expect("rename edit");
+        let edits = edit.changes.unwrap().remove(&uri).unwrap();
+        let renamed = apply_edits(UNICODE_DOC, &edits);
+        assert_eq!(renamed, UNICODE_DOC.replace("greet", "hello"));
+    }
+
+    #[test]
+    fn rename_text_fallback_skips_partial_words_next_to_non_ascii() {
+        let text = "let éfoo = foo + fooé\nprint(foo)";
+        let occs = find_text_occurrences(text, "foo");
+        // Only the two bare `foo`s count; `éfoo` and `fooé` are different identifiers.
+        assert_eq!(occs.len(), 2, "{occs:?}");
+        assert_eq!(
+            occs[0],
+            SymbolOccurrence {
+                line: 0,
+                start_char: 11,
+                end_char: 14
+            }
+        );
+    }
+
+    #[test]
+    fn rename_and_prepare_rename_never_panic_on_any_column() {
+        use crate::position::testing::*;
+        let program = parse_program(UNICODE_DOC);
+        let uri = make_uri();
+        for line in 0..UNICODE_DOC.lines().count() as u32 + 1 {
+            for col in 0..60 {
+                let pos = Position {
+                    line,
+                    character: col,
+                };
+                let _ = prepare_rename(UNICODE_DOC, pos, program.as_ref());
+                let _ = rename_symbol(&uri, UNICODE_DOC, pos, "x", program.as_ref());
+            }
         }
     }
 }

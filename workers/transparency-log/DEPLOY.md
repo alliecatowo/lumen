@@ -49,7 +49,7 @@ GET https://wares-transparency-log.alliecatowo.workers.dev/api/v1/log/entries/0
 ```bash
 # Environment variables for registry server
 export TRANSPARENCY_LOG_URL=https://wares-transparency-log.alliecatowo.workers.dev
-export TRANSPARENCY_LOG_API_KEY=<set via `wrangler secret put` — never commit>
+export TRANSPARENCY_LOG_API_KEY=b9326424bd8ae579aa0f815c310bd2f14667701116fa6068dbef3d23250954c4
 
 # Or once custom domain is ready:
 export TRANSPARENCY_LOG_URL=https://logs.wares.lumen-lang.com
